@@ -66,8 +66,10 @@ subprojects {
                 buildTypes {
                     release {
                         signingConfig signingConfigs.va
-                        minifyEnabled true
-                        shrinkResources true
+                        // 1.9.26：R8 对新增 UI 代码做枚举 switch 优化时触发了闭源引擎
+                        // （com.lody.virtual.client.core.k.R）的空枚举崩溃，个人工具不靠混淆瘦身，先关掉保稳
+                        minifyEnabled false
+                        shrinkResources false
                         zipAlignEnabled true
                         proguardFiles getDefaultProguardFile('proguard-android.txt'), "${rootProject.rootDir}/proguard/proguard-rules.pro", "proguard-rules.pro"
                     }

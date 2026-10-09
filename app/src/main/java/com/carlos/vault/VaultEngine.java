@@ -47,6 +47,46 @@ public class VaultEngine {
     public VaultEngine(Context ctx) {
         this.ctx = ctx;
         this.store = new AccountStore(ctx);
+        probeHiddenApi();
+    }
+
+    /**
+     * 诊断：Android16 上引擎镜像（MAX-TARGET-O 隐藏字段）疑似被反射过滤绑不上，
+     * 导致容器微信 8.0.6x 在 HCallbackStub 崩溃。探明：直接反射是否被拦、
+     * setHiddenApiExemptions 解除是否可用、解除后能否反射。
+     */
+    private void probeHiddenApi() {
+        final String CT = "android.app.servertransaction.ClientTransaction";
+        try {
+            try {
+                java.lang.reflect.Field f = Class.forName(CT).getDeclaredField("mLifecycleStateRequest");
+                f.setAccessible(true);
+                android.util.Log.e("WXPROBE", "direct reflect OK: " + f);
+            } catch (Throwable t) {
+                android.util.Log.e("WXPROBE", "direct reflect BLOCKED: " + t);
+            }
+            try {
+                Class<?> vmr = Class.forName("dalvik.system.VMRuntime");
+                java.lang.reflect.Method get = vmr.getDeclaredMethod("getRuntime");
+                get.setAccessible(true);
+                Object rt = get.invoke(null);
+                java.lang.reflect.Method exh = vmr.getDeclaredMethod("setHiddenApiExemptions", String[].class);
+                exh.setAccessible(true);
+                Object r = exh.invoke(rt, new Object[]{new String[]{"L"}});
+                android.util.Log.e("WXPROBE", "exempt result=" + r);
+            } catch (Throwable t) {
+                android.util.Log.e("WXPROBE", "exempt failed: " + t);
+            }
+            try {
+                java.lang.reflect.Field f2 = Class.forName(CT).getDeclaredField("mLifecycleStateRequest");
+                f2.setAccessible(true);
+                android.util.Log.e("WXPROBE", "after-exempt reflect OK: " + f2);
+            } catch (Throwable t) {
+                android.util.Log.e("WXPROBE", "after-exempt still blocked: " + t);
+            }
+        } catch (Throwable t) {
+            android.util.Log.e("WXPROBE", "probe crash: " + t);
+        }
     }
 
     // ---------- 路径 ----------
@@ -291,6 +331,188 @@ public class VaultEngine {
         }
     }
 
+    // ---------- 容器微信（旧版支付试验） ----------
+
+    public static final String WECHAT_PKG = "com.tencent.mm";
+    /** 兼容保留：旧版微信包位置 */
+    public static final String WECHAT_APK_PATH = "/sdcard/Download/wechat_8053.apk";
+    /** 新版微信包：微信服务器会拒绝过老版本登录（提示"版本太低"），放这里用于自动升级 */
+    public static final String WECHAT_APK_NEW = "/sdcard/Download/wechat_8079.apk";
+
+    /** 微信是否已装入容器 */
+    public boolean isWechatInstalled() {
+        try {
+            return VirtualCore.get().getInstalledAppInfo(WECHAT_PKG, 0) != null;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 容器内微信的 versionCode；未安装返回 -1 */
+    public long installedWechatVersionCode() {
+        try {
+            InstalledAppInfo info = VirtualCore.get().getInstalledAppInfo(WECHAT_PKG, 0);
+            if (info == null) return -1;
+            android.content.pm.PackageInfo pi = info.getPackageInfo(0);
+            return pi == null ? -1 : pi.versionCode;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
+     * 确保容器微信用上手机下载目录里能找到的最新安装包：
+     * wechat_8079.apk（新）优先，其次 wechat_8053.apk（旧，兼容）。
+     * 包比容器内版本新（或未安装）时自动 卸旧→装新。
+     * 返回 null 表示无需变更或已就绪；否则为给用户看的错误说明。
+     */
+    public String ensureWechatFromApk() {
+        try {
+            File apk = bestWechatApk();
+            if (apk == null || !apk.exists()) {
+                return isWechatInstalled() ? null
+                        : "未找到微信APK：请把 wechat_8079.apk 放到手机 下载/ 目录";
+            }
+            android.content.pm.PackageInfo fpi =
+                    ctx.getPackageManager().getPackageArchiveInfo(apk.getPath(), 0);
+            if (fpi == null) return "微信APK读取失败：" + apk.getName();
+            long installed = installedWechatVersionCode();
+            if (installed == fpi.versionCode) return null;
+            if (installed >= 0) {
+                // 旧版容器微信没有可保留的登录态，直接卸掉换新
+                try { VirtualCore.get().uninstallPackage(WECHAT_PKG); } catch (Throwable ignored) { }
+            }
+            VAppInstallerParams params = new VAppInstallerParams();
+            VAppInstallerResult r = VirtualCore.get().installPackage(Uri.fromFile(apk), params);
+            if (r == null || r.status != VAppInstallerResult.STATUS_SUCCESS) {
+                return "微信安装失败 status=" + (r == null ? "?" : r.status);
+            }
+            android.util.Log.i("WXUP", "容器微信已换装 v" + fpi.versionName
+                    + " (code=" + fpi.versionCode + ") <- " + apk.getName());
+            return null;
+        } catch (Throwable t) {
+            return "微信换装异常:" + t.getMessage();
+        }
+    }
+
+    /**
+     * 保数据降级：不卸载直接覆盖安装 8.0.53。
+     * 背景：8.0.67 的支付界面是 LiteApp 组件，其基础库在容器内无法自举；
+     * 8.0.53 的收银台是原生的，不依赖 LiteApp。登录态（数据库/会话）跨版本保留。
+     */
+    public String downgradeWechatKeepData() {
+        try {
+            File apk = new File(WECHAT_APK_PATH); // wechat_8053.apk
+            if (!apk.exists()) return "未找到 wechat_8053.apk";
+            android.content.pm.PackageInfo fpi =
+                    ctx.getPackageManager().getPackageArchiveInfo(apk.getPath(), 0);
+            if (fpi == null) return "8053 APK 读取失败";
+            long installed = installedWechatVersionCode();
+            if (installed == fpi.versionCode) return null;
+            VAppInstallerParams params = new VAppInstallerParams();
+            params.setMode(VAppInstallerParams.MODE_INHERIT_EXISTING);
+            params.addInstallFlags(VAppInstallerParams.FLAG_INSTALL_OVERRIDE_NO_CHECK
+                    | VAppInstallerParams.FLAG_INSTALL_OVERRIDE_SKIP_ODEX);
+            VAppInstallerResult r = VirtualCore.get().installPackage(Uri.fromFile(apk), params);
+            if (r == null || r.status != VAppInstallerResult.STATUS_SUCCESS) {
+                return "保数据降级失败 status=" + (r == null ? "?" : r.status);
+            }
+            android.util.Log.i("WXUP", "保数据降级到 v" + fpi.versionName
+                    + " (code=" + fpi.versionCode + ")，登录数据保留");
+            return null;
+        } catch (Throwable t) {
+            return "保数据降级异常:" + t.getMessage();
+        }
+    }
+
+    /** 在两个已知位置里挑 versionCode 最大的可读微信包 */
+    private File bestWechatApk() {
+        File newer = new File(WECHAT_APK_NEW);
+        File older = new File(WECHAT_APK_PATH);
+        long vcNewer = apkVersionCode(newer);
+        long vcOlder = apkVersionCode(older);
+        if (vcNewer < 0 && vcOlder < 0) return null;
+        return vcNewer >= vcOlder ? newer : older;
+    }
+
+    private long apkVersionCode(File f) {
+        try {
+            if (f == null || !f.exists()) return -1;
+            android.content.pm.PackageInfo pi =
+                    ctx.getPackageManager().getPackageArchiveInfo(f.getPath(), 0);
+            return pi == null ? -1 : pi.versionCode;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /**
+     * 从本地 APK 把微信装入容器。
+     * 试验背景：引擎（2024.10 预编译）跑不动 2026 新版微信（登录页崩溃），
+     * 改用引擎同期的 8.0.53（2024.10 发布，签名已校验与官方一致）。
+     */
+    public String installWechatFromApk(String apkPath) {
+        try {
+            File apk = new File(apkPath);
+            if (!apk.exists()) return "未找到 APK，请先把微信包放到手机 下载/wechat_8053.apk";
+            VAppInstallerParams params = new VAppInstallerParams();
+            VAppInstallerResult r = VirtualCore.get().installPackage(Uri.fromFile(apk), params);
+            if (r == null || r.status != VAppInstallerResult.STATUS_SUCCESS) {
+                return r == null ? "安装失败" : ("安装失败: status=" + r.status);
+            }
+            return null;
+        } catch (Throwable t) {
+            return "安装异常:" + t.getMessage();
+        }
+    }
+
+    /** 启动容器内微信 */
+    public boolean launchWechat() {
+        diagnoseWechatRegistry();
+        int[] uids = candidateUserIds();
+        for (int uid : uids) {
+            try {
+                Intent launch = VirtualCore.get().getLaunchIntent(WECHAT_PKG, uid);
+                if (launch == null) continue;
+                VActivityManager.get().startActivity(launch, uid);
+                return true;
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 一次性诊断：确认 VA 虚拟注册表里微信 WelcomeActivity 的可见性。
+     * 背景：容器微信跳登录页时 VA resolve 不到该组件，转而透传真系统被拒（SecurityException）。
+     * 此日志用于区分：注册表缺失 vs userId 错位。
+     */
+    private void diagnoseWechatRegistry() {
+        try {
+        } catch (Throwable ignored) {
+        }
+        try {
+            com.lody.virtual.remote.InstalledAppInfo info =
+                    VirtualCore.get().getInstalledAppInfo(WECHAT_PKG, 0);
+            StringBuilder sb = new StringBuilder("WXDIAG installed=" + (info != null));
+            if (info != null) {
+                int[] users = info.getInstalledUsers();
+                sb.append(" users=");
+                if (users == null) sb.append("null");
+                else for (int u : users) sb.append(u).append(',');
+                for (int u : (users == null ? new int[]{0} : users)) {
+                    android.content.Intent probe = new android.content.Intent();
+                    probe.setClassName(WECHAT_PKG, WECHAT_PKG + ".plugin.account.ui.WelcomeActivity");
+                    android.content.pm.ActivityInfo ai = VirtualCore.get().resolveActivityInfo(probe, u);
+                    sb.append(" [u").append(u).append(" welcome=").append(ai != null).append(']');
+                }
+            }
+            android.util.Log.e("WXDIAG", sb.toString());
+        } catch (Throwable t) {
+            android.util.Log.e("WXDIAG", "diag-fail", t);
+        }
+    }
+
     /** 候选虚拟用户号：VA登记的 + 常见 0/1/2 兜底，去掉重复 */
     private int[] candidateUserIds() {
         int[] registered = new int[0];
@@ -432,15 +654,47 @@ public class VaultEngine {
 
     // ---------- token 注入 ----------
 
-    /** 向游戏 prefs 写入账号会话（XML 转义后合并/新建） */
+    /** 向游戏 prefs 写入账号会话（XML 转义后合并/新建）；手机号/身份证按脱敏空串处理。 */
     public boolean injectSession(String fpid, String token) throws IOException {
+        return injectSession(fpid, token, "", "");
+    }
+
+    /**
+     * 向游戏 prefs 写入账号会话（XML 转义后合并/新建）。
+     *
+     * <p><b>#70 F2：字段必须与游戏 SDK 的真实会话完全一致</b>（此前只写 9 个字段，且
+     * {@code account_type} 写成小写 {@code "mobile"}）。真机可用样本（可登录账号）
+     * {@code .workbuddy/artifacts/qa-loginfail/xml_snap_80049204.xml} 的
+     * {@code account_session_cn} 共 <b>11 个字段</b>，顺序为：
+     * <pre>
+     *   fpid, session_key, is_new, expire_on, account_type, session_expire_in,
+     *   created_ts, is_verify_id_card, mobile, id_card, offline_time
+     * </pre>
+     * 差异修正：{@code account_type} ⇒ {@code "Mobile"}（<b>大写 M</b>）；
+     * 补齐 {@code mobile}、{@code id_card}（真实样本里这两项是<b>脱敏值</b>
+     * {@code "133****7371"} / {@code "13023019961128****"}，我们没有真实值时按空串写，
+     * 先保证字段集与字段名对齐 —— 字段缺失比值为空更容易被 SDK 判为"会话不完整"而清除）。
+     *
+     * <p>旁证：09-26 18:0x 实测注入后 90s 内 {@code account_session_cn} 被清空 ⇒ 合成会话
+     * 没被 SDK 接受。字段对齐是第一个要排除的变量。
+     *
+     * @param fpid   号ID
+     * @param token  会话 token（{@code session_key}）
+     * @param mobile 手机号（脱敏值亦可）；无真实值传 {@code ""}
+     * @param idCard 实名身份证（脱敏值亦可）；无真实值传 {@code ""}
+     */
+    public boolean injectSession(String fpid, String token, String mobile, String idCard)
+            throws IOException {
         File prefsDir = new File(gameDataDir(), "shared_prefs");
         if (!prefsDir.exists() && !prefsDir.mkdirs()) return false;
         File f = new File(prefsDir, PREF_NAME + ".xml");
+        String m = mobile == null ? "" : mobile;
+        String ic = idCard == null ? "" : idCard;
         String sess = "{\"fpid\":\"" + fpid + "\",\"session_key\":\"" + token
-                + "\",\"is_new\":false,\"expire_on\":9999999999999,\"account_type\":\"mobile\""
+                + "\",\"is_new\":false,\"expire_on\":9999999999999,\"account_type\":\"Mobile\""
                 + ",\"session_expire_in\":31536000000,\"created_ts\":" + System.currentTimeMillis()
-                + ",\"is_verify_id_card\":true,\"offline_time\":0}";
+                + ",\"is_verify_id_card\":true,\"mobile\":\"" + m + "\",\"id_card\":\"" + ic
+                + "\",\"offline_time\":0}";
         String sessXml = sess.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
         String entry = "    <string name=\"" + SESSION_KEY + "\">" + sessXml + "</string>\n";
         String content;
@@ -545,11 +799,80 @@ public class VaultEngine {
      */
     public boolean autoSaveEntrySnapshot(String entryId) throws IOException {
         if (!hasLiveContent()) return false;
+        // 【新增】写 zip 之前先把「入口 ↔ 会话」归属校准（用户语义：同一入口内切换登录，以最新登录为准）。
+        // 位置刻意在**指纹判定之前**：否则"内容没变"时会提前 return，归属同步会被一起跳过。
+        // 同步失败/读不到会话都静默跳过 —— 绝不因为它中断存档（返回值不参与下面的流程判定）。
+        syncSessionOwner(entryId);
         String fp = liveFingerprint();
         if (fp != null && fp.equals(store.getSnapshotFingerprint(entryId)) && hasEntrySnapshot(entryId)) {
             return false;
         }
         return saveEntrySnapshot(entryId);
+    }
+
+    /**
+     * 读 live 目录里「**实际登录**的号ID（fpid）」。只读：不写文件、**不杀游戏进程**、不动归属标记。
+     *
+     * <p>读的就是 {@link #injectSession} 写的同一个文件（{@code <gameDataDir>/shared_prefs/<PREF_NAME>.xml}），
+     * 解析交给纯 Java 的 {@link SessionProbe#parseSessionFpid}（与快照读侧同一套判定口径，
+     * 可在宿主机 javac 干跑验证）。
+     *
+     * <p>任何失败（文件不存在 / 空 / 超大 / 未登录 / 解析异常）一律返回 {@code ""} ⇒ 调用方静默跳过同步。
+     */
+    public String readLiveSessionFpid() {
+        try {
+            File f = new File(new File(gameDataDir(), "shared_prefs"), PREF_NAME + ".xml");
+            if (!f.isFile()) return "";
+            long len = f.length();
+            if (len <= 0 || len > 1024L * 1024L) return "";
+            byte[] buf = new byte[(int) len];
+            InputStream in = null;
+            try {
+                in = new FileInputStream(f);
+                int n = in.read(buf);
+                if (n <= 0) return "";
+                if (n < buf.length) buf = java.util.Arrays.copyOf(buf, n);
+            } finally {
+                if (in != null) {
+                    try {
+                        in.close();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+            return SessionProbe.parseSessionFpid(new String(buf, Charset.forName("UTF-8")), SESSION_KEY);
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * 会话 ↔ 入口 归属同步：live 里实际登录的号 与 入口记录的 {@code fpid} 不一致时，
+     * **以最新登录为准**校准入口（同时作废旧 token，见
+     * {@link AccountStore#updateFpidAndClearToken}）。修复真机上「A 入口快照里存着 B 账号会话」
+     * （鲍哥888 / D-4，{@code login-failure-diagnosis.md} §13）。
+     *
+     * <p><b>只在"确实登录了"时才同步</b>：未登录 / 读不到会话 ⇒ 直接跳过，绝不把入口改成登出态残留值。
+     *
+     * <p><b>不碰 id / label / lastLogin</b>：理由见 {@link AccountStore#updateFpidAndClearToken} 的注释。
+     *
+     * @return true 表示确实校准了入口；false = 无需同步 / 读不到 / 未登录（调用方无需区分）
+     */
+    public boolean syncSessionOwner(String entryId) {
+        if (entryId == null || entryId.isEmpty()) return false;
+        String live = readLiveSessionFpid();
+        if (live.isEmpty()) return false;              // 未登录 / 读不到 ⇒ 静默跳过
+        AccountStore.Account target = null;
+        for (AccountStore.Account a : store.all()) {
+            if (a != null && entryId.equals(a.id)) {
+                target = a;
+                break;
+            }
+        }
+        if (target == null) return false;
+        String cur = target.fpid == null ? "" : target.fpid;
+        if (live.equals(cur)) return false;            // 已一致 ⇒ 不写盘
+        return store.updateFpidAndClearToken(entryId, live);
     }
 
     /**
@@ -600,6 +923,25 @@ public class VaultEngine {
      */
     public boolean launchEntry(String autoSaveToId, AccountStore.Account acc) {
         try {
+            // 【#72 F2】纵深防御：**一律按 id 重新读最新账户**，不要用调用方传进来的对象。
+            // 管理页的 acc 只在 onCreate 取过一次（改完 token 就陈旧）⇒ useToken 判空 ⇒ 不注入。
+            // 有了这一步，任何调用方（主页 / 管理页 / 将来的入口）传陈旧对象都不会再漏注入。
+            // 读不到（例如新入口尚未落盘）时退回调用方传入的对象，不改变既有行为。
+            AccountStore.Account fresh = null;
+            try {
+                fresh = store.byId(acc.id);
+            } catch (Throwable ignored) {
+            }
+            if (fresh != null) acc = fresh;
+
+            // 服务器模式：进游戏前通知 vault-server 让位（30 分钟探测回连，期间不抢号）
+            if (acc.fpid != null && !acc.fpid.isEmpty()) {
+                try {
+                    VaultSync.yieldForGame(ctx, acc.fpid, 30);
+                } catch (Throwable ignored) {
+                }
+            }
+
             if (!killGameAndWait(10000)) return false;
 
             String liveOwner = store.getLiveEntryId();
@@ -627,12 +969,36 @@ public class VaultEngine {
             boolean keepLive = acc.id != null && !acc.id.isEmpty()
                     && acc.id.equals(liveOwner) && hasLiveContent();
 
+            // 【新增】keepLive 正是「在某入口内换号登录后、重开同一入口」会走的分支：
+            // 此时 live 里的会话就是**最新登录**，必须把入口 fpid 同步过来，否则下次
+            // SessionProbe 判快照无效、又回退成旧号（QA 称之为"放大器"）。
+            // 时序按要求：keepLive 成立 → 同步 → （下面）setLiveEntryId(acc.id)。
+            if (keepLive) {
+                syncSessionOwner(acc.id);
+            }
+
             if (!keepLive) {
                 // 走既有还原链（wipe → 有快照还原快照 → 无快照回退基线/注入 token）。
                 // wipeGameInternal() 内部会把归属标记清空，这里不用再管。
                 wipeGameInternal();
                 boolean restored = false;
-                if (hasEntrySnapshot(acc.id)) {
+                // 【修复】快照必须先过"会话有效性"判定，再决定要不要解压。
+                //
+                // 原逻辑只看"快照文件存不存在"（hasEntrySnapshot = 存在且 >1024 字节），于是变成
+                // 【有快照 ⇒ 只还原快照、永不注入 token】：一旦首次注入没成功，那份"未登录"
+                // 快照就成了死循环 —— 点一次还原一次坏态、再存一份坏态，用户改 token / 重贴 /
+                // 重启 App 全都无效（本仓库 .workbuddy/artifacts/token-path-audit.md C1、
+                // login-failure-diagnosis.md D-1，两条独立路径收敛到同一处）。
+                //
+                // 判定同时比对 fpid（见 SessionProbe 类注释）：真机上发现过"A 入口的快照里存着
+                // B 账号的会话"，若只判"有没有会话"会被误判为有效、照旧还原成别人的号。
+                //
+                // 失败即判无效（fail-closed）：后果只是多走一次"还原基线 + 注入"，方向安全；
+                // 反过来 fail-open 会让坏快照继续固化。
+                // 注意：不删除、不覆盖那份无效快照文件，留给下次 autoSaveEntrySnapshot() 正常覆盖。
+                if (hasEntrySnapshot(acc.id)
+                        && SessionProbe.snapshotHasValidSession(entrySnapshot(acc.id),
+                                "shared_prefs/" + PREF_NAME + ".xml", SESSION_KEY, acc.fpid)) {
                     try {
                         unzip(entrySnapshot(acc.id), gameDataDir());
                         restored = true;
@@ -643,7 +1009,13 @@ public class VaultEngine {
                     boolean useToken = acc.fpid != null && !acc.fpid.isEmpty()
                             && acc.token != null && !acc.token.isEmpty();
                     if (hasBaseline()) restoreBaseline();
-                    if (useToken) injectSession(acc.fpid, acc.token);
+                    if (useToken) {
+                        injectSession(acc.fpid, acc.token);
+                        // 【#72 F3】注入后立刻标记"待存"：SessionSaver 的下一次回调会跳过 45s 节流
+                        // 直接尝试落盘（游戏还活着时它会自动跳过，等游戏一退出就补上）⇒
+                        // 保证闪退 / 强杀之后再次进入仍免验证码。失败也不影响本次启动。
+                        SessionSaver.requestSaveNow(ctx);
+                    }
                 }
             }
 
@@ -652,6 +1024,42 @@ public class VaultEngine {
 
             Thread.sleep(200);
             return launchGame();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 【#70 F1】作废某入口在 live 里的会话归属，使**下次打开该入口必然重新注入 token**。
+     *
+     * <p><b>为什么需要它</b>：{@link #launchEntry} 的 {@code keepLive} 分支（live 仍归属本入口）
+     * 会<b>原样保留</b> live，既不 wipe 也不注入 —— 而 {@code injectSession} 只挂在
+     * {@code !keepLive} 分支里。于是用户在管理页改完 token 后<b>紧接着打开同一入口</b>时，
+     * live 仍归属它 ⇒ {@code keepLive=true} ⇒ 不注入 ⇒ 游戏沿用旧的 live 会话 ⇒
+     * "token 改了却没生效"（{@code .workbuddy/artifacts/token-inject-auth-failure.md} R1）。
+     *
+     * <p><b>只摘归属标记，不删快照、不杀进程</b>：
+     * <ul>
+     *   <li>快照留着 —— {@code SessionProbe} 会比对 fpid，旧会话的快照会被判无效并走
+     *       "还原基线 + 注入"，不会还原成旧号；覆盖交给 {@link #autoSaveEntrySnapshot} 正常进行；</li>
+     *   <li>不在这里杀游戏 —— {@code launchEntry} 开头就会 {@code killGameAndWait}，
+     *       提前杀反而会打断用户当前的操作。</li>
+     * </ul>
+     *
+     * <p><b>幂等 + 静默</b>：live 没有归属、或归属的不是该入口 ⇒ 直接返回 false（本来就会走还原链）；
+     * 任何异常一律吞掉并返回 false —— 这是"改设置"路径，绝不能因为作废失败而弹错或中断。
+     *
+     * @param entryId 要作废的目标入口 id
+     * @return true = 确实摘掉了归属（下次打开必然重新注入）；false = 无需/无法作废
+     */
+    public boolean invalidateEntrySession(String entryId) {
+        if (entryId == null || entryId.isEmpty()) return false;
+        try {
+            String owner = store.getLiveEntryId();
+            if (owner == null || owner.isEmpty()) return false;   // live 无归属 ⇒ 下次本来就会 wipe+注入
+            if (!entryId.equals(owner)) return false;             // live 不归它 ⇒ 与本次改动无关
+            store.setLiveEntryId(null);                           // 只摘标记（null ⇒ 移除该键）
+            return true;
         } catch (Throwable t) {
             return false;
         }
@@ -679,9 +1087,50 @@ public class VaultEngine {
         }
     }
 
-    /** 保存当前登录到入口：杀游戏 → 快照 */
+    /**
+     * 【#72 F4】「保存登录现场」的前置校验：不让"别人的 live"或"未登录态"被写进本入口快照。
+     *
+     * <p>判定口径与 {@link SessionProbe} 完全一致（{@code session_key} 非空 + fpid 匹配），
+     * 只是对象从 zip 换成 live 目录 —— 这就是 {@link #readLiveSessionFpid}。
+     * 入口没配 fpid（原生登录型）时只要求"会话存在且不为空"，与读侧 probe 的宽松口径对齐。
+     *
+     * @param entryId 目标入口 id
+     * @return {@code null} = 允许保存；非 null = **拒绝原因**（可直接展示给用户）
+     */
+    public String captureGuardReason(String entryId) {
+        if (entryId == null || entryId.isEmpty()) return "入口不存在，无法保存";
+        try {
+            if (!hasLiveContent()) return "当前没有可保存的游戏数据（游戏还没运行过），无法保存";
+            String owner = store.getLiveEntryId();
+            if (owner == null || owner.isEmpty()) {
+                return "无法判断当前游戏归属哪个入口，为避免存错已取消保存";
+            }
+            if (!entryId.equals(owner)) {
+                AccountStore.Account oa = store.byId(owner);
+                String nm = (oa == null || oa.label == null || oa.label.isEmpty()) ? owner : oa.label;
+                return "当前游戏里登录的是入口「" + nm + "」，不是本入口。请从本入口启动并登录后再保存";
+            }
+            String live = readLiveSessionFpid();
+            if (live.isEmpty()) {
+                return "当前游戏处于未登录状态，保存会把「未登录」写进本入口。请先登录游戏再保存";
+            }
+            AccountStore.Account target = store.byId(entryId);
+            String expect = (target == null || target.fpid == null) ? "" : target.fpid;
+            if (!expect.isEmpty() && !expect.equals(live)) {
+                return "当前游戏登录的号（" + live + "）与本入口记录的号（" + expect + "）不一致，已取消保存";
+            }
+            return null;
+        } catch (Throwable t) {
+            return "读取当前登录状态失败（" + t + "），已取消保存以免写错";
+        }
+    }
+
+    /** 保存当前登录到入口：先过 {@link #captureGuardReason}，再 杀游戏 → 快照 */
     public boolean captureEntrySnapshot(String entryId) {
         try {
+            // 【#72 F4】纵深防御：即使调用方忘了先问校验，这里也不放行（保住了过去那个
+            // 无条件打包 live 的写法会造成的错位）。
+            if (captureGuardReason(entryId) != null) return false;
             if (!killGameAndWait(10000)) return false;
             return saveEntrySnapshot(entryId);
         } catch (Throwable t) {

@@ -1,6 +1,7 @@
 package com.carlos.vault;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.content.ClipData;
 import android.content.ClipboardManager;
@@ -21,7 +22,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 
 /** 入口管理页：卡片式布局 */
@@ -165,6 +168,8 @@ public class EntryDetailActivity extends Activity {
         mgmtCard.addView(sectionTitle("入口管理"));
         mgmtCard.addView(UiStyle.makeRowBtn(this, "✏️", "修改备注名", UiStyle.TEXT_PRI, this::showRenameDialog));
         addDivider(mgmtCard);
+        mgmtCard.addView(UiStyle.makeRowBtn(this, "🗂", "移动到分组…", UiStyle.TEXT_PRI, this::showMoveToGroupDialog));
+        addDivider(mgmtCard);
         mgmtCard.addView(UiStyle.makeRowBtn(this, "📱", "设备伪装（下一版）", UiStyle.TEXT_SEC, () -> toast("设备伪装将在下一版提供")));
         addDivider(mgmtCard);
         mgmtCard.addView(UiStyle.makeRowBtn(this, "🗑", "删除本入口", UiStyle.RED, this::confirmDelete));
@@ -196,13 +201,81 @@ public class EntryDetailActivity extends Activity {
     }
 
     private void refreshInfo() {
-        boolean hasToken = acc.fpid != null && !acc.fpid.isEmpty() && acc.token != null && !acc.token.isEmpty();
+        // 【#72 F1】判据以 token 为准（与主页卡片 #71 同口径）：原来要求 fpid *也*非空，
+        // 于是"有 fpid、没 token"的入口会显示成"备有 token"，可实际并没有 token 可用。
+        boolean hasToken = acc.token != null && !acc.token.isEmpty();
         boolean hasSnap = engine.hasEntrySnapshot(acc.id);
         String mode = hasSnap ? "已保存登录" + (hasToken ? " · 备有token" : "")
                 : (hasToken ? "token 登录" : "原生登录（未绑定）");
         modeView.setText(mode);
         String when = acc.lastLogin > 0 ? FMT.format(new Date(acc.lastLogin)) : "未使用";
-        infoView.setText((hasToken ? "号ID: " + acc.fpid + "\n" : "") + "上次使用: " + when);
+        infoView.setText((hasToken ? "号ID: " + acc.fpid + "\n" : "")
+                + "分组: " + groupDisplay() + "\n"
+                + "上次使用: " + when);
+    }
+
+    /** 当前分组的展示名（"" 显示为"未分组"）。 */
+    private String groupDisplay() {
+        return (acc == null || acc.group == null || acc.group.isEmpty())
+                ? EntryLayout.UNGROUPED_TITLE : acc.group;
+    }
+
+    // ---------- 移动到分组（③） ----------
+
+    /**
+     * 分组选择弹窗：已有分组 + "未分组" + "＋ 新建分组…"。
+     *
+     * 校验（空名 / 重名 / 保留名）全部交给 {@link EntryLayout#validateGroupName}，
+     * 这里只做 UI 编排。**移入空组是允许的**；**最后一个成员被移走后分组不自动删除**
+     * （变空组，仍显示，方便改名/删除）。
+     */
+    private void showMoveToGroupDialog() {
+        List<EntryLayout.Group> meta = store.getGroupMeta();
+        final List<String> names = new ArrayList<>();
+        names.add(EntryLayout.UNGROUPED_TITLE);
+        for (EntryLayout.Group g : meta) {
+            if (g != null && g.name != null && !g.name.isEmpty()) names.add(g.name);
+        }
+        names.add("＋ 新建分组…");
+
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("移动到分组（当前：" + groupDisplay() + "）")
+                .setItems(names.toArray(new String[0]), (d, which) -> {
+                    String picked = names.get(which);
+                    if ("＋ 新建分组…".equals(picked)) {
+                        promptNewGroup();
+                        return;
+                    }
+                    String target = EntryLayout.UNGROUPED_TITLE.equals(picked) ? "" : picked;
+                    if (!store.setGroup(acc.id, target)) {
+                        toast("移动失败，请重试");
+                        return;
+                    }
+                    acc.group = target;
+                    toast("已移动到「" + picked + "」");
+                    refreshInfo();
+                })
+                .show();
+    }
+
+    /** 新建分组并把当前入口移进去。 */
+    private void promptNewGroup() {
+        UiStyle.showInputDialog(this, "新建分组", "输入分组名", "", false, text -> {
+            String err = EntryLayout.validateGroupName(store.getGroupMeta(), text);
+            if (err != null) {
+                toast(err);
+                return;
+            }
+            String name = text.trim();
+            if (!store.createGroup(name)) {
+                toast("新建分组失败，请重试");
+                return;
+            }
+            store.setGroup(acc.id, name);
+            acc.group = name;
+            toast("已新建分组「" + name + "」并移入");
+            refreshInfo();
+        });
     }
 
     // ---------- 启动 ----------
@@ -241,7 +314,18 @@ public class EntryDetailActivity extends Activity {
                     String fpid = AccountStore.extractFpid(text.substring(0, sep));
                     if (fpid.isEmpty()) { toast("号ID必须为数字"); return; }
                     store.setToken(acc.id, fpid, text.substring(sep + 4).trim());
-                    toast("token 已保存");
+                    // 【#70 F1】只存 token 是不够的：若 live 仍归属该入口，下次 launchEntry 会走
+                    // keepLive 分支（不 wipe、不还原、**不注入**）⇒ 游戏沿用旧的 live 会话，
+                    // 于是"改了 token 却没生效"。这里摘掉 live 归属，强制下次走 wipe→基线→注入。
+                    // 不删快照（SessionProbe 会按 fpid 判无效），也不在这里杀游戏。
+                    engine.invalidateEntrySession(acc.id);
+                    // 【#72 F1】根因修复：acc 只在 onCreate 取过一次，这里必须重新读。
+                    // 否则紧接着点「▶ 启 动 分 身」时 doLaunch() 把**陈旧 acc**（token 还是旧值/空）
+                    // 交给 engine.launchEntry ⇒ useToken=false ⇒ 跳过注入 ⇒ 要求验证码。
+                    // 主页之所以正常，是因为它每次都会重读库 —— 这就是"主页能用、管理页不行"的原因。
+                    AccountStore.Account fresh = store.byId(acc.id);
+                    if (fresh != null) acc = fresh;
+                    toast("token 已保存，下次打开该入口时重新登录");
                     refreshInfo();
                 });
     }
@@ -304,6 +388,14 @@ public class EntryDetailActivity extends Activity {
     // ---------- 保存现场 ----------
 
     private void captureSnapshot() {
+        // 【#72 F4】保存前先显式校验，并把**具体原因**说清楚（而不是一句笼统的"保存失败"）：
+        // 无条件打包 live 会把"别人的号"或"未登录态"固化进本入口快照 —— 这正是历史上
+        // D-4 类错位（A 入口快照里存着 B 账号的会话）的同源写法。
+        String why = engine.captureGuardReason(acc.id);
+        if (why != null) {
+            toast(why);
+            return;
+        }
         ProgressDialog pd = new ProgressDialog(this);
         pd.setMessage("正在保存登录状态…");
         pd.setCancelable(false);

@@ -1,0 +1,627 @@
+package com.carlos.vault.daily;
+
+import android.content.Context;
+
+import com.carlos.vault.AccountStore;
+import com.carlos.vault.wjdr.WjdrEngine;
+
+import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+/**
+ * 常驻在线会话管理器（对标原版 GameAccountSessionService 的多角色会话层）。
+ *
+ * <p>模型与原版一致：<b>每角色（fpid:sid）一条独立 TCP 会话</b>，各自心跳/恢复/顶号处理。
+ * 引擎侧（WjdrEngine）已内置心跳判定、指数退避重连与 notify_logout 码表；本类只做三件事：
+ * <ul>
+ *   <li>1 秒扫描（原版 heartbeatExecutor 同款节拍）：在线会话发心跳、恢复态到点重登、顶号态探测回连；</li>
+ *   <li>登录/重连/互助动作统一走单线程 actor（= 原版"全局登录并发 1"的保守版），避免扫描线程被阻塞；</li>
+ *   <li>会话生命周期与账号库联动：token 更新即重建，账号退出自动日常即下线。</li>
+ * </ul>
+ *
+ * <p>哪些角色常驻在线由 {@link #syncOnline()} 决定：开启「常驻在线」的账号 → 工作区全部启用角色。
+ *
+ * <p><b>同账号多角色并存的机制：竞速登录（2026-10-08 定论）</b>。服务器在<b>登录完成时</b>踢掉
+ * 该账号的全部既有会话（2026-10-07/08 实测：串行登录必互踢，code=46 同设备 / code=5 异设备，
+ * 与指纹无关）；但<b>多条 loginauth 同时在途</b>（都未完成登记）时可钻过踢人检查，全部登记成功，
+ * 之后只要不掉线就永久共存——即游戏已知的"卡多角色在线"。因此：
+ * <ul>
+ *   <li>多角色账号登录 = 各角色线程<b>同刻起跑</b>（{@link #startRace}，CountDownLatch 发令）；</li>
+ *   <li>任何一条会话掉线后<b>禁止单独重连</b>（单独重连=新登录，必踢掉兄弟会话），必须整账号
+ *       关旧重赛；</li>
+ *   <li>竞速前护栏：容器游戏客户端正挂本账号时不抢（人玩优先，1 分钟后再看）；竞速失败按
+ *       指数退避重赛（8s×2ⁿ 封顶 300s）。</li>
+ * </ul>
+ * 设备指纹按角色独立（{@link AccountStore#roleIdentitySeed}）仅为了身份稳定/风控分散。
+ */
+public final class RoleSessionKeeper {
+
+    /** 互助兜底轮询间隔（原版 alliance-donation 任务间隔 30s）。 */
+    static final long HELP_POLL_MILLIS = 30_000L;
+
+    /**
+     * 竞速错峰：第 i 个角色延迟 i×此值起跑（主角色 0ms）。实测踢人检查发生在
+     * <b>loginauth 完成时、只踢已完全登记（online）的同账号会话</b>——因此跟进者的
+     * loginauth <b>请求</b>要落在先行者"loginauth 处理中、尚未响应"的窗口内（实测约
+     * 300~700ms，随网络抖动）——即用户口述的"登录的那一瞬间"。太早（同时起跑）会被
+     * 服务器互斥饿死（输家黑洞在 loaddata）；太晚（先行者已完全登记）会触发登记踢除。
+     * 300ms 基数 + 400ms 抖动覆盖窗口中段；重赛循环天然多次采样，落进窗口即双角色共存。
+     */
+    static final long RACE_STAGGER_BASE_MS = 300L, RACE_STAGGER_JITTER_MS = 400L;
+
+    /** 一条常驻会话（fpid:sid → 引擎 + 互助响应状态）。 */
+    public static final class LiveSession {
+        public final WjdrEngine engine;
+        public final String fpid;
+        public final long sid;
+        public final String label;
+
+        // ---- 互助响应状态（HelpResponder 维护；对标原版 DailyAllianceDonationState 的 helpRequests） ----
+        final Map<String, HelpResponder.HelpReq> helpRequests = new ConcurrentHashMap<>();
+        final AtomicBoolean helpAttached = new AtomicBoolean();
+        final AtomicBoolean helpBusy = new AtomicBoolean();
+        volatile long helpBlockedUntil;
+        volatile long lastHelpScanAt;
+        volatile int helpNumToday;
+        volatile long dayGlory;
+        volatile long lastMarchPollAt;   // 行军类轮询兜底节流（PushWakeDriver.MARCH_POLL_MILLIS）
+
+        // ---- 推送唤醒状态（PushWakeDriver；每会话一次） ----
+        final java.util.concurrent.atomic.AtomicBoolean wakeAttached = new AtomicBoolean();
+
+        LiveSession(WjdrEngine engine, String fpid, long sid, String label) {
+            this.engine = engine;
+            this.fpid = fpid;
+            this.sid = sid;
+            this.label = label == null ? fpid : label;
+        }
+
+        /** 供扫描线程异步重登（重登耗时数十秒，不能占住扫描线程）。 */
+        void reconnectOnce() {
+            try {
+                engine.tryReconnect();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static volatile RoleSessionKeeper instance;
+
+    public static RoleSessionKeeper get(Context ctx) {
+        RoleSessionKeeper k = instance;
+        if (k == null) {
+            synchronized (RoleSessionKeeper.class) {
+                if (instance == null) instance = new RoleSessionKeeper(ctx.getApplicationContext());
+                k = instance;
+            }
+        }
+        return k;
+    }
+
+    private final Context ctx;
+    private final Map<String, LiveSession> sessions = new ConcurrentHashMap<>();
+    private final ExecutorService actor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "vault-session-actor");
+        t.setDaemon(true);
+        return t;
+    });
+    private volatile ScheduledExecutorService scanner;
+
+    // ---------- 账号级竞速登录状态（多角色并存的编排层） ----------
+    // desired：<fpid → 想保持在线的(账号, 角色列表)>，syncOnline 每次全量重建；scan 按它判断
+    // "账号是否完整"，不完整（任一会话掉线）就整号重赛——绝不单独重连某一条（会踢掉兄弟）。
+    private static final class Desired {
+        final AccountStore.Account acc;
+        final List<Long> sids;
+        Desired(AccountStore.Account acc, List<Long> sids) {
+            this.acc = acc;
+            this.sids = sids;
+        }
+    }
+
+    private final Map<String, Desired> desired = new ConcurrentHashMap<>();
+    /** 竞速退避：<fpid → 下次允许起赛的时刻>（失败 8s×2ⁿ 封顶 300s；人玩避让固定 60s）。 */
+    private final Map<String, Long> nextRaceAt = new ConcurrentHashMap<>();
+    private final Map<String, Integer> raceShift = new ConcurrentHashMap<>();
+    /** 正在竞速的账号（防重复起赛）。 */
+    private final Set<String> raceInFlight = ConcurrentHashMap.newKeySet();
+    /**
+     * 竞速连续失败计数 / 已降级单会话的账号。实测服务器对同账号登录做串行化处理
+     * （跟进者 loginauth 响应总在先行者登记完成后 ~3ms 释放并清除它），客户端时序钻不过
+     * 窗口——连续 {@link #RACE_GIVE_UP_AFTER} 次未全员在线即降级：只保一条会话，停止重赛，
+     * 直到进程重启或常驻开关重开。若某网关/真机环境允许窗口存在，成功一次即清零计数。
+     */
+    private final Map<String, Integer> raceFails = new ConcurrentHashMap<>();
+    private final Set<String> raceGivenUp = ConcurrentHashMap.newKeySet();
+    static final int RACE_GIVE_UP_AFTER = 8;
+
+    private RoleSessionKeeper(Context ctx) {
+        this.ctx = ctx;
+    }
+
+    /** 启动 1 秒扫描（幂等；服务重建后可再次调用）。 */
+    public synchronized void start() {
+        if (scanner != null && !scanner.isShutdown()) return;
+        scanner = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "vault-session-keeper");
+            t.setDaemon(true);
+            return t;
+        });
+        scanner.scheduleWithFixedDelay(this::scan, 1L, 1L, TimeUnit.SECONDS);
+    }
+
+    private void scan() {
+        long now = System.currentTimeMillis();
+        // 服务器模式自愈：模式开启前已建立的期望/会话（如启动时的本地竞速）在 1 秒内全部
+        // 收敛关闭——否则本地会与 vault-server 互踢（会话创建入口在 syncOnline，这里兜底）。
+        if (com.carlos.vault.VaultSync.isServerMode(ctx)) {
+            if (!desired.isEmpty() || !sessions.isEmpty()) {
+                closeSessionsNotIn(new HashSet<String>());
+                desired.clear();
+            }
+            return;
+        }
+        // 按账号分组处理：多角色账号的恢复是"整号重赛"，不能逐会话单独重连
+        Map<String, List<LiveSession>> byAccount = new java.util.HashMap<>();
+        for (LiveSession ls : sessions.values()) {
+            byAccount.computeIfAbsent(ls.fpid, k -> new ArrayList<>()).add(ls);
+        }
+        for (Map.Entry<String, List<LiveSession>> e : byAccount.entrySet()) {
+            String fpid = e.getKey();
+            Desired d = desired.get(fpid);
+            // 已降级单会话的账号：收敛到一条（其余关闭），按单会话语义处理
+            if (raceGivenUp.contains(fpid) && d != null && d.sids.size() > 1) {
+                long pick = pickSingle(fpid, d.sids);
+                for (LiveSession ls : new ArrayList<>(e.getValue())) {
+                    if (ls.sid != pick) closeSession(key(fpid, ls.sid));
+                }
+                e.getValue().removeIf(ls -> ls.sid != pick);
+            }
+            boolean multi = d != null && d.sids.size() > 1 && !raceGivenUp.contains(fpid);
+            boolean needRace = false;
+            String raceReason = "";
+            for (LiveSession ls : e.getValue()) {
+                try {
+                    String st = ls.engine.sessionState();
+                    if (WjdrEngine.STATE_ONLINE.equals(st)) {
+                        ls.engine.heartbeatTick();
+                        if (now - ls.lastHelpScanAt >= HELP_POLL_MILLIS) {
+                            ls.lastHelpScanAt = now;
+                            HelpResponder.poll(ctx, ls);
+                        }
+                        if (now - ls.lastMarchPollAt >= PushWakeDriver.MARCH_POLL_MILLIS) {
+                            ls.lastMarchPollAt = now;
+                            PushWakeDriver.pollMarch(ctx, ls);
+                        }
+                    } else if (WjdrEngine.STATE_RECOVERING.equals(st)) {
+                        if (multi) {
+                            // 多角色账号：单独重连会踢掉兄弟会话，标记整号重赛
+                            needRace = true;
+                            raceReason = "会话断线";
+                        } else {
+                            actor.execute(ls::reconnectOnce);
+                        }
+                    } else if (WjdrEngine.STATE_TAKEOVER.equals(st) && ls.engine.takeoverProbeDue(now)) {
+                        if (multi) {
+                            needRace = true;
+                            raceReason = "顶号探测到期";
+                        } else {
+                            ls.engine.beginRecoveryNow("顶号探测回连");
+                        }
+                    }
+                    // need_token：停机待人工重导 token，不自动重试
+                } catch (Throwable ignored) {
+                }
+            }
+            // 账号不完整（应有 N 条在线、实际缺员）也整号重赛
+            if (!needRace && multi && d != null) {
+                for (long sid : d.sids) {
+                    LiveSession ls = sessions.get(key(fpid, sid));
+                    if (ls == null || !WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+                        needRace = true;
+                        raceReason = "在线缺员";
+                        break;
+                    }
+                }
+            }
+            if (needRace && d != null) {
+                ensureAccountOnline(d);
+            }
+        }
+    }
+
+    /**
+     * 确保某角色的常驻会话存在（不存在/凭证变更则创建并异步登录；返回当前会话，可能仍在登录中）。
+     *
+     * <p><b>单角色账号的常规路径</b>；多角色账号由 {@link #startRace} 竞速编排（同刻起跑钻
+     * 登记窗口），不走本方法。身份按角色独立注入（roleIdentitySeed：主角色沿用账号级旧指纹，
+     * 其它角色各自随机并固化）。
+     */
+    public LiveSession ensureOnline(AccountStore.Account acc, long sid) {
+        if (acc == null || acc.fpid == null || acc.fpid.isEmpty()
+                || acc.token == null || acc.token.isEmpty() || sid <= 0) {
+            return null;
+        }
+        String k = key(acc.fpid, sid);
+        LiveSession ls = sessions.get(k);
+        if (ls != null) {
+            // token 已更新（用户重导）：旧凭证会话永远登不回去，直接重建
+            if (acc.token.equals(ls.engine.savedToken())) return ls;
+            closeSession(k);
+        }
+        ls = new LiveSession(WjdrAndroid.newEngine(ctx), acc.fpid, sid, acc.label);
+        // 状态变化日志（灰度观察用：logcat 过滤 SessionKeeper）
+        final LiveSession flsLog = ls;
+        ls.engine.setStateListener(s -> android.util.Log.i("SessionKeeper",
+                flsLog.label + " " + flsLog.fpid + ":" + flsLog.sid + " → " + s
+                        + (flsLog.engine.lastFailure() == null ? "" : " · " + flsLog.engine.lastFailure())));
+        sessions.put(k, ls);
+        start();
+        final LiveSession fls = ls;
+        final AccountStore.Account facc = acc;
+        actor.execute(() -> {
+            try {
+                fls.engine.initialize();
+                try {
+                    AccountStore store = new AccountStore(ctx);
+                    fls.engine.applyIdentity(store.roleIdentitySeed(
+                            fls.fpid, fls.sid, RoleStore.activeRole(ctx, fls.fpid)));
+                } catch (Throwable ignored) {
+                }
+                fls.engine.login(facc.fpid, facc.token, fls.sid);
+                HelpResponder.attach(ctx, fls);
+                PushWakeDriver.attach(ctx, fls);
+                try {
+                    new AccountStore(ctx).updateRoleSettings(fls.fpid, fls.sid, fls.engine.identityJson());
+                } catch (Throwable ignored) {
+                }
+            } catch (Throwable ignored) {
+                // 登录失败：引擎状态机已就位（recovering 退避重试 / need_token 停机），扫描线程接管
+            }
+        });
+        return ls;
+    }
+
+    /** 借一条"当前在线"的会话执行操作（无则返回 null，调用方回落 fresh 登录）。
+     *  借用即防自顶：已有常驻会话的号绝不能再 fresh 登录（同号同角色会互踢）。 */
+    public LiveSession borrowOnline(String fpid, long sid) {
+        if (fpid == null || fpid.isEmpty()) return null;
+        LiveSession ls = sessions.get(key(fpid, sid));
+        return (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) ? ls : null;
+    }
+
+    /** 该账号任意一条在线会话（未指定角色时的兜底）。 */
+    public LiveSession borrowAnyOnline(String fpid) {
+        if (fpid == null || fpid.isEmpty()) return null;
+        for (LiveSession ls : sessions.values()) {
+            if (fpid.equals(ls.fpid) && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+                return ls;
+            }
+        }
+        return null;
+    }
+
+    /** 动作线程（登录/重连/互助等阻塞操作统一串行，防扫描线程被卡）。 */
+    public void execute(Runnable r) {
+        try {
+            actor.execute(() -> {
+                try {
+                    r.run();
+                } catch (Throwable ignored) {
+                }
+            });
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 常驻在线同步（DailySchedulerService 巡检调用，10 分钟一次）：
+     * <b>开启「常驻在线」开关（keep:&lt;fpid&gt;）的账号</b>，其<b>工作区全部启用角色</b>保持在线
+     * （无启用角色时回落调度角色）；不再符合条件的会话关闭。与「自动日常」（每日时间窗整轮）正交：
+     * 常驻是 24h 心跳+自动互助，自动日常是每天窗口跑任务。
+     *
+     * <p>多角色账号经 {@link #startRace} 竞速登录同时起跑（见类注释的机制说明）；单角色账号走
+     * {@link #ensureOnline} 常规登录。
+     */
+    public void syncOnline() {
+        try {
+            // 服务器模式：本地不建常驻会话（防与 vault-server 互踢），状态改由服务器回传。
+            // syncOnline 的触发点（keep 开关切换/巡检/登录收尾）同时是账号数据可能变化的时点，
+            // 顺手触发一次去抖全量同步，让服务器的 keep/active 角色跟随本机。
+            if (com.carlos.vault.VaultSync.isServerMode(ctx)) {
+                closeSessionsNotIn(new HashSet<String>());
+                desired.clear();
+                com.carlos.vault.VaultSync.onAccountsChanged(ctx);
+                com.carlos.vault.VaultSync.fetchState(ctx);
+                return;
+            }
+            Set<String> want = new HashSet<>();
+            Map<String, Desired> wantDesired = new java.util.HashMap<>();
+            for (AccountStore.Account acc : new AccountStore(ctx).all()) {
+                if (acc == null || acc.token == null || acc.token.isEmpty()
+                        || acc.fpid == null || acc.fpid.isEmpty()) continue;
+                if (!RoleStore.keepOnline(ctx, acc.fpid)) continue;
+                RoleStore.Schedule s = RoleStore.schedule(ctx, acc.fpid);
+                List<Long> sids = new ArrayList<>();
+                for (RoleStore.Role r : RoleStore.roles(ctx, acc.fpid)) {
+                    if (r.enabled && r.serverid > 0) sids.add(r.serverid);
+                }
+                if (sids.isEmpty() && s.serverid > 0) sids.add(s.serverid);
+                if (sids.isEmpty()) continue;
+                if (raceGivenUp.contains(acc.fpid) && sids.size() > 1) {
+                    // 已降级单会话：只保一条（在线者优先，其次 activeRole，再次第一个启用角色）
+                    long pick = pickSingle(acc.fpid, sids);
+                    want.add(key(acc.fpid, pick));
+                    ensureOnline(acc, pick);
+                    continue;
+                }
+                wantDesired.put(acc.fpid, new Desired(acc, sids));
+                for (long sid : sids) want.add(key(acc.fpid, sid));
+            }
+            // keep 关掉的账号：清竞速降级状态（下次重开常驻开关给新的竞速机会）
+            for (String fpid : new ArrayList<>(raceGivenUp)) {
+                if (!wantDesired.containsKey(fpid)) {
+                    raceGivenUp.remove(fpid);
+                    raceFails.remove(fpid);
+                }
+            }
+            // 全量重建期望表（keep 关掉的账号随之移出，scan 不再为其重赛）
+            desired.clear();
+            desired.putAll(wantDesired);
+            for (Map.Entry<String, Desired> e : wantDesired.entrySet()) {
+                ensureAccountOnline(e.getValue());
+            }
+            closeSessionsNotIn(want);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 降级单会话时的选角：在线者优先（不打断已建立的会话），其次 activeRole，再次第一个启用角色。 */
+    private long pickSingle(String fpid, List<Long> sids) {
+        for (long sid : sids) {
+            LiveSession ls = sessions.get(key(fpid, sid));
+            if (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) return sid;
+        }
+        long act = 0;
+        try {
+            act = RoleStore.activeRole(ctx, fpid);
+        } catch (Throwable ignored) {
+        }
+        for (long sid : sids) if (sid == act) return sid;
+        return sids.get(0);
+    }
+
+    /**
+     * 账号会话编排：全员在线则无事；单角色账号常规登录；多角色缺员时——
+     * <b>已有在线会话则热补</b>（只补缺的角色，不动在线的——复刻实测成功形态：02:08 的
+     * 成功对正是在第三方会话占用"已注册槽位"时建立的）；全员缺员才整号冷启动竞速。
+     */
+    private void ensureAccountOnline(Desired d) {
+        String fpid = d.acc.fpid;
+        if (d.sids.size() == 1) {
+            ensureOnline(d.acc, d.sids.get(0));
+            return;
+        }
+        if (raceGivenUp.contains(fpid)) {
+            // 已降级单会话：所有入口（含 UI 触发的 syncOnline）都只保 pick 这一条，
+            // 不再竞速——降级前刚被踢散的半死会话顺手清掉
+            long pick = pickSingle(fpid, d.sids);
+            for (long sid : d.sids) {
+                if (sid == pick) continue;
+                LiveSession ls = sessions.get(key(fpid, sid));
+                if (ls != null) closeSession(key(fpid, sid));
+            }
+            ensureOnline(d.acc, pick);
+            return;
+        }
+        java.util.List<Long> missing = new ArrayList<>();
+        boolean anyOnline = false;
+        for (long sid : d.sids) {
+            LiveSession ls = sessions.get(key(fpid, sid));
+            if (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) anyOnline = true;
+            else missing.add(sid);
+        }
+        if (missing.isEmpty()) return;
+        startRace(d.acc, missing, d.sids, anyOnline ? "热补缺员" : "整号竞速", anyOnline);
+    }
+
+    /**
+     * 账号级<b>竞速登录</b>：同账号的全部角色线程同刻起跑，多条 loginauth 同时在途，
+     * 钻过服务器"登录完成时踢旧会话"的检查（游戏已知的卡多角色在线机制），全部登记成功后
+     * 只要不掉线即长期共存。
+     *
+     * <p>护栏：①容器游戏客户端正挂本账号时不抢（人玩优先，60s 后再看）；②任一会话掉线后由
+     * scan 触发<b>整号重赛</b>（关旧再赛，绝不单独重连——单独重连必踢兄弟）；③竞速失败按
+     * 8s×2ⁿ 封顶 300s 退避。
+     */
+    void startRace(final AccountStore.Account acc, final List<Long> sids, final List<Long> allSids,
+                   final String reason, final boolean warm) {
+        final String fpid = acc.fpid;
+        if (fpid == null || fpid.isEmpty() || sids == null || sids.isEmpty()) return;
+        if (!raceInFlight.add(fpid)) return;   // 该账号已有竞速在跑
+        final long now = System.currentTimeMillis();
+        Long until = nextRaceAt.get(fpid);
+        if (until != null && now < until) {
+            raceInFlight.remove(fpid);
+            return;
+        }
+        // 人玩优先：容器游戏客户端正挂本账号时不抢（竞速登录会把人玩顶下线）
+        try {
+            String live = new com.carlos.vault.VaultEngine(ctx).readLiveSessionFpid();
+            if (live != null && !live.isEmpty() && live.equals(fpid)) {
+                raceInFlight.remove(fpid);
+                nextRaceAt.put(fpid, now + 60_000L);
+                android.util.Log.i("SessionKeeper", fpid + " 游戏客户端在线，竞速避让 60s（" + reason + "）");
+                return;
+            }
+        } catch (Throwable ignored) {
+        }
+        // 冷启动才关全账号旧会话；热补不动在线会话（只清要重登的角色的半死会话）
+        if (!warm) closeAccountSessions(fpid);
+        for (long sid : sids) {
+            LiveSession old = sessions.get(key(fpid, sid));
+            if (old != null && !WjdrEngine.STATE_ONLINE.equals(old.engine.sessionState())) {
+                closeSession(key(fpid, sid));
+            }
+        }
+        final int n = sids.size();
+        // 错峰竞速：主角色（activeRole）先起跑，其余角色在其"登录中、未完成"的窗口内跟进
+        // （STAGGER_MS ≈ 半个登录序列）。纯零毫秒同时起跑实测不行：服务器每次只放行一个
+        // loaddata，另一个被挂起超时；错峰才能让后来者钻进"前者未登记"的窗口（卡多角色机制）。
+        long active = 0;
+        try {
+            active = RoleStore.activeRole(ctx, fpid);
+        } catch (Throwable ignored) {
+        }
+        final long act = active;
+        final List<Long> order = new ArrayList<>(sids);
+        order.sort((a, b) -> (a == act ? 0 : 1) - (b == act ? 0 : 1));
+        final long stagger = RACE_STAGGER_BASE_MS
+                + (long) (Math.random() * RACE_STAGGER_JITTER_MS);
+        final java.util.concurrent.CountDownLatch startGate = new java.util.concurrent.CountDownLatch(1);
+        final java.util.concurrent.CountDownLatch done = new java.util.concurrent.CountDownLatch(n);
+        android.util.Log.i("SessionKeeper",
+                fpid + " 竞速登录起跑：" + n + " 角色（错峰 " + stagger + "ms，" + reason + "）");
+        for (int i = 0; i < n; i++) {
+            final long sid = order.get(i);
+            final long myDelay = i * stagger;
+            final LiveSession ls = new LiveSession(WjdrAndroid.newEngine(ctx), fpid, sid, acc.label);
+            final LiveSession fls = ls;
+            ls.engine.setStateListener(s -> android.util.Log.i("SessionKeeper",
+                    fls.label + " " + fls.fpid + ":" + fls.sid + " → " + s
+                            + (fls.engine.lastFailure() == null ? "" : " · " + fls.engine.lastFailure())));
+            sessions.put(key(fpid, sid), ls);
+            Thread t = new Thread(() -> {
+                try {
+                    fls.engine.initialize();
+                    try {
+                        AccountStore store = new AccountStore(ctx);
+                        fls.engine.applyIdentity(store.roleIdentitySeed(
+                                fls.fpid, fls.sid, RoleStore.activeRole(ctx, fls.fpid)));
+                    } catch (Throwable ignored) {
+                    }
+                    startGate.await();   // 同刻发令后按错峰延迟起跑
+                    if (myDelay > 0) {
+                        try {
+                            Thread.sleep(myDelay);
+                        } catch (InterruptedException ignored) {
+                        }
+                    }
+                    fls.engine.login(acc.fpid, acc.token, fls.sid);
+                    HelpResponder.attach(ctx, fls);
+                    PushWakeDriver.attach(ctx, fls);
+                    try {
+                        new AccountStore(ctx).updateRoleSettings(fls.fpid, fls.sid, fls.engine.identityJson());
+                    } catch (Throwable ignored) {
+                    }
+                } catch (Throwable ignored) {
+                    // 失败会话留在状态机（recovering/need_token），settle 后按退避整号重赛
+                } finally {
+                    done.countDown();
+                }
+            }, "vault-race-" + fpid + ":" + sid);
+            t.setDaemon(true);
+            t.start();
+        }
+        startGate.countDown();   // 发令
+        Thread settle = new Thread(() -> {
+            try {
+                done.await();
+                // 宽限：顶号推送可比 login 返回晚若干毫秒才被入站线程处理，
+                // 立即结算会把"登录后 4ms 被踢"虚报成成功。等一小会儿再以实际会话态计分。
+                Thread.sleep(800);
+            } catch (InterruptedException ignored) {
+            }
+            raceInFlight.remove(fpid);
+            // 结算口径：结算时刻的实际会话态（含热补时未参赛的在线角色，不用线程内计数——
+            // 顶号推送可比 login 返回晚若干毫秒，线程内计数会虚报成功）
+            int ok = 0;
+            for (long sid : allSids) {
+                LiveSession ls = sessions.get(key(fpid, sid));
+                if (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) ok++;
+            }
+            if (ok == allSids.size()) {
+                raceShift.put(fpid, 0);
+                raceFails.remove(fpid);
+                android.util.Log.i("SessionKeeper",
+                        fpid + " 竞速成功：" + ok + " 角色同时在线（" + reason + "）");
+            } else {
+                int fails = raceFails.merge(fpid, 1, Integer::sum);
+                if (fails >= RACE_GIVE_UP_AFTER) {
+                    // 服务器串行化同账号登录，竞速窗口钻不进（见字段注释）：降级单会话，
+                    // 停止重赛——重启 App 或重开常驻开关后可再给一次机会。
+                    raceGivenUp.add(fpid);
+                    raceFails.remove(fpid);
+                    raceShift.remove(fpid);
+                    nextRaceAt.remove(fpid);
+                    Desired d = desired.get(fpid);
+                    if (d != null) {
+                        long pick = pickSingle(fpid, d.sids);
+                        closeAccountSessions(fpid);
+                        ensureOnline(d.acc, pick);
+                    }
+                    android.util.Log.i("SessionKeeper", fpid + " 竞速连续 " + fails
+                            + " 次未全员在线，降级单会话模式（pick=" + (d == null ? "?" : pickSingleLog(fpid, d)) + "）");
+                } else {
+                    int shift = Math.min(raceShift.merge(fpid, 1, Integer::sum), 6);
+                    long backoff = Math.min(8000L << shift, 300000L);
+                    nextRaceAt.put(fpid, System.currentTimeMillis() + backoff);
+                    android.util.Log.i("SessionKeeper", fpid + " 竞速未全员在线（"
+                            + ok + "/" + n + "，第 " + fails + " 次），" + (backoff / 1000) + "s 后重赛");
+                }
+            }
+        }, "vault-race-settle-" + fpid);
+        settle.setDaemon(true);
+        settle.start();
+    }
+
+    private String pickSingleLog(String fpid, Desired d) {
+        try {
+            return "K" + pickSingle(fpid, d.sids);
+        } catch (Throwable t) {
+            return "?";
+        }
+    }
+
+    /** 关闭该账号的全部常驻会话（fresh 登录其任意角色前调用：服务器按账号唯一会话，防互踢）。 */
+    public void closeAccountSessions(String fpid) {
+        if (fpid == null || fpid.isEmpty()) return;
+        for (LiveSession ls : new ArrayList<>(sessions.values())) {
+            if (fpid.equals(ls.fpid)) closeSession(key(ls.fpid, ls.sid));
+        }
+    }
+
+    /** 全部会话快照（UI 展示在线状态用）。 */
+    public List<LiveSession> sessionsSnapshot() {
+        return new ArrayList<>(sessions.values());
+    }
+
+    public void closeSession(String k) {
+        LiveSession ls = sessions.remove(k);
+        if (ls != null) {
+            try {
+                ls.engine.close();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    public void closeSessionsNotIn(Set<String> keep) {
+        for (String k : new ArrayList<>(sessions.keySet())) {
+            if (keep == null || !keep.contains(k)) closeSession(k);
+        }
+    }
+
+    static String key(String fpid, long sid) {
+        return fpid + ":" + sid;
+    }
+}
