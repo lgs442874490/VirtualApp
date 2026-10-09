@@ -4,7 +4,7 @@
     android:layout_width="wrap_content"
     android:layout_height="wrap_content"
     android:gravity="center"
-    app:cardCornerRadius="10dp"
+    app:cardCornerRadius="16dp"
     app:cardElevation="3dp">
 
     <com.carlos.common.widget.LabelView
@@ -14,7 +14,7 @@
         android:layout_height="wrap_content"
         android:layout_gravity="end"
         android:visibility="invisible"
-        lv:lv_background_color="#3F9FE0"
+        lv:lv_background_color="@color/vault_brand"
         lv:lv_gravity="TOP_RIGHT"
         lv:lv_text="2"
         lv:lv_text_size="12sp"/>
@@ -68,7 +68,7 @@
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
         android:layout_gravity="bottom|end"
-        lv:lv_background_color="@color/color_6bc196"
+        lv:lv_background_color="@color/vault_ok_solid"
         lv:lv_fill_triangle="true"
         lv:lv_gravity="BOTTOM_RIGHT"
         lv:lv_text="32"

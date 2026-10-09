@@ -12,7 +12,7 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.CheckBox;
+import android.content.Context;
 import android.widget.CompoundButton;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
@@ -60,7 +60,7 @@ public class FunctionActivity extends Activity {
     private long serverid;
     private TextView logView;
     private TextView claimView;
-    private CheckBox toggle;
+    private UiStyle.Switch toggle;
     // 每日任务专属（原日常页模块迁移）
     private LinearLayout extraBox;
     private TextView actTitle, actSub;
@@ -127,7 +127,7 @@ public class FunctionActivity extends Activity {
                             TextView tip = new TextView(FunctionActivity.this);
                             tip.setText("⏳ 常驻会话不在线，显示上次快照（开启 24h 常驻在线后自动实时刷新）");
                             tip.setTextSize(10.5f);
-                            tip.setTextColor(0xFFB45309);
+                            tip.setTextColor(UiStyle.WARN_INK);
                             tip.setPadding(dp(4), dp(6), dp(4), dp(2));
                             subCard.addView(tip, 0);
                         } catch (Throwable ignored) {
@@ -153,7 +153,7 @@ public class FunctionActivity extends Activity {
 
     private View buildUi() {        LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(UiStyle.BG);
+        root.setBackgroundColor(UiStyle.BG_V2);
 
         // 顶栏
         LinearLayout bar = new LinearLayout(this);
@@ -163,15 +163,16 @@ public class FunctionActivity extends Activity {
         TextView back = new TextView(this);
         back.setText("‹");
         back.setTextSize(26);
-        back.setTextColor(UiStyle.BLUE);
+        back.setTextColor(UiStyle.BRAND);
         back.setPadding(dp(6), 0, dp(12), 0);
+        UiStyle.press(back);
         back.setOnClickListener(v -> finish());
         bar.addView(back);
         TextView title = new TextView(this);
         title.setText(fn.name);
         title.setTextSize(19);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.BLUE_DARK);
+        title.setTextColor(UiStyle.BRAND_TEXT);
         bar.addView(title);
         root.addView(bar);
 
@@ -181,7 +182,7 @@ public class FunctionActivity extends Activity {
         TextView desc = new TextView(this);
         desc.setText(fn.desc);
         desc.setTextSize(13);
-        desc.setTextColor(UiStyle.TEXT_PRI);
+        desc.setTextColor(UiStyle.INK);
         info.addView(desc);
         TextView role = new TextView(this);
         String roleName = "";
@@ -199,41 +200,58 @@ public class FunctionActivity extends Activity {
                 : roleName + " · K" + serverid + "（" + account.label + "）")
                 + "（配置只作用于本角色）");
         role.setTextSize(12);
-        role.setTextColor(UiStyle.TEXT_SEC);
+        role.setTextColor(UiStyle.INK2);
         role.setPadding(0, dp(6), 0, 0);
         info.addView(role);
-        root.addView(info);
 
-        // 开关行
-        LinearLayout toggleRow = UiStyle.card(this);
-        toggleRow.setPadding(dp(16), dp(8), dp(16), dp(8));
-        toggle = new CheckBox(this);
-        toggle.setText("启用此功能（自动执行与一键执行都会包含）");
-        toggle.setTextSize(14);
+        // 总开关行（与子项开关同语言的 iOS Switch）：关闭后自动日常/一键执行跳过本功能。
+        // 底层配置键不变（cfg[fn.id]），执行链路照旧读取。
         Map<String, Boolean> cfg = configStore.roleConfig(account.fpid, serverid);
         // roleConfig 在无角色配置/无旧号级配置/无 meta 模板时返回 null（全新状态）——
-        // 判空兜底（与下方监听器的 null 回退同款），否则功能详情页一开就 NPE。
+        // 判空兜底（与 FnParams 读取侧的 null 回退同款），否则功能详情页一开就 NPE。
         Boolean on = cfg == null ? null : cfg.get(fn.id);
-        toggle.setChecked(on == null || on);
-        toggle.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            Map<String, Boolean> c = configStore.roleConfig(account.fpid, serverid);
-            if (c == null) c = configStore.metaConfig(DailyTasks.all());
-            c.put(fn.id, isChecked);
-            configStore.saveRoleConfig(account.fpid, serverid, c);
-            toast(isChecked ? "已启用" : "已停用");
-        });
-        toggleRow.addView(toggle);
-        root.addView(toggleRow);
+        LinearLayout enableRow = new LinearLayout(this);
+        enableRow.setOrientation(LinearLayout.HORIZONTAL);
+        enableRow.setGravity(Gravity.CENTER_VERTICAL);
+        enableRow.setPadding(0, dp(10), 0, 0);
+        LinearLayout enableCol = new LinearLayout(this);
+        enableCol.setOrientation(LinearLayout.VERTICAL);
+        TextView enableTitle = new TextView(this);
+        enableTitle.setText("启用此功能");
+        enableTitle.setTextSize(13);
+        enableTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        enableTitle.setTextColor(UiStyle.INK);
+        enableCol.addView(enableTitle);
+        TextView enableSub = new TextView(this);
+        enableSub.setText("关闭后，自动日常与一键执行都会跳过本功能");
+        enableSub.setTextSize(11);
+        enableSub.setTextColor(UiStyle.INK2);
+        enableSub.setPadding(0, dp(2), 0, 0);
+        enableCol.addView(enableSub);
+        enableRow.addView(enableCol, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final UiStyle.Switch[] swRef = new UiStyle.Switch[1];
+        toggle = new UiStyle.Switch(this, on == null || on,
+                () -> {
+                    boolean isChecked = swRef[0].isOn();
+                    Map<String, Boolean> c = configStore.roleConfig(account.fpid, serverid);
+                    if (c == null) c = configStore.metaConfig(DailyTasks.all());
+                    c.put(fn.id, isChecked);
+                    configStore.saveRoleConfig(account.fpid, serverid, c);
+                    toast(isChecked ? "已启用" : "已停用");
+                });
+        swRef[0] = toggle;
+        enableRow.addView(toggle);
+        info.addView(enableRow);
+        root.addView(info);
 
-        // 执行按钮
+        // 立即执行（规范主按钮：48dp · 品牌实心 · 按压反馈；未开放置灰）
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setPadding(dp(16), dp(10), dp(16), 0);
-        TextView run = pill(fn.implemented ? "▶ 立即执行本功能" : "功能待开放", fn.implemented ? UiStyle.BLUE : UiStyle.INK3, v -> {
-            if (fn.implemented) runOne();
-        });
+        btnRow.setPadding(dp(16), dp(12), dp(16), 0);
+        TextView run = actionButton(fn.implemented ? "立即执行" : "功能待开放", fn.implemented);
         btnRow.addView(run, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
         root.addView(btnRow);
 
         // 整页滚动区：子项实时状态与配置 → 领取内容 → 运行记录
@@ -264,7 +282,7 @@ public class FunctionActivity extends Activity {
             actTitle = new TextView(this);
             actTitle.setTextSize(13);
             actTitle.setTypeface(Typeface.DEFAULT_BOLD);
-            actTitle.setTextColor(UiStyle.TEXT_PRI);
+            actTitle.setTextColor(UiStyle.INK);
             actCard.addView(actTitle);
             actBar = new android.widget.ProgressBar(this, null,
                     android.R.attr.progressBarStyleHorizontal);
@@ -277,7 +295,7 @@ public class FunctionActivity extends Activity {
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(10)));
             actSub = new TextView(this);
             actSub.setTextSize(11);
-            actSub.setTextColor(UiStyle.TEXT_SEC);
+            actSub.setTextColor(UiStyle.INK2);
             actSub.setPadding(0, dp(6), 0, 0);
             actCard.addView(actSub);
             boxRow = new LinearLayout(this);
@@ -289,7 +307,7 @@ public class FunctionActivity extends Activity {
             qTitle.setText("任务进度 · 点「待领取」行可手动领");
             qTitle.setTextSize(14);
             qTitle.setTypeface(Typeface.DEFAULT_BOLD);
-            qTitle.setTextColor(UiStyle.TEXT_PRI);
+            qTitle.setTextColor(UiStyle.INK);
             qTitle.setPadding(dp(20), dp(14), dp(16), dp(6));
             scrollBox.addView(qTitle);
             questBox = new LinearLayout(this);
@@ -302,7 +320,7 @@ public class FunctionActivity extends Activity {
         subTitle.setText("子项状态 · 配置");
         subTitle.setTextSize(14);
         subTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        subTitle.setTextColor(UiStyle.TEXT_PRI);
+        subTitle.setTextColor(UiStyle.INK);
         subTitle.setPadding(dp(20), dp(14), dp(16), dp(6));
         scrollBox.addView(subTitle);
         LinearLayout subCard = UiStyle.card(this);
@@ -318,7 +336,7 @@ public class FunctionActivity extends Activity {
         claimTitle.setText("领取内容");
         claimTitle.setTextSize(14);
         claimTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        claimTitle.setTextColor(UiStyle.TEXT_PRI);
+        claimTitle.setTextColor(UiStyle.INK);
         claimTitle.setPadding(dp(20), dp(16), dp(16), dp(6));
         scrollBox.addView(claimTitle);
         LinearLayout claimCard = UiStyle.card(this);
@@ -333,7 +351,7 @@ public class FunctionActivity extends Activity {
         logTitle.setText("运行记录");
         logTitle.setTextSize(14);
         logTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        logTitle.setTextColor(UiStyle.TEXT_PRI);
+        logTitle.setTextColor(UiStyle.INK);
         logTitle.setPadding(dp(20), dp(16), dp(16), dp(6));
         scrollBox.addView(logTitle);
         LinearLayout logCard = UiStyle.card(this);
@@ -385,8 +403,8 @@ public class FunctionActivity extends Activity {
                 android.graphics.drawable.GradientDrawable gd = new android.graphics.drawable.GradientDrawable();
                 gd.setCornerRadius(dp(9));
                 boolean reached = st.integral >= t;
-                gd.setColor(reached ? UiStyle.BLUE : UiStyle.IDLE_BG);
-                chip.setTextColor(reached ? android.graphics.Color.WHITE : UiStyle.TEXT_SEC);
+                gd.setColor(reached ? UiStyle.BRAND : UiStyle.IDLE_BG);
+                chip.setTextColor(reached ? android.graphics.Color.WHITE : UiStyle.INK2);
                 chip.setBackground(gd);
                 LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -398,7 +416,7 @@ public class FunctionActivity extends Activity {
             TextView tip = new TextView(this);
             tip.setText("任务进度尚未同步 —— 打开「今日」页会自动同步一次");
             tip.setTextSize(12);
-            tip.setTextColor(UiStyle.TEXT_SEC);
+            tip.setTextColor(UiStyle.INK2);
             tip.setPadding(dp(4), dp(8), dp(4), dp(8));
             questBox.addView(tip);
             return;
@@ -436,7 +454,7 @@ public class FunctionActivity extends Activity {
             name.setText(g.name);
             name.setTextSize(13.5f);
             name.setTypeface(Typeface.DEFAULT_BOLD);
-            name.setTextColor(UiStyle.TEXT_PRI);
+            name.setTextColor(UiStyle.INK);
             l1.addView(name, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             TextView status = new TextView(this);
@@ -454,20 +472,21 @@ public class FunctionActivity extends Activity {
                 sgd.setColor(UiStyle.WARN_BG);
             } else if (groupProg > 0) {
                 status.setText("进行中");
-                status.setTextColor(UiStyle.BLUE);
+                status.setTextColor(UiStyle.BRAND);
                 sgd.setColor(UiStyle.WAIT_50);
             } else {
                 status.setText("未开始");
-                status.setTextColor(UiStyle.TEXT_SEC);
+                status.setTextColor(UiStyle.INK2);
                 sgd.setColor(UiStyle.IDLE_BG);
             }
             status.setBackground(sgd);
             l1.addView(status);
             card.addView(l1);
 
+            UiStyle.press(card);
             card.setOnClickListener(v -> {
                 if (fClaim != null) claimQuestManually(fClaim);
-                else if (!fAllDone) toast("先完成对应玩法（或点上方「立即执行本功能」自动领）");
+                else if (!fAllDone) toast("先完成对应玩法（或点上方「立即执行」自动领）");
             });
 
             LinearLayout l2 = new LinearLayout(this);
@@ -484,7 +503,7 @@ public class FunctionActivity extends Activity {
             TextView pt = new TextView(this);
             pt.setText(fProg + "/" + (fClaim != null ? fClaim.target : maxTarget));
             pt.setTextSize(12);
-            pt.setTextColor(UiStyle.TEXT_SEC);
+            pt.setTextColor(UiStyle.INK2);
             l2.addView(pt);
             card.addView(l2);
 
@@ -503,12 +522,12 @@ public class FunctionActivity extends Activity {
                 cgd.setCornerRadius(dp(10));
                 if (done) {
                     chip.setTextColor(android.graphics.Color.WHITE);
-                    cgd.setColor(UiStyle.BLUE);
+                    cgd.setColor(UiStyle.BRAND);
                 } else if (reach) {
                     chip.setTextColor(UiStyle.WARN_INK);
                     cgd.setColor(UiStyle.WARN_BG);
                 } else {
-                    chip.setTextColor(UiStyle.TEXT_SEC);
+                    chip.setTextColor(UiStyle.INK2);
                     cgd.setColor(UiStyle.IDLE_BG);
                 }
                 chip.setBackground(cgd);
@@ -581,11 +600,11 @@ public class FunctionActivity extends Activity {
             TextView tip = new TextView(this);
             tip.setText("签到进度尚未同步 —— 打开「今日」页会自动同步一次");
             tip.setTextSize(12);
-            tip.setTextColor(UiStyle.TEXT_SEC);
+            tip.setTextColor(UiStyle.INK2);
             tip.setPadding(dp(4), dp(8), dp(4), dp(8));
             giftGrid.addView(tip);
             giftClaimBtn.setText("今日状态未知（先同步）");
-            giftClaimBtn.setTextColor(UiStyle.TEXT_SEC);
+            giftClaimBtn.setTextColor(UiStyle.INK2);
             return;
         }
         int signDays = (int) Math.min(7, mod.optLong("sign_days", 0));
@@ -625,7 +644,7 @@ public class FunctionActivity extends Activity {
                 cg.setColor(UiStyle.IDLE_BG);
             } else if (claimable) {
                 cg.setColor(UiStyle.BRAND_50);
-                cg.setStroke(dp(2), UiStyle.BLUE);
+                cg.setStroke(dp(2), UiStyle.BRAND);
             } else {
                 cg.setColor(UiStyle.SURFACE_2);
                 cg.setStroke(dp(1), UiStyle.LINE);
@@ -640,8 +659,8 @@ public class FunctionActivity extends Activity {
             dayTag.setText((claimed ? "✓" : "") + "DAY " + (i + 1));
             dayTag.setTextSize(9.5f);
             dayTag.setTypeface(Typeface.DEFAULT_BOLD);
-            dayTag.setTextColor(claimable ? UiStyle.BLUE
-                    : (claimed ? UiStyle.INK3 : UiStyle.TEXT_SEC));
+            dayTag.setTextColor(claimable ? UiStyle.BRAND
+                    : (claimed ? UiStyle.INK3 : UiStyle.INK2));
             head.addView(dayTag);
             if (isEpic) {
                 TextView ep = new TextView(this);
@@ -657,7 +676,7 @@ public class FunctionActivity extends Activity {
                 rt.setText(r);
                 rt.setTextSize(10);
                 rt.setGravity(Gravity.CENTER);
-                rt.setTextColor(claimed ? UiStyle.INK3 : UiStyle.TEXT_PRI);
+                rt.setTextColor(claimed ? UiStyle.INK3 : UiStyle.INK);
                 rt.setPadding(0, dp(2), 0, 0);
                 cell.addView(rt);
             }
@@ -681,17 +700,19 @@ public class FunctionActivity extends Activity {
             giftClaimBtn.setText("领取今日好礼");
             giftClaimBtn.setTextColor(android.graphics.Color.WHITE);
             android.graphics.drawable.GradientDrawable bbg = new android.graphics.drawable.GradientDrawable();
-            bbg.setColor(UiStyle.BLUE);
+            bbg.setColor(UiStyle.BRAND);
             bbg.setCornerRadius(dp(12));
             giftClaimBtn.setBackground(bbg);
+            UiStyle.press(giftClaimBtn);
             giftClaimBtn.setOnClickListener(v -> runOne());
         } else {
             giftClaimBtn.setText("今日已领 · 明日再来");
-            giftClaimBtn.setTextColor(UiStyle.TEXT_SEC);
+            giftClaimBtn.setTextColor(UiStyle.INK2);
             android.graphics.drawable.GradientDrawable bbg = new android.graphics.drawable.GradientDrawable();
             bbg.setColor(UiStyle.IDLE_BG);
             bbg.setCornerRadius(dp(12));
             giftClaimBtn.setBackground(bbg);
+            UiStyle.press(giftClaimBtn);
             giftClaimBtn.setOnClickListener(null);
         }
     }
@@ -767,6 +788,7 @@ public class FunctionActivity extends Activity {
                 new String[]{"设计图纸×2", "传说英雄信物×1"}};
     }
 
+
     // ---------- 各奖励功能专属区（统一标准：横幅 + 可视化数据 + 行动按钮） ----------
 
     private void rebuildExtra() {
@@ -821,17 +843,20 @@ public class FunctionActivity extends Activity {
         android.graphics.drawable.GradientDrawable bgd = new android.graphics.drawable.GradientDrawable();
         bgd.setCornerRadius(dp(12));
         if (enabled) {
-            bgd.setColor(UiStyle.BLUE);
+            bgd.setColor(UiStyle.BRAND);
             b.setTextColor(android.graphics.Color.WHITE);
+            UiStyle.press(b);
             b.setOnClickListener(v -> runOne());
         } else {
             bgd.setColor(UiStyle.IDLE_BG);
-            b.setTextColor(UiStyle.TEXT_SEC);
+            b.setTextColor(UiStyle.INK2);
         }
         b.setBackground(bgd);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(4);
+        lp.topMargin = dp(10);
+        lp.leftMargin = dp(16);
+        lp.rightMargin = dp(16);
         b.setLayoutParams(lp);
         return b;
     }
@@ -873,7 +898,7 @@ public class FunctionActivity extends Activity {
         return sec / 86400 + " 天后";
     }
 
-    /** 邮件板块卡（可勾选任意组合，写回 strategy 为逗号 types）。 */
+    /** 邮件板块：只做状态汇总（领取组合在下方子项配置用预设 chips 切换，避免双编辑面）。 */
     private void buildMailBoard() {
         String[] names = {"系统", "联盟", "战报", "消息", "收藏"};
         int[][] boardTypes = {
@@ -897,74 +922,7 @@ public class FunctionActivity extends Activity {
         int onCnt = 0;
         for (int i = 0; i < names.length; i++) if (containsAny(cur, boardTypes[i])) onCnt++;
         themeBanner("邮件奖励 · 批量读信领附件",
-                "已选 " + onCnt + "/5 板块 · 点板块卡切换是否领取该板块");
-        LinearLayout grid = new LinearLayout(this);
-        grid.setOrientation(LinearLayout.VERTICAL);
-        grid.setPadding(0, dp(10), 0, 0);
-        LinearLayout row = null;
-        for (int i = 0; i < names.length; i++) {
-            if (i % 3 == 0) {
-                row = new LinearLayout(this);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                grid.addView(row, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            }
-            final int idx = i;
-            boolean on = containsAny(cur, boardTypes[i]);
-            LinearLayout cell = new LinearLayout(this);
-            cell.setOrientation(LinearLayout.VERTICAL);
-            cell.setGravity(Gravity.CENTER);
-            cell.setPadding(dp(4), dp(10), dp(4), dp(10));
-            android.graphics.drawable.GradientDrawable cg = new android.graphics.drawable.GradientDrawable();
-            cg.setCornerRadius(dp(10));
-            if (on) {
-                cg.setColor(UiStyle.BRAND_50);
-                cg.setStroke(dp(2), UiStyle.BLUE);
-            } else {
-                cg.setColor(UiStyle.SURFACE_2);
-                cg.setStroke(dp(1), UiStyle.LINE);
-            }
-            cell.setBackground(cg);
-            TextView nm = new TextView(this);
-            nm.setText(names[i] + "邮件");
-            nm.setTextSize(12.5f);
-            nm.setTypeface(Typeface.DEFAULT_BOLD);
-            nm.setTextColor(on ? UiStyle.BLUE : UiStyle.TEXT_SEC);
-            cell.addView(nm);
-            TextView mk = new TextView(this);
-            mk.setText(on ? "✓ 领取" : "× 跳过");
-            mk.setTextSize(10);
-            mk.setTextColor(on ? UiStyle.WARN_INK : UiStyle.INK3);
-            mk.setPadding(0, dp(3), 0, 0);
-            cell.addView(mk);
-            cell.setOnClickListener(v -> {
-                java.util.Set<Integer> next = new java.util.HashSet<>(cur);
-                if (on) for (int t : boardTypes[idx]) next.remove(t);
-                else for (int t : boardTypes[idx]) next.add(t);
-                if (next.isEmpty()) {
-                    toast("至少保留一个板块");
-                    return;
-                }
-                boolean all = true;
-                for (int[] bt : boardTypes) for (int t : bt) if (!next.contains(t)) all = false;
-                StringBuilder sbd = new StringBuilder();
-                java.util.List<Integer> sorted = new java.util.ArrayList<>(next);
-                java.util.Collections.sort(sorted);
-                for (int t : sorted) {
-                    if (sbd.length() > 0) sbd.append(',');
-                    sbd.append(t);
-                }
-                FnParams.saveStrategy(this, account.fpid, serverid, "mail", "read",
-                        all ? "all" : sbd.toString());
-                rebuildExtra();
-            });
-            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            if (i % 3 != 2) clp.rightMargin = dp(7);
-            row.addView(cell, clp);
-        }
-        extraBox.addView(grid);
-        extraBox.addView(actionButton("立即读信领取", true));
+                "已选 " + onCnt + "/5 板块 · 组合在下方子项配置切换");
     }
 
     private static boolean containsAny(java.util.Set<Integer> set, int[] types) {
@@ -988,7 +946,6 @@ public class FunctionActivity extends Activity {
         addKV(card, "限时体力", spec.isEmpty() ? "窗口外（午间/晚间开启）" : spec);
         addKV(card, "说明", "刷新即领/截止前N分钟的策略在下方子项配置里选");
         extraBox.addView(card);
-        extraBox.addView(actionButton("立即尝试领取", true));
     }
 
     private void addKV(LinearLayout card, String k, String v) {
@@ -998,14 +955,14 @@ public class FunctionActivity extends Activity {
         TextView kt = new TextView(this);
         kt.setText(k);
         kt.setTextSize(12);
-        kt.setTextColor(UiStyle.TEXT_SEC);
+        kt.setTextColor(UiStyle.INK2);
         row.addView(kt, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView vt = new TextView(this);
         vt.setText(v);
         vt.setTextSize(12);
         vt.setTypeface(Typeface.DEFAULT_BOLD);
-        vt.setTextColor(UiStyle.TEXT_PRI);
+        vt.setTextColor(UiStyle.INK);
         vt.setGravity(Gravity.RIGHT);
         row.addView(vt, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1.6f));
@@ -1035,76 +992,29 @@ public class FunctionActivity extends Activity {
         big.setText(hang.isEmpty() ? "--" : (ts > 0 ? remainText(ts) : "已可领"));
         big.setTextSize(26);
         big.setTypeface(Typeface.DEFAULT_BOLD);
-        big.setTextColor(UiStyle.BLUE);
+        big.setTextColor(UiStyle.BRAND);
         big.setGravity(Gravity.CENTER);
         card.addView(big);
         TextView cap = new TextView(this);
         cap.setText("距产量满格（可领）");
         cap.setTextSize(11);
-        cap.setTextColor(UiStyle.TEXT_SEC);
+        cap.setTextColor(UiStyle.INK2);
         cap.setGravity(Gravity.CENTER);
         card.addView(cap);
         addKV(card, "当前策略", stratName + "（在下方子项配置切换）");
-        addKV(card, "说明", "不想攒的直接点下方按钮立即领取当前产量");
+        addKV(card, "说明", "不想攒的话，把子项策略切到「总是领取」，点上方「立即执行」马上领");
         extraBox.addView(card);
-        extraBox.addView(actionButton("立即领取当前产量", true));
     }
 
-    /** 活动奖励合集：17种免费奖励按子项网格。 */
+    /** 活动奖励合集：状态汇总（要领哪些在下方子项配置勾选，避免与子项开关双编辑面）。 */
     private void buildActivityRewards() {
-        themeBanner("活动奖励合集", "月卡经验/战令/转盘等免费奖励 · 一键全领");
-        LinearLayout grid = new LinearLayout(this);
-        grid.setOrientation(LinearLayout.VERTICAL);
-        grid.setPadding(0, dp(10), 0, 0);
-        LinearLayout row = null;
         java.util.List<FnDetail.Sub> subs = FnDetail.of(fn.id);
-        for (int i = 0; i < subs.size(); i++) {
-            FnDetail.Sub sub = subs.get(i);
-            if (i % 2 == 0) {
-                row = new LinearLayout(this);
-                row.setOrientation(LinearLayout.HORIZONTAL);
-                grid.addView(row, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            }
-            boolean on = FnParams.subOn(this, account.fpid, serverid, fn.id, sub.id, sub.defOn);
-            LinearLayout cell = new LinearLayout(this);
-            cell.setOrientation(LinearLayout.VERTICAL);
-            cell.setGravity(Gravity.CENTER);
-            cell.setPadding(dp(4), dp(10), dp(4), dp(10));
-            android.graphics.drawable.GradientDrawable cg = new android.graphics.drawable.GradientDrawable();
-            cg.setCornerRadius(dp(10));
-            if (on) {
-                cg.setColor(UiStyle.BRAND_50);
-                cg.setStroke(dp(2), UiStyle.BLUE);
-            } else {
-                cg.setColor(UiStyle.SURFACE_2);
-                cg.setStroke(dp(1), UiStyle.LINE);
-            }
-            cell.setBackground(cg);
-            TextView nm = new TextView(this);
-            nm.setText(sub.name);
-            nm.setTextSize(12.5f);
-            nm.setTypeface(Typeface.DEFAULT_BOLD);
-            nm.setTextColor(on ? UiStyle.BLUE : UiStyle.TEXT_SEC);
-            nm.setGravity(Gravity.CENTER);
-            cell.addView(nm);
-            TextView mk = new TextView(this);
-            mk.setText(on ? "✓ 已启用" : "× 已关闭");
-            mk.setTextSize(10);
-            mk.setTextColor(on ? UiStyle.WARN_INK : UiStyle.INK3);
-            mk.setPadding(0, dp(3), 0, 0);
-            cell.addView(mk);
-            cell.setOnClickListener(v -> {
-                FnParams.saveSubOn(this, account.fpid, serverid, fn.id, sub.id, !on);
-                rebuildExtra();
-            });
-            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            if (i % 2 == 0) clp.rightMargin = dp(7);
-            row.addView(cell, clp);
+        int onCnt = 0;
+        for (FnDetail.Sub s : subs) {
+            if (FnParams.subOn(this, account.fpid, serverid, fn.id, s.id, s.defOn)) onCnt++;
         }
-        extraBox.addView(grid);
-        extraBox.addView(actionButton("一键领取已启用奖励", true));
+        themeBanner("活动奖励合集 · 免费奖励一键全领",
+                "已启用 " + onCnt + "/" + subs.size() + " 项 · 在下方子项配置勾选");
     }
 
     /** 统帅礼包：每日一份。 */
@@ -1115,12 +1025,11 @@ public class FunctionActivity extends Activity {
         LinearLayout card = UiStyle.card(this);
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
         TextView t = new TextView(this);
-        t.setText(done ? "✓ 今日已领取，明日刷新" : "今日的免费统帅礼包还没领，点下方按钮领取");
+        t.setText(done ? "✓ 今日已领取，明日刷新" : "今日的免费统帅礼包还没领，点上方「立即执行」领取");
         t.setTextSize(13);
         t.setTextColor(done ? UiStyle.OK_INK : UiStyle.WARN_INK);
         card.addView(t);
         extraBox.addView(card);
-        extraBox.addView(actionButton(done ? "再试一次（通常已领）" : "领取统帅礼包", true));
     }
 
     /** 无尽征程：积分里程碑。 */
@@ -1142,17 +1051,16 @@ public class FunctionActivity extends Activity {
         big.setText(String.valueOf(integral > 0 ? integral : "--"));
         big.setTextSize(30);
         big.setTypeface(Typeface.DEFAULT_BOLD);
-        big.setTextColor(UiStyle.BLUE);
+        big.setTextColor(UiStyle.BRAND);
         big.setGravity(Gravity.CENTER);
         card.addView(big);
         TextView cap = new TextView(this);
         cap.setText("当前积分（活动期间任务/玩法累积）");
         cap.setTextSize(11);
-        cap.setTextColor(UiStyle.TEXT_SEC);
+        cap.setTextColor(UiStyle.INK2);
         cap.setGravity(Gravity.CENTER);
         card.addView(cap);
         extraBox.addView(card);
-        extraBox.addView(actionButton("领取已达成档位", true));
     }
 
     private void claimQuestManually(final QuestCatalog.Tier tier) {
@@ -1196,7 +1104,7 @@ public class FunctionActivity extends Activity {
             }
         }
         claimView.setText(claimCnt == 0 ? "暂无领取记录" : claims.toString().trim());
-        claimView.setTextColor(claimCnt == 0 ? UiStyle.TEXT_SEC : UiStyle.TEXT_PRI);
+        claimView.setTextColor(claimCnt == 0 ? UiStyle.INK2 : UiStyle.INK);
         for (LogStore.Entry e : es) {
             logsSb.append(f1.format(new java.util.Date(e.ts))).append("  ")
                     .append(e.ok ? "✅" : "❌").append(e.reason.isEmpty() ? "" : " " + e.reason);
@@ -1211,9 +1119,9 @@ public class FunctionActivity extends Activity {
             logsSb.append('\n');
         }
         logView.setText(logsSb.length() == 0
-                ? "暂无运行记录\n· 点上方「立即执行本功能」马上生成\n· 开了自动日常的话，定时执行后也会记录在这里"
+                ? "暂无运行记录\n· 点上方「立即执行」马上生成\n· 开了自动日常的话，定时执行后也会记录在这里"
                 : logsSb.toString().trim());
-        logView.setTextColor(UiStyle.TEXT_PRI);
+        logView.setTextColor(UiStyle.INK);
     }
 
     private void runOne() {
@@ -1261,19 +1169,8 @@ public class FunctionActivity extends Activity {
         }.execute();
     }
 
-    private TextView pill(String text, int color, View.OnClickListener l) {
-        TextView v = new TextView(this);
-        v.setText(text);
-        v.setTextSize(14);
-        v.setTextColor(android.graphics.Color.WHITE);
-        v.setGravity(Gravity.CENTER);
-        v.setBackground(UiStyle.roundRect(color, 12));
-        if (l != null) v.setOnClickListener(l);
-        return v;
-    }
-
     private void toast(String s) {
-        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
+        UiStyle.toast(this, s);
     }
 
     private int dp(int v) {

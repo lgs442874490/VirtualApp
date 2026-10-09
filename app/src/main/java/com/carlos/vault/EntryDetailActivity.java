@@ -60,7 +60,7 @@ public class EntryDetailActivity extends Activity {
 
     private void buildUi() {
         ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(UiStyle.BG);
+        scroll.setBackgroundColor(UiStyle.BG_V2);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -76,8 +76,9 @@ public class EntryDetailActivity extends Activity {
         TextView back = new TextView(this);
         back.setText("←");
         back.setTextSize(22);
-        back.setTextColor(UiStyle.BLUE);
+        back.setTextColor(UiStyle.BRAND);
         back.setPadding(dp(8), dp(8), dp(16), dp(8));
+        UiStyle.press(back);
         back.setOnClickListener(v -> finish());
         topBar.addView(back);
 
@@ -85,7 +86,7 @@ public class EntryDetailActivity extends Activity {
         title.setText("应用管理");
         title.setTextSize(18);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.TEXT_PRI);
+        title.setTextColor(UiStyle.INK);
         topBar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         root.addView(topBar, new LinearLayout.LayoutParams(
@@ -117,12 +118,12 @@ public class EntryDetailActivity extends Activity {
         name.setText(acc.label);
         name.setTextSize(18);
         name.setTypeface(Typeface.DEFAULT_BOLD);
-        name.setTextColor(UiStyle.TEXT_PRI);
+        name.setTextColor(UiStyle.INK);
         headText.addView(name);
 
         modeView = new TextView(this);
         modeView.setTextSize(13);
-        modeView.setTextColor(UiStyle.BLUE);
+        modeView.setTextColor(UiStyle.BRAND);
         modeView.setPadding(0, dp(4), 0, 0);
         headText.addView(modeView);
 
@@ -133,7 +134,7 @@ public class EntryDetailActivity extends Activity {
         LinearLayout infoCard = UiStyle.card(this);
         infoView = new TextView(this);
         infoView.setTextSize(13);
-        infoView.setTextColor(UiStyle.TEXT_SEC);
+        infoView.setTextColor(UiStyle.INK2);
         infoCard.addView(infoView);
         root.addView(infoCard);
 
@@ -144,35 +145,36 @@ public class EntryDetailActivity extends Activity {
         launchBtn.setTextColor(Color.WHITE);
         launchBtn.setTypeface(Typeface.DEFAULT_BOLD);
         launchBtn.setGravity(Gravity.CENTER);
-        launchBtn.setBackground(UiStyle.roundRect(UiStyle.BLUE, 14));
+        launchBtn.setBackground(UiStyle.roundRect(UiStyle.BRAND, 14));
         launchBtn.setPadding(0, dp(16), 0, dp(16));
         LinearLayout.LayoutParams lblp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lblp.setMargins(dp(16), dp(14), dp(16), 0);
         launchBtn.setLayoutParams(lblp);
+        UiStyle.press(launchBtn);
         launchBtn.setOnClickListener(v -> doLaunch());
         root.addView(launchBtn);
 
         // 登录设置卡片
         LinearLayout loginCard = UiStyle.card(this);
         loginCard.addView(sectionTitle("登录设置"));
-        loginCard.addView(UiStyle.makeRowBtn(this, "🔑", "设置 token（号ID----token）", UiStyle.TEXT_PRI, this::showTokenDialog));
+        loginCard.addView(UiStyle.makeRowBtn(this, "🔑", "设置 token（号ID----token）", UiStyle.INK, this::showTokenDialog));
         addDivider(loginCard);
-        loginCard.addView(UiStyle.makeRowBtn(this, "📋", "提取并复制当前登录 token", UiStyle.TEXT_PRI, this::confirmExtractToken));
+        loginCard.addView(UiStyle.makeRowBtn(this, "📋", "提取并复制当前登录 token", UiStyle.INK, this::confirmExtractToken));
         addDivider(loginCard);
-        loginCard.addView(UiStyle.makeRowBtn(this, "💾", "保存当前登录现场到本入口", UiStyle.TEXT_PRI, this::captureSnapshot));
+        loginCard.addView(UiStyle.makeRowBtn(this, "💾", "保存当前登录现场到本入口", UiStyle.INK, this::captureSnapshot));
         root.addView(loginCard);
 
         // 入口管理卡片
         LinearLayout mgmtCard = UiStyle.card(this);
         mgmtCard.addView(sectionTitle("入口管理"));
-        mgmtCard.addView(UiStyle.makeRowBtn(this, "✏️", "修改备注名", UiStyle.TEXT_PRI, this::showRenameDialog));
+        mgmtCard.addView(UiStyle.makeRowBtn(this, "✏️", "修改备注名", UiStyle.INK, this::showRenameDialog));
         addDivider(mgmtCard);
-        mgmtCard.addView(UiStyle.makeRowBtn(this, "🗂", "移动到分组…", UiStyle.TEXT_PRI, this::showMoveToGroupDialog));
+        mgmtCard.addView(UiStyle.makeRowBtn(this, "🗂", "移动到分组…", UiStyle.INK, this::showMoveToGroupDialog));
         addDivider(mgmtCard);
-        mgmtCard.addView(UiStyle.makeRowBtn(this, "📱", "设备伪装（下一版）", UiStyle.TEXT_SEC, () -> toast("设备伪装将在下一版提供")));
+        mgmtCard.addView(UiStyle.makeRowBtn(this, "📱", "设备伪装（下一版）", UiStyle.INK2, () -> toast("设备伪装将在下一版提供")));
         addDivider(mgmtCard);
-        mgmtCard.addView(UiStyle.makeRowBtn(this, "🗑", "删除本入口", UiStyle.RED, this::confirmDelete));
+        mgmtCard.addView(UiStyle.makeRowBtn(this, "🗑", "删除本入口", UiStyle.ERR_INK, this::confirmDelete));
         root.addView(mgmtCard);
 
         scroll.addView(root, new ViewGroup.LayoutParams(
@@ -185,14 +187,14 @@ public class EntryDetailActivity extends Activity {
         TextView t = new TextView(this);
         t.setText(text);
         t.setTextSize(12);
-        t.setTextColor(UiStyle.TEXT_SEC);
+        t.setTextColor(UiStyle.INK2);
         t.setPadding(dp(4), dp(2), 0, dp(10));
         return t;
     }
 
     private void addDivider(LinearLayout card) {
         TextView div = new TextView(this);
-        div.setBackgroundColor(UiStyle.DIVIDER);
+        div.setBackgroundColor(UiStyle.LINE);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
         lp.setMargins(dp(16), dp(4), dp(16), dp(4));
@@ -336,7 +338,7 @@ public class EntryDetailActivity extends Activity {
         UiStyle.showConfirmDialog(this, "提取登录 token",
                 "将读取当前游戏里登录的那个账号的 token，并复制为「号ID----token」。\n\n"
                         + "token 等同登录凭据，可粘贴到另一台设备的号库导入框迁移账号。请勿分享给他人。",
-                "复制", UiStyle.BLUE, this::doExtractToken);
+                "复制", UiStyle.BRAND, this::doExtractToken);
     }
 
     private void doExtractToken() {
@@ -429,7 +431,7 @@ public class EntryDetailActivity extends Activity {
     private void confirmDelete() {
         UiStyle.showConfirmDialog(this, "删除入口",
                 "将删除「" + acc.label + "」及登录数据，不可恢复。",
-                "删除", UiStyle.RED,
+                "删除", UiStyle.ERR_INK,
                 () -> {
                     engine.deleteEntryData(acc.id);
                     if (acc.id.equals(store.getLastEntry())) store.setLastEntry(null);

@@ -239,7 +239,7 @@ public class AccountVaultActivity extends Activity {
         title.setText("功能菜单");
         title.setTextSize(17);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.TEXT_PRI);
+        title.setTextColor(UiStyle.INK);
         title.setPadding(0, 0, 0, dp(8));
         box.addView(title);
 
@@ -248,11 +248,11 @@ public class AccountVaultActivity extends Activity {
         rowLp.topMargin = dp(6);
 
         LinearLayout r1 = UiStyle.makeRowBtn(this, "🧭", "初始化向导（首次配置四步走）",
-                UiStyle.BLUE, this::showWizard);
+                UiStyle.BRAND, this::showWizard);
         box.addView(r1, rowLp);
 
         LinearLayout r2 = UiStyle.makeRowBtn(this, "📥", "克隆软件（无尽冬日装进号库）",
-                UiStyle.BLUE, () -> onWizardStep(0));
+                UiStyle.BRAND, () -> onWizardStep(0));
         box.addView(r2, new LinearLayout.LayoutParams(rowLp));
 
         LinearLayout r3 = UiStyle.makeRowBtn(this, "💚", "微信支付（容器微信登录/充值）",
@@ -260,13 +260,13 @@ public class AccountVaultActivity extends Activity {
         box.addView(r3, new LinearLayout.LayoutParams(rowLp));
 
         LinearLayout r4 = UiStyle.makeRowBtn(this, "🔑", "授权管理（兑换码/到期详情）",
-                UiStyle.TEAL, this::showLicenseMenu);
+                UiStyle.RUN_INK, this::showLicenseMenu);
         box.addView(r4, new LinearLayout.LayoutParams(rowLp));
 
         TextView close = new TextView(this);
         close.setText("关闭");
         close.setTextSize(14);
-        close.setTextColor(UiStyle.TEXT_SEC);
+        close.setTextColor(UiStyle.INK2);
         close.setGravity(Gravity.CENTER);
         close.setPadding(0, dp(14), 0, dp(8));
 
@@ -275,6 +275,7 @@ public class AccountVaultActivity extends Activity {
                 .create();
         if (dlg.getWindow() != null)
             dlg.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+        UiStyle.press(close);
         close.setOnClickListener(v -> dlg.dismiss());
         box.addView(close);
         dlg.show();
@@ -355,7 +356,7 @@ public class AccountVaultActivity extends Activity {
                     w.close();
                 } catch (Throwable ignored) { }
                 UiStyle.showConfirmDialog(AccountVaultActivity.this, "协议 PoC 结果", result,
-                        "知道了", UiStyle.BLUE, null);
+                        "知道了", UiStyle.BRAND, null);
             }
         }.execute(account);
     }
@@ -373,17 +374,17 @@ public class AccountVaultActivity extends Activity {
         box.setElevation(dp(8));
         box.setPadding(dp(5), dp(5), dp(5), dp(5));
 
-        addTileAction(box, "▶ 启动", UiStyle.BLUE, () -> {
+        addTileAction(box, "▶ 启动", UiStyle.BRAND, () -> {
             if (ac != null) doSwitch(ac);
         });
-        addTileAction(box, "⇅ 排序", UiStyle.TEAL, () -> {
+        addTileAction(box, "⇅ 排序", UiStyle.RUN_INK, () -> {
             expandAllGroups();
             dragArm = true;
             String hint = "排序中：长按任意卡片拖到目标位置，松手自动保存";
             toast(hint);
             if (status != null) status.setText(hint);
         });
-        addTileAction(box, "⋯ 管理", UiStyle.BLUE_DARK, () -> {
+        addTileAction(box, "⋯ 管理", UiStyle.BRAND_TEXT, () -> {
             Intent it = new Intent(this, EntryDetailActivity.class);
             it.putExtra(EntryDetailActivity.EXTRA_ID, row.itemId);
             startActivity(it);
@@ -415,6 +416,7 @@ public class AccountVaultActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.setMargins(dp(3), 0, dp(3), 0);
         box.addView(b, lp);
+        UiStyle.press(b);
         b.setOnClickListener(v -> {
             dismissTilePopup();
             action.run();
@@ -441,7 +443,7 @@ public class AccountVaultActivity extends Activity {
         }
         msg.append("\n\n如已购买新的兑换码，可点「更换」重新激活。");
 
-        UiStyle.showConfirmDialog(this, "授权状态", msg.toString(), "更换", UiStyle.BLUE,
+        UiStyle.showConfirmDialog(this, "授权状态", msg.toString(), "更换", UiStyle.BRAND,
                 new Runnable() {
                     @Override
                     public void run() {
@@ -514,7 +516,7 @@ public class AccountVaultActivity extends Activity {
 
     private void buildUi() {
         FrameLayout frame = new FrameLayout(this);
-        frame.setBackgroundColor(UiStyle.BG);
+        frame.setBackgroundColor(UiStyle.BG_V2);
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -529,11 +531,12 @@ public class AccountVaultActivity extends Activity {
         title.setText("无尽号库");
         title.setTextSize(22);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.BLUE_DARK);
+        title.setTextColor(UiStyle.BRAND_TEXT);
         header.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         // 授权状态圆环：绿=充足 黄=≤3天 红=过期/废除 ∞=永久；点击直达授权管理。
         licenseRing = LicenseUi.buildRing(this, licenseManager);
+        UiStyle.press(licenseRing);
         licenseRing.setOnClickListener(v -> showLicenseMenu());
         LinearLayout.LayoutParams ringLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -544,19 +547,20 @@ public class AccountVaultActivity extends Activity {
         TextView menuBtn = new TextView(this);
         menuBtn.setText("☰");
         menuBtn.setTextSize(16);
-        menuBtn.setTextColor(UiStyle.BLUE);
+        menuBtn.setTextColor(UiStyle.BRAND);
         menuBtn.setGravity(Gravity.CENTER);
         GradientDrawable menuBg = new GradientDrawable();
         menuBg.setShape(GradientDrawable.OVAL);
         menuBg.setColor(UiStyle.WAIT_50);
         menuBtn.setBackground(menuBg);
+        UiStyle.press(menuBtn);
         menuBtn.setOnClickListener(v -> showMainMenu());
         header.addView(menuBtn, new LinearLayout.LayoutParams(dp(36), dp(36)));
         root.addView(header);
 
         status = new TextView(this);
         status.setTextSize(12);
-        status.setTextColor(UiStyle.TEXT_SEC);
+        status.setTextColor(UiStyle.INK2);
         status.setPadding(dp(20), dp(4), dp(20), dp(12));
         root.addView(status);
 
@@ -598,9 +602,10 @@ public class AccountVaultActivity extends Activity {
         fab.setShadowLayer(8, 0, 3, 0x40000000);
         GradientDrawable fabBg = new GradientDrawable();
         fabBg.setShape(GradientDrawable.OVAL);
-        fabBg.setColor(UiStyle.BLUE);
+        fabBg.setColor(UiStyle.BRAND);
         fab.setBackground(fabBg);
         fab.setElevation(dp(6));
+        UiStyle.press(fab);
         fab.setOnClickListener(v -> showCreateEntry());
         fab.setOnLongClickListener(v -> { showBatchImport(); return true; });
         FrameLayout.LayoutParams fabLp = new FrameLayout.LayoutParams(dp(56), dp(56));
@@ -846,7 +851,7 @@ public class AccountVaultActivity extends Activity {
         title.setText("批量导入账号");
         title.setTextSize(17);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.TEXT_PRI);
+        title.setTextColor(UiStyle.INK);
         box.addView(title);
 
         TextView hint = new TextView(this);
@@ -854,7 +859,7 @@ public class AccountVaultActivity extends Activity {
                 + "格式二：表格粘贴 —— 备注⇥account=号ID，紧跟一行 sdkToken=...\n"
                 + "空行与 # 开头的行会被忽略；与库内重复的号ID 默认跳过、不覆盖。");
         hint.setTextSize(12);
-        hint.setTextColor(UiStyle.TEXT_SEC);
+        hint.setTextColor(UiStyle.INK2);
         LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         hintLp.topMargin = dp(10);
@@ -863,7 +868,7 @@ public class AccountVaultActivity extends Activity {
         final EditText et = new EditText(this);
         et.setHint("在此粘贴账号列表，或点「选择文件」…");
         et.setTextSize(13);
-        et.setTextColor(UiStyle.TEXT_PRI);
+        et.setTextColor(UiStyle.INK);
         et.setMinLines(6);
         et.setMaxLines(12);
         et.setGravity(Gravity.TOP);
@@ -889,14 +894,15 @@ public class AccountVaultActivity extends Activity {
             public void run() {
                 if (overwrite[0]) {
                     policy.setText("冲突策略：覆盖已有账号（同号ID 将被改写）— 点此切回");
-                    policy.setTextColor(UiStyle.RED);
+                    policy.setTextColor(UiStyle.ERR_INK);
                 } else {
                     policy.setText("冲突策略：跳过冲突（默认，不覆盖任何已有数据）— 点此切换");
-                    policy.setTextColor(UiStyle.TEAL);
+                    policy.setTextColor(UiStyle.RUN_INK);
                 }
             }
         };
         syncPolicy.run();
+        UiStyle.press(policy);
         policy.setOnClickListener(v -> {
             overwrite[0] = !overwrite[0];
             syncPolicy.run();
@@ -906,7 +912,7 @@ public class AccountVaultActivity extends Activity {
         TextView pick = new TextView(this);
         pick.setText("选择文件");
         pick.setTextSize(14);
-        pick.setTextColor(UiStyle.BLUE);
+        pick.setTextColor(UiStyle.BRAND);
         pick.setTypeface(Typeface.DEFAULT_BOLD);
         pick.setGravity(Gravity.CENTER);
         pick.setPadding(dp(10), dp(10), dp(10), dp(10));
@@ -914,6 +920,7 @@ public class AccountVaultActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         pickLp.topMargin = dp(8);
         box.addView(pick, pickLp);
+        UiStyle.press(pick);
         pick.setOnClickListener(v -> {
             try {
                 Intent it = new Intent(Intent.ACTION_OPEN_DOCUMENT);
@@ -933,14 +940,14 @@ public class AccountVaultActivity extends Activity {
         TextView cancel = new TextView(this);
         cancel.setText("取消");
         cancel.setTextSize(14);
-        cancel.setTextColor(UiStyle.TEXT_SEC);
+        cancel.setTextColor(UiStyle.INK2);
         cancel.setPadding(dp(16), dp(10), dp(16), dp(10));
         btnRow.addView(cancel);
 
         TextView go = new TextView(this);
         go.setText("开始导入");
         go.setTextSize(14);
-        go.setTextColor(UiStyle.BLUE);
+        go.setTextColor(UiStyle.BRAND);
         go.setTypeface(Typeface.DEFAULT_BOLD);
         go.setPadding(dp(16), dp(10), dp(16), dp(10));
         btnRow.addView(go);
@@ -953,7 +960,9 @@ public class AccountVaultActivity extends Activity {
         dlg.setOnDismissListener(d -> {
             if (importInput == et) importInput = null;
         });
+        UiStyle.press(cancel);
         cancel.setOnClickListener(v -> dlg.dismiss());
+        UiStyle.press(go);
         go.setOnClickListener(v -> {
             String text = et.getText() == null ? "" : et.getText().toString();
             dlg.dismiss();
@@ -1023,13 +1032,13 @@ public class AccountVaultActivity extends Activity {
         title.setText("导入结果");
         title.setTextSize(17);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.TEXT_PRI);
+        title.setTextColor(UiStyle.INK);
         box.addView(title);
 
         TextView sum = new TextView(this);
         sum.setText("成功 " + r.ok + " 个 · 失败 " + r.failed + " 条 · 跳过 " + r.skipped + " 条");
         sum.setTextSize(14);
-        sum.setTextColor(r.failed > 0 ? UiStyle.RED : UiStyle.TEXT_PRI);
+        sum.setTextColor(r.failed > 0 ? UiStyle.ERR_INK : UiStyle.INK);
         LinearLayout.LayoutParams sumLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         sumLp.topMargin = dp(12);
@@ -1046,7 +1055,7 @@ public class AccountVaultActivity extends Activity {
             TextView det = new TextView(this);
             det.setText(detail.toString().trim());
             det.setTextSize(12);
-            det.setTextColor(UiStyle.RED);
+            det.setTextColor(UiStyle.ERR_INK);
             det.setMaxLines(10);
             LinearLayout.LayoutParams detLp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1063,16 +1072,17 @@ public class AccountVaultActivity extends Activity {
             TextView exp = new TextView(this);
             exp.setText("导出失败明细");
             exp.setTextSize(14);
-            exp.setTextColor(UiStyle.BLUE);
+            exp.setTextColor(UiStyle.BRAND);
             exp.setPadding(dp(16), dp(10), dp(16), dp(10));
             btnRow.addView(exp);
+            UiStyle.press(exp);
             exp.setOnClickListener(v -> exportFailures());
         }
 
         TextView close = new TextView(this);
         close.setText("关闭");
         close.setTextSize(14);
-        close.setTextColor(UiStyle.TEXT_SEC);
+        close.setTextColor(UiStyle.INK2);
         close.setPadding(dp(16), dp(10), dp(16), dp(10));
         btnRow.addView(close);
         box.addView(btnRow);
@@ -1081,6 +1091,7 @@ public class AccountVaultActivity extends Activity {
                 .setView(box).create();
         if (dlg.getWindow() != null)
             dlg.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+        UiStyle.press(close);
         close.setOnClickListener(v -> dlg.dismiss());
         dlg.show();
     }
@@ -1215,7 +1226,7 @@ public class AccountVaultActivity extends Activity {
         tvTitle.setText("初始化向导（只需一次）");
         tvTitle.setTextSize(18);
         tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(UiStyle.TEXT_PRI);
+        tvTitle.setTextColor(UiStyle.INK);
         box.addView(tvTitle);
 
         String[] steps = {
@@ -1228,7 +1239,7 @@ public class AccountVaultActivity extends Activity {
             TextView t = new TextView(this);
             t.setText(steps[i]);
             t.setTextSize(13);
-            t.setTextColor(UiStyle.TEXT_SEC);
+            t.setTextColor(UiStyle.INK2);
             t.setPadding(0, dp(10), 0, 0);
             box.addView(t);
         }
@@ -1251,6 +1262,7 @@ public class AccountVaultActivity extends Activity {
             LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, dp(44), 1);
             blp.setMargins(dp(3), 0, dp(3), 0);
             b.setLayoutParams(blp);
+            UiStyle.press(b);
             b.setOnClickListener(v -> onWizardStep(step));
             row.addView(b);
         }
@@ -1270,6 +1282,7 @@ public class AccountVaultActivity extends Activity {
         boolean wxInstalled = engine.isWechatInstalled();
         wxBtn.setText(wxInstalled ? "⑤ 打开/更新容器微信（登录后游戏内充值可拉起）"
                                   : "⑤ 装入微信进号库（自动用下载目录最新包）");
+        UiStyle.press(wxBtn);
         wxBtn.setOnClickListener(v -> doWechatPay());
         box.addView(wxBtn);
 
@@ -1277,7 +1290,7 @@ public class AccountVaultActivity extends Activity {
         TextView close = new TextView(this);
         close.setText("关闭");
         close.setTextSize(14);
-        close.setTextColor(UiStyle.TEXT_SEC);
+        close.setTextColor(UiStyle.INK2);
         close.setGravity(Gravity.CENTER);
         close.setPadding(0, dp(16), 0, dp(8));
 
@@ -1286,6 +1299,7 @@ public class AccountVaultActivity extends Activity {
                 .create();
         if (dlg.getWindow() != null)
             dlg.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+        UiStyle.press(close);
         close.setOnClickListener(v -> dlg.dismiss());
         box.addView(close);
         dlg.show();
@@ -1427,6 +1441,7 @@ public class AccountVaultActivity extends Activity {
             arrow = (TextView) box.getChildAt(2);
             // 点击按 **position** 取行，而不是 bind 时捕获的 Row 对象：
             // 后者在列表重建后可能是过期对象 ⇒ 点了没反应。
+            UiStyle.press(itemView);
             itemView.setOnClickListener(v2 -> {
                 int pos = getAdapterPosition();
                 if (pos != RecyclerView.NO_POSITION) onHeaderClickAt(pos);
@@ -1487,6 +1502,7 @@ public class AccountVaultActivity extends Activity {
             subStatus = (TextView) subRow.getChildAt(0);
             subTime = (TextView) subRow.getChildAt(1);
             // 单击 / 长按统一弹悬浮操作组（▶启动 / ⇅排序 / ⋯管理）——不再有隐藏手势差异。
+            UiStyle.press(itemView);
             itemView.setOnClickListener(v2 -> {
                 EntryLayout.Row r = rowAt(getAdapterPosition());
                 if (r == null || r.type != EntryLayout.TYPE_ENTRY) return;
@@ -1536,14 +1552,14 @@ public class AccountVaultActivity extends Activity {
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         name.setTypeface(Typeface.DEFAULT_BOLD);
-        name.setTextColor(UiStyle.TEXT_PRI);
+        name.setTextColor(UiStyle.INK);
         box.addView(name, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         // [1] 入口数量：`(6)`
         TextView cnt = new TextView(this);
         cnt.setTextSize(12);
-        cnt.setTextColor(UiStyle.TEXT_SEC);
+        cnt.setTextColor(UiStyle.INK2);
         box.addView(cnt, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -1552,7 +1568,7 @@ public class AccountVaultActivity extends Activity {
         TextView arrow = new TextView(this);
         arrow.setText("▾");
         arrow.setTextSize(15);
-        arrow.setTextColor(UiStyle.BLUE);
+        arrow.setTextColor(UiStyle.BRAND);
         arrow.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(24), dp(24));
         alp.leftMargin = dp(6);
@@ -1587,7 +1603,7 @@ public class AccountVaultActivity extends Activity {
         TextView name = new TextView(this);
         name.setTextSize(13);
         name.setMaxLines(1);
-        name.setTextColor(UiStyle.TEXT_PRI);
+        name.setTextColor(UiStyle.INK);
         name.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1605,7 +1621,7 @@ public class AccountVaultActivity extends Activity {
         subStatus.setTextSize(10);
         subStatus.setMaxLines(1);
         subStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        subStatus.setTextColor(UiStyle.TEXT_SEC);
+        subStatus.setTextColor(UiStyle.INK2);
         subStatus.setGravity(Gravity.START);
         subRow.addView(subStatus, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -1613,7 +1629,7 @@ public class AccountVaultActivity extends Activity {
         TextView subTime = new TextView(this);
         subTime.setTextSize(10);
         subTime.setMaxLines(1);
-        subTime.setTextColor(UiStyle.TEXT_SEC);
+        subTime.setTextColor(UiStyle.INK2);
         subTime.setGravity(Gravity.END);
         subRow.addView(subTime, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));

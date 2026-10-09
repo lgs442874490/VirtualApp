@@ -2,8 +2,8 @@
 
     <!-- Base application theme. -->
     <style name="AppTheme" parent="Theme.AppCompat.Light.NoActionBar">
-        <item name="colorPrimary">#03a9f4</item>
-        <item name="colorAccent">#03a9f4</item>
+        <item name="colorPrimary">#2E5BFF</item>
+        <item name="colorAccent">#2E5BFF</item>
         <item name="windowNoTitle">true</item>
         <item name="android:windowIsTranslucent">false</item>
         <item name="android:textAllCaps">false</item>
@@ -38,8 +38,8 @@
 
     <!-- Base application theme. -->
 <!--    <style name="AppTheme" parent="@android:style/Theme.Holo.Light">
-        <item name="colorPrimary">#03a9f4</item>
-        <item name="colorAccent">#03a9f4</item>
+        <item name="colorPrimary">#2E5BFF</item>
+        <item name="colorAccent">#2E5BFF</item>
         <item name="windowNoTitle">true</item>
         <item name="android:windowIsTranslucent">false</item>
         <item name="android:textAllCaps">false</item>
@@ -72,8 +72,8 @@
 
 
     <style name="UITheme" parent="Theme.AppCompat.Light.NoActionBar">
-        <item name="colorPrimary">#03a9f4</item>
-        <item name="colorAccent">#03a9f4</item>
+        <item name="colorPrimary">#2E5BFF</item>
+        <item name="colorAccent">#2E5BFF</item>
         <item name="android:textAllCaps">false</item>
     </style>
 

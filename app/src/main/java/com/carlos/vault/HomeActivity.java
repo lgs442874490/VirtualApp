@@ -260,7 +260,7 @@ public class HomeActivity extends AccountVaultActivity {
     private View buildBottomNav() {
         LinearLayout nav = new LinearLayout(this);
         nav.setOrientation(LinearLayout.VERTICAL);
-        nav.setBackgroundColor(0xFFFFFFFF);
+        nav.setBackgroundColor(UiStyle.WHITE);
         // 顶部 1px 分割线（独立垂直层，不挤占横向空间）
         View line = new View(this);
         line.setBackgroundColor(UiStyle.LINE);
@@ -296,6 +296,7 @@ public class HomeActivity extends AccountVaultActivity {
             label.setGravity(Gravity.CENTER);
             label.setTag("label" + i);
             item.addView(label);
+            UiStyle.press(item);
             item.setOnClickListener(v -> switchTab(idx));
             navBars[i] = bar;
             navItems[i] = label;
@@ -360,6 +361,7 @@ public class HomeActivity extends AccountVaultActivity {
         menu.setTextSize(20);
         menu.setTextColor(UiStyle.INK);
         menu.setPadding(dp(10), dp(6), dp(4), dp(6));
+        UiStyle.press(menu);
         menu.setOnClickListener(v -> showMainMenu());
         top.addView(menu);
         box.addView(top);
@@ -418,7 +420,7 @@ public class HomeActivity extends AccountVaultActivity {
         actVal = new TextView(this);
         actVal.setTextSize(12);
         actVal.setTypeface(Typeface.DEFAULT_BOLD);
-        actVal.setTextColor(0xFFFFFFFF);
+        actVal.setTextColor(UiStyle.WHITE);
         actRow.addView(actVal);
         LinearLayout.LayoutParams arlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -426,9 +428,9 @@ public class HomeActivity extends AccountVaultActivity {
         right.addView(actRow, arlp);
         LinearLayout actBar = new LinearLayout(this);
         actBar.setOrientation(LinearLayout.HORIZONTAL);
-        actBar.setBackground(UiStyle.roundRect(0x33FFFFFF, dp(3)));
+        actBar.setBackground(UiStyle.roundRect(UiStyle.WHITE_20, dp(3)));
         actFill = new View(this);
-        actFill.setBackground(UiStyle.roundRect(0xFFFFFFFF, dp(3)));
+        actFill.setBackground(UiStyle.roundRect(UiStyle.WHITE, dp(3)));
         actBar.addView(actFill, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0f));
         LinearLayout.LayoutParams ablp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(6));
@@ -455,10 +457,11 @@ public class HomeActivity extends AccountVaultActivity {
         accBtn.setTextColor(UiStyle.BRAND_TEXT);
         accBtn.setGravity(Gravity.CENTER);
         GradientDrawable sg = new GradientDrawable();
-        sg.setColor(0xFFFFFFFF);
+        sg.setColor(UiStyle.WHITE);
         sg.setCornerRadius(dp(16));
         accBtn.setBackground(sg);
         accBtn.setElevation(dp(5));
+        UiStyle.press(accBtn);
         accBtn.setOnClickListener(v -> showAccountSwitcher());
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(0, dp(48), 1.35f);
         btnRow.addView(accBtn, mlp);
@@ -466,13 +469,14 @@ public class HomeActivity extends AccountVaultActivity {
         roleBtn.setText("切换角色");
         roleBtn.setTextSize(13);
         roleBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        roleBtn.setTextColor(0xFFFFFFFF);
+        roleBtn.setTextColor(UiStyle.WHITE);
         roleBtn.setGravity(Gravity.CENTER);
         GradientDrawable og = new GradientDrawable();
-        og.setColor(0x1FFFFFFF);
+        og.setColor(UiStyle.WHITE_12);
         og.setCornerRadius(dp(16));
-        og.setStroke(dp(1), 0x73FFFFFF);
+        og.setStroke(dp(1), UiStyle.WHITE_45);
         roleBtn.setBackground(og);
+        UiStyle.press(roleBtn);
         roleBtn.setOnClickListener(v -> showRolePicker());
         LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(0, dp(42), 1f);
         olp.leftMargin = dp(8);
@@ -486,6 +490,7 @@ public class HomeActivity extends AccountVaultActivity {
         autoStateBtn.setTextColor(UiStyle.BRAND_100);
         autoStateBtn.setGravity(Gravity.CENTER);
         autoStateBtn.setPadding(dp(8), dp(10), dp(8), dp(2));
+        UiStyle.press(autoStateBtn);
         autoStateBtn.setOnClickListener(v -> {
             AccountStore.Account cra = currentRoleAccount();
             if (cra == null) {
@@ -556,13 +561,14 @@ public class HomeActivity extends AccountVaultActivity {
         helpActionBtn.setText("一键帮助全盟");
         helpActionBtn.setTextSize(12);
         helpActionBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        helpActionBtn.setTextColor(0xFFFFFFFF);
+        helpActionBtn.setTextColor(UiStyle.WHITE);
         helpActionBtn.setGravity(Gravity.CENTER);
         GradientDrawable hbg = new GradientDrawable();
         hbg.setColor(UiStyle.BRAND);
         hbg.setCornerRadius(dp(10));
         helpActionBtn.setBackground(hbg);
         helpActionBtn.setPadding(dp(12), dp(7), dp(12), dp(7));
+        UiStyle.press(helpActionBtn);
         helpActionBtn.setOnClickListener(v -> oneKeyHelpAll());
         helpHead.addView(helpActionBtn);
         helpCard.addView(helpHead);
@@ -602,6 +608,7 @@ public class HomeActivity extends AccountVaultActivity {
             label.setGravity(Gravity.CENTER);
             cell.addView(icon);
             cell.addView(label);
+            UiStyle.press(cell);
             cell.setOnClickListener(v -> {
                 if ("switch".equals(q[2])) showAccountSwitcher();
                 else quickAction(q[2]);
@@ -797,7 +804,7 @@ public class HomeActivity extends AccountVaultActivity {
             if (!(c instanceof TextView)) continue;
             TextView t = (TextView) c;
             boolean sel = i == accView;
-            t.setTextColor(sel ? 0xFFFFFFFF : UiStyle.INK2);
+            t.setTextColor(sel ? UiStyle.WHITE : UiStyle.INK2);
             t.setTypeface(sel ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
             t.setBackground(sel ? UiStyle.roundRect(UiStyle.BRAND, dp(11)) : null);
         }
@@ -1023,46 +1030,46 @@ public class HomeActivity extends AccountVaultActivity {
                     String st = srv.optString("state", "offline");
                     if (com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(st)) {
                         text = "● 日常在线";
-                        color = 0xFF7EE2B8;
+                        color = UiStyle.ON_BRAND_OK;
                     } else if (com.carlos.vault.wjdr.WjdrEngine.STATE_RECOVERING.equals(st)) {
                         text = "◌ 重连中";
-                        color = 0xFFFFD59E;
+                        color = UiStyle.ON_BRAND_WARN;
                     } else if (com.carlos.vault.wjdr.WjdrEngine.STATE_TAKEOVER.equals(st)) {
                         text = "△ 被顶号暂停";
-                        color = 0xFFFFD59E;
+                        color = UiStyle.ON_BRAND_WARN;
                     } else if (com.carlos.vault.wjdr.WjdrEngine.STATE_NEED_TOKEN.equals(st)) {
                         text = "⚠ 需重导token";
-                        color = 0xFFFF9E9E;
+                        color = UiStyle.ON_BRAND_ERR;
                     } else {
                         text = "○ 离线";
-                        color = 0xFFDCE5FF;
+                        color = UiStyle.ON_BRAND_IDLE;
                     }
                 } else if (cur != null) {
                     String st = cur.engine.sessionState();
                     if (com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(st)) {
                         text = "● 日常在线";
-                        color = 0xFF7EE2B8;
+                        color = UiStyle.ON_BRAND_OK;
                     } else if (com.carlos.vault.wjdr.WjdrEngine.STATE_RECOVERING.equals(st)) {
                         text = "◌ 重连中";
-                        color = 0xFFFFD59E;
+                        color = UiStyle.ON_BRAND_WARN;
                     } else if (com.carlos.vault.wjdr.WjdrEngine.STATE_TAKEOVER.equals(st)) {
                         text = "△ 被顶号暂停";
-                        color = 0xFFFFD59E;
+                        color = UiStyle.ON_BRAND_WARN;
                     } else if (com.carlos.vault.wjdr.WjdrEngine.STATE_NEED_TOKEN.equals(st)) {
                         text = "⚠ 需重导token";
-                        color = 0xFFFF9E9E;
+                        color = UiStyle.ON_BRAND_ERR;
                     } else {
                         text = "○ 离线";
-                        color = 0xFFDCE5FF;
+                        color = UiStyle.ON_BRAND_IDLE;
                     }
                 } else if (accountOnline(onlineAcc) && roleUidOf(onlineAcc.fpid, curSidF) != 0
                         && liveOnlineUid() == roleUidOf(onlineAcc.fpid, curSidF)) {
                     // 容器游戏客户端正挂着当前角色
                     text = "● 游戏在线";
-                    color = 0xFF7EE2B8;
+                    color = UiStyle.ON_BRAND_OK;
                 } else {
                     text = "○ 离线";
-                    color = 0xFFDCE5FF;
+                    color = UiStyle.ON_BRAND_IDLE;
                 }
                 final String fText = text;
                 final int fColor = color;
@@ -1588,6 +1595,7 @@ public class HomeActivity extends AccountVaultActivity {
         addDetLine(det, "英雄/兵种", "游戏推送未含明细，随协议补全");
         det.setVisibility(View.GONE);
         final LinearLayout fdet = det;
+        UiStyle.press(row);
         row.setOnClickListener(v -> fdet.setVisibility(
                 fdet.getVisibility() == View.VISIBLE ? View.GONE : View.VISIBLE));
         card.addView(det);
@@ -1766,11 +1774,12 @@ public class HomeActivity extends AccountVaultActivity {
         sort.setTextColor(UiStyle.INK2);
         sort.setGravity(Gravity.CENTER);
         GradientDrawable sobg = new GradientDrawable();
-        sobg.setColor(0xFFFFFFFF);
+        sobg.setColor(UiStyle.WHITE);
         sobg.setCornerRadius(dp(12));
         sobg.setStroke(dp(1), UiStyle.LINE);
         sort.setBackground(sobg);
         sort.setPadding(dp(10), dp(9), dp(10), dp(9));
+        UiStyle.press(sort);
         sort.setOnClickListener(v -> openOld());
         top.addView(sort);
         box.addView(top);
@@ -1785,7 +1794,7 @@ public class HomeActivity extends AccountVaultActivity {
         searchInput.setTextColor(UiStyle.INK);
         searchInput.setHintTextColor(UiStyle.INK2);
         GradientDrawable sg = new GradientDrawable();
-        sg.setColor(0xFFFFFFFF);
+        sg.setColor(UiStyle.WHITE);
         sg.setCornerRadius(dp(12));
         sg.setStroke(dp(1), UiStyle.LINE);
         searchInput.setBackground(sg);
@@ -1813,6 +1822,7 @@ public class HomeActivity extends AccountVaultActivity {
         for (int i = 0; i < 4; i++) {
             final int idx = i;
             TextView c = UiStyle.chipGray(this, labels[i], i == 0);
+            UiStyle.press(c);
             c.setOnClickListener(v -> {
                 accountFilter = idx;
                 refreshAccounts();
@@ -1836,7 +1846,7 @@ public class HomeActivity extends AccountVaultActivity {
         TextView fab = new TextView(this);
         fab.setText("＋");
         fab.setTextSize(24);
-        fab.setTextColor(0xFFFFFFFF);
+        fab.setTextColor(UiStyle.WHITE);
         fab.setGravity(Gravity.CENTER);
         GradientDrawable fg = new GradientDrawable();
         fg.setColor(UiStyle.BRAND);
@@ -1847,6 +1857,7 @@ public class HomeActivity extends AccountVaultActivity {
         flp.rightMargin = dp(18);
         flp.bottomMargin = dp(18);
         fabWrap.addView(fab, flp);
+        UiStyle.press(fab);
         fab.setOnClickListener(v -> showCreateEntry());
         fab.setOnLongClickListener(v -> {
             showBatchImport();
@@ -1916,6 +1927,7 @@ public class HomeActivity extends AccountVaultActivity {
             sub.setMaxLines(1);
             cell.addView(sub);
 
+            UiStyle.press(cell);
             cell.setOnClickListener(v -> doSwitch(a));
             row.addView(cell, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -1952,7 +1964,7 @@ public class HomeActivity extends AccountVaultActivity {
             card.setOrientation(LinearLayout.VERTICAL);
             card.setPadding(dp(12), dp(10), dp(12), dp(10));
             GradientDrawable cg = new GradientDrawable();
-            cg.setColor(0xFFFFFFFF);
+            cg.setColor(UiStyle.WHITE);
             cg.setCornerRadius(dp(14));
             cg.setStroke(dp(1), UiStyle.LINE);
             card.setBackground(cg);
@@ -2006,6 +2018,7 @@ public class HomeActivity extends AccountVaultActivity {
             bottom.addView(last);
             card.addView(bottom);
 
+            UiStyle.press(card);
             card.setOnClickListener(v -> accountMenu(a));
             LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
@@ -2149,11 +2162,11 @@ public class HomeActivity extends AccountVaultActivity {
                 pill.setColor(UiStyle.BRAND);
                 pill.setStroke(dp(1), UiStyle.BRAND);
             } else {
-                pill.setColor(0xFFFFFFFF);
+                pill.setColor(UiStyle.WHITE);
                 pill.setStroke(dp(1), UiStyle.LINE);
             }
             filterChips.get(i).setBackground(pill);
-            filterChips.get(i).setTextColor(sel ? 0xFFFFFFFF : UiStyle.INK2);
+            filterChips.get(i).setTextColor(sel ? UiStyle.WHITE : UiStyle.INK2);
             filterChips.get(i).setTypeface(Typeface.DEFAULT_BOLD);
         }
         if (accountCap != null)
@@ -2308,7 +2321,7 @@ public class HomeActivity extends AccountVaultActivity {
         tv.setText(label == null || label.isEmpty() ? "?" : label.substring(0, 1));
         tv.setTextSize(16);
         tv.setTypeface(Typeface.DEFAULT_BOLD);
-        tv.setTextColor(0xFFFFFFFF);
+        tv.setTextColor(UiStyle.WHITE);
         tv.setGravity(Gravity.CENTER);
         int h = seed == null ? 0 : Math.abs(seed.hashCode());
         int[][] grads = {{UiStyle.BRAND, UiStyle.BRAND_DEEP}, {UiStyle.RUN_SOLID, UiStyle.RUN_INK},
@@ -2405,17 +2418,18 @@ public class HomeActivity extends AccountVaultActivity {
         check.setText(sel ? "✓" : "");
         check.setTextSize(12);
         check.setTypeface(Typeface.DEFAULT_BOLD);
-        check.setTextColor(0xFFFFFFFF);
+        check.setTextColor(UiStyle.WHITE);
         check.setGravity(Gravity.CENTER);
         GradientDrawable ckg = new GradientDrawable();
         ckg.setCornerRadius(dp(7));
         if (sel) {
             ckg.setColor(UiStyle.BRAND);
         } else {
-            ckg.setColor(0xFFFFFFFF);
+            ckg.setColor(UiStyle.WHITE);
             ckg.setStroke(dp(1), UiStyle.LINE_STRONG);
         }
         check.setBackground(ckg);
+        UiStyle.press(check);
         check.setOnClickListener(v -> {
             if (selectedAccounts.contains(a.id)) selectedAccounts.remove(a.id);
             else selectedAccounts.add(a.id);
@@ -2478,6 +2492,7 @@ public class HomeActivity extends AccountVaultActivity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         glp2.leftMargin = dp(5);
         gear.addView(gearTx, glp2);
+        UiStyle.press(gear);
         gear.setOnClickListener(v -> showRoleManager(a, roles, accOn));
         head.addView(gear);
         box.addView(head);
@@ -2535,6 +2550,7 @@ public class HomeActivity extends AccountVaultActivity {
                 more.setTypeface(Typeface.DEFAULT_BOLD);
                 more.setTextColor(UiStyle.BRAND_TEXT);
                 more.setPadding(0, dp(8), 0, 0);
+                UiStyle.press(more);
                 more.setOnClickListener(v -> showRoleManager(a, roles, accOn));
                 box.addView(more);
             }
@@ -2612,10 +2628,12 @@ public class HomeActivity extends AccountVaultActivity {
         go.setBackground(gbg);
         go.setPadding(0, dp(5), 0, dp(5));
         go.setWidth(dp(COL_GO));
+        UiStyle.press(go);
         go.setOnClickListener(v -> launchRole(a, r));
         row.addView(go);
 
         // 点角色行 = 角色管理（与齿轮同一入口）
+        UiStyle.press(row);
         row.setOnClickListener(v -> showRoleManager(a, allRoles, accOn));
         return row;
     }
@@ -2680,15 +2698,15 @@ public class HomeActivity extends AccountVaultActivity {
         final long liveUid = isLiveAcc ? liveOnlineUid() : 0;
 
         final android.widget.FrameLayout overlay = new android.widget.FrameLayout(this);
-        overlay.setBackgroundColor(0x59080C17);   // rgba(8,12,23,35%)，压暗背景
+        overlay.setBackgroundColor(UiStyle.SCRIM);   // rgba(8,12,23,35%)，压暗背景
         // 点遮罩空白处关闭
         overlay.setOnClickListener(v -> dismissSheet(overlay));
 
         LinearLayout panel = new LinearLayout(this);
         panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setBackgroundColor(0xFFFFFFFF);
+        panel.setBackgroundColor(UiStyle.WHITE);
         GradientDrawable pbg = new GradientDrawable();
-        pbg.setColor(0xFFFFFFFF);
+        pbg.setColor(UiStyle.WHITE);
         pbg.setCornerRadii(new float[]{dp(24), dp(24), dp(24), dp(24), 0, 0, 0, 0});
         panel.setBackground(pbg);
         panel.setElevation(dp(16));
@@ -2733,6 +2751,7 @@ public class HomeActivity extends AccountVaultActivity {
                 dp(18), dp(18), Gravity.CENTER);
         close.addView(new UiStyle.Icon(this, UiStyle.Icon.CLOSE, UiStyle.INK2), clp3);
         close.setPadding(dp(10), dp(7), dp(10), dp(7));
+        UiStyle.press(close);
         close.setOnClickListener(v -> dismissSheet(overlay));
         head.addView(close);
         panel.addView(head);
@@ -2770,6 +2789,7 @@ public class HomeActivity extends AccountVaultActivity {
         all.setGravity(Gravity.CENTER);
         all.setBackground(UiStyle.roundRect(UiStyle.SURFACE_3, dp(12)));
         all.setPadding(0, dp(11), 0, dp(11));
+        UiStyle.press(all);
         all.setOnClickListener(v -> {
             for (RoleStore.Role r : roles) RoleStore.setEnabled(this, a.fpid, r.serverid, true);
             for (Runnable rr : syncSubs) rr.run();
@@ -2788,10 +2808,11 @@ public class HomeActivity extends AccountVaultActivity {
         done.setText("完成");
         done.setTextSize(13f);
         done.setTypeface(Typeface.DEFAULT_BOLD);
-        done.setTextColor(0xFFFFFFFF);
+        done.setTextColor(UiStyle.WHITE);
         done.setGravity(Gravity.CENTER);
         done.setBackground(UiStyle.roundRect(UiStyle.BRAND, dp(12)));
         done.setPadding(0, dp(11), 0, dp(11));
+        UiStyle.press(done);
         done.setOnClickListener(v -> dismissSheet(overlay));
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1.15f);
@@ -2906,7 +2927,7 @@ public class HomeActivity extends AccountVaultActivity {
             boolean now = !r.enabled;
             r.enabled = now;
             RoleStore.setEnabled(HomeActivity.this, a.fpid, r.serverid, now);
-            row.setBackgroundColor(now ? 0xFFFFFFFF : UiStyle.SURFACE_2);
+            row.setBackgroundColor(now ? UiStyle.WHITE : UiStyle.SURFACE_2);
             nm.setTextColor(now ? UiStyle.INK : UiStyle.INK2);
             for (Runnable rr : syncSubs) rr.run();
             refreshAccounts();
@@ -2939,7 +2960,7 @@ public class HomeActivity extends AccountVaultActivity {
     private void showAccMask() {
         if (accMask == null) {
             android.widget.FrameLayout fl = new android.widget.FrameLayout(this);
-            fl.setBackgroundColor(0x66000000);
+            fl.setBackgroundColor(UiStyle.BLACK_40);
             fl.setClickable(true);
             LinearLayout box = UiStyle.outlineCard(this);
             box.setOrientation(LinearLayout.VERTICAL);
@@ -3041,11 +3062,12 @@ public class HomeActivity extends AccountVaultActivity {
         winBtn.setTextColor(UiStyle.BRAND_TEXT);
         winBtn.setGravity(Gravity.CENTER);
         GradientDrawable wbg = new GradientDrawable();
-        wbg.setColor(0xFFFFFFFF);
+        wbg.setColor(UiStyle.WHITE);
         wbg.setCornerRadius(dp(9));
         wbg.setStroke(dp(1), UiStyle.BRAND_300);
         winBtn.setBackground(wbg);
         winBtn.setPadding(dp(10), dp(7), dp(10), dp(7));
+        UiStyle.press(winBtn);
         winBtn.setOnClickListener(v -> showWindowPicker());
         auto.addView(winBtn);
         // 自动日常开关（原日常页顶部开关迁移至此）
@@ -3067,6 +3089,7 @@ public class HomeActivity extends AccountVaultActivity {
         auto.addView(autoSwitch, swlp);
         box.addView(auto);
         // 点横幅主体 → 每日任务详情页（进度/领取）
+        UiStyle.press(auto);
         auto.setOnClickListener(v -> openDaily(
                 taskAccount == null ? firstWorkspace() : taskAccount, null));
 
@@ -3138,6 +3161,7 @@ public class HomeActivity extends AccountVaultActivity {
             final int cat = i;
             int cnt = FnRegistry.byCategory(i).size();
             TextView c = UiStyle.chipGray(this, FnRegistry.CAT_NAMES[i] + " " + cnt, i == 0);
+            UiStyle.press(c);
             c.setOnClickListener(v -> {
                 taskCat = cat;
                 refreshTasks();
@@ -3170,6 +3194,7 @@ public class HomeActivity extends AccountVaultActivity {
         t2.setTypeface(Typeface.DEFAULT_BOLD);
         t2.setTextColor(UiStyle.BRAND_TEXT);
         tools.addView(t2);
+        UiStyle.press(tools);
         tools.setOnClickListener(v -> showTools());
         box.addView(tools);
     }
@@ -3452,11 +3477,11 @@ public class HomeActivity extends AccountVaultActivity {
                 pill.setColor(UiStyle.BRAND);
                 pill.setStroke(dp(1), UiStyle.BRAND);
             } else {
-                pill.setColor(0xFFFFFFFF);
+                pill.setColor(UiStyle.WHITE);
                 pill.setStroke(dp(1), UiStyle.LINE);
             }
             chip.setBackground(pill);
-            chip.setTextColor(sel ? 0xFFFFFFFF : UiStyle.INK2);
+            chip.setTextColor(sel ? UiStyle.WHITE : UiStyle.INK2);
             chip.setTypeface(Typeface.DEFAULT_BOLD);
         }
         int wsCnt = workspaceAccounts().size();
@@ -3546,6 +3571,7 @@ public class HomeActivity extends AccountVaultActivity {
             boolean open = fn.id.equals(expandedFn);
             chev.setRotation(open ? 180f : 0f);
             head.addView(chev);
+            UiStyle.press(head);
             head.setOnClickListener(v -> {
                 expandedFn = open ? null : fn.id;
                 refreshTasks();
@@ -3571,6 +3597,7 @@ public class HomeActivity extends AccountVaultActivity {
                 deep.setPadding(0, dp(8), 0, dp(2));
                 deep.setLayoutParams(new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                UiStyle.press(deep);
                 deep.setOnClickListener(v -> openFnDetail(taskAccount, fn.id));
                 detail.addView(deep);
                 card.addView(detail);
@@ -3684,7 +3711,7 @@ public class HomeActivity extends AccountVaultActivity {
         licenseDays = new TextView(this);
         licenseDays.setTextSize(30);
         licenseDays.setTypeface(Typeface.DEFAULT_BOLD);
-        licenseDays.setTextColor(0xFFFFFFFF);
+        licenseDays.setTextColor(UiStyle.WHITE);
         ln.addView(licenseDays);
         TextView lu = new TextView(this);
         lu.setText(" 天");
@@ -3696,8 +3723,9 @@ public class HomeActivity extends AccountVaultActivity {
         renew.setText("续期 / 兑换码 ›");
         renew.setTextSize(12.5f);
         renew.setTypeface(Typeface.DEFAULT_BOLD);
-        renew.setTextColor(0xFFFFFFFF);
+        renew.setTextColor(UiStyle.WHITE);
         renew.setPadding(0, dp(8), 0, 0);
+        UiStyle.press(renew);
         renew.setOnClickListener(v -> showLicenseMenu());
         lic.addView(renew);
         box.addView(lic);
@@ -3727,7 +3755,7 @@ public class HomeActivity extends AccountVaultActivity {
         danger.setGravity(Gravity.CENTER_VERTICAL);
         danger.setPadding(dp(12), dp(12), dp(12), dp(12));
         GradientDrawable dg = new GradientDrawable();
-        dg.setColor(0xFFFFFFFF);
+        dg.setColor(UiStyle.WHITE);
         dg.setCornerRadius(dp(16));
         dg.setStroke(dp(1), UiStyle.ERR_BORDER);
         danger.setBackground(dg);
@@ -3742,6 +3770,7 @@ public class HomeActivity extends AccountVaultActivity {
         d2.setTextSize(11.5f);
         d2.setTextColor(UiStyle.INK2);
         danger.addView(d2);
+        UiStyle.press(danger);
         danger.setOnClickListener(v -> new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle("清除容器数据")
                 .setMessage("该操作会作废容器内全部账号（快照仍保留），且不可恢复。\n\n如需彻底重置，请走「初始化向导」第 3 步。")
@@ -3779,6 +3808,7 @@ public class HomeActivity extends AccountVaultActivity {
         arrow.setTextSize(18);
         arrow.setTextColor(UiStyle.INK2);
         row.addView(arrow);
+        UiStyle.press(row);
         row.setOnClickListener(v -> onClick.run());
         return row;
     }
@@ -3892,11 +3922,12 @@ public class HomeActivity extends AccountVaultActivity {
         t.setText(selectedAccounts.size() + " 个已选");
         t.setTextSize(12.5f);
         t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setTextColor(0xFFFFFFFF);
+        t.setTextColor(UiStyle.WHITE);
         batchBar.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         // 跑日常
-        TextView run = batchBtn("跑日常", 0x24FFFFFF, 0xFFFFFFFF);
+        TextView run = batchBtn("跑日常", UiStyle.WHITE_14, UiStyle.WHITE);
+        UiStyle.press(run);
         run.setOnClickListener(v -> {
             List<AccountStore.Account> sel = new ArrayList<>();
             for (AccountStore.Account a : accounts) {
@@ -3907,7 +3938,8 @@ public class HomeActivity extends AccountVaultActivity {
         });
         batchBar.addView(run);
         // 导出：账号名 + fpid 文本复制到剪贴板
-        TextView exp = batchBtn("导出", 0x24FFFFFF, 0xFFFFFFFF);
+        TextView exp = batchBtn("导出", UiStyle.WHITE_14, UiStyle.WHITE);
+        UiStyle.press(exp);
         exp.setOnClickListener(v -> {
             StringBuilder sb = new StringBuilder();
             for (AccountStore.Account a : accounts) {
@@ -3921,7 +3953,8 @@ public class HomeActivity extends AccountVaultActivity {
         });
         batchBar.addView(exp);
         // 删除（危险：确认后从号库移除）
-        TextView del = batchBtn("删除", UiStyle.ERR_SOLID, 0xFFFFFFFF);
+        TextView del = batchBtn("删除", UiStyle.ERR_SOLID, UiStyle.WHITE);
+        UiStyle.press(del);
         del.setOnClickListener(v -> {
             final int n = selectedAccounts.size();
             new AlertDialog.Builder(HomeActivity.this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)

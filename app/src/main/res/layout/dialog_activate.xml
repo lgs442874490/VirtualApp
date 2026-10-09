@@ -60,7 +60,7 @@
             android:layout_weight="1"
             android:gravity="center"
             android:text="@android:string/cancel"
-            android:textColor="@android:color/black" />
+            android:textColor="@color/vault_ink" />
 
         <View
             android:layout_width="1px"
@@ -74,6 +74,6 @@
             android:layout_weight="1"
             android:gravity="center"
             android:text="@android:string/ok"
-            android:textColor="@android:color/black" />
+            android:textColor="@color/vault_ink" />
     </LinearLayout>
 </LinearLayout>

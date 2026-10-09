@@ -102,7 +102,7 @@ public final class SubCardUi {
             TextView st = new TextView(ctx);
             st.setText((stale ? "⏳ " : "") + status + suffix);
             st.setTextSize(11);
-            st.setTextColor(stale ? 0xFFB45309 : UiStyle.BRAND_TEXT);   // WARN_INK
+            st.setTextColor(stale ? UiStyle.WARN_INK : UiStyle.BRAND_TEXT);   // WARN_INK
             st.setPadding(0, dp(ctx, 3), 0, 0);
             card.addView(st);
         } else {
@@ -187,6 +187,7 @@ public final class SubCardUi {
                 chip.setPadding(dp(ctx, 8), dp(ctx, 5), dp(ctx, 8), dp(ctx, 5));
                 applyChip(chip, val.equals(cur));
                 chips[i] = chip;
+                UiStyle.press(chip);
                 chip.setOnClickListener(v -> {
                     FnParams.saveStrategy(ctx, fpid, sid, fnId, sub.id, val);
                     for (TextView c : chips) applyChip(c, c == v);
@@ -202,7 +203,7 @@ public final class SubCardUi {
     }
 
     private static void applyChip(TextView v, boolean selected) {
-        v.setTextColor(selected ? 0xFFFFFFFF : UiStyle.INK2);
+        v.setTextColor(selected ? UiStyle.WHITE : UiStyle.INK2);
         v.setTypeface(selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
         v.setBackground(UiStyle.roundRect(selected ? UiStyle.BRAND : UiStyle.SURFACE_3, dp(v.getContext(), 10)));
     }

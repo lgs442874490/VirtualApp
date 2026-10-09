@@ -1,22 +1,45 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="colorAccent">#FF4081</color>
+    <color name="colorAccent">#1E43D9</color>
     <color name="white">#ffffff</color>
     <color name="color_6bc196">#6bc196</color>
     <color name="transparent">#00000000</color>
     <color name="black_20_transparent">#55000000</color>
 
     <color name="md_transparent">#00FFFFFF</color>
-    <color name="gray9">#333333</color>
-    <color name="gray">#D0D0D0</color>
+    <!-- 旧容器页文本/灰阶：值统一到 v2 设计 token（名字保留以免动布局） -->
+    <color name="gray9">#0F1729</color>
+    <color name="gray">#E5E9F2</color>
 
-    <color name="black2">#252525</color>
-    <color name="black3">#606060</color>
-    <color name="gray4">#686868</color>
-    <color name="gray2">#C0C0C0</color>
+    <color name="black2">#0F1729</color>
+    <color name="black3">#61708B</color>
+    <color name="gray4">#61708B</color>
+    <color name="gray2">#9AA6BC</color>
     <color name="dialogColorPrimary">#a0607191</color>
     <color name="dialogColorPrimary2">#50607191</color>
 
-    <color name="colorPrimary">#3F51B5</color>
+    <color name="colorPrimary">#2E5BFF</color>
+
+    <!-- ===== 无尽号库 v2 设计 token（与 com.carlos.vault.UiStyle 一一对应）===== -->
+    <color name="vault_brand">#2E5BFF</color>
+    <color name="vault_brand_press">#1E43D9</color>
+    <color name="vault_brand_text">#1E43D9</color>
+    <color name="vault_brand_50">#EEF3FF</color>
+    <color name="vault_bg">#F2F5FA</color>
+    <color name="vault_card">#FFFFFF</color>
+    <color name="vault_ink">#0F1729</color>
+    <color name="vault_ink2">#61708B</color>
+    <color name="vault_ink3">#9AA6BC</color>
+    <color name="vault_line">#E5E9F2</color>
+    <color name="vault_line_strong">#D2D9E6</color>
+    <color name="vault_ok_solid">#10B981</color>
+    <color name="vault_run_solid">#0EA5A5</color>
+    <color name="vault_wait_solid">#6366F1</color>
+    <color name="vault_warn_solid">#F59E0B</color>
+    <color name="vault_warn_ink">#B45309</color>
+    <color name="vault_err_solid">#EF4444</color>
+    <color name="vault_err_ink">#B91C1C</color>
+    <color name="vault_idle_solid">#CBD3E1</color>
+    <color name="vault_idle_ink">#6B7280</color>
 
 </resources>

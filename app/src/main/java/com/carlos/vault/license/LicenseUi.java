@@ -72,30 +72,25 @@ public final class LicenseUi {
         intro.setText("请使用兑换码激活本应用");
         intro.setTextSize(15);
         intro.setTypeface(Typeface.DEFAULT_BOLD);
-        intro.setTextColor(UiStyle.TEXT_PRI);
+        intro.setTextColor(UiStyle.INK);
         intro.setGravity(Gravity.CENTER);
         card.addView(intro, marginTop(act, 12));
 
         TextView label = new TextView(act);
         label.setText("兑换码");
         label.setTextSize(13);
-        label.setTextColor(UiStyle.TEXT_SEC);
+        label.setTextColor(UiStyle.INK2);
         card.addView(label, marginTop(act, 20));
 
         final EditText input = new EditText(act);
         input.setHint("XXXX-XXXX-XXXX-XXXX");
         input.setTextSize(16);
         input.setSingleLine(true);
-        input.setTextColor(UiStyle.TEXT_PRI);
+        input.setTextColor(UiStyle.INK);
         input.setGravity(Gravity.CENTER);
         input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
-        GradientDrawable bg = new GradientDrawable();
-        bg.setShape(GradientDrawable.RECTANGLE);
-        bg.setCornerRadius(10);
-        bg.setStroke(1, UiStyle.DIVIDER);
-        bg.setColor(UiStyle.SURFACE_2);
-        input.setBackground(bg);
+        input.setBackground(UiStyle.roundRectStroke(act, UiStyle.CARD, 12, UiStyle.LINE_STRONG));
         input.setPadding(dp(act, 14), dp(act, 14), dp(act, 14), dp(act, 14));
         LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -104,16 +99,17 @@ public final class LicenseUi {
 
         final TextView error = new TextView(act);
         error.setTextSize(13);
-        error.setTextColor(UiStyle.RED);
+        error.setTextColor(UiStyle.ERR_INK);
         error.setGravity(Gravity.CENTER);
         error.setVisibility(View.GONE);
         card.addView(error, marginTop(act, 10));
 
-        final TextView submit = primaryButton(act, "激  活", UiStyle.BLUE, 0xFFFFFFFF);
+        final TextView submit = UiStyle.primaryBtn(act, "激  活", null);
         card.addView(submit, marginTop(act, 14));
 
         final ProgressDialog[] holder = new ProgressDialog[1];
 
+        UiStyle.press(submit);
         submit.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
@@ -144,7 +140,7 @@ public final class LicenseUi {
                         submit.setEnabled(true);
                         submit.setText("激  活");
                         if (state != null && state.usable()) {
-                            Toast.makeText(act, message, Toast.LENGTH_LONG).show();
+                            UiStyle.toast(act, message);
                             if (onChanged != null) onChanged.onChanged();
                         } else {
                             showError(error, message == null ? "激活失败" : message);
@@ -159,7 +155,7 @@ public final class LicenseUi {
         TextView footer = new TextView(act);
         footer.setText("购买 / 续费请联系运营方");
         footer.setTextSize(12);
-        footer.setTextColor(UiStyle.TEXT_SEC);
+        footer.setTextColor(UiStyle.INK2);
         footer.setGravity(Gravity.CENTER);
         root.addView(footer, marginTop(act, 24));
 
@@ -186,22 +182,23 @@ public final class LicenseUi {
         title.setText(st == null ? "使用受限" : st.title());
         title.setTextSize(18);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.TEXT_PRI);
+        title.setTextColor(UiStyle.INK);
         title.setGravity(Gravity.CENTER);
         card.addView(title, marginTop(act, 12));
 
         TextView desc = new TextView(act);
         desc.setText(descriptionFor(lm, st));
         desc.setTextSize(14);
-        desc.setTextColor(UiStyle.TEXT_SEC);
+        desc.setTextColor(UiStyle.INK2);
         desc.setGravity(Gravity.CENTER);
         desc.setLineSpacing(dp(act, 3), 1f);
         card.addView(desc, marginTop(act, 10));
 
         // 离线超期是可恢复态：给一个显式的「联网重试」
         if (st == LicenseState.OFFLINE_EXPIRED) {
-            final TextView retry = primaryButton(act, "联网重试", UiStyle.BLUE, 0xFFFFFFFF);
+            final TextView retry = UiStyle.primaryBtn(act, "联网重试", null);
             card.addView(retry, marginTop(act, 18));
+            UiStyle.press(retry);
             retry.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -216,7 +213,7 @@ public final class LicenseUi {
                                 pd.dismiss();
                             } catch (Throwable ignored) {
                             }
-                            Toast.makeText(act, message, Toast.LENGTH_LONG).show();
+                            UiStyle.toast(act, message);
                             if (state != null && state.usable() && onChanged != null) {
                                 onChanged.onChanged();
                             }
@@ -229,15 +226,12 @@ public final class LicenseUi {
         // 终态也可换新码：给出重新激活入口
         if (st == LicenseState.EXPIRED || st == LicenseState.REVOKED
                 || st == LicenseState.TAMPERED || st == LicenseState.UNACTIVATED) {
-            TextView reenter = primaryButton(act, "重新输入兑换码激活",
-                    UiStyle.CARD, UiStyle.BLUE);
-            GradientDrawable outline = new GradientDrawable();
-            outline.setShape(GradientDrawable.RECTANGLE);
-            outline.setCornerRadius(dp(act, 10));
-            outline.setStroke(dp(act, 1), UiStyle.BLUE);
-            outline.setColor(UiStyle.CARD);
-            reenter.setBackground(outline);
-            card.addView(reenter, marginTop(act, 18));
+            TextView reenter = UiStyle.secondaryBtn(act, "重新输入兑换码激活", null);
+            LinearLayout.LayoutParams reenterLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, UiStyle.dp(act, 40));
+            reenterLp.topMargin = dp(act, 18);
+            card.addView(reenter, reenterLp);
+            UiStyle.press(reenter);
             reenter.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
@@ -246,12 +240,13 @@ public final class LicenseUi {
             });
         }
 
-        TextView contact = primaryButton(act, "联系客服", UiStyle.BG, UiStyle.TEXT_SEC);
+        TextView contact = UiStyle.ghostBtn(act, "联系客服", null);
         card.addView(contact, marginTop(act, 10));
+        UiStyle.press(contact);
         contact.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                Toast.makeText(act, "请通过购买渠道联系运营方", Toast.LENGTH_LONG).show();
+                UiStyle.toast(act, "请通过购买渠道联系运营方");
             }
         });
 
@@ -324,7 +319,7 @@ public final class LicenseUi {
             TextView sub = new TextView(act);
             sub.setText("至 " + date);
             sub.setTextSize(12);
-            sub.setTextColor(UiStyle.TEXT_SEC);
+            sub.setTextColor(UiStyle.INK2);
             bar.addView(sub);
         }
 
@@ -348,14 +343,14 @@ public final class LicenseUi {
     }
 
     private static int barTextColor(LicenseState st) {
-        if (st == null) return UiStyle.TEXT_SEC;
+        if (st == null) return UiStyle.INK2;
         switch (st) {
             case ACTIVE:
-                return UiStyle.BLUE;
+                return UiStyle.BRAND;
             case ACTIVE_OFFLINE:
                 return UiStyle.WARN_INK;
             default:
-                return UiStyle.RED;
+                return UiStyle.ERR_INK;
         }
     }
 
@@ -479,8 +474,7 @@ public final class LicenseUi {
                     public void onResult(String value) {
                         final String code = LicenseManager.normalize(value);
                         if (code.length() != 16) {
-                            Toast.makeText(act, "兑换码不存在或格式错误",
-                                    Toast.LENGTH_SHORT).show();
+                            UiStyle.toast(act, "兑换码不存在或格式错误");
                             return;
                         }
                         final ProgressDialog pd = new ProgressDialog(act);
@@ -494,7 +488,7 @@ public final class LicenseUi {
                                     pd.dismiss();
                                 } catch (Throwable ignored) {
                                 }
-                                Toast.makeText(act, message, Toast.LENGTH_LONG).show();
+                                UiStyle.toast(act, message);
                                 if (state != null && state.usable() && onChanged != null) {
                                     onChanged.onChanged();
                                 }
@@ -509,14 +503,14 @@ public final class LicenseUi {
     private static LinearLayout pageRoot(Activity act) {
         LinearLayout root = new LinearLayout(act);
         root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(UiStyle.BG);
+        root.setBackgroundColor(UiStyle.BG_V2);
         root.setPadding(0, 0, 0, dp(act, 28));
         return root;
     }
 
     private static View wrapScroll(LinearLayout content) {
         ScrollView sv = new ScrollView(content.getContext());
-        sv.setBackgroundColor(UiStyle.BG);
+        sv.setBackgroundColor(UiStyle.BG_V2);
         sv.addView(content, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return sv;
@@ -525,29 +519,11 @@ public final class LicenseUi {
     private static View titleBar(Activity act, String text) {
         TextView tv = new TextView(act);
         tv.setText(text);
-        tv.setTextSize(20);
+        tv.setTextSize(19);
         tv.setTypeface(Typeface.DEFAULT_BOLD);
-        tv.setTextColor(UiStyle.BLUE_DARK);
+        tv.setTextColor(UiStyle.BRAND_TEXT);
         tv.setGravity(Gravity.CENTER);
         tv.setPadding(dp(act, 20), dp(act, 32), dp(act, 8), dp(act, 8));
-        return tv;
-    }
-
-    private static TextView primaryButton(Activity act, String text, int bgColor, int textColor) {
-        TextView tv = new TextView(act);
-        tv.setText(text);
-        tv.setTextSize(15);
-        tv.setTypeface(Typeface.DEFAULT_BOLD);
-        tv.setTextColor(textColor);
-        tv.setGravity(Gravity.CENTER);
-        tv.setPadding(dp(act, 16), dp(act, 14), dp(act, 16), dp(act, 14));
-        GradientDrawable d = new GradientDrawable();
-        d.setShape(GradientDrawable.RECTANGLE);
-        d.setCornerRadius(dp(act, 10));
-        d.setColor(bgColor);
-        tv.setBackground(d);
-        tv.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return tv;
     }
 
