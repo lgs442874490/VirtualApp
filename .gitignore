@@ -127,3 +127,4 @@ engine-upgrade/
 
 # 根目录发布 APK（历史惯例不入库）
 /*.apk
+license-server/deploy/license-server-linux
