@@ -1,0 +1,108 @@
+package com.carlos.vaultserver;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
+
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+
+/** 身份库：sync 覆盖合并、token 更新、学到指纹落库与重载。 */
+public class VaultStoreTest {
+
+    @Rule
+    public TemporaryFolder tmp = new TemporaryFolder();
+
+    private VaultStore store;
+
+    @Before
+    public void setUp() {
+        store = new VaultStore(tmp.getRoot().toPath());
+    }
+
+    private VaultStore.Account acc(String fpid, boolean keep, String token) {
+        VaultStore.Account a = new VaultStore.Account(fpid);
+        a.keep = keep;
+        a.token = token;
+        a.label = "号" + fpid;
+        return a;
+    }
+
+    @Test
+    public void replaceAll_fullOverwrite() {
+        List<VaultStore.Account> in = new ArrayList<>();
+        in.add(acc("111", true, "tk1"));
+        in.add(acc("222", false, "tk2"));
+        assertEquals(2, store.replaceAll(in));
+        assertEquals("tk1", store.find("111").token);
+        assertFalse(store.find("222").keep);
+        assertNull(store.find("333"));
+    }
+
+    @Test
+    public void replaceAll_preservesServerLearnedIdentityWhenAppOmits() {
+        List<VaultStore.Account> in = new ArrayList<>();
+        in.add(acc("111", true, "tk1"));
+        store.replaceAll(in);
+        // 服务器登录后学到的角色指纹
+        store.learnIdentity("111", "913", "{\"distinct_id\":\"d1\",\"device_id\":\"e1\"}");
+
+        // App 全量 sync 未携带任何指纹（重装后）
+        store.replaceAll(in);
+
+        VaultStore.Account a = store.find("111");
+        assertEquals("{\"distinct_id\":\"d1\",\"device_id\":\"e1\"}", a.roleIdentity.get("913"));
+    }
+
+    @Test
+    public void replaceAll_appIdentityWins() {
+        List<VaultStore.Account> in = new ArrayList<>();
+        in.add(acc("111", true, "tk1"));
+        store.replaceAll(in);
+        store.learnIdentity("111", "913", "{\"distinct_id\":\"server\"}");
+
+        VaultStore.Account fresh = acc("111", true, "tk1");
+        fresh.roleIdentity.put("913", "{\"distinct_id\":\"app\"}");
+        List<VaultStore.Account> in2 = new ArrayList<>();
+        in2.add(fresh);
+        store.replaceAll(in2);
+
+        assertEquals("{\"distinct_id\":\"app\"}", store.find("111").roleIdentity.get("913"));
+    }
+
+    @Test
+    public void learnIdentity_notOverwriteExisting() {
+        store.replaceAll(List.of(acc("111", true, "tk1")));
+        store.learnIdentity("111", "888", "{\"distinct_id\":\"first\"}");
+        store.learnIdentity("111", "888", "{\"distinct_id\":\"second\"}");
+        assertEquals("{\"distinct_id\":\"first\"}", store.find("111").roleIdentity.get("888"));
+    }
+
+    @Test
+    public void updateToken_thenPersistAcrossReload() {
+        store.replaceAll(List.of(acc("111", true, "tk1")));
+        assertTrue(store.updateToken("111", "tk2"));
+        assertFalse(store.updateToken("999", "x"));
+
+        VaultStore reloaded = new VaultStore(tmp.getRoot().toPath());
+        reloaded.load();
+        assertEquals("tk2", reloaded.find("111").token);
+        assertTrue(reloaded.find("111").keep);
+    }
+
+    @Test
+    public void setPolicy_validatedAndPersisted() {
+        assertTrue(store.setPolicy("grab_back"));
+        assertFalse(store.setPolicy("bogus"));
+        VaultStore reloaded = new VaultStore(tmp.getRoot().toPath());
+        reloaded.load();
+        assertEquals("grab_back", reloaded.policy());
+    }
+}

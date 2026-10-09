@@ -1,0 +1,32 @@
+[Unit]
+Description=vault-server (号库服务器：游戏协议常驻会话)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=vault
+Group=vault
+WorkingDirectory=/opt/vault-server
+EnvironmentFile=/etc/vault-server.env
+ExecStart=/usr/bin/java -Xmx256m -jar /opt/vault-server/vault-server-all.jar
+Restart=always
+RestartSec=5
+
+# 沙箱加固（对齐 license-server.service）
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/vault-server/data
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

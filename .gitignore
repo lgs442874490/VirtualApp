@@ -106,3 +106,24 @@ security/proguard-rules.pro
 
 basegenerator/
 basegenerator/*
+
+# vault-server TLS 私钥（证书可公开，私钥绝不入库）
+vault-server/deploy/tls/vault-ip.key
+
+# 构建产物与备份（vault-server 独立 gradle 工程）
+vault-server/build/
+app/build.bak-*/
+*.aar.bak
+screen_v0*.png
+
+# license-server 编译产物（单静态二进制，不入库）
+license-server/license-server
+license-server/license-cli
+
+# 本地工件与工程副本快照
+engine-upgrade/
+.workbuddy/
+.zcode/
+
+# 根目录发布 APK（历史惯例不入库）
+/*.apk

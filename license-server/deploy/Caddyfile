@@ -1,0 +1,59 @@
+# VAContainer 授权服务端 —— Caddy 反向代理 + 自动 HTTPS
+#
+# 域名定版（v1.2）：cs.888syd.xyz（弃用原 lic.888syd.xyz 方案）。
+# A 记录已存在（→ 43.163.7.111，新加坡测试机），无需新增 DNS；
+# Caddy 通过 Let's Encrypt 自动申请并续期证书。
+#
+# ⚠️ v1.2 变更：CloudDroid 业务已从该机下线（compose 已停、数据卷保留），
+# 本机不再有共享反代 —— 本文件为**独立整域配置**。
+# （旧版"路由片段并入 CloudDroid 容器 Caddy"方案已废弃。）
+#
+# ⚠️ 为何 Caddy 走容器而非宿主机进程：宿主机 UDP 443 被 hysteria 代理长期占用
+# （/usr/local/bin/hysteria server），而 Caddy 2.6.2 默认开启 HTTP/3 会抢 UDP 443 →
+# 启动失败（listen udp :443: bind: address already in use）。2.6.2 的 Caddyfile 已无
+# 关闭 HTTP/3 的开关（protocol 子选项被移除）。故让 Caddy 运行在**容器 netns** 内
+# （容器内 UDP 443 空闲），宿主仅发布 TCP 80/443，与 hysteria 互不干扰。
+#
+# 启动：
+#   sudo docker run -d --name lic-caddy --restart unless-stopped \
+#     -p 80:80/tcp -p 443:443/tcp \
+#     --add-host host.docker.internal:host-gateway \
+#     -v /etc/caddy/Caddyfile:/etc/caddy/Caddyfile:ro \
+#     -v lic_caddy_data:/data -v lic_caddy_config:/config \
+#     caddy:2-alpine
+#
+# 应用进程只监听明文 `127.0.0.1:8787`（systemd 单元见同目录 license-server.service），
+# TLS 由 Caddy 终结。
+
+cs.888syd.xyz {
+	# 反向代理到【宿主机】的 license-server。
+	# 必须写 host.docker.internal（而非 127.0.0.1）：Caddy 以容器运行，容器内 127.0.0.1 是容器自己。
+	# 启动容器时需带 --add-host host.docker.internal:host-gateway。
+	reverse_proxy host.docker.internal:8787
+
+	# 安全响应头
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		-Server
+	}
+
+	# 请求体大小限制（与 Go 服务端的 64KB 上限配合）
+	request_body {
+		max_size 128KB
+	}
+
+	# 访问日志
+	log {
+		output file /var/log/caddy/license-server.log
+		format json
+	}
+}
+
+# 说明（运维必读）：
+# 1. 放到 /etc/caddy/Caddyfile 后执行 `caddy validate --config /etc/caddy/Caddyfile`，再 `systemctl reload caddy`。
+# 2. 客户端 LicenseConfig.BASE_URL = `https://cs.888syd.xyz`（**不含 /v1**）。
+#    `/v1/...` 由客户端按 LicenseConfig.PATH_* 拼接（LicenseApi.post: url = baseUrl + path），
+#    若 BASE_URL 误带 /v1，实际会请求到 /v1/v1/activate 而 404。
+# 3. 证书签发前提：80/443 对公网放通且由本机 Caddy 独占；域名不得套 CDN 代理。
+# 4. /healthz 会对公网暴露（仅返回进程存活状态，无敏感信息）；/v1/rebind 需 adminToken。

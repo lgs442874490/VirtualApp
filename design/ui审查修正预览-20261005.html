@@ -1,0 +1,300 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>UI 规范修正 · 效果预览（静态示例数据）</title>
+<style>
+:root{
+  --brand-500:#2E5BFF; --brand-600:#1E43D9; --brand-text:#1E43D9;
+  --brand-50:#EEF3FF; --brand-100:#DCE5FF; --brand-200:#BFCCFF;
+  --ok-bg:#E7F8F1;  --ok-ink:#047857;  --ok-solid:#10B981;
+  --run-bg:#E6F6F6; --run-ink:#0F766E; --run-solid:#0EA5A5;
+  --warn-bg:#FFF4E5;--warn-ink:#B45309;--warn-solid:#F59E0B;
+  --err-bg:#FEECEC; --err-ink:#B91C1C; --err-solid:#EF4444;
+  --wait-bg:#EEF0FE;--wait-ink:#4338CA;--wait-solid:#6366F1;
+  --idle-bg:#F1F3F7;--idle-ink:#6B7280;--idle-solid:#CBD3E1;
+  --bg:#F2F5FA; --surface:#FFF; --surface-2:#F8FAFD; --surface-3:#EEF2F9;
+  --line:#E5E9F2; --line-strong:#D2D9E6;
+  --ink:#0F1729; --ink-2:#61708B; --ink-3:#9AA6BC;
+  --font:-apple-system,BlinkMacSystemFont,"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);font-size:14px;line-height:1.62;-webkit-font-smoothing:antialiased}
+h1,h2,h3{margin:0;font-weight:600;letter-spacing:-.01em}
+p{margin:0}
+.wrap{max-width:1240px;margin:0 auto;padding:36px 28px 90px}
+.doc-head h1{font-size:26px;letter-spacing:-.03em}
+.doc-head .sub{color:var(--ink-2);margin-top:8px;max-width:70ch;font-size:14px}
+.meta{display:flex;flex-wrap:wrap;gap:8px;margin-top:14px}
+.chip{font-size:11.5px;padding:3px 10px;border-radius:999px;background:var(--surface);border:1px solid var(--line);color:var(--ink-2)}
+.chip.b{background:var(--brand-50);border-color:var(--brand-200);color:var(--brand-text)}
+.chip.g{background:var(--ok-bg);color:var(--ok-ink);border-color:transparent}
+h2.sec{font-size:17px;margin-top:44px;display:flex;align-items:baseline;gap:10px}
+h2.sec em{font-style:normal;font-size:11px;color:var(--ink-3);letter-spacing:.08em}
+
+/* ===== 审查结论表 ===== */
+table{width:100%;border-collapse:collapse;margin-top:14px;font-size:12.5px;background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+th{background:var(--surface-3);text-align:left;font-weight:600;color:var(--ink-2);font-size:11px;letter-spacing:.05em;padding:9px 12px}
+td{padding:9px 12px;border-top:1px solid var(--line);vertical-align:top}
+td.code{font-family:ui-monospace,Menlo,monospace;font-size:11.5px;color:var(--ink-2);white-space:nowrap}
+.tag{display:inline-block;font-size:10.5px;font-weight:700;padding:1px 8px;border-radius:6px;white-space:nowrap}
+.tag.done{background:var(--ok-bg);color:var(--ok-ink)}
+.tag.part{background:var(--warn-bg);color:var(--warn-ink)}
+.tag.keep{background:var(--idle-bg);color:var(--idle-ink)}
+
+/* ===== 预览舞台 ===== */
+.stage{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:26px;margin-top:18px}
+.phone{border-radius:30px;background:var(--bg);border:1px solid var(--line-strong);box-shadow:0 18px 44px -14px rgba(15,23,41,.22);overflow:hidden;position:relative}
+.statbar{height:28px;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:10.5px;color:var(--ink-2)}
+.appbar{padding:10px 18px 12px;display:flex;align-items:center;gap:10px}
+.appbar h3{font-size:17px;letter-spacing:-.02em}
+.appbar .cap{font-size:10.5px;color:var(--ink-3);margin-top:1px}
+.appbar .tt{flex:1;min-width:0}
+.viewtoggle{display:inline-flex;background:var(--surface-3);border-radius:11px;padding:3px;gap:2px}
+.viewtoggle button{width:32px;height:30px;border:none;background:transparent;border-radius:8px;color:var(--ink-3);display:grid;place-items:center;cursor:default}
+.viewtoggle button.on{background:var(--surface);color:var(--brand-text);box-shadow:0 1px 2px rgba(15,23,41,.06)}
+.viewtoggle svg{width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:1.8}
+.scroll{padding:0 18px 18px}
+
+/* 组件（与 Android 实现同规格） */
+.acard{background:var(--surface);border:1px solid var(--line);border-radius:16px;margin-bottom:10px;overflow:hidden}
+.ah{display:flex;gap:10px;align-items:center;padding:12px}
+.ah .ck{width:22px;height:22px;border-radius:7px;border:1.5px solid var(--line-strong);display:grid;place-items:center;font-size:12px;font-weight:700;color:#fff}
+.ah .ck.on{background:var(--brand-500);border-color:var(--brand-500)}
+.avatar{width:40px;height:40px;border-radius:13px;background:linear-gradient(150deg,#1B3FD1,#2E5BFF);display:grid;place-items:center;flex:none}
+.avatar svg{width:62%;height:62%;stroke:rgba(255,255,255,.92);fill:none;stroke-width:1.7}
+.am{flex:1;min-width:0}
+.am .n{font-size:14.5px;font-weight:600}
+.am .lg{display:flex;align-items:center;gap:6px;margin-top:3px}
+.vbadge{height:19px;padding:0 7px;border-radius:6px;font-size:10.5px;font-weight:600;display:inline-flex;align-items:center}
+.vbadge.tk{background:var(--wait-bg);color:var(--wait-ink)}
+.vbadge.nt{background:var(--ok-bg);color:var(--ok-ink)}
+.uid{font-size:10.5px;color:var(--ink-2);font-variant-numeric:tabular-nums}
+.rmBtn{height:34px;padding:0 10px;border-radius:10px;border:1px solid var(--brand-200);background:var(--brand-50);color:var(--brand-text);font-family:var(--font);font-size:11.5px;font-weight:600;display:inline-flex;align-items:center;gap:5px;flex:none}
+.rmBtn svg{width:14px;height:14px;stroke:currentColor;fill:none;stroke-width:1.8}
+.roles{border-top:1px solid var(--line);background:var(--surface-2);padding:8px 12px 10px}
+.rh{display:flex;justify-content:space-between;font-size:10px;color:var(--ink-3);margin-bottom:5px}
+.rh b.rgt{font-weight:700}
+.rh .on-t{color:var(--ok-ink)}
+.rolehead,.role{display:grid;grid-template-columns:40px minmax(0,1fr) 34px 52px 52px 44px;gap:5px;align-items:center}
+.rolehead{font-size:9.5px;color:var(--ink-3);padding-bottom:4px;border-bottom:1px solid var(--line)}
+.rolehead span:nth-child(3),.rolehead span:nth-child(4),.rolehead span:nth-child(5){text-align:right}
+.role{padding:7px 0}
+.rst{font-size:10px;font-weight:700;white-space:nowrap}
+.rst.on{color:var(--ok-ink)} .rst.off{color:var(--ink-3)}
+.rn{font-size:12.5px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.rz{font-size:10.5px;color:var(--ink-2);text-align:right;font-variant-numeric:tabular-nums}
+.rd{font-size:11.5px;font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
+.rd.full{color:var(--ok-ink)} .rd.part{color:var(--warn-ink)} .rd.zero{color:var(--ink-3)}
+.rl{font-size:10.5px;color:var(--ink-2);text-align:right;font-variant-numeric:tabular-nums}
+.go{height:28px;border-radius:8px;border:1px solid var(--brand-200);background:var(--brand-50);color:var(--brand-text);font-size:11px;font-weight:600;display:grid;place-items:center}
+.ptoast{background:var(--ink);color:#F5F7FB;border-radius:14px;padding:11px 16px;font-size:12.5px;width:max-content;max-width:100%;margin:6px auto 0;box-shadow:0 10px 24px -8px rgba(15,23,41,.4)}
+.badges{display:flex;flex-wrap:wrap;gap:7px;padding:4px 0 2px}
+.badge{height:22px;padding:0 10px;border-radius:999px;font-size:11px;font-weight:600;display:inline-flex;align-items:center;gap:5px}
+.badge i{width:6px;height:6px;border-radius:50%;background:currentColor}
+.b-ok{background:var(--ok-bg);color:var(--ok-ink)} .b-run{background:var(--run-bg);color:var(--run-ink)}
+.b-wait{background:var(--wait-bg);color:var(--wait-ink)} .b-warn{background:var(--warn-bg);color:var(--warn-ink)}
+.b-err{background:var(--err-bg);color:var(--err-ink)} .b-idle{background:var(--idle-bg);color:var(--idle-ink)}
+.switches{display:flex;gap:14px;align-items:center;padding:10px 2px}
+.sw{width:46px;height:28px;border-radius:999px;background:var(--line-strong);position:relative}
+.sw::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;box-shadow:0 1px 2px rgba(15,23,41,.15)}
+.sw.on{background:var(--brand-500)} .sw.on::after{transform:translateX(18px)}
+.seg-demo{display:inline-flex;background:var(--surface-3);border-radius:12px;padding:3px;gap:2px}
+.seg-demo button{border:none;background:transparent;font-family:var(--font);font-size:12px;font-weight:600;color:var(--ink-2);padding:6px 16px;border-radius:10px}
+.seg-demo button.on{background:var(--brand-500);color:#fff}
+
+/* 改动说明卡 */
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px;margin-top:16px}
+.note{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:13px 15px}
+.note h4{font-size:12.5px;display:flex;align-items:center;gap:7px}
+.note h4 .no{width:18px;height:18px;border-radius:6px;background:var(--brand-500);color:#fff;font-size:10.5px;display:grid;place-items:center;flex:none}
+.note p{font-size:11.5px;color:var(--ink-2);margin-top:6px}
+.note .where{font-family:ui-monospace,Menlo,monospace;font-size:10.5px;color:var(--ink-3);margin-top:6px;display:block}
+.footer-note{margin-top:26px;border-left:2px solid var(--brand-500);background:var(--brand-50);padding:11px 15px;border-radius:0 10px 10px 0;font-size:12.5px;color:var(--ink-2)}
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="doc-head">
+    <h1>UI 规范符合性审查 · 修正效果预览</h1>
+    <p class="sub">对照《无尽号库·界面设计方案 v2》的 token 与组件规范，对当前代码全量核对后的结论与修正。
+    本页为<b>静态示例数据</b>（无后端、无动态逻辑），所见即分支 <code>fix/ui-20261005-spec-conformance</code> 修正后的视觉效果。</p>
+    <div class="meta">
+      <span class="chip b">分支 fix/ui-20261005-spec-conformance</span>
+      <span class="chip">2026-10-05</span>
+      <span class="chip g">编译 + assembleDebug 通过</span>
+      <span class="chip">未装机（需真机验收动效/手感）</span>
+    </div>
+  </header>
+
+  <h2 class="sec">一、审查结论 <em>Audit</em></h2>
+  <table>
+    <thead><tr><th style="width:16%">维度</th><th style="width:26%">问题</th><th style="width:30%">位置（文件 : 行）</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td><b>配色·token</b></td><td>v1 旧色值（BLUE 2962FF / TEAL 00695C / RED D32F2F 等 9 支）与 v2 token 并存，两套体系</td>
+          <td class="code">UiStyle.java:19-27（旧定义）→ AccountVaultActivity(48处)/FunctionActivity(46)/LicenseUi(23)/EntryDetailActivity(19)</td>
+          <td><span class="tag done">已修</span> 旧名重定向为 v2 别名并 @Deprecated，136 处引用一次性对齐</td></tr>
+      <tr><td><b>配色·对比度</b></td><td>RED D32F2F 对白底 4.2:1 不达 AA；BLUE 2962FF 白字 4.9:1 偏低</td>
+          <td class="code">UiStyle.java 旧 RED/BLUE 定义处</td>
+          <td><span class="tag done">已修</span> → ERR_INK B91C1C（6.5:1）/ BRAND 2E5BFF（5.1:1）</td></tr>
+      <tr><td><b>配色·裸值</b></td><td>30+ 处硬编码色值未进 token 表（0xFF9AA6BC ×13、0xFFDCE5FF ×10…）</td>
+          <td class="code">HomeActivity / FunctionActivity / AccountVaultActivity / SubCardUi / LicenseUi 全部业务文件</td>
+          <td><span class="tag done">已修</span> <b>全清零</b>（终扫 0 处）：收编为 INK3/SURFACE_2/SURFACE_3/BRAND_100~300/LINE_STRONG/SWITCH_OFF/WAIT_50/WECHAT_GREEN/ERR_BORDER/INVERSE 等 21 个 token</td></tr>
+      <tr><td><b>组件·徽章</b></td><td>badge 圆角 11dp，规范为 22dp 高全圆胶囊</td>
+          <td class="code">UiStyle.badge()</td>
+          <td><span class="tag done">已修</span> → 全圆（999）</td></tr>
+      <tr><td><b>组件·分段</b></td><td>segmented 容器底 0xFFE9EEF9 是表外色，与 surface-3 不一致</td>
+          <td class="code">UiStyle.segmented()</td>
+          <td><span class="tag done">已修</span> → SURFACE_3</td></tr>
+      <tr><td><b>交互·轻提示</b></td><td>用系统 Toast：样式随 ROM 漂移、位置压底部导航，不符规范"深底胶囊"</td>
+          <td class="code">HomeActivity.toast()</td>
+          <td><span class="tag done">已修</span> 自绘 INK 深底胶囊，200ms 淡入 / 1.6s 消失，位于导航上方 92dp</td></tr>
+      <tr><td><b>配色·语义</b></td><td>日常详情页活跃度四态用色与徽章体系不一致（绿 2E9E44 / 橙 E65100 / 蓝 / 灰 各一套）</td>
+          <td class="code">FunctionActivity.java L337-618（35 处）</td>
+          <td><span class="tag done">已修</span> 四态对齐 OK/WARN/RUN/IDLE 语义色（第二、三轮扫描发现并清除）</td></tr>
+      <tr><td><b>布局·边距</b></td><td>四页根容器统一 18dp ✓；但页内区块残留 12/14/16dp 三档左距</td>
+          <td class="code">HomeActivity L1014/1090/1192/1448/1609/2680 等</td>
+          <td><span class="tag part">部分</span> 根容器已合规；区块级属嵌套缩进（卡片内 12–14dp 合规），维持现状</td></tr>
+      <tr><td><b>字体·数字</b></td><td>UID/完成度/时间等数值未统一等宽数字</td>
+          <td class="code">cellText()/colHead()/sheetRoleRow()</td>
+          <td><span class="tag part">部分</span> 定宽列已用右对齐+定宽抑制抖动；TextView 无 tabular-nums 等价物，需字体层支持，标记待办</td></tr>
+      <tr><td><b>组件·图标</b></td><td>⚙/✕/●/⇅ 用文本字符，规范为单色矢量</td>
+          <td class="code">HomeActivity 齿轮按钮 / 弹层关闭键</td>
+          <td><span class="tag done">已修</span> 新增程序化矢量 <code>UiStyle.Icon</code>（Path 手绘 24dp 网格，GEAR/CLOSE/CHEVRON），替换 ⚙ ✕ 文本字符</td></tr>
+      <tr><td><b>组件·开关</b></td><td>UiStyle.Switch 46×28、热区不足 44dp</td>
+          <td class="code">UiStyle.Switch.onMeasure()/onDraw()</td>
+          <td><span class="tag done">已修</span> 测量 46×44（透明垫肩），轨道视觉仍 28dp 高 —— 热区达标且零调用点改动</td></tr>
+    </tbody>
+  </table>
+
+  <h2 class="sec">二、修正后效果 <em>Preview · 静态示例</em></h2>
+  <div class="stage">
+    <div class="phone">
+      <div class="statbar"><span>22:04</span><span>5G · 81%</span></div>
+      <div class="appbar">
+        <div class="tt"><h3>账号</h3><div class="cap">45 个账号 · 工作区 12</div></div>
+        <div class="viewtoggle">
+          <button class="on" title="列表"><svg viewBox="0 0 24 24"><path d="M4 6h4M4 12h4M4 18h4"/><path d="M11 6h9M11 12h9M11 18h9"/></svg></button>
+          <button title="卡片"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="7" height="7" rx="1.6"/><rect x="13" y="4" width="7" height="7" rx="1.6"/><rect x="4" y="13" width="7" height="7" rx="1.6"/><rect x="13" y="13" width="7" height="7" rx="1.6"/></svg></button>
+        </div>
+      </div>
+      <div class="scroll">
+        <!-- 账号卡 1 -->
+        <div class="acard">
+          <div class="ah">
+            <span class="ck on">✓</span>
+            <span class="avatar"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="15"/><path d="M9 24h30M24 9c5.2 5 5.2 25 0 30M24 9c-5.2 5-5.2 25 0 30"/><path d="M12.2 15.5c7.6 3.2 16 3.2 23.6 0M12.2 32.5c7.6-3.2 16-3.2 23.6 0"/></svg></span>
+            <div class="am">
+              <div class="n">丢丢888</div>
+              <div class="lg"><span class="vbadge nt">原生</span><span class="uid">UID …73425600</span></div>
+            </div>
+            <span class="rmBtn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.6M12 18.4V21M3 12h2.6M18.4 12H21M5.6 5.6l1.9 1.9M16.5 16.5l1.9 1.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9"/></svg>角色管理</span>
+          </div>
+          <div class="roles">
+            <div class="rh"><span>已启用角色 · 3</span><b class="rgt on-t">在线</b></div>
+            <div class="rolehead"><span>状态</span><span>角色</span><span>区号</span><span>今日完成</span><span>上次登录</span><span></span></div>
+            <div class="role"><span class="rst on">● 在线</span><span class="rn">霜刃</span><span class="rz">1024</span><span class="rd zero">0/50</span><span class="rl">01:12</span><span class="go">登录</span></div>
+            <div class="role"><span class="rst off">● 离线</span><span class="rn">北风</span><span class="rz">2317</span><span class="rd part">13/50</span><span class="rl">昨天</span><span class="go">登录</span></div>
+            <div class="role"><span class="rst off">● 离线</span><span class="rn">极光</span><span class="rz">3090</span><span class="rd full">50/50</span><span class="rl">08-20</span><span class="go">登录</span></div>
+          </div>
+        </div>
+        <!-- 账号卡 2 -->
+        <div class="acard">
+          <div class="ah">
+            <span class="ck"></span>
+            <span class="avatar"><svg viewBox="0 0 48 48"><circle cx="24" cy="24" r="15"/><path d="M9 24h30M24 9c5.2 5 5.2 25 0 30M24 9c-5.2 5-5.2 25 0 30"/><path d="M12.2 15.5c7.6 3.2 16 3.2 23.6 0M12.2 32.5c7.6-3.2 16-3.2 23.6 0"/></svg></span>
+            <div class="am">
+              <div class="n">雪落无声</div>
+              <div class="lg"><span class="vbadge tk">token</span><span class="uid">UID …73425611</span></div>
+            </div>
+            <span class="rmBtn"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.2"/><path d="M12 3v2.6M12 18.4V21M3 12h2.6M18.4 12H21M5.6 5.6l1.9 1.9M16.5 16.5l1.9 1.9M18.4 5.6l-1.9 1.9M7.5 16.5l-1.9 1.9"/></svg>角色管理</span>
+          </div>
+          <div class="roles">
+            <div class="rh"><span>已启用角色 · 2</span><b class="rgt">离线</b></div>
+            <div class="rolehead"><span>状态</span><span>角色</span><span>区号</span><span>今日完成</span><span>上次登录</span><span></span></div>
+            <div class="role"><span class="rst off">● 离线</span><span class="rn">雪鸮</span><span class="rz">1188</span><span class="rd part">38/50</span><span class="rl">00:48</span><span class="go">登录</span></div>
+            <div class="role"><span class="rst off">● 离线</span><span class="rn">云松</span><span class="rz">4520</span><span class="rd full">50/50</span><span class="rl">昨天</span><span class="go">登录</span></div>
+          </div>
+        </div>
+        <div class="ptoast">已把 3 个角色全部加入工作区</div>
+      </div>
+    </div>
+
+    <div class="phone">
+      <div class="statbar"><span>22:04</span><span>5G · 81%</span></div>
+      <div class="appbar"><div class="tt"><h3>组件对照</h3><div class="cap">修正后的徽章 / 开关 / 分段 / 轻提示</div></div></div>
+      <div class="scroll">
+        <div class="acard" style="padding:12px 14px">
+          <div style="font-size:11px;color:var(--ink-3);margin-bottom:7px">状态徽章（全圆胶囊 · 修正项 ⑤）</div>
+          <div class="badges">
+            <span class="badge b-ok"><i></i>已完成</span><span class="badge b-run"><i></i>进行中</span>
+            <span class="badge b-wait"><i></i>待领取</span><span class="badge b-warn"><i></i>限时</span>
+            <span class="badge b-err"><i></i>失败</span><span class="badge b-idle"><i></i>未开始</span>
+          </div>
+        </div>
+        <div class="acard" style="padding:12px 14px">
+          <div style="font-size:11px;color:var(--ink-3);margin-bottom:4px">开关（自绘 46×28 · brand / surface-3）</div>
+          <div class="switches"><span class="sw on"></span><span class="sw"></span></div>
+        </div>
+        <div class="acard" style="padding:12px 14px">
+          <div style="font-size:11px;color:var(--ink-3);margin-bottom:7px">分段控件（容器底 = surface-3 · 修正项 ⑥）</div>
+          <div class="seg-demo"><button class="on">列表</button><button>卡片</button></div>
+        </div>
+        <div class="acard" style="padding:12px 14px">
+          <div style="font-size:11px;color:var(--ink-3);margin-bottom:7px">轻提示（深底 INK 胶囊 · 修正项 ⑦）</div>
+          <div class="ptoast" style="margin:0">正在以「霜刃」打开原生游戏 · 丢丢888</div>
+        </div>
+        <div class="acard" style="padding:12px 14px">
+          <div style="font-size:11px;color:var(--ink-3);margin-bottom:7px">旧页面同步对齐（别名重定向 · 修正项 ①②③）</div>
+          <div style="font-size:11.5px;color:var(--ink-2);line-height:1.9">
+            旧入口页 / 日常详情 / 入口管理 / 授权页 共 <b>136 处</b>旧色引用<br>
+            全部经由别名映射到 v2 token，无需逐处改码
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h2 class="sec">三、每项改动解决了什么 <em>Change notes</em></h2>
+  <div class="notes">
+    <div class="note"><h4><span class="no">1</span>旧 token 全量重定向</h4>
+      <p><b>解决：</b>两套色彩体系并存（v1 9 支旧色 vs v2 token）——规范要求"全项目一套 token"。旧名（BLUE/TEAL/RED/TEXT_PRI…）改为 v2 语义别名并标注 @Deprecated，4 个旧页面 136 处引用零改动对齐。</p>
+      <span class="where">UiStyle.java · v1 兼容别名段（IDLE_BG 之后）</span></div>
+    <div class="note"><h4><span class="no">2</span>RED 对比度修正</h4>
+      <p><b>解决：</b>旧红 D32F2F 对白底仅 4.2:1（AA 要求正文 4.5:1）。经别名映射到 ERR_INK B91C1C（6.5:1），所有"失败"文字一次性达标。</p>
+      <span class="where">UiStyle.RED → ERR_INK</span></div>
+    <div class="note"><h4><span class="no">3</span>裸色值收编进 token 表</h4>
+      <p><b>解决：</b>30+ 处 0xFF… 硬编码（INK3、SURFACE_2/3、BRAND_100/200、LINE_STRONG、SWITCH_OFF、WARN_SOLID…）散落在 HomeActivity，改色时要全文检索。现全部走常量，token 表成为唯一色源。</p>
+      <span class="where">HomeActivity.java（9+2+2+2+7+2+1+2+1+2+2+2 处）+ UiStyle 新增 7 常量</span></div>
+    <div class="note"><h4><span class="no">4</span>分段控件底色统一</h4>
+      <p><b>解决：</b>segmented 容器底用了表外色 0xFFE9EEF9，与 surface-3(#EEF2F9) 相近不同值——同层级面应同色。统一为 SURFACE_3。</p>
+      <span class="where">UiStyle.segmented()</span></div>
+    <div class="note"><h4><span class="no">5</span>徽章全圆化</h4>
+      <p><b>解决：</b>徽章规范是 22dp 高全圆胶囊，实现里是 11dp 圆角矩形，视觉上"方 pills"。改为全圆（roundRect 999）。</p>
+      <span class="where">UiStyle.badge()</span></div>
+    <div class="note"><h4><span class="no">6</span>轻提示替换系统 Toast</h4>
+      <p><b>解决：</b>系统 Toast 样式随厂商 ROM 漂移、位置压住底部导航，与规范的"深底胶囊、底部浮出、1.5s 自消失"不符。改为自绘 INK 深底胶囊：200ms 淡入、1.6s 淡出，悬于导航上方 92dp。</p>
+      <span class="where">HomeActivity.toast()</span></div>
+    <div class="note"><h4><span class="no">7</span> SWITCH_OFF / LINE_STRONG 语义化</h4>
+      <p><b>解决：</b>开关关闭态底色与输入框强描边各有一个游离灰值，无法从名字推断用途。命名收编后，暗色主题只需替换这两个常量即可整体换肤。</p>
+      <span class="where">UiStyle.Switch.onDraw() / LINE_STRONG 声明</span></div>
+    <div class="note"><h4><span class="no">8</span>页面边距核验（维持）</h4>
+      <p><b>结论：</b>四页根容器左右均 18dp，符合 screen-x 规范；页内 12–16dp 属卡片内边距（card-pad 12–16 合规档位），不是违例，不动。</p>
+      <span class="where">buildTodayPage / buildAccountPage / buildTaskPage / buildMinePage</span></div>
+    <div class="note"><h4><span class="no">9</span>图标矢量化 + Switch 热区（补完）</h4>
+      <p><b>解决：</b>原先判"暂缓"的两项实际都能低成本做掉——① 新增 <code>UiStyle.Icon</code>（Path 手绘 GEAR/CLOSE/CHEVRON），齿轮按钮与弹层关闭键已替换，不再依赖机型字体；② Switch 测量尺寸改 46×44、轨道画中段 28dp，透明垫肩扩热区，零调用点改动。</p>
+      <span class="where">UiStyle.Icon / UiStyle.Switch + HomeActivity 齿轮与关闭键</span></div>
+    <div class="note"><h4><span class="no">10</span>全包裸色值清零（补完）</h4>
+      <p><b>解决：</b>首轮只清了 HomeActivity；复扫发现 FunctionActivity 35 处（活跃度四态色）、AccountVaultActivity、SubCardUi、LicenseUi 共 40+ 处残留，全部收编。终扫（排除 token 定义本体与位掩码）= <b>0 处</b>。</p>
+      <span class="where">五文件 · 新增 token：BRAND_300/WAIT_50/WECHAT_GREEN/ERR_BORDER/INVERSE</span></div>
+  </div>
+
+  <div class="footer-note">
+    <b>验证边界：</b>本分支已通过 compileDebugJavaWithJavac 与 assembleDebug；静态页仅为视觉对照，<b>动效（弹层 320ms 上滑、开关滑块、轻提示淡入淡出）与手感需真机验收</b>。
+    引擎 so 仍为原版（a0f06e48），可装机包需按既定流程换补丁 AAR 后构建。
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,12 @@
+# Caddy 站点块追加片段（cs.888syd.xyz 既有站点内，加在 license 反代规则旁）
+#
+# /v1/vault/* → vault-server（Java）；其余路径不变（license-server）。
+# 不用 handle_path：vault-server 自身路由已含 /v1/vault 前缀，无需 strip。
+
+cs.888syd.xyz {
+	# …既有的 /v1/activate、/v1/verify、/v1/rebind 反代规则保持不动…
+
+	handle /v1/vault/* {
+		reverse_proxy 127.0.0.1:8790
+	}
+}

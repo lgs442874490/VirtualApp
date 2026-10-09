@@ -19,14 +19,17 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.BaseAdapter;
 import android.widget.EditText;
 import android.widget.FrameLayout;
-import android.widget.GridView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.PopupWindow;
 import android.widget.TextView;
 import android.widget.Toast;
+
+import androidx.recyclerview.widget.GridLayoutManager;
+import androidx.recyclerview.widget.ItemTouchHelper;
+import androidx.recyclerview.widget.RecyclerView;
 
 import com.carlos.vault.license.LicenseManager;
 import com.carlos.vault.license.LicenseState;
@@ -44,18 +47,41 @@ import java.util.Locale;
 /** 号库主界面：Carlos 风格九宫格 + 蓝色悬浮加号 */
 public class AccountVaultActivity extends Activity {
 
-    private VaultEngine engine;
-    private AccountStore store;
-    private GridView grid;
+    /** 网格列数：入口卡片占 1 格；分组表头经 SpanSizeLookup 占满 {@link #SPAN} 格（通铺）。 */
+    private static final int SPAN = 3;
+    /** 两类行的 viewType —— 直接复用 {@link EntryLayout} 的行类型常量，避免两套编号对不上。 */
+    private static final int VH_HEADER = EntryLayout.TYPE_HEADER;
+    private static final int VH_ENTRY = EntryLayout.TYPE_ENTRY;
+
+    protected VaultEngine engine;
+    protected AccountStore store;
+    private RecyclerView recycler;
+    /** 3 列网格；分组表头通过 {@link GridLayoutManager.SpanSizeLookup} 占满整行（通铺）。 */
+    private GridLayoutManager layoutManager;
+    /** 排序模式内的拖拽（⇅ 把手触发，长按仍留给"打开详情"）。 */
+    private ItemTouchHelper itemTouchHelper;
     private TextView status;
-    private List<AccountStore.Account> accounts;
+    protected List<AccountStore.Account> accounts;
     private TileAdapter adapter;
     private Drawable gameIcon;
 
-    /** 授权门面（门禁 + 顶部状态条 + 节流校验）。 */
-    private LicenseManager licenseManager;
-    /** 主界面顶部的授权状态条，便于 onResume 时原地刷新。 */
-    private View licenseBar;
+    // ---------- ②排序 / ③分组的展示状态 ----------
+
+    /** 展示行（分组表头 / 入口 tile），由 accounts + groupMeta 重建。 */
+    private List<EntryLayout.Row> displayItems;
+    /** 布局视图（只含 id + group）；拖拽时在它上面搬移，松手后写回 accounts。 */
+    private List<EntryLayout.Item> layoutItems;
+    /** 分组元数据（分组顺序 + 折叠态）。 */
+    private List<EntryLayout.Group> groupMeta;
+    /** 卡片悬浮操作弹层（▶启动 / ⇅排序 / ⋯管理），同一时刻至多一个。 */
+    private PopupWindow tilePopup;
+    /** 「排序中」标记：⇅ 按下后置位——长按卡片=直接拖拽（ITH 标准手势），松手自动退出。 */
+    private boolean dragArm = false;
+
+    /** 授权门面（门禁 + 头部状态环 + 节流校验）。 */
+    protected LicenseManager licenseManager;
+    /** 头部授权状态圆环（剩余时长百分比换色），onResume 原地刷新。 */
+    private LicenseUi.LicenseRingView licenseRing;
 
     private static final SimpleDateFormat FMT = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
 
@@ -105,9 +131,29 @@ public class AccountVaultActivity extends Activity {
         for (AccountStore.Account a : accounts) validIds.add(a.id);
         engine.pruneOrphanSnapshots(validIds);
         gameIcon = loadGameIcon();
+        if (this instanceof HomeActivity) {
+            ((HomeActivity) this).buildHomeUi();
+            requestNotifPermission();
+            com.carlos.vault.daily.DailySchedulerService.ensureStarted(this);
+            new AsyncTask<Void, Void, Void>() {
+                @Override
+                protected Void doInBackground(Void... p) {
+                    engine.ensureEngineReady();
+                    return null;
+                }
+
+                @Override
+                protected void onPostExecute(Void v) {
+                    ((HomeActivity) AccountVaultActivity.this).onEngineReady();
+                }
+            }.execute();
+            return;
+        }
         buildUi();
         refresh();
         requestNotifPermission();
+        // 日常自动执行服务：App 打开即确保在跑（开机另有广播兜底）
+        com.carlos.vault.daily.DailySchedulerService.ensureStarted(this);
 
         // —— 启动时授权检测（一次性、强制联网）——
         // 取消 60s 复核后，服务端吊销/到期不再由后台改状态；冷启动时本地票据可能仍是
@@ -139,10 +185,33 @@ public class AccountVaultActivity extends Activity {
             protected void onPostExecute(Void v) {
                 refresh();
                 if (!engine.isGameInstalled() || !engine.hasBaseline()) {
-                    status.postDelayed(AccountVaultActivity.this::showWizard, 300);
+                    status.postDelayed(() -> autoWizardIfIdle(0), 300);
                 }
             }
         }.execute();
+    }
+
+    /**
+     * 引擎就绪后的向导自动弹出（仅用户空闲时）。
+     *
+     * <p>引擎就绪的回调可能落在用户操作过程中（如批量导入正在输入/结果弹窗正显示），
+     * 此时活动窗口失去焦点（对话框/输入法各自成窗）。直接弹向导会覆盖用户正在看
+     * 的弹窗（实测事故：导入结果汇总被向导顶掉）。这里以 {@link #hasWindowFocus()}
+     * 为"用户空闲"信号：忙则 1.5s 后重试（带上限，超限放弃，仍可从 ☰ 菜单进入），
+     * 并在每次触发前复核向导是否仍必要（用户可能已通过菜单完成初始化）。
+     */
+    private static final int AUTO_WIZARD_MAX_RETRY = 60;   // 60 × 1.5s ≈ 1.5 分钟
+
+    private void autoWizardIfIdle(int retry) {
+        if (isFinishing() || isDestroyed()) return;
+        if (engine.isGameInstalled() && engine.hasBaseline()) return;  // 已配置完成，不再打扰
+        if (!hasWindowFocus()) {                                       // 弹窗/输入法在前：顺延
+            if (retry < AUTO_WIZARD_MAX_RETRY) {
+                status.postDelayed(() -> autoWizardIfIdle(retry + 1), 1500);
+            }
+            return;
+        }
+        showWizard();
     }
 
     private String reason(String e) {
@@ -151,27 +220,219 @@ public class AccountVaultActivity extends Activity {
 
     // ---------- 授权（顶部状态条 / 换码入口） ----------
 
-    /** 构建并插入顶部授权状态条。 */
-    private void installLicenseBar(LinearLayout root) {
-        if (licenseManager == null) return;
-        licenseBar = LicenseUi.buildStatusBar(this, licenseManager);
-        root.addView(licenseBar);
+    /** 原地刷新头部授权圆环（颜色/百分比/环心文字）。 */
+    protected void refreshLicenseBar() {
+        if (licenseRing == null || licenseManager == null) return;
+        licenseRing.updateFrom(licenseManager);
     }
 
-    /** 原地刷新状态条：remove 后按原位置重新插入，避免打乱布局顺序。 */
-    private void refreshLicenseBar() {
-        if (licenseBar == null || licenseManager == null) return;
-        android.view.ViewParent parentView = licenseBar.getParent();
-        if (!(parentView instanceof LinearLayout)) return;
-        LinearLayout parent = (LinearLayout) parentView;
-        int index = parent.indexOfChild(licenseBar);
-        parent.removeViewAt(index);
-        licenseBar = LicenseUi.buildStatusBar(this, licenseManager);
-        parent.addView(licenseBar, index);
+    // ---------- 右上角 ☰ 功能菜单 ----------
+
+    /** 功能菜单：初始化向导 / 克隆软件 / 微信支付 / 授权管理（替换原头部三按钮）。 */
+    protected void showMainMenu() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(UiStyle.roundRect(UiStyle.CARD, 16));
+        box.setPadding(dp(22), dp(18), dp(22), dp(8));
+
+        TextView title = new TextView(this);
+        title.setText("功能菜单");
+        title.setTextSize(17);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.TEXT_PRI);
+        title.setPadding(0, 0, 0, dp(8));
+        box.addView(title);
+
+        LinearLayout.LayoutParams rowLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rowLp.topMargin = dp(6);
+
+        LinearLayout r1 = UiStyle.makeRowBtn(this, "🧭", "初始化向导（首次配置四步走）",
+                UiStyle.BLUE, this::showWizard);
+        box.addView(r1, rowLp);
+
+        LinearLayout r2 = UiStyle.makeRowBtn(this, "📥", "克隆软件（无尽冬日装进号库）",
+                UiStyle.BLUE, () -> onWizardStep(0));
+        box.addView(r2, new LinearLayout.LayoutParams(rowLp));
+
+        LinearLayout r3 = UiStyle.makeRowBtn(this, "💚", "微信支付（容器微信登录/充值）",
+                UiStyle.WECHAT_GREEN, this::doWechatPay);
+        box.addView(r3, new LinearLayout.LayoutParams(rowLp));
+
+        LinearLayout r4 = UiStyle.makeRowBtn(this, "🔑", "授权管理（兑换码/到期详情）",
+                UiStyle.TEAL, this::showLicenseMenu);
+        box.addView(r4, new LinearLayout.LayoutParams(rowLp));
+
+        TextView close = new TextView(this);
+        close.setText("关闭");
+        close.setTextSize(14);
+        close.setTextColor(UiStyle.TEXT_SEC);
+        close.setGravity(Gravity.CENTER);
+        close.setPadding(0, dp(14), 0, dp(8));
+
+        AlertDialog dlg = new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setView(box)
+                .create();
+        if (dlg.getWindow() != null)
+            dlg.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+        close.setOnClickListener(v -> dlg.dismiss());
+        box.addView(close);
+        dlg.show();
+    }
+
+    // ---------- 协议 PoC：号库账号直连游戏服务器登录 ----------
+
+    /** 列出有 token 的号库账号，选中即用其 fpid+token 跑协议登录验证。 */
+    private void showProtocolPoc() {
+        List<AccountStore.Account> candidates = new ArrayList<>();
+        if (accounts != null) {
+            for (AccountStore.Account a : accounts) {
+                if (a != null && a.token != null && !a.token.isEmpty()
+                        && a.fpid != null && !a.fpid.isEmpty()) {
+                    candidates.add(a);
+                }
+            }
+        }
+        if (candidates.isEmpty()) {
+            toast("没有带 token 的账号可测，请先导入");
+            return;
+        }
+        String[] names = new String[candidates.size()];
+        for (int i = 0; i < candidates.size(); i++) {
+            names[i] = candidates.get(i).label + "（" + candidates.get(i).fpid + "）";
+        }
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("选择账号 · 协议登录验证")
+                .setItems(names, (d, which) -> runProtocolPoc(candidates.get(which)))
+                .show();
+    }
+
+    private void runProtocolPoc(AccountStore.Account account) {
+        ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("直连游戏服务器登录中…\n账号 " + account.fpid);
+        pd.setCancelable(false);
+        pd.show();
+        new AsyncTask<AccountStore.Account, Void, String>() {
+            @Override
+            protected String doInBackground(AccountStore.Account... p) {
+                com.carlos.vault.wjdr.WjdrEngine engine =
+                        com.carlos.vault.daily.WjdrAndroid.newEngine(AccountVaultActivity.this);
+                try {
+                    engine.initialize();
+                    com.carlos.vault.wjdr.WjdrEngine.LoginResult r =
+                            engine.login(p[0].fpid, p[0].token);
+                    return "✅ 登录成功\n\nuid: " + r.uid + "\n区服: " + r.serverId
+                            + "\n角色名: " + (r.gameName == null || r.gameName.isEmpty() ? "-" : r.gameName)
+                            + "\n\n载荷摘要: " + r.loadSummary;
+                } catch (Throwable t) {
+                    StringBuilder sb = new StringBuilder("❌ 失败: ")
+                            .append(t.getClass().getSimpleName()).append('\n')
+                            .append(t.getMessage());
+                    Throwable c = t.getCause();
+                    while (c != null) {
+                        sb.append("\n← 因: ").append(c.getClass().getSimpleName())
+                                .append(": ").append(c.getMessage());
+                        StackTraceElement[] st = c.getStackTrace();
+                        for (int i = 0; i < Math.min(6, st.length); i++) {
+                            sb.append("\n    at ").append(st[i]);
+                        }
+                        c = c.getCause();
+                    }
+                    return sb.toString();
+                } finally {
+                    engine.close();
+                }
+            }
+
+            @Override
+            protected void onPostExecute(String result) {
+                try { pd.dismiss(); } catch (Throwable ignored) { }
+                // vivo 压制应用日志：结果同步落文件（shell 可读）
+                try {
+                    java.io.File dir = getExternalFilesDir(null);
+                    java.io.FileWriter w = new java.io.FileWriter(new java.io.File(dir, "poc_result.txt"));
+                    w.write(result);
+                    w.close();
+                } catch (Throwable ignored) { }
+                UiStyle.showConfirmDialog(AccountVaultActivity.this, "协议 PoC 结果", result,
+                        "知道了", UiStyle.BLUE, null);
+            }
+        }.execute(account);
+    }
+
+    // ---------- 卡片悬浮操作组（▶启动 / ⇅排序 / ⋯管理） ----------
+
+    /** 在被点卡片下方弹出悬浮操作组；点击任一按钮或空白处关闭。 */
+    protected void showTileActions(View anchorView, EntryLayout.Row row) {
+        dismissTilePopup();
+        final AccountStore.Account ac = accountById(row.itemId);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setBackground(UiStyle.roundRect(UiStyle.CARD, 20));
+        box.setElevation(dp(8));
+        box.setPadding(dp(5), dp(5), dp(5), dp(5));
+
+        addTileAction(box, "▶ 启动", UiStyle.BLUE, () -> {
+            if (ac != null) doSwitch(ac);
+        });
+        addTileAction(box, "⇅ 排序", UiStyle.TEAL, () -> {
+            expandAllGroups();
+            dragArm = true;
+            String hint = "排序中：长按任意卡片拖到目标位置，松手自动保存";
+            toast(hint);
+            if (status != null) status.setText(hint);
+        });
+        addTileAction(box, "⋯ 管理", UiStyle.BLUE_DARK, () -> {
+            Intent it = new Intent(this, EntryDetailActivity.class);
+            it.putExtra(EntryDetailActivity.EXTRA_ID, row.itemId);
+            startActivity(it);
+        });
+        addTileAction(box, "🎁 每日任务", UiStyle.OK_INK, () -> {
+            Intent it = new Intent(this, com.carlos.vault.daily.FunctionActivity.class);
+            it.putExtra(com.carlos.vault.daily.FunctionActivity.EXTRA_ACCOUNT_ID, row.itemId);
+            it.putExtra(com.carlos.vault.daily.FunctionActivity.EXTRA_FN_ID, "daily_mission");
+            startActivity(it);
+        });
+
+        tilePopup = new PopupWindow(box, ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        tilePopup.setOutsideTouchable(true);
+        tilePopup.setElevation(dp(8));
+        tilePopup.setBackgroundDrawable(new GradientDrawable());
+        tilePopup.showAsDropDown(anchorView, 0, -dp(8));
+    }
+
+    private void addTileAction(LinearLayout box, String label, int color, Runnable action) {
+        TextView b = new TextView(this);
+        b.setText(label);
+        b.setTextSize(13);
+        b.setTextColor(Color.WHITE);
+        b.setGravity(Gravity.CENTER);
+        b.setBackground(UiStyle.roundRect(color, 16));
+        b.setPadding(dp(13), dp(9), dp(13), dp(9));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.setMargins(dp(3), 0, dp(3), 0);
+        box.addView(b, lp);
+        b.setOnClickListener(v -> {
+            dismissTilePopup();
+            action.run();
+        });
+    }
+
+    private void dismissTilePopup() {
+        if (tilePopup != null) {
+            try {
+                tilePopup.dismiss();
+            } catch (Throwable ignored) {
+            }
+            tilePopup = null;
+        }
     }
 
     /** 授权菜单：查看当前状态，或更换兑换码重新激活。 */
-    private void showLicenseMenu() {
+    protected void showLicenseMenu() {
         if (licenseManager == null) return;
         StringBuilder msg = new StringBuilder(licenseManager.describeRemain());
         String expire = licenseManager.expireDateText();
@@ -233,6 +494,7 @@ public class AccountVaultActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        dismissTilePopup();
         // R3 尽最大努力：离开号库界面时请求一次后台存档（内部有节流，且**不会**杀游戏进程）。
         // ⚠️ Android 不保证 onPause/onStop 在强杀时被调用（任务栏划掉、am force-stop 都可能直接
         //    杀进程而不回调）。真正的兜底是 VaultEngine 的 R1+R2 —— 只要 live 目录还在，会话就还在；
@@ -270,41 +532,27 @@ public class AccountVaultActivity extends Activity {
         title.setTextColor(UiStyle.BLUE_DARK);
         header.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        // 授权入口（查看状态 / 更换兑换码）
-        TextView licenseBtn = new TextView(this);
-        licenseBtn.setText("授权");
-        licenseBtn.setTextSize(13);
-        licenseBtn.setTextColor(UiStyle.BLUE);
-        licenseBtn.setGravity(Gravity.CENTER);
-        GradientDrawable licenseBg = new GradientDrawable();
-        licenseBg.setShape(GradientDrawable.RECTANGLE);
-        licenseBg.setCornerRadius(dp(14));
-        licenseBg.setColor(0xFFE8EEFF);
-        licenseBtn.setBackground(licenseBg);
-        licenseBtn.setPadding(dp(12), dp(7), dp(12), dp(7));
-        licenseBtn.setOnClickListener(v -> showLicenseMenu());
-        LinearLayout.LayoutParams licenseLp = new LinearLayout.LayoutParams(
+        // 授权状态圆环：绿=充足 黄=≤3天 红=过期/废除 ∞=永久；点击直达授权管理。
+        licenseRing = LicenseUi.buildRing(this, licenseManager);
+        licenseRing.setOnClickListener(v -> showLicenseMenu());
+        LinearLayout.LayoutParams ringLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        licenseLp.rightMargin = dp(8);
-        header.addView(licenseBtn, licenseLp);
+        ringLp.rightMargin = dp(12);
+        header.addView(licenseRing, ringLp);
 
-        // 向导按钮（问号图标）
-        TextView helpBtn = new TextView(this);
-        helpBtn.setText("？");
-        helpBtn.setTextSize(16);
-        helpBtn.setTextColor(UiStyle.BLUE);
-        helpBtn.setGravity(Gravity.CENTER);
-        GradientDrawable helpBg = new GradientDrawable();
-        helpBg.setShape(GradientDrawable.OVAL);
-        helpBg.setColor(0xFFE8EEFF);
-        helpBtn.setBackground(helpBg);
-        helpBtn.setPadding(dp(10), dp(10), dp(10), dp(10));
-        helpBtn.setOnClickListener(v -> showWizard());
-        header.addView(helpBtn, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        // 功能菜单（替换原 排序/授权/？ 三按钮）：向导 / 克隆 / 微信支付 / 授权。
+        TextView menuBtn = new TextView(this);
+        menuBtn.setText("☰");
+        menuBtn.setTextSize(16);
+        menuBtn.setTextColor(UiStyle.BLUE);
+        menuBtn.setGravity(Gravity.CENTER);
+        GradientDrawable menuBg = new GradientDrawable();
+        menuBg.setShape(GradientDrawable.OVAL);
+        menuBg.setColor(UiStyle.WAIT_50);
+        menuBtn.setBackground(menuBg);
+        menuBtn.setOnClickListener(v -> showMainMenu());
+        header.addView(menuBtn, new LinearLayout.LayoutParams(dp(36), dp(36)));
         root.addView(header);
-
-        // 授权状态条：常驻展示剩余天数 / 永久有效 / 离线状态（PRD 4.3）
-        installLicenseBar(root);
 
         status = new TextView(this);
         status.setTextSize(12);
@@ -312,14 +560,31 @@ public class AccountVaultActivity extends Activity {
         status.setPadding(dp(20), dp(4), dp(20), dp(12));
         root.addView(status);
 
-        // 九宫格
-        grid = new GridView(this);
-        grid.setNumColumns(3);
-        grid.setPadding(dp(12), dp(4), dp(12), dp(16));
-        grid.setVerticalSpacing(dp(12));
-        grid.setHorizontalSpacing(dp(12));
-        grid.setScrollBarStyle(View.SCROLLBARS_OUTSIDE_OVERLAY);
-        root.addView(grid, new LinearLayout.LayoutParams(
+        // 九宫格：RecyclerView + 3 列 GridLayoutManager（androidx，项目里已有，零新增依赖）。
+        //
+        // 为什么从 GridView 换成 RecyclerView：**GridView 不支持跨列**，分组表头只能占 1/3 格宽，
+        // 做不出"表头整行通铺"的手风琴面板。换过来后用 SpanSizeLookup 让表头占满 SPAN 格。
+        recycler = new RecyclerView(this);
+        // 底部留出悬浮加号（56dp + 28dp 边距）的高度，最后一行滚到底时不被遮挡
+        recycler.setPadding(dp(6), dp(4), dp(6), dp(96));
+        recycler.setClipToPadding(false);
+        recycler.setScrollBarStyle(View.SCROLLBARS_OUTSIDE_OVERLAY);
+        // 展开/收起要有逐项动画（手风琴感），别关掉默认动画器。
+        recycler.setItemAnimator(new androidx.recyclerview.widget.DefaultItemAnimator());
+        layoutManager = new GridLayoutManager(this, SPAN);
+        layoutManager.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
+            @Override
+            public int getSpanSize(int position) {
+                EntryLayout.Row r = rowAt(position);
+                // 分组表头 ⇒ 通铺整行；入口卡片 ⇒ 占 1 格。
+                return (r != null && r.type == EntryLayout.TYPE_HEADER) ? SPAN : 1;
+            }
+        });
+        recycler.setLayoutManager(layoutManager);
+        // GridView 的 vertical/horizontal spacing 在 RecyclerView 里没有直接对应项：
+        // 用 ItemDecoration 四边各留半格（dp(6)）⇒ 相邻元素之间仍是 dp(12)，边缘也是 dp(12)。
+        recycler.addItemDecoration(new SpaceDecoration(dp(6)));
+        root.addView(recycler, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         frame.addView(root, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -346,37 +611,207 @@ public class AccountVaultActivity extends Activity {
         setContentView(frame);
 
         adapter = new TileAdapter();
-        grid.setAdapter(adapter);
-        grid.setOnItemClickListener((parent, view, pos, id) -> {
-            if (accounts == null || pos >= accounts.size()) return;
-            doSwitch(accounts.get(pos));
-        });
-        grid.setOnItemLongClickListener((parent, view, pos, id) -> {
-            if (accounts == null || pos >= accounts.size()) return false;
-            android.content.Intent it = new android.content.Intent(this, EntryDetailActivity.class);
-            it.putExtra(EntryDetailActivity.EXTRA_ID, accounts.get(pos).id);
-            startActivity(it);
-            return true;
-        });
+        recycler.setAdapter(adapter);
+        // 排序模式内的拖拽：ItemTouchHelper（androidx 自带，零新增依赖）。
+        // ⚠️ 长按已被"打开详情"占用 ⇒ 关掉 ITH 自带的"长按起拖"，改由 tile 右上角 ⇅ 把手手动
+        // startDrag（见 TileHolder 的把手 onTouch）。单击/长按的语义与 GridView 时代完全一致。
+        itemTouchHelper = new ItemTouchHelper(new DragCallback());
+        itemTouchHelper.attachToRecyclerView(recycler);
     }
 
     private void refresh() {
+        // 守卫：新版四 Tab（HomeActivity）不构建经典九宫格（adapter/status 均为 null），
+        // 直接 notifyDataSetChanged() 会 NPE——实测事故：批量导入完成回调与启动分身成功回调
+        // 都会走到这里，曾导致导入后 App 崩溃重启（被误判为"向导顶掉结果弹窗"）。
+        // 数据变化交由子类刷新对应页面。
+        if (adapter == null) {
+            if (this instanceof HomeActivity) {
+                ((HomeActivity) this).onAccountsChanged();
+            }
+            return;
+        }
         accounts = store.all();
+        rebuildDisplayItems();
         adapter.notifyDataSetChanged();
         String s;
         if (!engine.isGameInstalled()) {
-            s = "游戏未克隆 · 点右上角 ？ 开始初始化";
+            s = "游戏未克隆 · 点右上角 ☰ → 克隆软件 开始初始化";
         } else if (!engine.hasBaseline()) {
             s = "分身就绪 · 完成初始化后即可添加账号";
         } else {
-            s = "就绪 · 单击启动 · 长按管理";
+            s = "就绪 · 点卡片出操作（启动 / 排序 / 管理 / 日常）";
         }
         status.setText(s);
     }
 
+    /**
+     * 由 {@link #accounts} 重建展示行。
+     *
+     * 展示顺序 = 分组顺序（"未分组"置顶）+ 组内顺序；分组顺序/折叠态来自 {@code group_meta}。
+     * 全部规则（含"空组仍显示""孤儿分组不丢条目"）都在 {@link EntryLayout#buildRows} 里，
+     * 这里不重复实现。
+     */
+    private void rebuildDisplayItems() {
+        layoutItems = new ArrayList<>();
+        if (accounts != null) {
+            for (AccountStore.Account a : accounts) {
+                layoutItems.add(new EntryLayout.Item(a.id, a.group));
+            }
+        }
+        groupMeta = store.getGroupMeta();
+        displayItems = EntryLayout.buildRows(layoutItems, groupMeta);
+    }
+
+    // ---------- ②排序模式 / 拖拽 ----------
+
+    private EntryLayout.Row rowAt(int position) {
+        if (displayItems == null || position < 0 || position >= displayItems.size()) return null;
+        return displayItems.get(position);
+    }
+
+    private AccountStore.Account accountById(String id) {
+        if (accounts == null || id == null) return null;
+        for (AccountStore.Account a : accounts) {
+            if (a != null && id.equals(a.id)) return a;
+        }
+        return null;
+    }
+
+    /** 某个条目 id 当前在展示列表里的行下标（拖拽过程中要重新定位被拖的条目）。 */
+    private int rowIndexOfItem(String itemId) {
+        if (displayItems == null || itemId == null) return -1;
+        for (int i = 0; i < displayItems.size(); i++) {
+            EntryLayout.Row r = displayItems.get(i);
+            if (r.type == EntryLayout.TYPE_ENTRY && itemId.equals(r.itemId)) return i;
+        }
+        return -1;
+    }
+
+    /**
+     * 拖拽排序前展开全部分组：跨组拖拽要求目标组可见（表头不可作落点）。
+     * 取代原「排序模式」——拖拽由卡片悬浮操作组的 ⇅ 按钮直接发起。
+     */
+    private void expandAllGroups() {
+        boolean changed = false;
+        if (groupMeta != null) {
+            for (EntryLayout.Group g : groupMeta) {
+                if (g != null && g.name != null
+                        && !EntryLayout.UNGROUPED_TITLE.equals(g.name) && g.collapsed) {
+                    g.collapsed = false;
+                    changed = true;
+                }
+            }
+        }
+        if (changed) {
+            store.setGroupMeta(EntryLayout.toMeta(groupMeta));
+            rebuildDisplayItems();
+            adapter.notifyDataSetChanged();
+        }
+    }
+
+    /**
+     * 排序模式内的拖拽回调（{@link ItemTouchHelper}，androidx 自带 ⇒ 零新增依赖）。
+     *
+     * 三条硬规则：
+     * <ol>
+     *   <li>非排序模式 ⇒ 一律不可拖；</li>
+     *   <li>分组表头**不可作为拖拽源**（它是分组，不是条目）；</li>
+     *   <li>分组表头**也不可作为落点**（用户拍板）。</li>
+     * </ol>
+     *
+     * <p>⚠️ 与"单开手风琴"叠加会产生一个坑，本实现已规避：非排序模式下一次只展开一组，
+     * 而表头又不能作落点 ⇒ 若排序模式也做单开互斥，**跨组拖拽将完全不可达**（要落到的目标组
+     * 必须展开，可一展开源组就收起、被拖的条目就看不见了）。因此 {@link #onHeaderClickAt}
+     * 在**排序模式内不做单开互斥** —— 进排序模式后可以同时展开多组，再往下拖，
+     * 于是"表头不可落"与"可跨组"能同时成立。代价：想拖进**空组**做不到（空组只剩表头），
+     * 需先把该组改成有成员或改用详情页的「移动到分组…」。已上报给 team-lead 知悉。
+     */
+    private class DragCallback extends ItemTouchHelper.Callback {
+
+        @Override
+        public int getMovementFlags(RecyclerView rv, RecyclerView.ViewHolder vh) {
+            EntryLayout.Row row = rowAt(vh.getAdapterPosition());
+            if (row == null || row.type != EntryLayout.TYPE_ENTRY) return 0;   // 表头不可作源
+            int dir = ItemTouchHelper.UP | ItemTouchHelper.DOWN
+                    | ItemTouchHelper.LEFT | ItemTouchHelper.RIGHT;
+            return makeMovementFlags(dir, 0);   // 不需要滑动删除
+        }
+
+        /** 仅「排序中」（dragArm）允许 ITH 默认长按起拖；平时长按弹操作组。 */
+        @Override
+        public boolean isLongPressDragEnabled() {
+            return dragArm;
+        }
+
+        @Override
+        public boolean onMove(RecyclerView rv, RecyclerView.ViewHolder from,
+                              RecyclerView.ViewHolder to) {
+            int f = from.getAdapterPosition();
+            int t = to.getAdapterPosition();
+            if (f < 0 || t < 0 || f == t) return false;
+            EntryLayout.Row src = rowAt(f);
+            EntryLayout.Row dst = rowAt(t);
+            if (src == null || src.type != EntryLayout.TYPE_ENTRY) return false;
+            if (dst == null) return false;
+            if (dst.type == EntryLayout.TYPE_HEADER) return false;   // 表头不可作落点（用户拍板）
+            if (!EntryLayout.applyDrag(layoutItems, displayItems, f, t)) return false;
+            String movedId = src.itemId;
+            displayItems = EntryLayout.buildRows(layoutItems, groupMeta);
+            // applyDrag 只重排、不增减行（表头数不变、条目数不变）⇒ 新列表是原列表的一个排列，
+            // 因此用 notifyItemMoved 精确通知即可，RecyclerView 自带位移动画。
+            int np = rowIndexOfItem(movedId);
+            if (np >= 0 && np != f) adapter.notifyItemMoved(f, np);
+            return true;
+        }
+
+        /** 松手：写回 accounts 并**同步**落盘（commit —— 拖完立刻划掉 App 也不丢），
+         *  同时退出「排序中」状态并恢复状态栏文案。 */
+        @Override
+        public void clearView(RecyclerView rv, RecyclerView.ViewHolder vh) {
+            super.clearView(rv, vh);
+            persistOrder();
+            if (dragArm) {
+                dragArm = false;
+                refresh();
+            }
+        }
+
+        @Override
+        public void onSwiped(RecyclerView.ViewHolder vh, int direction) {
+            // 不支持滑动删除
+        }
+    }
+
+    /**
+     * 松手落盘：把 {@link #layoutItems} 的顺序与分组写回 accounts，并**同步**保存
+     * （{@code commit()}）——拖完立刻把 App 划掉都不会丢。
+     *
+     * 用"逐条 consume"的方式重建 accounts 而不是直接映射，是为了保证**一条都不会丢**：
+     * 万一 layoutItems 与 accounts 对不齐（理论上不会），落单的条目会原样追加到末尾。
+     */
+    private void persistOrder() {
+        if (accounts == null || layoutItems == null) return;
+        List<AccountStore.Account> remaining = new ArrayList<>(accounts);
+        List<AccountStore.Account> ordered = new ArrayList<>();
+        for (EntryLayout.Item it : layoutItems) {
+            for (int i = 0; i < remaining.size(); i++) {
+                AccountStore.Account a = remaining.get(i);
+                if (a != null && a.id != null && a.id.equals(it.id)) {
+                    remaining.remove(i);
+                    a.group = it.group == null ? "" : it.group;
+                    ordered.add(a);
+                    break;
+                }
+            }
+        }
+        ordered.addAll(remaining);   // 兜底：一条都不能丢
+        accounts = ordered;
+        store.saveOrder(accounts);
+    }
+
     // ---------- 创建入口 / 批量导入 ----------
 
-    private void showCreateEntry() {
+    protected void showCreateEntry() {
         UiStyle.showInputDialog(this, "创建账号入口",
                 "输入备注名（如：3号低保）", "", false,
                 text -> {
@@ -399,7 +834,7 @@ public class AccountVaultActivity extends Activity {
      * 解析 / 校验 / 去重 / 冲突判定全在 {@link AccountImport}（纯逻辑）里完成，这里只负责 UI 编排
      * 与一次事务化提交。冲突策略默认 <b>跳过</b>，绝不覆盖已有数据。
      */
-    private void showBatchImport() {
+    protected void showBatchImport() {
         final boolean[] overwrite = {false};
 
         LinearLayout box = new LinearLayout(this);
@@ -432,7 +867,7 @@ public class AccountVaultActivity extends Activity {
         et.setMinLines(6);
         et.setMaxLines(12);
         et.setGravity(Gravity.TOP);
-        et.setBackground(UiStyle.roundRect(0xFFF8F9FC, 10));
+        et.setBackground(UiStyle.roundRect(UiStyle.SURFACE_2, 10));
         et.setPadding(dp(14), dp(12), dp(14), dp(12));
         LinearLayout.LayoutParams etLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -444,7 +879,7 @@ public class AccountVaultActivity extends Activity {
         final TextView policy = new TextView(this);
         policy.setTextSize(13);
         policy.setPadding(dp(10), dp(10), dp(10), dp(10));
-        policy.setBackground(UiStyle.roundRect(0xFFF1F5F9, 10));
+        policy.setBackground(UiStyle.roundRect(UiStyle.SURFACE_3, 10));
         LinearLayout.LayoutParams pLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         pLp.topMargin = dp(10);
@@ -735,7 +1170,7 @@ public class AccountVaultActivity extends Activity {
 
     // ---------- 启动 ----------
 
-    private void doSwitch(AccountStore.Account acc) {
+    protected void doSwitch(AccountStore.Account acc) {
         if (!engine.isGameInstalled()) {
             toast("请先完成初始化");
             return;
@@ -770,7 +1205,7 @@ public class AccountVaultActivity extends Activity {
 
     // ---------- 初始化向导 ----------
 
-    private void showWizard() {
+    protected void showWizard() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setBackground(UiStyle.roundRect(UiStyle.CARD, 16));
@@ -803,7 +1238,7 @@ public class AccountVaultActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setPadding(0, dp(18), 0, dp(4));
         String[] labels = {"① 克隆", "② 首开", "③ 重置", "④ 存基线"};
-        int[] colors = {UiStyle.BLUE, UiStyle.BLUE, UiStyle.TEAL, 0xFF6A1B9A};
+        int[] colors = {UiStyle.BRAND, UiStyle.BRAND, UiStyle.RUN_INK, UiStyle.BRAND_DEEP};
         for (int i = 0; i < 4; i++) {
             final int step = i;
             TextView b = new TextView(this);
@@ -820,6 +1255,23 @@ public class AccountVaultActivity extends Activity {
             row.addView(b);
         }
         box.addView(row);
+
+        // ⑤ 容器微信（旧版支付试验）：未装→从下载目录装入；已装→打开
+        TextView wxBtn = new TextView(this);
+        wxBtn.setTextSize(13);
+        wxBtn.setTextColor(Color.WHITE);
+        wxBtn.setGravity(Gravity.CENTER);
+        wxBtn.setBackground(UiStyle.roundRect(UiStyle.WECHAT_GREEN, 10));
+        wxBtn.setPadding(dp(6), dp(12), dp(6), dp(12));
+        LinearLayout.LayoutParams wxlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        wxlp.setMargins(0, dp(8), 0, dp(4));
+        wxBtn.setLayoutParams(wxlp);
+        boolean wxInstalled = engine.isWechatInstalled();
+        wxBtn.setText(wxInstalled ? "⑤ 打开/更新容器微信（登录后游戏内充值可拉起）"
+                                  : "⑤ 装入微信进号库（自动用下载目录最新包）");
+        wxBtn.setOnClickListener(v -> doWechatPay());
+        box.addView(wxBtn);
 
         // 关闭按钮
         TextView close = new TextView(this);
@@ -839,7 +1291,39 @@ public class AccountVaultActivity extends Activity {
         dlg.show();
     }
 
-    private void onWizardStep(int step) {
+    /**
+     * 微信支付入口（菜单与向导⑤共用）：保数据降级到 8.0.53（原生收银台）→ 未装则从下载目录
+     * 装入 → 打开容器微信。登录后游戏内充值可拉起微信支付。
+     */
+    protected void doWechatPay() {
+        toast("检查容器微信版本…");
+        new AsyncTask<Void, Void, String>() {
+            boolean installed;
+            @Override protected String doInBackground(Void... p) {
+                // 支付收银台试验：8.0.67 支付页为 LiteApp 组件（容器内基础库无法自举），
+                // 8.0.53 为原生收银台。已登录状态下保数据降级到 8.0.53。
+                String err = engine.downgradeWechatKeepData();
+                if (err == null && !engine.isWechatInstalled()) {
+                    err = engine.ensureWechatFromApk();
+                }
+                installed = err == null && engine.isWechatInstalled();
+                return err;
+            }
+            @Override protected void onPostExecute(String err) {
+                if (err != null) {
+                    toast(err);
+                    return;
+                }
+                if (!installed) {
+                    toast("微信尚未装入，请先放好APK再点一次");
+                    return;
+                }
+                toast(engine.launchWechat() ? "已打开容器微信" : "容器微信启动失败");
+            }
+        }.execute();
+    }
+
+    protected void onWizardStep(int step) {
         switch (step) {
             case 0: // 克隆
                 if (engine.isGameInstalled()) { toast("已克隆，可跳过"); return; }
@@ -899,70 +1383,417 @@ public class AccountVaultActivity extends Activity {
 
     // ---------- 九宫格 ----------
 
-    private class TileAdapter extends BaseAdapter {
+    private class TileAdapter extends RecyclerView.Adapter<RecyclerView.ViewHolder> {
+
         @Override
-        public int getCount() {
-            return accounts == null ? 0 : accounts.size();
+        public int getItemCount() {
+            return displayItems == null ? 0 : displayItems.size();
         }
 
         @Override
-        public Object getItem(int position) {
-            return accounts.get(position);
+        public int getItemViewType(int position) {
+            EntryLayout.Row r = rowAt(position);
+            return r == null ? VH_ENTRY : r.type;
         }
 
         @Override
-        public long getItemId(int position) {
-            return position;
+        public RecyclerView.ViewHolder onCreateViewHolder(ViewGroup parent, int viewType) {
+            if (viewType == VH_HEADER) return new HeaderHolder(buildHeaderView());
+            return new TileHolder(buildTileView());
         }
 
         @Override
-        public View getView(int position, View convertView, ViewGroup parent) {
-            LinearLayout tile;
-            if (convertView instanceof LinearLayout) {
-                tile = (LinearLayout) convertView;
-            } else {
-                tile = new LinearLayout(AccountVaultActivity.this);
-                tile.setOrientation(LinearLayout.VERTICAL);
-                tile.setGravity(Gravity.CENTER_HORIZONTAL);
-                tile.setPadding(dp(8), dp(14), dp(8), dp(14));
-                tile.setBackground(UiStyle.roundRect(UiStyle.CARD, 14));
-                tile.setElevation(dp(2));
-
-                ImageView icon = new ImageView(AccountVaultActivity.this);
-                icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
-                tile.addView(icon, new LinearLayout.LayoutParams(dp(60), dp(60)));
-
-                TextView name = new TextView(AccountVaultActivity.this);
-                name.setTextSize(13);
-                name.setMaxLines(1);
-                name.setTextColor(UiStyle.TEXT_PRI);
-                name.setGravity(Gravity.CENTER);
-                LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                nlp.topMargin = dp(8);
-                tile.addView(name, nlp);
-
-                TextView sub = new TextView(AccountVaultActivity.this);
-                sub.setTextSize(10);
-                sub.setMaxLines(1);
-                sub.setTextColor(UiStyle.TEXT_SEC);
-                sub.setGravity(Gravity.CENTER);
-                tile.addView(sub);
-            }
-
-            ImageView icon = (ImageView) tile.getChildAt(0);
-            TextView name = (TextView) tile.getChildAt(1);
-            TextView sub = (TextView) tile.getChildAt(2);
-
-            name.setTextSize(13);
-            AccountStore.Account a = accounts.get(position);
-            if (gameIcon != null) icon.setImageDrawable(gameIcon);
-            icon.setAlpha(1f);
-            name.setText(a.label);
-            String tag = (a.fpid != null && !a.fpid.isEmpty()) ? "token" :
-                    (engine.hasEntrySnapshot(a.id) ? "已存" : "原生");
-            sub.setText(tag + " · " + (a.lastLogin > 0 ? FMT.format(new Date(a.lastLogin)) : "未用"));
-            return tile;
+        public void onBindViewHolder(RecyclerView.ViewHolder holder, int position) {
+            EntryLayout.Row row = rowAt(position);
+            if (row == null) return;
+            if (row.type == VH_HEADER) ((HeaderHolder) holder).bind(row);
+            else ((TileHolder) holder).bind(row);
         }
     }
+
+    // ---------- 两种 ViewHolder ----------
+
+    /** 分组表头（通铺整行）：左 = 组名 + 计数，右 = ▾/▸ 箭头（150ms 旋转过渡）。 */
+    private class HeaderHolder extends RecyclerView.ViewHolder {
+        private final TextView name;
+        private final TextView cnt;
+        private final TextView arrow;
+
+        HeaderHolder(View v) {
+            super(v);
+            LinearLayout box = (LinearLayout) v;      // HORIZONTAL: [组名] [数量] [箭头]
+            name = (TextView) box.getChildAt(0);
+            cnt = (TextView) box.getChildAt(1);
+            arrow = (TextView) box.getChildAt(2);
+            // 点击按 **position** 取行，而不是 bind 时捕获的 Row 对象：
+            // 后者在列表重建后可能是过期对象 ⇒ 点了没反应。
+            itemView.setOnClickListener(v2 -> {
+                int pos = getAdapterPosition();
+                if (pos != RecyclerView.NO_POSITION) onHeaderClickAt(pos);
+            });
+        }
+
+        void bind(EntryLayout.Row row) {
+            name.setText(row.title);
+            // 用户拍板格式：`大号 (6) ▾`。数量在折叠时也显示 —— 否则用户不知道藏了多少条。
+            cnt.setText("(" + row.count + ")");
+            if (canCollapse(row)) {
+                arrow.setVisibility(View.VISIBLE);
+                arrow.setRotation(row.collapsed ? -90f : 0f);
+                itemView.setAlpha(1f);
+            } else {
+                // 未分组（置顶、恒定展开）/ 孤儿分组（meta 里没有它 ⇒ 折叠态无处持久化）：
+                // 不给箭头、点不动，并轻微置灰 —— 让它明确"不是可折叠面板"，而不是看起来像坏了。
+                arrow.setVisibility(View.GONE);
+                itemView.setAlpha(0.8f);
+            }
+        }
+
+        /**
+         * 就地更新表头（展开/收起时用）：改计数文案 + 箭头旋转动画。
+         *
+         * <p>与 {@link #bind} 的区别：bind 是**瞬时**置到终态（rebind 场景，不该有动画），
+         * 这里是**带过渡**地更新（用户点了一下，要有 150ms 的箭头转动）。
+         */
+        void applyState(EntryLayout.Row row) {
+            cnt.setText("(" + row.count + ")");
+            animateArrow(row.collapsed);
+        }
+
+        /** 手风琴感：箭头 150ms 旋转（▾ ⇄ ▸），而不是整屏刷新。 */
+        void animateArrow(boolean collapsed) {
+            arrow.animate().cancel();
+            arrow.animate().rotation(collapsed ? -90f : 0f).setDuration(150).start();
+        }
+    }
+
+    /** 入口卡片：图标 + 名称 + 状态；排序模式内右上角 ⇅ 把手（按住起拖）。 */
+    private class TileHolder extends RecyclerView.ViewHolder {
+        private final ImageView icon;
+        private final TextView name;
+        /** 卡片底部左段：状态（token / 原生 / 无）。 */
+        private final TextView subStatus;
+        /** 卡片底部右段：最近一次登录时间（无则"未用"）。 */
+        private final TextView subTime;
+
+        TileHolder(View v) {
+            super(v);
+            FrameLayout tile = (FrameLayout) v;
+            LinearLayout content = (LinearLayout) tile.getChildAt(0);
+            icon = (ImageView) content.getChildAt(0);
+            name = (TextView) content.getChildAt(1);
+            // 第 3 个子视图已由单个居中 TextView 换成"状态 / 时间"横向两段容器（#71）。
+            LinearLayout subRow = (LinearLayout) content.getChildAt(2);
+            subStatus = (TextView) subRow.getChildAt(0);
+            subTime = (TextView) subRow.getChildAt(1);
+            // 单击 / 长按统一弹悬浮操作组（▶启动 / ⇅排序 / ⋯管理）——不再有隐藏手势差异。
+            itemView.setOnClickListener(v2 -> {
+                EntryLayout.Row r = rowAt(getAdapterPosition());
+                if (r == null || r.type != EntryLayout.TYPE_ENTRY) return;
+                showTileActions(itemView, r);
+            });
+            itemView.setOnLongClickListener(v2 -> {
+                if (dragArm) return true;   // 排序中：长按交给 ITH 起拖
+                EntryLayout.Row r = rowAt(getAdapterPosition());
+                if (r == null || r.type != EntryLayout.TYPE_ENTRY) return true;
+                showTileActions(itemView, r);
+                return true;
+            });
+        }
+
+        void bind(EntryLayout.Row row) {
+            AccountStore.Account a = accountById(row.itemId);
+            if (gameIcon != null) icon.setImageDrawable(gameIcon);
+            icon.setAlpha(1f);
+            name.setText(a == null ? "入口" : a.label);
+            // 【#71】状态三态以 **token** 为准。
+            // ⚠️ 修一处 bug：原写法判的是 fpid 而不是 token ⇒ "有 fpid、没 token"的入口
+            // （例如备战号888：fpid=44714253、token 为空）会被**误显示成 token**，
+            // 用户据此以为会用 token 登录，实际根本没有 token 可用。
+            // 三态：有 token ⇒ "token"；无 token 但已初始化（有快照）⇒ "原生"；都没有 ⇒ "无"。
+            boolean hasToken = a != null && a.token != null && !a.token.isEmpty();
+            boolean hasSnap = a != null && engine.hasEntrySnapshot(a.id);
+            subStatus.setText(hasToken ? "token" : (hasSnap ? "原生" : "无"));
+            long lastLogin = a == null ? 0L : a.lastLogin;
+            subTime.setText(lastLogin > 0 ? FMT.format(new Date(lastLogin)) : "未用");
+        }
+    }
+
+    // ---------- 两种 item 视图的构造 ----------
+
+    /** 分组表头视图：横向一行 `组名 (N) ▾`，通铺整行（由 SpanSizeLookup 给满 span）。 */
+    private View buildHeaderView() {
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.HORIZONTAL);
+        box.setGravity(Gravity.CENTER_VERTICAL);
+        box.setPadding(dp(14), dp(12), dp(14), dp(12));
+        box.setBackground(UiStyle.roundRect(UiStyle.CARD, 12));
+        box.setElevation(dp(2));
+
+        // [0] 组名（占满剩余宽度；过长省略，避免把数量/箭头挤出屏外）
+        TextView name = new TextView(this);
+        name.setTextSize(14);
+        name.setMaxLines(1);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        name.setTextColor(UiStyle.TEXT_PRI);
+        box.addView(name, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        // [1] 入口数量：`(6)`
+        TextView cnt = new TextView(this);
+        cnt.setTextSize(12);
+        cnt.setTextColor(UiStyle.TEXT_SEC);
+        box.addView(cnt, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // [2] 折叠箭头：▾（展开）/ ▸（收起）。用同一个 "▾" 旋转 -90° 得到 ▸，
+        //     这样展开/收起之间能走 150ms 的旋转过渡（换字符是瞬变、没有过渡感）。
+        TextView arrow = new TextView(this);
+        arrow.setText("▾");
+        arrow.setTextSize(15);
+        arrow.setTextColor(UiStyle.BLUE);
+        arrow.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(24), dp(24));
+        alp.leftMargin = dp(6);
+        box.addView(arrow, alp);
+        return box;
+    }
+
+    /**
+     * 入口 tile：FrameLayout(卡片背景/阴影)
+     *          ├ LinearLayout(VERTICAL) 图标/名称/状态（内容）
+     *          └ TextView "⇅"（把手，END|TOP；非排序模式 GONE）
+     * 用 FrameLayout 是为了让把手"浮"在内容右上角，同时不影响原有 tile 外观。
+     */
+    private View buildTileView() {
+        FrameLayout tile = new FrameLayout(this);
+        tile.setBackground(UiStyle.roundRect(UiStyle.CARD, 14));
+        tile.setElevation(dp(2));
+        tile.setLayoutParams(new RecyclerView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setGravity(Gravity.CENTER_HORIZONTAL);
+        content.setPadding(dp(8), dp(14), dp(8), dp(14));
+        tile.addView(content, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        ImageView icon = new ImageView(this);
+        icon.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        content.addView(icon, new LinearLayout.LayoutParams(dp(60), dp(60)));
+
+        TextView name = new TextView(this);
+        name.setTextSize(13);
+        name.setMaxLines(1);
+        name.setTextColor(UiStyle.TEXT_PRI);
+        name.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        nlp.topMargin = dp(8);
+        content.addView(name, nlp);
+
+        // 【#71】底部改为"状态（左） / 最近登录时间（右）"一行两段：
+        // 状态段 weight=1 吃掉剩余宽度并省略尾部，时间段 WRAP_CONTENT 靠右 ⇒
+        // 状态文案再长也挤不掉时间。
+        LinearLayout subRow = new LinearLayout(this);
+        subRow.setOrientation(LinearLayout.HORIZONTAL);
+        subRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView subStatus = new TextView(this);
+        subStatus.setTextSize(10);
+        subStatus.setMaxLines(1);
+        subStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        subStatus.setTextColor(UiStyle.TEXT_SEC);
+        subStatus.setGravity(Gravity.START);
+        subRow.addView(subStatus, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        TextView subTime = new TextView(this);
+        subTime.setTextSize(10);
+        subTime.setMaxLines(1);
+        subTime.setTextColor(UiStyle.TEXT_SEC);
+        subTime.setGravity(Gravity.END);
+        subRow.addView(subTime, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        content.addView(subRow);
+        return tile;
+    }
+
+    /** 相邻元素之间的间距：四边各半格 ⇒ 相邻 = 一整格（对齐 GridView 时代的 dp(12)）。 */
+    private static class SpaceDecoration extends RecyclerView.ItemDecoration {
+        private final int half;
+
+        SpaceDecoration(int half) {
+            this.half = half;
+        }
+
+        @Override
+        public void getItemOffsets(android.graphics.Rect outRect, View view,
+                                   RecyclerView parent, RecyclerView.State state) {
+            outRect.set(half, half, half, half);
+        }
+    }
+
+    /**
+     * 点表头 = 手风琴折叠/展开。**单开**：展开某组时，其余可折叠组一并收起（用户拍板）。
+     *
+     * <p>持久化仍走既有的 {@code group_meta.collapsed}（{@code apply}，丢了不致命），
+     * 字段名与序列化格式**完全不变** ⇒ 真机上已建好的「大号」等分组不会丢。
+     *
+     * <p>动画：不整屏刷新，而是把"展示行的变化"翻译成区间通知（{@link #notifyRowsChanged}），
+     * RecyclerView 会为收起/展开的每一条做逐项动画；被点的那一行再就地做箭头 150ms 过渡
+     * （{@link HeaderHolder#applyState}）。
+     *
+     * <p>两条边界：
+     * <ul>
+     *   <li>「未分组」置顶、恒定展开、**不参与单开互斥**，点了不折叠（见 {@link #canCollapse}）；</li>
+     *   <li>**排序模式内不做单开互斥**（只切换被点的那一组）—— 否则源组与目标组无法同时展开，
+     *       而表头又不可作拖拽落点 ⇒ 跨组拖拽会完全不可达。</li>
+     * </ul>
+     */
+    private void onHeaderClickAt(int headerPos) {
+        EntryLayout.Row row = rowAt(headerPos);
+        if (!canCollapse(row)) return;                  // 未分组 / 孤儿分组：不可折叠
+
+        boolean collapsing = !row.collapsed;            // 已展开 ⇒ 再点即收起
+        List<EntryLayout.Row> before = displayItems;    // 旧行列表（留引用，供 diff 用）
+
+        if (!collapsing) {
+            // 展开：先把其余可折叠组全部收起（经典手风琴：一次只开一组；
+            // 跨组拖拽的可达性由拖拽前 expandAllGroups 保证，与此不冲突）
+            for (EntryLayout.Group g : groupMeta) {
+                if (g != null && g.name != null && !EntryLayout.UNGROUPED_TITLE.equals(g.name)) {
+                    g.collapsed = true;
+                }
+            }
+        }
+        EntryLayout.Group target = EntryLayout.findGroup(groupMeta, row.group);
+        if (target == null) return;                     // 双保险
+        target.collapsed = collapsing;
+
+        store.setGroupMeta(EntryLayout.toMeta(groupMeta));
+        displayItems = EntryLayout.buildRows(layoutItems, groupMeta);
+
+        // ① 区间通知：收起/展开的那些条目走逐项动画
+        notifyRowsChanged(before);
+        // ② 被"单开"连带收起的表头，箭头方向也变了 ⇒ 逐行 rebind
+        for (int j = 0; j < displayItems.size(); j++) {
+            EntryLayout.Row r = displayItems.get(j);
+            if (r.type != EntryLayout.TYPE_HEADER || sameGroupKey(r, row)) continue;
+            EntryLayout.Row old = findHeaderByGroup(before, r.group);
+            if (old != null && old.collapsed != r.collapsed) adapter.notifyItemChanged(j);
+        }
+        // ③ 被点的那一行：就地更新（数量 + 箭头过渡）。
+        //    **刻意不 notifyItemChanged** —— 那会 rebind，bind() 把箭头瞬时置到终态，150ms 过渡就没了。
+        int np = findHeaderIndex(row.group);
+        RecyclerView.ViewHolder vh = np < 0 ? null : recycler.findViewHolderForAdapterPosition(np);
+        if (vh instanceof HeaderHolder) {
+            EntryLayout.Row nr = rowAt(np);
+            ((HeaderHolder) vh).applyState(nr == null ? row : nr);
+        }
+    }
+
+    /**
+     * 该表头是否可折叠。
+     *
+     * <p>「未分组」永远置顶、恒定展开（不变式①）；**孤儿分组**（成员 group 指向 meta 未登记的
+     * 组名，只在脏数据下出现）在 {@code group_meta} 里没有对应项、折叠态无处持久化，
+     * 故同样按"不可折叠"处理（UI 上不给箭头、点击无反应，并轻微置灰以免看起来像坏了）。
+     */
+    private boolean canCollapse(EntryLayout.Row row) {
+        if (row == null || row.type != EntryLayout.TYPE_HEADER) return false;
+        if (row.ungrouped) return false;
+        return EntryLayout.findGroup(groupMeta, row.group) != null;
+    }
+
+    private static boolean sameGroupKey(EntryLayout.Row a, EntryLayout.Row b) {
+        String ga = a.group == null ? "" : a.group;
+        String gb = b.group == null ? "" : b.group;
+        return ga.equals(gb);
+    }
+
+    private static EntryLayout.Row findHeaderByGroup(List<EntryLayout.Row> rows, String group) {
+        String g = group == null ? "" : group;
+        if (rows == null) return null;
+        for (EntryLayout.Row r : rows) {
+            if (r.type == EntryLayout.TYPE_HEADER && g.equals(r.group == null ? "" : r.group)) return r;
+        }
+        return null;
+    }
+
+    /** 某个组在展示行里的表头下标（-1 = 没有）。 */
+    private int findHeaderIndex(String group) {
+        String g = group == null ? "" : group;
+        if (displayItems == null) return -1;
+        for (int i = 0; i < displayItems.size(); i++) {
+            EntryLayout.Row r = displayItems.get(i);
+            if (r.type == EntryLayout.TYPE_HEADER && g.equals(r.group == null ? "" : r.group)) return i;
+        }
+        return -1;
+    }
+
+    /** 某个组在展示行里的条目数。 */
+    private static int countEntriesOfGroup(List<EntryLayout.Row> rows, String group) {
+        String g = group == null ? "" : group;
+        int n = 0;
+        if (rows == null) return 0;
+        for (EntryLayout.Row r : rows) {
+            if (r.type == EntryLayout.TYPE_ENTRY && g.equals(r.group == null ? "" : r.group)) n++;
+        }
+        return n;
+    }
+
+    /**
+     * 把"展示行从 before 变成现在"翻译成**区间通知**，而不是全量 {@code notifyDataSetChanged}。
+     *
+     * <p>本列表的行结构只有两种变化：某一组的条目**整段消失**（收起）或**整段出现**（展开）。
+     * 于是：
+     * <ol>
+     *   <li>先按**旧下标降序**发 {@code notifyItemRangeRemoved} —— 从后往前删，前面待删的下标才不失效；</li>
+     *   <li>再按**新下标升序**发 {@code notifyItemRangeInserted}。</li>
+     * </ol>
+     * 这样既有逐项动画（手风琴感），也不会出现"通知的位置与真实数据对不上"导致的错位或崩溃。
+     * （单开时一次点击会同时收起一组、展开另一组，位置变化不止一处，所以必须按这个顺序发。）
+     */
+    private void notifyRowsChanged(List<EntryLayout.Row> before) {
+        List<EntryLayout.Row> now = displayItems == null ? new ArrayList<>() : displayItems;
+
+        List<int[]> removals = new ArrayList<>();        // {startInOld, count}
+        collectEntryBlocks(before, now, removals);
+        for (int k = removals.size() - 1; k >= 0; k--) {
+            if (removals.get(k)[1] > 0) {
+                adapter.notifyItemRangeRemoved(removals.get(k)[0], removals.get(k)[1]);
+            }
+        }
+
+        List<int[]> insertions = new ArrayList<>();      // {startInNew, count}
+        collectEntryBlocks(now, before, insertions);
+        for (int[] r : insertions) {
+            if (r[1] > 0) adapter.notifyItemRangeInserted(r[0], r[1]);
+        }
+    }
+
+    /**
+     * 收集 {@code list} 里那些"该组有条目、但在 {@code other} 里一条都没有"的**连续条目段**。
+     *
+     * <p>产出 {@code {起始下标, 条数}}。"在 other 里没有"这个条件用来区分"这段是新出现的"
+     * 与"这段一直都在" —— 只有前者才需要发插入/移除通知。
+     */
+    private static void collectEntryBlocks(List<EntryLayout.Row> list,
+                                           List<EntryLayout.Row> other, List<int[]> out) {
+        if (list == null) return;
+        for (int i = 0; i < list.size(); i++) {
+            EntryLayout.Row h = list.get(i);
+            if (h.type != EntryLayout.TYPE_HEADER) continue;
+            int start = i + 1;
+            int n = 0;
+            while (start + n < list.size() && list.get(start + n).type == EntryLayout.TYPE_ENTRY) n++;
+            if (n > 0 && countEntriesOfGroup(other, h.group) == 0) out.add(new int[]{start, n});
+            i = start + n - 1;   // 跳到本组块末尾（for 里还会 ++）
+        }
+    }
+
 }

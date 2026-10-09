@@ -7,6 +7,7 @@
     <!--外部存储的读权限-->
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- SandHook -->
     <uses-sdk tools:overrideLibrary="com.swift.sandhook.lib, com.swift.sandhook.xposedcompat"/>
 
@@ -33,6 +34,14 @@
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
 
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 24h 常驻在线：引导用户把号库加入电池优化白名单（否则 Doze 会掐心跳连接） -->
+    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <!-- 容器微信(Android14+)注册截屏检测回调需要，以宿主身份申请 -->
+    <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE" />
 
     <application
         android:appComponentFactory="androidx.core.app.CoreComponentFactory"
@@ -55,14 +64,69 @@
             android:value="zxc77848" />
 
         <activity
-            android:name="com.carlos.splash.splashActivity"
+            android:name="com.carlos.vault.HomeActivity"
             android:exported="true"
-            android:theme="@style/AppTheme">
+            android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+        <activity
+            android:name="com.carlos.splash.splashActivity"
+            android:exported="true"
+            android:theme="@style/AppTheme">
+        </activity>
+        <activity
+            android:name="com.carlos.vault.AccountVaultActivity"
+            android:exported="true"
+            android:theme="@style/AppTheme">
+            
+        </activity>
+        <service
+            android:name="com.carlos.vault.daily.DailySchedulerService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <receiver
+            android:name="com.carlos.vault.daily.DailyBootReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+            </intent-filter>
+        </receiver>
+        <!-- 游戏原生通知监听（反应式开盾 WAR/RECON、部队返回补采集、治疗完成续批、建造完成刷状态）。
+             NotificationListenerService 必须由系统绑定：需要该权限声明 + intent-filter，
+             用户在「通知使用权」里授权后才生效（GameNotifyListenerService.enabled() 检测并引导）。 -->
+        <service
+            android:name="com.carlos.vault.daily.GameNotifyListenerService"
+            android:label="号库游戏通知监听"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+        <activity
+            android:name="com.carlos.vault.daily.FunctionActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+        <activity
+            android:name="com.carlos.vault.EntryDetailActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+
+        <!-- 游戏保活前台服务。目的：切到微信等后台时，游戏进程不被系统 LMK 回收。
+             必须留在宿主主进程，不能指定 android:process=":p0"。
+             早先绑定在 VA 的游戏 stub 进程 :p0 上，而 :p0 与游戏同进程：
+             829M Unity 首启会把该进程主线程打满，startForegroundService() 之后
+             onStartCommand 排不上队，Android 8+ 的 5 秒死限被击穿，抛
+             ForegroundServiceDidNotStartInTimeException，反而把游戏进程杀掉。
+             放宿主主进程后，宿主主线程此时是空闲的（用户正看着宿主界面），能按时
+             startForeground()；而前台服务提升的是同 UID 的进程优先级，
+             com.gof.china 与宿主同为 u0_a373，游戏进程同样受保护，保活目的仍达成。 -->
+        <service
+            android:name="com.carlos.vault.GameKeepAliveService"
+            android:exported="false" />
 
 
         <activity

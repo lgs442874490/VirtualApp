@@ -94,7 +94,7 @@ public final class LicenseUi {
         bg.setShape(GradientDrawable.RECTANGLE);
         bg.setCornerRadius(10);
         bg.setStroke(1, UiStyle.DIVIDER);
-        bg.setColor(0xFFF8F9FC);
+        bg.setColor(UiStyle.SURFACE_2);
         input.setBackground(bg);
         input.setPadding(dp(act, 14), dp(act, 14), dp(act, 14), dp(act, 14));
         LinearLayout.LayoutParams inputLp = new LinearLayout.LayoutParams(
@@ -314,7 +314,7 @@ public final class LicenseUi {
         tv.setTextSize(13);
         tv.setTextColor(barTextColor(st));
         if (st == LicenseState.ACTIVE && lm.remainDays() >= 0 && lm.remainDays() <= 7) {
-            tv.setTextColor(0xFFB26A00);
+            tv.setTextColor(UiStyle.WARN_INK);
         }
         bar.addView(tv, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -336,14 +336,14 @@ public final class LicenseUi {
     }
 
     private static int barColor(LicenseState st) {
-        if (st == null) return 0xFFF1F3F8;
+        if (st == null) return UiStyle.IDLE_BG;
         switch (st) {
             case ACTIVE:
-                return 0xFFE8F0FE;
+                return UiStyle.WAIT_BG;
             case ACTIVE_OFFLINE:
-                return 0xFFFFF6E5;
+                return UiStyle.WARN_BG;
             default:
-                return 0xFFFDECEA;
+                return UiStyle.ERR_BG;
         }
     }
 
@@ -353,9 +353,118 @@ public final class LicenseUi {
             case ACTIVE:
                 return UiStyle.BLUE;
             case ACTIVE_OFFLINE:
-                return 0xFF8A5A00;
+                return UiStyle.WARN_INK;
             default:
                 return UiStyle.RED;
+        }
+    }
+
+    // ---------- 头部授权状态圆环（替换原文字状态条） ----------
+
+    /** 环形颜色（PRD：>3天绿 / ≤3天黄 / 过期·废除红 / 永久绿满 / 离线灰）。 */
+    private static final int RING_GREEN = UiStyle.OK_SOLID;
+    private static final int RING_YELLOW = UiStyle.WARN_SOLID;
+    private static final int RING_RED = UiStyle.ERR_SOLID;
+    private static final int RING_GRAY = UiStyle.INK3;
+    private static final int RING_TRACK = UiStyle.LINE;
+
+    /**
+     * 构建头部授权圆环（直径 34dp）。点击行为由调用方挂（直达授权管理）。
+     * 数据源 {@link LicenseManager}：百分比 = 剩余时长 ÷ 票据总时长。
+     */
+    public static LicenseRingView buildRing(Context ctx, LicenseManager lm) {
+        LicenseRingView ring = new LicenseRingView(ctx);
+        ring.updateFrom(lm);
+        return ring;
+    }
+
+    /** 自绘授权状态环：底环 + 进度弧 + 环心文字（剩余天数 / ∞ / 0 / 废）。 */
+    public static class LicenseRingView extends View {
+
+        private float fraction = 1f;      // 进度 0~1
+        private int ringColor = RING_GRAY;
+        private String centerText = "…";
+
+        public LicenseRingView(Context ctx) {
+            super(ctx);
+        }
+
+        /** 依据授权管理器重算颜色 / 进度 / 环心文字。 */
+        public void updateFrom(LicenseManager lm) {
+            if (lm == null) { invalidate(); return; }
+            LicenseState st = lm.recheckLocalState();
+            LicenseTicket t = lm.currentTicket();
+            boolean permanent = t != null && t.isPermanent();
+
+            if (permanent && (st == LicenseState.ACTIVE || st == LicenseState.ACTIVE_OFFLINE)) {
+                ringColor = RING_GREEN;
+                fraction = 1f;
+                centerText = "∞";
+            } else if (st == LicenseState.REVOKED) {
+                ringColor = RING_RED;
+                fraction = 1f;
+                centerText = "废";
+            } else if (st == LicenseState.EXPIRED || st == LicenseState.OFFLINE_EXPIRED
+                    || st == LicenseState.DEVICE_MISMATCH || st == LicenseState.TAMPERED
+                    || st == LicenseState.UNACTIVATED) {
+                // 过期/设备不匹配等终态：红色满环（离线超宽限期按灰，可联网恢复）
+                ringColor = st == LicenseState.OFFLINE_EXPIRED ? RING_GRAY : RING_RED;
+                fraction = 1f;
+                centerText = st == LicenseState.OFFLINE_EXPIRED ? "…" : "0";
+            } else {
+                // 可用态：按剩余时长百分比；≤3 天转黄
+                int remain = lm.remainDays();
+                long totalMs = (t != null && t.activatedAt > 0 && t.expireAt > t.activatedAt)
+                        ? (t.expireAt - t.activatedAt) : 0L;
+                if (totalMs > 0) {
+                    long remainMs = Math.max(0L, t.expireAt - System.currentTimeMillis());
+                    fraction = Math.max(0.04f, Math.min(1f, remainMs / (float) totalMs));
+                } else {
+                    fraction = 1f;   // 拿不到总时长时不瞎猜，满环但颜色表达状态
+                }
+                ringColor = (remain >= 0 && remain <= 3) ? RING_YELLOW : RING_GREEN;
+                centerText = String.valueOf(Math.max(0, remain));
+            }
+            invalidate();
+        }
+
+        @Override
+        protected void onDraw(android.graphics.Canvas canvas) {
+            super.onDraw(canvas);
+            float w = getWidth(), h = getHeight();
+            float cx = w / 2f, cy = h / 2f;
+            float stroke = Math.max(4f, Math.min(w, h) * 0.11f);
+            float radius = (Math.min(w, h) - stroke) / 2f - 1f;
+
+            android.graphics.Paint track = new android.graphics.Paint(
+                    android.graphics.Paint.ANTI_ALIAS_FLAG);
+            track.setStyle(android.graphics.Paint.Style.STROKE);
+            track.setStrokeWidth(stroke);
+            track.setColor(RING_TRACK);
+            canvas.drawCircle(cx, cy, radius, track);
+
+            android.graphics.Paint arc = new android.graphics.Paint(track);
+            arc.setColor(ringColor);
+            arc.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            android.graphics.RectF box = new android.graphics.RectF(
+                    cx - radius, cy - radius, cx + radius, cy + radius);
+            float sweep = 360f * Math.max(0f, Math.min(1f, fraction));
+            if (sweep > 0f) canvas.drawArc(box, -90f, sweep, false, arc);
+
+            android.graphics.Paint tp = new android.graphics.Paint(
+                    android.graphics.Paint.ANTI_ALIAS_FLAG);
+            tp.setColor(ringColor);
+            tp.setTypeface(Typeface.DEFAULT_BOLD);
+            tp.setTextSize(Math.min(w, h) * 0.34f);
+            tp.setTextAlign(android.graphics.Paint.Align.CENTER);
+            float ty = cy - (tp.descent() + tp.ascent()) / 2f;
+            canvas.drawText(centerText, cx, ty, tp);
+        }
+
+        @Override
+        protected void onMeasure(int ws, int hs) {
+            int size = dp(getContext(), 34);
+            setMeasuredDimension(size, size);
         }
     }
 

@@ -1,0 +1,145 @@
+{
+  "_comment": "自动领取工具配置。改完建议先跑 dry-run --limit 1 看检测准不准。坐标单位=设备物理像素(1260x2800)。",
+
+  "device": {
+    "adb": "adb",
+    "serial": "",
+    "width": 1260,
+    "height": 2800,
+    "cmd_timeout_sec": 40
+  },
+
+  "paths": {
+    "samples_dir": "samples",
+    "logs_dir": "logs",
+    "state_dir": "state",
+    "ui_dump_remote": "/sdcard/auto_claim_ui.xml"
+  },
+
+  "vault": {
+    "_comment": "宿主号库 App（无尽号库）相关，只读 shared_prefs + uiautomator 定位入口卡片",
+    "package": "com.carlos.multiapp",
+    "activity": "com.carlos.vault.AccountVaultActivity",
+    "prefs_path": "/data/user/0/com.carlos.multiapp/shared_prefs/account_vault.xml",
+    "cold_start_wait_sec": 9.0,
+    "warm_start_wait_sec": 3.5,
+    "scroll_x": 630,
+    "scroll_y_from": 2200,
+    "scroll_y_to": 700,
+    "scroll_duration_ms": 400,
+    "header_min_width_px": 800,
+    "header_max_height_px": 220,
+    "header_tap_x_ratio": 0.25,
+    "max_scroll_attempts": 6,
+    "ui_dump_retry": 3
+  },
+
+  "game": {
+    "package": "com.gof.china",
+    "launch_timeout_sec": 35.0,
+    "launch_poll_sec": 2.0,
+    "ready_wait_sec": 6.0,
+    "stop_before_open": true,
+    "stop_before_next": true,
+    "stop_wait_timeout_sec": 10.0
+  },
+
+  "red_dot": {
+    "_comment": "红点判据。criterion=rgb 用 R/G/B 阈值；criterion=hsv 用色相/饱和度/明度（暗红更宽容）。",
+    "criterion": "rgb",
+    "rgb": {
+      "r_min": 180,
+      "g_max": 110,
+      "b_max": 110,
+      "channel_gap_min": 55
+    },
+    "hsv": {
+      "h_lo": 0,
+      "h_hi": 14,
+      "h2_lo": 166,
+      "h2_hi": 180,
+      "s_min": 0.50,
+      "v_min": 0.35
+    },
+    "min_radius_px": 4.0,
+    "max_radius_px": 28.0,
+    "min_fill_ratio": 0.40,
+    "min_aspect": 0.50,
+    "max_aspect": 2.00,
+    "merge_distance_px": 26,
+    "noise_min_neighbors": 3,
+    "max_component_pixels": 60000,
+    "disable_big_blob_prune": false,
+    "sort": "top_down"
+  },
+
+  "dialog": {
+    "_comment": "弹窗主按钮判据：只在中央区域找『高饱和 + 近纯色 + 宽>高』的矩形色块。",
+    "region": {
+      "x0_ratio": 0.10,
+      "x1_ratio": 0.90,
+      "y0_ratio": 0.28,
+      "y1_ratio": 0.80
+    },
+    "min_saturation": 0.45,
+    "min_value": 0.35,
+    "max_value": 0.98,
+    "min_width_px": 160,
+    "max_width_px": 1000,
+    "min_height_px": 56,
+    "max_height_px": 220,
+    "min_fill_ratio": 0.55,
+    "min_area_px": 6000,
+    "color_uniformity_max_std": 26.0,
+    "noise_min_neighbors": 3,
+    "max_component_pixels": 120000,
+    "pick": "bottom"
+  },
+
+  "blacklist": [
+    {
+      "name": "底部商城/充值常驻栏",
+      "x0": 0,
+      "y0": 2520,
+      "x1": 1260,
+      "y1": 2800,
+      "enabled": true
+    },
+    {
+      "name": "右上金币/钻石资源栏",
+      "x0": 880,
+      "y0": 0,
+      "x1": 1260,
+      "y1": 200,
+      "enabled": true
+    }
+  ],
+
+  "throttle": {
+    "tap_wait_min_sec": 0.8,
+    "tap_wait_max_sec": 2.5,
+    "swipe_wait_min_sec": 0.5,
+    "swipe_wait_max_sec": 1.5,
+    "after_tap_settle_sec": 1.6,
+    "after_dialog_sec": 1.4,
+    "between_shots_sec": 1.2
+  },
+
+  "loop": {
+    "max_taps": 40,
+    "max_rounds": 12,
+    "no_progress_rounds": 2,
+    "settle_after_close_sec": 1.2
+  },
+
+  "safety": {
+    "close_strategy": "back",
+    "max_back_presses": 2,
+    "tap_only_detected_target": true
+  },
+
+  "record": {
+    "interval_sec": 0.7,
+    "max_frames": 300
+  }
+}

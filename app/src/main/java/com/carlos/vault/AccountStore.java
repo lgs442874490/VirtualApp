@@ -9,7 +9,13 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.List;
 
-/** 账号库：SharedPreferences 存储 [{fpid, token, label, lastLogin}] */
+/**
+ * 账号库：SharedPreferences 存储 [{id, fpid, token, label, lastLogin, group}] + 独立键 group_meta。
+ *
+ * <p><b>排序 = 数组顺序（隐式）</b>：不加 {@code order} 字段 ⇒ 38 条老数据零迁移。
+ * <b>分组 = 每条 {@code group}</b>（分组名，{@code ""} = 未分组）+ {@link #getGroupMeta()} 里的
+ * {@code group_meta} = {@code [{"name":"…","collapsed":false}]}（同时表达分组顺序与折叠态）。
+ */
 public class AccountStore {
 
     public static class Account {
@@ -18,12 +24,30 @@ public class AccountStore {
         public String token;   // 可选：登录token
         public String label;
         public long lastLogin;
+        /**
+         * 所属分组名（{@code ""} = 未分组）。
+         *
+         * ⚠️ 38 条老数据**没有**这个字段，{@link #all()} 用 {@code optString("group", "")}
+         * 兜底 ⇒ 全部归入"未分组"，**零迁移、一条不丢**。
+         */
+        public String group;
+        /**
+         * 设备指纹 JSON（{@code {"distinct_id":…,"device_id":…,"ip":…}}，WjdrEngine 登录载荷用）。
+         *
+         * <p>每账号固定一份 ⇒ 同一账号在游戏风控侧始终是"同一台设备"，
+         * 而不是每次协议登录都换一批设备 id。首次登录由引擎随机生成并回写，之后登录复用。
+         *
+         * <p>老数据没有该字段，{@link #all()} 用 {@code optString("settings", "")} 兜底，零迁移。
+         */
+        public String settings;
     }
 
     private final SharedPreferences sp;
+    private final android.content.Context appCtx;
 
     public AccountStore(Context ctx) {
         sp = ctx.getSharedPreferences("account_vault", Context.MODE_PRIVATE);
+        appCtx = ctx.getApplicationContext();
     }
 
     public List<Account> all() {
@@ -40,6 +64,9 @@ public class AccountStore {
                 a.token = o.optString("token");
                 a.label = o.optString("label", a.fpid.isEmpty() ? "入口" : a.fpid);
                 a.lastLogin = o.optLong("lastLogin");
+                // 分组名缺省即"未分组"：38 条老数据没有该字段，绝不能因为读不到就丢条目。
+                a.group = o.optString("group", "");
+                a.settings = o.optString("settings", "");
                 if (a.id.isEmpty()) a.id = a.fpid.isEmpty() ? ("e" + a.hashCode()) : a.fpid;
                 // 修复旧版批量导入混入备注的号ID（如 "kk大王｜⇥81444913" → "81444913"）
                 if (!a.fpid.isEmpty() && !a.fpid.matches("[0-9]+")) {
@@ -82,6 +109,12 @@ public class AccountStore {
                 o.put("token", a.token);
                 o.put("label", a.label);
                 o.put("lastLogin", a.lastLogin);
+                // ⚠️⚠️ 本行与 toJsonArray() 里的同名行必须同时存在！
+                // save() 与 toJsonArray() 是本类仅有的两份 accounts 序列化；只加一处，
+                // 就会在"批量导入一次"(走 saveSync→toJsonArray) 时把全部 38 条的分组抹掉。
+                o.put("group", a.group == null ? "" : a.group);
+                // settings 同理（设备指纹，见字段注释）。
+                o.put("settings", a.settings == null ? "" : a.settings);
                 arr.put(o);
             } catch (Throwable ignored) {
             }
@@ -89,7 +122,12 @@ public class AccountStore {
         sp.edit().putString("accounts", arr.toString()).apply();
     }
 
-    /** 序列化为 JSON 数组（{@link #saveSync} 专用；{@code save()} 本体未作任何改动）。 */
+    /**
+     * 序列化为 JSON 数组（{@link #saveSync} 与 {@link #saveOrder} 专用；
+     * {@code save()} 本体未作任何改动）。
+     *
+     * ⚠️ 字段列表必须与 {@code save()} 保持一致（尤其是 {@code group}）——见 {@code save()} 内注释。
+     */
     private JSONArray toJsonArray(List<Account> list) {
         JSONArray arr = new JSONArray();
         for (Account a : list) {
@@ -100,6 +138,10 @@ public class AccountStore {
                 o.put("token", a.token);
                 o.put("label", a.label);
                 o.put("lastLogin", a.lastLogin);
+                // ⚠️⚠️ 本行与 save() 里的同名行必须同时存在！见 save() 的说明。
+                o.put("group", a.group == null ? "" : a.group);
+                // settings 同理（设备指纹，见字段注释）。
+                o.put("settings", a.settings == null ? "" : a.settings);
                 arr.put(o);
             } catch (Throwable ignored) {
             }
@@ -165,6 +207,7 @@ public class AccountStore {
                 a.token = token;
                 if (label != null && !label.equals(fpid)) a.label = label;
                 save(list);
+                VaultSync.onAccountsChanged(appCtx);
                 return null;
             }
         }
@@ -175,6 +218,7 @@ public class AccountStore {
         a.label = label;
         list.add(a);
         save(list);
+        VaultSync.onAccountsChanged(appCtx);
         return null;
     }
 
@@ -195,9 +239,119 @@ public class AccountStore {
             if (a.id.equals(id)) {
                 a.token = token;
                 save(list);
+                VaultSync.onAccountsChanged(appCtx);
                 return;
             }
         }
+    }
+
+    // ---------- 设备指纹（按 fpid 存取：协议登录侧只认 fpid，不认入口 id） ----------
+
+    /** 取某账号的设备指纹 JSON；无则返回 {@code ""}（调用方回落引擎随机生成）。只读，不触发写盘。 */
+    public String getSettings(String fpid) {
+        if (fpid == null || fpid.isEmpty()) return "";
+        for (Account a : all()) {
+            if (a != null && fpid.equals(a.fpid) && a.settings != null && !a.settings.isEmpty()) {
+                return a.settings;
+            }
+        }
+        return "";
+    }
+
+    /** 记录/更新某账号的设备指纹（引擎首次登录随机生成后回写固化，此后复用同一"设备"）。 */
+    public void updateSettings(String fpid, String settings) {
+        if (fpid == null || fpid.isEmpty() || settings == null || settings.isEmpty()) return;
+        List<Account> list = all();
+        for (Account a : list) {
+            if (fpid.equals(a.fpid)) {
+                if (settings.equals(a.settings)) return;   // 未变化不写盘
+                a.settings = settings;
+                save(list);
+                return;
+            }
+        }
+    }
+
+    // ---------- 设备指纹（按角色存取：同账号多角色并行在线，每角色一台独立"设备"） ----------
+
+    /**
+     * 取某角色的设备指纹 JSON（独立键 {@code role_settings:<fpid>:<sid>}）。刻意不进 accounts
+     * 数组——那份序列化有 save()/toJsonArray() 两处必须同步的坑，独立键零迁移零风险。
+     * 无则返回 {@code ""}（调用方回落引擎随机生成）。
+     */
+    public String getRoleSettings(String fpid, long sid) {
+        if (fpid == null || fpid.isEmpty() || sid <= 0) return "";
+        String v = sp.getString("role_settings:" + fpid + ":" + sid, "");
+        return v == null ? "" : v;
+    }
+
+    /** 记录/更新某角色的设备指纹（引擎登录后回写固化，此后该角色复用同一"设备"）。 */
+    public void updateRoleSettings(String fpid, long sid, String settings) {
+        if (fpid == null || fpid.isEmpty() || sid <= 0 || settings == null || settings.isEmpty()) return;
+        String k = "role_settings:" + fpid + ":" + sid;
+        if (settings.equals(sp.getString(k, ""))) return;   // 未变化不写盘
+        sp.edit().putString(k, settings).apply();
+    }
+
+    /**
+     * 角色登录用的身份种子（含从账号级旧指纹的迁移规则）：
+     * <ul>
+     *   <li>已有角色级指纹 → 直接复用；</li>
+     *   <li>没有且是主角色（当前选中，{@code sid == mainSid}）→ 沿用账号级旧指纹
+     *       （对服务器仍是"同一台设备"，不换脸）；</li>
+     *   <li>没有且是其它角色 → 返回空串，由引擎随机生成新"设备"，登录成功后固化；</li>
+     *   <li>{@code sid <= 0}（默认角色登录）→ 沿用账号级指纹（旧行为，默认角色即主角色）。</li>
+     * </ul>
+     *
+     * <p><b>注意：角色级指纹只是身份稳定性/风控分散手段，不能实现同账号多角色并行在线</b>——
+     * 服务器按账号（fpid）唯一会话，同账号新登录必踢旧会话（2026-10-07/08 终判实验：同指纹
+     * 收 code=46、异指纹收 code=5，均互踢；见 RoleSessionKeeper 类注释）。
+     */
+    public String roleIdentitySeed(String fpid, long sid, long mainSid) {
+        if (fpid == null || fpid.isEmpty()) return "";
+        if (sid <= 0) return getSettings(fpid);
+        String role = getRoleSettings(fpid, sid);
+        if (!role.isEmpty()) return role;
+        return sid == mainSid ? getSettings(fpid) : "";
+    }
+
+    /**
+     * 会话 ↔ 入口 归属同步：把入口的 {@code fpid} 改成「live 里**实际登录**的那个号」，并作废旧 token。
+     *
+     * <p><b>为什么需要它</b>：真机上出现过「A 入口的快照里存着 B 账号的会话」（鲍哥888，D-4）——
+     * 用户在**同一入口内用验证码换了号**，而 R2 存档只按「live 归属哪个入口」落盘、
+     * <b>不校验会话 fpid 与入口 fpid 是否一致</b>，于是把错归属的会话固化进了快照。
+     * 用户拍板的语义是「同一入口内切换登录，以最新登录的号为准」⇒ 这里主动把入口校准到最新登录的号。
+     *
+     * <p><b>为什么连 token 一起清</b>：旧 token 属于**旧号**。留着它，下次走「还原基线 + 注入 token」
+     * 分支时会把用户又登回旧号（{@code useToken} 只看 fpid/token 是否非空）。清空后该入口回落到
+     * 「按快照还原」，与「以最新登录为准」的语义一致。
+     *
+     * <p><b>刻意不动的三样</b>：
+     * <ul>
+     *   <li>{@code id} —— {@code snap_<id>.zip}、{@code live_entry_id}、{@code last_entry}、
+     *       {@code snap_fp_<id>} 全以 id 为键，改 id 会把它们**全部孤儿化**；</li>
+     *   <li>{@code label} —— 用户起的备注，不该被自动覆盖；</li>
+     *   <li>{@code lastLogin} —— 由 {@link #markLogin} 单独管。</li>
+     * </ul>
+     *
+     * <p>落盘走 {@link #save(List)}，与其它写路径是**同一份序列化**（含 {@code group} 字段），
+     * 不存在"某条路径漏字段把分组抹掉"的隐患。
+     *
+     * @return true 表示找到了该入口并已写入；false = 参数非法或该 id 不存在（调用方静默跳过即可）
+     */
+    public boolean updateFpidAndClearToken(String id, String fpid) {
+        if (id == null || id.isEmpty() || fpid == null || fpid.isEmpty()) return false;
+        List<Account> list = all();
+        for (Account a : list) {
+            if (id.equals(a.id)) {
+                a.fpid = fpid;
+                a.token = "";
+                save(list);
+                return true;
+            }
+        }
+        return false;
     }
 
     public void remove(String id) {
@@ -251,6 +405,129 @@ public class AccountStore {
         else sp.edit().putString("snap_fp_" + entryId, fp).apply();
     }
 
+    // ---------- 排序 / 分组（②拖拽排序 ③分组） ----------
+    //
+    // 排序 = accounts 数组顺序（隐式，不加 order 字段）⇒ 38 条老数据零迁移。
+    // 分组 = 每条 Account.group（分组名，"" = 未分组）+ 独立键 group_meta。
+    // 纯逻辑（构建展示列表 / 拖拽落位 / 分组增删改名 / 折叠 / JSON 读写）都在
+    // EntryLayout 里（不 import android.*，可在宿主机 javac 干跑）；这里只做落盘。
+
+    /** 分组元数据键名。 */
+    private static final String KEY_GROUP_META = "group_meta";
+
+    /**
+     * 按给定数组顺序落盘（{@code commit()} 同步写）。
+     *
+     * 与 {@link #saveSync} 的区别：这个用于"用户拖完顺序"这种交互式提交，必须同步落盘，
+     * 否则用户拖完立刻把 App 划掉，顺序会随进程一起丢。序列化走 {@link #toJsonArray}，与
+     * {@code save()/saveSync()} 规则完全一致（含 group 字段）。
+     *
+     * @return true 表示已同步写入磁盘
+     */
+    public boolean saveOrder(List<Account> list) {
+        return sp.edit().putString("accounts", toJsonArray(list).toString()).commit();
+    }
+
+    /** 读分组元数据（分组顺序 + 折叠态）。无该键 / 解析失败都返回空列表。 */
+    public List<EntryLayout.Group> getGroupMeta() {
+        return EntryLayout.parseMeta(sp.getString(KEY_GROUP_META, ""));
+    }
+
+    /** 写分组元数据（{@code apply()}）。用于**折叠态**这类"丢了不致命"的改动。 */
+    public void setGroupMeta(String json) {
+        sp.edit().putString(KEY_GROUP_META, json == null ? "[]" : json).apply();
+    }
+
+    /** 写分组元数据（{@code commit()}）。用于分组增删改名这类"丢不起"的改动。 */
+    public boolean setGroupMetaSync(String json) {
+        return sp.edit().putString(KEY_GROUP_META, json == null ? "[]" : json).commit();
+    }
+
+    /** 把某入口移到指定分组（{@code ""} = 未分组）。同步落盘。 */
+    public boolean setGroup(String entryId, String group) {
+        if (entryId == null) return false;
+        String g = group == null ? "" : group.trim();
+        List<Account> list = all();
+        for (Account a : list) {
+            if (entryId.equals(a.id)) {
+                a.group = g;
+                return saveOrder(list);
+            }
+        }
+        return false;
+    }
+
+    /** 新建分组（只写 group_meta，不动任何成员）。空名 / 重名 / 保留名被拒。 */
+    public boolean createGroup(String name) {
+        List<EntryLayout.Group> meta = getGroupMeta();
+        if (EntryLayout.validateGroupName(meta, name) != null) return false;
+        meta.add(new EntryLayout.Group(name.trim(), false));
+        return setGroupMetaSync(EntryLayout.toMeta(meta));
+    }
+
+    /**
+     * 重命名分组：改 {@code group_meta} 的组名 + 把所有 {@code group==oldName} 的成员改成新名，
+     * 并且<b>只做一次事务</b> —— 同一个 {@code Editor} 里同时写 {@code accounts} 与
+     * {@code group_meta}，{@code commit()} 保证要么都写、要么都不写，
+     * 不会出现"元数据改了、成员没改"的中间态。空名 / 重名 / 保留名 / 原名被拒。
+     */
+    public boolean renameGroup(String oldName, String newName) {
+        List<EntryLayout.Group> meta = getGroupMeta();
+        if (EntryLayout.validateRename(meta, oldName, newName) != null) return false;
+        List<Account> list = all();
+        List<EntryLayout.Item> items = new ArrayList<>();
+        for (Account a : list) items.add(new EntryLayout.Item(a.id, a.group));
+        if (!EntryLayout.renameInPlace(meta, items, oldName, newName)) return false;
+        for (int i = 0; i < list.size(); i++) list.get(i).group = items.get(i).group;
+        return sp.edit()
+                .putString("accounts", toJsonArray(list).toString())
+                .putString(KEY_GROUP_META, EntryLayout.toMeta(meta))
+                .commit();
+    }
+
+    /**
+     * 删除分组：从 {@code group_meta} 移除该组，成员<b>退回"未分组"</b>（绝不删条目）。
+     * 同样是一次事务（accounts + group_meta 同一个 {@code commit()}）。
+     *
+     * 注意：**最后一个成员被移走不会自动删组**（只变空组，仍显示，方便改名/删除）；
+     * 只有显式调用本方法才真正删组。
+     */
+    public boolean deleteGroup(String name) {
+        if (name == null || name.isEmpty()) return false;
+        List<EntryLayout.Group> meta = getGroupMeta();
+        List<Account> list = all();
+        List<EntryLayout.Item> items = new ArrayList<>();
+        for (Account a : list) items.add(new EntryLayout.Item(a.id, a.group));
+        if (!EntryLayout.deleteInPlace(meta, items, name)) return false;
+        for (int i = 0; i < list.size(); i++) list.get(i).group = items.get(i).group;
+        return sp.edit()
+                .putString("accounts", toJsonArray(list).toString())
+                .putString(KEY_GROUP_META, EntryLayout.toMeta(meta))
+                .commit();
+    }
+
+    /**
+     * 按 id 取一条**最新**账户；不存在返回 {@code null}。
+     *
+     * <p><b>为什么要有它（#72 F1/F2）</b>：管理层 Activity 的 {@code acc} 只在 onCreate 取过一次，
+     * 用户改完 token 后内存里的对象就陈旧了 —— 点「启动分身」传下去的还是旧对象，
+     * 于是 {@code useToken} 判空、不注入。引擎侧同样需要一条"按 id 重新读"的标准姿势。
+     * 此前各处都是手写 for 循环在 {@link #all()} 里找，容易出现"某处忘了同步、某处口径不一"的偏差。
+     *
+     * <p>刻意<b>只读</b>：不触发任何写盘，可在任意线程/时机安全调用。
+     *
+     * @param id 入口 id；null / 空串直接返回 null
+     * @return 磁盘上最新的那条账户；没有则返回 null
+     */
+    public Account byId(String id) {
+        if (id == null || id.isEmpty()) return null;
+        List<Account> list = all();
+        for (Account a : list) {
+            if (a != null && id.equals(a.id)) return a;
+        }
+        return null;
+    }
+
     public void markLogin(String id) {
         List<Account> list = all();
         for (Account a : list) {
@@ -267,6 +544,7 @@ public class AccountStore {
         a.id = "e" + System.currentTimeMillis();
         a.fpid = "";
         a.token = "";
+        a.group = "";   // 新建入口默认进"未分组"
         a.label = label == null || label.trim().isEmpty() ? ("入口" + (all().size() + 1)) : label.trim();
         List<Account> list = all();
         list.add(a);
@@ -283,6 +561,8 @@ public class AccountStore {
                     a.label = fpid;
                 }
                 save(list);
+                VaultSync.pushToken(appCtx, fpid, token);
+                VaultSync.onAccountsChanged(appCtx);
                 return;
             }
         }
