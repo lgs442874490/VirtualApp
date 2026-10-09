@@ -1,0 +1,228 @@
+package com.carlos.vaultserver;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+import org.junit.After;
+import org.junit.Before;
+import org.junit.Rule;
+import org.junit.Test;
+import org.junit.rules.TemporaryFolder;
+
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
+
+/** API 端到端（假 SessionControl，不连游戏服）：签名信封 + sync/token/status/policy 全链路。 */
+public class VaultHttpApiTest {
+
+    private static final String SECRET = "api-test-secret";
+
+    @Rule
+    public TemporaryFolder tmp = new TemporaryFolder();
+
+    private VaultHttpApi api;
+    private FakeKeeper keeper;
+    private StateStore stateStore;
+    private String base;
+
+    static final class FakeKeeper implements SessionControl {
+        int reconcileCalls;
+        String yieldedFpid;
+        long yieldedMillis;
+        final List<SessionStatus> statuses = new ArrayList<>();
+
+        @Override
+        public void reconcile() {
+            reconcileCalls++;
+        }
+
+        @Override
+        public List<SessionStatus> status() {
+            return statuses;
+        }
+
+        @Override
+        public boolean yield(String fpid, long probeMillis) {
+            this.yieldedFpid = fpid;
+            this.yieldedMillis = probeMillis;
+            return !"missing".equals(fpid);
+        }
+    }
+
+    @Before
+    public void setUp() throws Exception {
+        Path dataDir = tmp.getRoot().toPath();
+        VaultStore store = new VaultStore(dataDir);
+        store.load();
+        stateStore = new StateStore(dataDir);
+        stateStore.load();
+        keeper = new FakeKeeper();
+        VaultConfig config = new VaultConfig("127.0.0.1:0", dataDir, SECRET, null, "human_first");
+        api = new VaultHttpApi(config, store, keeper, stateStore);
+        api.start();
+        int port = api.server().getAddress().getPort();
+        base = "http://127.0.0.1:" + port;
+    }
+
+    @After
+    public void tearDown() {
+        api.stop();
+    }
+
+    // ---------- HTTP 工具 ----------
+
+    private JSONObject post(String path, String op, Map<String, Object> fields) throws Exception {
+        String body = ApiSign.buildSignedBody(SECRET, op, fields);
+        HttpURLConnection conn = (HttpURLConnection) new URL(base + path).openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+        try (OutputStream out = conn.getOutputStream()) {
+            out.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+        String text;
+        try (InputStream in = conn.getInputStream()) {
+            text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        return new JSONObject(text);
+    }
+
+    private JSONObject get(String path) throws Exception {
+        HttpURLConnection conn = (HttpURLConnection) new URL(base + path).openConnection();
+        String text;
+        try (InputStream in = conn.getInputStream()) {
+            text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+        }
+        return new JSONObject(text);
+    }
+
+    // ---------- 用例 ----------
+
+    @Test
+    public void healthz() throws Exception {
+        JSONObject rsp = get("/healthz");
+        assertEquals(0, rsp.getInt("code"));
+        assertTrue(rsp.getLong("serverTime") > 0);
+    }
+
+    @Test
+    public void sync_then_token_then_status_flow() throws Exception {
+        JSONArray accounts = new JSONArray();
+        JSONObject a1 = new JSONObject();
+        a1.put("fpid", "80971192");
+        a1.put("token", "tk-A");
+        a1.put("label", "开发号");
+        a1.put("keep", true);
+        a1.put("activeSid", "913");
+        a1.put("identity", "{\"distinct_id\":\"dd\"}");
+        JSONArray roles = new JSONArray();
+        JSONObject r1 = new JSONObject();
+        r1.put("sid", "913");
+        r1.put("identity", "{\"distinct_id\":\"dd\",\"device_id\":\"ee\"}");
+        roles.put(r1);
+        a1.put("roles", roles);
+        accounts.put(a1);
+
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("pkg", "com.carlos.vault");
+        f.put("accountsJson", accounts.toString());
+        JSONObject rsp = post("/v1/vault/sync", "vaultSync", f);
+        assertEquals(0, rsp.getInt("code"));
+        assertEquals(1, rsp.getJSONObject("data").getInt("accepted"));
+        assertEquals(1, keeper.reconcileCalls);
+
+        // token 补给
+        Map<String, Object> tf = new LinkedHashMap<>();
+        tf.put("fpid", "80971192");
+        tf.put("token", "tk-B");
+        assertEquals(0, post("/v1/vault/token", "vaultToken", tf).getInt("code"));
+
+        // 状态查询（假 keeper 回填）
+        SessionControl.SessionStatus s = new SessionControl.SessionStatus();
+        s.fpid = "80971192";
+        s.label = "开发号";
+        s.state = "online";
+        s.sid = "913";
+        s.hasToken = true;
+        keeper.statuses.add(s);
+        Map<String, Object> sf = new LinkedHashMap<>();
+        JSONObject status = post("/v1/vault/status", "vaultStatus", sf);
+        assertEquals(0, status.getInt("code"));
+        JSONArray arr = status.getJSONObject("data").getJSONArray("accounts");
+        assertEquals(1, arr.length());
+        assertEquals("online", arr.getJSONObject(0).getString("state"));
+        assertEquals("913", arr.getJSONObject(0).getString("sid"));
+    }
+
+    @Test
+    public void token_unknownAccount_1004() throws Exception {
+        Map<String, Object> tf = new LinkedHashMap<>();
+        tf.put("fpid", "nope");
+        tf.put("token", "tk");
+        JSONObject rsp = post("/v1/vault/token", "vaultToken", tf);
+        assertEquals(1004, rsp.getInt("code"));
+    }
+
+    @Test
+    public void policy_yield_delegates() throws Exception {
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("action", "yield");
+        f.put("fpid", "80971192");
+        f.put("minutes", 45);
+        JSONObject rsp = post("/v1/vault/policy", "vaultPolicy", f);
+        assertEquals(0, rsp.getInt("code"));
+        assertEquals("80971192", keeper.yieldedFpid);
+        assertEquals(45 * 60_000L, keeper.yieldedMillis);
+    }
+
+    @Test
+    public void state_endpoint_returnsStatesAndAccounts() throws Exception {
+        stateStore.putString("todo:111:913", "[{\"id\":2705001}]");
+        stateStore.putString("mod:111:913:bear", "{\"trap\":\"未预约\"}");
+        stateStore.putLong("act:111:913", 270L);
+        stateStore.putLong("questts:111:913", System.currentTimeMillis());
+        SessionControl.SessionStatus s = new SessionControl.SessionStatus();
+        s.fpid = "111";
+        s.state = "online";
+        keeper.statuses.add(s);
+
+        Map<String, Object> f = new LinkedHashMap<>();
+        JSONObject rsp = post("/v1/vault/state", "vaultState", f);
+        assertEquals(0, rsp.getInt("code"));
+        JSONObject states = rsp.getJSONObject("data").getJSONObject("states");
+        assertEquals(4, states.length());
+        assertEquals("[{\"id\":2705001}]", states.getString("todo:111:913"));
+        assertEquals(270L, states.getLong("act:111:913"));
+        assertEquals("online", rsp.getJSONObject("data").getJSONArray("accounts")
+                .getJSONObject(0).getString("state"));
+    }
+
+    @Test
+    public void badSignature_rejected() throws Exception {
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("action", "yield");
+        f.put("fpid", "x");
+        String body = ApiSign.buildSignedBody("wrong-secret", "vaultPolicy", f);
+        HttpURLConnection conn = (HttpURLConnection) new URL(base + "/v1/vault/policy").openConnection();
+        conn.setRequestMethod("POST");
+        conn.setDoOutput(true);
+        try (OutputStream out = conn.getOutputStream()) {
+            out.write(body.getBytes(StandardCharsets.UTF_8));
+        }
+        JSONObject rsp;
+        try (InputStream in = conn.getInputStream()) {
+            rsp = new JSONObject(new String(in.readAllBytes(), StandardCharsets.UTF_8));
+        }
+        assertEquals(2001, rsp.getInt("code"));
+    }
+}

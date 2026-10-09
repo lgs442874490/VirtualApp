@@ -1,0 +1,64 @@
+plugins {
+    id 'java'
+    id 'application'
+}
+
+group = 'com.carlos'
+version = '0.1.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    // WjdrEngine 的 JSON 用法与 Android 内置 org.json API 一致，JVM 侧用官方包补齐
+    implementation 'org.json:json:20240303'
+    testImplementation 'junit:junit:4.13.2'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+compileJava.options.encoding = 'UTF-8'
+compileTestJava.options.encoding = 'UTF-8'
+
+// 单一事实源：直接编译 App 工程里的 wjdr 协议包（已零 Android 依赖），不做复制
+sourceSets.main.java {
+    srcDir '../app/src/main/java'
+    include 'com/carlos/vaultserver/**', 'com/carlos/vault/wjdr/**'
+}
+
+// sproto schema（.spb）与任务目录（towndev/*.json）打进 classpath，服务器侧从 classpath 读
+processResources {
+    from('../app/src/main/assets/wjdr') { into 'wjdr' }
+    from('../app/src/main/assets/towndev') { into 'towndev' }
+}
+
+application {
+    mainClass = 'com.carlos.vaultserver.Main'
+}
+
+test {
+    testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat 'full'
+    }
+}
+
+// 单文件 fat jar：部署只拷 vault-server-all.jar + systemd 一行 ExecStart
+tasks.register('fatJar', Jar) {
+    archiveBaseName = 'vault-server'
+    archiveClassifier = 'all'
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+    manifest {
+        attributes 'Main-Class': 'com.carlos.vaultserver.Main'
+    }
+    from sourceSets.main.output
+    dependsOn configurations.runtimeClasspath
+    from {
+        configurations.runtimeClasspath.findAll { it.name.endsWith('jar') }.collect { zipTree(it) }
+    }
+    exclude 'META-INF/*.SF', 'META-INF/*.DSA', 'META-INF/*.RSA'
+}
