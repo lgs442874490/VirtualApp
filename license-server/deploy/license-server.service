@@ -1,0 +1,41 @@
+# VAContainer 授权服务 systemd 单元
+# 安装：
+#   sudo cp license-server.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now license-server
+# 前置：
+#   1) 二进制已放 /opt/license-server/license-server（linux/amd64 静态编译，CGO_ENABLED=0）
+#   2) /etc/license-server.env 已建（600 权限，root 属主），至少含 LICENSE_SECRET、LICENSE_ADMIN_TOKEN
+#      —— 密钥不得写进任何仓库或对话，仅落该文件
+# 验证：
+#   systemctl status license-server
+#   curl -s http://127.0.0.1:8787/healthz
+
+[Unit]
+Description=VAContainer License Server (license-server, 127.0.0.1:8787)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# env 文件仅放密钥类变量（LICENSE_SECRET / LICENSE_ADMIN_TOKEN），600 权限，勿入库
+EnvironmentFile=/etc/license-server.env
+ExecStartPre=/usr/bin/mkdir -p /opt/license-server/data
+# 监听 docker0 网桥地址（172.17.0.1），而非 127.0.0.1：
+# 前端 Caddy 以容器运行（宿主机 UDP 443 被 hysteria 占用，Caddy 2.6.2 又无法关闭 HTTP/3），
+# 容器经 host.docker.internal(=172.17.0.1) 反代进来；绑 127.0.0.1 时容器连不上 → 502。
+# 该地址仅对同网桥容器可见，不对公网暴露（docker0 不可路由）。
+ExecStart=/opt/license-server/license-server serve --addr 172.17.0.1:8787 --db /opt/license-server/data/license.db
+Restart=on-failure
+RestartSec=3
+# 加固：只监听本机回环（TLS 由云机测试服 Caddy 终结），进程无需任何特权
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/license-server/data
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
