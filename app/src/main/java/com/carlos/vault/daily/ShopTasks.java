@@ -154,6 +154,81 @@ final class ShopTasks {
         return buyFromShops(engine, SHOP_IDS_ALLIANCE, "alliance_shop", "联盟商店");
     }
 
+    /** 实时价防御式提取（字段名未实证：price/cur_price/now_price/discount_price 之一），缺省回退目录价。 */
+    private static long livePriceOf(Map<String, Object> g, long fallback) {
+        for (String k : new String[]{"price", "cur_price", "now_price", "discount_price"}) {
+            long v = ExecUtil.longOf(g.get(k));
+            if (v > 0) return v;
+        }
+        return fallback;
+    }
+
+    private static boolean containsShop(long[] ids, long want) {
+        for (long id : ids) if (id == want) return true;
+        return false;
+    }
+
+    /** 一轮货架采购：对每个勾选名字买货架上最便宜的一档×1；错误码视为该名字本轮跳过。 */
+    private static void buyWantedPass(WjdrEngine engine, ExecUtil.Multi m, Map<String, Object> mapInfo,
+                                      Map<Long, Good> catalog, java.util.Set<String> wanted,
+                                      java.util.Set<String> bought) throws Exception {
+        Map<String, long[]> best = new HashMap<>();   // name → {price, shopId, goodsId}
+        for (Map.Entry<String, Object> e : mapInfo.entrySet()) {
+            long shopId = Long.parseLong(e.getKey());
+            Map<String, Object> shopInfo = ExecUtil.mapOf(e.getValue());
+            if (shopInfo == null) continue;
+            for (Map<String, Object> g : ExecUtil.mapsOf(shopInfo.get("goods"))) {
+                long confId = ExecUtil.longOf(g.get("conf_id"));
+                Good meta = catalog.get(confId);
+                if (meta == null) continue;
+                String name = meta.name == null || meta.name.isEmpty()
+                        ? String.valueOf(confId) : meta.name;
+                if (!wanted.contains(name) || bought.contains(name)) continue;
+                long boughtCount = ExecUtil.longOf(g.get("buy_count"));
+                if (meta.limit > 0 && boughtCount >= meta.limit) continue;
+                long price = livePriceOf(g, meta.price);
+                long[] cur = best.get(name);
+                if (cur == null || price < cur[0]) {
+                    best.put(name, new long[]{price, shopId, ExecUtil.longOf(g.get("id"))});
+                }
+            }
+        }
+        for (String name : wanted) {
+            if (bought.contains(name)) continue;
+            long[] b = best.get(name);
+            if (b == null) continue;
+            GameMessage buy = engine.request("req_shop_buy", ExecUtil.args(
+                    "shop_id", b[1], "goods_id", b[2], "count", 1));
+            int code = ExecUtil.codeOf(buy);
+            bought.add(name);   // 无论成败，本轮不再重试该名字
+            if (ExecUtil.ok(buy)) {
+                m.claimed(name + "×1（" + b[0] + "）");
+            } else if ((code >= 800 && code <= 830) || code == 10521 || code == 40240) {
+                m.skip(name + " 条件不满足");
+            } else {
+                m.skip(name + " 码" + code);
+            }
+        }
+    }
+
+    /** 流动商人钻石刷新当日用量（进程内；按自然日重置）。 */
+    private static final java.util.concurrent.ConcurrentHashMap<String, long[]> DIAMOND_REFRESH_DAILY =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static int diamondRefreshUsedToday(String fpid, long sid) {
+        String day = new java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.CHINA)
+                .format(new java.util.Date());
+        long[] v = DIAMOND_REFRESH_DAILY.get(fpid + ":" + sid);
+        if (v == null || String.valueOf(v[1]).equals(day) != true) return 0;
+        return (int) v[0];
+    }
+
+    private static void diamondRefreshSetToday(String fpid, long sid, int set) {
+        String day = new java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.CHINA)
+                .format(new java.util.Date());
+        DIAMOND_REFRESH_DAILY.put(fpid + ":" + sid, new long[]{set, Long.parseLong(day)});
+    }
+
     private static DailyResult buyFromShops(WjdrEngine engine, long[] shopIds,
                                             String fnId, String fnName) {
         ExecUtil.Multi m = new ExecUtil.Multi();
@@ -161,14 +236,10 @@ final class ShopTasks {
             JSONObject p = FnParams.params(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), fnId);
             JSONObject buys = p.optJSONObject("buys");
+            JSONObject buyNames = p.optJSONObject("buy_names");
             if (buys == null || buys.length() == 0) {
                 m.skip("未勾选商品（设置页配置）");
                 return result(m, fnId, fnName);
-            }
-            Map<Long, Long> want = new HashMap<>();   // configId → 数量
-            for (Iterator<String> it = buys.keys(); it.hasNext(); ) {
-                String k = it.next();
-                want.put(Long.parseLong(k), buys.optLong(k));
             }
             List<Object> arr = new ArrayList<>();
             for (long sid : shopIds) arr.add(sid);
@@ -185,6 +256,68 @@ final class ShopTasks {
             Map<Long, Good> catalog = new HashMap<>();
             for (List<Good> gl : shops(engine.appContext()).values()) {
                 for (Good g : gl) catalog.put(g.configId, g);
+            }
+            // 名字模式（新选择器）：同名商品多档折扣位合并勾选，运行时买货架上最便宜的一档。
+            // 流动商人(801)支持刷新循环：先免费刷新3次，之后按子项开关/策略用钻石刷新，直到刷齐勾选商品
+            if (buyNames != null && buyNames.length() > 0) {
+                android.content.Context sctx = engine.appContext();
+                String sfpid = engine.lastFpid() == null ? "" : engine.lastFpid();
+                long ssid = engine.lastServerId();
+                boolean diamondRefresh = FnParams.subOn(sctx, sfpid, ssid, fnId, "refresh_diamond", false);
+                int diamondMax = 0;
+                try {
+                    diamondMax = Integer.parseInt(FnParams.strategy(sctx, sfpid, ssid,
+                            fnId, "refresh_diamond", "0").trim());
+                } catch (Exception ignored) {
+                }
+                boolean refreshShop = containsShop(shopIds, 801L);
+                java.util.Set<String> wanted = new java.util.HashSet<>();
+                for (Iterator<String> it = buyNames.keys(); it.hasNext(); ) wanted.add(it.next());
+                java.util.Set<String> bought = new java.util.HashSet<>();
+                int freeUsed = 0;
+                int diamondUsed = diamondRefreshUsedToday(sfpid, ssid);
+                int maxPass = refreshShop ? 3 + Math.max(0, diamondMax) : 0;
+                for (int pass = 0; pass <= maxPass; pass++) {
+                    buyWantedPass(engine, m, mapInfo, catalog, wanted, bought);
+                    if (bought.containsAll(wanted) || !refreshShop) break;
+                    boolean canRefresh;
+                    if (freeUsed < 3) {
+                        canRefresh = true;
+                    } else {
+                        canRefresh = diamondRefresh && diamondUsed < diamondMax;
+                    }
+                    if (!canRefresh) break;
+                    GameMessage rf = engine.request("req_shop_refresh",
+                            ExecUtil.args("shop_id", 801L));
+                    if (!ExecUtil.ok(rf)) {
+                        m.skip("刷新货架失败(码" + ExecUtil.codeOf(rf) + ")");
+                        break;
+                    }
+                    if (freeUsed < 3) {
+                        freeUsed++;
+                    } else {
+                        diamondUsed++;
+                        diamondRefreshSetToday(sfpid, ssid, diamondUsed);
+                    }
+                    m.claimed("刷新货架（" + (freeUsed < 3 ? "免费" : "钻石") + "第" + (freeUsed < 3 ? freeUsed : diamondUsed) + "次）");
+                    GameMessage info2 = engine.request("req_shop_info_array", ExecUtil.args("arr_id", arr));
+                    if (ExecUtil.ok(info2)) {
+                        Map<String, Object> mi2 = ExecUtil.mapOf(info2.getContent().get("map_info"));
+                        if (mi2 != null) mapInfo = mi2;
+                    }
+                }
+                if (bought.isEmpty() && m.sb.length() == 0) m.skip("货架无勾选商品");
+                if (!bought.containsAll(wanted)) {
+                    java.util.List<String> miss = new ArrayList<>();
+                    for (String w : wanted) if (!bought.contains(w)) miss.add(w);
+                    m.skip("未刷到: " + String.join("、", miss));
+                }
+                return result(m, fnId, fnName);
+            }
+            Map<Long, Long> want = new HashMap<>();   // configId → 数量
+            for (Iterator<String> it = buys.keys(); it.hasNext(); ) {
+                String k = it.next();
+                want.put(Long.parseLong(k), buys.optLong(k));
             }
             int bought = 0;
             for (Map.Entry<String, Object> e : mapInfo.entrySet()) {
@@ -425,6 +558,9 @@ final class ShopTasks {
     }
 
     private static DailyResult result(ExecUtil.Multi m, String id, String name) {
-        return new DailyResult(id, name, m.cat(), m.note() + " " + m.sb);
+        DailyResult r = new DailyResult(id, name, m.cat(), m.note() + " " + m.sb);
+        r.rewards = m.rewardsText();
+        r.subResults.putAll(m.subResults);
+        return r;
     }
 }
