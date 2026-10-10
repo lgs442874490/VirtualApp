@@ -110,7 +110,8 @@ public final class RoundRunner {
             e.put("ts", System.currentTimeMillis());
             e.put("ok", r.successLike());
             e.put("reason", r.message);
-            e.put("detail", "");
+            // detail 带领取明细（与 App LogStore.Entry.detail 同键型），App「领取内容」直接展示
+            e.put("detail", r.rewards == null ? "" : r.rewards);
             e.put("trg", trigger);
             e.put("dur", r.durationMs);
             e.put("cat", r.category.name());

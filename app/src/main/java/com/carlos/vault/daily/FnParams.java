@@ -82,6 +82,49 @@ public final class FnParams {
         }
     }
 
+    // ================= 子项多选集（清单勾选，如商店商品/报名时段） =================
+
+    /** 子项多选集（存于 sel:{subId:{val:true}}）。 */
+    public static java.util.Set<String> selSet(Context ctx, String fpid, long sid, String fnId, String subId) {
+        java.util.Set<String> out = new java.util.LinkedHashSet<>();
+        try {
+            JSONObject sel = params(ctx, fpid, sid, fnId).optJSONObject("sel");
+            JSONObject o = sel == null ? null : sel.optJSONObject(subId);
+            if (o != null) {
+                java.util.Iterator<String> it = o.keys();
+                while (it.hasNext()) out.add(it.next());
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    /** 整体替换某子项的多选集。 */
+    public static void saveSelSet(Context ctx, String fpid, long sid, String fnId, String subId,
+                                  java.util.Collection<String> vals) {
+        try {
+            JSONObject p = params(ctx, fpid, sid, fnId);
+            JSONObject sel = p.optJSONObject("sel");
+            if (sel == null) sel = new JSONObject();
+            JSONObject o = new JSONObject();
+            for (String v : vals) o.put(v, true);
+            sel.put(subId, o);
+            p.put("sel", sel);
+            saveParams(ctx, fpid, sid, fnId, p);
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** 写参数顶层键（如 act_frostfire 的 slots 数组）。 */
+    public static void putTopLevel(Context ctx, String fpid, long sid, String fnId, String key, Object val) {
+        try {
+            JSONObject p = params(ctx, fpid, sid, fnId);
+            p.put(key, val);
+            saveParams(ctx, fpid, sid, fnId, p);
+        } catch (Exception ignored) {
+        }
+    }
+
     /** 自定义策略分钟数。 */
     public static int strategyMinutes(Context ctx, String fpid, long sid, String fnId, String subId, int def) {
         try {

@@ -125,6 +125,7 @@ public final class ServerTasks {
     static TaskOutcome loginRewards(TaskContext tc) throws Exception {
         try {
             GameMessage rsp = tc.engine.request("req_fourteen_sign_get_all_reward", null);
+            // 服务端无签到进度快照，明细只取响应自带字段（推不出留空，App 端目录兜底）
             return classifySimple(rsp, "req_fourteen_sign_get_all_reward", "登录好礼",
                     new String[]{"code"}, "已一键领取全部可领签到奖励");
         } catch (Exception e) {
@@ -221,6 +222,7 @@ public final class ServerTasks {
         boolean onSpec = tc.subOn("supply", "spec", true);
         String strat = tc.strategy("supply", "spec", "now");
         Map<String, String> subs = new LinkedHashMap<>();
+        StringBuilder rewardParts = new StringBuilder();   // 领取明细（与 App supplyRewards 一致）
         try {
             if (onOnline) {
                 try {
@@ -234,8 +236,10 @@ public final class ServerTasks {
                             sb.append("普通补给").append(describeSupplyCode(toInt(code), ":")).append("; ");
                             subs.put("online", "skip:码" + toInt(code));
                         } else if (online.getContent().containsKey("online_reward")) {
-                            sb.append("普通补给已领取").append(descRewards(online.getContent().get("online_reward"))).append("; ");
-                            subs.put("online", "ok:已领" + descRewards(online.getContent().get("online_reward")));
+                            String d = descRewards(online.getContent().get("online_reward"));
+                            sb.append("普通补给已领取").append(d).append("; ");
+                            subs.put("online", "ok:已领" + d);
+                            if (!d.isEmpty()) rewardParts.append("普通补给：").append(d).append("；");
                         } else {
                             sb.append("普通补给暂不可领; ");
                             subs.put("online", "skip:暂不可领");
@@ -270,8 +274,10 @@ public final class ServerTasks {
                                 sb.append("体力补给").append(describeSupplyCode(toInt(code), ":")).append("; ");
                                 subs.put("spec", "skip:码" + toInt(code));
                             } else if (spec.getContent().containsKey("spec_reward")) {
-                                sb.append("体力补给已领取").append(descRewards(spec.getContent().get("spec_reward"))).append("; ");
-                                subs.put("spec", "ok:已领" + descRewards(spec.getContent().get("spec_reward")));
+                                String d = descRewards(spec.getContent().get("spec_reward"));
+                                sb.append("体力补给已领取").append(d).append("; ");
+                                subs.put("spec", "ok:已领" + d);
+                                if (!d.isEmpty()) rewardParts.append("体力补给：").append(d).append("；");
                             } else {
                                 sb.append("体力补给暂不可领; ");
                                 subs.put("spec", "skip:暂不可领");
@@ -300,6 +306,9 @@ public final class ServerTasks {
                             : (claimed ? TaskOutcome.Category.CLAIMED : TaskOutcome.Category.SKIPPED),
                     msg);
             sr.subResults.putAll(subs);
+            if (rewardParts.length() > 0) {
+                sr.rewards = rewardParts.substring(0, rewardParts.length() - 1);
+            }
             return sr;
         } catch (Exception e) {
             return classifyException(e, "仓库补给");
@@ -325,8 +334,10 @@ public final class ServerTasks {
                     || rsp.getContent().containsKey("rewards")
                     || rsp.getContent().containsKey("quest_ids");
             if (hasAward) {
-                return new TaskOutcome("daily_mission", "每日任务奖励", TaskOutcome.Category.CLAIMED,
+                TaskOutcome r = new TaskOutcome("daily_mission", "每日任务奖励", TaskOutcome.Category.CLAIMED,
                         "已完成任务奖励批量领取（未完成的任务由服务端自动跳过）");
+                r.rewards = com.carlos.vault.daily.RewardText.fromContent(rsp.getContent());
+                return r;
             }
             return new TaskOutcome("daily_mission", "每日任务奖励", TaskOutcome.Category.DEGRADED,
                     "响应无奖励字段，未确认到账（不视为成功）");
@@ -391,9 +402,12 @@ public final class ServerTasks {
             }
             if (claim.getContent().containsKey("rewards")
                     || claim.getContent().containsKey("reward")) {
-                return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.CLAIMED,
-                        "挂机奖励已领取" + descRewards(claim.getContent().get("rewards") != null
-                                ? claim.getContent().get("rewards") : claim.getContent().get("reward")));
+                String d = descRewards(claim.getContent().get("rewards") != null
+                        ? claim.getContent().get("rewards") : claim.getContent().get("reward"));
+                TaskOutcome r = new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.CLAIMED,
+                        "挂机奖励已领取" + d);
+                r.rewards = d;
+                return r;
             }
             return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.SKIPPED,
                     "当前暂无可领取的挂机奖励");
@@ -406,6 +420,7 @@ public final class ServerTasks {
         try {
             tc.engine.collectNotifies(2500);
             int ok = 0, skip = 0, fail = 0;
+            StringBuilder rewardParts = new StringBuilder();   // 每个活动的领取明细（与 App 一致）
             String[][] noArg = {
                     {"月卡每日奖励", "req_month_card_get_daily_reaward"},
                     {"VIP每日经验", "req_vip_get_daily_exp"},
@@ -413,7 +428,7 @@ public final class ServerTasks {
                     {"每日特惠礼包", "req_daily_bundle_get_free_gift"},
             };
             for (String[] na : noArg) {
-                int[] c = tryClaim(tc, na[0], na[1], null);
+                int[] c = tryClaim(tc, na[0], na[1], null, rewardParts);
                 ok += c[0]; skip += c[1]; fail += c[3];
             }
             String[][] byId = {
@@ -436,14 +451,14 @@ public final class ServerTasks {
                 }
                 Map<String, Object> args = new LinkedHashMap<>();
                 args.put("id", id);
-                int[] c = tryClaim(tc, bi[0], bi[1], args);
+                int[] c = tryClaim(tc, bi[0], bi[1], args, rewardParts);
                 ok += c[0]; skip += c[1]; fail += c[3];
             }
             Long bpId = WjdrEngine.extractId(tc.engine.notifyContent("notify_battle_pass_info"));
             if (bpId != null) {
                 Map<String, Object> args = new LinkedHashMap<>();
                 args.put("id", bpId);
-                int[] c = tryClaim(tc, "英雄集结", "req_battle_pass_collect_all_reward", args);
+                int[] c = tryClaim(tc, "英雄集结", "req_battle_pass_collect_all_reward", args, rewardParts);
                 ok += c[0]; skip += c[1]; fail += c[3];
             } else {
                 skip++;
@@ -453,14 +468,19 @@ public final class ServerTasks {
             if (fail > 0) note.append("/失败").append(fail);
             TaskOutcome.Category cat = fail > 0 ? TaskOutcome.Category.ERROR
                     : (ok > 0 ? TaskOutcome.Category.CLAIMED : TaskOutcome.Category.SKIPPED);
-            return new TaskOutcome("activity_rewards", "活动奖励合集(17种)", cat,
+            TaskOutcome r = new TaskOutcome("activity_rewards", "活动奖励合集(17种)", cat,
                     note + "（未开放的活动自动跳过）");
+            if (rewardParts.length() > 0) {
+                r.rewards = rewardParts.substring(0, rewardParts.length() - 1);
+            }
+            return r;
         } catch (Exception e) {
             return classifyException(e, "活动奖励合集");
         }
     }
 
-    static int[] tryClaim(TaskContext tc, String name, String proto, Map<String, Object> args) {
+    static int[] tryClaim(TaskContext tc, String name, String proto, Map<String, Object> args,
+                          StringBuilder rewardsOut) {
         try {
             GameMessage rsp = tc.engine.request(proto, args);
             if (isDegraded(rsp)) {
@@ -474,6 +494,10 @@ public final class ServerTasks {
                     return new int[]{0, 1, 0, 0};
                 }
                 return new int[]{0, 0, 0, 1};
+            }
+            if (rewardsOut != null && rewardsOut.length() <= 600) {
+                String d = com.carlos.vault.daily.RewardText.fromContent(rsp.getContent());
+                if (!d.isEmpty()) rewardsOut.append(name).append("：").append(d).append("；");
             }
             return new int[]{1, 0, 0, 0};
         } catch (Exception e) {
@@ -501,8 +525,10 @@ public final class ServerTasks {
                 }
                 return classifyServerCode(c, "联盟宝箱");
             }
-            return new TaskOutcome("alliance_chest", "联盟宝箱", TaskOutcome.Category.CLAIMED,
+            TaskOutcome r = new TaskOutcome("alliance_chest", "联盟宝箱", TaskOutcome.Category.CLAIMED,
                     "联盟宝箱已批量领取" + descRewards(rsp.getContent().get("rewards")));
+            r.rewards = com.carlos.vault.daily.RewardText.fromContent(rsp.getContent());
+            return r;
         } catch (Exception e) {
             return classifyException(e, "联盟宝箱");
         }
@@ -511,6 +537,7 @@ public final class ServerTasks {
     static TaskOutcome allianceDonate(TaskContext tc) throws Exception {
         try {
             StringBuilder sb = new StringBuilder();
+            StringBuilder rewardParts = new StringBuilder();
             int ok = 0;
             String[][] steps = {
                     {"免费科技捐献", "req_alliance_science_donate"},
@@ -532,6 +559,8 @@ public final class ServerTasks {
                     }
                     ok++;
                     sb.append(st[0]).append("✓ ");
+                    String d = com.carlos.vault.daily.RewardText.fromContent(rsp.getContent());
+                    if (!d.isEmpty()) rewardParts.append(st[0]).append("：").append(d).append("；");
                 } catch (Exception ex) {
                     TaskOutcome r = classifyException(ex, st[0]);
                     if (r.category == TaskOutcome.Category.SESSION_CLOSED) return r;
@@ -539,10 +568,14 @@ public final class ServerTasks {
                 }
             }
             boolean anyDegraded = sb.toString().contains("响应异常");
-            return new TaskOutcome("alliance_donate", "联盟捐献",
+            TaskOutcome r = new TaskOutcome("alliance_donate", "联盟捐献",
                     anyDegraded ? TaskOutcome.Category.DEGRADED
                             : (ok > 0 ? TaskOutcome.Category.CLAIMED : TaskOutcome.Category.SKIPPED),
                     sb.length() == 0 ? "无结果" : sb.toString());
+            if (rewardParts.length() > 0) {
+                r.rewards = rewardParts.substring(0, rewardParts.length() - 1);
+            }
+            return r;
         } catch (Exception e) {
             return classifyException(e, "联盟捐献");
         }
@@ -643,7 +676,9 @@ public final class ServerTasks {
         }
         for (String k : evidenceKeys) {
             if (msg.getContent().containsKey(k)) {
-                return new TaskOutcome(proto, name, TaskOutcome.Category.CLAIMED, claimedMsg);
+                TaskOutcome r = new TaskOutcome(proto, name, TaskOutcome.Category.CLAIMED, claimedMsg);
+                r.rewards = com.carlos.vault.daily.RewardText.fromContent(msg.getContent());
+                return r;
             }
         }
         return new TaskOutcome(proto, name, TaskOutcome.Category.DEGRADED, "响应缺少预期字段，未确认到账");
@@ -716,7 +751,7 @@ public final class ServerTasks {
     }
 
     static String descRewards(Object rewards) {
-        return rewards == null ? ")" : rewards + ")";
+        return com.carlos.vault.daily.RewardText.describe(rewards);
     }
 
     static int toInt(Object v) {

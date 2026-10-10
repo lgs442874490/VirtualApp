@@ -241,6 +241,24 @@ final class ExecUtil {
         int ok, skip, degraded, fail;
         /** B表子项级：subId → "ok:文案"/"skip:文案"/"fail:文案"（随 DailyResult 落盘） */
         final java.util.Map<String, String> subResults = new java.util.LinkedHashMap<>();
+        /** 领取明细累计（"名称：物品×数；"），随 DailyResult.rewards 落盘供「领取内容」展示 */
+        private final StringBuilder rw = new StringBuilder();
+
+        /** 领取成功时从响应提取物品明细并累计（无明细字段则不计）。 */
+        void rewards(String name, GameMessage rsp) {
+            try {
+                if (rw.length() > 600) return;
+                String d = RewardText.fromContent(rsp == null ? null : rsp.getContent());
+                if (!d.isEmpty()) rw.append(name).append("：").append(d).append("；");
+            } catch (Throwable ignored) {
+            }
+        }
+
+        /** 累计的领取明细（去尾分隔符；空=未捕获到明细）。 */
+        String rewardsText() {
+            String s = rw.toString();
+            return s.endsWith("；") ? s.substring(0, s.length() - 1) : s;
+        }
 
         void subOk(String subId, String note) {
             subResults.put(subId, "ok:" + note);

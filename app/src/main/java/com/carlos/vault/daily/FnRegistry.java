@@ -42,6 +42,7 @@ public final class FnRegistry {
         l.add(new Fn("mail", "邮件奖励", CAT_REWARD, true, "自动读邮件并批量领取附件"));
         l.add(new Fn("supply", "仓库补给", CAT_REWARD, true, "普通仓库补给+限时体力补给（策略可选）"));
         l.add(new Fn("daily_mission", "每日任务", CAT_REWARD, true, "每日任务与活跃度奖励"));
+        l.add(new Fn("chapter_quest", "章节任务", CAT_REWARD, true, "章节奖励+章节任务+成长任务一键领取"));
         l.add(new Fn("adventure", "挂机奖励", CAT_REWARD, true, "挂机产量到期自动领取"));
         l.add(new Fn("activity_rewards", "活动奖励", CAT_REWARD, true, "月卡经验/战令/转盘等17种免费奖励"));
         l.add(new Fn("commander_gift", "统帅礼包", CAT_REWARD, true, "每日免费统帅礼包"));

@@ -231,6 +231,25 @@ public final class Exec {
         public final StringBuilder sb = new StringBuilder();
         public int ok, skip, degraded, fail;
         public final java.util.Map<String, String> subResults = new java.util.LinkedHashMap<>();
+        /** 领取明细累计（与 App ExecUtil.Multi 一致；随 TaskOutcome.rewards 落盘）。 */
+        private final StringBuilder rw = new StringBuilder();
+
+        /** 领取成功时从响应提取物品明细并累计（与 App ExecUtil.Multi.rewards 一致）。 */
+        public void rewards(String name, GameMessage rsp) {
+            try {
+                if (rw.length() > 600) return;
+                String d = com.carlos.vault.daily.RewardText.fromContent(
+                        rsp == null ? null : rsp.getContent());
+                if (!d.isEmpty()) rw.append(name).append("：").append(d).append("；");
+            } catch (Throwable ignored) {
+            }
+        }
+
+        /** 累计的领取明细（去尾分隔符；空=未捕获到明细）。 */
+        public String rewardsText() {
+            String s = rw.toString();
+            return s.endsWith("；") ? s.substring(0, s.length() - 1) : s;
+        }
 
         public void subOk(String subId, String note) {
             subResults.put(subId, "ok:" + note);
@@ -280,6 +299,7 @@ public final class Exec {
     /** Multi → TaskOutcome 收口（所有移植执行器统一用）。 */
     public static TaskOutcome result(Exec.Multi m, String id, String name) {
         TaskOutcome r = new TaskOutcome(id, name, m.cat(), m.note() + " " + m.sb);
+        r.rewards = m.rewardsText();
         r.subResults.putAll(m.subResults);
         return r;
     }

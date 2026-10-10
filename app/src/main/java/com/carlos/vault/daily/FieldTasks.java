@@ -93,6 +93,7 @@ final class FieldTasks {
 
     private static DailyResult done(ExecUtil.Multi m) {
         DailyResult rr = new DailyResult("gather", "野外采集", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -186,6 +187,7 @@ final class FieldTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("intel", "情报任务", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -196,11 +198,12 @@ final class FieldTasks {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
             engine.collectNotifies(1500);
-            org.json.JSONObject bp = FnParams.params(engine.appContext(),
-                    engine.lastFpid(), engine.lastServerId(), "behemoth");
-            if (!bp.optBoolean("auto_join", true)) {
+            if (!FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "behemoth", "auto_join", true)) {
                 m.skip("自动上车已关闭（设置页可开）");
                 DailyResult rr = new DailyResult("behemoth", "巨兽狩猎", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
             }
@@ -220,6 +223,7 @@ final class FieldTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("behemoth", "巨兽狩猎", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -281,6 +285,7 @@ final class FieldTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("bear", "巨熊行动", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -374,6 +379,7 @@ final class FieldTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("hunt", "自动狩猎", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }

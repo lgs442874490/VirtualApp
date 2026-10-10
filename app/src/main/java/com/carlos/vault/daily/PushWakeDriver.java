@@ -26,6 +26,8 @@ final class PushWakeDriver {
 
     static {
         WAKE_MAP.put("notify_dailyquests", "daily_mission");            // 原版#17 日常任务推送
+        WAKE_MAP.put("notify_growthquests", "chapter_quest");           // 成长任务列表（登录期到达）
+        WAKE_MAP.put("notify_chapterquests", "chapter_quest");          // 章节任务列表（登录期到达）
         WAKE_MAP.put("notify_fourteen_sign_info", "login_rewards");     // 原版#32 签到推送
         WAKE_MAP.put("notify_recover_resource_init", "supply");         // 原版#9 奖励推送
         WAKE_MAP.put("notify_recover_resource_update", "supply");
@@ -132,7 +134,8 @@ final class PushWakeDriver {
                 boolean ok = r.category == DailyResult.Category.CLAIMED
                         || r.category == DailyResult.Category.SKIPPED;
                 LogStore log = new LogStore(ctx);
-                log.append(ls.fpid, ls.sid, fnId, ok, r.toString(), "",
+                log.append(ls.fpid, ls.sid, fnId, ok, r.toString(),
+                        r.rewards == null ? "" : r.rewards,
                         "通知", r.durationMs, r.category.name(), 1);
                 log.setStatus(ls.fpid, ls.sid, fnId, ok ? LogStore.ST_DONE : LogStore.ST_FAILED);
                 log.applySubResults(ls.fpid, ls.sid, fnId, r.subResults);

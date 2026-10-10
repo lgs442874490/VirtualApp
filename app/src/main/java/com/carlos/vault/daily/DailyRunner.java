@@ -1095,7 +1095,8 @@ public class DailyRunner {
                     try {
                         boolean ok = res.category == DailyResult.Category.CLAIMED
                                 || res.category == DailyResult.Category.SKIPPED;
-                        ls.append(acc.fpid, sidF, res.taskId, ok, res.toString(), "",
+                        ls.append(acc.fpid, sidF, res.taskId, ok, res.toString(),
+                                res.rewards == null ? "" : res.rewards,
                                 DailyRunner.SOURCE, res.durationMs, res.category.name(), res.attempt);
                         ls.setStatus(acc.fpid, sidF, res.taskId,
                                 ok ? LogStore.ST_DONE : LogStore.ST_FAILED);

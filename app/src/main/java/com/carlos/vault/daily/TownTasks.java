@@ -25,23 +25,32 @@ final class TownTasks {
         captureHeroSearch(engine);
         // 1. 免费英雄招募（高级 search_type=1 免费次数；史诗 search_type=2 48小时一次）
         try {
+            android.content.Context rctx = engine.appContext();
+            String rfpid = engine.lastFpid() == null ? "" : engine.lastFpid();
+            long rsid = engine.lastServerId();
+            boolean doFree = FnParams.subOn(rctx, rfpid, rsid, "town_affairs", "recruit_free", true);
+            boolean doEpic = FnParams.subOn(rctx, rfpid, rsid, "town_affairs", "recruit_epic", true);
             int free = 0;
-            for (int i = 0; i < 5; i++) {
-                GameMessage rsp = engine.request("req_hero_search_times",
-                        ExecUtil.args("search_type", 1, "cost_type", 1, "times", 1));
-                if (ExecUtil.ok(rsp)) {
-                    free++;
-                } else {
-                    break;
+            if (doFree) {
+                for (int i = 0; i < 5; i++) {
+                    GameMessage rsp = engine.request("req_hero_search_times",
+                            ExecUtil.args("search_type", 1, "cost_type", 1, "times", 1));
+                    if (ExecUtil.ok(rsp)) {
+                        free++;
+                    } else {
+                        break;
+                    }
                 }
             }
             if (free > 0) { m.claimed("高级招募×" + free); m.subOk("recruit_free", "招募×" + free); }
-            else { m.skip("免费招募无次数"); m.subSkip("recruit_free", "今日无免费次数"); }
+            else { m.skip("免费招募无次数"); m.subSkip("recruit_free", doFree ? "今日无免费次数" : "已关闭"); }
 
-            GameMessage epic = engine.request("req_hero_search_times",
-                    ExecUtil.args("search_type", 2, "cost_type", 1, "times", 1));
-            if (ExecUtil.ok(epic)) { m.claimed("史诗招募"); m.subOk("recruit_epic", "史诗招募已招"); }
-            else { m.skip("史诗招募未到时间"); m.subSkip("recruit_epic", "未到48小时"); }
+            if (doEpic) {
+                GameMessage epic = engine.request("req_hero_search_times",
+                        ExecUtil.args("search_type", 2, "cost_type", 1, "times", 1));
+                if (ExecUtil.ok(epic)) { m.claimed("史诗招募"); m.subOk("recruit_epic", "史诗招募已招"); }
+                else { m.skip("史诗招募未到时间"); m.subSkip("recruit_epic", "未到48小时"); }
+            }
         } catch (Exception e) {
             if (sessionLost(e)) return DailyTasks.classifyException(e, "城镇管理");
             m.fail("招募:" + DailyTasks.brief(String.valueOf(e.getMessage())));
@@ -82,6 +91,7 @@ final class TownTasks {
             }
         }
         DailyResult rr = new DailyResult("town_affairs", "城镇管理", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -232,11 +242,17 @@ final class TownTasks {
             Map<Long, Long> wound = ExecUtil.kvPairs(w);
             long total = 0;
             for (long v : wound.values()) total += v;
+            boolean doHeal = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "medic", "heal", true);
             if (total <= 0) {
                 m.skip("无伤兵");
                 m.subSkip("heal", "无伤兵");
                 mod(engine, "medic", "heal", "当前无伤兵 · " + new java.text.SimpleDateFormat(
                         "HH:mm", java.util.Locale.CHINA).format(new java.util.Date()) + "检查");
+            } else if (!doHeal) {
+                m.skip("治疗已关闭");
+                m.subSkip("heal", "已关闭");
             } else {
                 List<Map<String, Object>> batch = new ArrayList<>();
                 for (Map.Entry<Long, Long> e : wound.entrySet()) {
@@ -258,15 +274,20 @@ final class TownTasks {
             if (sessionLost(e)) return DailyTasks.classifyException(e, "军医所");
             m.fail("治疗:" + DailyTasks.brief(String.valueOf(e.getMessage())));
         }
-        try {
-            GameMessage help = engine.request("req_alliance_help_all", null);
-            if (ExecUtil.ok(help)) { m.claimed("联盟一键求助/互助"); m.subOk("help_all", "已互助全盟"); }
-            else { m.skip("联盟求助不可用(码" + ExecUtil.codeOf(help) + ")"); m.subSkip("help_all", "码" + ExecUtil.codeOf(help)); }
-        } catch (Exception e) {
-            if (sessionLost(e)) return DailyTasks.classifyException(e, "军医所");
-            m.skip("联盟求助未执行");
+        if (FnParams.subOn(engine.appContext(),
+                engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                "medic", "help_all", true)) {
+            try {
+                GameMessage help = engine.request("req_alliance_help_all", null);
+                if (ExecUtil.ok(help)) { m.claimed("联盟一键求助/互助"); m.subOk("help_all", "已互助全盟"); }
+                else { m.skip("联盟求助不可用(码" + ExecUtil.codeOf(help) + ")"); m.subSkip("help_all", "码" + ExecUtil.codeOf(help)); }
+            } catch (Exception e) {
+                if (sessionLost(e)) return DailyTasks.classifyException(e, "军医所");
+                m.skip("联盟求助未执行");
+            }
         }
         DailyResult rr = new DailyResult("medic", "军医所", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -389,6 +410,7 @@ final class TownTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult r = new DailyResult("barracks", "兵营训练", m.cat(), m.note() + " " + m.sb);
+        r.rewards = m.rewardsText();
         r.subResults.putAll(m.subResults);
         return r;
     }
@@ -560,22 +582,23 @@ final class TownTasks {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
             engine.collectNotifies(2000);
-            org.json.JSONObject pp2 = FnParams.params(engine.appContext(),
-                    engine.lastFpid(), engine.lastServerId(), "pet");
+            android.content.Context pctx = engine.appContext();
+            String pfpid = engine.lastFpid() == null ? "" : engine.lastFpid();
+            long psid = engine.lastServerId();
             // 1. 批量开战斗技能
             List<Object> skills = new ArrayList<>();
             for (long s : new long[]{550051L, 550071L, 550081L, 550091L, 550101L,
                     550111L, 550121L, 550131L, 550141L}) {
                 skills.add(s);
             }
-            if (pp2.optBoolean("skills", true)) {
+            if (FnParams.subOn(pctx, pfpid, psid, "pet", "skills", true)) {
                 GameMessage sk = engine.request("req_pet_use_skill",
                         ExecUtil.args("skill_id_lst", skills));
                 if (ExecUtil.ok(sk)) { m.claimed("宠物技能"); m.subOk("skills", "技能已开"); }
                 else { m.skip("宠物技能冷却/不可用(码" + ExecUtil.codeOf(sk) + ")"); m.subSkip("skills", "码" + ExecUtil.codeOf(sk)); }
             }
             // 2. 寻宝：先批量领联盟宝箱，再按通知逐区领奖+派遣
-            if (pp2.optBoolean("alliance_chest", true)) {
+            if (FnParams.subOn(pctx, pfpid, psid, "pet", "alliance_chest", true)) {
                 GameMessage ab = engine.request("req_pet_adventure_batch_take_alliance_reward", null);
                 if (ExecUtil.ok(ab)) { m.claimed("联盟寻宝宝箱"); m.subOk("alliance_chest", "宝箱已领"); }
                 else { m.skip("联盟宝箱无可领(码" + ExecUtil.codeOf(ab) + ")"); m.subSkip("alliance_chest", "码" + ExecUtil.codeOf(ab)); }
@@ -590,7 +613,7 @@ final class TownTasks {
                     if (id > 0) petIds.add(id);
                 }
             }
-            if (adv != null && !petIds.isEmpty() && pp2.optBoolean("adventure", true)) {
+            if (adv != null && !petIds.isEmpty() && FnParams.subOn(pctx, pfpid, psid, "pet", "adventure", true)) {
                 int claimed = 0, sent = 0;
                 for (Map<String, Object> area : ExecUtil.mapsOf(adv.get("areas"))) {
                     long aid = ExecUtil.longOf(area.get("id"));
@@ -626,6 +649,7 @@ final class TownTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("pet", "宠物", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -658,9 +682,9 @@ final class TownTasks {
                 }
                 if (ExecUtil.ok(recv)) { m.claimed("行动力已领"); m.subOk("energy", "行动力已领"); }
                 else m.subSkip("energy", "行动力不可领");
-                org.json.JSONObject ep = FnParams.params(engine.appContext(),
-                        engine.lastFpid(), engine.lastServerId(), "expert");
-                if (ep.optBoolean("buy_energy", false)) {
+                if (FnParams.subOn(engine.appContext(),
+                        engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                        "expert", "buy", false)) {
                     for (int i = 0; i < 4; i++) {
                         GameMessage be = engine.request("req_travel_buy_energy", null);
                         if (!ExecUtil.ok(be)) break;
@@ -696,6 +720,7 @@ final class TownTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("expert", "专家游历", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -706,23 +731,34 @@ final class TownTasks {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
             engine.collectNotifies(1500);
-            tryStep(engine, m, "晨曦回礼", "free", "req_homeland_gain_free_production", null);
-            tryStep(engine, m, "生命之树", "tree", "req_homeland_take_life_tree_coin", null);
-            // 伐木小屋/加工厂需要坐标：从家园通知里找 point
-            Map<String, Object> hi = engine.notifyContent("notify_homeland_info");
-            List<Map<String, Object>> pts = new ArrayList<>();
-            if (hi != null) {
-                collectPoints(hi, pts, 0);
+            android.content.Context hctx = engine.appContext();
+            String hfpid = engine.lastFpid() == null ? "" : engine.lastFpid();
+            long hsid = engine.lastServerId();
+            if (FnParams.subOn(hctx, hfpid, hsid, "homeland", "free", true)) {
+                tryStep(engine, m, "晨曦回礼", "free", "req_homeland_gain_free_production", null);
             }
-            if (pts.isEmpty()) {
-                m.skip("伐木点未同步");
+            if (FnParams.subOn(hctx, hfpid, hsid, "homeland", "tree", true)) {
+                tryStep(engine, m, "生命之树", "tree", "req_homeland_take_life_tree_coin", null);
+            }
+            // 伐木小屋/加工厂需要坐标：从家园通知里找 point
+            if (!FnParams.subOn(hctx, hfpid, hsid, "homeland", "logging", true)) {
+                m.subSkip("logging", "已关闭");
             } else {
-                Map<String, Object> p = pts.get(0);
-                tryStep(engine, m, "伐木小屋", "logging", "req_homeland_take_logging_cabin_tree",
-                        ExecUtil.args("point", p));
-                if (pts.size() > 1) {
-                    tryStep(engine, m, "木材加工厂", "req_homeland_take_logging_site_coin",
-                            ExecUtil.args("point", pts.get(1)));
+                Map<String, Object> hi = engine.notifyContent("notify_homeland_info");
+                List<Map<String, Object>> pts = new ArrayList<>();
+                if (hi != null) {
+                    collectPoints(hi, pts, 0);
+                }
+                if (pts.isEmpty()) {
+                    m.skip("伐木点未同步");
+                } else {
+                    Map<String, Object> p = pts.get(0);
+                    tryStep(engine, m, "伐木小屋", "logging", "req_homeland_take_logging_cabin_tree",
+                            ExecUtil.args("point", p));
+                    if (pts.size() > 1) {
+                        tryStep(engine, m, "木材加工厂", "req_homeland_take_logging_site_coin",
+                                ExecUtil.args("point", pts.get(1)));
+                    }
                 }
             }
         } catch (Exception e) {
@@ -730,6 +766,7 @@ final class TownTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("homeland", "晨曦岛", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -780,10 +817,13 @@ final class TownTasks {
                 mod(engine, "fire_crystal", "purify", "上轮提炼 " + done + " 次");
             }
             else if (m.sb.length() == 0) { m.skip("今日提炼已达上限或未解锁"); m.subSkip("purify", "达上限或未解锁"); }
-            // 超级提炼（配置次数，耗火晶）
+            // 超级提炼（子项开关，默认关；次数可选配 super_times，默认 1 次/轮）
             org.json.JSONObject fp = FnParams.params(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "fire_crystal");
-            int superN = Math.max(0, Math.min(50, fp.optInt("super_purify", 0)));
+            boolean superOn = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "fire_crystal", "super", false);
+            int superN = superOn ? Math.max(1, Math.min(50, fp.optInt("super_times", 1))) : 0;
             int superDone = 0;
             for (int i = 0; i < superN; i++) {
                 GameMessage sp = engine.request("req_spar_super_purify",
@@ -791,12 +831,13 @@ final class TownTasks {
                 if (ExecUtil.ok(sp)) superDone++;
                 else break;
             }
-            if (superDone > 0) m.claimed("超炼×" + superDone);
+            if (superDone > 0) { m.claimed("超炼×" + superDone); m.subOk("super", "超炼×" + superDone); }
         } catch (Exception e) {
             if (sessionLost(e)) return DailyTasks.classifyException(e, "火晶提炼");
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("fire_crystal", "火晶提炼", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -825,6 +866,7 @@ final class TownTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("climbtower", "地心探索", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -920,6 +962,7 @@ final class TownTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("arena", "竞技场", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -953,6 +996,7 @@ final class TownTasks {
         int code = ExecUtil.codeOf(rsp);
         if (ExecUtil.ok(rsp)) {
             m.claimed(name);
+            m.rewards(name, rsp);
             if (subId != null) m.subOk(subId, name + "✓");
         } else if (code == 15005 || code == 15029 || code == 15048 || code == 2 || code == 7401 || code == 7404) {
             m.skip(name + "无可收");

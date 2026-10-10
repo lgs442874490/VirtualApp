@@ -37,7 +37,10 @@ final class LeagueTasks {
                             if (pos > 0 && target > 0 && progress >= target) {
                                 GameMessage r = engine.request("req_mobilization_get_quest_reward",
                                         ExecUtil.args("pos", pos));
-                                if (ExecUtil.ok(r)) claimed++;
+                                if (ExecUtil.ok(r)) {
+                                    claimed++;
+                                    m.rewards("任务奖励", r);
+                                }
                             }
                         }
                     }
@@ -48,7 +51,10 @@ final class LeagueTasks {
                 if (ExecUtil.ok(buy)) m.claimed("接取次数+1");
                 // 里程碑批量领取
                 GameMessage ms = engine.request("req_mobilization_batch_get_milestone", null);
-                if (ExecUtil.ok(ms)) m.claimed("里程碑");
+                if (ExecUtil.ok(ms)) {
+                    m.claimed("里程碑");
+                    m.rewards("里程碑", ms);
+                }
                 else if (ExecUtil.codeOf(ms) != 8413) m.skip("里程碑码" + ExecUtil.codeOf(ms));
             }
         } catch (Exception e) {
@@ -56,6 +62,7 @@ final class LeagueTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("alliance_mobilization", "联盟总动员", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -88,6 +95,7 @@ final class LeagueTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("alliance_showdown", "争霸赛", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -138,8 +146,6 @@ final class LeagueTasks {
             } else {
                 List<Map<String, Object>> params = new ArrayList<>();
                 int used = 0;
-                org.json.JSONObject bpk = FnParams.params(engine.appContext(),
-                        engine.lastFpid(), engine.lastServerId(), "backpack");
                 // 固定资源包（普通 100111~100115：100/1k/1w/10w/100w 档）
                 for (long id = 100111; id <= 100111 + 4; id++) {
                     Long cnt = items.get(id);
@@ -149,7 +155,9 @@ final class LeagueTasks {
                     }
                 }
                 // 随机补给箱（可选，默认关）
-                if (bpk.optBoolean("random_boxes", false)) {
+                if (FnParams.subOn(engine.appContext(),
+                        engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                        "backpack", "random", false)) {
                     for (long id = 100091; id <= 100093; id++) {
                         Long cnt = items.get(id);
                         if (cnt != null && cnt > 0) {
@@ -162,7 +170,10 @@ final class LeagueTasks {
                     m.skip("无资源包可开");
                 } else {
                     GameMessage rsp = engine.request("req_batch_use_item", ExecUtil.args("params", params));
-                    if (ExecUtil.ok(rsp)) m.claimed("开启资源包×" + used);
+                    if (ExecUtil.ok(rsp)) {
+                        m.claimed("开启资源包×" + used);
+                        m.rewards("资源包", rsp);
+                    }
                     else m.skip("使用码" + ExecUtil.codeOf(rsp));
                 }
             }
@@ -171,6 +182,7 @@ final class LeagueTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("backpack", "背包道具", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }

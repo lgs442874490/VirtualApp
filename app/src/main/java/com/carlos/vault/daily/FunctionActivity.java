@@ -616,8 +616,8 @@ public class FunctionActivity extends Activity {
                 + " 天 · " + (hasPay ? "史诗通行证已激活" : "后 7 天为史诗轨（需通行证）"));
         giftBanner.setLineSpacing(dp(3), 1f);
 
-        String[][] free = loginRewardsFree(round);
-        String[][] epic = loginRewardsEpic(round);
+        String[][] free = RewardText.loginRewardsFree(round);
+        String[][] epic = RewardText.loginRewardsEpic(round);
         boolean anyClaimable = false;
         LinearLayout row = null;
         for (int i = 0; i < 14; i++) {
@@ -723,71 +723,6 @@ public class FunctionActivity extends Activity {
         for (int i = 0; i < arr.length(); i++) out.add(arr.optLong(i, -1));
         return out;
     }
-
-    /** 奖励目录（照原版 DailyLoginRewardCatalog 三轮次）：[day][物品描述]。 */
-    private static String itemName(long id) {
-        switch ((int) id) {
-            case 100003: return "钻石";
-            case 100004: return "1000肉";
-            case 100072: return "5000英雄经验";
-            case 100081: return "传说装备自选箱";
-            case 200102: return "5分钟加速";
-            case 200103: return "1小时加速";
-            case 200202: return "建造加速5分钟";
-            case 200203: return "建造加速1小时";
-            case 200302: return "训练加速5分钟";
-            case 200303: return "训练加速1小时";
-            case 200402: return "研究加速5分钟";
-            case 200403: return "研究加速1小时";
-            case 500200: return "传说探险技能书";
-            case 500210: return "传说远征技能书";
-            case 500220: return "传说英雄信物";
-            case 500221: return "史诗英雄信物";
-            case 600021: return "强韧合金";
-            case 600022: return "抛光液";
-            case 600023: return "设计图纸";
-            case 600024: return "宝石图纸";
-            case 600025: return "精工图纸";
-            default: return "奖励" + id;
-        }
-    }
-
-    private static String[] line(long id, long cnt) {
-        return new String[]{itemName(id) + "×" + cnt};
-    }
-
-    private static String[][] loginRewardsFree(int round) {
-        if (round == 5004002 || round == 5004003) {
-            return new String[][]{line(100003, 1), line(200102, 1), line(200202, 1),
-                    line(600021, 50), line(200402, 1), line(200302, 1), line(600022, 1)};
-        }
-        return new String[][]{line(100003, 1), line(200102, 1), line(200202, 1),
-                line(100072, 1), line(200402, 1), line(200302, 1), line(500221, 1)};
-    }
-
-    private static String[][] loginRewardsEpic(int round) {
-        if (round == 5004001) {
-            return new String[][]{
-                    new String[]{"1000肉×1", "传说英雄信物×1"},
-                    new String[]{"5分钟加速×12", "1小时加速×1"},
-                    new String[]{"1小时加速×1", "建造加速1小时×1"},
-                    new String[]{"传说探险技能书×5", "传说远征技能书×5"},
-                    new String[]{"1小时加速×1", "研究加速1小时×1"},
-                    new String[]{"1小时加速×1", "训练加速1小时×1"},
-                    new String[]{"史诗英雄信物×1", "传说英雄信物×1"}};
-        }
-        int epic81 = round == 5004003 ? 7 : 5;   // 第三轮 D2 传说装备箱×7
-        int epic81b = round == 5004003 ? 8 : 5;  // 第三轮 D6 传说装备箱×8
-        return new String[][]{
-                new String[]{"1000肉×1", "传说英雄信物×1"},
-                new String[]{"1小时加速×1", "传说装备自选箱×" + epic81},
-                new String[]{"建造加速1小时×1", "宝石图纸×2"},
-                new String[]{"传说探险技能书×5", "传说远征技能书×5"},
-                new String[]{"研究加速1小时×1", "精工图纸×2"},
-                new String[]{"训练加速1小时×1", "传说装备自选箱×" + epic81b},
-                new String[]{"设计图纸×2", "传说英雄信物×1"}};
-    }
-
 
     // ---------- 各奖励功能专属区（统一标准：横幅 + 可视化数据 + 行动按钮） ----------
 
@@ -1096,12 +1031,15 @@ public class FunctionActivity extends Activity {
         List<LogStore.Entry> es = logStore.logs(account.fpid, serverid, fn.id);
         int claimCnt = 0;
         for (LogStore.Entry e : es) {
-            if (e.ok && (e.reason.contains("领") || e.reason.contains("×"))) {
-                String one = e.reason.replace("✅", "").replace("⏭", "").trim();
-                claims.append("· ").append(one).append("（")
-                        .append(f1.format(new java.util.Date(e.ts))).append("）\n");
-                if (++claimCnt >= 20) break;
-            }
+            // 只收领取成功条目：新条目看 category，旧条目（无 category 字段）按 DailyResult 符号兜底
+            boolean claimed = "CLAIMED".equals(e.category)
+                    || (e.category.isEmpty() && e.reason.startsWith("✅"));
+            if (!e.ok || !claimed) continue;
+            // 展示"领到了什么"（物品明细优先），不再把时间点当内容罗列
+            String line = RewardText.claimLine(e.reason, e.detail);
+            if (line.isEmpty()) continue;
+            claims.append("· ").append(line.replace("\n", "\n  ")).append('\n');
+            if (++claimCnt >= 20) break;
         }
         claimView.setText(claimCnt == 0 ? "暂无领取记录" : claims.toString().trim());
         claimView.setTextColor(claimCnt == 0 ? UiStyle.INK2 : UiStyle.INK);
@@ -1150,7 +1088,8 @@ public class FunctionActivity extends Activity {
             protected void onPostExecute(DailyResult r) {
                 try { pd.dismiss(); } catch (Throwable ignored) { }
                 logStore.append(acc.fpid, sid, fn.id,
-                        r.category == DailyResult.Category.CLAIMED, r.toString(), "",
+                        r.category == DailyResult.Category.CLAIMED, r.toString(),
+                        r.rewards == null ? "" : r.rewards,
                         "手动", r.durationMs, r.category.name(), r.attempt);
                 logStore.setStatus(acc.fpid, sid, fn.id,
                         r.category == DailyResult.Category.CLAIMED || r.category == DailyResult.Category.SKIPPED

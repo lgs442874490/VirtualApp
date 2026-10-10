@@ -44,7 +44,10 @@ final class ActivityTasks {
                     if (coin < t) break;
                     GameMessage r = engine.request("req_balloon_coin_exchange",
                             ExecUtil.args("id", BALLOON_ID, "exchange_num", t));
-                    if (ExecUtil.ok(r)) exOk++;
+                    if (ExecUtil.ok(r)) {
+                        exOk++;
+                        m.rewards("兑换档" + t, r);
+                    }
                 }
                 if (exOk > 0) m.claimed("兑换×" + exOk);
             }
@@ -76,6 +79,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_balloon", "正中靶心", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -121,7 +125,10 @@ final class ActivityTasks {
                 GameMessage se = engine.request("req_pitch_pot_settle", ExecUtil.args(
                         "id", id, "score", 4650L, "achieve", achieve,
                         "n_normal", 8L, "n_advance", 3L));
-                if (ExecUtil.ok(se)) m.claimed("满分结算(4650分)");
+                if (ExecUtil.ok(se)) {
+                    m.claimed("满分结算(4650分)");
+                    m.rewards("满分结算", se);
+                }
                 else m.fail("结算码" + ExecUtil.codeOf(se));
                 break;
             }
@@ -138,7 +145,10 @@ final class ActivityTasks {
                     if (qid <= 0 || actId <= 0 || prog < pitchpotTarget(qid)) continue;
                     GameMessage r = engine.request("req_pitch_pot_task_reward",
                             ExecUtil.args("id", actId, "task_id", qid));
-                    if (ExecUtil.ok(r)) m.claimed("任务" + qid);
+                    if (ExecUtil.ok(r)) {
+                        m.claimed("任务" + qid);
+                        m.rewards("任务" + qid, r);
+                    }
                 }
             }
         } catch (Exception e) {
@@ -147,6 +157,7 @@ final class ActivityTasks {
         }
         if (m.sb.length() == 0) m.skip("活动未开放");
         DailyResult rr = new DailyResult("act_pitchpot", "壶纳千祥", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -189,7 +200,10 @@ final class ActivityTasks {
                     if (qid <= 0) continue;
                     GameMessage r = engine.request("req_snow_clean_task",
                             ExecUtil.args("id", id, "task_id", qid));
-                    if (ExecUtil.ok(r)) m.claimed("任务" + qid);
+                    if (ExecUtil.ok(r)) {
+                        m.claimed("任务" + qid);
+                        m.rewards("任务" + qid, r);
+                    }
                 }
                 TownTasks.tryStep(engine, m, "冰雪基金", "req_snow_fund_get_all_reward", null);
                 // 极速除雪：当前关连扫
@@ -222,6 +236,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_snowclean", "除雪小分队", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -254,14 +269,20 @@ final class ActivityTasks {
                     if (progress > 0) {
                         GameMessage pr = engine.request("req_icebound_amazing_progress_reward",
                                 ExecUtil.args("progress", progress, "activity_id", aid));
-                        if (ExecUtil.ok(pr)) m.claimed("积分档位奖励");
+                        if (ExecUtil.ok(pr)) {
+                            m.claimed("积分档位奖励");
+                            m.rewards("积分档位", pr);
+                        }
                     }
                     Map<String, Object> chest = ExecUtil.mapOf(info.get("chest"));
                     if (chest != null && !chest.isEmpty()) {
                         List<Object> ids = new ArrayList<>(chest.keySet());
                         GameMessage oc = engine.request("req_icebound_amazing_open_chest",
                                 ExecUtil.args("ids", ids, "activity_id", aid));
-                        if (ExecUtil.ok(oc)) m.claimed("宝箱×" + ids.size());
+                        if (ExecUtil.ok(oc)) {
+                            m.claimed("宝箱×" + ids.size());
+                            m.rewards("宝箱", oc);
+                        }
                     }
                 }
             } else {
@@ -272,6 +293,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_icebound", "冰封的宝藏", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -295,7 +317,10 @@ final class ActivityTasks {
                     if (state == 2) {
                         GameMessage r = engine.request("req_polar_expedition_get_chest",
                                 ExecUtil.args("id", id, "team_id", tid));
-                        if (ExecUtil.ok(r)) m.claimed("队列" + tid + "宝箱");
+                        if (ExecUtil.ok(r)) {
+                            m.claimed("队列" + tid + "宝箱");
+                            m.rewards("队列宝箱", r);
+                        }
                     } else if (state == 0) {
                         GameMessage r = engine.request("req_polar_expedition_start",
                                 ExecUtil.args("id", id, "team_id", tid));
@@ -308,6 +333,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_polar", "逐光之旅", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -321,7 +347,10 @@ final class ActivityTasks {
             GameMessage ach = engine.request("req_brawl_war_get_achievement_reward",
                     ExecUtil.args("id", 2438001L));
             int code = ExecUtil.codeOf(ach);
-            if (ExecUtil.ok(ach)) m.claimed("成就奖励");
+            if (ExecUtil.ok(ach)) {
+                m.claimed("成就奖励");
+                m.rewards("成就奖励", ach);
+            }
             else m.skip(code == 7401 || code == 7404 ? "活动未开放" : "成就码" + code);
             // 战场内自动战斗（匹配/迁城/循环打矿）逻辑复杂，待专项迭代
             m.skip("战斗部分待开放");
@@ -330,6 +359,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_brawl", "欢乐大乱斗", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -363,6 +393,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_fishing", "钓鱼", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -375,8 +406,10 @@ final class ActivityTasks {
                     ExecUtil.args("id", 2904006L));
             int code = ExecUtil.codeOf(rsp);
             if (ExecUtil.ok(rsp)) {
-                return new DailyResult("act_endless", "无尽征程", DailyResult.Category.CLAIMED,
+                DailyResult r = new DailyResult("act_endless", "无尽征程", DailyResult.Category.CLAIMED,
                         "里程碑奖励已领取");
+                r.rewards = RewardText.fromContent(rsp.getContent());
+                return r;
             }
             if (code == 11723) {
                 return new DailyResult("act_endless", "无尽征程", DailyResult.Category.SKIPPED, "暂无可领奖励");
@@ -417,6 +450,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_joy", "怪攻守城", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -459,6 +493,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_feast", "至尊盛宴", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -468,7 +503,17 @@ final class ActivityTasks {
     static DailyResult redPacket(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            android.content.Context rpctx = engine.appContext();
+            String rpfpid = engine.lastFpid() == null ? "" : engine.lastFpid();
+            long rpsid = engine.lastServerId();
             for (int channel = 1; channel <= 2; channel++) {
+                // 子项开关：alliance=联盟频道 / world=世界频道（默认开）
+                boolean on = FnParams.subOn(rpctx, rpfpid, rpsid, "red_packet",
+                        channel == 1 ? "alliance" : "world", true);
+                if (!on) {
+                    m.subSkip(channel == 1 ? "alliance" : "world", "已关闭");
+                    continue;
+                }
                 GameMessage rf = engine.request("req_red_packet_refresh",
                         ExecUtil.args("channel_type", channel, "id_lst", new ArrayList<>()));
                 if (!ExecUtil.ok(rf)) {
@@ -484,10 +529,14 @@ final class ActivityTasks {
                     GameMessage g = engine.request("req_red_packet_get", ExecUtil.args(
                             "channel_type", channel, "id", pid, "index", idx));
                     int code = ExecUtil.codeOf(g);
-                    if (ExecUtil.ok(g)) got++;
+                    if (ExecUtil.ok(g)) {
+                        got++;
+                        m.rewards((channel == 1 ? "联盟" : "世界") + "红包", g);
+                    }
                     else if (code == 16876) {
                         m.skip("今日配额已满");
                         DailyResult rr = new DailyResult("red_packet", "游戏红包", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
                     }
@@ -499,6 +548,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("red_packet", "游戏红包", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -518,11 +568,22 @@ final class ActivityTasks {
             if (use == null || amount <= 0) {
                 m.skip("无在存订单（默认不新增存款）");
             } else if (expire > 0 && expire * 1000L <= System.currentTimeMillis() + 2000) {
+                boolean doWithdraw = FnParams.subOn(engine.appContext(),
+                        engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                        "bank", "withdraw", true);
+                boolean doRedeposit = FnParams.subOn(engine.appContext(),
+                        engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                        "bank", "redeposit", true);
+                if (!doWithdraw) {
+                    m.skip("取款已关闭");
+                    m.subSkip("withdraw", "已关闭");
+                } else {
                 GameMessage wd = engine.request("req_bank_withdraw", null);
                 if (ExecUtil.ok(wd)) {
                     m.claimed("取款" + amount);
+                    m.rewards("取款", wd);
                     long reDep = amount / 100 * 100;
-                    if (reDep >= 100) {
+                    if (reDep >= 100 && doRedeposit) {
                         GameMessage dp = engine.request("req_bank_deopsit",
                                 ExecUtil.args("locker_id", lockerId, "amount", reDep));
                         if (ExecUtil.ok(dp)) m.claimed("续存" + reDep);
@@ -532,6 +593,7 @@ final class ActivityTasks {
                     int code = ExecUtil.codeOf(wd);
                     m.skip(code == 6157 ? "未到期" : "取款码" + code);
                 }
+                }
             } else {
                 m.skip("存款未到期");
             }
@@ -540,6 +602,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("bank", "钻石银行", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -600,6 +663,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_mercenary", "佣兵荣耀", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -625,7 +689,10 @@ final class ActivityTasks {
                     if (!finish) continue;
                     GameMessage r = engine.request("req_truck_escort_take_truck_reward",
                             ExecUtil.args("id", id, "truck_id", tid));
-                    if (ExecUtil.ok(r)) taken++;
+                    if (ExecUtil.ok(r)) {
+                        taken++;
+                        m.rewards("货车奖励", r);
+                    }
                 }
                 if (taken > 0) m.claimed("货车奖励×" + taken);
                 else m.skip("暂无送达货车");
@@ -652,6 +719,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_truck", "运宝车队", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }
@@ -675,7 +743,10 @@ final class ActivityTasks {
                     GameMessage col = engine.request("req_icefield_hunter2_collect_master_reward",
                             ExecUtil.args("id", id, "reward_id", 0L, "is_gain_all", true));
                     int code = ExecUtil.codeOf(col);
-                    if (ExecUtil.ok(col)) m.claimed("进度奖励");
+                    if (ExecUtil.ok(col)) {
+                        m.claimed("进度奖励");
+                        m.rewards("进度奖励", col);
+                    }
                     else if (code != 61 && code != 8251) m.skip("领奖码" + code);
 
                     GameMessage sp = engine.request("req_icefield_hunter_spawn_monster",
@@ -705,6 +776,7 @@ final class ActivityTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         DailyResult rr = new DailyResult("act_icehunter", "冰原猎人", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
     }

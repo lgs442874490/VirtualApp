@@ -18,6 +18,8 @@ public final class TaskOutcome {
     public final String taskName;
     public final Category category;
     public final String message;
+    /** 领取明细（与 App DailyResult.rewards 同构："普通补给：钻石×30"式，落盘到日志 detail）。 */
+    public String rewards = "";
     /** 子项级结果：subId → "ok:文案"/"skip:文案"/"fail:文案"。 */
     public final Map<String, String> subResults = new LinkedHashMap<>();
     public long durationMs;

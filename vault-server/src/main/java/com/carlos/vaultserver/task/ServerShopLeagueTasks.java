@@ -209,6 +209,7 @@ public final class ServerShopLeagueTasks {
                     if (Exec.ok(buy)) {
                         bought++;
                         m.claimed((meta == null ? confId : meta.name) + "×" + count);
+                        m.rewards(meta == null ? "商品" + confId : meta.name, buy);
                     } else if (code >= 800 && code <= 830) {
                         m.skip((meta == null ? confId : meta.name) + "条件不满足");
                     } else if (code == 10521 || code == 40240) {
@@ -438,7 +439,10 @@ public final class ServerShopLeagueTasks {
                             if (pos > 0 && target > 0 && progress >= target) {
                                 GameMessage r = tc.engine.request("req_mobilization_get_quest_reward",
                                         Exec.args("pos", pos));
-                                if (Exec.ok(r)) claimed++;
+                                if (Exec.ok(r)) {
+                                    claimed++;
+                                    m.rewards("任务奖励", r);
+                                }
                             }
                         }
                     }
@@ -447,7 +451,10 @@ public final class ServerShopLeagueTasks {
                 GameMessage buy = tc.engine.request("req_mobilization_buy_count", Exec.args("count", 1));
                 if (Exec.ok(buy)) m.claimed("接取次数+1");
                 GameMessage ms = tc.engine.request("req_mobilization_batch_get_milestone", null);
-                if (Exec.ok(ms)) m.claimed("里程碑");
+                if (Exec.ok(ms)) {
+                    m.claimed("里程碑");
+                    m.rewards("里程碑", ms);
+                }
                 else if (Exec.codeOf(ms) != 8413) m.skip("里程碑码" + Exec.codeOf(ms));
             }
         } catch (Exception e) {
@@ -544,7 +551,10 @@ public final class ServerShopLeagueTasks {
                     m.skip("无资源包可开");
                 } else {
                     GameMessage rsp = tc.engine.request("req_batch_use_item", Exec.args("params", params));
-                    if (Exec.ok(rsp)) m.claimed("开启资源包×" + used);
+                    if (Exec.ok(rsp)) {
+                        m.claimed("开启资源包×" + used);
+                        m.rewards("资源包", rsp);
+                    }
                     else m.skip("使用码" + Exec.codeOf(rsp));
                 }
             }

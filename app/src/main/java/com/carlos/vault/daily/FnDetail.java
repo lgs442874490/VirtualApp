@@ -49,6 +49,10 @@ public final class FnDetail {
                         new String[][]{{"now", "刷新即领取"}, {"end30", "截止前30分钟"}, {"end60", "截止前60分钟"}, {"custom", "自定义(分钟)"}}));
         fn("daily_mission",
                 new Sub("claim", "批量领奖", "把已达成的每日任务奖励一次性领取（含活跃度宝箱到档）", true, null));
+        fn("chapter_quest",
+                new Sub("chapter", "章节奖励", "当前章节（含上一章兜底）的章节奖励领取", true, null),
+                new Sub("chapter_quest", "章节任务", "notify_chapterquests 中列表任务逐个领取", true, null),
+                new Sub("growth_quest", "成长任务", "notify_growthquests 中列表任务逐个领取", true, null));
         fn("adventure",
                 new Sub("hang_up", "挂机产量", "探险挂机奖励到期自动领取（约10分钟一领）", true,
                         new String[][]{{"0", "总是领取"}, {"300", "≥5分钟"}, {"600", "≥10分钟"}, {"1800", "≥30分钟"}}));
@@ -101,7 +105,7 @@ public final class FnDetail {
                 new Sub("logging", "伐木小屋/加工厂", "按家园通知坐标收取木材产物", true, null));
         fn("fire_crystal",
                 new Sub("purify", "普通提炼", "普通火晶提炼至每日上限", true, null),
-                new Sub("super", "超级提炼", "按配置次数超级提炼（消耗火晶，默认0次）", false, null));
+                new Sub("super", "超级提炼", "开关打开后每轮超炼1次（可在参数 super_times 配次数，消耗火晶）", false, null));
         fn("climbtower",
                 new Sub("sweep", "每日扫荡", "按星期自动扫荡今日开放的地心之塔", true, null));
         fn("arena",
@@ -185,7 +189,9 @@ public final class FnDetail {
 
         // ===== 商店/其他 =====
         fn("shop",
-                new Sub("buy", "按清单购买", "先选店铺勾选商品，运行时按限购与币种余额自动购买", true, null));
+                new Sub("buy", "按清单购买", "先选店铺勾选商品，运行时按限购与币种余额自动购买", true, null),
+                new Sub("refresh_diamond", "钻石刷新货架", "流动商人免费刷新(3次)用完后，继续用钻石刷新直到刷出勾选商品；策略=最多钻石刷新次数", false,
+                        new String[][]{{"0", "关闭"}, {"5", "再刷5次"}, {"10", "再刷10次"}, {"20", "再刷20次"}}));
         fn("alliance_shop",
                 new Sub("buy", "联盟日/周商店", "联盟币商品按勾选清单购买", true, null));
         fn("act_flamefangs",

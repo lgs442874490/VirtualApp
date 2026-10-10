@@ -173,9 +173,13 @@ final class TownDevTasks {
             int code = ExecUtil.codeOf(rsp);
             if (ExecUtil.ok(rsp)) {
                 m.claimed("研究 " + (t == null ? tid : t.name) + " → Lv" + toLevel);
-                GameMessage help = engine.request("req_queue_ask_for_help",
-                        ExecUtil.args("qid", s.idleResearchQueue));
-                if (!ExecUtil.ok(help)) m.skip("联盟求助不可用");
+                if (FnParams.subOn(engine.appContext(),
+                        engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                        "research", "help", true)) {
+                    GameMessage help = engine.request("req_queue_ask_for_help",
+                            ExecUtil.args("qid", s.idleResearchQueue));
+                    if (!ExecUtil.ok(help)) m.skip("联盟求助不可用");
+                }
             } else if (code == 51) {
                 m.skip("研究资源不足");
             } else if (code == 4111) {
@@ -283,9 +287,13 @@ final class TownDevTasks {
                     s.buildingLevels.put(bid, toLevel);
                     s.busyBuildings.add(bid);
                     m.claimed((b == null ? bid : b.name) + "→Lv" + toLevel);
-                    GameMessage help = engine.request("req_queue_ask_for_help",
-                            ExecUtil.args("qid", qid));
-                    if (!ExecUtil.ok(help)) m.skip("求助不可用");
+                    if (FnParams.subOn(engine.appContext(),
+                            engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                            "building", "help", true)) {
+                        GameMessage help = engine.request("req_queue_ask_for_help",
+                                ExecUtil.args("qid", qid));
+                        if (!ExecUtil.ok(help)) m.skip("求助不可用");
+                    }
                 } else if (code == 51) {
                     m.skip("资源不足，停止本轮");
                     break;

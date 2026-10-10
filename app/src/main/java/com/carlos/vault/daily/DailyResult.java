@@ -18,6 +18,8 @@ public class DailyResult {
     public final String taskName;
     public final Category category;
     public final String message;
+    /** 领取明细（"普通补给：钻石×30；体力补给：体力×100"式），落盘到日志 detail 供「领取内容」展示；空=响应未带明细。 */
+    public String rewards = "";
     /** B表子项级结果：subId → "ok:文案"/"skip:文案"/"fail:文案"（执行器填充，落盘到日志表） */
     public final java.util.Map<String, String> subResults = new java.util.LinkedHashMap<>();
     /** 执行信息（非构造必需，由执行链路填充后随日志落盘；对标原版 daily_execution_log 同名字段）。 */

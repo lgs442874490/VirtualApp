@@ -40,7 +40,10 @@ public final class ServerActivityTasks {
                     if (coin < t) break;
                     GameMessage r = tc.engine.request("req_balloon_coin_exchange",
                             Exec.args("id", BALLOON_ID, "exchange_num", t));
-                    if (Exec.ok(r)) exOk++;
+                    if (Exec.ok(r)) {
+                        exOk++;
+                        m.rewards("兑换档" + t, r);
+                    }
                 }
                 if (exOk > 0) m.claimed("兑换×" + exOk);
             }
@@ -114,7 +117,10 @@ public final class ServerActivityTasks {
                 GameMessage se = tc.engine.request("req_pitch_pot_settle", Exec.args(
                         "id", id, "score", 4650L, "achieve", achieve,
                         "n_normal", 8L, "n_advance", 3L));
-                if (Exec.ok(se)) m.claimed("满分结算(4650分)");
+                if (Exec.ok(se)) {
+                    m.claimed("满分结算(4650分)");
+                    m.rewards("满分结算", se);
+                }
                 else m.fail("结算码" + Exec.codeOf(se));
                 break;
             }
@@ -130,7 +136,10 @@ public final class ServerActivityTasks {
                     if (qid <= 0 || actId <= 0 || prog < pitchpotTarget(qid)) continue;
                     GameMessage r = tc.engine.request("req_pitch_pot_task_reward",
                             Exec.args("id", actId, "task_id", qid));
-                    if (Exec.ok(r)) m.claimed("任务" + qid);
+                    if (Exec.ok(r)) {
+                        m.claimed("任务" + qid);
+                        m.rewards("任务" + qid, r);
+                    }
                 }
             }
         } catch (Exception e) {
@@ -178,7 +187,10 @@ public final class ServerActivityTasks {
                     if (qid <= 0) continue;
                     GameMessage r = tc.engine.request("req_snow_clean_task",
                             Exec.args("id", id, "task_id", qid));
-                    if (Exec.ok(r)) m.claimed("任务" + qid);
+                    if (Exec.ok(r)) {
+                        m.claimed("任务" + qid);
+                        m.rewards("任务" + qid, r);
+                    }
                 }
                 ServerTownTasks.tryStep(tc, m, "冰雪基金", "req_snow_fund_get_all_reward", null);
                 long mission = Exec.longOf(ni.get("mission"));
@@ -240,14 +252,20 @@ public final class ServerActivityTasks {
                     if (progress > 0) {
                         GameMessage pr = tc.engine.request("req_icebound_amazing_progress_reward",
                                 Exec.args("progress", progress, "activity_id", aid));
-                        if (Exec.ok(pr)) m.claimed("积分档位奖励");
+                        if (Exec.ok(pr)) {
+                            m.claimed("积分档位奖励");
+                            m.rewards("积分档位", pr);
+                        }
                     }
                     Map<String, Object> chest = Exec.mapOf(info.get("chest"));
                     if (chest != null && !chest.isEmpty()) {
                         List<Object> ids = new ArrayList<>(chest.keySet());
                         GameMessage oc = tc.engine.request("req_icebound_amazing_open_chest",
                                 Exec.args("ids", ids, "activity_id", aid));
-                        if (Exec.ok(oc)) m.claimed("宝箱×" + ids.size());
+                        if (Exec.ok(oc)) {
+                            m.claimed("宝箱×" + ids.size());
+                            m.rewards("宝箱", oc);
+                        }
                     }
                 }
             } else {
@@ -279,7 +297,10 @@ public final class ServerActivityTasks {
                     if (state == 2) {
                         GameMessage r = tc.engine.request("req_polar_expedition_get_chest",
                                 Exec.args("id", id, "team_id", tid));
-                        if (Exec.ok(r)) m.claimed("队列" + tid + "宝箱");
+                        if (Exec.ok(r)) {
+                            m.claimed("队列" + tid + "宝箱");
+                            m.rewards("队列宝箱", r);
+                        }
                     } else if (state == 0) {
                         GameMessage r = tc.engine.request("req_polar_expedition_start",
                                 Exec.args("id", id, "team_id", tid));
@@ -303,7 +324,10 @@ public final class ServerActivityTasks {
             GameMessage ach = tc.engine.request("req_brawl_war_get_achievement_reward",
                     Exec.args("id", 2438001L));
             int code = Exec.codeOf(ach);
-            if (Exec.ok(ach)) m.claimed("成就奖励");
+            if (Exec.ok(ach)) {
+                m.claimed("成就奖励");
+                m.rewards("成就奖励", ach);
+            }
             else m.skip(code == 7401 || code == 7404 ? "活动未开放" : "成就码" + code);
             m.skip("战斗部分待开放");
         } catch (Exception e) {
@@ -352,8 +376,10 @@ public final class ServerActivityTasks {
                     Exec.args("id", 2904006L));
             int code = Exec.codeOf(rsp);
             if (Exec.ok(rsp)) {
-                return new TaskOutcome("act_endless", "无尽征程", TaskOutcome.Category.CLAIMED,
+                TaskOutcome r = new TaskOutcome("act_endless", "无尽征程", TaskOutcome.Category.CLAIMED,
                         "里程碑奖励已领取");
+                r.rewards = com.carlos.vault.daily.RewardText.fromContent(rsp.getContent());
+                return r;
             }
             if (code == 11723) {
                 return new TaskOutcome("act_endless", "无尽征程", TaskOutcome.Category.SKIPPED, "暂无可领奖励");
@@ -456,7 +482,10 @@ public final class ServerActivityTasks {
                     GameMessage g = tc.engine.request("req_red_packet_get", Exec.args(
                             "channel_type", channel, "id", pid, "index", idx));
                     int code = Exec.codeOf(g);
-                    if (Exec.ok(g)) got++;
+                    if (Exec.ok(g)) {
+                        got++;
+                        m.rewards((channel == 1 ? "联盟" : "世界") + "红包", g);
+                    }
                     else if (code == 16876) {
                         m.skip("今日配额已满");
                         return Exec.result(m, "red_packet", "游戏红包");
@@ -489,6 +518,7 @@ public final class ServerActivityTasks {
                 GameMessage wd = tc.engine.request("req_bank_withdraw", null);
                 if (Exec.ok(wd)) {
                     m.claimed("取款" + amount);
+                    m.rewards("取款", wd);
                     long reDep = amount / 100 * 100;
                     if (reDep >= 100) {
                         GameMessage dp = tc.engine.request("req_bank_deopsit",
@@ -589,7 +619,10 @@ public final class ServerActivityTasks {
                     if (!finish) continue;
                     GameMessage r = tc.engine.request("req_truck_escort_take_truck_reward",
                             Exec.args("id", id, "truck_id", tid));
-                    if (Exec.ok(r)) taken++;
+                    if (Exec.ok(r)) {
+                        taken++;
+                        m.rewards("货车奖励", r);
+                    }
                 }
                 if (taken > 0) m.claimed("货车奖励×" + taken);
                 else m.skip("暂无送达货车");
@@ -636,7 +669,10 @@ public final class ServerActivityTasks {
                     GameMessage col = tc.engine.request("req_icefield_hunter2_collect_master_reward",
                             Exec.args("id", id, "reward_id", 0L, "is_gain_all", true));
                     int code = Exec.codeOf(col);
-                    if (Exec.ok(col)) m.claimed("进度奖励");
+                    if (Exec.ok(col)) {
+                        m.claimed("进度奖励");
+                        m.rewards("进度奖励", col);
+                    }
                     else if (code != 61 && code != 8251) m.skip("领奖码" + code);
 
                     GameMessage sp = tc.engine.request("req_icefield_hunter_spawn_monster",
