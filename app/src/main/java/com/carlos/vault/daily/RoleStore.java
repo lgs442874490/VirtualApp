@@ -99,6 +99,31 @@ public class RoleStore {
         }
     }
 
+    /** 按 (fpid, serverid) 取已登记角色；未登记返回 null。 */
+    public static Role roleOf(Context ctx, String fpid, long serverid) {
+        if (fpid == null || serverid <= 0) return null;
+        for (Role r : roles(ctx, fpid)) {
+            if (r.serverid == serverid) return r;
+        }
+        return null;
+    }
+
+    /** 直接改写某角色的 uid（含清 0；钉扎自愈用：串区时期登记的错 uid 需要纠正）。 */
+    public static void updateUid(Context ctx, String fpid, long serverid, long uid) {
+        if (fpid == null || serverid <= 0) return;
+        try {
+            List<Role> list = roles(ctx, fpid);
+            for (Role r : list) {
+                if (r.serverid == serverid) {
+                    r.uid = uid;
+                    break;
+                }
+            }
+            saveRoles(ctx, fpid, list);
+        } catch (Throwable ignored) {
+        }
+    }
+
     private static void saveRoles(Context ctx, String fpid, List<Role> list) throws org.json.JSONException {
         JSONArray arr = new JSONArray();
         for (Role r : list) {

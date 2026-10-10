@@ -277,7 +277,9 @@ public final class RoleSessionKeeper {
                             fls.fpid, fls.sid, RoleStore.activeRole(ctx, fls.fpid)));
                 } catch (Throwable ignored) {
                 }
-                fls.engine.login(facc.fpid, facc.token, fls.sid);
+                // 角色钉扎登录（uid 选角 + 落地校验）：serverid 会被服务器忽略恒落最近角色，
+                // 不钉扎会出现"913 会话实际跑 888"，配置/状态跨区污染
+                RoleLogin.loginPinned(ctx, fls.engine, facc.fpid, facc.token, fls.sid);
                 HelpResponder.attach(ctx, fls);
                 PushWakeDriver.attach(ctx, fls);
                 try {
@@ -516,7 +518,7 @@ public final class RoleSessionKeeper {
                         } catch (InterruptedException ignored) {
                         }
                     }
-                    fls.engine.login(acc.fpid, acc.token, fls.sid);
+                    RoleLogin.loginPinned(ctx, fls.engine, acc.fpid, acc.token, fls.sid);
                     HelpResponder.attach(ctx, fls);
                     PushWakeDriver.attach(ctx, fls);
                     try {

@@ -270,7 +270,19 @@ public class WjdrEngine {
                 result.serverId = toLong(auth.getContent().get("serverid"));
                 this.lastUid = result.uid;
                 this.lastFpid = fpid;
-                this.lastServerId = serverid != null ? serverid : result.serverId;
+                // 落地真值优先（防串区）：请求的 serverid 会被服务器忽略（恒落最近角色），
+                // lastServerId 必须反映实际落地的区服——下游 FnParams/状态写入按它分键
+                this.lastServerId = result.serverId > 0 ? result.serverId
+                        : (serverid != null ? serverid : 0);
+                // 钉扎校验：登录载荷带 uid（loginByRole/重连重放）时，落地 uid 必须一致；
+                // 不一致=落错角色，立即失败（外层 catch → handleLoginFailure 进退避，不在线、不假报身份）
+                Object pinUid = extraParams == null ? null : extraParams.get("uid");
+                long pin = pinUid == null ? 0 : toLong(pinUid);
+                if (pin > 0 && result.uid != pin) {
+                    throw new IllegalStateException(
+                            "落错角色：钉扎 uid=" + pin + " 实际 uid=" + result.uid
+                                    + "（serverid=" + result.serverId + "）");
+                }
 
                 GameMessage load = lockedRequest("req_loaddata", new LinkedHashMap<String, Object>(), seconds(20));
                 validate(load, "req_loaddata");

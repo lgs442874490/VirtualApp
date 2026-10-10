@@ -567,7 +567,7 @@ public class DailyRunner {
         try {
             engine.initialize();
             applyRoleIdentity(context, engine, fpid, serverid);
-            engine.login(fpid, sdkToken, serverid > 0 ? serverid : null);
+            RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);
             persistRoleIdentity(context, engine, fpid, serverid);
             GameMessage rsp = engine.request("req_get_all_dailyquest_award",
                     ExecUtil.args("quest_ids", Collections.singletonList(questId)));
@@ -827,7 +827,7 @@ public class DailyRunner {
         WjdrEngine.LoginResult lr;
         applyRoleIdentity(context, engine, fpid, serverid);
         try {
-            lr = engine.login(fpid, sdkToken, serverid > 0 ? serverid : null);
+            lr = RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);
         } catch (Throwable t) {
             sum.loginError = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
             if (listener != null) listener.onFinish(sum);
@@ -955,7 +955,7 @@ public class DailyRunner {
                 }
                 try {
                     applyRoleIdentity(context, engine, fpid, serverid);
-                    engine.login(fpid, sdkToken, serverid > 0 ? serverid : null);
+                    RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);
                     persistRoleIdentity(context, engine, fpid, serverid);
                 } catch (Throwable t) {
                     return DailyTasks.classifyException(t, d.name);
@@ -1191,7 +1191,7 @@ public class DailyRunner {
         try {
             engine.initialize();
             applyRoleIdentity(context, engine, fpid, serverid);
-            WjdrEngine.LoginResult lr = engine.login(fpid, sdkToken, serverid > 0 ? serverid : null);
+            WjdrEngine.LoginResult lr = RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);
             persistRoleIdentity(context, engine, fpid, serverid);
             long sid = lr.serverId > 0 ? lr.serverId : serverid;
             RoleStore.registerRole(context, fpid, lr.serverId, lr.uid, lr.gameName,
