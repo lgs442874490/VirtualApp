@@ -1182,17 +1182,24 @@ public class AccountVaultActivity extends Activity {
     // ---------- 启动 ----------
 
     protected void doSwitch(AccountStore.Account acc) {
+        doSwitch(acc, null);   // 无角色语境的调用方：沿用账号备注名
+    }
+
+    /** @param labelOverride 角色语境的显示名（如"K913·铁柱"）；null 沿用账号备注名。 */
+    protected void doSwitch(AccountStore.Account acc, String labelOverride) {
         if (!engine.isGameInstalled()) {
             toast("请先完成初始化");
             return;
         }
+        String show = labelOverride == null || labelOverride.isEmpty() ? acc.label : labelOverride;
         ProgressDialog pd = new ProgressDialog(this);
-        pd.setMessage("正在切换到 «" + acc.label + "» …");
+        pd.setMessage("正在切换到 «" + show + "» …");
         pd.setCancelable(false);
         pd.show();
         String lastId = store.getLastEntry();
         new AsyncTask<AccountStore.Account, Void, Boolean>() {
             final AccountStore.Account target = acc;
+            final String showName = show;
 
             @Override
             protected Boolean doInBackground(AccountStore.Account... a) {
@@ -1206,7 +1213,7 @@ public class AccountVaultActivity extends Activity {
                     store.setLastEntry(target.id);
                     store.markLogin(target.id);
                     refresh();
-                    toast("已启动 «" + target.label + "»");
+                    toast("已启动 «" + showName + "»");
                 } else {
                     toast("启动失败：请从任务栏划掉游戏后重试");
                 }

@@ -2656,13 +2656,50 @@ public class HomeActivity extends AccountVaultActivity {
      *
      * <p>登录的对象是<b>角色</b>而不是账号 —— 同一账号下不同角色是不同游戏进度，
      * 所以这里必须先 {@code setActiveRole}，否则引擎会按上次的激活角色启动。
+     *
+     * <p><b>翻转最近角色</b>：游戏客户端的 loginauth 写死在 il2cpp 里无法定制选角参数，
+     * 落哪个角色由服务器端"最近角色"决定。启动客户端前先用引擎按目标角色登录一次
+     * （RoleLogin 钉扎，uid 选角实证有效）随即断开——服务器"最近角色"翻转为目标，
+     * 客户端起来自然落对。预登录失败不阻断启动（客户端按旧状态落，弹提示）。
      */
     private void launchRole(AccountStore.Account a, RoleStore.Role r) {
         try {
             RoleStore.setActiveRole(this, a.fpid, r.serverid);
         } catch (Throwable ignored) {
         }
-        doSwitch(a);
+        final ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("正在切换到 K" + r.serverid + " «" + r.name + "»（预登录对齐角色…）");
+        pd.setCancelable(false);
+        pd.show();
+        final AccountStore.Account acc = a;
+        final RoleStore.Role role = r;
+        new Thread(() -> {
+            String warn = null;
+            try {
+                com.carlos.vault.wjdr.WjdrEngine pre =
+                        com.carlos.vault.daily.WjdrAndroid.newEngine(this);
+                try {
+                    pre.initialize();
+                    com.carlos.vault.daily.RoleLogin.loginPinned(this, pre,
+                            acc.fpid, acc.token, role.serverid);
+                } finally {
+                    pre.close();   // 立即断开：只为翻转服务器端"最近角色"记录
+                }
+            } catch (Throwable t) {
+                warn = "预登录失败(" + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage())
+                        + ")，客户端可能落在上次角色";
+            }
+            final String warnF = warn;
+            runOnUiThread(() -> {
+                pd.dismiss();
+                if (warnF != null) android.widget.Toast.makeText(this, warnF,
+                        android.widget.Toast.LENGTH_LONG).show();
+                // 启动阶段提示角色名（含区服），不再显示账号备注名
+                String roleName = (role.name == null || role.name.isEmpty() ? acc.label : role.name)
+                        + "·K" + role.serverid;
+                doSwitch(acc, roleName);
+            });
+        }, "prelaunch-role").start();
     }
 
     /**

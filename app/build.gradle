@@ -75,6 +75,7 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android.txt'), '../security/proguard-rules.pro' //'proguard-rules.pro', 'virtualapp-proguard-rules.pro','../security/proguard-rules.pro' //
         }
         release {
+            debuggable true   // 恒开：run-as 调试容器数据/导出快照依赖此标记
             jniDebuggable true
             minifyEnabled true
             zipAlignEnabled true

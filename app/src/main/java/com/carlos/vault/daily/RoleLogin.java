@@ -22,7 +22,7 @@ import com.carlos.vault.wjdr.WjdrEngine;
  *     IllegalStateException——绝不静默在错误角色上执行任务/写状态。</li>
  * </ul>
  */
-final class RoleLogin {
+public final class RoleLogin {
 
     /**
      * 钉扎登录 + 落地校验。
@@ -31,8 +31,8 @@ final class RoleLogin {
      * @return 登录结果（uid/serverId 与期望一致）
      * @throws IllegalStateException 落错角色（已登记实际角色，信息里带期望/实际）
      */
-    static WjdrEngine.LoginResult loginPinned(Context ctx, WjdrEngine engine,
-                                              String fpid, String sdkToken, long sid) throws Exception {
+    public static WjdrEngine.LoginResult loginPinned(Context ctx, WjdrEngine engine,
+                                                      String fpid, String sdkToken, long sid) throws Exception {
         if (sid <= 0) {
             return engine.login(fpid, sdkToken, null);
         }
