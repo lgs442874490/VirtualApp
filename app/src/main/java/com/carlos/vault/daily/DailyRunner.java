@@ -1342,6 +1342,10 @@ public class DailyRunner {
                         && engine.notifyContent("notify_recover_resource_init") != null) break;
                 engine.collectNotifies(500);
             }
+            try {
+                RoleStore.syncRoleMeta(context, engine, fpid);   // 昵称/等级/战力/联盟补全（幂等）
+            } catch (Throwable ignored) {
+            }
             captureQuestState(context, engine, fpid, sid, null);
             captureCalendar(context, engine, fpid, sid);
             saveResources(context, engine, fpid, sid);

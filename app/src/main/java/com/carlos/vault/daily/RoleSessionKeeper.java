@@ -283,6 +283,10 @@ public final class RoleSessionKeeper {
                 // 角色钉扎登录（uid 选角 + 落地校验）：serverid 会被服务器忽略恒落最近角色，
                 // 不钉扎会出现"913 会话实际跑 888"，配置/状态跨区污染
                 RoleLogin.loginPinned(ctx, fls.engine, facc.fpid, facc.token, fls.sid);
+                try {
+                    RoleStore.syncRoleMeta(ctx, fls.engine, fls.fpid);   // 登录推送补全昵称/等级/战力
+                } catch (Throwable ignored) {
+                }
                 HelpResponder.attach(ctx, fls);
                 PushWakeDriver.attach(ctx, fls);
                 ProtoLogger.attach(ctx, fls);
@@ -523,6 +527,10 @@ public final class RoleSessionKeeper {
                         }
                     }
                     RoleLogin.loginPinned(ctx, fls.engine, acc.fpid, acc.token, fls.sid);
+                    try {
+                        RoleStore.syncRoleMeta(ctx, fls.engine, fls.fpid);   // 登录推送补全昵称/等级/战力
+                    } catch (Throwable ignored) {
+                    }
                     HelpResponder.attach(ctx, fls);
                     PushWakeDriver.attach(ctx, fls);
                     ProtoLogger.attach(ctx, fls);

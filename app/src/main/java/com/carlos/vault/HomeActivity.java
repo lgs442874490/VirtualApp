@@ -832,7 +832,8 @@ public class HomeActivity extends AccountVaultActivity {
             return;
         }
         for (RoleStore.Role r : rs) {
-            String rn = r.name == null || r.name.isEmpty() ? "角色" + r.serverid : r.name;
+            String rn = r.name == null || r.name.isEmpty()
+                    ? "K" + r.serverid + "（未同步）" : r.name;
             String tag = r.serverid == curSid ? " ✓当前" : "";
             pairs.add(new String[]{curAcc.fpid, String.valueOf(r.serverid), rn});
             items.add(rn + " · K" + r.serverid + (r.enabled ? "" : " · 未入区") + tag);
@@ -2035,7 +2036,7 @@ public class HomeActivity extends AccountVaultActivity {
     /** 角色操作菜单（矩阵格子/角色行用）。 */
     private void roleMenu(final AccountStore.Account a, final RoleStore.Role r) {
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle((r.name == null ? "角色" + r.serverid : r.name) + " · K" + r.serverid)
+                .setTitle((r.name == null || r.name.isEmpty() ? "K" + r.serverid + "（未同步）" : r.name) + " · K" + r.serverid)
                 .setItems(new String[]{"▶ 跑日常（该角色）", "📋 日常详情", "🖥 启动游戏（整个账号）",
                         r.enabled ? "移出工作区" : "纳入工作区"}, (d, w) -> {
                     switch (w) {
@@ -2599,7 +2600,7 @@ public class HomeActivity extends AccountVaultActivity {
 
         // ② 昵称
         TextView nm = new TextView(this);
-        nm.setText(r.name == null || r.name.isEmpty() ? "角色" + r.serverid : r.name);
+        nm.setText(r.name == null || r.name.isEmpty() ? "K" + r.serverid + " · 未同步" : r.name);
         nm.setTextSize(12.5f);
         nm.setTypeface(Typeface.DEFAULT_BOLD);
         nm.setTextColor(UiStyle.INK);
@@ -2934,7 +2935,7 @@ public class HomeActivity extends AccountVaultActivity {
         stv.setTextColor(online ? UiStyle.OK_INK : UiStyle.INK3);
         tb.addView(stv);
         TextView nm = new TextView(this);
-        String rn = r.name == null || r.name.isEmpty() ? "角色" + r.serverid : r.name;
+        String rn = r.name == null || r.name.isEmpty() ? "K" + r.serverid + " · 未同步" : r.name;
         nm.setText(rn);
         nm.setTextSize(13.5f);
         nm.setTypeface(Typeface.DEFAULT_BOLD);

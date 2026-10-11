@@ -17,6 +17,15 @@ import java.util.List;
  */
 public class RoleStore {
 
+    /**
+     * 角色表写锁：roles 表是"读全表→改→写全表"模式，registerRole（登录登记，多角色
+     * 竞速时多线程并发）/setEnabled（UI 开关）/updateUid（钉扎自愈）并发时后写者
+     * 会用旧快照整表覆盖、丢掉别的线程刚写入的角色（真机事故：94450730 的 K916
+     * 角色被并发的 K913 登记覆盖，工作区里凭空消失）。所有写路径必须在同一把锁内
+     * 完成"读-改-写"。
+     */
+    private static final Object WRITE_LOCK = new Object();
+
     public static class Role {
         public long serverid;
         public long uid;
@@ -59,43 +68,48 @@ public class RoleStore {
     /** 带元数据版：等级/战力/联盟名仅在新值有效时覆盖（0/"" 不冲掉旧值，与 uid/name 同策略）。 */
     public static void registerRole(Context ctx, String fpid, long serverid, long uid, String name,
                                     long level, long power, String alliance) {
-        try {
-            List<Role> list = roles(ctx, fpid);
-            Role hit = null;
-            for (Role r : list) {
-                if (r.serverid == serverid) {
-                    hit = r;
-                    break;
+        if (fpid == null || fpid.isEmpty()) return;
+        synchronized (WRITE_LOCK) {
+            try {
+                List<Role> list = roles(ctx, fpid);
+                Role hit = null;
+                for (Role r : list) {
+                    if (r.serverid == serverid) {
+                        hit = r;
+                        break;
+                    }
                 }
+                if (hit == null) {
+                    hit = new Role();
+                    hit.serverid = serverid;
+                    hit.enabled = false;   // 新角色默认不进工作区
+                    list.add(hit);
+                }
+                if (uid > 0) hit.uid = uid;
+                if (name != null && !name.isEmpty()) hit.name = name;
+                if (level > 0) hit.level = level;
+                if (power > 0) hit.power = power;
+                if (alliance != null && !alliance.isEmpty()) hit.alliance = alliance;
+                saveRoles(ctx, fpid, list);
+            } catch (Throwable ignored) {
             }
-            if (hit == null) {
-                hit = new Role();
-                hit.serverid = serverid;
-                hit.enabled = false;   // 新角色默认不进工作区
-                list.add(hit);
-            }
-            if (uid > 0) hit.uid = uid;
-            if (name != null && !name.isEmpty()) hit.name = name;
-            if (level > 0) hit.level = level;
-            if (power > 0) hit.power = power;
-            if (alliance != null && !alliance.isEmpty()) hit.alliance = alliance;
-            saveRoles(ctx, fpid, list);
-        } catch (Throwable ignored) {
         }
     }
 
     /** 更新角色的工作区开关。 */
     public static void setEnabled(Context ctx, String fpid, long serverid, boolean enabled) {
-        try {
-            List<Role> list = roles(ctx, fpid);
-            for (Role r : list) {
-                if (r.serverid == serverid) {
-                    r.enabled = enabled;
-                    break;
+        synchronized (WRITE_LOCK) {
+            try {
+                List<Role> list = roles(ctx, fpid);
+                for (Role r : list) {
+                    if (r.serverid == serverid) {
+                        r.enabled = enabled;
+                        break;
+                    }
                 }
+                saveRoles(ctx, fpid, list);
+            } catch (Throwable ignored) {
             }
-            saveRoles(ctx, fpid, list);
-        } catch (Throwable ignored) {
         }
     }
 
@@ -111,34 +125,100 @@ public class RoleStore {
     /** 直接改写某角色的 uid（含清 0；钉扎自愈用：串区时期登记的错 uid 需要纠正）。 */
     public static void updateUid(Context ctx, String fpid, long serverid, long uid) {
         if (fpid == null || serverid <= 0) return;
-        try {
-            List<Role> list = roles(ctx, fpid);
-            for (Role r : list) {
-                if (r.serverid == serverid) {
-                    r.uid = uid;
-                    break;
+        synchronized (WRITE_LOCK) {
+            try {
+                List<Role> list = roles(ctx, fpid);
+                for (Role r : list) {
+                    if (r.serverid == serverid) {
+                        r.uid = uid;
+                        break;
+                    }
                 }
+                saveRoles(ctx, fpid, list);
+            } catch (Throwable ignored) {
             }
-            saveRoles(ctx, fpid, list);
-        } catch (Throwable ignored) {
         }
     }
 
     private static void saveRoles(Context ctx, String fpid, List<Role> list) throws org.json.JSONException {
-        JSONArray arr = new JSONArray();
-        for (Role r : list) {
-            JSONObject o = new JSONObject();
-            o.put("serverid", r.serverid);
-            o.put("uid", r.uid);
-            o.put("name", r.name);
-            o.put("enabled", r.enabled);
-            o.put("level", r.level);
-            o.put("power", r.power);
-            o.put("alliance", r.alliance == null ? "" : r.alliance);
-            arr.put(o);
+        synchronized (WRITE_LOCK) {
+            JSONArray arr = new JSONArray();
+            for (Role r : list) {
+                JSONObject o = new JSONObject();
+                o.put("serverid", r.serverid);
+                o.put("uid", r.uid);
+                o.put("name", r.name);
+                o.put("enabled", r.enabled);
+                o.put("level", r.level);
+                o.put("power", r.power);
+                o.put("alliance", r.alliance == null ? "" : r.alliance);
+                arr.put(o);
+            }
+            ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
+                    .edit().putString("roles:" + fpid, arr.toString()).apply();
         }
-        ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
-                .edit().putString("roles:" + fpid, arr.toString()).apply();
+    }
+
+    /**
+     * 从登录/采集推送补全当前角色的元数据（昵称/等级/战力/联盟名）。
+     *
+     * <p>登录摘要（loginauth）经常拿不到角色昵称，导致角色表 name 永远为空——角色管理/
+     * 角色切换里只剩"角色913"兜底名，用户感知为"没有任何数据"（真机：94450730）。
+     * 数据源：notify_base_info（nickName/lv/power/uid/kid）+ notify_alliance_init
+     * （alliance.name）。字段为空/缺失时不覆盖旧值，幂等可反复调用。
+     */
+    public static void syncRoleMeta(Context ctx, com.carlos.vault.wjdr.WjdrEngine engine, String fpid) {
+        if (ctx == null || engine == null || fpid == null || fpid.isEmpty()) return;
+        try {
+            java.util.Map<String, Object> base = engine.notifyData("notify_base_info");
+            if (base == null || base.isEmpty()) {
+                try {
+                    DailyRunner.debugLog(ctx, "syncRoleMeta: 无 base_info fpid=" + fpid
+                            + " protos=" + (engine.notifyProtos().length() > 200
+                            ? engine.notifyProtos().substring(0, 200) : engine.notifyProtos()));
+                } catch (Throwable ignored) {
+                }
+                return;
+            }
+            long kid = num(base.get("kid"));
+            long uid = num(base.get("uid"));
+            if (kid <= 0 || uid <= 0) {
+                try {
+                    DailyRunner.debugLog(ctx, "syncRoleMeta: kid/uid 无效 fpid=" + fpid
+                            + " kid=" + kid + " uid=" + uid);
+                } catch (Throwable ignored) {
+                }
+                return;
+            }
+            String name = base.get("nickName") instanceof String ? (String) base.get("nickName") : "";
+            long lv = num(base.get("lv"));
+            long power = num(base.get("power"));
+            String alliance = "";
+            try {
+                java.util.Map<String, Object> ai = engine.notifyData("notify_alliance_init");
+                Object all = ai == null ? null : ai.get("alliance");
+                if (all instanceof java.util.Map) {
+                    Object n = ((java.util.Map<?, ?>) all).get("name");
+                    if (n instanceof String) alliance = (String) n;
+                }
+            } catch (Throwable ignored) {
+            }
+            registerRole(ctx, fpid, kid, uid, name, lv, power, alliance);
+            try {
+                DailyRunner.debugLog(ctx, "syncRoleMeta: ok fpid=" + fpid + " kid=" + kid
+                        + " uid=" + uid + " name=" + name + " lv=" + lv + " power=" + power);
+            } catch (Throwable ignored) {
+            }
+        } catch (Throwable t) {
+            try {
+                DailyRunner.debugLog(ctx, "syncRoleMeta: 异常 " + t);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static long num(Object o) {
+        return o instanceof Number ? ((Number) o).longValue() : 0L;
     }
 
     /** 当前选中的角色（工作区内切换）。 */

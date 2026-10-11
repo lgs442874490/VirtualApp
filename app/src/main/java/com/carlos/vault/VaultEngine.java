@@ -820,6 +820,12 @@ public class VaultEngine {
      * <p>任何失败（文件不存在 / 空 / 超大 / 未登录 / 解析异常）一律返回 {@code ""} ⇒ 调用方静默跳过同步。
      */
     public String readLiveSessionFpid() {
+        // 进程存活前置检查：session 文件是持久登录态，游戏退出后仍留在盘上——只看文件
+        // 会把"上次在容器里玩过的号"永久误判成"游戏在线"，拦掉它的同步/补跑/角色补全
+        // （真机：94450730 在容器登录一次后，后续所有 syncOnly 恒被"游戏在线·跳过"拦截，
+        // 角色表永远空）。容器游戏跑在宿主 uid 下，ActivityManager 只返回自身 uid 的进程，
+        // 匹配到 com.gof.china 即为存活。
+        if (!isContainerGameRunning()) return "";
         try {
             File f = new File(new File(gameDataDir(), "shared_prefs"), PREF_NAME + ".xml");
             if (!f.isFile()) return "";
@@ -843,6 +849,29 @@ public class VaultEngine {
             return SessionProbe.parseSessionFpid(new String(buf, Charset.forName("UTF-8")), SESSION_KEY);
         } catch (Throwable t) {
             return "";
+        }
+    }
+
+    /**
+     * 容器游戏进程是否存活（顶号保护的"游戏正在跑"判定）。
+     *
+     * <p>容器（VA）里的游戏进程跑在宿主 uid 下、进程名即游戏包名。Android 11+ 的
+     * ActivityManager#getRunningAppProcesses 只返回调用方自身 uid 的进程——对我们
+     * 恰好够用：能查到 {@link #GAME_PKG} 就说明游戏在容器里活着；查不到（含任何
+     * 异常）视为未运行，宁可少拦一次顶号（登录失败可重试）也不永久误拦。
+     */
+    public boolean isContainerGameRunning() {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager)
+                    ctx.getSystemService(android.content.Context.ACTIVITY_SERVICE);
+            if (am == null) return false;
+            int myUid = android.os.Process.myUid();
+            for (android.app.ActivityManager.RunningAppProcessInfo p : am.getRunningAppProcesses()) {
+                if (p != null && GAME_PKG.equals(p.processName) && p.uid == myUid) return true;
+            }
+            return false;
+        } catch (Throwable t) {
+            return false;
         }
     }
 
