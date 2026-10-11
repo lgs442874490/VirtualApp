@@ -74,8 +74,15 @@ final class FieldTasks {
                 if (sent > 0) {
                     m.claimed("派出采集×" + sent);
                     mod(engine, "gather", "send", "上轮派出 " + sent + " 队（队列 " + active + "/" + capacity + "）");
-                }
-                else m.skip("附近未搜到资源点");
+                    // 容量估算 + 采集英雄推荐（对标原版 MarchCapacityState；兵量=节点余量÷容量）
+                    try {
+                        GatherCapacity.Estimate est = GatherCapacity.estimateFull(engine);
+                        mod(engine, "gather", "capacity", "编队容量≈" + est.capacity + "/队"
+                                + (est.note.isEmpty() ? "" : "（" + est.note + "）")
+                                + " · 满载兵量=节点余量÷容量 · " + GatherCapacity.GATHER_HERO_HINT);
+                    } catch (Throwable ignored) {
+                    }
+                } else m.skip("附近未搜到资源点");
             }
         } catch (Exception e) {
             if (TownTasks.sessionLost(e)) return DailyTasks.classifyException(e, "野外采集");
@@ -394,5 +401,81 @@ final class FieldTasks {
             }
         }
         return null;
+    }
+
+    // ---------- 探险速刷（is_fast 快速战斗通道，2026-10-11 协议实证） ----------
+    //
+    // req_begin_adventure_pve{checkpoint, fight_heros_data, is_fast} →
+    // req_end_adventure_pve{checkpoint, operatedata, enddata}。
+    // 已通关(≤pass_checkpoint)的关卡走 is_fast 速刷无需战斗回放；未通关的新关
+    // 需要客户端战斗模拟，enddata 形状未实证——遇到即停并提示手动解锁一次。
+
+    static DailyResult adventureSweep(WjdrEngine engine) {
+        ExecUtil.Multi m = new ExecUtil.Multi();
+        try {
+            engine.collectNotifies(1500);
+            android.content.Context sctx = engine.appContext();
+            String sfpid = engine.lastFpid() == null ? "" : engine.lastFpid();
+            long ssidx = engine.lastServerId();
+            org.json.JSONObject sp = FnParams.params(sctx, sfpid, ssidx, "adventure_sweep");
+            org.json.JSONObject strat = sp.optJSONObject("strategy");
+            int maxSweep = strat != null && strat.has("sweep") ? strat.optInt("sweep", 5) : 5;
+            maxSweep = Math.max(1, Math.min(50, maxSweep));
+
+            Map<String, Object> pve = engine.notifyData("notify_adventure_pve_info");
+            long passed = TownTasks.numIn(pve, "pass_checkpoint");
+            if (passed <= 0) {
+                m.skip("探险进度未同步（先手动进一次探险）");
+                m.subSkip("sweep", "进度未同步");
+                return sweepResult(m);
+            }
+            List<Long> heroes = ExecUtil.clientSquads(engine).values().stream().findFirst()
+                    .orElseGet(() -> ExecUtil.allHeroes(engine).stream().limit(5)
+                            .collect(java.util.stream.Collectors.toList()));
+            if (heroes.isEmpty()) {
+                m.skip("无可用英雄编队");
+                m.subSkip("sweep", "无编队");
+                return sweepResult(m);
+            }
+            int swept = 0;
+            for (int i = 0; i < maxSweep; i++) {
+                long next = passed + 1;
+                GameMessage begin = engine.request("req_begin_adventure_pve", ExecUtil.args(
+                        "checkpoint", next, "fight_heros_data", heroes, "is_fast", true));
+                if (!ExecUtil.ok(begin)) {
+                    int code = ExecUtil.codeOf(begin);
+                    m.skip("第" + next + "关无法速刷(码" + code + ")"
+                            + (code != 0 ? "" : ""));
+                    break;
+                }
+                GameMessage end = engine.request("req_end_adventure_pve", ExecUtil.args(
+                        "checkpoint", next, "operatedata", new java.util.LinkedHashMap<>(),
+                        "enddata", new ArrayList<>()));
+                if (ExecUtil.ok(end)) {
+                    swept++;
+                    passed = next;
+                    m.claimed("速刷第" + next + "关");
+                } else {
+                    int code = ExecUtil.codeOf(end);
+                    m.skip("第" + next + "关未确认(码" + code + ")——新关卡需手动战斗解锁一次");
+                    break;
+                }
+            }
+            if (swept > 0) {
+                m.subOk("sweep", "速刷×" + swept + "（推进到第" + passed + "关）");
+                mod(engine, "adventure_sweep", "sweep", "上轮速刷 " + swept + " 关 → 第 " + passed + " 关");
+            }
+        } catch (Exception e) {
+            if (TownTasks.sessionLost(e)) return DailyTasks.classifyException(e, "探险速刷");
+            m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return sweepResult(m);
+    }
+
+    private static DailyResult sweepResult(ExecUtil.Multi m) {
+        DailyResult rr = new DailyResult("adventure_sweep", "探险速刷", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
+        rr.subResults.putAll(m.subResults);
+        return rr;
     }
 }

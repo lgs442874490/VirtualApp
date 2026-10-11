@@ -92,10 +92,12 @@ public final class DailyTasks {
         list.add(new TaskDef("behemoth", "巨兽狩猎", true, FieldTasks::behemoth));
         list.add(new TaskDef("bear", "巨熊行动", true, FieldTasks::bear));
         list.add(new TaskDef("hunt", "自动狩猎", false, FieldTasks::hunt));
+        list.add(new TaskDef("adventure_sweep", "探险速刷", false, FieldTasks::adventureSweep));
         // ===== 联盟 =====
         list.add(new TaskDef("alliance_mobilization", "联盟动员", true, LeagueTasks::mobilization));
         list.add(new TaskDef("alliance_showdown", "争霸赛", false, LeagueTasks::showdown));
         list.add(new TaskDef("alliance_help", "联盟互助", true, LeagueTasks::allianceHelp));
+        list.add(new TaskDef("homeland_visit", "晨曦岛拜访", true, LeagueTasks::homelandVisit));
         // ===== 商店/其他 =====
         list.add(new TaskDef("alliance_shop", "联盟商店", false, ShopTasks::allianceShop));
         list.add(new TaskDef("backpack", "背包道具", true, LeagueTasks::backpack));

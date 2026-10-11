@@ -186,4 +186,82 @@ final class LeagueTasks {
         rr.subResults.putAll(m.subResults);
         return rr;
     }
+
+    // ---------- 晨曦岛拜访协助（原版 homeland-visit 同款） ----------
+
+    static DailyResult homelandVisit(WjdrEngine engine) {
+        ExecUtil.Multi m = new ExecUtil.Multi();
+        try {
+            engine.collectNotifies(1500);
+            long myUid = engine.lastUid();
+            long kid = engine.lastServerId();
+            // 1. 联盟活跃排行（type=10003 = 晨曦岛活跃榜），rank_list[].key = 成员 uid
+            GameMessage rank = engine.request("req_alliance_rank_data",
+                    ExecUtil.args("type", 10003L));
+            if (!ExecUtil.ok(rank)) {
+                m.skip("联盟排行未开放(码" + ExecUtil.codeOf(rank) + ")");
+                return visitResult(m);
+            }
+            List<Long> candidates = new ArrayList<>();
+            for (Map<String, Object> row : ExecUtil.mapsOf(rank.getContent().get("rank_list"))) {
+                long uid = ExecUtil.longOf(row.get("key"));
+                if (uid > 0 && uid != myUid && candidates.size() < 20) candidates.add(uid);
+            }
+            if (candidates.isEmpty()) {
+                m.skip("联盟排行无成员");
+                return visitResult(m);
+            }
+            // 2. 批量查协助状态：今日已协助≥3 或 6 小时内协助过 → 跳过（原版同款阈值）
+            GameMessage infos = engine.request("req_homeland_player_homeland_info",
+                    ExecUtil.args("uids", candidates, "type", 1L));
+            Map<String, Object> pi = ExecUtil.mapOf(infos.getContent().get("player_homeland_infos"));
+            int visited = 0, assisted = 0;
+            for (Long uid : candidates) {
+                if (visited >= 10) break;   // 单轮上限（原版 300s 任务节律的保守版）
+                Map<String, Object> info = ExecUtil.mapOf(pi == null ? null : pi.get(String.valueOf(uid)));
+                Map<String, Object> assist = ExecUtil.mapOf(info == null ? null : info.get("homeland_assist_info"));
+                long assistedCount = ExecUtil.longOf(assist == null ? null : assist.get("assisted_count"));
+                long lastTime = ExecUtil.longOf(assist == null ? null : assist.get("last_assisted_time"));
+                if (assistedCount >= 3 || (lastTime > 0
+                        && System.currentTimeMillis() / 1000L - lastTime < 21600L)) {
+                    continue;
+                }
+                GameMessage visit = engine.request("req_homeland_visit_other_homeland",
+                        ExecUtil.args("uid", uid, "kid", kid));
+                if (!ExecUtil.ok(visit)) continue;
+                GameMessage as = engine.request("req_homeland_assist", ExecUtil.args("uid", uid));
+                int code = ExecUtil.codeOf(as);
+                if (ExecUtil.ok(as)) {
+                    assisted++;
+                    m.claimed("协助 uid=" + uid);
+                } else if (code == 15026) {
+                    m.skip("今日协助次数已用完(3/3)");
+                    break;
+                } else if (code == 15027 || code == 15028) {
+                    m.skip("uid=" + uid + " 冷却/对方已满");
+                } else {
+                    m.skip("uid=" + uid + " 码" + code);
+                }
+                visited++;
+            }
+            if (assisted > 0) {
+                m.claimed("拜访协助×" + assisted);
+                m.subOk("assist", "协助×" + assisted);
+            } else if (m.sb.length() == 0) {
+                m.skip("无可协助对象");
+                m.subSkip("assist", "无可协助");
+            }
+        } catch (Exception e) {
+            if (TownTasks.sessionLost(e)) return DailyTasks.classifyException(e, "晨曦岛拜访");
+            m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return visitResult(m);
+    }
+
+    private static DailyResult visitResult(ExecUtil.Multi m) {
+        DailyResult rr = new DailyResult("homeland_visit", "晨曦岛拜访", m.cat(), m.note() + " " + m.sb);
+        rr.rewards = m.rewardsText();
+        rr.subResults.putAll(m.subResults);
+        return rr;
+    }
 }

@@ -105,7 +105,8 @@ public final class FnDetail {
                 new Sub("logging", "伐木小屋/加工厂", "按家园通知坐标收取木材产物", true, null));
         fn("fire_crystal",
                 new Sub("purify", "普通提炼", "普通火晶提炼至每日上限", true, null),
-                new Sub("super", "超级提炼", "开关打开后每轮超炼1次（可在参数 super_times 配次数，消耗火晶）", false, null));
+                new Sub("super", "超级提炼", "开关打开后每轮超炼1次（可在参数 super_times 配次数，消耗火晶）", false, null),
+                new Sub("quests", "悬赏任务", "火晶悬赏任务奖励批量领取（notify_firecrystal_quests）", true, null));
         fn("climbtower",
                 new Sub("sweep", "每日扫荡", "按星期自动扫荡今日开放的地心之塔", true, null));
         fn("arena",
@@ -160,6 +161,9 @@ public final class FnDetail {
         fn("gather",
                 new Sub("send", "自动采集", "搜索资源点并派出空闲队列（资源/等级/队列数见下方策略）", true,
                         new String[][]{{"any", "任意存量"}, {"full", "只采满矿"}}));
+        fn("adventure_sweep",
+                new Sub("sweep", "速刷关数", "已通关卡用快速战斗逐关推进；新关卡需手动战斗解锁一次", true,
+                        new String[][]{{"5", "最多5关"}, {"10", "最多10关"}, {"20", "最多20关"}, {"50", "最多50关"}}));
         fn("intel",
                 new Sub("events", "处理情报", "待办情报事件自动出征/快速战并领奖（优先于采集队列）", true, null));
         fn("behemoth",
@@ -186,6 +190,8 @@ public final class FnDetail {
                 new Sub("apply", "自动报名", "未报名时按配置编队报名（默认赛道1）", true, null));
         fn("alliance_help",
                 new Sub("help_all", "一键帮助全盟", "每次运行帮助全部盟友（建议配合自动日常高频跑）", true, null));
+        fn("homeland_visit",
+                new Sub("assist", "拜访协助", "拉联盟活跃榜→逐个拜访活跃盟友晨曦岛并协助（今日<3次且过6小时冷却）", true, null));
 
         // ===== 商店/其他 =====
         fn("shop",

@@ -18,7 +18,7 @@ public class RegistryAndDefaultsTest {
     @Test
     public void fnRegistry_allItems_uniqueAndImplemented() {
         List<FnRegistry.Fn> all = FnRegistry.all();
-        assertEquals(51, all.size());
+        assertEquals(53, all.size());
         Set<String> ids = new HashSet<>();
         Set<String> names = new HashSet<>();
         for (FnRegistry.Fn f : all) {
@@ -28,13 +28,13 @@ public class RegistryAndDefaultsTest {
             ids.add(f.id);
             names.add(f.name);
         }
-        assertEquals("fn id 不得重复", 51, ids.size());
-        assertEquals("fn 名称不得重复", 51, names.size());
+        assertEquals("fn id 不得重复", 53, ids.size());
+        assertEquals("fn 名称不得重复", 53, names.size());
     }
 
     @Test
     public void fnRegistry_categoryCounts() {
-        int[] expected = {9, 11, 14, 6, 5, 2, 4}; // 奖励/城镇/活动/野外/联盟/商店/其他
+        int[] expected = {9, 11, 14, 7, 6, 2, 4}; // 奖励/城镇/活动/野外/联盟/商店/其他
         assertEquals(7, FnRegistry.CAT_NAMES.length);
         for (int cat = 0; cat < 7; cat++) {
             assertEquals("分类 " + FnRegistry.CAT_NAMES[cat] + " 数量",
@@ -52,7 +52,7 @@ public class RegistryAndDefaultsTest {
     @Test
     public void dailyTasks_registryMatchesFnRegistry() {
         List<DailyTasks.TaskDef> defs = DailyTasks.all();
-        assertEquals(51, defs.size());
+        assertEquals(53, defs.size());
         Set<String> fnIds = new HashSet<>();
         for (FnRegistry.Fn f : FnRegistry.all()) fnIds.add(f.id);
         Set<String> defIds = new HashSet<>();
@@ -83,6 +83,7 @@ public class RegistryAndDefaultsTest {
     public void defaultOffMatrix_exactly18() {
         Set<String> expectedOff = new HashSet<>();
         expectedOff.add("shop");
+        expectedOff.add("adventure_sweep");
         expectedOff.add("building");
         expectedOff.add("barracks");
         expectedOff.add("arena");

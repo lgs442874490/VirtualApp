@@ -1,0 +1,292 @@
+package com.carlos.vault.daily;
+
+import android.content.Context;
+import android.util.Log;
+
+import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.protocol.GameMessage;
+
+import org.json.JSONArray;
+import org.json.JSONObject;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.util.Map;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+
+/**
+ * 热更新管理器（Tier 1 配置/目录 + Tier 2 声明式领取任务）：
+ * 解决"改个字段名/阈值/目录就要重出包+过 vivo 确认"的发版循环。
+ *
+ * <p><b>数据来源优先级</b>：① filesDir/hotconfig/config.json（adb push / run-as 放置，
+ * 离线可用）；② 远端 URL（prefs hot_url 可配，启动/每 6 小时刷新）；③ 兜底走 APK
+ * 内置 assets——热更失败时行为与旧版完全一致。
+ *
+ * <p><b>热更包格式</b>（JSON）：
+ * <pre>{ "version": 2026101101,
+ *   "nums":  { "arena.version_fallback": 26042102 },
+ *   "catalogs": { "shops": [ ...条目同 assets/towndev/shops.json 单店数组... ] },
+ *   "claims":[ {"id":"hot_fire_chest","name":"火晶宝箱",
+ *               "proto":"req_get_firecrystal_chest_award","args":{}},
+ *              {"id":"hot_x","name":"xx","proto":"req_y","args":{"k":"v"},
+ *               "notify":"notify_z"} ],
+ *   "disabled": ["act_joy"] }</pre>
+ *
+ * <p><b>声明式领取语义</b>（Tier 2）：每日轮收尾按 claims 顺序执行——collectNotifies
+ * 后发 {@code proto}（args 原样透传，空=无参），code==0 记 CLAIMED 否则按码记
+ * SKIPPED。覆盖"无参/固定参/单步"领取类需求；复杂逻辑（阈值/循环/战斗）仍走正式发版。
+ *
+ * <p>安全边界：内容限 2MB；不做任何代码/Dex 加载。
+ */
+public final class HotConfig {
+
+    public static final String TAG = "HotConfig";
+    private static final long REFRESH_INTERVAL_MILLIS = 6 * 3600_000L;
+
+    private static volatile JSONObject config;      // 热更包全文（null=无热更）
+    private static volatile long version;
+    private static volatile long lastFetchAt;
+    private static volatile boolean initialized;
+
+    private HotConfig() {
+    }
+
+    /** app 启动时调用一次：读本地文件 + 到点拉远端。 */
+    public static synchronized void init(Context ctx) {
+        if (initialized) return;
+        initialized = true;
+        loadLocal(ctx);
+        maybeRefreshRemote(ctx);
+    }
+
+    private static File file(Context ctx) {
+        File dir = new File(ctx.getFilesDir(), "hotconfig");
+        if (!dir.exists()) dir.mkdirs();
+        return new File(dir, "config.json");
+    }
+
+    private static void loadLocal(Context ctx) {
+        try {
+            File f = file(ctx);
+            if (!f.isFile() || f.length() == 0 || f.length() > 2_000_000L) return;
+            JSONObject o = new JSONObject(readFile(f));
+            apply(o);
+            Log.i(TAG, "本地热更包已加载 version=" + version);
+        } catch (Throwable t) {
+            Log.w(TAG, "本地热更包解析失败: " + t.getMessage());
+        }
+    }
+
+    private static String readFile(File f) throws Exception {
+        try (FileInputStream in = new FileInputStream(f)) {
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            byte[] buf = new byte[8192];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            return out.toString("UTF-8");
+        }
+    }
+
+    /** 远端刷新（prefs hot_url 配置了才生效；成功写回本地文件）。限频 6 小时。 */
+    public static synchronized void maybeRefreshRemote(Context ctx) {
+        try {
+            String url = ctx.getSharedPreferences("hotconfig", Context.MODE_PRIVATE)
+                    .getString("hot_url", "");
+            if (url == null || url.isEmpty()) return;
+            if (System.currentTimeMillis() - lastFetchAt < REFRESH_INTERVAL_MILLIS) return;
+            fetchAndApply(ctx, url);
+        } catch (Throwable t) {
+            Log.w(TAG, "远端热更拉取失败: " + t.getMessage());
+        }
+    }
+
+    /**
+     * 手动检查更新接口（绕过 6 小时限频立即拉取）。
+     *
+     * @return 生效的热更包版本号；未配置 hot_url 返回 -1
+     */
+    public static synchronized long forceRefresh(Context ctx) {
+        lastFetchAt = System.currentTimeMillis();
+        try {
+            String url = ctx.getSharedPreferences("hotconfig", Context.MODE_PRIVATE)
+                    .getString("hot_url", "");
+            if (url == null || url.isEmpty()) {
+                Log.i(TAG, "手动检查：未配置 hot_url（adb 广播 --es url 可设置）");
+                return -1;
+            }
+            long before = version;
+            fetchAndApply(ctx, url);
+            Log.i(TAG, "手动检查完成：version " + before + " → " + version);
+            return version;
+        } catch (Throwable t) {
+            Log.w(TAG, "手动检查失败: " + t.getMessage());
+            return -1;
+        }
+    }
+
+    private static void fetchAndApply(Context ctx, String url) throws Exception {
+        OkHttpClient client = new OkHttpClient.Builder().build();
+        Request request = new Request.Builder().url(url).build();
+        try (Response response = client.newCall(request).execute()) {
+            String text = response.body() == null ? "" : response.body().string();
+            if (text.isEmpty() || text.length() > 2_000_000L) return;
+            JSONObject o = new JSONObject(text);
+            long remote = o.optLong("version", 0);
+            if (remote > version) {
+                FileOutputStream out = new FileOutputStream(file(ctx));
+                out.write(text.getBytes("UTF-8"));
+                out.close();
+                apply(o);
+                Log.i(TAG, "远端热更包已更新 version=" + remote);
+            }
+        }
+    }
+
+    /** 服务器版本比对结果。 */
+    public static final class CheckResult {
+        public final int code;        // 0=已更新到服务器版 1=已是最新 2=未配置热更源 3=拉取失败
+        public final long serverVersion;
+        public final long localVersion;
+
+        CheckResult(int code, long serverVersion, long localVersion) {
+            this.code = code;
+            this.serverVersion = serverVersion;
+            this.localVersion = localVersion;
+        }
+    }
+
+    /**
+     * 检查服务器热更包版本并与本地比对，不一致即拉取应用（"检查更新"按钮语义）。
+     */
+    public static synchronized CheckResult checkServer(Context ctx) {
+        long local = version;
+        try {
+            String url = ctx.getSharedPreferences("hotconfig", Context.MODE_PRIVATE)
+                    .getString("hot_url", "");
+            if (url == null || url.isEmpty()) {
+                return new CheckResult(2, -1, local);
+            }
+            lastFetchAt = System.currentTimeMillis();
+            OkHttpClient client = new OkHttpClient.Builder().build();
+            Request request = new Request.Builder().url(url).build();
+            long remote;
+            try (Response response = client.newCall(request).execute()) {
+                String text = response.body() == null ? "" : response.body().string();
+                if (text.isEmpty() || text.length() > 2_000_000L) {
+                    return new CheckResult(3, -1, local);
+                }
+                remote = new JSONObject(text).optLong("version", 0);
+            }
+            if (remote <= local) {
+                return new CheckResult(1, remote, local);
+            }
+            fetchAndApply(ctx, url);
+            return new CheckResult(0, remote, local);
+        } catch (Throwable t) {
+            Log.w(TAG, "检查热更失败: " + t.getMessage());
+            return new CheckResult(3, -1, local);
+        }
+    }
+
+    /** 手动放置/替换热更包后调用。 */
+    public static synchronized void apply(JSONObject o) {
+        if (o == null) return;
+        config = o;
+        version = o.optLong("version", 0);
+    }
+
+    // ---------- 消费接口（全部防御式：无热更包=回默认值） ----------
+
+    /** 数值参数：nums.{key}，热更包未定义时回落 def。 */
+    public static long num(String key, long def) {
+        JSONObject o = config;
+        if (o == null) return def;
+        JSONObject nums = o.optJSONObject("nums");
+        long v = nums == null ? def : nums.optLong(key, def);
+        return v != 0 ? v : def;
+    }
+
+    /** 目录覆盖（map 形态，如 shops）：catalogs.{name}，否则 null。 */
+    public static JSONObject catalogObj(String name) {
+        JSONObject o = config;
+        if (o == null) return null;
+        JSONObject catalogs = o.optJSONObject("catalogs");
+        return catalogs == null ? null : catalogs.optJSONObject(name);
+    }
+
+    /** 目录覆盖（数组形态，如 flamefangs）：catalogs.{name}，否则 null（调用方回落 assets）。 */
+    public static JSONArray catalog(String name) {
+        JSONObject o = config;
+        if (o == null) return null;
+        JSONObject catalogs = o.optJSONObject("catalogs");
+        return catalogs == null ? null : catalogs.optJSONArray(name);
+    }
+
+    /** 声明式领取任务清单（Tier 2）；无热更包返回空数组。 */
+    public static JSONArray claims() {
+        JSONObject o = config;
+        return o == null ? new JSONArray() : o.optJSONArray("claims");
+    }
+
+    /** 被热更禁用的任务 id，runTasks 据此强制跳过（远端一键止血用）。 */
+    public static boolean isDisabled(String fnId) {
+        JSONObject o = config;
+        if (o == null) return false;
+        JSONArray arr = o.optJSONArray("disabled");
+        if (arr == null) return false;
+        for (int i = 0; i < arr.length(); i++) {
+            if (fnId.equals(arr.optString(i))) return true;
+        }
+        return false;
+    }
+
+    public static long version() {
+        return version;
+    }
+
+    // ---------- 声明式领取执行 ----------
+
+    /**
+     * 在会话上执行全部声明式领取任务（runTasks 收尾调用；逐条隔离，单条失败不影响后续）。
+     */
+    public static void runClaims(WjdrEngine engine, DailyRunner.ProgressListener listener) {
+        JSONArray claims = claims();
+        for (int i = 0; i < claims.length(); i++) {
+            JSONObject c = claims.optJSONObject(i);
+            if (c == null) continue;
+            String id = c.optString("id", "hot" + i);
+            String name = c.optString("name", id);
+            String proto = c.optString("proto", "");
+            if (proto.isEmpty()) continue;
+            try {
+                engine.collectNotifies(1200);
+                Map<String, Object> args = new java.util.LinkedHashMap<>();
+                JSONObject jsonArgs = c.optJSONObject("args");
+                if (jsonArgs != null) {
+                    java.util.Iterator<String> it = jsonArgs.keys();
+                    while (it.hasNext()) {
+                        String k = it.next();
+                        args.put(k, jsonArgs.opt(k));
+                    }
+                }
+                GameMessage rsp = engine.request(proto, args);
+                int code = rsp == null || rsp.getContent() == null
+                        ? -1 : (int) ExecUtil.longOf(rsp.getContent().get("code"));
+                boolean ok = rsp != null && code == 0;
+                DailyResult r = new DailyResult("hot:" + id, name,
+                        ok ? DailyResult.Category.CLAIMED : DailyResult.Category.SKIPPED,
+                        ok ? "已执行" : "码" + code);
+                if (listener != null) listener.onTaskDone(r);
+            } catch (Throwable t) {
+                DailyResult r = new DailyResult("hot:" + id, name,
+                        DailyResult.Category.ERROR,
+                        t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
+                if (listener != null) listener.onTaskDone(r);
+            }
+        }
+    }
+}

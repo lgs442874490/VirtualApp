@@ -42,7 +42,9 @@ final class ShopTasks {
         if (shopsCache != null) return shopsCache;
         Map<Long, List<Good>> out = new LinkedHashMap<>();
         try {
-            JSONObject root = new JSONObject(readAsset(ctx, "towndev/shops.json"));
+            // 热更目录优先（HotConfig.catalogs.shops），缺失回落 APK 内置 assets
+            JSONObject root = HotConfig.catalogObj("shops");
+            if (root == null) root = new JSONObject(readAsset(ctx, "towndev/shops.json"));
             for (Iterator<String> it = root.keys(); it.hasNext(); ) {
                 String shopId = it.next();
                 JSONArray arr = root.getJSONArray(shopId);
@@ -78,7 +80,9 @@ final class ShopTasks {
         if (leakCache != null) return leakCache;
         List<LeakGood> out = new ArrayList<>();
         try {
-            JSONArray arr = new JSONArray(readAsset(ctx, "towndev/flamefangs.json"));
+            // 热更目录优先（HotConfig.catalogs.flamefangs），缺失回落 APK 内置 assets
+            JSONArray arr = HotConfig.catalog("flamefangs");
+            if (arr == null) arr = new JSONArray(readAsset(ctx, "towndev/flamefangs.json"));
             for (int i = 0; i < arr.length(); i++) {
                 JSONObject g = arr.getJSONObject(i);
                 LeakGood l = new LeakGood();

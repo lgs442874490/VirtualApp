@@ -3773,6 +3773,7 @@ public class HomeActivity extends AccountVaultActivity {
         box.addView(mineRow("☁️ 服务器模式",
                 (VaultSync.isServerMode(this) ? "已开启 · " : "未开启 · ")
                         + "自动化跑在服务器，本机做号库与分身", this::showServerModePicker));
+        box.addView(buildHotUpdateRow());
         box.addView(mineRow("⏰ 定时与保活", "前台服务 · 精确闹钟 · 通知唤醒", () -> {
             AccountStore.Account cur = firstWorkspace();
             if (cur != null) openDaily(cur, null);
@@ -3817,11 +3818,83 @@ public class HomeActivity extends AccountVaultActivity {
         box.addView(danger);
     }
 
-    private View mineRow(String title, String sub, Runnable onClick) {
+    /** 热更新检查行：显示本地热更版本，点击对比服务器版本，不一致自动拉取应用。 */
+    private TextView hotSub;
+
+    private View buildHotUpdateRow() {
         LinearLayout row = UiStyle.outlineCard(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.bottomMargin = dp(8);
+        row.setLayoutParams(rlp);
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        TextView t = new TextView(this);
+        t.setText("🔄 检查热更");
+        t.setTextSize(13.5f);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextColor(UiStyle.INK);
+        mid.addView(t);
+        hotSub = new TextView(this);
+        hotSub.setText(hotSubText());
+        hotSub.setTextSize(11.5f);
+        hotSub.setTextColor(UiStyle.INK2);
+        mid.addView(hotSub);
+        row.addView(mid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView arrow = new TextView(this);
+        arrow.setText("›");
+        arrow.setTextSize(18);
+        arrow.setTextColor(UiStyle.INK2);
+        row.addView(arrow);
+        UiStyle.press(row);
+        row.setOnClickListener(v -> runHotUpdateCheck());
+        return row;
+    }
+
+    private String hotSubText() {
+        long v = com.carlos.vault.daily.HotConfig.version();
+        String url = getSharedPreferences("hotconfig", MODE_PRIVATE).getString("hot_url", "");
+        boolean hasUrl = url != null && !url.isEmpty();
+        String local = v > 0 ? ("本地热更 v" + v) : "本地无热更包";
+        return hasUrl ? (local + " · 点击对比服务器") : (local + " · 未配置热更源");
+    }
+
+    private void runHotUpdateCheck() {
+        final android.app.ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("检查热更…");
+        pd.setCancelable(false);
+        pd.show();
+        new Thread(() -> {
+            com.carlos.vault.daily.HotConfig.CheckResult r =
+                    com.carlos.vault.daily.HotConfig.checkServer(this);
+            runOnUiThread(() -> {
+                pd.dismiss();
+                String msg;
+                switch (r.code) {
+                    case 0:
+                        msg = "热更已更新：v" + r.localVersion + " → v" + r.serverVersion;
+                        break;
+                    case 1:
+                        msg = r.serverVersion > 0 ? "已是最新 v" + r.serverVersion : "已是最新";
+                        break;
+                    case 2:
+                        msg = "未配置热更源（prefs hot_url / adb 广播 --es url 均可设置）";
+                        break;
+                    default:
+                        msg = "拉取失败，请检查网络后重试";
+                }
+                toast(msg);
+                refreshAllPages();   // 重建我的页，刷新版本号显示
+            });
+        }, "hot-check").start();
+    }
+
+    private View mineRow(String title, String sub, Runnable onClick) {
+        LinearLayout row = UiStyle.outlineCard(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);        row.setPadding(dp(12), dp(12), dp(12), dp(12));
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         rlp.bottomMargin = dp(8);

@@ -180,6 +180,14 @@
             android:authorities="io.virtualapp.sandvxposed:x"
             android:exported="false"
             android:process=":x" />-->
+        <receiver
+            android:name="com.carlos.vault.daily.HotConfigReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.carlos.multiapp.HOT_REFRESH" />
+            </intent-filter>
+        </receiver>
+
     </application>
 
 

@@ -79,6 +79,7 @@ public final class FnRegistry {
 
         // ===== 野外 =====
         l.add(new Fn("gather", "野外采集", CAT_FIELD, true, "搜索资源点派出空闲队列"));
+        l.add(new Fn("adventure_sweep", "探险速刷", CAT_FIELD, true, "已通关关卡 is_fast 快速推进（每日可刷）"));
         l.add(new Fn("intel", "情报任务", CAT_FIELD, true, "处理待办情报事件并领奖"));
         l.add(new Fn("behemoth", "巨兽狩猎", CAT_FIELD, true, "开启原生自动上车(巨兽/死神/巨熊)"));
         l.add(new Fn("bear", "巨熊行动", CAT_FIELD, true, "陷阱预约同步（上车由自动上车承接）"));
@@ -91,6 +92,7 @@ public final class FnRegistry {
         l.add(new Fn("alliance_mobilization", "联盟动员", CAT_ALLIANCE, true, "任务奖励+免费次数+里程碑"));
         l.add(new Fn("alliance_showdown", "争霸赛", CAT_ALLIANCE, true, "未报名时自动报名赛道1"));
         l.add(new Fn("alliance_help", "联盟互助", CAT_ALLIANCE, true, "一键帮助全盟（随每次运行执行）"));
+        l.add(new Fn("homeland_visit", "晨曦岛拜访", CAT_ALLIANCE, true, "拜访活跃盟友晨曦岛并协助（每日3次）"));
 
         // ===== 商店 =====
         l.add(new Fn("shop", "商店购买", CAT_SHOP, true, "勾选商品后按限购自动购买（默认不勾）"));

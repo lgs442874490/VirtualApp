@@ -33,6 +33,9 @@ final class PushWakeDriver {
         WAKE_MAP.put("notify_recover_resource_update", "supply");
         WAKE_MAP.put("notify_adventure_pve_info", "adventure");         // 原版#2 探险挂机推送
         WAKE_MAP.put("notify_homeland_info", "homeland");               // 原版#25 家园推送
+        WAKE_MAP.put("notify_homeland_life_tree_output_update", "homeland");     // 生命之树产出更新
+        WAKE_MAP.put("notify_homeland_logging_site_update_info", "homeland");    // 木材加工厂更新
+        WAKE_MAP.put("notify_homeland_free_production_info", "homeland");        // 晨曦回礼刷新
         WAKE_MAP.put("notify_spar_info", "fire_crystal");               // 原版#22 火晶推送
         WAKE_MAP.put("notify_general_bp_extra_info", "act_endless");    // 原版#18 BP 推送
         WAKE_MAP.put("notify_general_bp_normal_info", "act_endless");

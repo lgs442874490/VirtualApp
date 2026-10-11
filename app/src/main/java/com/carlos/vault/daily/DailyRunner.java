@@ -565,6 +565,7 @@ public class DailyRunner {
         }
         WjdrEngine engine = WjdrAndroid.newEngine(context);
         try {
+            HotConfig.init(context);
             engine.initialize();
             applyRoleIdentity(context, engine, fpid, serverid);
             RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);
@@ -860,9 +861,17 @@ public class DailyRunner {
     static Summary runTasks(Context context, WjdrEngine engine, String fpid, long serverid,
                             Map<String, Boolean> cfg, ProgressListener listener, Summary sum,
                             boolean closeEngine) {
+        HotConfig.init(context);
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
             Boolean on = cfg == null ? null : cfg.get(d.id);
             boolean enabled = on != null ? on : d.enabledByDefault;
+            if (HotConfig.isDisabled(d.id)) {
+                // 热更止血：远端一键禁用某任务（优先级高于本地开关）
+                DailyResult r = new DailyResult(d.id, d.name, DailyResult.Category.SKIPPED, "热更禁用");
+                sum.results.add(r);
+                if (listener != null) listener.onTaskDone(r);
+                continue;
+            }
             if (!enabled) {
                 DailyResult r = new DailyResult(d.id, d.name, DailyResult.Category.SKIPPED, "配置未启用");
                 sum.results.add(r);
@@ -910,6 +919,10 @@ public class DailyRunner {
         }
         engine.collectNotifies(1200);
         captureQuestState(context, engine, fpid, serverid, sum);
+        // 热更声明式领取任务（Tier 2）收尾执行：单条隔离，失败不影响整轮
+        if (!sum.sessionLost) {
+            HotConfig.runClaims(engine, listener);
+        }
         if (closeEngine) engine.close();
         if (listener != null) listener.onFinish(sum);
         return sum;
@@ -954,6 +967,7 @@ public class DailyRunner {
                     return new DailyResult(d.id, d.name, x.category, x.message);
                 }
                 try {
+                    HotConfig.init(context);
                     applyRoleIdentity(context, engine, fpid, serverid);
                     RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);
                     persistRoleIdentity(context, engine, fpid, serverid);
@@ -1189,6 +1203,7 @@ public class DailyRunner {
         }
         WjdrEngine engine = WjdrAndroid.newEngine(context);
         try {
+            HotConfig.init(context);
             engine.initialize();
             applyRoleIdentity(context, engine, fpid, serverid);
             WjdrEngine.LoginResult lr = RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);

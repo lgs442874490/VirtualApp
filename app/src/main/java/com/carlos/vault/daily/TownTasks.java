@@ -405,6 +405,9 @@ final class TownTasks {
             }
             if (trOk > 0) m.claimed("训练" + trNote.toString().trim());
             else if (trNote.length() > 0) m.skip("训练未成：" + trNote.toString().trim());
+            // 收发动作会改变兵营队列，服务器会推送新 notify_barrack_init——补捕一次刷新状态行
+            engine.collectNotifies(800);
+            captureBarrackState(engine);
         } catch (Exception e) {
             if (sessionLost(e)) return DailyTasks.classifyException(e, "兵营训练");
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
@@ -514,7 +517,13 @@ final class TownTasks {
     /** 三兵营实时状态：notify_barrack_init 逐营解析（训练中·HH:mm可收 / 空闲）。 */    static void captureBarrackState(WjdrEngine engine) {
         try {
             Map<String, Object> bi = engine.notifyData("notify_barrack_init");
-            if (bi == null) return;
+            if (bi == null) {
+                // 通知未同步也要覆盖旧文本，避免"永远几天前快照"的假象
+                for (String sub : new String[]{"collect_shield", "collect_spear", "collect_bow"}) {
+                    mod(engine, "barracks", sub, "兵营通知未同步");
+                }
+                return;
+            }
             String raw = String.valueOf(bi);
             DailyTasks.debugLog(engine.appContext(), "barrack raw=" + raw.substring(0, Math.min(500, raw.length())));
             long now = System.currentTimeMillis() / 1000L;
@@ -734,41 +743,165 @@ final class TownTasks {
             android.content.Context hctx = engine.appContext();
             String hfpid = engine.lastFpid() == null ? "" : engine.lastFpid();
             long hsid = engine.lastServerId();
+            Map<String, Object> hi = engine.notifyContent("notify_homeland_info");
+            if (hi == null) {
+                m.skip("家园通知未同步（登录期首跑即可）");
+                m.subSkip("free", "未同步");
+                m.subSkip("tree", "未同步");
+                m.subSkip("logging", "未同步");
+                return homelandResult(m);
+            }
+            long nowSec = System.currentTimeMillis() / 1000L;
+
+            // 回礼：每 8 小时一个、至多 3 个（原版 free_production_ts 同款口径）
             if (FnParams.subOn(hctx, hfpid, hsid, "homeland", "free", true)) {
-                tryStep(engine, m, "晨曦回礼", "free", "req_homeland_gain_free_production", null);
+                long fpTs = numIn(hi, "free_production_ts");
+                if (fpTs > 0 && nowSec > fpTs) {
+                    long count = Math.min(3, (nowSec - fpTs) / 28800L);
+                    if (count > 0) {
+                        tryStep(engine, m, "晨曦回礼×" + count, "free",
+                                "req_homeland_gain_free_production", null);
+                    } else {
+                        m.subSkip("free", "未到8小时");
+                    }
+                } else {
+                    m.subSkip("free", "时间戳未同步");
+                }
             }
+
+            // 生命之树：按等级的小时产量表 + 12 小时上限本地外推，可收值>0 才领
             if (FnParams.subOn(hctx, hfpid, hsid, "homeland", "tree", true)) {
-                tryStep(engine, m, "生命之树", "tree", "req_homeland_take_life_tree_coin", null);
+                Map<String, Object> tree = deepMap(hi, "life_tree_info");
+                long lifeTreeLevel = homelandBuildingLevel(hi, 7000L);
+                long hourly = LIFE_TREE_HOURLY[Math.min((int) lifeTreeLevel, LIFE_TREE_HOURLY.length - 1)];
+                long max = hourly * 12L;
+                long cur = numIn(tree, "cur_value");
+                long lastRec = numIn(tree, "last_recovery_time");
+                long base = Math.max(0, Math.min(cur, max));
+                long value = base;
+                if (hourly > 0 && lastRec > 0 && nowSec > lastRec && base < max) {
+                    long perMin = Math.max(1, hourly / 60L);
+                    long elapsedMin = (nowSec - lastRec) / 60L;
+                    long growCapMin = (max - base + perMin - 1) / perMin;
+                    value = base + Math.min(elapsedMin, growCapMin) * perMin;
+                }
+                if (value > 0) {
+                    tryStep(engine, m, "生命之树（约" + value + "）", "tree",
+                            "req_homeland_take_life_tree_coin", null);
+                } else {
+                    m.subSkip("tree", "无可收（产量" + hourly + "/时）");
+                }
             }
-            // 伐木小屋/加工厂需要坐标：从家园通知里找 point
+
+            // 伐木小屋(7001)满 720 / 木材加工厂(7082)满 2：逐建筑判阈值（原版同款）
             if (!FnParams.subOn(hctx, hfpid, hsid, "homeland", "logging", true)) {
                 m.subSkip("logging", "已关闭");
             } else {
-                Map<String, Object> hi = engine.notifyContent("notify_homeland_info");
-                List<Map<String, Object>> pts = new ArrayList<>();
-                if (hi != null) {
-                    collectPoints(hi, pts, 0);
-                }
-                if (pts.isEmpty()) {
-                    m.skip("伐木点未同步");
-                } else {
-                    Map<String, Object> p = pts.get(0);
-                    tryStep(engine, m, "伐木小屋", "logging", "req_homeland_take_logging_cabin_tree",
-                            ExecUtil.args("point", p));
-                    if (pts.size() > 1) {
-                        tryStep(engine, m, "木材加工厂", "req_homeland_take_logging_site_coin",
-                                ExecUtil.args("point", pts.get(1)));
+                List<Map<String, Object>> builds = homelandBuildings(hi);
+                boolean took = false;
+                boolean cabinTaken = false;
+                for (Map<String, Object> b : builds) {
+                    long bid = numIn(b, "bid");
+                    if (bid != 7001L && bid != 7082L) continue;
+                    Map<String, Object> point = deepMap(b, "point");
+                    if (point == null || numIn(point, "x") == 0 && numIn(point, "y") == 0) continue;
+                    if (bid == 7001L) {
+                        if (cabinTaken) continue;   // 每轮只取一个小屋（原版同款）
+                        long cur = loggingCur(b);
+                        if (cur >= 720) {
+                            tryStep(engine, m, "伐木小屋", "logging",
+                                    "req_homeland_take_logging_cabin_tree",
+                                    ExecUtil.args("point", point));
+                            took = true;
+                            cabinTaken = true;
+                        }
+                    } else {
+                        long cur = loggingCur(b);
+                        if (cur >= 2) {
+                            tryStep(engine, m, "木材加工厂", "logging",
+                                    "req_homeland_take_logging_site_coin",
+                                    ExecUtil.args("point", point));
+                            took = true;
+                        }
                     }
+                }
+                if (!took && m.sb.length() == 0) {
+                    m.subSkip("logging", "未满阈值（小屋720/工厂2）");
                 }
             }
         } catch (Exception e) {
             if (sessionLost(e)) return DailyTasks.classifyException(e, "晨曦岛");
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
+        return homelandResult(m);
+    }
+
+    /** 生命之树小时产量表（按建筑等级，index=等级，封顶 420/时）。 */
+    private static final long[] LIFE_TREE_HOURLY = {0, 120, 150, 180, 210, 240, 270, 300, 330, 360, 420};
+
+    private static DailyResult homelandResult(ExecUtil.Multi m) {
         DailyResult rr = new DailyResult("homeland", "晨曦岛", m.cat(), m.note() + " " + m.sb);
         rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
+    }
+
+    /** 递归收集家园建筑条目（含 bid 的 map）。 */
+    static List<Map<String, Object>> homelandBuildings(Map<String, Object> node) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        collectBuildings(node, out, 0);
+        return out;
+    }
+
+    private static void collectBuildings(Map<String, Object> node, List<Map<String, Object>> out, int depth) {
+        if (node == null || depth > 4 || out.size() >= 32) return;
+        if (node.containsKey("bid")) {
+            out.add(node);
+            return;
+        }
+        for (Object v : node.values()) {
+            if (v instanceof Map) {
+                collectBuildings((Map<String, Object>) v, out, depth + 1);
+            } else if (v instanceof List) {
+                for (Object o : (List<?>) v) {
+                    if (o instanceof Map) collectBuildings((Map<String, Object>) o, out, depth + 1);
+                }
+            }
+        }
+    }
+
+    private static long homelandBuildingLevel(Map<String, Object> hi, long bid) {
+        for (Map<String, Object> b : homelandBuildings(hi)) {
+            if (numIn(b, "bid") == bid) return numIn(b, "level");
+        }
+        return 0;
+    }
+
+    /** 小屋/加工厂的 cur_value（字段可能直接挂建筑条目或内嵌 info）。 */
+    private static long loggingCur(Map<String, Object> b) {
+        long v = numIn(b, "cur_value");
+        if (v > 0) return v;
+        for (Object o : b.values()) {
+            if (o instanceof Map) {
+                v = numIn((Map<String, Object>) o, "cur_value");
+                if (v > 0) return v;
+            }
+        }
+        return 0;
+    }
+
+    /** 递归找第一个含指定键的子 map。 */
+    private static Map<String, Object> deepMap(Map<String, Object> node, String key) {
+        if (node == null) return null;
+        Object direct = node.get(key);
+        if (direct instanceof Map) return (Map<String, Object>) direct;
+        for (Object v : node.values()) {
+            if (v instanceof Map) {
+                Map<String, Object> r = deepMap((Map<String, Object>) v, key);
+                if (r != null) return r;
+            }
+        }
+        return null;
     }
 
     private static void collectPoints(Map<String, Object> m, List<Map<String, Object>> out, int depth) {
@@ -832,6 +965,31 @@ final class TownTasks {
                 else break;
             }
             if (superDone > 0) { m.claimed("超炼×" + superDone); m.subOk("super", "超炼×" + superDone); }
+            // 火晶悬赏任务：notify_firecrystal_quests 的任务批量领取（quest_ids 批量接口，已领/未达标服务端跳过）
+            if (FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "fire_crystal", "quests", true)) {
+                Map<String, Object> fq = engine.notifyData("notify_firecrystal_quests");
+                List<Object> questIds = new ArrayList<>();
+                for (Map<String, Object> q : ExecUtil.mapsOf(fq == null ? null : fq.get("quests"))) {
+                    long id = ExecUtil.longOf(q.get("id"));
+                    if (id > 0 && questIds.size() < 30) questIds.add(id);
+                }
+                if (!questIds.isEmpty()) {
+                    GameMessage qa = engine.request("req_get_firecrystal_quest_award",
+                            ExecUtil.args("quest_ids", questIds));
+                    if (ExecUtil.ok(qa)) {
+                        m.claimed("悬赏任务×" + questIds.size());
+                        m.subOk("quests", "悬赏×" + questIds.size());
+                    } else {
+                        int code = ExecUtil.codeOf(qa);
+                        m.skip("悬赏无可领(码" + code + ")");
+                        m.subSkip("quests", "码" + code);
+                    }
+                } else {
+                    m.subSkip("quests", "无任务记录");
+                }
+            }
         } catch (Exception e) {
             if (sessionLost(e)) return DailyTasks.classifyException(e, "火晶提炼");
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
@@ -907,56 +1065,103 @@ final class TownTasks {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
             engine.collectNotifies(1500);
+            android.content.Context actx = engine.appContext();
+            String afpid = engine.lastFpid() == null ? "" : engine.lastFpid();
+            long asid = engine.lastServerId();
+            org.json.JSONObject ap = FnParams.params(actx, afpid, asid, "arena");
+            org.json.JSONObject strat = ap.optJSONObject("strategy");
+            // 次数：策略chips优先（3/5/8/10场），无策略再兼容旧 params.max_fights
+            int maxFights = strat != null && strat.has("fight") ? strat.optInt("fight", 5)
+                    : ap.optInt("max_fights", 5);
+            maxFights = Math.max(1, Math.min(10, maxFights));
+
+            // 1. 战斗版本学习（原版同款：从 battle_data 学 version；写死值可被热更包
+            //    nums."arena.version_fallback" 覆盖——版本更新后远端改数即生效）
+            long version = HotConfig.num("arena.version_fallback", 26042101L);
+            try {
+                GameMessage bd = engine.request("req_arena_get_battle_data", null);
+                if (ExecUtil.ok(bd)) {
+                    long v = deepFindNum(bd.getContent(), 0, "version", "battle_version");
+                    if (v > 0) version = v;
+                }
+            } catch (Throwable ignored) {
+            }
+
+            // 2. 竞技场基础状态（防御式）：完成次数/英雄阵容
+            Map<String, Object> base = arenaBase(engine);
+            long freeUsed = numIn(base, "free_times_use");
+            long buyTimes = numIn(base, "buy_times");
+            long leftTimes = numIn(base, "left_times");
+            long completed = freeUsed + Math.max(0, buyTimes - leftTimes);
+
+            // 3. 对手列表
             GameMessage opp = engine.request("req_arena_get_opponent", null);
+            int fights = 0, wins = 0;
             if (ExecUtil.ok(opp)) {
                 List<Map<String, Object>> list = new ArrayList<>();
                 for (String k : new String[]{"opponents", "data", "list"}) {
                     list = ExecUtil.mapsOf(opp.getContent().get(k));
                     if (!list.isEmpty()) break;
                 }
-                // 选战力最低的打（字段名防御式取）
-                list.sort((a, b) -> Long.compare(powerOf(a), powerOf(b)));
-                List<Long> heroes = squadHeroes(engine);
-                org.json.JSONObject ap = FnParams.params(engine.appContext(),
-                        engine.lastFpid(), engine.lastServerId(), "arena");
-                // 次数：策略chips优先（3/5/8/10场），无策略再兼容旧 params.max_fights
-                int maxFights = 5;
-                org.json.JSONObject strat = ap.optJSONObject("strategy");
-                if (strat != null && strat.has("fight")) {
-                    maxFights = strat.optInt("fight", 5);
-                } else if (ap.has("max_fights")) {
-                    maxFights = ap.optInt("max_fights", 5);
-                }
-                maxFights = Math.max(1, Math.min(10, maxFights));
-                int wins = 0, fights = 0;
+                // 战力降序无意义，先过滤再按防御战力升序（挑最软的）
+                long myPower = numIn(base, "power");
+                if (myPower <= 0) myPower = numIn(base, "defence_power");
+                java.util.Set<Long> fought = new java.util.HashSet<>();
+                List<Long> heroes = arenaHeroes(engine, base);
+                list.sort((x, y) -> Long.compare(powerOf(x), powerOf(y)));
                 for (Map<String, Object> o : list) {
                     if (fights >= maxFights || heroes.isEmpty()) break;
                     long oid = ExecUtil.longOf(o.get("uid"));
                     if (oid <= 0) oid = ExecUtil.longOf(o.get("id"));
-                    if (oid <= 0) continue;
+                    if (oid <= 0 || fought.contains(oid)) continue;
+                    long pw = powerOf(o);
+                    boolean robot = pw == 0 || ExecUtil.longOf(o.get("fid")) == 0;
+                    // 弱于我才打（机器人豁免）；战力未知按可打处理
+                    if (!robot && myPower > 0 && pw >= myPower) continue;
                     List<Object> heroArray = new ArrayList<>(heroes);
                     GameMessage f = engine.request("req_arena_fight", ExecUtil.args(
-                            "opponent_type", ExecUtil.longOf(o.get("type")) == 0 ? 1 : ExecUtil.longOf(o.get("type")),
+                            "opponent_type", robot ? 1 : 0,
                             "opponent_id", oid,
                             "hero_array", heroArray,
-                            "version", 26042101L));
+                            "version", version));
                     fights++;
-                    if (ExecUtil.ok(f)) wins++;
+                    if (ExecUtil.ok(f)) {
+                        wins++;
+                        fought.add(oid);
+                    } else {
+                        int code = ExecUtil.codeOf(f);
+                        if (code == 2901) { m.skip("挑战次数已用完"); break; }
+                        if (code == 2903) { ExecUtil.sleep(1000); fights--; continue; }  // 太频繁，等一下重试
+                        if (code == 2904 || code == 2920 || code == 2921) { m.skip("对手已过期，下轮刷新"); break; }
+                        fought.add(oid);   // 其余错误码（含 2914 结果未知）本轮不再碰这个对手
+                        m.skip("对手码" + code);
+                    }
                     ExecUtil.sleep(800);
                 }
                 if (fights > 0) {
                     m.claimed("挑战" + fights + "场胜" + wins);
                     m.subOk("fight", "挑战" + fights + "胜" + wins);
-                    mod(engine, "arena", "fight", "上轮挑战 " + fights + " 场 · 胜 " + wins);
+                    mod(engine, "arena", "fight", "上轮挑战 " + fights + " 场 · 胜 " + wins
+                            + " · 战斗版本 " + version);
+                } else {
+                    m.skip("无可打对手（含战力门槛过滤）");
+                    m.subSkip("fight", "无合适对手");
                 }
-                else { m.skip("无对手数据"); m.subSkip("fight", "无对手数据"); }
             } else {
                 m.skip("竞技场未解锁(码" + ExecUtil.codeOf(opp) + ")");
             }
-            GameMessage daily = engine.request("req_arena_get_daily_reward", null);
-            int dc = ExecUtil.codeOf(daily);
-            if (ExecUtil.ok(daily)) { m.claimed("每日奖励"); m.subOk("daily", "每日奖励已领"); }
-            else if (dc == 2926 || dc == 2925) { m.skip(dc == 2926 ? "每日奖励已领" : "次数未达标"); m.subSkip("daily", dc == 2926 ? "已领" : "次数未达标"); }
+
+            // 4. 每日奖励：完成次数达标才领（原版同款门控），不达标不发请求
+            if (completed >= 5) {
+                GameMessage daily = engine.request("req_arena_get_daily_reward", null);
+                int dc = ExecUtil.codeOf(daily);
+                if (ExecUtil.ok(daily)) { m.claimed("每日奖励"); m.subOk("daily", "每日奖励已领"); }
+                else if (dc == 2926) { m.skip("每日奖励已领"); m.subSkip("daily", "已领"); }
+                else { m.skip("每日奖励码" + dc); m.subFail("daily", "码" + dc); }
+            } else {
+                m.skip("完成" + completed + "/5，未达每日奖励门槛");
+                m.subSkip("daily", "完成" + completed + "/5");
+            }
         } catch (Exception e) {
             if (sessionLost(e)) return DailyTasks.classifyException(e, "竞技场");
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
@@ -965,6 +1170,57 @@ final class TownTasks {
         rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
+    }
+
+    /** 竞技场基础状态（notify_arena_init.base 或消息本体），防御式。 */
+    private static Map<String, Object> arenaBase(WjdrEngine engine) {
+        Map<String, Object> init = engine.notifyData("notify_arena_init");
+        if (init == null) return new java.util.HashMap<>();
+        Map<String, Object> base = ExecUtil.mapOf(init.get("base"));
+        return base == null ? init : base;
+    }
+
+    /** 防御式数字提取：依次找 depth≤2 的同名键。 */
+    static long numIn(Map<String, Object> map, String key) {
+        if (map == null) return 0;
+        Object v = map.get(key);
+        if (v instanceof Number) return ExecUtil.longOf(v);
+        for (Object o : map.values()) {
+            if (o instanceof Map) {
+                Object inner = ((Map<?, ?>) o).get(key);
+                if (inner instanceof Number) return ExecUtil.longOf(inner);
+            }
+        }
+        return 0;
+    }
+
+    /** 英雄阵容三级回退：竞技场保存的进攻阵容 → 基础防守阵容 → 客户端 1 队/英雄榜。 */
+    private static List<Long> arenaHeroes(WjdrEngine engine, Map<String, Object> base) {
+        for (String k : new String[]{"challenge_hero", "hero_array"}) {
+            List<Long> ids = new ArrayList<>();
+            for (Object o : ExecUtil.listOf(base.get(k)) == null
+                    ? new ArrayList<Object>() : ExecUtil.listOf(base.get(k))) {
+                long id = ExecUtil.longOf(o);
+                if (id > 0) ids.add(id);
+            }
+            if (!ids.isEmpty()) return ids;
+        }
+        return squadHeroes(engine);
+    }
+
+    private static long deepFindNum(Map<String, Object> map, int depth, String... keys) {
+        if (map == null || depth > 4) return 0;
+        for (String k : keys) {
+            Object v = map.get(k);
+            if (v instanceof Number) return ExecUtil.longOf(v);
+        }
+        for (Object o : map.values()) {
+            if (o instanceof Map) {
+                long r = deepFindNum((Map<String, Object>) o, depth + 1, keys);
+                if (r > 0) return r;
+            }
+        }
+        return 0;
     }
 
     private static long powerOf(Map<String, Object> o) {
