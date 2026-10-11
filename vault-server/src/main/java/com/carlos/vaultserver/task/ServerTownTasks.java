@@ -165,14 +165,7 @@ public final class ServerTownTasks {
             if (sessionLost(e)) return ServerTasks.classifyException(e, "军医所");
             m.fail("治疗:" + ServerTasks.brief(String.valueOf(e.getMessage())));
         }
-        try {
-            GameMessage help = tc.engine.request("req_alliance_help_all", null);
-            if (Exec.ok(help)) { m.claimed("联盟一键求助/互助"); m.subOk("help_all", "已互助全盟"); }
-            else { m.skip("联盟求助不可用(码" + Exec.codeOf(help) + ")"); m.subSkip("help_all", "码" + Exec.codeOf(help)); }
-        } catch (Exception e) {
-            if (sessionLost(e)) return ServerTasks.classifyException(e, "军医所");
-            m.skip("联盟求助未执行");
-        }
+        // 联盟互助已收敛到 alliance_help（常驻响应器 + 定时兜底），军医所不再附带重复请求
         return Exec.result(m, "medic", "军医所");
     }
 

@@ -8,6 +8,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -230,6 +231,96 @@ public final class ServerFieldTasks {
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "hunt", "自动狩猎");
+    }
+
+    // ---------- 探险速刷（App FieldTasks.adventureSweep 逐行移植） ----------
+    //
+    // req_begin_adventure_pve{checkpoint, fight_heros_data, is_fast} →
+    // req_end_adventure_pve{checkpoint, operatedata, enddata}。
+    // 已通关(≤pass_checkpoint)的关卡走 is_fast 速刷无需战斗回放；未通关的新关
+    // 需要客户端战斗模拟，enddata 形状未实证——遇到即停并提示手动解锁一次。
+
+    public static TaskOutcome adventureSweep(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            JSONObject sp = tc.params("adventure_sweep");
+            JSONObject strat = sp.optJSONObject("strategy");
+            int maxSweep = strat != null && strat.has("sweep") ? strat.optInt("sweep", 5) : 5;
+            maxSweep = Math.max(1, Math.min(50, maxSweep));
+
+            Map<String, Object> pve = tc.engine.notifyData("notify_adventure_pve_info");
+            long passed = numIn(pve, "pass_checkpoint");
+            if (passed <= 0) {
+                m.skip("探险进度未同步（先手动进一次探险）");
+                m.subSkip("sweep", "进度未同步");
+                return Exec.result(m, "adventure_sweep", "探险速刷");
+            }
+            List<Long> heroes = null;
+            for (List<Long> v : Exec.clientSquads(tc.engine).values()) {
+                if (v != null && !v.isEmpty()) {
+                    heroes = v;
+                    break;
+                }
+            }
+            if (heroes == null) {
+                heroes = new ArrayList<>();
+                List<Long> all = Exec.allHeroes(tc.engine);
+                for (int i = 0; i < all.size() && heroes.size() < 5; i++) heroes.add(all.get(i));
+            }
+            if (heroes.isEmpty()) {
+                m.skip("无可用英雄编队");
+                m.subSkip("sweep", "无编队");
+                return Exec.result(m, "adventure_sweep", "探险速刷");
+            }
+            int swept = 0;
+            for (int i = 0; i < maxSweep; i++) {
+                long next = passed + 1;
+                GameMessage begin = tc.engine.request("req_begin_adventure_pve", Exec.args(
+                        "checkpoint", next, "fight_heros_data", heroes, "is_fast", true));
+                if (!Exec.ok(begin)) {
+                    int code = Exec.codeOf(begin);
+                    m.skip("第" + next + "关无法速刷(码" + code + ")"
+                            + (code != 0 ? "" : ""));
+                    break;
+                }
+                GameMessage end = tc.engine.request("req_end_adventure_pve", Exec.args(
+                        "checkpoint", next, "operatedata", new LinkedHashMap<String, Object>(),
+                        "enddata", new ArrayList<>()));
+                if (Exec.ok(end)) {
+                    swept++;
+                    passed = next;
+                    m.claimed("速刷第" + next + "关");
+                } else {
+                    int code = Exec.codeOf(end);
+                    m.skip("第" + next + "关未确认(码" + code + ")——新关卡需手动战斗解锁一次");
+                    break;
+                }
+            }
+            if (swept > 0) {
+                m.subOk("sweep", "速刷×" + swept + "（推进到第" + passed + "关）");
+                tc.saveModText("adventure_sweep", "sweep",
+                        "上轮速刷 " + swept + " 关 → 第 " + passed + " 关");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "探险速刷");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "adventure_sweep", "探险速刷");
+    }
+
+    /** 逐层下钻取数值（App TownTasks.numIn 同款：顶层或一层容器内）。 */
+    private static long numIn(Map<String, Object> map, String key) {
+        if (map == null) return 0;
+        Object v = map.get(key);
+        if (v instanceof Number) return Exec.longOf(v);
+        for (Object o : map.values()) {
+            if (o instanceof Map) {
+                Object inner = ((Map<?, ?>) o).get(key);
+                if (inner instanceof Number) return Exec.longOf(inner);
+            }
+        }
+        return 0;
     }
 
     private static Map<String, Object> searchMonster(WjdrEngine engine, int level) throws Exception {

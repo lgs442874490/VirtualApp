@@ -274,18 +274,7 @@ final class TownTasks {
             if (sessionLost(e)) return DailyTasks.classifyException(e, "军医所");
             m.fail("治疗:" + DailyTasks.brief(String.valueOf(e.getMessage())));
         }
-        if (FnParams.subOn(engine.appContext(),
-                engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
-                "medic", "help_all", true)) {
-            try {
-                GameMessage help = engine.request("req_alliance_help_all", null);
-                if (ExecUtil.ok(help)) { m.claimed("联盟一键求助/互助"); m.subOk("help_all", "已互助全盟"); }
-                else { m.skip("联盟求助不可用(码" + ExecUtil.codeOf(help) + ")"); m.subSkip("help_all", "码" + ExecUtil.codeOf(help)); }
-            } catch (Exception e) {
-                if (sessionLost(e)) return DailyTasks.classifyException(e, "军医所");
-                m.skip("联盟求助未执行");
-            }
-        }
+        // 联盟互助已收敛到 alliance_help（常驻响应器 + 定时兜底），军医所不再附带重复请求
         DailyResult rr = new DailyResult("medic", "军医所", m.cat(), m.note() + " " + m.sb);
         rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);

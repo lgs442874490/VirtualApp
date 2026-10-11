@@ -493,6 +493,16 @@ public final class ServerShopLeagueTasks {
     }
 
     public static TaskOutcome allianceHelp(TaskContext tc) {
+        // 常驻互助（ServerHelpResponder）接管中：它 30s 轮询持续刷新 help_all_ts，
+        // 3 分钟内有过响应/巡检即视为已覆盖，跳过本轮重复请求（服务器上整轮仅在常驻会话跑，此跳过常态生效）
+        try {
+            long ts = tc.modState("alliance_help").optLong("help_all_ts", 0);
+            if (ts > 0 && System.currentTimeMillis() - ts < 180_000L) {
+                return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
+                        "常驻互助接管中，跳过本轮");
+            }
+        } catch (Throwable ignored) {
+        }
         try {
             GameMessage rsp = tc.engine.request("req_alliance_help_all", null);
             int code = Exec.codeOf(rsp);
@@ -514,6 +524,77 @@ public final class ServerShopLeagueTasks {
         } catch (Exception e) {
             return ServerTasks.classifyException(e, "联盟互助");
         }
+    }
+
+    // ---------- 晨曦岛拜访协助（App LeagueTasks.homelandVisit 逐行移植；原版 homeland-visit 同款） ----------
+
+    public static TaskOutcome homelandVisit(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            long myUid = tc.engine.lastUid();
+            long kid = tc.sid;
+            // 1. 联盟活跃排行（type=10003 = 晨曦岛活跃榜），rank_list[].key = 成员 uid
+            GameMessage rank = tc.engine.request("req_alliance_rank_data",
+                    Exec.args("type", 10003L));
+            if (!Exec.ok(rank)) {
+                m.skip("联盟排行未开放(码" + Exec.codeOf(rank) + ")");
+                return Exec.result(m, "homeland_visit", "晨曦岛拜访");
+            }
+            List<Long> candidates = new ArrayList<>();
+            for (Map<String, Object> row : Exec.mapsOf(rank.getContent().get("rank_list"))) {
+                long uid = Exec.longOf(row.get("key"));
+                if (uid > 0 && uid != myUid && candidates.size() < 20) candidates.add(uid);
+            }
+            if (candidates.isEmpty()) {
+                m.skip("联盟排行无成员");
+                return Exec.result(m, "homeland_visit", "晨曦岛拜访");
+            }
+            // 2. 批量查协助状态：今日已协助≥3 或 6 小时内协助过 → 跳过（原版同款阈值）
+            GameMessage infos = tc.engine.request("req_homeland_player_homeland_info",
+                    Exec.args("uids", candidates, "type", 1L));
+            Map<String, Object> pi = Exec.mapOf(infos.getContent().get("player_homeland_infos"));
+            int visited = 0, assisted = 0;
+            for (Long uid : candidates) {
+                if (visited >= 10) break;   // 单轮上限（原版 300s 任务节律的保守版）
+                Map<String, Object> info = Exec.mapOf(pi == null ? null : pi.get(String.valueOf(uid)));
+                Map<String, Object> assist = Exec.mapOf(info == null ? null : info.get("homeland_assist_info"));
+                long assistedCount = Exec.longOf(assist == null ? null : assist.get("assisted_count"));
+                long lastTime = Exec.longOf(assist == null ? null : assist.get("last_assisted_time"));
+                if (assistedCount >= 3 || (lastTime > 0
+                        && System.currentTimeMillis() / 1000L - lastTime < 21600L)) {
+                    continue;
+                }
+                GameMessage visit = tc.engine.request("req_homeland_visit_other_homeland",
+                        Exec.args("uid", uid, "kid", kid));
+                if (!Exec.ok(visit)) continue;
+                GameMessage as = tc.engine.request("req_homeland_assist", Exec.args("uid", uid));
+                int code = Exec.codeOf(as);
+                if (Exec.ok(as)) {
+                    assisted++;
+                    m.claimed("协助 uid=" + uid);
+                } else if (code == 15026) {
+                    m.skip("今日协助次数已用完(3/3)");
+                    break;
+                } else if (code == 15027 || code == 15028) {
+                    m.skip("uid=" + uid + " 冷却/对方已满");
+                } else {
+                    m.skip("uid=" + uid + " 码" + code);
+                }
+                visited++;
+            }
+            if (assisted > 0) {
+                m.claimed("拜访协助×" + assisted);
+                m.subOk("assist", "协助×" + assisted);
+            } else if (m.sb.length() == 0) {
+                m.skip("无可协助对象");
+                m.subSkip("assist", "无可协助");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "晨曦岛拜访");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "homeland_visit", "晨曦岛拜访");
     }
 
     public static TaskOutcome backpack(TaskContext tc) {

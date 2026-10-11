@@ -75,8 +75,7 @@ public final class FnDetail {
                 new Sub("expert_soldier", "罗慕路斯·每日士兵", "领取每日兵营士兵（选择兵营：默认盾兵营）", true,
                         new String[][]{{"321", "盾兵营"}, {"322", "矛兵营"}, {"323", "弓兵营"}}));
         fn("medic",
-                new Sub("heal", "治疗伤兵", "高等级优先批量治疗，发起联盟求助加速", true, null),
-                new Sub("help_all", "联盟一键互助", "帮助全盟加速（每次运行执行一次）", true, null));
+                new Sub("heal", "治疗伤兵", "高等级优先批量治疗伤兵（联盟互助已收敛到联盟模块）", true, null));
         fn("barracks",
                 new Sub("collect_shield", "盾兵营收兵", "收回盾兵营已训练完毕的士兵", true, null),
                 new Sub("collect_spear", "矛兵营收兵", "收回矛兵营已训练完毕的士兵", true, null),
@@ -189,7 +188,7 @@ public final class FnDetail {
         fn("alliance_showdown",
                 new Sub("apply", "自动报名", "未报名时按配置编队报名（默认赛道1）", true, null));
         fn("alliance_help",
-                new Sub("help_all", "一键帮助全盟", "每次运行帮助全部盟友（建议配合自动日常高频跑）", true, null));
+                new Sub("help_all", "一键帮助全盟", "定时兜底：常驻互助（今日页卡/服务器）接管时自动跳过", true, null));
         fn("homeland_visit",
                 new Sub("assist", "拜访协助", "拉联盟活跃榜→逐个拜访活跃盟友晨曦岛并协助（今日<3次且过6小时冷却）", true, null));
 

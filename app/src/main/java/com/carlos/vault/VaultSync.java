@@ -223,6 +223,11 @@ public final class VaultSync {
      * 原样回写后今日页/日常页零改动渲染。
      */
     public static void fetchState(Context ctx) {
+        fetchState(ctx, null);
+    }
+
+    /** 同上，附带完成回调（回写完成后触发，含失败；回调在 OkHttp 线程）。 */
+    public static void fetchState(Context ctx, Callback done) {
         final Context app = ctx.getApplicationContext();
         Map<String, Object> f = commonFields(app);
         new Thread(() -> post(app, PATH_STATE, OP_STATE, f,
@@ -235,6 +240,7 @@ public final class VaultSync {
                             Log.i(TAG, "采集状态回写 " + states.length() + " 键");
                         }
                     }
+                    if (done != null) done.onResult(code, message, data);
                 }), "vault-state").start();
     }
 
@@ -415,7 +421,7 @@ public final class VaultSync {
 
     // ---------- HTTP（签名 + 信封） ----------
 
-    interface Callback {
+    public interface Callback {
         void onResult(int code, String message, JSONObject data);
     }
 

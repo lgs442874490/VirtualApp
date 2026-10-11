@@ -50,7 +50,7 @@ public final class FnRegistry {
 
         // ===== 城镇 =====
         l.add(new Fn("town_affairs", "城镇管理", CAT_TOWN, true, "免费招募+收兵+专家技能"));
-        l.add(new Fn("medic", "军医所", CAT_TOWN, true, "自动治疗伤兵+联盟求助"));
+        l.add(new Fn("medic", "军医所", CAT_TOWN, true, "自动治疗伤兵"));
         l.add(new Fn("barracks", "兵营训练", CAT_TOWN, true, "收兵+按现有最高兵种续训一批"));
         l.add(new Fn("research", "科技研究", CAT_TOWN, true, "按路线自动研究（休闲/战狂可选，设置页切换）"));
         l.add(new Fn("building", "建筑升级", CAT_TOWN, true, "按前置最低自动升级（每轮上限可配）"));
@@ -91,7 +91,7 @@ public final class FnRegistry {
         l.add(new Fn("alliance_donate", "联盟捐献", CAT_ALLIANCE, true, "科技捐献+发展/排名奖励"));
         l.add(new Fn("alliance_mobilization", "联盟动员", CAT_ALLIANCE, true, "任务奖励+免费次数+里程碑"));
         l.add(new Fn("alliance_showdown", "争霸赛", CAT_ALLIANCE, true, "未报名时自动报名赛道1"));
-        l.add(new Fn("alliance_help", "联盟互助", CAT_ALLIANCE, true, "一键帮助全盟（随每次运行执行）"));
+        l.add(new Fn("alliance_help", "联盟互助", CAT_ALLIANCE, true, "一键帮助全盟（常驻互助接管时自动跳过）"));
         l.add(new Fn("homeland_visit", "晨曦岛拜访", CAT_ALLIANCE, true, "拜访活跃盟友晨曦岛并协助（每日3次）"));
 
         // ===== 商店 =====

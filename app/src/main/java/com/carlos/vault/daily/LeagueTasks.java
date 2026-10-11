@@ -103,6 +103,19 @@ final class LeagueTasks {
     // ---------- 联盟互助：一键帮助全盟（每次运行执行，配合定时器高频互助） ----------
 
     static DailyResult allianceHelp(WjdrEngine engine) {
+        // 常驻互助（今日页卡 HelpResponder / 服务器响应器）接管中：它 30s 轮询持续刷新
+        // help_all_ts，3 分钟内有过响应/巡检即视为已覆盖，跳过本轮重复请求
+        try {
+            org.json.JSONObject mod = FnParams.modState(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(),
+                    engine.lastServerId(), "alliance_help");
+            long ts = mod.optLong("help_all_ts", 0);
+            if (ts > 0 && System.currentTimeMillis() - ts < 180_000L) {
+                return new DailyResult("alliance_help", "联盟互助", DailyResult.Category.SKIPPED,
+                        "常驻互助接管中，跳过本轮");
+            }
+        } catch (Throwable ignored) {
+        }
         try {
             GameMessage rsp = engine.request("req_alliance_help_all", null);
             int code = ExecUtil.codeOf(rsp);

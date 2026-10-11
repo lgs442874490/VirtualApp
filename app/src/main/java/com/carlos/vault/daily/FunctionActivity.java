@@ -94,6 +94,18 @@ public class FunctionActivity extends Activity {
             return;
         }
         setContentView(buildUi());
+        // 服务器模式：进页先拉一次服务器最新状态，回写后重渲染（否则看到的是上次快照）
+        if (com.carlos.vault.VaultSync.isServerMode(this)
+                && account.fpid != null && !account.fpid.isEmpty()) {
+            com.carlos.vault.VaultSync.fetchState(this, (code, message, data) ->
+                    runOnUiThread(() -> {
+                        try {
+                            if (isFinishing() || code != 0) return;
+                            setContentView(buildUi());
+                        } catch (Throwable ignored) {
+                        }
+                    }));
+        }
     }
 
     private String findFpid() {
@@ -109,6 +121,9 @@ public class FunctionActivity extends Activity {
 
     private void refreshOnOpen(final LinearLayout subCard) {
         try {
+            // 服务器模式：本地无常驻会话（执行与采集都在 vault-server），状态新鲜度由
+            // onCreate 的 fetchState 重渲染负责，不走本地引擎刷新也不提示"会话不在线"
+            if (com.carlos.vault.VaultSync.isServerMode(this)) return;
             final String fpid = account.fpid;
             final long sid = serverid;
             String key = fpid + ":" + sid + ":" + fn.id;
@@ -1068,7 +1083,15 @@ public class FunctionActivity extends Activity {
                 && account.fpid != null && !account.fpid.isEmpty()) {
             com.carlos.vault.VaultSync.runTask(this, account.fpid, fn.id);
             toast("已提交服务器执行「" + fn.name + "」\n稍后下拉/重进本页查看结果");
-            com.carlos.vault.VaultSync.fetchState(this);
+            // 已回传的状态先渲染一次（本轮结果要等服务器跑完，重进页面再取）
+            com.carlos.vault.VaultSync.fetchState(this, (code, message, data) ->
+                    runOnUiThread(() -> {
+                        try {
+                            if (isFinishing() || code != 0) return;
+                            setContentView(buildUi());
+                        } catch (Throwable ignored) {
+                        }
+                    }));
             return;
         }
         DailyRunner.SOURCE = "手动";   // 与 HomeActivity 一键跑全部同款：本次执行产生的日志/状态行都标"手动"

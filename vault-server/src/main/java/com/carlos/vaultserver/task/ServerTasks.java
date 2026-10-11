@@ -59,6 +59,7 @@ public final class ServerTasks {
         l.add(new TaskDef("mail", "邮件奖励", true, ServerTasks::mailRewards));
         l.add(new TaskDef("supply", "仓库补给", true, ServerTasks::supplyRewards));
         l.add(new TaskDef("daily_mission", "每日任务", true, ServerTasks::dailyMission));
+        l.add(new TaskDef("chapter_quest", "章节任务", true, ServerTasks::chapterQuest));
         l.add(new TaskDef("adventure", "挂机奖励", true, ServerTasks::adventureReward));
         l.add(new TaskDef("activity_rewards", "活动奖励", true, ServerTasks::activityRewards));
         l.add(new TaskDef("commander_gift", "统帅礼包", true, ServerTasks::commanderGift));
@@ -96,6 +97,7 @@ public final class ServerTasks {
         l.add(new TaskDef("behemoth", "巨兽狩猎", true, ServerTasks::behemoth));
         l.add(new TaskDef("bear", "巨熊行动", true, ServerTasks::bear));
         l.add(new TaskDef("hunt", "自动狩猎", false, ServerFieldTasks::hunt));
+        l.add(new TaskDef("adventure_sweep", "探险速刷", false, ServerFieldTasks::adventureSweep));
         l.add(new TaskDef("battle_shield", "战斗护盾", true, ServerTasks::freeShield));
         // ===== 联盟 =====
         l.add(new TaskDef("alliance_chest", "联盟宝箱", true, ServerTasks::allianceChest));
@@ -103,6 +105,7 @@ public final class ServerTasks {
         l.add(new TaskDef("alliance_mobilization", "联盟动员", true, ServerShopLeagueTasks::mobilization));
         l.add(new TaskDef("alliance_showdown", "争霸赛", false, ServerShopLeagueTasks::showdown));
         l.add(new TaskDef("alliance_help", "联盟互助", true, ServerShopLeagueTasks::allianceHelp));
+        l.add(new TaskDef("homeland_visit", "晨曦岛拜访", true, ServerShopLeagueTasks::homelandVisit));
         // ===== 商店/其他 =====
         l.add(new TaskDef("shop", "商店购买", false, ServerShopLeagueTasks::shopBuy));
         l.add(new TaskDef("alliance_shop", "联盟商店", false, ServerShopLeagueTasks::allianceShop));
@@ -343,6 +346,86 @@ public final class ServerTasks {
                     "响应无奖励字段，未确认到账（不视为成功）");
         } catch (Exception e) {
             return classifyException(e, "每日任务奖励");
+        }
+    }
+
+    // ---------- 4b. 章节奖励 + 章节任务 + 成长任务（App DailyTasks.chapterQuest 逐行移植） ----------
+
+    static TaskOutcome chapterQuest(TaskContext tc) {
+        try {
+            tc.engine.collectNotifies(1500);
+            Map<String, Object> cq = tc.engine.notifyContent("notify_chapterquests");
+            Map<String, Object> gq = tc.engine.notifyContent("notify_growthquests");
+            int claimed = 0, skipped = 0;
+            StringBuilder hits = new StringBuilder();
+
+            // 成长任务：notify_growthquests.quests[].id 逐个尝试（未达标由服务端错误码跳过，上限 60 条防刷屏）
+            if (tc.subOn("chapter_quest", "growth_quest", true)) {
+                int sent = 0;
+                for (Map<String, Object> q : Exec.mapsOf(gq == null ? null : gq.get("quests"))) {
+                    long id = Exec.longOf(q.get("id"));
+                    if (id <= 0 || sent >= 60) continue;
+                    sent++;
+                    GameMessage r = tc.engine.request("req_get_growthquest_award",
+                            Exec.args("questid", id));
+                    if (Exec.ok(r)) {
+                        claimed++;
+                        if (hits.length() > 0) hits.append("、");
+                        hits.append("成长#").append(id);
+                    } else skipped++;
+                }
+                if (gq == null) skipped++;
+            }
+
+            // 章节任务：notify_chapterquests.quests[].id
+            if (tc.subOn("chapter_quest", "chapter_quest", true)) {
+                int sent = 0;
+                for (Map<String, Object> q : Exec.mapsOf(cq == null ? null : cq.get("quests"))) {
+                    long id = Exec.longOf(q.get("id"));
+                    if (id <= 0 || sent >= 60) continue;
+                    sent++;
+                    GameMessage r = tc.engine.request("req_get_chapterquest_award",
+                            Exec.args("questid", id));
+                    if (Exec.ok(r)) {
+                        claimed++;
+                        if (hits.length() > 0) hits.append("、");
+                        hits.append("章任#").append(id);
+                    } else skipped++;
+                }
+                if (cq == null) skipped++;
+            }
+
+            // 章节奖励：cur_chapter（含上一章兜底，跨章领漏）
+            if (tc.subOn("chapter_quest", "chapter", true)) {
+                long cur = cq == null ? 0 : Exec.longOf(cq.get("cur_chapter"));
+                if (cur > 0) {
+                    long from = Math.max(1, cur - 1);
+                    for (long ch = from; ch <= cur; ch++) {
+                        GameMessage r = tc.engine.request("req_get_chapter_award",
+                                Exec.args("chapterid", ch));
+                        if (Exec.ok(r)) {
+                            claimed++;
+                            if (hits.length() > 0) hits.append("、");
+                            hits.append("章奖#").append(ch);
+                        } else skipped++;
+                    }
+                } else {
+                    skipped++;
+                }
+            }
+
+            if (claimed > 0) {
+                return new TaskOutcome("chapter_quest", "章节任务", TaskOutcome.Category.CLAIMED,
+                        "领取×" + claimed + "：" + hits + "（服务端跳过×" + skipped + "）");
+            }
+            if (cq == null && gq == null) {
+                return new TaskOutcome("chapter_quest", "章节任务", TaskOutcome.Category.SKIPPED,
+                        "章节/成长任务通知未同步");
+            }
+            return new TaskOutcome("chapter_quest", "章节任务", TaskOutcome.Category.SKIPPED,
+                    "无可领（服务端跳过×" + skipped + "）");
+        } catch (Exception e) {
+            return classifyException(e, "章节任务");
         }
     }
 
