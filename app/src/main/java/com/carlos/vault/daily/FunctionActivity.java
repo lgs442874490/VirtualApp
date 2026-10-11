@@ -611,7 +611,7 @@ public class FunctionActivity extends Activity {
         giftGrid.removeAllViews();
         org.json.JSONObject mod = FnParams.modState(this, account.fpid, serverid, "login_rewards");
         if (mod.optLong("sign_ts", 0) == 0) {
-            giftBanner.setText("开启你的十四天独家好礼");
+            giftBanner.setText("登录好礼 · 7 天双轨签到");
             TextView tip = new TextView(this);
             tip.setText("签到进度尚未同步 —— 打开「今日」页会自动同步一次");
             tip.setTextSize(12);
@@ -627,8 +627,8 @@ public class FunctionActivity extends Activity {
         int round = mod.optInt("server_index", 5004001);
         java.util.Set<Long> freeRec = daySet(mod.optJSONArray("free_rec"));
         java.util.Set<Long> buyRec = daySet(mod.optJSONArray("buy_rec"));
-        giftBanner.setText("开启你的十四天独家好礼\n已连签 " + mod.optLong("sign_days", 0)
-                + " 天 · " + (hasPay ? "史诗通行证已激活" : "后 7 天为史诗轨（需通行证）"));
+        giftBanner.setText("登录好礼 · 7 天双轨签到\n已连签 " + mod.optLong("sign_days", 0)
+                + " 天 · " + (hasPay ? "史诗通行证已激活" : "史诗轨需通行证（同 7 天，独立领奖）"));
         giftBanner.setLineSpacing(dp(3), 1f);
 
         String[][] free = RewardText.loginRewardsFree(round);
@@ -671,7 +671,7 @@ public class FunctionActivity extends Activity {
             head.setOrientation(LinearLayout.HORIZONTAL);
             head.setGravity(Gravity.CENTER);
             TextView dayTag = new TextView(this);
-            dayTag.setText((claimed ? "✓" : "") + "DAY " + (i + 1));
+            dayTag.setText((claimed ? "✓" : "") + "DAY " + day);
             dayTag.setTextSize(9.5f);
             dayTag.setTypeface(Typeface.DEFAULT_BOLD);
             dayTag.setTextColor(claimable ? UiStyle.BRAND

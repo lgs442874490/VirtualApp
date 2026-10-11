@@ -1095,6 +1095,7 @@ public class DailyRunner {
         LogStore ls = new LogStore(context);
         StringBuilder multi = new StringBuilder();
         DailyRunner.Summary last = null;
+        int ranRoles = 0;   // 真实跑过任务的角色数（0=本轮全被顶号/登录失败，不烧当天）
         for (RoleStore.Role r : roleList) {
             final long sidF = r.serverid;
             Map<String, Boolean> cfg = cfgStore.roleConfig(acc.fpid, sidF);
@@ -1146,11 +1147,16 @@ public class DailyRunner {
                     sum = run(context, acc.fpid, acc.token, sidF, cfg, pl);
                 }
             }
-            try {
-                context.getSharedPreferences("daily_sched", Context.MODE_PRIVATE).edit()
-                        .putLong("lastr:" + acc.fpid + ":" + sidF,
-                                System.currentTimeMillis()).apply();
-            } catch (Throwable ignored) {
+            // 轮次真实跑过才盖该角色的 lastr；顶号跳过/登录失败不盖（否则 UI 显示"今日已跑"
+            // 且当日补跑被烧掉，用户玩一天游戏当天日常全废——2026-10-11 真机实证）
+            if (sum.loginError == null) {
+                try {
+                    context.getSharedPreferences("daily_sched", Context.MODE_PRIVATE).edit()
+                            .putLong("lastr:" + acc.fpid + ":" + sidF,
+                                    System.currentTimeMillis()).apply();
+                } catch (Throwable ignored) {
+                }
+                ranRoles++;
             }
             last = sum;
             multi.append(r.name == null || r.name.isEmpty() ? "K" + r.serverid : r.name)
@@ -1158,10 +1164,12 @@ public class DailyRunner {
                             ? "登录失败 " + sum.loginError : sum.toText().split("\n")[0])
                     .append('\n');
         }
-        try {
-            context.getSharedPreferences("daily_sched", Context.MODE_PRIVATE).edit()
-                    .putLong("last:" + acc.fpid, System.currentTimeMillis()).apply();
-        } catch (Throwable ignored) {
+        if (ranRoles > 0) {
+            try {
+                context.getSharedPreferences("daily_sched", Context.MODE_PRIVATE).edit()
+                        .putLong("last:" + acc.fpid, System.currentTimeMillis()).apply();
+            } catch (Throwable ignored) {
+            }
         }
         if (last != null) {
             RoleStore.registerRole(context, acc.fpid, last.serverId, last.uid,
@@ -1179,6 +1187,8 @@ public class DailyRunner {
             RoleSessionKeeper.get(context).syncOnline();
         } catch (Throwable ignored) {
         }
+        // 全部角色被顶号跳过/登录失败：按"没跑"上报（null），让调度/补跑路径保持当日待跑
+        if (ranRoles == 0) return null;
         return roleList.size() > 1 ? multi.toString().trim()
                 : (last == null ? null : last.toText());
     }
@@ -1356,12 +1366,7 @@ public class DailyRunner {
                 scheduleNextSupplyWake(context, fpid);   // 依据最新补给状态顺延任务级 wake
             } catch (Throwable ignored) {
             }
-            try {
-                context.getSharedPreferences("daily_sched", Context.MODE_PRIVATE)
-                        .edit().putLong("lastr:" + fpid + ":" + sid,
-                                System.currentTimeMillis()).apply();
-            } catch (Throwable ignored) {
-            }
+            // 采集不盖 lastr：lastr 语义是"该角色上一次任务轮次"，采集盖章会让 UI 误显示"今日已跑"
             return null;
         } catch (Throwable t) {
             return t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();

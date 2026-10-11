@@ -281,15 +281,24 @@ public class DailySchedulerService extends Service {
         worker.execute(() -> {
             acquireWake();
             updateNotification("正在执行：" + acc.label + " 的日常…");
+            boolean ran = false;
             try {
                 String result = DailyRunner.runAccountRoles(ctx, acc);
-                if (result == null) return;
-                notifyMulti(acc, result);
+                if (result != null) {
+                    ran = true;
+                    notifyMulti(acc, result);
+                }
             } catch (Throwable t) {
                 android.util.Log.e("DailySched", "run fail " + acc.fpid, t);
             } finally {
-                s.lastRunAt = System.currentTimeMillis();
-                s.nextRunAt = nextRunInWindow(s.lastRunAt);
+                if (ran) {
+                    // 轮次真实跑过才记"今日已跑"（runAccountRoles 返回 null = 顶号跳过/登录失败）
+                    s.lastRunAt = System.currentTimeMillis();
+                    s.nextRunAt = nextRunInWindow(s.lastRunAt);
+                } else {
+                    // 失败/跳过不烧当天：30 分钟后重试（游戏还在玩就继续让位）
+                    s.nextRunAt = System.currentTimeMillis() + 30 * 60_000L;
+                }
                 RoleStore.saveSchedule(ctx, acc.fpid, s);
                 updateNotification("日常自动执行已开启 · 下次窗口 " + describeWindow());
                 releaseWake();

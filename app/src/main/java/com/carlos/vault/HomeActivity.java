@@ -23,6 +23,7 @@ import com.carlos.vault.daily.DailyRunner;
 import com.carlos.vault.daily.DailySchedulerService;
 import com.carlos.vault.daily.FnRegistry;
 import com.carlos.vault.daily.LogStore;
+import com.carlos.vault.daily.ProtoLogger;
 import com.carlos.vault.daily.RoleStore;
 import com.carlos.vault.license.LicenseManager;
 import com.carlos.vault.license.LicenseTicket;
@@ -3710,10 +3711,27 @@ public class HomeActivity extends AccountVaultActivity {
         for (int i = 0; i < tools.length; i++) {
             sb.append(i + 1).append(". ").append(tools[i]).append(" · 规划中\n");
         }
+        sb.append("\n按日常模块稳定后逐个开放。");
+        boolean logOn = ProtoLogger.on(this);
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("进阶工具（14 项）")
-                .setMessage(sb.append("\n按日常模块稳定后逐个开放。").toString())
-                .setPositiveButton("知道了", null)
+                .setTitle("工具箱 · 协议监听" + (logOn ? "已开启" : "已关闭"))
+                .setMessage((logOn
+                        ? "🔍 协议监听运行中 · 已记录 " + (ProtoLogger.logSize(this) / 1024) + " KB\n"
+                          + "玩法：原生游戏里进新活动界面操作一轮 → 退出游戏 → 稍等本应用\n"
+                          + "常驻会话自动回连，登录全量推送即被记录（files/proto_log.txt）。\n\n"
+                        : "🔍 协议监听（诊断）：记录常驻会话收到的全部服务端推送，用于逆向\n"
+                          + "新功能（如史诗与远方/成长支线）的协议。开启后去原生游戏操作一轮\n"
+                          + "再退出，回连后的 init 推送会落在 proto_log.txt。\n\n")
+                        + sb)
+                .setPositiveButton(logOn ? "停止监听" : "开启监听", (d, w) -> {
+                    boolean turnOn = !logOn;
+                    ProtoLogger.setOn(this, turnOn);
+                    if (turnOn) ProtoLogger.reattachAll(this);
+                    toast(turnOn ? "协议监听已开启\n（原生游戏里玩一轮后退出，稍后我来拉日志分析）"
+                            : "协议监听已停止");
+                    showTools();
+                })
+                .setNegativeButton("知道了", null)
                 .show();
     }
 

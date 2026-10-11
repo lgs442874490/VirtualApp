@@ -37,7 +37,7 @@ public final class FnDetail {
     static {
         // ===== 奖励 =====
         fn("login_rewards",
-                new Sub("sign", "十四天签到", "登录好礼的一键补领（错过日期可追溯）", true, null));
+                new Sub("sign", "7天签到", "登录好礼的一键补领（错过日期可追溯）", true, null));
         fn("mail",
                 new Sub("read", "读信领附件", "自动读取所选板块邮件并批量领取附件（单批上限100封）", true,
                         new String[][]{{"all", "全部板块"}, {"sys", "仅系统"}, {"sys_ally", "系统+联盟"}, {"no_battle", "除战报"}}),

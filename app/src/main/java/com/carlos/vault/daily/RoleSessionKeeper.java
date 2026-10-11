@@ -78,6 +78,9 @@ public final class RoleSessionKeeper {
         // ---- 推送唤醒状态（PushWakeDriver；每会话一次） ----
         final java.util.concurrent.atomic.AtomicBoolean wakeAttached = new AtomicBoolean();
 
+        // ---- 协议监听（ProtoLogger 诊断；每会话一次） ----
+        final AtomicBoolean protoLogAttached = new AtomicBoolean();
+
         LiveSession(WjdrEngine engine, String fpid, long sid, String label) {
             this.engine = engine;
             this.fpid = fpid;
@@ -282,6 +285,7 @@ public final class RoleSessionKeeper {
                 RoleLogin.loginPinned(ctx, fls.engine, facc.fpid, facc.token, fls.sid);
                 HelpResponder.attach(ctx, fls);
                 PushWakeDriver.attach(ctx, fls);
+                ProtoLogger.attach(ctx, fls);
                 try {
                     new AccountStore(ctx).updateRoleSettings(fls.fpid, fls.sid, fls.engine.identityJson());
                 } catch (Throwable ignored) {
@@ -521,6 +525,7 @@ public final class RoleSessionKeeper {
                     RoleLogin.loginPinned(ctx, fls.engine, acc.fpid, acc.token, fls.sid);
                     HelpResponder.attach(ctx, fls);
                     PushWakeDriver.attach(ctx, fls);
+                    ProtoLogger.attach(ctx, fls);
                     try {
                         new AccountStore(ctx).updateRoleSettings(fls.fpid, fls.sid, fls.engine.identityJson());
                     } catch (Throwable ignored) {

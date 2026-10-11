@@ -322,7 +322,25 @@ public final class ServerTasks {
         try {
             Map<String, Object> args = new LinkedHashMap<>();
             List<Integer> ids = new ArrayList<>();
-            for (int id : DAILY_QUEST_IDS) ids.add(id);
+            // id 清单：notify_dailyquests.quests 键（真实任务表）∪ 静态表兜底（与 App DailyTasks.dailyQuestIds 一致）
+            java.util.TreeSet<Long> merged = new java.util.TreeSet<>();
+            try {
+                tc.engine.collectNotifies(800);
+                Map<String, Object> q = tc.engine.notifyData("notify_dailyquests");
+                Object quests = q == null ? null : q.get("quests");
+                if (quests instanceof Map) {
+                    for (Object k : ((Map<?, ?>) quests).keySet()) {
+                        try {
+                            long id = Long.parseLong(String.valueOf(k).trim());
+                            if (id > 0) merged.add(id);
+                        } catch (Throwable ignored) {
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            for (int id : DAILY_QUEST_IDS) merged.add((long) id);
+            for (long id : merged) ids.add((int) id);
             args.put("quest_ids", ids);
             GameMessage rsp = tc.engine.request("req_get_all_dailyquest_award", args);
             if (isDegraded(rsp)) {

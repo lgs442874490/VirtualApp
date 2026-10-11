@@ -104,7 +104,7 @@ public final class DailyTasks {
         return list;
     }
 
-    // ---------- 1. 登录好礼（十四天签到） ----------
+    // ---------- 1. 登录好礼（7 天双轨签到：免费轨 + 史诗轨各 7 天） ----------
 
     static DailyResult loginRewards(WjdrEngine engine) throws Exception {
         try {
@@ -428,8 +428,7 @@ public final class DailyTasks {
     static DailyResult dailyMission(WjdrEngine engine) throws Exception {
         try {
             Map<String, Object> args = new LinkedHashMap<>();
-            List<Integer> ids = new ArrayList<>();
-            for (int id : DAILY_QUEST_IDS) ids.add(id);
+            List<Integer> ids = dailyQuestIds(engine);
             args.put("quest_ids", ids);
             GameMessage rsp = engine.request("req_get_all_dailyquest_award", args);
             if (isDegraded(rsp)) {
@@ -455,6 +454,34 @@ public final class DailyTasks {
         } catch (Exception e) {
             return classifyException(e, "每日任务奖励");
         }
+    }
+
+    /**
+     * 每日任务 id 清单：notify_dailyquests.quests 键（当前账号真实任务表）∪ 静态
+     * DAILY_QUEST_IDS（推送缺失时兜底）。游戏新增任务（如 1320090/1320100 段）不再
+     * 因硬编码表过时而漏领——2026-10-11 真机实证旧表止于 1320083，新任务全部漏领。
+     */
+    static List<Integer> dailyQuestIds(WjdrEngine engine) {
+        java.util.TreeSet<Long> ids = new java.util.TreeSet<>();
+        try {
+            engine.collectNotifies(800);
+            Map<String, Object> q = engine.notifyData("notify_dailyquests");
+            Object quests = q == null ? null : q.get("quests");
+            if (quests instanceof Map) {
+                for (Object k : ((Map<?, ?>) quests).keySet()) {
+                    try {
+                        long id = (long) Double.parseDouble(String.valueOf(k).trim());
+                        if (id > 0) ids.add(id);
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        for (int id : DAILY_QUEST_IDS) ids.add((long) id);
+        List<Integer> out = new ArrayList<>();
+        for (long id : ids) out.add((int) id);
+        return out;
     }
 
     // ---------- 4b. 章节奖励 + 章节任务 + 成长任务 ----------

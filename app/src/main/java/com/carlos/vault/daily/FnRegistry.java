@@ -38,7 +38,7 @@ public final class FnRegistry {
     public static List<Fn> all() {
         List<Fn> l = new ArrayList<>();
         // ===== 奖励（仅领取类） =====
-        l.add(new Fn("login_rewards", "登录好礼", CAT_REWARD, true, "十四天签到奖励自动领取"));
+        l.add(new Fn("login_rewards", "登录好礼", CAT_REWARD, true, "7天双轨签到奖励自动领取"));
         l.add(new Fn("mail", "邮件奖励", CAT_REWARD, true, "自动读邮件并批量领取附件"));
         l.add(new Fn("supply", "仓库补给", CAT_REWARD, true, "普通仓库补给+限时体力补给（策略可选）"));
         l.add(new Fn("daily_mission", "每日任务", CAT_REWARD, true, "每日任务与活跃度奖励"));
