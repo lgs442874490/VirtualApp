@@ -351,6 +351,136 @@ public final class ServerShopLeagueTasks {
         return Exec.result(m, "social_gift", "社交礼物");
     }
 
+    // ================= 雪原贸易站（活动族 2702；与 App ShopTasks.snowTrade 2026-10-14 版一致） =================
+    //
+    // notify_value_exchange_init.ve_info = {id, exchange_data:{idx:已兑次数}, is_free_exchange}。
+    // 购买：req_value_exchange_exchange{idx,count}；免费兑：req_value_exchange_free_exchange{idx}。
+    // 参数：p:act_snowtrade.free_idx（免费档，默认 132）、buys={idx:目标数量}。
+    // 注：seen_idx 缓存是 App 功能页勾选清单的适配数据，服务器参数为同步副本只读，不写。
+
+    public static TaskOutcome snowTrade(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            boolean onFree = tc.subOn("act_snowtrade", "free", true);
+            boolean onBuy = tc.subOn("act_snowtrade", "buy", false);
+            if (!onFree && !onBuy) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("free", "已关闭");
+                m.subSkip("buy", "已关闭");
+                return Exec.result(m, "act_snowtrade", "雪原贸易站");
+            }
+            tc.engine.collectNotifies(1500);
+            JSONObject p = tc.params("act_snowtrade");
+            Map<String, Object> vi = tc.engine.notifyData("notify_value_exchange_init");
+            Map<String, Object> ve = Exec.mapOf(vi == null ? null : vi.get("ve_info"));
+            long actId = ve == null ? 0 : Exec.longOf(ve.get("id"));
+            if (ve == null || actId <= 0) {
+                tc.saveModText("act_snowtrade", "free", "活动未开放（无 ve_info 推送）");
+                tc.saveModText("act_snowtrade", "buy", "活动未开放（无 ve_info 推送）");
+                m.skip("雪原贸易站未开放（ve_info 未同步）");
+                m.subSkip("free", "活动未开放");
+                m.subSkip("buy", "活动未开放");
+                return Exec.result(m, "act_snowtrade", "雪原贸易站");
+            }
+            // 已兑次数表（外层键形如 "132.0"，值形如 {k:132,v:0}；兼容纯数字形状）
+            java.util.Map<Long, Long> bought = new java.util.HashMap<>();
+            Object ed = ve.get("exchange_data");
+            if (ed instanceof Map) {
+                for (Map.Entry<?, ?> e : ((Map<?, ?>) ed).entrySet()) {
+                    try {
+                        long idx = Long.parseLong(String.valueOf(e.getKey()).replace(".0", ""));
+                        Object vObj = e.getValue();
+                        long cnt;
+                        if (vObj instanceof Map) {
+                            Map<String, Object> vm = Exec.mapOf(vObj);
+                            cnt = Exec.longOf(vm != null && vm.containsKey("v") ? vm.get("v") : vObj);
+                        } else {
+                            cnt = Exec.longOf(vObj);
+                        }
+                        bought.put(idx, cnt);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            boolean freeAvail = "true".equals(String.valueOf(ve.get("is_free_exchange")));
+            tc.saveModText("act_snowtrade", "free", "活动" + actId + " · 免费兑"
+                    + (freeAvail ? "可用" : "不可用") + " · 已兑 " + bought);
+            // ① 免费兑（默认档 132；兑错档由服务端报错跳过，无副作用）
+            if (!onFree) {
+                m.subSkip("free", "已关闭");
+            } else if (!freeAvail) {
+                m.skip("免费兑不可用或已用");
+                m.subSkip("free", "不可用");
+            } else {
+                long freeIdx = p.optLong("free_idx", 132);
+                if (bought.getOrDefault(freeIdx, 0L) > 0) {
+                    m.skip("免费档" + freeIdx + "本角色已兑×" + bought.get(freeIdx));
+                    m.subSkip("free", "本角色已兑");
+                } else {
+                    GameMessage fr = tc.engine.request("req_value_exchange_free_exchange",
+                            Exec.args("idx", freeIdx));
+                    if (Exec.ok(fr)) {
+                        m.claimed("免费兑档" + freeIdx);
+                        m.subOk("free", "已兑档" + freeIdx);
+                    } else {
+                        m.skip("免费兑码" + Exec.codeOf(fr));
+                        m.subSkip("free", "码" + Exec.codeOf(fr));
+                    }
+                }
+            }
+            // ② 按清单兑换（buys: idx→目标数量；已兑部分自动扣减）
+            if (!onBuy) {
+                m.subSkip("buy", "已关闭");
+            } else {
+                JSONObject buys = p.optJSONObject("buys");
+                if (buys == null || buys.length() == 0) {
+                    tc.saveModText("act_snowtrade", "buy", "清单未配置（已知档位 " + bought.keySet() + "）");
+                    m.skip("未配置 buys");
+                    m.subSkip("buy", "未配置");
+                } else {
+                    int ok = 0;
+                    StringBuilder buySt = new StringBuilder();
+                    java.util.Iterator<String> it = buys.keys();
+                    while (it.hasNext()) {
+                        String idxS = it.next();
+                        long idx;
+                        try {
+                            idx = Long.parseLong(idxS.replace(".0", ""));
+                        } catch (NumberFormatException nfe) {
+                            continue;
+                        }
+                        long want = Math.max(1, buys.optLong(idxS, 1));
+                        long had = bought.getOrDefault(idx, 0L);
+                        long count = Math.max(0, want - had);
+                        if (buySt.length() > 0) buySt.append(" · ");
+                        buySt.append("档").append(idx).append(" ").append(had).append("/").append(want);
+                        if (count == 0) {
+                            buySt.append(" 已足");
+                            continue;
+                        }
+                        GameMessage r = tc.engine.request("req_value_exchange_exchange",
+                                Exec.args("idx", idx, "count", count));
+                        if (Exec.ok(r)) {
+                            ok++;
+                            m.claimed("档" + idx + "×" + count);
+                            buySt.append("→补").append(count);
+                        } else {
+                            m.skip("档" + idx + "码" + Exec.codeOf(r));
+                            buySt.append("→码").append(Exec.codeOf(r));
+                        }
+                    }
+                    tc.saveModText("act_snowtrade", "buy",
+                            buySt.length() == 0 ? "清单无可识别档位" : buySt.toString());
+                    if (ok == 0 && m.sb.length() == 0) m.skip("本轮无可兑换");
+                }
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "雪原贸易站");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_snowtrade", "雪原贸易站");
+    }
+
     // ================= 燃霜矿区 =================
 
     public static final String[] FROSTFIRE_SLOTS = {"12:30", "16:00", "19:00", "20:30", "22:00"};

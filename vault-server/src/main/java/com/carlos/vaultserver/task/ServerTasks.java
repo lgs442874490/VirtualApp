@@ -63,6 +63,7 @@ public final class ServerTasks {
         l.add(new TaskDef("adventure", "挂机奖励", true, ServerTasks::adventureReward));
         l.add(new TaskDef("activity_rewards", "活动奖励", true, ServerTasks::activityRewards));
         l.add(new TaskDef("commander_gift", "统帅礼包", true, ServerTasks::commanderGift));
+        l.add(new TaskDef("achievement_claim", "成就奖励", true, ServerTasks::achievementClaim));
         // ===== 城镇 =====
         l.add(new TaskDef("research", "科技研究", true, ServerFieldTasks::research));
         l.add(new TaskDef("building", "建筑升级", false, ServerFieldTasks::building));
@@ -82,6 +83,7 @@ public final class ServerTasks {
         l.add(new TaskDef("act_icebound", "冰封宝藏", true, ServerActivityTasks::icebound));
         l.add(new TaskDef("act_polar", "逐光之旅", true, ServerActivityTasks::polar));
         l.add(new TaskDef("act_flamefangs", "烈焰獠牙", false, ServerShopLeagueTasks::flamefangs));
+        l.add(new TaskDef("act_snowtrade", "雪原贸易站", false, ServerShopLeagueTasks::snowTrade));
         l.add(new TaskDef("act_brawl", "欢乐乱斗", true, ServerActivityTasks::brawl));
         l.add(new TaskDef("act_frostfire", "燃霜矿区", false, ServerShopLeagueTasks::frostfire));
         l.add(new TaskDef("act_fishing", "钓鱼", true, ServerActivityTasks::fishing));
@@ -127,12 +129,134 @@ public final class ServerTasks {
 
     static TaskOutcome loginRewards(TaskContext tc) throws Exception {
         try {
+            // 三轨（与 App DailyTasks.loginRewards 2026-10-12 版一致）：14天双轨 / 七天 / 21天，
+            // 各子开关独立门控；聚合口径 claimed>0→CLAIMED，否则有降级→DEGRADED，否则 SKIPPED
+            if (!tc.subOn("login_rewards", "sign", true)) {
+                return new TaskOutcome("login_rewards", "登录好礼", TaskOutcome.Category.SKIPPED,
+                        "子开关「7天签到」已关闭");
+            }
+            StringBuilder msg = new StringBuilder();
+            StringBuilder rewards = new StringBuilder();
+            int claimed = 0, degraded = 0;
+
+            // ① 登录好礼（十四天双轨）
             GameMessage rsp = tc.engine.request("req_fourteen_sign_get_all_reward", null);
-            // 服务端无签到进度快照，明细只取响应自带字段（推不出留空，App 端目录兜底）
-            return classifySimple(rsp, "req_fourteen_sign_get_all_reward", "登录好礼",
+            TaskOutcome r = classifySimple(rsp, "req_fourteen_sign_get_all_reward", "登录好礼",
                     new String[]{"code"}, "已一键领取全部可领签到奖励");
+            if (r.category == TaskOutcome.Category.CLAIMED) {
+                claimed++;
+                msg.append("登录好礼已领");
+                if (r.rewards != null && !r.rewards.isEmpty()) {
+                    msg.append("（").append(r.rewards).append("）");
+                    rewards.append(r.rewards).append("；");
+                }
+            } else if (r.category == TaskOutcome.Category.DEGRADED) {
+                degraded++;
+                msg.append("登录好礼响应异常");
+            } else {
+                msg.append("登录好礼无可领");
+            }
+
+            // ② 七天签到：award_success_list 非空才算真领到（防假成功）
+            if (tc.subOn("login_rewards", "seven", true)) {
+                GameMessage seven = tc.engine.request("req_seven_sign_one_click_award", null);
+                if (isDegraded(seven)) {
+                    degraded++;
+                    msg.append("; 七天签到响应异常");
+                } else if (Exec.ok(seven)) {
+                    List<Object> okList = listOfRaw(seven.getContent().get("award_success_list"));
+                    if (okList != null && !okList.isEmpty()) {
+                        claimed++;
+                        msg.append("; 七天签到×").append(okList.size());
+                        rewards.append("七天签到奖励；");
+                    } else {
+                        msg.append("; 七天签到无可领");
+                    }
+                } else {
+                    msg.append("; 七天签到已全领或不可用");
+                }
+            } else {
+                msg.append("; 七天签到已关");
+            }
+
+            // ③ 21天签到免费档（付费档 has_pay 才有，免费档空参全领）
+            if (tc.subOn("login_rewards", "day21", true)) {
+                GameMessage d21 = tc.engine.request("req_sign_21day_get_all_reward", null);
+                if (isDegraded(d21)) {
+                    degraded++;
+                    msg.append("; 21天签到响应异常");
+                } else if (Exec.ok(d21)) {
+                    List<Object> rw = listOfRaw(d21.getContent().get("rewards"));
+                    if (rw != null && !rw.isEmpty()) {
+                        claimed++;
+                        msg.append("; 21天签到已领");
+                        rewards.append("21天签到奖励；");
+                    } else {
+                        msg.append("; 21天签到无可领");
+                    }
+                } else {
+                    msg.append("; 21天签到已全领或不可用");
+                }
+            } else {
+                msg.append("; 21天签到已关");
+            }
+
+            TaskOutcome out = new TaskOutcome("login_rewards", "登录好礼",
+                    claimed > 0 ? TaskOutcome.Category.CLAIMED
+                            : degraded > 0 ? TaskOutcome.Category.DEGRADED
+                            : TaskOutcome.Category.SKIPPED,
+                    msg.toString());
+            out.rewards = rewards.toString();
+            return out;
         } catch (Exception e) {
             return classifyException(e, "登录好礼");
+        }
+    }
+
+    // ---------- 1b. 成就奖励（与 App DailyTasks.achievementClaim 2026-10-12 版一致） ----------
+
+    /**
+     * notify_achievement_info 字段实证：infos[]{id, count, complete:"true"/"false", received:...}。
+     * 领取条件 = complete && !received；req_achievement_get_reward.request{list_data}（批量 id）。
+     */
+    static TaskOutcome achievementClaim(TaskContext tc) {
+        try {
+            if (!tc.subOn("achievement_claim", "claim", true)) {
+                return new TaskOutcome("achievement_claim", "成就奖励", TaskOutcome.Category.SKIPPED,
+                        "子开关「批量领取」已关闭");
+            }
+            tc.engine.collectNotifies(1200);
+            Map<String, Object> ai = tc.engine.notifyData("notify_achievement_info");
+            List<Integer> ids = new ArrayList<>();
+            for (Map<String, Object> a : listOfMaps(ai == null ? null : ai.get("infos"))) {
+                boolean complete = "true".equals(String.valueOf(a.get("complete")));
+                boolean received = "true".equals(String.valueOf(a.get("received")));
+                int id = toInt(a.get("id"));
+                if (complete && !received && id > 0) ids.add(id);
+            }
+            if (ids.isEmpty()) {
+                return new TaskOutcome("achievement_claim", "成就奖励", TaskOutcome.Category.SKIPPED,
+                        ai == null ? "成就数据未同步" : "没有已完成未领取的成就");
+            }
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("list_data", ids);
+            GameMessage rsp = tc.engine.request("req_achievement_get_reward", args);
+            if (isDegraded(rsp)) {
+                return new TaskOutcome("achievement_claim", "成就奖励", TaskOutcome.Category.DEGRADED,
+                        "响应异常（协议可能变更）");
+            }
+            Object code = rsp.getContent().get("code");
+            if (code != null && toInt(code) != 0) {
+                return classifyServerCode(toInt(code), "成就奖励");
+            }
+            String d = com.carlos.vault.daily.RewardText.describe(rsp.getContent().get("rewards") != null
+                    ? rsp.getContent().get("rewards") : rsp.getContent().get("awards"));
+            TaskOutcome r = new TaskOutcome("achievement_claim", "成就奖励", TaskOutcome.Category.CLAIMED,
+                    "成就奖励×" + ids.size() + (d.isEmpty() ? "" : "：" + d));
+            r.rewards = d;
+            return r;
+        } catch (Exception e) {
+            return classifyException(e, "成就奖励");
         }
     }
 
@@ -162,8 +286,12 @@ public final class ServerTasks {
                 }
             }
             tc.engine.request("req_mail_type_info", null);
+            // 子开关门控（与 App 2026-10-12 版一致）：keep_unread=仅领有附件邮件（默认开）；
+            // 关=无附件公告一并批量已读
+            boolean keepUnread = tc.subOn("mail", "keep_unread", true);
             int sections = 0;
             List<String> pendingIds = new ArrayList<>();
+            List<String> noAttachIds = new ArrayList<>();   // 无附件邮件（仅 keep_unread=false 时批量已读）
             StringBuilder degradeNote = new StringBuilder();
             for (int type : types) {
                 Map<String, Object> args = new LinkedHashMap<>();
@@ -179,16 +307,37 @@ public final class ServerTasks {
                 List<Map<String, Object>> covers = listOfMaps(cover.getContent().get("coverlist"));
                 if (covers == null) continue;
                 for (Map<String, Object> m : covers) {
-                    Object attach = m.get("attach_statue");
-                    if (attach == null || toInt(attach) != 1) continue;
                     Object idNew = m.get("mailid_new");
-                    if (idNew != null && !String.valueOf(idNew).isEmpty()) {
+                    if (idNew == null || String.valueOf(idNew).isEmpty()) continue;
+                    Object attach = m.get("attach_statue");
+                    if (attach != null && toInt(attach) == 1) {
                         pendingIds.add(String.valueOf(idNew));
+                    } else if (!keepUnread) {
+                        noAttachIds.add(String.valueOf(idNew));
                     }
                 }
                 if (pendingIds.size() >= 100) break;
             }
             if (pendingIds.isEmpty()) {
+                // 关掉「仅领有附件邮件」：没有可领附件也把无附件公告批量已读
+                if (!keepUnread && !noAttachIds.isEmpty()) {
+                    try {
+                        Map<String, Object> readArgs = new LinkedHashMap<>();
+                        readArgs.put("first_type", 10);
+                        readArgs.put("mid_list_new", noAttachIds);
+                        GameMessage readRsp = tc.engine.request("req_batch_mail_read", readArgs);
+                        if (!isDegraded(readRsp)) {
+                            Object rc = readRsp.getContent().get("code");
+                            if (rc == null || toInt(rc) == 0) {
+                                List<Object> rl = listOfRaw(readRsp.getContent().get("readlist_new"));
+                                int n = rl == null ? noAttachIds.size() : rl.size();
+                                return new TaskOutcome("mail", "邮件奖励", TaskOutcome.Category.CLAIMED,
+                                        "无附件可领，公告已读 " + n + " 封");
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
                 if (degradeNote.length() > 0) {
                     return new TaskOutcome("mail", "邮件奖励", TaskOutcome.Category.DEGRADED,
                             "部分板块协议异常：" + degradeNote);
@@ -210,9 +359,29 @@ public final class ServerTasks {
             }
             List<Object> readList = listOfRaw(claim.getContent().get("readlist_new"));
             int confirmed = readList == null ? pendingIds.size() : readList.size();
+            // keep_unread=false：无附件公告一并已读（有附件邮件上面已领）
+            int readNoAttach = 0;
+            if (!keepUnread && !noAttachIds.isEmpty()) {
+                try {
+                    Map<String, Object> readArgs = new LinkedHashMap<>();
+                    readArgs.put("first_type", 10);
+                    readArgs.put("mid_list_new", noAttachIds);
+                    GameMessage readRsp = tc.engine.request("req_batch_mail_read", readArgs);
+                    if (!isDegraded(readRsp)) {
+                        Object rc = readRsp.getContent().get("code");
+                        if (rc == null || toInt(rc) == 0) {
+                            List<Object> rl = listOfRaw(readRsp.getContent().get("readlist_new"));
+                            readNoAttach = rl == null ? noAttachIds.size() : rl.size();
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // 已读失败不影响附件领取结果
+                }
+            }
             tc.saveModText("mail", "read", "上轮领取 " + confirmed + " 封 · 候选 " + pendingIds.size());
             return new TaskOutcome("mail", "邮件奖励", TaskOutcome.Category.CLAIMED,
-                    "领取邮件 " + confirmed + " 封（候选 " + pendingIds.size() + "）");
+                    "领取邮件 " + confirmed + " 封（候选 " + pendingIds.size() + "）"
+                            + (readNoAttach > 0 ? "，公告已读 " + readNoAttach + " 封" : ""));
         } catch (Exception e) {
             return classifyException(e, "邮件奖励");
         }

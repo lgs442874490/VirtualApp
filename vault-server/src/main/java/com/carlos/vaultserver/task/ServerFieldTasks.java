@@ -98,14 +98,32 @@ public final class ServerFieldTasks {
         return null;
     }
 
+    /** 当前 type=N 的行军数。协议盘点 2026-10-12 两级实锤（与 App FieldTasks 2026-10-14 版一致）：
+     * ① notify_player_march_init 不在 s2c schema（旧实现恒返回 0 → 已派出队列被重复计入空位）；
+     * ② schema 解析得 req_world_march_detail_4_player_situation.request{owner,kid}，
+     *    空参被服务端拒（code 2 实证）——owner=玩家uid、kid=区号，行军列表在响应 detail 字段。
+     *  查询失败按 0 处理（回退旧行为，宁可让服务端拒多发也不漏发）。 */
     private static int countMarches(WjdrEngine engine, int type) {
-        Map<String, Object> mi = engine.notifyData("notify_player_march_init");
-        int n = 0;
-        if (mi == null) return 0;
-        for (Map<String, Object> march : Exec.mapsOf(mi.get("marchs"))) {
-            if (Exec.longOf(march.get("type")) == type) n++;
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("owner", engine.lastUid());
+            args.put("kid", engine.lastServerId());
+            GameMessage rsp = engine.request("req_world_march_detail_4_player_situation", args);
+            if (rsp == null || rsp.getContent() == null) return 0;
+            Object code = rsp.getContent().get("code");
+            if (code != null && Exec.longOf(code) != 0) return 0;
+            Map<String, Object> detail = Exec.mapOf(rsp.getContent().get("detail"));
+            int n = 0;
+            for (String k : new String[]{"marchs", "march_list", "list", "marches"}) {
+                for (Map<String, Object> march : Exec.mapsOf(detail == null ? null : detail.get(k))) {
+                    if (Exec.longOf(march.get("type")) == type) n++;
+                }
+                if (n > 0) break;   // 取第一个命中的列表形状
+            }
+            return n;
+        } catch (Throwable ignored) {
+            return 0;
         }
-        return n;
     }
 
     private static int marchCapacity(WjdrEngine engine) {

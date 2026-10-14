@@ -626,6 +626,23 @@ final class ShopTasks {
                 m.subSkip("buy", "活动未开放");
                 return result(m, "act_snowtrade", "雪原贸易站");
             }
+            // 换期保护：活动 id 变化后旧 free_idx 可能指向付费档（132 是本期实证档，换期不保证），
+            // 自动失效置 0 待用户在功能页重新选择；新活动首见则记录 act_id（保持默认档不动）。
+            try {
+                android.content.Context sctx = engine.appContext();
+                String sfpid = engine.lastFpid() == null ? "" : engine.lastFpid();
+                long ssidx = engine.lastServerId();
+                long storedAct = FnParams.params(sctx, sfpid, ssidx, "act_snowtrade").optLong("act_id", 0);
+                if (storedAct != actId) {
+                    if (storedAct > 0) {
+                        FnParams.putTopLevel(sctx, sfpid, ssidx, "act_snowtrade", "free_idx", 0);
+                        mod(engine, "act_snowtrade", "free", "活动已换期（" + storedAct + "→" + actId
+                                + "），免费档已重置，请在功能页重新选择");
+                    }
+                    FnParams.putTopLevel(sctx, sfpid, ssidx, "act_snowtrade", "act_id", actId);
+                }
+            } catch (Exception ignored) {
+            }
             // 已兑次数表（外层键形如 "132.0"，值形如 {k:132,v:0}；兼容纯数字形状）
             Map<Long, Long> bought = new HashMap<>();
             Object ed = ve.get("exchange_data");
@@ -667,7 +684,11 @@ final class ShopTasks {
             } else {
                 long freeIdx = FnParams.params(engine.appContext(),
                         engine.lastFpid(), engine.lastServerId(), "act_snowtrade").optLong("free_idx", 132);
-                if (bought.getOrDefault(freeIdx, 0L) > 0) {
+                if (freeIdx <= 0) {
+                    // 换期后已重置：宁可不领也不能拿旧档位号去碰新活动
+                    m.skip("免费档待配置（活动换期已重置，请在功能页重新选择）");
+                    m.subSkip("free", "待配置");
+                } else if (bought.getOrDefault(freeIdx, 0L) > 0) {
                     m.skip("免费档" + freeIdx + "本角色已兑×" + bought.get(freeIdx));
                     m.subSkip("free", "本角色已兑");
                 } else {

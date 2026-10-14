@@ -711,9 +711,34 @@ public final class SubCardUi {
         final java.util.List<String> labels = new ArrayList<>();
         final java.util.List<String> vals = new ArrayList<>();
         for (long idx : idxSet) {
-            labels.add("档" + idx + (idx == 132L ? "（免费档默认）" : ""));
+            labels.add("档" + idx + (idx == 132L ? "（默认）" : ""));
             vals.add(String.valueOf(idx));
         }
+        // 免费档单选行：换期保护会把 free_idx 重置为 0（待配置），在此重选
+        final long curFree = FnParams.params(ctx, fpid, sid, "act_snowtrade").optLong("free_idx", 132);
+        View freeRow = pickRow(ctx, "免费兑换档",
+                curFree <= 0 ? "待配置（换期已重置，必选）" : "档" + curFree, () -> {
+            new AlertDialog.Builder(ctx, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                    .setTitle("雪原贸易站 · 选择免费兑换档")
+                    .setSingleChoiceItems(labels.toArray(new String[0]),
+                            Math.max(0, vals.indexOf(String.valueOf(curFree))),
+                            (dlg, w) -> FnParams.putTopLevel(ctx, fpid, sid,
+                                    "act_snowtrade", "free_idx", Long.parseLong(vals.get(w))))
+                    .setPositiveButton("保存", null)
+                    .setNegativeButton("取消", null)
+                    .show();
+        });
+        View buyRow = snowtradeBuysPickRow(ctx, fpid, sid, labels, vals);
+        LinearLayout wrap = new LinearLayout(ctx);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(freeRow);
+        wrap.addView(buyRow);
+        return wrap;
+    }
+
+    private static View snowtradeBuysPickRow(final Context ctx, final String fpid, final long sid,
+                                             final java.util.List<String> labels,
+                                             final java.util.List<String> vals) {
         JSONObject buys = FnParams.params(ctx, fpid, sid, "act_snowtrade").optJSONObject("buys");
         int n = buys == null ? 0 : buys.length();
         return pickRow(ctx, "勾选兑换档位", n == 0 ? "未勾选（目录 " + labels.size() + " 档）" : "已勾选 " + n + " 档", () -> {
