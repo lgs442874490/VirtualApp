@@ -37,7 +37,9 @@ public final class FnDetail {
     static {
         // ===== 奖励 =====
         fn("login_rewards",
-                new Sub("sign", "7天签到", "登录好礼的一键补领（错过日期可追溯）", true, null));
+                new Sub("sign", "7天签到", "登录好礼的一键补领（错过日期可追溯）", true, null),
+                new Sub("seven", "七天签到", "七日签到一键领取（未领天数自动补，协议盘点2026-10-12新增）", true, null),
+                new Sub("day21", "21天签到", "21天签到免费档一键领取（协议盘点2026-10-12新增）", true, null));
         fn("mail",
                 new Sub("read", "读信领附件", "自动读取所选板块邮件并批量领取附件（单批上限100封）", true,
                         new String[][]{{"all", "全部板块"}, {"sys", "仅系统"}, {"sys_ally", "系统+联盟"}, {"no_battle", "除战报"}}),
@@ -66,6 +68,8 @@ public final class FnDetail {
                 new Sub("gift", "统帅每日礼包", "当前统帅等级的每日免费礼包", true, null));
         fn("act_endless",
                 new Sub("milestone", "里程碑奖励", "无尽征程达到档位的一键领取", true, null));
+        fn("achievement_claim",
+                new Sub("claim", "批量领取", "已完成未领取的成就奖励批量领取（notify_achievement_info：complete且未received）", true, null));
 
         // ===== 城镇 =====
         fn("town_affairs",
@@ -204,6 +208,9 @@ public final class FnDetail {
         fn("act_frostfire",
                 new Sub("apply", "按时段报名", "每日自动报名所选时段的燃霜矿区战场", true, null),
                 new Sub("milestone", "里程碑奖励", "战场内里程碑奖励领取+积分上报", true, null));
+        fn("act_snowtrade",
+                new Sub("free", "免费兑换", "雪原贸易站免费档自动兑换（ve_info.is_free_exchange 且该档未兑时）", true, null),
+                new Sub("buy", "按清单兑换", "勾选档位自动兑换（已兑部分自动扣减，超出限购由服务端拒绝；档位目录随最近快照自适应）", false, null));
         fn("backpack",
                 new Sub("fixed", "固定资源包", "批量开启100/1k/1w/10w/100w档固定资源包", true, null),
                 new Sub("random", "随机补给箱", "批量开启随机补给箱（默认关，收益随机）", false, null));

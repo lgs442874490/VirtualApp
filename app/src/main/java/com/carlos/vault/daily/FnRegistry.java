@@ -47,6 +47,7 @@ public final class FnRegistry {
         l.add(new Fn("activity_rewards", "活动奖励", CAT_REWARD, true, "月卡经验/战令/转盘等17种免费奖励"));
         l.add(new Fn("commander_gift", "统帅礼包", CAT_REWARD, true, "每日免费统帅礼包"));
         l.add(new Fn("act_endless", "无尽征程", CAT_REWARD, true, "无尽征程里程碑奖励一键领取"));
+        l.add(new Fn("achievement_claim", "成就奖励", CAT_REWARD, true, "已完成未领取的成就批量领取（协议盘点2026-10-12新增）"));
 
         // ===== 城镇 =====
         l.add(new Fn("town_affairs", "城镇管理", CAT_TOWN, true, "免费招募+收兵+专家技能"));
@@ -68,6 +69,7 @@ public final class FnRegistry {
         l.add(new Fn("act_icebound", "冰封宝藏", CAT_ACTIVITY, true, "特训奖励+积分档位+开宝箱"));
         l.add(new Fn("act_polar", "逐光之旅", CAT_ACTIVITY, true, "队列派遣与宝箱领取"));
         l.add(new Fn("act_flamefangs", "烈焰獠牙", CAT_ACTIVITY, true, "兑换期按勾选清单自动兑换"));
+        l.add(new Fn("act_snowtrade", "雪原贸易站", CAT_ACTIVITY, true, "免费兑自动领+按清单兑换（协议盘点2026-10-12新增）"));
         l.add(new Fn("act_brawl", "欢乐乱斗", CAT_ACTIVITY, true, "成就奖励领取（战斗部分待开放）"));
         l.add(new Fn("act_frostfire", "燃霜矿区", CAT_ACTIVITY, true, "按时段自动报名+里程碑领取（占矿战斗下一版）"));
         l.add(new Fn("act_fishing", "钓鱼", CAT_ACTIVITY, true, "免费礼/日常/任务/俱乐趣奖励"));

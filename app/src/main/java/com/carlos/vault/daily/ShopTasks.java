@@ -434,6 +434,14 @@ final class ShopTasks {
     static DailyResult socialGift(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：send=按FID赠送（清单/礼物仍需在参数里配置，未配置照旧跳过）
+            if (!FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "social_gift", "send", true)) {
+                m.skip("子开关「按FID赠送」已关闭");
+                m.subSkip("send", "子开关已关闭");
+                return result(m, "social_gift", "社交礼物");
+            }
             JSONObject p = FnParams.params(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "social_gift");
             JSONArray targets = p.optJSONArray("targets");
@@ -499,14 +507,30 @@ final class ShopTasks {
     static DailyResult frostfire(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：apply=按时段报名 / milestone=里程碑领奖+积分上报
+            // （报名同时要求已勾选时段，两个条件都满足才发报名）
+            boolean onApply = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "act_frostfire", "apply", true);
+            boolean onMilestone = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "act_frostfire", "milestone", true);
+            if (!onApply && !onMilestone) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("apply", "已关闭"); m.subSkip("milestone", "已关闭");
+                return result(m, "act_frostfire", "燃霜矿区");
+            }
             engine.collectNotifies(2000);
             JSONObject p = FnParams.params(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "act_frostfire");
             JSONArray slots = p.optJSONArray("slots");
-            if (slots == null || slots.length() == 0) {
+            if (!onApply) {
+                m.subSkip("apply", "已关闭");
+            } else if (slots == null || slots.length() == 0) {
                 m.skip("未选择报名时段（设置页配置）");
+                m.subSkip("apply", "未选时段");
                 return result(m, "act_frostfire", "燃霜矿区");
-            }
+            } else {
             long slot = slots.optLong(0);
             Map<String, Object> wi = engine.notifyContent("notify_frostfire_war_info");
             Map<String, Object> actInfo = wi == null ? null : ExecUtil.mapOf(wi.get("act_info"));
@@ -537,7 +561,12 @@ final class ShopTasks {
                     m.skip(code == 10717 ? "未到报名时间" : "报名码" + code);
                 }
             }
+            }
             // 已在战区：领里程碑 + 报分数
+            if (!onMilestone) {
+                m.subSkip("milestone", "已关闭");
+                return result(m, "act_frostfire", "燃霜矿区");
+            }
             Map<String, Object> pi = engine.notifyContent("notify_frostfire_war_player_init");
             long state = pi == null ? 0 : ExecUtil.longOf(pi.get("state"));
             if (state == 2 || state == 3) {
@@ -559,6 +588,160 @@ final class ShopTasks {
             m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
         }
         return result(m, "act_frostfire", "燃霜矿区");
+    }
+
+    // ================= 雪原贸易站（活动族 2702；协议盘点 2026-10-12 真机快照实证） =================
+    //
+    // notify_value_exchange_init.ve_info = {id:2702001, exchange_data:{idx:已兑次数},
+    //   is_free_exchange}（快照实证：进游戏 132:0 → 出游戏 132:1，兑换进度按角色隔离）。
+    // 购买：req_value_exchange_exchange{idx,count}；免费兑：req_value_exchange_free_exchange{idx}。
+    // 商品目录在游戏客户端本地资源、服务器不推送——用户按游戏内档位号配置：
+    //   p:act_snowtrade.free_idx = 132（免费档，默认 132：K913 手动兑的档，K888 未兑）
+    //   p:act_snowtrade.buys = {"155": 3, ...}（idx→目标数量，超出限购由服务端拒绝）
+
+    static DailyResult snowTrade(WjdrEngine engine) {
+        ExecUtil.Multi m = new ExecUtil.Multi();
+        try {
+            boolean onFree = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "act_snowtrade", "free", true);
+            boolean onBuy = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "act_snowtrade", "buy", false);
+            if (!onFree && !onBuy) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("free", "已关闭");
+                m.subSkip("buy", "已关闭");
+                return result(m, "act_snowtrade", "雪原贸易站");
+            }
+            engine.collectNotifies(1500);
+            Map<String, Object> vi = engine.notifyData("notify_value_exchange_init");
+            Map<String, Object> ve = ExecUtil.mapOf(vi == null ? null : vi.get("ve_info"));
+            long actId = ve == null ? 0 : ExecUtil.longOf(ve.get("id"));
+            if (ve == null || actId <= 0) {
+                mod(engine, "act_snowtrade", "free", "活动未开放（无 ve_info 推送）");
+                mod(engine, "act_snowtrade", "buy", "活动未开放（无 ve_info 推送）");
+                m.skip("雪原贸易站未开放（ve_info 未同步）");
+                m.subSkip("free", "活动未开放");
+                m.subSkip("buy", "活动未开放");
+                return result(m, "act_snowtrade", "雪原贸易站");
+            }
+            // 已兑次数表（外层键形如 "132.0"，值形如 {k:132,v:0}；兼容纯数字形状）
+            Map<Long, Long> bought = new HashMap<>();
+            Object ed = ve.get("exchange_data");
+            if (ed instanceof Map) {
+                for (Map.Entry<?, ?> e : ((Map<?, ?>) ed).entrySet()) {
+                    try {
+                        long idx = Long.parseLong(String.valueOf(e.getKey()).replace(".0", ""));
+                        Object vObj = e.getValue();
+                        long cnt;
+                        if (vObj instanceof Map) {
+                            Map<String, Object> vm = ExecUtil.mapOf(vObj);
+                            cnt = ExecUtil.longOf(vm != null && vm.containsKey("v") ? vm.get("v") : vObj);
+                        } else {
+                            cnt = ExecUtil.longOf(vObj);
+                        }
+                        bought.put(idx, cnt);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+            boolean freeAvail = "true".equals(String.valueOf(ve.get("is_free_exchange")));
+            // 缓存本活动出现过的档位号——功能页勾选清单据此自适应（服务器不推商品目录）
+            try {
+                JSONObject seen = new JSONObject();
+                for (Long k : bought.keySet()) seen.put(String.valueOf(k), 1);
+                FnParams.putTopLevel(engine.appContext(),
+                        engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                        "act_snowtrade", "seen_idx", seen);
+            } catch (Exception ignored) {
+            }
+            mod(engine, "act_snowtrade", "free", "活动" + actId + " · 免费兑"
+                    + (freeAvail ? "可用" : "不可用") + " · 已兑 " + bought);
+            // ① 免费兑（默认档 132；兑错档由服务端报错跳过，无副作用）
+            if (!onFree) {
+                m.subSkip("free", "已关闭");
+            } else if (!freeAvail) {
+                m.skip("免费兑不可用或已用");
+                m.subSkip("free", "不可用");
+            } else {
+                long freeIdx = FnParams.params(engine.appContext(),
+                        engine.lastFpid(), engine.lastServerId(), "act_snowtrade").optLong("free_idx", 132);
+                if (bought.getOrDefault(freeIdx, 0L) > 0) {
+                    m.skip("免费档" + freeIdx + "本角色已兑×" + bought.get(freeIdx));
+                    m.subSkip("free", "本角色已兑");
+                } else {
+                    GameMessage fr = engine.request("req_value_exchange_free_exchange",
+                            ExecUtil.args("idx", freeIdx));
+                    if (ExecUtil.ok(fr)) {
+                        m.claimed("免费兑档" + freeIdx);
+                        m.subOk("free", "已兑档" + freeIdx);
+                    } else {
+                        m.skip("免费兑码" + ExecUtil.codeOf(fr));
+                        m.subSkip("free", "码" + ExecUtil.codeOf(fr));
+                    }
+                }
+            }
+            // ② 按清单兑换（buys: idx→目标数量；已兑部分自动扣减）
+            if (!onBuy) {
+                m.subSkip("buy", "已关闭");
+            } else {
+                JSONObject buys = FnParams.params(engine.appContext(),
+                        engine.lastFpid(), engine.lastServerId(), "act_snowtrade").optJSONObject("buys");
+                if (buys == null || buys.length() == 0) {
+                    mod(engine, "act_snowtrade", "buy", "清单未配置（已知档位 " + bought.keySet() + "，进页勾选）");
+                    m.skip("未配置 buys（功能页 buy 子项勾选档位）");
+                    m.subSkip("buy", "未配置");
+                } else {
+                    int ok = 0;
+                    StringBuilder buySt = new StringBuilder();
+                    java.util.Iterator<String> it = buys.keys();
+                    while (it.hasNext()) {
+                        String idxS = it.next();
+                        long idx;
+                        try {
+                            idx = Long.parseLong(idxS.replace(".0", ""));
+                        } catch (NumberFormatException nfe) {
+                            continue;
+                        }
+                        long want = Math.max(1, buys.optLong(idxS, 1));
+                        long had = bought.getOrDefault(idx, 0L);
+                        long count = Math.max(0, want - had);
+                        if (buySt.length() > 0) buySt.append(" · ");
+                        buySt.append("档").append(idx).append(" ").append(had).append("/").append(want);
+                        if (count == 0) {
+                            buySt.append(" 已足");
+                            continue;
+                        }
+                        GameMessage r = engine.request("req_value_exchange_exchange",
+                                ExecUtil.args("idx", idx, "count", count));
+                        if (ExecUtil.ok(r)) {
+                            ok++;
+                            m.claimed("档" + idx + "×" + count);
+                            buySt.append("→补").append(count);
+                        } else {
+                            m.skip("档" + idx + "码" + ExecUtil.codeOf(r));
+                            buySt.append("→码").append(ExecUtil.codeOf(r));
+                        }
+                    }
+                    mod(engine, "act_snowtrade", "buy",
+                            buySt.length() == 0 ? "清单无可识别档位" : buySt.toString());
+                    if (ok == 0 && m.sb.length() == 0) m.skip("本轮无可兑换");
+                }
+            }
+        } catch (Exception e) {
+            if (TownTasks.sessionLost(e)) return DailyTasks.classifyException(e, "雪原贸易站");
+            m.fail(DailyTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return result(m, "act_snowtrade", "雪原贸易站");
+    }
+
+    /** 子项状态行写入助手。 */
+    static void mod(WjdrEngine engine, String fnId, String subId, String text) {
+        try {
+            FnParams.saveModText(engine.appContext(), engine.lastFpid(), engine.lastServerId(), fnId, subId, text);
+        } catch (Throwable ignored) {
+        }
     }
 
     private static DailyResult result(ExecUtil.Multi m, String id, String name) {

@@ -21,6 +21,15 @@ final class FieldTasks {
     static DailyResult gather(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：send=自动采集（本功能唯一动作；策略只管"任意存量/只采满矿"）
+            boolean onSend = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "gather", "send", true);
+            if (!onSend) {
+                m.skip("子开关「自动采集」已关闭");
+                m.subSkip("send", "子开关已关闭");
+                return done(m);
+            }
             engine.collectNotifies(2500);
             org.json.JSONObject p = FnParams.params(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "gather");
@@ -120,15 +129,32 @@ final class FieldTasks {
         return null;
     }
 
-    /** 当前 type=N 的行军数（来自 notify_player_march_add 的累计缓存不可用，改用初始化通知）。 */
+    /** 当前 type=N 的行军数。协议盘点 2026-10-12 两级实锤：
+     * ① notify_player_march_init 不在 s2c schema（旧实现恒返回 0 → 已派出队列被重复计入空位）；
+     * ② schema 解析得 req_world_march_detail_4_player_situation.request{owner,kid}，
+     *    空参被服务端拒（code 2 实证）——owner=玩家uid、kid=区号，行军列表在响应 detail 字段。
+     *  查询失败按 0 处理（回退旧行为，宁可让服务端拒多发也不漏发）。 */
     private static int countMarches(WjdrEngine engine, int type) {
-        Map<String, Object> mi = engine.notifyData("notify_player_march_init");
-        int n = 0;
-        if (mi == null) return 0;
-        for (Map<String, Object> march : ExecUtil.mapsOf(mi.get("marchs"))) {
-            if (ExecUtil.longOf(march.get("type")) == type) n++;
+        try {
+            Map<String, Object> args = new java.util.LinkedHashMap<>();
+            args.put("owner", engine.lastUid());
+            args.put("kid", engine.lastServerId());
+            GameMessage rsp = engine.request("req_world_march_detail_4_player_situation", args);
+            if (rsp == null || rsp.getContent() == null) return 0;
+            Object code = rsp.getContent().get("code");
+            if (code != null && ExecUtil.longOf(code) != 0) return 0;
+            Map<String, Object> detail = ExecUtil.mapOf(rsp.getContent().get("detail"));
+            int n = 0;
+            for (String k : new String[]{"marchs", "march_list", "list", "marches"}) {
+                for (Map<String, Object> march : ExecUtil.mapsOf(detail == null ? null : detail.get(k))) {
+                    if (ExecUtil.longOf(march.get("type")) == type) n++;
+                }
+                if (n > 0) break;   // 取第一个命中的列表形状
+            }
+            return n;
+        } catch (Throwable ignored) {
+            return 0;
         }
-        return n;
     }
 
     private static int marchCapacity(WjdrEngine engine) {
@@ -144,6 +170,17 @@ final class FieldTasks {
     static DailyResult intel(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：events=处理情报（本功能唯一动作）
+            if (!FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "intel", "events", true)) {
+                m.skip("子开关「处理情报」已关闭");
+                m.subSkip("events", "子开关已关闭");
+                DailyResult off = new DailyResult("intel", "情报任务", m.cat(), m.note() + " " + m.sb);
+                off.rewards = m.rewardsText();
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(2500);
             Map<String, Object> ev = engine.notifyData("notify_intelligence_events");
             if (ev == null) {
@@ -240,6 +277,17 @@ final class FieldTasks {
     static DailyResult bear(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：trap=巨熊陷阱同步（本功能唯一动作）
+            if (!FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "bear", "trap", true)) {
+                m.skip("子开关「巨熊陷阱同步」已关闭");
+                m.subSkip("trap", "子开关已关闭");
+                DailyResult off = new DailyResult("bear", "巨熊行动", m.cat(), m.note() + " " + m.sb);
+                off.rewards = m.rewardsText();
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(1500);
             GameMessage trap = engine.request("req_alliance_trap_info", null);
             try {
@@ -329,6 +377,17 @@ final class FieldTasks {
     static DailyResult hunt(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：hunt=自动狩猎（本功能唯一动作；参数只管等级区间/次数）
+            if (!FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "hunt", "hunt", true)) {
+                m.skip("子开关「自动狩猎」已关闭");
+                m.subSkip("hunt", "子开关已关闭");
+                DailyResult off = new DailyResult("hunt", "自动狩猎", m.cat(), m.note() + " " + m.sb);
+                off.rewards = m.rewardsText();
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(2500);
             org.json.JSONObject hp = FnParams.params(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "hunt");

@@ -18,6 +18,12 @@ final class ActivityTasks {
     private ActivityTasks() {
     }
 
+    /** 子开关便捷读取（fpid/sid 取当前会话；def 用调用方传入的 FnDetail 默认值）。 */
+    private static boolean sub(WjdrEngine engine, String fnId, String subId, boolean def) {
+        return FnParams.subOn(engine.appContext(), engine.lastFpid() == null ? "" : engine.lastFpid(),
+                engine.lastServerId(), fnId, subId, def);
+    }
+
     // ---------- 正中靶心（射气球） ----------
 
     static final long BALLOON_ID = 2965001L;
@@ -27,10 +33,25 @@ final class ActivityTasks {
     static DailyResult balloon(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：sign=签到 / exchange=积分兑换 / free=免费局
+            boolean onSign = sub(engine, "act_balloon", "sign", true);
+            boolean onExchange = sub(engine, "act_balloon", "exchange", true);
+            boolean onFree = sub(engine, "act_balloon", "free", true);
+            if (!onSign && !onExchange && !onFree) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("sign", "已关闭"); m.subSkip("exchange", "已关闭"); m.subSkip("free", "已关闭");
+                DailyResult off = new DailyResult("act_balloon", "正中靶心", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(2000);
             // 签到奖励
-            TownTasks.tryStep(engine, m, "签到奖励", "req_balloon_sign_reward_all",
-                    ExecUtil.args("id", BALLOON_ID));
+            if (onSign) {
+                TownTasks.tryStep(engine, m, "签到奖励", "req_balloon_sign_reward_all",
+                        ExecUtil.args("id", BALLOON_ID));
+            } else {
+                m.subSkip("sign", "已关闭");
+            }
             // 兑换档位（按累计代币数领所有达到的档）
             Map<String, Object> data = engine.notifyData("notify_balloon_data");
             long coin = -1;
@@ -38,7 +59,9 @@ final class ActivityTasks {
                 Map<String, Object> ex = ExecUtil.mapOf(data.get("exchange"));
                 if (ex != null) coin = ExecUtil.longOf(ex.get("accumulate_coin_num"));
             }
-            if (coin >= 5) {
+            if (!onExchange) {
+                m.subSkip("exchange", "已关闭");
+            } else if (coin >= 5) {
                 int exOk = 0;
                 for (int t : BALLOON_EXCHANGE) {
                     if (coin < t) break;
@@ -50,6 +73,13 @@ final class ActivityTasks {
                     }
                 }
                 if (exOk > 0) m.claimed("兑换×" + exOk);
+            }
+            if (!onFree) {
+                m.subSkip("free", "已关闭");
+                DailyResult rr = new DailyResult("act_balloon", "正中靶心", m.cat(), m.note() + " " + m.sb);
+                rr.rewards = m.rewardsText();
+                rr.subResults.putAll(m.subResults);
+                return rr;
             }
             // 免费局：开局→顺序射12靶（只用免费次数，不耗券）
             int games = 0;
@@ -91,6 +121,16 @@ final class ActivityTasks {
     static DailyResult pitchpot(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：play=开局+满分结算 / task=任务奖励
+            boolean onPlay = sub(engine, "act_pitchpot", "play", true);
+            boolean onTask = sub(engine, "act_pitchpot", "task", true);
+            if (!onPlay && !onTask) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("play", "已关闭"); m.subSkip("task", "已关闭");
+                DailyResult off = new DailyResult("act_pitchpot", "壶纳千祥", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(2000);
             Long openId = null;
             Map<String, Object> ni = engine.notifyContent("notify_pitch_pot_info");
@@ -98,7 +138,8 @@ final class ActivityTasks {
                 long id = ExecUtil.longOf(ni.get("id"));
                 if (id > 0) openId = id;
             }
-            for (long id : PITCHPOT_IDS) {
+            if (onPlay) {
+                for (long id : PITCHPOT_IDS) {
                 if (openId != null && openId != id) continue;
                 GameMessage st = engine.request("req_pitch_pot_start", ExecUtil.args("id", id));
                 int code = ExecUtil.codeOf(st);
@@ -131,8 +172,14 @@ final class ActivityTasks {
                 }
                 else m.fail("结算码" + ExecUtil.codeOf(se));
                 break;
+                }
+            } else {
+                m.subSkip("play", "已关闭");
             }
             // 任务奖励：进度达标的领
+            if (!onTask) {
+                m.subSkip("task", "已关闭");
+            } else {
             Map<String, Object> ti = engine.notifyContent("notify_pitch_pot_task_info");
             if (ti != null) {
                 Map<String, Object> task = ExecUtil.mapOf(ti.get("task"));
@@ -150,6 +197,7 @@ final class ActivityTasks {
                         m.rewards("任务" + qid, r);
                     }
                 }
+            }
             }
         } catch (Exception e) {
             if (TownTasks.sessionLost(e)) return DailyTasks.classifyException(e, "壶纳千祥");
@@ -184,6 +232,17 @@ final class ActivityTasks {
     static DailyResult snowclean(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：task=每日任务 / fund=冰雪基金 / sweep=极速除雪
+            boolean onTask = sub(engine, "act_snowclean", "task", true);
+            boolean onFund = sub(engine, "act_snowclean", "fund", true);
+            boolean onSweep = sub(engine, "act_snowclean", "sweep", true);
+            if (!onTask && !onFund && !onSweep) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("task", "已关闭"); m.subSkip("fund", "已关闭"); m.subSkip("sweep", "已关闭");
+                DailyResult off = new DailyResult("act_snowclean", "除雪小分队", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(2000);
             Map<String, Object> ni = engine.notifyData("notify_snow_clean_info");
             long id = ni == null ? 2450001L : ExecUtil.longOf(ni.get("id"));
@@ -192,6 +251,7 @@ final class ActivityTasks {
                 m.skip("活动未开放");
             } else {
                 // 每日任务奖励
+                if (onTask) {
                 Map<String, Object> tasks = ExecUtil.mapOf(ni.get("tasks"));
                 List<Map<String, Object>> quests = tasks == null
                         ? new ArrayList<>() : ExecUtil.mapsOf(tasks.get("quests"));
@@ -205,7 +265,17 @@ final class ActivityTasks {
                         m.rewards("任务" + qid, r);
                     }
                 }
-                TownTasks.tryStep(engine, m, "冰雪基金", "req_snow_fund_get_all_reward", null);
+                } else {
+                    m.subSkip("task", "已关闭");
+                }
+                if (onFund) {
+                    TownTasks.tryStep(engine, m, "冰雪基金", "req_snow_fund_get_all_reward", null);
+                } else {
+                    m.subSkip("fund", "已关闭");
+                }
+                if (!onSweep) {
+                    m.subSkip("sweep", "已关闭");
+                } else {
                 // 极速除雪：当前关连扫
                 long mission = ExecUtil.longOf(ni.get("mission"));
                 int swept = 0;
@@ -230,6 +300,7 @@ final class ActivityTasks {
                     }
                 }
                 if (swept > 0) m.claimed("除雪×" + swept + "关");
+                }
             }
         } catch (Exception e) {
             if (TownTasks.sessionLost(e)) return DailyTasks.classifyException(e, "除雪小分队");
@@ -246,9 +317,21 @@ final class ActivityTasks {
     static DailyResult icebound(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：training=寻宝特训 / chest=宝藏积分与宝箱
+            boolean onTraining = sub(engine, "act_icebound", "training", true);
+            boolean onChest = sub(engine, "act_icebound", "chest", true);
+            if (!onTraining && !onChest) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("training", "已关闭"); m.subSkip("chest", "已关闭");
+                DailyResult off = new DailyResult("act_icebound", "冰封的宝藏", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(2000);
             Map<String, Object> fs = engine.notifyContent("notify_frozen_soil_info");
-            if (fs != null) {
+            if (!onTraining) {
+                m.subSkip("training", "已关闭");
+            } else if (fs != null) {
                 long id = ExecUtil.longOf(fs.get("id"));
                 if (id > 0) {
                     TownTasks.tryStep(engine, m, "特训任务奖励", "req_frozen_soil_get_all_reward",
@@ -258,6 +341,13 @@ final class ActivityTasks {
                 }
             } else {
                 m.skip("寻宝特训未开");
+            }
+            if (!onChest) {
+                m.subSkip("chest", "已关闭");
+                DailyResult rr = new DailyResult("act_icebound", "冰封的宝藏", m.cat(), m.note() + " " + m.sb);
+                rr.rewards = m.rewardsText();
+                rr.subResults.putAll(m.subResults);
+                return rr;
             }
             Map<String, Object> am = engine.notifyContent("notify_icebound_amazing_info");
             if (am != null) {
@@ -303,6 +393,16 @@ final class ActivityTasks {
     static DailyResult polar(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：chest=队列宝箱 / start=派遣队列
+            boolean onChest = sub(engine, "act_polar", "chest", true);
+            boolean onStart = sub(engine, "act_polar", "start", true);
+            if (!onChest && !onStart) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("chest", "已关闭"); m.subSkip("start", "已关闭");
+                DailyResult off = new DailyResult("act_polar", "逐光之旅", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(2000);
             Map<String, Object> ni = engine.notifyContent("notify_polar_expedition_info");
             if (ni == null) {
@@ -315,6 +415,7 @@ final class ActivityTasks {
                     long state = ExecUtil.longOf(team.get("state"));
                     if (tid <= 0) continue;
                     if (state == 2) {
+                        if (!onChest) { m.subSkip("chest", "已关闭"); continue; }
                         GameMessage r = engine.request("req_polar_expedition_get_chest",
                                 ExecUtil.args("id", id, "team_id", tid));
                         if (ExecUtil.ok(r)) {
@@ -322,6 +423,7 @@ final class ActivityTasks {
                             m.rewards("队列宝箱", r);
                         }
                     } else if (state == 0) {
+                        if (!onStart) { m.subSkip("start", "已关闭"); continue; }
                         GameMessage r = engine.request("req_polar_expedition_start",
                                 ExecUtil.args("id", id, "team_id", tid));
                         if (ExecUtil.ok(r)) m.claimed("队列" + tid + "已派遣");
@@ -343,6 +445,14 @@ final class ActivityTasks {
     static DailyResult brawl(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：achievement=成就奖励领取（战场自动战斗待专项迭代）
+            if (!sub(engine, "act_brawl", "achievement", true)) {
+                m.skip("子开关「成就奖励」已关闭");
+                m.subSkip("achievement", "已关闭");
+                DailyResult off = new DailyResult("act_brawl", "欢乐大乱斗", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(1500);
             GameMessage ach = engine.request("req_brawl_war_get_achievement_reward",
                     ExecUtil.args("id", 2438001L));
@@ -369,23 +479,41 @@ final class ActivityTasks {
     static DailyResult fishing(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：free=免费礼/每日奖励 / task=任务与俱乐趣
+            boolean onFree = sub(engine, "act_fishing", "free", true);
+            boolean onTask = sub(engine, "act_fishing", "task", true);
+            if (!onFree && !onTask) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("free", "已关闭"); m.subSkip("task", "已关闭");
+                DailyResult off = new DailyResult("act_fishing", "钓鱼", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(2000);
+            // 协议盘点 2026-10-12：notify_fishing_info 不在 s2c schema，旧兜底恒空已删
             Map<String, Object> ni = engine.notifyContent("notify_fishing_activity_info");
-            if (ni == null) ni = engine.notifyContent("notify_fishing_info");
             if (ni == null) {
                 m.skip("钓鱼活动未开放");
             } else {
                 Long id = WjdrEngine.extractId(ni);
                 if (id != null && id > 0) {
-                    TownTasks.tryStep(engine, m, "每日奖励", "req_fishing_get_daily_rewards",
-                            ExecUtil.args("id", id));
-                    for (int type = 1; type <= 3; type++) {
-                        TownTasks.tryStep(engine, m, "任务奖励T" + type,
-                                "req_fishing_get_all_task_reward",
-                                ExecUtil.args("id", id, "type", type));
+                    if (onFree) {
+                        TownTasks.tryStep(engine, m, "每日奖励", "req_fishing_get_daily_rewards",
+                                ExecUtil.args("id", id));
+                    } else {
+                        m.subSkip("free", "已关闭");
                     }
-                    TownTasks.tryStep(engine, m, "俱乐趣奖励", "req_fishing_bp_get_all_reward",
-                            ExecUtil.args("id", id));
+                    if (onTask) {
+                        for (int type = 1; type <= 3; type++) {
+                            TownTasks.tryStep(engine, m, "任务奖励T" + type,
+                                    "req_fishing_get_all_task_reward",
+                                    ExecUtil.args("id", id, "type", type));
+                        }
+                        TownTasks.tryStep(engine, m, "俱乐趣奖励", "req_fishing_bp_get_all_reward",
+                                ExecUtil.args("id", id));
+                    } else {
+                        m.subSkip("task", "已关闭");
+                    }
                 }
             }
         } catch (Exception e) {
@@ -402,6 +530,11 @@ final class ActivityTasks {
 
     static DailyResult endlessJourney(WjdrEngine engine) {
         try {
+            // 子开关门控：milestone=无尽征程里程碑一键领取
+            if (!sub(engine, "act_endless", "milestone", true)) {
+                return new DailyResult("act_endless", "无尽征程", DailyResult.Category.SKIPPED,
+                        "子开关「里程碑奖励」已关闭");
+            }
             GameMessage rsp = engine.request("req_general_bp_get_all_reward",
                     ExecUtil.args("id", 2904006L));
             int code = ExecUtil.codeOf(rsp);
@@ -437,13 +570,23 @@ final class ActivityTasks {
     static DailyResult joyAction(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：watch=怪攻监测（自动驻防待盟友配置，当前仅监测+提醒）
+            if (!sub(engine, "act_joy", "watch", true)) {
+                m.skip("子开关「怪攻监测」已关闭");
+                m.subSkip("watch", "已关闭");
+                DailyResult off = new DailyResult("act_joy", "怪攻守城", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(1500);
             Map<String, Object> siege = engine.notifyContent("notify_monster_siege_activity");
             if (siege == null) {
                 m.skip("活动未开战");
+                m.subSkip("watch", "活动未开战");
             } else {
                 // 驻防目标需盟友在线信息，第一版先不自动出征
                 m.skip("活动进行中（自动驻防待盟友配置）");
+                m.subSkip("watch", "监测到开战，自动驻防待盟友配置");
             }
         } catch (Exception e) {
             if (TownTasks.sessionLost(e)) return DailyTasks.classifyException(e, "怪攻守城");
@@ -460,6 +603,14 @@ final class ActivityTasks {
     static DailyResult supremacyFeast(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：eat=自动赴宴（整功能唯一动作）
+            if (!sub(engine, "act_feast", "eat", true)) {
+                m.skip("子开关「自动赴宴」已关闭");
+                m.subSkip("eat", "已关闭");
+                DailyResult off = new DailyResult("act_feast", "至尊盛宴", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(1500);
             Map<String, Object> fi = engine.notifyContent("notify_supremacy_war_feast_init");
             if (fi == null) {
@@ -631,9 +782,29 @@ final class ActivityTasks {
                 if (id <= 0) {
                     m.skip("活动数据异常");
                 } else {
+                    // 子开关门控：difficulty=选难度 / spawn=生成佣兵并出征
+                    boolean onDiff = sub(engine, "act_mercenary", "difficulty", true);
+                    boolean onSpawn = sub(engine, "act_mercenary", "spawn", true);
+                    if (!onDiff && !onSpawn) {
+                        m.skip("子开关已全部关闭");
+                        m.subSkip("difficulty", "已关闭"); m.subSkip("spawn", "已关闭");
+                        DailyResult off = new DailyResult("act_mercenary", "佣兵荣耀", m.cat(), m.note() + " " + m.sb);
+                        off.subResults.putAll(m.subResults);
+                        return off;
+                    }
                     long diff = Math.min(20, maxDiff + 1);
-                    engine.request("req_mercenary_choose_difficulty",
-                            ExecUtil.args("id", id, "difficulty", diff));
+                    if (onDiff) {
+                        engine.request("req_mercenary_choose_difficulty",
+                                ExecUtil.args("id", id, "difficulty", diff));
+                    } else {
+                        m.subSkip("difficulty", "已关闭");
+                    }
+                    if (!onSpawn) {
+                        m.subSkip("spawn", "已关闭");
+                        DailyResult off = new DailyResult("act_mercenary", "佣兵荣耀", m.cat(), m.note() + " " + m.sb);
+                        off.subResults.putAll(m.subResults);
+                        return off;
+                    }
                     GameMessage sp = engine.request("req_mercenary_spawn_player_monster",
                             ExecUtil.args("id", id));
                     if (ExecUtil.ok(sp)) {
@@ -680,7 +851,20 @@ final class ActivityTasks {
             } else {
                 Map<String, Object> base = ExecUtil.mapOf(ni.get("base"));
                 long id = base == null ? ExecUtil.longOf(ni.get("id")) : ExecUtil.longOf(base.get("id"));
+                // 子开关门控：take=领送达奖励 / send=自动发车
+                boolean onTake = sub(engine, "act_truck", "take", true);
+                boolean onSend = sub(engine, "act_truck", "send", true);
+                if (!onTake && !onSend) {
+                    m.skip("子开关已全部关闭");
+                    m.subSkip("take", "已关闭"); m.subSkip("send", "已关闭");
+                    DailyResult off = new DailyResult("act_truck", "运宝车队", m.cat(), m.note() + " " + m.sb);
+                    off.subResults.putAll(m.subResults);
+                    return off;
+                }
                 int taken = 0;
+                if (!onTake) {
+                    m.subSkip("take", "已关闭");
+                } else {
                 for (Map<String, Object> t : ExecUtil.mapsOf(ni.get("truck_infos"))) {
                     long tid = ExecUtil.longOf(t.get("truck_id"));
                     if (tid <= 0) tid = ExecUtil.longOf(t.get("slot_id"));
@@ -696,7 +880,15 @@ final class ActivityTasks {
                 }
                 if (taken > 0) m.claimed("货车奖励×" + taken);
                 else m.skip("暂无送达货车");
+                }
                 // 发车（一名英雄即可）
+                if (!onSend) {
+                    m.subSkip("send", "已关闭");
+                    DailyResult rr = new DailyResult("act_truck", "运宝车队", m.cat(), m.note() + " " + m.sb);
+                    rr.rewards = m.rewardsText();
+                    rr.subResults.putAll(m.subResults);
+                    return rr;
+                }
                 Map<String, Object> send = ExecUtil.mapOf(ni.get("send_truck_info"));
                 long stage = send == null ? 0 : ExecUtil.longOf(send.get("stage_index"));
                 if (send != null && stage >= 0) {
@@ -737,9 +929,20 @@ final class ActivityTasks {
             } else {
                 Map<String, Object> base = ExecUtil.mapOf(ni.get("base"));
                 long id = base == null ? ExecUtil.longOf(ni.get("id")) : ExecUtil.longOf(base.get("id"));
+                // 子开关门控：reward=进度奖励 / boss=生成并集结BOSS
+                boolean onReward = sub(engine, "act_icehunter", "reward", true);
+                boolean onBoss = sub(engine, "act_icehunter", "boss", true);
+                if (!onReward && !onBoss) {
+                    m.skip("子开关已全部关闭");
+                    m.subSkip("reward", "已关闭"); m.subSkip("boss", "已关闭");
+                    DailyResult off = new DailyResult("act_icehunter", "冰原猎人", m.cat(), m.note() + " " + m.sb);
+                    off.subResults.putAll(m.subResults);
+                    return off;
+                }
                 if (id <= 0) {
                     m.skip("活动数据异常");
                 } else {
+                    if (onReward) {
                     GameMessage col = engine.request("req_icefield_hunter2_collect_master_reward",
                             ExecUtil.args("id", id, "reward_id", 0L, "is_gain_all", true));
                     int code = ExecUtil.codeOf(col);
@@ -748,7 +951,17 @@ final class ActivityTasks {
                         m.rewards("进度奖励", col);
                     }
                     else if (code != 61 && code != 8251) m.skip("领奖码" + code);
+                    } else {
+                        m.subSkip("reward", "已关闭");
+                    }
 
+                    if (!onBoss) {
+                        m.subSkip("boss", "已关闭");
+                        DailyResult rr = new DailyResult("act_icehunter", "冰原猎人", m.cat(), m.note() + " " + m.sb);
+                        rr.rewards = m.rewardsText();
+                        rr.subResults.putAll(m.subResults);
+                        return rr;
+                    }
                     GameMessage sp = engine.request("req_icefield_hunter_spawn_monster",
                             ExecUtil.args("item_id", 600008L));
                     if (ExecUtil.ok(sp)) {

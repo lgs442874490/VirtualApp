@@ -661,25 +661,42 @@ final class TownTasks {
             if (!ExecUtil.ok(info)) {
                 m.skip("专家游历未解锁(码" + ExecUtil.codeOf(info) + ")");
             } else {
-                GameMessage recv = engine.request("req_travel_recv_energy", null);
+                // 子开关门控：energy=领取行动力（默认开）
+                boolean onEnergy = FnParams.subOn(engine.appContext(),
+                        engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                        "expert", "energy", true);
                 long energy = -1;
-                Map<String, Object> c = recv != null ? recv.getContent() : null;
-                for (String k : new String[]{"energy", "stamina", "power", "cnt", "action"}) {
-                    if (c != null && c.containsKey(k)) {
-                        energy = ExecUtil.longOf(c.get(k));
-                        break;
-                    }
-                }
-                if (energy < 0 && info.getContent() != null) {
+                if (onEnergy) {
+                    GameMessage recv = engine.request("req_travel_recv_energy", null);
+                    Map<String, Object> c = recv != null ? recv.getContent() : null;
                     for (String k : new String[]{"energy", "stamina", "power", "cnt", "action"}) {
-                        if (info.getContent().containsKey(k)) {
-                            energy = ExecUtil.longOf(info.getContent().get(k));
+                        if (c != null && c.containsKey(k)) {
+                            energy = ExecUtil.longOf(c.get(k));
                             break;
                         }
                     }
+                    if (energy < 0 && info.getContent() != null) {
+                        for (String k : new String[]{"energy", "stamina", "power", "cnt", "action"}) {
+                            if (info.getContent().containsKey(k)) {
+                                energy = ExecUtil.longOf(info.getContent().get(k));
+                                break;
+                            }
+                        }
+                    }
+                    if (ExecUtil.ok(recv)) { m.claimed("行动力已领"); m.subOk("energy", "行动力已领"); }
+                    else m.subSkip("energy", "行动力不可领");
+                } else {
+                    m.subSkip("energy", "子开关已关闭");
+                    // 行动力当前值从 info 兜底读取，供 afk 决策
+                    if (info.getContent() != null) {
+                        for (String k : new String[]{"energy", "stamina", "power", "cnt", "action"}) {
+                            if (info.getContent().containsKey(k)) {
+                                energy = ExecUtil.longOf(info.getContent().get(k));
+                                break;
+                            }
+                        }
+                    }
                 }
-                if (ExecUtil.ok(recv)) { m.claimed("行动力已领"); m.subOk("energy", "行动力已领"); }
-                else m.subSkip("energy", "行动力不可领");
                 if (FnParams.subOn(engine.appContext(),
                         engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
                         "expert", "buy", false)) {
@@ -689,6 +706,10 @@ final class TownTasks {
                         m.claimed("购体力+1");
                     }
                 }
+                // 子开关门控：afk=全额挂机游历（策略只管保留多少）
+                boolean onAfk = FnParams.subOn(engine.appContext(),
+                        engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                        "expert", "afk", true);
                 // 策略：保留 N 点行动力不挂机（0=用全部）
                 long keep = 0;
                 try {
@@ -696,7 +717,7 @@ final class TownTasks {
                             engine.lastFpid(), engine.lastServerId(), "expert", "afk", "0").trim());
                 } catch (Throwable ignored) {
                 }
-                long use = Math.max(0, energy - keep);
+                long use = onAfk ? Math.max(0, energy - keep) : -1;
                 if (use > 0) {
                     GameMessage afk = engine.request("req_normal_travel_afk",
                             ExecUtil.args("cnt", use));
@@ -709,8 +730,8 @@ final class TownTasks {
                         m.subSkip("afk", "码" + ExecUtil.codeOf(afk));
                     }
                 } else {
-                    m.skip("行动力" + energy + "，按保留阈值跳过");
-                    m.subSkip("afk", "按保留阈值跳过");
+                    m.skip(onAfk ? "行动力" + energy + "，按保留阈值跳过" : "子开关「全额挂机游历」已关闭");
+                    m.subSkip("afk", onAfk ? "按保留阈值跳过" : "子开关已关闭");
                 }
             }
         } catch (Exception e) {
@@ -917,20 +938,26 @@ final class TownTasks {
     static DailyResult fireCrystal(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：purify=普通提炼（super/quests 各自独立门控）
+            boolean onPurify = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "fire_crystal", "purify", true);
             int done = 0;
-            for (int i = 0; i < 40; i++) {
-                GameMessage rsp = engine.request("req_spar_purify", null);
-                if (ExecUtil.ok(rsp)) {
-                    done++;
-                } else {
-                    int code = ExecUtil.codeOf(rsp);
-                    if (code == 10051 || code == 10052 || code == 51 || code == 2) {
-                        break;   // 未解锁/材料不足/到上限
+            if (onPurify) {
+                for (int i = 0; i < 40; i++) {
+                    GameMessage rsp = engine.request("req_spar_purify", null);
+                    if (ExecUtil.ok(rsp)) {
+                        done++;
+                    } else {
+                        int code = ExecUtil.codeOf(rsp);
+                        if (code == 10051 || code == 10052 || code == 51 || code == 2) {
+                            break;   // 未解锁/材料不足/到上限
+                        }
+                        if (i == 0) {
+                            m.skip("提炼不可用(码" + code + ")");
+                        }
+                        break;
                     }
-                    if (i == 0) {
-                        m.skip("提炼不可用(码" + code + ")");
-                    }
-                    break;
                 }
             }
             if (done > 0) {
@@ -938,6 +965,7 @@ final class TownTasks {
                 m.subOk("purify", "提炼×" + done);
                 mod(engine, "fire_crystal", "purify", "上轮提炼 " + done + " 次");
             }
+            else if (!onPurify) { m.subSkip("purify", "子开关已关闭"); }
             else if (m.sb.length() == 0) { m.skip("今日提炼已达上限或未解锁"); m.subSkip("purify", "达上限或未解锁"); }
             // 超级提炼（子项开关，默认关；次数可选配 super_times，默认 1 次/轮）
             org.json.JSONObject fp = FnParams.params(engine.appContext(),
@@ -994,6 +1022,16 @@ final class TownTasks {
     static DailyResult climbtower(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：sweep=每日扫荡（本功能唯一动作，关=整功能跳过）
+            if (!FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "climbtower", "sweep", true)) {
+                m.skip("子开关「每日扫荡」已关闭");
+                m.subSkip("sweep", "子开关已关闭");
+                DailyResult off = new DailyResult("climbtower", "地心探索", m.cat(), m.note() + " " + m.sb);
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             GameMessage info = engine.request("req_climbtower_info", null);
             if (!ExecUtil.ok(info)) {
                 m.skip("地心探索未解锁(码" + ExecUtil.codeOf(info) + ")");
@@ -1059,6 +1097,9 @@ final class TownTasks {
             long asid = engine.lastServerId();
             org.json.JSONObject ap = FnParams.params(actx, afpid, asid, "arena");
             org.json.JSONObject strat = ap.optJSONObject("strategy");
+            // 子开关门控：fight=自动挑战（strategy.fight 只管场数），daily=每日奖励
+            boolean onFight = FnParams.subOn(actx, afpid, asid, "arena", "fight", true);
+            boolean onDaily = FnParams.subOn(actx, afpid, asid, "arena", "daily", true);
             // 次数：策略chips优先（3/5/8/10场），无策略再兼容旧 params.max_fights
             int maxFights = strat != null && strat.has("fight") ? strat.optInt("fight", 5)
                     : ap.optInt("max_fights", 5);
@@ -1067,13 +1108,15 @@ final class TownTasks {
             // 1. 战斗版本学习（原版同款：从 battle_data 学 version；写死值可被热更包
             //    nums."arena.version_fallback" 覆盖——版本更新后远端改数即生效）
             long version = HotConfig.num("arena.version_fallback", 26042101L);
-            try {
-                GameMessage bd = engine.request("req_arena_get_battle_data", null);
-                if (ExecUtil.ok(bd)) {
-                    long v = deepFindNum(bd.getContent(), 0, "version", "battle_version");
-                    if (v > 0) version = v;
+            if (onFight) {
+                try {
+                    GameMessage bd = engine.request("req_arena_get_battle_data", null);
+                    if (ExecUtil.ok(bd)) {
+                        long v = deepFindNum(bd.getContent(), 0, "version", "battle_version");
+                        if (v > 0) version = v;
+                    }
+                } catch (Throwable ignored) {
                 }
-            } catch (Throwable ignored) {
             }
 
             // 2. 竞技场基础状态（防御式）：完成次数/英雄阵容
@@ -1083,10 +1126,13 @@ final class TownTasks {
             long leftTimes = numIn(base, "left_times");
             long completed = freeUsed + Math.max(0, buyTimes - leftTimes);
 
-            // 3. 对手列表
+            // 3. 对手列表（fight 子开关关闭则整段跳过）
             GameMessage opp = engine.request("req_arena_get_opponent", null);
             int fights = 0, wins = 0;
-            if (ExecUtil.ok(opp)) {
+            if (!onFight) {
+                m.skip("子开关「自动挑战」已关闭");
+                m.subSkip("fight", "子开关已关闭");
+            } else if (ExecUtil.ok(opp)) {
                 List<Map<String, Object>> list = new ArrayList<>();
                 for (String k : new String[]{"opponents", "data", "list"}) {
                     list = ExecUtil.mapsOf(opp.getContent().get(k));
@@ -1140,8 +1186,11 @@ final class TownTasks {
                 m.skip("竞技场未解锁(码" + ExecUtil.codeOf(opp) + ")");
             }
 
-            // 4. 每日奖励：完成次数达标才领（原版同款门控），不达标不发请求
-            if (completed >= 5) {
+            // 4. 每日奖励：完成次数达标才领（原版同款门控），不达标不发请求；daily 子开关总闸
+            if (!onDaily) {
+                m.skip("子开关「每日奖励」已关闭");
+                m.subSkip("daily", "子开关已关闭");
+            } else if (completed >= 5) {
                 GameMessage daily = engine.request("req_arena_get_daily_reward", null);
                 int dc = ExecUtil.codeOf(daily);
                 if (ExecUtil.ok(daily)) { m.claimed("每日奖励"); m.subOk("daily", "每日奖励已领"); }

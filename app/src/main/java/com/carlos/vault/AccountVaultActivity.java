@@ -477,7 +477,9 @@ public class AccountVaultActivity extends Activity {
         super.onResume();
         // 门禁页路径下主界面未构建（status 仍为 null），此时不做刷新；
         // 门禁页的联网刷新已在 onCreate 中触发。
-        if (status == null) return;
+        // HomeActivity 例外：它不走 buildUi()（status 恒为 null），不能被这条守卫拦掉，
+        // 否则从功能页/游戏返回时永远不刷新（三页数据停留在离开前的旧状态）。
+        if (status == null && !(this instanceof HomeActivity)) return;
 
         refresh();
         refreshLicenseBar();
@@ -631,6 +633,10 @@ public class AccountVaultActivity extends Activity {
         // 数据变化交由子类刷新对应页面。
         if (adapter == null) {
             if (this instanceof HomeActivity) {
+                // 四 Tab 主界面的账号列表是内存快照（仅 onCreate / 批量删除会重载），
+                // 导入、新增入口、token 校准等落盘后必须先重载，否则三页展示与磁盘割裂：
+                // 账号数不变、旧 fpid 查不到角色表（实测：导入成功 46 个，界面仍显示 45）。
+                if (store != null) accounts = store.all();
                 ((HomeActivity) this).onAccountsChanged();
             }
             return;

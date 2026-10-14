@@ -115,6 +115,11 @@ public class DailySchedulerService extends Service {
                                     || a.fpid == null || a.fpid.isEmpty()) continue;
                             RoleStore.Schedule s2 = RoleStore.schedule(ctx, a.fpid);
                             if (!s2.autoEnabled) continue;
+                            // 子开关门控：reactive=反应式开盾（关掉后战争/侦查通知不再自动开盾，
+                            // 每日定时免费盾由 battle_shield.free 单独控制）
+                            if (!FnParams.subOn(ctx, a.fpid, s2.serverid, "battle_shield", "reactive", true)) {
+                                continue;
+                            }
                             DailyResult r = DailyRunner.runSingle(ctx, a.fpid, a.token, s2.serverid, "battle_shield");
                             GameNotifyListenerService.logEvent("reactive shield " + a.label + ": " + r.message);
                         }

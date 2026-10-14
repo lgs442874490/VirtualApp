@@ -20,14 +20,35 @@ final class LeagueTasks {
     static DailyResult mobilization(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：reward=任务奖励 / count=免费接取次数 / milestone=里程碑
+            boolean onReward = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "alliance_mobilization", "reward", true);
+            boolean onCount = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "alliance_mobilization", "count", true);
+            boolean onMilestone = FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "alliance_mobilization", "milestone", true);
+            if (!onReward && !onCount && !onMilestone) {
+                m.skip("子开关已全部关闭");
+                m.subSkip("reward", "已关闭"); m.subSkip("count", "已关闭"); m.subSkip("milestone", "已关闭");
+                DailyResult off = new DailyResult("alliance_mobilization", "联盟总动员", m.cat(), m.note() + " " + m.sb);
+                off.rewards = m.rewardsText();
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(2000);
             GameMessage info = engine.request("req_mobilization_open_info", null);
             if (!ExecUtil.ok(info)) {
                 m.skip("总动员未开启(码" + ExecUtil.codeOf(info) + ")");
             } else {
                 // 已完成未领的任务奖励（notify 维护的任务板）
-                Map<String, Object> ni = engine.notifyContent("notify_mobilization_init");
                 int claimed = 0;
+                if (!onReward) {
+                    m.subSkip("reward", "已关闭");
+                } else {
+                Map<String, Object> ni = engine.notifyContent("notify_mobilization_init");
                 if (ni != null) {
                     for (String key : new String[]{"quests", "quest_list", "data"}) {
                         for (Map<String, Object> q : ExecUtil.mapsOf(ni.get(key))) {
@@ -46,16 +67,25 @@ final class LeagueTasks {
                     }
                 }
                 if (claimed > 0) m.claimed("任务奖励×" + claimed);
+                }
                 // 免费领一次接取次数
+                if (!onCount) {
+                    m.subSkip("count", "已关闭");
+                } else {
                 GameMessage buy = engine.request("req_mobilization_buy_count", ExecUtil.args("count", 1));
                 if (ExecUtil.ok(buy)) m.claimed("接取次数+1");
+                }
                 // 里程碑批量领取
+                if (!onMilestone) {
+                    m.subSkip("milestone", "已关闭");
+                } else {
                 GameMessage ms = engine.request("req_mobilization_batch_get_milestone", null);
                 if (ExecUtil.ok(ms)) {
                     m.claimed("里程碑");
                     m.rewards("里程碑", ms);
                 }
                 else if (ExecUtil.codeOf(ms) != 8413) m.skip("里程碑码" + ExecUtil.codeOf(ms));
+                }
             }
         } catch (Exception e) {
             if (TownTasks.sessionLost(e)) return DailyTasks.classifyException(e, "联盟总动员");
@@ -72,6 +102,17 @@ final class LeagueTasks {
     static DailyResult showdown(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：apply=自动报名（本功能唯一动作）
+            if (!FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "alliance_showdown", "apply", true)) {
+                m.skip("子开关「自动报名」已关闭");
+                m.subSkip("apply", "子开关已关闭");
+                DailyResult off = new DailyResult("alliance_showdown", "争霸赛", m.cat(), m.note() + " " + m.sb);
+                off.rewards = m.rewardsText();
+                off.subResults.putAll(m.subResults);
+                return off;
+            }
             engine.collectNotifies(1500);
             GameMessage info = engine.request("req_alliance_showdown_activity_info", null);
             if (!ExecUtil.ok(info)) {
@@ -103,6 +144,12 @@ final class LeagueTasks {
     // ---------- 联盟互助：一键帮助全盟（每次运行执行，配合定时器高频互助） ----------
 
     static DailyResult allianceHelp(WjdrEngine engine) {
+        // 子开关门控：help_all=一键帮助全盟（关=任务级跳过，常驻互助今日页卡不受影响）
+        if (!FnParams.subOn(engine.appContext(), engine.lastFpid() == null ? "" : engine.lastFpid(),
+                engine.lastServerId(), "alliance_help", "help_all", true)) {
+            return new DailyResult("alliance_help", "联盟互助", DailyResult.Category.SKIPPED,
+                    "子开关「一键帮助全盟」已关闭");
+        }
         // 常驻互助（今日页卡 HelpResponder / 服务器响应器）接管中：它 30s 轮询持续刷新
         // help_all_ts，3 分钟内有过响应/巡检即视为已覆盖，跳过本轮重复请求
         try {
@@ -157,15 +204,23 @@ final class LeagueTasks {
             if (items.isEmpty()) {
                 m.skip("背包数据未同步");
             } else {
+                // 子开关门控：fixed=固定资源包（random=随机补给箱，下面单独判）
+                boolean onFixed = FnParams.subOn(engine.appContext(),
+                        engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                        "backpack", "fixed", true);
                 List<Map<String, Object>> params = new ArrayList<>();
                 int used = 0;
                 // 固定资源包（普通 100111~100115：100/1k/1w/10w/100w 档）
+                if (onFixed) {
                 for (long id = 100111; id <= 100111 + 4; id++) {
                     Long cnt = items.get(id);
                     if (cnt != null && cnt > 0) {
                         params.add(ExecUtil.args("id", id, "count", cnt, "extra", new java.util.LinkedHashMap<>()));
                         used += cnt;
                     }
+                }
+                } else {
+                    m.subSkip("fixed", "已关闭");
                 }
                 // 随机补给箱（可选，默认关）
                 if (FnParams.subOn(engine.appContext(),
@@ -205,6 +260,14 @@ final class LeagueTasks {
     static DailyResult homelandVisit(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：assist=拜访协助（本功能唯一动作）
+            if (!FnParams.subOn(engine.appContext(),
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
+                    "homeland_visit", "assist", true)) {
+                m.skip("子开关「拜访协助」已关闭");
+                m.subSkip("assist", "子开关已关闭");
+                return visitResult(m);
+            }
             engine.collectNotifies(1500);
             long myUid = engine.lastUid();
             long kid = engine.lastServerId();

@@ -55,6 +55,7 @@ public final class DailyTasks {
         list.add(new TaskDef("battle_shield", "战斗护盾", true, DailyTasks::freeShield));
         list.add(new TaskDef("shop", "商店购买", false, ShopTasks::shopBuy));
         list.add(new TaskDef("commander_gift", "统帅礼包", true, DailyTasks::commanderGift));
+        list.add(new TaskDef("achievement_claim", "成就奖励", true, DailyTasks::achievementClaim));
         // ===== 城镇 =====
         list.add(new TaskDef("research", "科技研究", true, TownDevTasks::research));
         list.add(new TaskDef("building", "建筑升级", false, TownDevTasks::building));
@@ -84,6 +85,7 @@ public final class DailyTasks {
         list.add(new TaskDef("red_packet", "游戏红包", true, ActivityTasks::redPacket));
         list.add(new TaskDef("bank", "钻石银行", false, ActivityTasks::bank));
         list.add(new TaskDef("act_flamefangs", "烈焰獠牙", false, ShopTasks::flamefangs));
+        list.add(new TaskDef("act_snowtrade", "雪原贸易站", false, ShopTasks::snowTrade));
         list.add(new TaskDef("act_frostfire", "燃霜矿区", false, ShopTasks::frostfire));
         list.add(new TaskDef("social_gift", "社交礼物", false, ShopTasks::socialGift));
         // ===== 野外 =====
@@ -108,18 +110,149 @@ public final class DailyTasks {
 
     static DailyResult loginRewards(WjdrEngine engine) throws Exception {
         try {
+            // 子开关门控：sign=7天签到一键补领（FnDetail.defOn=true，存量角色默认行为不变）
+            if (!FnParams.subOn(engine.appContext(), engine.lastFpid() == null ? "" : engine.lastFpid(),
+                    engine.lastServerId(), "login_rewards", "sign", true)) {
+                return new DailyResult("login_rewards", "登录好礼", DailyResult.Category.SKIPPED,
+                        "子开关「7天签到」已关闭");
+            }
             // 领取前快照：响应不带明细时按目录推"第N天领了什么"
             org.json.JSONObject mod = FnParams.modState(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "login_rewards");
+            String fp = engine.lastFpid() == null ? "" : engine.lastFpid();
+            long sid = engine.lastServerId();
+            StringBuilder msg = new StringBuilder();
+            StringBuilder rewards = new StringBuilder();
+            int claimed = 0, degraded = 0;
+
+            // ① 登录好礼（十四天双轨）
             GameMessage rsp = engine.request("req_fourteen_sign_get_all_reward", null);
             DailyResult r = classifySimple(rsp, "req_fourteen_sign_get_all_reward", "登录好礼",
                     new String[]{"code"}, "已一键领取全部可领签到奖励");
-            if (r.category == DailyResult.Category.CLAIMED && r.rewards.isEmpty()) {
-                r.rewards = loginGiftDetail(mod);
+            if (r.category == DailyResult.Category.CLAIMED) {
+                claimed++;
+                String d = r.rewards.isEmpty() ? loginGiftDetail(mod) : r.rewards;
+                msg.append("登录好礼已领");
+                if (!d.isEmpty()) {
+                    msg.append("（").append(d).append("）");
+                    rewards.append(d).append("；");
+                }
+            } else if (r.category == DailyResult.Category.DEGRADED) {
+                degraded++;
+                msg.append("登录好礼响应异常");
+            } else {
+                msg.append("登录好礼无可领");
             }
-            return r;
+
+            // ② 七天签到（协议盘点 2026-10-12 实锤：req_seven_sign_one_click_award 空参一键，
+            //    已领天数由服务端跳过；award_success_list 非空才算真领到）
+            if (FnParams.subOn(engine.appContext(), fp, sid, "login_rewards", "seven", true)) {
+                GameMessage seven = engine.request("req_seven_sign_one_click_award", null);
+                if (isDegraded(seven)) {
+                    degraded++;
+                    msg.append("; 七天签到响应异常");
+                } else if (rspOk(seven)) {
+                    List<Object> okList = listOfRaw(seven.getContent().get("award_success_list"));
+                    if (okList != null && !okList.isEmpty()) {
+                        claimed++;
+                        msg.append("; 七天签到×").append(okList.size());
+                        rewards.append("七天签到奖励；");
+                    } else {
+                        msg.append("; 七天签到无可领");
+                    }
+                } else {
+                    msg.append("; 七天签到已全领或不可用");
+                }
+            } else {
+                msg.append("; 七天签到已关");
+            }
+
+            // ③ 21天签到免费档（req_sign_21day_get_all_reward 空参全领；付费档 has_pay 才有）
+            if (FnParams.subOn(engine.appContext(), fp, sid, "login_rewards", "day21", true)) {
+                GameMessage d21 = engine.request("req_sign_21day_get_all_reward", null);
+                if (isDegraded(d21)) {
+                    degraded++;
+                    msg.append("; 21天签到响应异常");
+                } else if (rspOk(d21)) {
+                    List<Object> rw = listOfRaw(d21.getContent().get("rewards"));
+                    if (rw != null && !rw.isEmpty()) {
+                        claimed++;
+                        msg.append("; 21天签到已领");
+                        rewards.append("21天签到奖励；");
+                    } else {
+                        msg.append("; 21天签到无可领");
+                    }
+                } else {
+                    msg.append("; 21天签到已全领或不可用");
+                }
+            } else {
+                msg.append("; 21天签到已关");
+            }
+
+            DailyResult out = new DailyResult("login_rewards", "登录好礼",
+                    claimed > 0 ? DailyResult.Category.CLAIMED
+                            : degraded > 0 ? DailyResult.Category.DEGRADED
+                            : DailyResult.Category.SKIPPED,
+                    msg.toString());
+            out.rewards = rewards.toString();
+            return out;
         } catch (Exception e) {
             return classifyException(e, "登录好礼");
+        }
+    }
+
+    /** 轻量成功判定（与 classifySimple 同口径）：有 code 看 code，无 code 视为成功。 */
+    private static boolean rspOk(GameMessage msg) {
+        if (isDegraded(msg)) return false;
+        Object code = msg.getContent().get("code");
+        return code == null || toInt(code) == 0;
+    }
+
+    // ---------- 1b. 成就奖励（协议盘点 2026-10-12 新增） ----------
+
+    /**
+     * notify_achievement_info 字段实证：infos[]{id, count, complete:"true"/"false", received:...}。
+     * 领取条件 = complete && !received；req_achievement_get_reward.request{list_data}（批量 id）。
+     */
+    static DailyResult achievementClaim(WjdrEngine engine) {
+        try {
+            if (!FnParams.subOn(engine.appContext(), engine.lastFpid() == null ? "" : engine.lastFpid(),
+                    engine.lastServerId(), "achievement_claim", "claim", true)) {
+                return new DailyResult("achievement_claim", "成就奖励", DailyResult.Category.SKIPPED,
+                        "子开关「批量领取」已关闭");
+            }
+            engine.collectNotifies(1200);
+            Map<String, Object> ai = engine.notifyData("notify_achievement_info");
+            List<Integer> ids = new ArrayList<>();
+            for (Map<String, Object> a : listOfMaps(ai == null ? null : ai.get("infos"))) {
+                boolean complete = "true".equals(String.valueOf(a.get("complete")));
+                boolean received = "true".equals(String.valueOf(a.get("received")));
+                int id = toInt(a.get("id"));
+                if (complete && !received && id > 0) ids.add(id);
+            }
+            if (ids.isEmpty()) {
+                return new DailyResult("achievement_claim", "成就奖励", DailyResult.Category.SKIPPED,
+                        ai == null ? "成就数据未同步" : "没有已完成未领取的成就");
+            }
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("list_data", ids);
+            GameMessage rsp = engine.request("req_achievement_get_reward", args);
+            if (isDegraded(rsp)) {
+                return new DailyResult("achievement_claim", "成就奖励", DailyResult.Category.DEGRADED,
+                        "响应异常（协议可能变更）");
+            }
+            Object code = rsp.getContent().get("code");
+            if (code != null && toInt(code) != 0) {
+                return classifyServerCode(toInt(code), "成就奖励");
+            }
+            String d = descRewards(rsp.getContent().get("rewards") != null
+                    ? rsp.getContent().get("rewards") : rsp.getContent().get("awards"));
+            DailyResult r = new DailyResult("achievement_claim", "成就奖励", DailyResult.Category.CLAIMED,
+                    "成就奖励×" + ids.size() + (d.isEmpty() ? "" : "：" + d));
+            r.rewards = d;
+            return r;
+        } catch (Exception e) {
+            return classifyException(e, "成就奖励");
         }
     }
 
@@ -174,9 +307,13 @@ public final class DailyTasks {
             }
             // 主动拉取邮箱板块（不依赖推送状态）
             engine.request("req_mail_type_info", null);
+            // 子开关门控：keep_unread=仅领有附件邮件（默认开，公告类不动）；关=无附件邮件一并已读
+            boolean keepUnread = FnParams.subOn(engine.appContext(), engine.lastFpid() == null ? "" : engine.lastFpid(),
+                    engine.lastServerId(), "mail", "keep_unread", true);
             int claimed = 0;
             int sections = 0;
             List<String> pendingIds = new ArrayList<>();
+            List<String> noAttachIds = new ArrayList<>();   // 无附件邮件（仅 keep_unread=false 时批量已读）
             StringBuilder degradeNote = new StringBuilder();
             for (int type : types) {
                 Map<String, Object> args = new LinkedHashMap<>();
@@ -195,16 +332,37 @@ public final class DailyTasks {
                     continue;
                 }
                 for (Map<String, Object> m : covers) {
-                    Object attach = m.get("attach_statue");
-                    if (attach == null || toInt(attach) != 1) continue;
                     Object idNew = m.get("mailid_new");
-                    if (idNew != null && !String.valueOf(idNew).isEmpty()) {
+                    if (idNew == null || String.valueOf(idNew).isEmpty()) continue;
+                    Object attach = m.get("attach_statue");
+                    if (attach != null && toInt(attach) == 1) {
                         pendingIds.add(String.valueOf(idNew));
+                    } else if (!keepUnread) {
+                        noAttachIds.add(String.valueOf(idNew));
                     }
                 }
                 if (pendingIds.size() >= 100) break;   // 与原版一致：单批上限
             }
             if (pendingIds.isEmpty()) {
+                // 关掉「仅领有附件邮件」后：即使没有可领附件，也把无附件公告批量已读
+                if (!keepUnread && !noAttachIds.isEmpty()) {
+                    try {
+                        Map<String, Object> readArgs = new LinkedHashMap<>();
+                        readArgs.put("first_type", 10);
+                        readArgs.put("mid_list_new", noAttachIds);
+                        GameMessage readRsp = engine.request("req_batch_mail_read", readArgs);
+                        if (!isDegraded(readRsp)) {
+                            Object rc = readRsp.getContent().get("code");
+                            if (rc == null || toInt(rc) == 0) {
+                                List<Object> rl = listOfRaw(readRsp.getContent().get("readlist_new"));
+                                int n = rl == null ? noAttachIds.size() : rl.size();
+                                return new DailyResult("mail", "邮件奖励", DailyResult.Category.CLAIMED,
+                                        "无附件可领，公告已读 " + n + " 封");
+                            }
+                        }
+                    } catch (Exception ignored) {
+                    }
+                }
                 if (degradeNote.length() > 0) {
                     return new DailyResult("mail", "邮件奖励", DailyResult.Category.DEGRADED,
                             "部分板块协议异常：" + degradeNote);
@@ -228,9 +386,29 @@ public final class DailyTasks {
             List<Object> readList = listOfRaw(claim.getContent().get("readlist_new"));
             int confirmed = readList == null ? pendingIds.size() : readList.size();
             claimed = confirmed;
+            // keep_unread=false：无附件的公告类邮件一并标记已读（附附件邮件上面已领）
+            int readNoAttach = 0;
+            if (!keepUnread && !noAttachIds.isEmpty()) {
+                try {
+                    Map<String, Object> readArgs = new LinkedHashMap<>();
+                    readArgs.put("first_type", 10);
+                    readArgs.put("mid_list_new", noAttachIds);
+                    GameMessage readRsp = engine.request("req_batch_mail_read", readArgs);
+                    if (!isDegraded(readRsp)) {
+                        Object rc = readRsp.getContent().get("code");
+                        if (rc == null || toInt(rc) == 0) {
+                            List<Object> rl = listOfRaw(readRsp.getContent().get("readlist_new"));
+                            readNoAttach = rl == null ? noAttachIds.size() : rl.size();
+                        }
+                    }
+                } catch (Exception ignored) {
+                    // 已读失败不影响附件领取结果
+                }
+            }
             mod(engine, "mail", "read", "上轮领取 " + claimed + " 封 · 候选 " + pendingIds.size());
             return new DailyResult("mail", "邮件奖励", DailyResult.Category.CLAIMED,
-                    "领取邮件 " + claimed + " 封（候选 " + pendingIds.size() + "）");
+                    "领取邮件 " + claimed + " 封（候选 " + pendingIds.size() + "）"
+                            + (readNoAttach > 0 ? "，公告已读 " + readNoAttach + " 封" : ""));
         } catch (Exception e) {
             return classifyException(e, "邮件奖励");
         }
@@ -427,6 +605,12 @@ public final class DailyTasks {
 
     static DailyResult dailyMission(WjdrEngine engine) throws Exception {
         try {
+            // 子开关门控：claim=批量领奖（进度采集照跑，仅关领取动作）
+            if (!FnParams.subOn(engine.appContext(), engine.lastFpid() == null ? "" : engine.lastFpid(),
+                    engine.lastServerId(), "daily_mission", "claim", true)) {
+                return new DailyResult("daily_mission", "每日任务奖励", DailyResult.Category.SKIPPED,
+                        "子开关「批量领奖」已关闭");
+            }
             Map<String, Object> args = new LinkedHashMap<>();
             List<Integer> ids = dailyQuestIds(engine);
             args.put("quest_ids", ids);
@@ -572,6 +756,12 @@ public final class DailyTasks {
 
     static DailyResult adventureReward(WjdrEngine engine) throws Exception {
         try {
+            // 子开关门控：hang_up 布尔（策略只管"距到量多久才领"，开关才是总闸）
+            if (!FnParams.subOn(engine.appContext(), engine.lastFpid() == null ? "" : engine.lastFpid(),
+                    engine.lastServerId(), "adventure", "hang_up", true)) {
+                return new DailyResult("adventure", "探险挂机奖励", DailyResult.Category.SKIPPED,
+                        "子开关「挂机产量」已关闭");
+            }
             // 主动预览（不依赖推送解锁状态；未解锁由错误码反馈）
             GameMessage view = engine.request("req_open_hang_up_reward_view", null);
             if (!isDegraded(view)) {
@@ -651,24 +841,38 @@ public final class DailyTasks {
         try {
             // 等待登录后的活动状态推送（id 参数来源）
             engine.collectNotifies(2500);
+            // 子开关门控（FnDetail：month_card/vip_exp/bundle/treasures/battle_pass，默认全开）
+            android.content.Context actCtx = engine.appContext();
+            String actFpid = engine.lastFpid() == null ? "" : engine.lastFpid();
+            long actSid = engine.lastServerId();
+            boolean onMonthCard = FnParams.subOn(actCtx, actFpid, actSid, "activity_rewards", "month_card", true);
+            boolean onVipExp = FnParams.subOn(actCtx, actFpid, actSid, "activity_rewards", "vip_exp", true);
+            boolean onBundle = FnParams.subOn(actCtx, actFpid, actSid, "activity_rewards", "bundle", true);
+            boolean onTreasures = FnParams.subOn(actCtx, actFpid, actSid, "activity_rewards", "treasures", true);
+            boolean onBattlePass = FnParams.subOn(actCtx, actFpid, actSid, "activity_rewards", "battle_pass", true);
+            // 统帅每日礼包原挂在合集 noArg 里（独立 commander_gift 任务也发一次，重复领由服务端跳过），
+            // 门控跟随 commander_gift.gift，保持"一个开关管一个动作"
+            boolean onCommander = FnParams.subOn(actCtx, actFpid, actSid, "commander_gift", "gift", true);
             int ok = 0, skip = 0, degraded = 0, fail = 0;
+            int gatedOff = 0;
             StringBuilder note = new StringBuilder();
             StringBuilder rewardParts = new StringBuilder();   // 每个活动的领取明细
 
-            // (1) 无参奖励：直接领
-            String[][] noArg = {
-                    {"月卡每日奖励", "req_month_card_get_daily_reaward"},
-                    {"VIP每日经验", "req_vip_get_daily_exp"},
-                    {"统帅每日礼包", "req_vip_get_daily_free_gift"},
-                    {"每日特惠礼包", "req_daily_bundle_get_free_gift"},
+            // (1) 无参奖励：直接领（按子开关逐项门控）
+            Object[][] noArg = {
+                    {"月卡每日奖励", "req_month_card_get_daily_reaward", onMonthCard},
+                    {"VIP每日经验", "req_vip_get_daily_exp", onVipExp},
+                    {"统帅每日礼包", "req_vip_get_daily_free_gift", onCommander},
+                    {"每日特惠礼包", "req_daily_bundle_get_free_gift", onBundle},
             };
-            for (String[] na : noArg) {
-                int[] c = tryClaim(engine, na[0], na[1], null, rewardParts);
+            for (Object[] na : noArg) {
+                if (!(Boolean) na[2]) { gatedOff++; continue; }
+                int[] c = tryClaim(engine, (String) na[0], (String) na[1], null, rewardParts);
                 ok += c[0]; skip += c[1]; degraded += c[2]; fail += c[3];
             }
 
-            // (2) 需要活动 id 的奖励：从对应 notify 提取，取不到则记为跳过
-            String[][] byId = {
+            // (2) 需要活动 id 的奖励：从对应 notify 提取，取不到则记为跳过（treasures 组）
+            Object[][] byId = {
                     {"失落宝藏", "req_lost_treasure_get_daily_reward", "notify_lost_treasure_info"},
                     {"远征宝藏", "req_daily_claim_free_reward", "notify_daily_free_reward_info"},
                     {"许愿屋", "req_hero_turntable_get_free_gift", "notify_hero_turntable_info"},
@@ -677,10 +881,13 @@ public final class DailyTasks {
                     {"自选礼包", "req_optional_gift_pack_get_free_box", "notify_optional_gift_pack_info"},
                     {"自选箱", "req_customize_item_get_free_box", "notify_customize_item_info"},
                     {"匠人宝库", "req_multiple_choice_pack_get_free_box", "notify_multiple_choice_pack_info"},
-                    {"钓鱼免费礼", "req_fishing_get_free_gift", "notify_fishing_info"},
+                    // 协议盘点 2026-10-12：notify_fishing_info 不在 s2c schema（id 永远取不到 →
+                    // 免费礼恒跳过），活动数据源实为 notify_fishing_activity_info（s2c 实证）
+                    {"钓鱼免费礼", "req_fishing_get_free_gift", "notify_fishing_activity_info"},
             };
-            for (String[] bi : byId) {
-                Map<String, Object> notify = engine.notifyContent(bi[2]);
+            for (Object[] bi : byId) {
+                if (!onTreasures) { gatedOff++; continue; }
+                Map<String, Object> notify = engine.notifyContent((String) bi[2]);
                 Long id = WjdrEngine.extractId(notify);
                 if (id == null) {
                     skip++;
@@ -688,22 +895,27 @@ public final class DailyTasks {
                 }
                 Map<String, Object> args = new LinkedHashMap<>();
                 args.put("id", id);
-                int[] c = tryClaim(engine, bi[0], bi[1], args, rewardParts);
+                int[] c = tryClaim(engine, (String) bi[0], (String) bi[1], args, rewardParts);
                 ok += c[0]; skip += c[1]; degraded += c[2]; fail += c[3];
             }
 
             // (3) 英雄集结（战令）：id 来自 battle_pass 通知
-            Long bpId = WjdrEngine.extractId(engine.notifyContent("notify_battle_pass_info"));
-            if (bpId != null) {
-                Map<String, Object> args = new LinkedHashMap<>();
-                args.put("id", bpId);
-                int[] c = tryClaim(engine, "英雄集结", "req_battle_pass_collect_all_reward", args, rewardParts);
-                ok += c[0]; skip += c[1]; degraded += c[2]; fail += c[3];
+            if (onBattlePass) {
+                Long bpId = WjdrEngine.extractId(engine.notifyContent("notify_battle_pass_info"));
+                if (bpId != null) {
+                    Map<String, Object> args = new LinkedHashMap<>();
+                    args.put("id", bpId);
+                    int[] c = tryClaim(engine, "英雄集结", "req_battle_pass_collect_all_reward", args, rewardParts);
+                    ok += c[0]; skip += c[1]; degraded += c[2]; fail += c[3];
+                } else {
+                    skip++;
+                }
             } else {
-                skip++;
+                gatedOff++;
             }
 
             note.append("领取").append(ok).append("/跳过").append(skip);
+            if (gatedOff > 0) note.append("/子开关关").append(gatedOff);
             if (fail > 0) note.append("/失败").append(fail);
             DailyResult.Category cat = fail > 0 ? DailyResult.Category.ERROR
                     : (ok > 0 ? DailyResult.Category.CLAIMED : DailyResult.Category.SKIPPED);
@@ -832,6 +1044,18 @@ public final class DailyTasks {
 
     static DailyResult freeShield(WjdrEngine engine) throws Exception {
         try {
+            // 子开关门控：free=每日定时开盾，reactive=被袭击反应式开盾（同一协议的两个触发源，
+            // 任一开启即允许执行；DailySchedulerService.onGameEvent 另有 reactive 单独门控）
+            boolean fpidEmpty = engine.lastFpid() == null;
+            String fp = fpidEmpty ? "" : engine.lastFpid();
+            boolean shieldOn = FnParams.subOn(engine.appContext(), fp,
+                    engine.lastServerId(), "battle_shield", "free", true)
+                    || FnParams.subOn(engine.appContext(), fp,
+                    engine.lastServerId(), "battle_shield", "reactive", true);
+            if (!shieldOn) {
+                return new DailyResult("battle_shield", "战斗护盾", DailyResult.Category.SKIPPED,
+                        "子开关「免费护盾/反应式开盾」均已关闭");
+            }
             Map<String, Object> args = new LinkedHashMap<>();
             args.put("free_id", 1L);
             GameMessage rsp = engine.request("req_city_item_free_use", args);
@@ -859,6 +1083,12 @@ public final class DailyTasks {
 
     static DailyResult commanderGift(WjdrEngine engine) throws Exception {
         try {
+            // 子开关门控：gift=统帅每日礼包
+            if (!FnParams.subOn(engine.appContext(), engine.lastFpid() == null ? "" : engine.lastFpid(),
+                    engine.lastServerId(), "commander_gift", "gift", true)) {
+                return new DailyResult("commander_gift", "统帅礼包", DailyResult.Category.SKIPPED,
+                        "子开关「统帅每日礼包」已关闭");
+            }
             GameMessage rsp = engine.request("req_vip_get_daily_free_gift", null);
             return classifySimple(rsp, "commander_gift", "统帅礼包",
                     new String[]{"code", "rewards"}, "当前统帅等级每日免费礼包已领取");

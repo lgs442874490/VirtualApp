@@ -171,6 +171,8 @@ public final class SubCardUi {
             card.addView(shopPickRow(ctx, fpid, sid, fnId));
         } else if ("act_flamefangs".equals(fnId) && "buy".equals(sub.id)) {
             card.addView(flamefangsPickRow(ctx, fpid, sid));
+        } else if ("act_snowtrade".equals(fnId) && "buy".equals(sub.id)) {
+            card.addView(snowtradePickRow(ctx, fpid, sid));
         } else if (sub.strategies != null && sub.strategies.length > 0) {
             // 策略 chips（>5 个换行）
             LinearLayout wrap = new LinearLayout(ctx);
@@ -682,6 +684,59 @@ public final class SubCardUi {
                             }
                         }
                         FnParams.putTopLevel(ctx, fpid, sid, "act_flamefangs", "buys", next);
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        });
+    }
+
+    /**
+     * 雪原贸易站兑换档位勾选：服务器不推商品目录，清单 = 内置已知档 ∪ 最近
+     * exchange_data 快照出现过的档（snowTrade 缓存于 seen_idx），存 buys {idx:1}。
+     */
+    private static View snowtradePickRow(final Context ctx, final String fpid, final long sid) {
+        java.util.TreeSet<Long> idxSet = new java.util.TreeSet<>();
+        idxSet.add(132L);   // 免费档（free 子项默认档）
+        idxSet.add(155L);   // 协议快照实证档（活动 2702001）
+        JSONObject seen = FnParams.params(ctx, fpid, sid, "act_snowtrade").optJSONObject("seen_idx");
+        if (seen != null) {
+            java.util.Iterator<String> sit = seen.keys();
+            while (sit.hasNext()) {
+                try {
+                    idxSet.add(Long.parseLong(sit.next().replace(".0", "")));
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        final java.util.List<String> labels = new ArrayList<>();
+        final java.util.List<String> vals = new ArrayList<>();
+        for (long idx : idxSet) {
+            labels.add("档" + idx + (idx == 132L ? "（免费档默认）" : ""));
+            vals.add(String.valueOf(idx));
+        }
+        JSONObject buys = FnParams.params(ctx, fpid, sid, "act_snowtrade").optJSONObject("buys");
+        int n = buys == null ? 0 : buys.length();
+        return pickRow(ctx, "勾选兑换档位", n == 0 ? "未勾选（目录 " + labels.size() + " 档）" : "已勾选 " + n + " 档", () -> {
+            JSONObject curBuys = FnParams.params(ctx, fpid, sid, "act_snowtrade").optJSONObject("buys");
+            final boolean[] state = new boolean[vals.size()];
+            for (int i = 0; i < vals.size(); i++) {
+                state[i] = curBuys != null && curBuys.has(vals.get(i));
+            }
+            new AlertDialog.Builder(ctx, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                    .setTitle("雪原贸易站 · 勾选要兑换的档位（存为数量1，多兑改 buys 参数）")
+                    .setMultiChoiceItems(labels.toArray(new String[0]), state,
+                            (dlg, w, isChecked) -> state[w] = isChecked)
+                    .setPositiveButton("保存", (dlg, w) -> {
+                        JSONObject next = new JSONObject();
+                        for (int i = 0; i < state.length; i++) {
+                            if (state[i]) {
+                                try {
+                                    next.put(vals.get(i), 1);
+                                } catch (Exception ignored) {
+                                }
+                            }
+                        }
+                        FnParams.putTopLevel(ctx, fpid, sid, "act_snowtrade", "buys", next);
                     })
                     .setNegativeButton("取消", null)
                     .show();

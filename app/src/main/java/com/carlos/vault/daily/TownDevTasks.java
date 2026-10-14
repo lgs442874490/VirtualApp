@@ -145,6 +145,11 @@ final class TownDevTasks {
         Context ctx = engine.appContext();
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：auto=路线自动研究（help=研究联盟求助，下面单独判）
+            if (!FnParams.subOn(ctx, currentFpid(engine), currentSid(engine), "research", "auto", true)) {
+                m.skip("子开关「路线自动研究」已关闭");
+                return result(m, RESEARCH_ID, RESEARCH_NAME);
+            }
             engine.collectNotifies(2500);
             DevState s = snapshot(engine);
             if (!s.ready) {
@@ -255,6 +260,11 @@ final class TownDevTasks {
         Context ctx = engine.appContext();
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 子开关门控：auto=前置最低自动升级（help=建造联盟求助，下面单独判）
+            if (!FnParams.subOn(ctx, currentFpid(engine), currentSid(engine), "building", "auto", true)) {
+                m.skip("子开关「前置最低自动升级」已关闭");
+                return result(m, BUILDING_ID, BUILDING_NAME);
+            }
             engine.collectNotifies(2500);
             DevState s = snapshot(engine);
             if (!s.ready) {

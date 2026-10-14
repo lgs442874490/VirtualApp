@@ -856,22 +856,66 @@ public class VaultEngine {
      * 容器游戏进程是否存活（顶号保护的"游戏正在跑"判定）。
      *
      * <p>容器（VA）里的游戏进程跑在宿主 uid 下、进程名即游戏包名。Android 11+ 的
-     * ActivityManager#getRunningAppProcesses 只返回调用方自身 uid 的进程——对我们
-     * 恰好够用：能查到 {@link #GAME_PKG} 就说明游戏在容器里活着；查不到（含任何
-     * 异常）视为未运行，宁可少拦一次顶号（登录失败可重试）也不永久误拦。
+     * 进程检测用 /proc 扫描（5s 缓存）：ActivityManager#getRunningAppProcesses 在
+     * Android 11+ 只返回调用方包名自己的进程，VA 容器里的游戏进程（同 uid 但包名为
+     * GAME_PKG）看不到 → 护栏恒失效 → keeper 被顶后立即重赛，把正在玩游戏的人反复顶下线
+     * （真机 2026-10-12 02:23-02:37 实证：80971192 每几分钟一双角色竞速登录）。
+     * /proc/<pid>/cmdline 对任意 uid 可读（ps 同源），同时覆盖容器与原生两种玩法。
      */
     public boolean isContainerGameRunning() {
+        long now = System.currentTimeMillis();
+        synchronized (PROC_SCAN_LOCK) {
+            if (now - procScanAt < 5000) return procScanCached;
+        }
+        boolean running = false;
         try {
-            android.app.ActivityManager am = (android.app.ActivityManager)
-                    ctx.getSystemService(android.content.Context.ACTIVITY_SERVICE);
-            if (am == null) return false;
-            int myUid = android.os.Process.myUid();
-            for (android.app.ActivityManager.RunningAppProcessInfo p : am.getRunningAppProcesses()) {
-                if (p != null && GAME_PKG.equals(p.processName) && p.uid == myUid) return true;
+            File[] dirs = new File("/proc").listFiles();
+            if (dirs != null) {
+                for (File d : dirs) {
+                    String name = d.getName();
+                    boolean numeric = !name.isEmpty();
+                    for (int i = 0; i < name.length() && numeric; i++) {
+                        if (!Character.isDigit(name.charAt(i))) numeric = false;
+                    }
+                    if (!numeric) continue;
+                    String cmd = readCmdline(name);
+                    if (GAME_PKG.equals(cmd)) {
+                        running = true;
+                        break;
+                    }
+                }
             }
-            return false;
+        } catch (Throwable ignored) {
+        }
+        synchronized (PROC_SCAN_LOCK) {
+            procScanAt = now;
+            procScanCached = running;
+        }
+        return running;
+    }
+
+    private static final Object PROC_SCAN_LOCK = new Object();
+    private static volatile long procScanAt;
+    private static volatile boolean procScanCached;
+
+    /** 读 /proc/<pid>/cmdline（去尾部 \0；不可读返回 ""）。 */
+    private static String readCmdline(String pid) {
+        try {
+            byte[] buf = new byte[128];
+            int n;
+            java.io.FileInputStream in = new java.io.FileInputStream(
+                    "/proc/" + pid + "/cmdline");
+            try {
+                n = in.read(buf);
+            } finally {
+                in.close();
+            }
+            if (n <= 0) return "";
+            int end = n;
+            while (end > 0 && buf[end - 1] == 0) end--;
+            return new String(buf, 0, end, java.nio.charset.StandardCharsets.UTF_8);
         } catch (Throwable t) {
-            return false;
+            return "";
         }
     }
 
