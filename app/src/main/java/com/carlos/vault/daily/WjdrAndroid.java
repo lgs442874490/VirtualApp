@@ -24,6 +24,8 @@ public final class WjdrAndroid {
                 default:  android.util.Log.i(tag, message); break;
             }
         });
+        // P0 服务器时钟：单调钟注入 elapsedRealtime（含深睡计时，用户改系统时间/NTP 跳变不影响）
+        com.carlos.vault.wjdr.GameServerClock.setMono(() -> android.os.SystemClock.elapsedRealtime());
     }
 
     private WjdrAndroid() {

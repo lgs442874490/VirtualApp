@@ -134,6 +134,8 @@ public class WjdrEngine {
     private long lastUid;
     private String lastFpid;
     private long lastServerId;
+    /** 游戏服务器时钟（P0）：登录/心跳响应校准，单调外推；waitUntil 供行军类毫秒到点用。 */
+    private final GameServerClock serverClock = new GameServerClock();
     /** 账号固定设备指纹（AccountStore.settings 注入；未注入时每次随机并经 identityJson 导出固化）。 */
     private String pinnedDistinctId;
     private String pinnedDeviceId;
@@ -262,8 +264,11 @@ public class WjdrEngine {
             try {
                 Map<String, Object> payload = buildLoginPayload(fpid, sdkToken, serverid);
                 if (extraParams != null) payload.putAll(extraParams);
+                long t0 = GameServerClock.monoNow();
                 GameMessage auth = lockedRequest("loginauth", payload, seconds(15));
+                long t1 = GameServerClock.monoNow();
                 validate(auth, "loginauth");
+                serverClock.calibrate(auth.getContent(), t0, t1, System.currentTimeMillis() / 1000L);
                 LoginResult result = new LoginResult();
                 result.authContent = auth.getContent();
                 result.uid = toLong(auth.getContent().get("uid"));
@@ -284,8 +289,11 @@ public class WjdrEngine {
                                     + "（serverid=" + result.serverId + "）");
                 }
 
+                long t2 = GameServerClock.monoNow();
                 GameMessage load = lockedRequest("req_loaddata", new LinkedHashMap<String, Object>(), seconds(20));
+                long t3 = GameServerClock.monoNow();
                 validate(load, "req_loaddata");
+                serverClock.calibrate(load.getContent(), t2, t3, System.currentTimeMillis() / 1000L);
                 result.loadSummary = summarize(load.getContent());
                 // 角色元数据源1：loaddata 顶层/浅层字段（字段名形状防御式深找）
                 result.level = toLong(load.getContent().get("level"));
@@ -737,7 +745,11 @@ public class WjdrEngine {
             if (requestLock.tryLock()) {
                 try {
                     lastHeartbeatSentAt = System.currentTimeMillis();
-                    lockedRequest("req_heartbeat", new LinkedHashMap<String, Object>(), seconds(5));
+                    long sentLocalSec = lastHeartbeatSentAt / 1000L;
+                    long t0 = GameServerClock.monoNow();
+                    GameMessage hb = lockedRequest("req_heartbeat", new LinkedHashMap<String, Object>(), seconds(5));
+                    long t1 = GameServerClock.monoNow();
+                    serverClock.calibrate(hb == null ? null : hb.getContent(), t0, t1, sentLocalSec);
                     long n = heartbeatCount.incrementAndGet();
                     if (n % 20 == 0) {
                         com.carlos.vault.wjdr.WjdrLog.i("session alive fpid={} sid={} heartbeats={}",
@@ -759,6 +771,11 @@ public class WjdrEngine {
 
     public String sessionState() {
         return sessionState;
+    }
+
+    /** 游戏服务器时钟（P0）：校准状态/nowServerMs/waitUntil，驻防类毫秒到点的统一入口。 */
+    public GameServerClock serverClock() {
+        return serverClock;
     }
 
     public String lastFailure() {
