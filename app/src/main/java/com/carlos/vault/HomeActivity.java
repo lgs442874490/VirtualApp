@@ -3872,8 +3872,104 @@ public class HomeActivity extends AccountVaultActivity {
                             : "协议监听已停止");
                     showTools();
                 })
+                .setNeutralButton("敌情监控", (d, w) -> showWatchConfig())
                 .setNegativeButton("知道了", null)
                 .show();
+    }
+
+    // ================= 敌情监控（EnemyWatch：标记敌人行军 → 企业微信 + 短信） =================
+
+    private void showWatchConfig() {
+        ScrollView sc = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(12), dp(18), dp(6));
+
+        TextView tip = new TextView(this);
+        tip.setText("标记敌人（按服分号观察）。名单每行一条：服:uid 备注\n例如 888:57347368 仇人A（备注可空，服号缺省按888）");
+        tip.setTextSize(12);
+        box.addView(tip);
+
+        android.widget.CheckBox cbOn = new android.widget.CheckBox(this);
+        cbOn.setText("敌情监控开启（挂在全部在线会话上）");
+        cbOn.setChecked(com.carlos.vault.daily.EnemyWatchStore.enabled(this));
+        box.addView(cbOn);
+
+        EditText etList = new EditText(this);
+        etList.setHint("888:57347368 仇人A\n888:123861751");
+        etList.setTextSize(13);
+        StringBuilder pre = new StringBuilder();
+        for (com.carlos.vault.daily.EnemyWatchStore.Entry e : com.carlos.vault.daily.EnemyWatchStore.entries(this)) {
+            pre.append(e.kid).append(':').append(e.uid);
+            if (!e.note.isEmpty()) pre.append(' ').append(e.note);
+            pre.append('\n');
+        }
+        etList.setText(pre.toString());
+        box.addView(etList);
+
+        EditText etWebhook = new EditText(this);
+        etWebhook.setHint("企业微信群机器人 Webhook URL");
+        etWebhook.setTextSize(13);
+        etWebhook.setText(com.carlos.vault.daily.EnemyWatchStore.webhook(this));
+        box.addView(etWebhook);
+
+        EditText etPhone = new EditText(this);
+        etPhone.setHint("短信接收手机号");
+        etPhone.setTextSize(13);
+        etPhone.setInputType(android.text.InputType.TYPE_CLASS_PHONE);
+        etPhone.setText(com.carlos.vault.daily.EnemyWatchStore.smsPhone(this));
+        box.addView(etPhone);
+
+        android.widget.CheckBox cbWecom = new android.widget.CheckBox(this);
+        cbWecom.setText("企业微信通知");
+        cbWecom.setChecked(com.carlos.vault.daily.EnemyWatchStore.wecomOn(this));
+        box.addView(cbWecom);
+        android.widget.CheckBox cbSms = new android.widget.CheckBox(this);
+        cbSms.setText("短信通知");
+        cbSms.setChecked(com.carlos.vault.daily.EnemyWatchStore.smsOn(this));
+        box.addView(cbSms);
+        android.widget.CheckBox cbEsc = new android.widget.CheckBox(this);
+        cbEsc.setText("短信仅升级事件（敌人加速时）；不勾 = 所有敌情都发短信");
+        cbEsc.setChecked(com.carlos.vault.daily.EnemyWatchStore.smsEscalateOnly(this));
+        box.addView(cbEsc);
+
+        TextView status = new TextView(this);
+        status.setText("最近事件：\n" + joinRecent());
+        status.setTextSize(11);
+        box.addView(status);
+
+        sc.addView(box);
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("敌情监控 · 标记敌人出征即推送（企业微信+短信）")
+                .setView(sc)
+                .setPositiveButton("保存", (d, w) -> {
+                    int bad = com.carlos.vault.daily.EnemyWatchStore.save(this,
+                            cbOn.isChecked(), etWebhook.getText().toString(), etPhone.getText().toString(),
+                            cbWecom.isChecked(), cbSms.isChecked(), cbEsc.isChecked(),
+                            etList.getText().toString());
+                    com.carlos.vault.daily.EnemyWatch.attachAll(this);
+                    toast(bad > 0 ? "已保存，" + bad + " 行格式非法被忽略"
+                            : "已保存，已对在线会话即时挂载");
+                })
+                .setNeutralButton("测试推送", (d, w) -> {
+                    int bad = com.carlos.vault.daily.EnemyWatchStore.save(this,
+                            cbOn.isChecked(), etWebhook.getText().toString(), etPhone.getText().toString(),
+                            cbWecom.isChecked(), cbSms.isChecked(), cbEsc.isChecked(),
+                            etList.getText().toString());
+                    com.carlos.vault.daily.EnemyWatch.attachAll(this);
+                    com.carlos.vault.daily.EnemyWatch.sendTest(this);
+                    toast(bad > 0 ? "已保存并发送测试（" + bad + " 行非法被忽略）" : "已保存并发送测试推送");
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private String joinRecent() {
+        List<String> list = com.carlos.vault.daily.EnemyWatchStore.recent(this);
+        if (list.isEmpty()) return "（暂无）";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(list.size(), 12); i++) sb.append(list.get(i)).append('\n');
+        return sb.toString();
     }
 
     // ================= Tab4 · 我的 =================
