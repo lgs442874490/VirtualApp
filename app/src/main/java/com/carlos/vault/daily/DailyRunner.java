@@ -1067,8 +1067,31 @@ public class DailyRunner {
      */
 
         /** 单账号全角色执行（工作区角色逐个跑日常：各自cfg/日志/子项/lastr；多角色汇总文本）。
-     *  顶号保护：游戏在线跳过。返回 null=没跑（无角色/游戏在线/无token），否则多角色汇总或单角色文本。 */
+         *  顶号保护：游戏在线跳过。返回 null=没跑（无角色/游戏在线/无token），否则多角色汇总或单角色文本。
+         *  手动触发（旧签名）不跳过任何角色；调度补跑传 skipDoneToday=true 时，今日已跑过的
+         *  角色直接短路（防止补跑轮重复出征/购买类动作）。 */
     public static String runAccountRoles(Context context, com.carlos.vault.AccountStore.Account acc) {
+        return runAccountRoles(context, acc, false);
+    }
+
+    /** 最近一次 runAccountRoles 后仍未跑且今日从未跑过的角色数（同 worker 线程内同步读，无竞态）。
+     *  >0 = 该账号今日存在待补跑角色（本轮被顶号/登录失败），调度端据此安排短间隔补跑。 */
+    public static volatile int lastPendingRoles = 0;
+
+    /** lastr:fpid:sid 是否为今天（角色级"今日已跑"判定，与 UI 展示同源）。 */
+    private static boolean lastrToday(Context ctx, String fpid, long sid) {
+        long ts = ctx.getSharedPreferences("daily_sched", Context.MODE_PRIVATE)
+                .getLong("lastr:" + fpid + ":" + sid, 0);
+        if (ts <= 0) return false;
+        Calendar c = Calendar.getInstance(), lc = Calendar.getInstance();
+        lc.setTimeInMillis(ts);
+        return c.get(Calendar.YEAR) == lc.get(Calendar.YEAR)
+                && c.get(Calendar.DAY_OF_YEAR) == lc.get(Calendar.DAY_OF_YEAR);
+    }
+
+    public static String runAccountRoles(Context context, com.carlos.vault.AccountStore.Account acc,
+                                         boolean skipDoneToday) {
+        lastPendingRoles = 0;
         if (acc == null || acc.token == null || acc.token.isEmpty()
                 || acc.fpid == null || acc.fpid.isEmpty()) return null;
         // 顶号保护不在函数开头一刀切：有常驻会话的角色照常在会话上执行（不会顶掉
@@ -1096,8 +1119,17 @@ public class DailyRunner {
         StringBuilder multi = new StringBuilder();
         DailyRunner.Summary last = null;
         int ranRoles = 0;   // 真实跑过任务的角色数（0=本轮全被顶号/登录失败，不烧当天）
+        int pendingRoles = 0;   // 本轮没跑成且今日也从未跑过的角色（补跑依据）
         for (RoleStore.Role r : roleList) {
             final long sidF = r.serverid;
+            // 角色级"今日已跑"短路（仅调度补跑轮）：防止补跑整轮时对已跑角色
+            // 重复出征/购买类动作（真机 2026-10-14：913 已跑、916 被顶号，若整轮
+            // 重跑会对 913 重复发兵）
+            if (skipDoneToday && lastrToday(context, acc.fpid, sidF)) {
+                multi.append(r.name == null || r.name.isEmpty() ? "K" + r.serverid : r.name)
+                        .append("：今日已跑 · 补跑轮跳过\n");
+                continue;
+            }
             Map<String, Boolean> cfg = cfgStore.roleConfig(acc.fpid, sidF);
             if (cfg == null) cfg = cfgStore.metaConfig(DailyTasks.all());
             DailyRunner.ProgressListener pl = new DailyRunner.ProgressListener() {
@@ -1157,6 +1189,8 @@ public class DailyRunner {
                 } catch (Throwable ignored) {
                 }
                 ranRoles++;
+            } else if (!lastrToday(context, acc.fpid, sidF)) {
+                pendingRoles++;   // 本轮没跑成，且今日也没有通过其他触发跑过 → 待补
             }
             last = sum;
             multi.append(r.name == null || r.name.isEmpty() ? "K" + r.serverid : r.name)
@@ -1188,6 +1222,7 @@ public class DailyRunner {
         } catch (Throwable ignored) {
         }
         // 全部角色被顶号跳过/登录失败：按"没跑"上报（null），让调度/补跑路径保持当日待跑
+        lastPendingRoles = pendingRoles;
         if (ranRoles == 0) return null;
         return roleList.size() > 1 ? multi.toString().trim()
                 : (last == null ? null : last.toText());

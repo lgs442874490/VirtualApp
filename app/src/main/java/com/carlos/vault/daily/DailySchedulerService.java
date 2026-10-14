@@ -39,6 +39,7 @@ public class DailySchedulerService extends Service {
     private static final int NOTIF_ID = 4210;
     private static final long CHECK_INTERVAL_MS = 10 * 60 * 1000L;   // 巡检 10 分钟
     private static final long ALARM_INTERVAL_MS = 30 * 60 * 1000L;  // 闹钟兜底 30 分钟
+    private static final long CATCHUP_MS = 45 * 60 * 1000L;         // 部分角色被顶号后的补跑间隔
 
     private static DailySchedulerService instance;
     private Handler handler;
@@ -70,6 +71,7 @@ public class DailySchedulerService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         running = true;
+        scheduleWakeupAlarm();   // onCreate 已排；被系统重启（START_STICKY）走不到 onCreate 的极端路径兜底重排
         tick();
         return START_STICKY;
     }
@@ -229,10 +231,10 @@ public class DailySchedulerService extends Service {
             if (s.nextRunAt <= 0) {
                 s.nextRunAt = nextRunInWindow(s.lastRunAt);
                 RoleStore.saveSchedule(this, acc.fpid, s);
-                scheduleAlarmAt(s.nextRunAt + 1500, 1002);
+                scheduleAlarmAt(s.nextRunAt + 1500, 1002, acc.fpid);
                 continue;
             }
-            scheduleAlarmAt(s.nextRunAt + 1500, 1002);   // 到点精确唤醒（Handler 可能被冻结）
+            scheduleAlarmAt(s.nextRunAt + 1500, 1002, acc.fpid);   // 到点精确唤醒（Handler 可能被冻结）
             if (System.currentTimeMillis() >= s.nextRunAt) {
                 runAccountNow(acc, s);
             }
@@ -243,7 +245,7 @@ public class DailySchedulerService extends Service {
                     RoleStore.saveWakeAt(this, acc.fpid, 0);   // 先清防重复触发，补领后再顺延
                     runSupplyTopup(acc, s);
                 } else {
-                    scheduleAlarmAt(wake + 1500, 1003);
+                    scheduleAlarmAt(wake + 1500, 1003, acc.fpid);
                 }
             }
         }
@@ -288,7 +290,8 @@ public class DailySchedulerService extends Service {
             updateNotification("正在执行：" + acc.label + " 的日常…");
             boolean ran = false;
             try {
-                String result = DailyRunner.runAccountRoles(ctx, acc);
+                // skipDoneToday=true：补跑轮对今日已跑角色短路（runAccountRoles 保证不重复动作）
+                String result = DailyRunner.runAccountRoles(ctx, acc, true);
                 if (result != null) {
                     ran = true;
                     notifyMulti(acc, result);
@@ -296,10 +299,19 @@ public class DailySchedulerService extends Service {
             } catch (Throwable t) {
                 android.util.Log.e("DailySched", "run fail " + acc.fpid, t);
             } finally {
+                int pending = DailyRunner.lastPendingRoles;   // 本轮没跑成且今日从未跑过的角色数
                 if (ran) {
                     // 轮次真实跑过才记"今日已跑"（runAccountRoles 返回 null = 顶号跳过/登录失败）
                     s.lastRunAt = System.currentTimeMillis();
-                    s.nextRunAt = nextRunInWindow(s.lastRunAt);
+                    if (pending > 0) {
+                        // 部分角色被顶号/登录失败：短间隔补跑而非等明天（角色级短路保证
+                        // 已跑角色只花一次配置读取；真机 2026-10-14：916 整轮被跳过后
+                        // 14天签到/VIP/礼包全天无人补，次日快照仍可领）
+                        long retry = System.currentTimeMillis() + CATCHUP_MS;
+                        s.nextRunAt = retry <= todayWindowEnd() ? retry : nextRunInWindow(s.lastRunAt);
+                    } else {
+                        s.nextRunAt = nextRunInWindow(s.lastRunAt);
+                    }
                 } else {
                     // 失败/跳过不烧当天：30 分钟后重试（游戏还在玩就继续让位）
                     s.nextRunAt = System.currentTimeMillis() + 30 * 60_000L;
@@ -309,6 +321,21 @@ public class DailySchedulerService extends Service {
                 releaseWake();
             }
         });
+    }
+
+    /** 今日时间窗截止时刻（w[1]:00；w[1]=24 时取当日末尾）——补跑重试不得越过窗口。 */
+    private long todayWindowEnd() {
+        int[] w = RoleStore.window(this);
+        Calendar c = Calendar.getInstance();
+        if (w[1] >= 24) {
+            c.add(Calendar.DAY_OF_YEAR, 1);
+            c.set(Calendar.HOUR_OF_DAY, 0);
+        } else {
+            c.set(Calendar.HOUR_OF_DAY, w[1]);
+        }
+        c.set(Calendar.MINUTE, 0);
+        c.set(Calendar.SECOND, 0);
+        return c.getTimeInMillis();
     }
 
     /** 时间窗内的随机时刻（每天只跑一次：今天没跑过且在窗内=2-15分钟后；否则明天窗口内随机）。 */
@@ -436,15 +463,19 @@ public class DailySchedulerService extends Service {
     }
 
     private void scheduleWakeupAlarm() {
-        scheduleAlarmAt(System.currentTimeMillis() + ALARM_INTERVAL_MS, 1001);
+        scheduleAlarmAt(System.currentTimeMillis() + ALARM_INTERVAL_MS, 1001, null);
     }
 
-    /** 精确闹钟（可精确则 setExactAndAllowWhileIdle；否则退化为 AllowWhileIdle）。 */
-    private void scheduleAlarmAt(long atMillis, int requestCode) {
+    /** 精确闹钟（可精确则 setExactAndAllowWhileIdle；否则退化为 AllowWhileIdle）。
+     *  tag 参与 requestCode 派生：多账号共用同一 base 码时 PendingIntent 相互覆盖
+     *  （filterEquals 匹配不到 extras），巡检循环里后排账号会把前排账号的闹钟顶掉——
+     *  每账号一个独立 requestCode，各自到期各自唤醒。 */
+    private void scheduleAlarmAt(long atMillis, int requestCodeBase, String tag) {
         try {
+            int rc = requestCodeBase + (tag == null ? 0 : Math.floorMod(tag.hashCode(), 900));
             AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
             Intent i = new Intent(this, DailySchedulerService.class);
-            PendingIntent pi = PendingIntent.getService(this, requestCode, i,
+            PendingIntent pi = PendingIntent.getService(this, rc, i,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             if (android.os.Build.VERSION.SDK_INT >= 31
                     && am.canScheduleExactAlarms()) {

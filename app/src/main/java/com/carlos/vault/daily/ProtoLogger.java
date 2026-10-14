@@ -26,6 +26,19 @@ public final class ProtoLogger {
     private static final String PREFS = "home";
     private static final String KEY_ON = "proto_log_on";
     private static final long ROTATE_BYTES = 2L * 1024 * 1024;
+    private static final int CAP_DEFAULT = 1200;
+    private static final int CAP_AUDIT = 16 * 1024;
+
+    /** 审计关键协议放宽截断（默认 1200 会把大 notify 截成不可解析的 JSON——
+     * 2026-10-14 对标审计中 notify_achievement_info 全量列表因此无法复核）。
+     * 用 contains：快照路径传入形如 "SNAPSHOT-LOGIN:notify_..." 带 tag 前缀。 */
+    private static int capOf(String proto) {
+        if (proto == null) return CAP_DEFAULT;
+        return (proto.contains("notify_achievement") || proto.contains("notify_mail")
+                || proto.contains("notify_value_exchange") || proto.contains("notify_daily_bundle")
+                || proto.contains("notify_vip") || proto.contains("notify_fourteen_sign"))
+                ? CAP_AUDIT : CAP_DEFAULT;
+    }
 
     private ProtoLogger() {
     }
@@ -117,7 +130,8 @@ public final class ProtoLogger {
             } catch (Throwable t) {
                 json = String.valueOf(content);
             }
-            if (json.length() > 1200) json = json.substring(0, 1200) + "…";
+            int cap = capOf(proto);
+            if (json.length() > cap) json = json.substring(0, cap) + "…";
             try (FileWriter w = new FileWriter(f, true)) {
                 w.write(new SimpleDateFormat("MM-dd HH:mm:ss.SSS", Locale.CHINA)
                         .format(new Date()));
