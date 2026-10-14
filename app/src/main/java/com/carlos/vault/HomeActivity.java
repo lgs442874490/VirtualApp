@@ -3843,37 +3843,29 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     private void showTools() {
-        // 名称与原版 wjdr 模块对齐（括号内为原版 moduleId，便于按原版实现文档逐个搬运）
-        String[] tools = {"排行榜(ranking)", "进攻/撞矿(attack)", "起号(bootstrap)", "活动榜单(activityrank)",
-                "迁城(movecity)", "三消(threetiles)", "爆兵(training)", "宠物洗练(petwash)",
-                "巨兽批量(behemoth)", "坐标查询(coordinate)", "侦察战报(recon)", "移民抢位(migrant)",
-                "充值记录(recharge)", "编队管理(formation)"};
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < tools.length; i++) {
-            sb.append(i + 1).append(". ").append(tools[i]).append(" · 规划中\n");
-        }
-        sb.append("\n按日常模块稳定后逐个开放。");
         boolean logOn = ProtoLogger.on(this);
+        String[] items = {
+                "协议监听：" + (logOn ? "已开启（点此停止）" : "已关闭（点此开启）"),
+                "敌情监控：标记敌人出征 → 企业微信+短信",
+                "P1 协议探针：使馆/道具/加速链/驻防/迁城（开发用）",
+        };
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("工具箱 · 协议监听" + (logOn ? "已开启" : "已关闭"))
-                .setMessage((logOn
-                        ? "🔍 协议监听运行中 · 已记录 " + (ProtoLogger.logSize(this) / 1024) + " KB\n"
-                          + "玩法：原生游戏里进新活动界面操作一轮 → 退出游戏 → 稍等本应用\n"
-                          + "常驻会话自动回连，登录全量推送即被记录（files/proto_log.txt）。\n\n"
-                        : "🔍 协议监听（诊断）：记录常驻会话收到的全部服务端推送，用于逆向\n"
-                          + "新功能（如史诗与远方/成长支线）的协议。开启后去原生游戏操作一轮\n"
-                          + "再退出，回连后的 init 推送会落在 proto_log.txt。\n\n")
-                        + sb)
-                .setPositiveButton(logOn ? "停止监听" : "开启监听", (d, w) -> {
-                    boolean turnOn = !logOn;
-                    ProtoLogger.setOn(this, turnOn);
-                    if (turnOn) ProtoLogger.reattachAll(this);
-                    toast(turnOn ? "协议监听已开启\n（原生游戏里玩一轮后退出，稍后我来拉日志分析）"
-                            : "协议监听已停止");
-                    showTools();
+                .setTitle("工具箱")
+                .setItems(items, (d, w) -> {
+                    if (w == 0) {
+                        boolean turnOn = !logOn;
+                        ProtoLogger.setOn(this, turnOn);
+                        if (turnOn) ProtoLogger.reattachAll(this);
+                        toast(turnOn ? "协议监听已开启\n（原生游戏里玩一轮后退出，稍后我来拉日志分析）"
+                                : "协议监听已停止");
+                        showTools();
+                    } else if (w == 1) {
+                        showWatchConfig();
+                    } else {
+                        showProbe();
+                    }
                 })
-                .setNeutralButton("敌情监控", (d, w) -> showWatchConfig())
-                .setNegativeButton("知道了", null)
+                .setNegativeButton("关闭", null)
                 .show();
     }
 
@@ -3969,6 +3961,96 @@ public class HomeActivity extends AccountVaultActivity {
         if (list.isEmpty()) return "（暂无）";
         StringBuilder sb = new StringBuilder();
         for (int i = 0; i < Math.min(list.size(), 12); i++) sb.append(list.get(i)).append('\n');
+        return sb.toString();
+    }
+
+    // ================= P1 协议探针（GuardProbe：开发用，烧真实道具前有确认） =================
+
+    private void showProbe() {
+        ScrollView sc = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(12), dp(18), dp(6));
+
+        TextView sess = new TextView(this);
+        List<String> online = com.carlos.vault.daily.GuardProbe.onlineSessions(this);
+        sess.setText("在线会话（探针取第一个在线）：\n" + (online.isEmpty() ? "（无）" : joinLines(online)));
+        sess.setTextSize(11);
+        box.addView(sess);
+
+        box.addView(btn("① 使馆查询（无消耗 · A-13 容量字段）", v ->
+                com.carlos.vault.daily.GuardProbe.embassyQuery(this, null)));
+        box.addView(btn("② 道具快照（无消耗 · A-10 库存读数）", v ->
+                com.carlos.vault.daily.GuardProbe.itemSnapshot(this, null)));
+        box.addView(btn("③ 加速链实测（烧≤8个加速道具 · A-3/15/16/17+召回）", v ->
+                confirmThen("将发射一条采集行军并连用最多 8 个加速道具直至触底，随后召回。\n确认执行？",
+                        () -> com.carlos.vault.daily.GuardProbe.speedupChain(this, null))));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        EditText px = new EditText(this);
+        px.setHint("盟友城x");
+        px.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        px.setText("687");
+        EditText py = new EditText(this);
+        py.setHint("盟友城y");
+        py.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        py.setText("698");
+        row.addView(px, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(py, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(row);
+        box.addView(btn("④ 驻防发起 type=5（A-2 · 打盟友城，发后不召回）", v -> {
+            long gx = 687, gy = 698;
+            try { gx = Long.parseLong(px.getText().toString().trim()); } catch (Throwable ignored) { }
+            try { gy = Long.parseLong(py.getText().toString().trim()); } catch (Throwable ignored) { }
+            final long fx = gx, fy = gy;
+            confirmThen("将向盟友城 (" + fx + "," + fy + ") 发起一次真实驻防（type=5）。\n确认执行？",
+                    () -> com.carlos.vault.daily.GuardProbe.garrisonLaunch(this, null, fx, fy));
+        }));
+        box.addView(btn("⑤ 迁城实测（烧高级迁城 · A-23 c2s）", v ->
+                confirmThen("将消耗高级迁城道具迁到附近 (+1,0)。\n确认执行？",
+                        () -> com.carlos.vault.daily.GuardProbe.moveCity(this, null))));
+
+        TextView result = new TextView(this);
+        result.setText("探针输出：\n" + joinProbe());
+        result.setTextSize(11);
+        box.addView(result);
+
+        sc.addView(box);
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("P1 协议探针（结果同步落 proto_log）")
+                .setView(sc)
+                .setPositiveButton("刷新结果", (d, w) -> showProbe())
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private android.widget.Button btn(String text, View.OnClickListener onClick) {
+        android.widget.Button b = new android.widget.Button(this);
+        b.setText(text);
+        b.setOnClickListener(onClick);
+        return b;
+    }
+
+    private void confirmThen(String msg, Runnable action) {
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("消耗确认")
+                .setMessage(msg)
+                .setPositiveButton("执行", (d, w) -> action.run())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private String joinLines(List<String> list) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(list.size(), 8); i++) sb.append(list.get(i)).append('\n');
+        return sb.toString();
+    }
+
+    private String joinProbe() {
+        List<String> list = com.carlos.vault.daily.GuardProbe.recent();
+        if (list.isEmpty()) return "（暂无）";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(list.size(), 20); i++) sb.append(list.get(i)).append('\n');
         return sb.toString();
     }
 
