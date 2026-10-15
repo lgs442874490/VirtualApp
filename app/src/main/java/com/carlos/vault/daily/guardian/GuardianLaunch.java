@@ -466,15 +466,32 @@ public final class GuardianLaunch {
             }
             if (itemId <= 0) { glog(app, "R3：无加速道具，无法跟进敌加速"); return; }
 
+            // 双协议：type=5 驻防行军优先 req_arsenal_league_march_speedup（21:08 实证 world 版对 type=5 无响应超时）
             int sent = 0;
             long ourEnd2 = ourEnd;
-            while (sent < 3 && ourEnd2 > enemyEndSec) {
+            int rounds = 0;
+            while (sent < 3 && ourEnd2 > enemyEndSec && rounds < 6) {
+                rounds++;
                 Map<String, Object> args = new LinkedHashMap<>();
                 args.put("id", g[0]);
                 args.put("itemid", itemId);
                 args.put("owner", String.valueOf(engine.lastUid()));
-                GameMessage rsp = engine.request("req_world_march_speedup", args);
-                if (ExecUtil.codeOf(rsp) != 0) { glog(app, "R3 加速拒绝 code=" + ExecUtil.codeOf(rsp)); break; }
+                GameMessage rsp = null;
+                int code = -999;
+                // 双协议：联盟版优先（type=5 驻防行军归属联盟行军系统的可能性），被拒退 world 版
+                for (String proto : new String[]{"req_arsenal_league_march_speedup", "req_world_march_speedup"}) {
+                    try {
+                        rsp = engine.request(proto, args);
+                        code = ExecUtil.codeOf(rsp);
+                        glog(app, "R3 " + proto + " code=" + code);
+                    } catch (Throwable t) {
+                        glog(app, "R3 " + proto + " 异常: " + String.valueOf(t));
+                        code = -999;
+                    }
+                    if (code == 0) break;
+                    sleep(250);
+                }
+                if (code != 0) { glog(app, "R3 双协议均失败，停止跟进"); break; }
                 long ne = ExecUtil.longOf(rsp.getContent().get("endtime"));
                 if (ne <= 0 || ne >= ourEnd2) break;     // 无前移即停
                 ourEnd2 = ne;
