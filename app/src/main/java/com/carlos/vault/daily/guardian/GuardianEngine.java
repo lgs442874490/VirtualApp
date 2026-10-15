@@ -138,6 +138,16 @@ public final class GuardianEngine {
 
     // ------------------------------------------------------------------ 推送处理
 
+    /** 供发射器实时读取敌 ETA（kid:marchId 定位）。 */
+    public static Track trackOf(long kid, long marchId) {
+        return THREATS.get(kid + ":" + marchId);
+    }
+
+    /** 供发射器感知威胁消失（敌召回/落地）。 */
+    public static void dropTrack(long kid, long marchId) {
+        THREATS.remove(kid + ":" + marchId);
+    }
+
     private static void handle(Context app, String fpid, long kid, String proto, Map<String, Object> content) {
         if (content == null) return;
         if (!watchOn(app, fpid, kid) && !interceptOn(app, fpid, kid)) return;
@@ -255,6 +265,10 @@ public final class GuardianEngine {
                     t.forceQualified = true;
                     com.carlos.vault.daily.guardian.GuardianLaunch.onThreatQualified(app, fpid, kid, t);
                 }
+                // R3 动态同步：我方驻防已在途时，敌方再加速 → 加速我方驻防保持先至
+                if (interceptOn(app, fpid, kid)) {
+                    com.carlos.vault.daily.guardian.GuardianLaunch.raceAccelerate(app, fpid, kid, t.targetUid, id, end);
+                }
             }
         }
     }
@@ -265,6 +279,13 @@ public final class GuardianEngine {
         String tkey = kid + ":" + id;
         Track t = THREATS.remove(tkey);
         if (t == null) return;
+        // 敌情解除 → 自动撤回我方驻防（打完即撤，释放盟友城驻防位与队列）
+        if (interceptOn(app, fpid, kid) && t.targetUid > 0) {
+            try {
+                com.carlos.vault.daily.guardian.GuardianLaunch.repatriate(app, fpid, kid, t.targetUid);
+            } catch (Throwable ignored) {
+            }
+        }
         long nowS = System.currentTimeMillis() / 1000L;
         long remain = t.endServerSec - nowS;
         String how = remain > 2 ? "召回解除（距落地 " + remain + "s）" : "已落地";
