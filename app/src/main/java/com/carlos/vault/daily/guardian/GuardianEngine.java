@@ -35,7 +35,7 @@ public final class GuardianEngine {
 
     public static final String FN_ID = "guardian";
 
-    private static final ConcurrentHashMap<String, Boolean> ATTACHED = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<WjdrEngine, Boolean> ATTACHED = new ConcurrentHashMap<>();
     /** 在途敌情：kid:marchId → Track。 */
     private static final ConcurrentHashMap<String, Track> THREATS = new ConcurrentHashMap<>();
     private static final ArrayDeque<String> RECENT = new ArrayDeque<>();
@@ -96,6 +96,11 @@ public final class GuardianEngine {
         }
     }
 
+    /** 该角色是否有活跃威胁（驻防任务执行中）——日常任务应让位（设计 §6.10.5/E1-lite）。 */
+    public static boolean threatActiveForRole(String fpid, long sid) {
+        return com.carlos.vault.daily.guardian.GuardianLaunch.isActiveForRole(fpid, sid);
+    }
+
     /** 守护开启时为卡秒驻防预留的队列数（采集等日常不得占用）。 */
     public static int reserveQueues(Context ctx, String fpid, long sid) {
         return (interceptOn(ctx, fpid, sid) || watchOn(ctx, fpid, sid)) ? 2 : 0;
@@ -115,8 +120,8 @@ public final class GuardianEngine {
     /** 会话登录后调用（RoleSessionKeeper，模式同 ProtoLogger/EnemyWatch）。幂等。 */
     public static void attach(Context ctx, RoleSessionKeeper.LiveSession fls) {
         try {
-            String key = fls.fpid + ":" + fls.sid;
-            if (ATTACHED.putIfAbsent(key, Boolean.TRUE) != null) return;
+            if (fls.engine == null) return;
+            if (ATTACHED.putIfAbsent(fls.engine, Boolean.TRUE) != null) return;
             final Context app = ctx.getApplicationContext();
             final long kid = fls.sid;
             final String fpid = fls.fpid;
@@ -131,7 +136,7 @@ public final class GuardianEngine {
                     glog("handle异常 " + proto + ": " + t);
                 }
             });
-            glog("已挂载 " + key);
+            glog("已挂载 " + fls.fpid + ":" + fls.sid);
         } catch (Throwable ignored) {
         }
     }

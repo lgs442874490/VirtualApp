@@ -51,7 +51,7 @@ public final class EnemyWatch {
     private static final long POLL_MS = 60_000L;
 
     /** 每会话只挂一个 hook（key = fpid:sid）。 */
-    private static final ConcurrentHashMap<String, Boolean> ATTACHED = new ConcurrentHashMap<>();
+    private static final ConcurrentHashMap<com.carlos.vault.wjdr.WjdrEngine, Boolean> ATTACHED = new ConcurrentHashMap<>();
     /** 行军跟踪表：marchId → track（含 owner/kid）。 */
     private static final ConcurrentHashMap<Long, Track> TRACKED = new ConcurrentHashMap<>();
     /** 已解除（到达/召回）的行军：marchId → 解除时刻，防轮询旧数据重报。 */
@@ -71,8 +71,8 @@ public final class EnemyWatch {
     public static void attach(Context ctx, RoleSessionKeeper.LiveSession fls) {
         try {
             if (!EnemyWatchStore.enabled(ctx)) return;
-            String key = fls.fpid + ":" + fls.sid;
-            if (ATTACHED.putIfAbsent(key, Boolean.TRUE) != null) return;
+            if (fls.engine == null) return;
+            if (ATTACHED.putIfAbsent(fls.engine, Boolean.TRUE) != null) return;
             final Context app = ctx.getApplicationContext();
             final long kid = fls.sid;
             fls.engine.addMessageHook((proto, content) -> {
@@ -82,7 +82,7 @@ public final class EnemyWatch {
                     EnemyWatchStore.log(app, TAG + " 处理异常 " + proto + ": " + t);
                 }
             });
-            EnemyWatchStore.log(app, "已挂载 " + key);
+            EnemyWatchStore.log(app, "已挂载 " + fls.fpid + ":" + fls.sid);
             startWorkers(app);
             startPoller(app);
         } catch (Throwable t) {

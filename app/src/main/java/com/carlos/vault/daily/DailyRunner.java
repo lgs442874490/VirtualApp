@@ -816,6 +816,13 @@ public class DailyRunner {
     }
     public static Summary run(Context context, String fpid, String sdkToken, long serverid,
                               Map<String, Boolean> cfg, ProgressListener listener) {
+        // 守护盟友威胁执行中 → 本角色日常轮让位（卡秒驻防优先，设计 §6.10.5/E1-lite）
+        if (com.carlos.vault.daily.guardian.GuardianLaunch.isActiveForRole(fpid, serverid)) {
+            Summary skip = new Summary();
+            skip.loginError = "守护盟友驻防任务执行中，本轮日常让位";
+            if (listener != null) listener.onFinish(skip);
+            return skip;
+        }
         Summary sum = new Summary();
         WjdrEngine engine = WjdrAndroid.newEngine(context);
         try {
@@ -863,6 +870,13 @@ public class DailyRunner {
                             boolean closeEngine) {
         HotConfig.init(context);
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
+            // 守护盟友威胁执行中 → 本角色日常让位（卡秒驻防优先，设计 §6.10.5）
+            if (com.carlos.vault.daily.guardian.GuardianLaunch.isActiveForRole(fpid, serverid)) {
+                DailyResult r = new DailyResult(d.id, d.name, DailyResult.Category.SKIPPED, "守护盟友驻防执行中，本轮让位");
+                sum.results.add(r);
+                if (listener != null) listener.onTaskDone(r);
+                continue;
+            }
             Boolean on = cfg == null ? null : cfg.get(d.id);
             boolean enabled = on != null ? on : d.enabledByDefault;
             if (HotConfig.isDisabled(d.id)) {

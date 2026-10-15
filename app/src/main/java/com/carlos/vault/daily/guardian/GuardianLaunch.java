@@ -68,18 +68,27 @@ public final class GuardianLaunch {
 
     /** 按目标的活动标记：同一目标同时只跑一个驻防任务；不同目标可并行。 */
     private static final ConcurrentHashMap<Long, Boolean> ACTIVE = new ConcurrentHashMap<>();
+    private static final java.util.Set<String> ACTIVE_ROLES = java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     private static void execute(Context app, String fpid, long kid, GuardianEngine.Track t) {
         Long activeKey = t.targetUid > 0 ? t.targetUid : (long) t.marchId;
+        String roleKey = fpid + ":" + kid;
         if (ACTIVE.putIfAbsent(activeKey, Boolean.TRUE) != null) {
             glog(app, "该目标已有驻防任务在跑，跳过（uid" + activeKey + "）");
             return;
         }
+        ACTIVE_ROLES.add(roleKey);
         try {
             runLaunch(app, fpid, kid, t);
         } finally {
             ACTIVE.remove(activeKey);
+            ACTIVE_ROLES.remove(roleKey);
         }
+    }
+
+    /** 该角色（fpid:kid）是否有驻防任务执行中——日常任务让位判定。 */
+    public static boolean isActiveForRole(String fpid, long sid) {
+        return ACTIVE_ROLES.contains(fpid + ":" + sid);
     }
 
     private static void runLaunch(Context app, String fpid, long kid, GuardianEngine.Track t) {
@@ -176,7 +185,7 @@ public final class GuardianLaunch {
                     + "，先于敌 " + marginMs + "ms → " + (inWin ? "✅卡秒验收通过（0.5~5s 窗）"
                     : marginMs > 0 ? "早于敌 " + marginMs / 1000L + "s（标定轮/提前落位，安全）"
                     : "⚠️晚于敌 " + (-marginMs) + "ms（敌加速过快，已尽力）"));
-            if (t.targetUid > 0) INFLIGHT.put(t.targetUid, new long[]{marchIdOf(ok), t.marchId});
+            if (t.targetUid > 0) INFLIGHT.put(t.targetUid, new long[]{marchIdOf(ok), t.marchId, ourEnd});
         } catch (Throwable ex) {
             glog(app, "驻防执行异常: " + stack(ex));
         }
@@ -439,8 +448,11 @@ public final class GuardianLaunch {
             RoleSessionKeeper.LiveSession f = sessionFor(app, kid);
             if (f == null) return;
             WjdrEngine engine = f.engine;
-            long ourEnd = selfMarchEnd(engine, g[0]);
-            if (ourEnd <= 0) return;
+            long ourEnd = g.length >= 3 ? g[2] : -1;     // 我方到达（发射响应实证值）
+            if (ourEnd <= 0) {
+                ourEnd = selfMarchEnd(engine, g[0]);      // 兜底查询
+                if (ourEnd <= 0) return;
+            }
             if (ourEnd <= enemyEndSec) return;           // 已先于敌，无需加速
 
             // 选道具：二阶 301901 优先，一阶 301900 兜底
@@ -467,6 +479,7 @@ public final class GuardianLaunch {
                 if (ne <= 0 || ne >= ourEnd2) break;     // 无前移即停
                 ourEnd2 = ne;
                 sent++;
+                g[2] = ne;                                // 回写记录
             }
             if (sent > 0) glog(app, "R3 跟进加速 " + sent + " 发，我方剩余 " + (ourEnd2 - System.currentTimeMillis() / 1000L) + "s vs 敌 " + (enemyEndSec - System.currentTimeMillis() / 1000L) + "s");
         } catch (Throwable t) {
