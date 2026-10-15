@@ -291,6 +291,8 @@ public final class RoleSessionKeeper {
                 PushWakeDriver.attach(ctx, fls);
                 ProtoLogger.attach(ctx, fls);
                 EnemyWatch.attach(ctx, fls);
+                com.carlos.vault.daily.guardian.GuardianEngine.init(ctx);
+                com.carlos.vault.daily.guardian.GuardianEngine.attach(ctx, fls);
                 try {
                     new AccountStore(ctx).updateRoleSettings(fls.fpid, fls.sid, fls.engine.identityJson());
                 } catch (Throwable ignored) {
@@ -536,6 +538,8 @@ public final class RoleSessionKeeper {
                     PushWakeDriver.attach(ctx, fls);
                     ProtoLogger.attach(ctx, fls);
                     EnemyWatch.attach(ctx, fls);
+                    com.carlos.vault.daily.guardian.GuardianEngine.init(ctx);
+                    com.carlos.vault.daily.guardian.GuardianEngine.attach(ctx, fls);
                     try {
                         new AccountStore(ctx).updateRoleSettings(fls.fpid, fls.sid, fls.engine.identityJson());
                     } catch (Throwable ignored) {
