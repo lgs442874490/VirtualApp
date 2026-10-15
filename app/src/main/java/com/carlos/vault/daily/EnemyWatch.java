@@ -364,6 +364,30 @@ public final class EnemyWatch {
         return null;
     }
 
+    /** 守护盟友等模块的公共告警入口：微信+短信双通道（绕过名单逻辑直接推送）。 */
+    public static void alert(Context ctx, String text, boolean sms) {
+        try {
+            startWorkers(ctx);
+            boolean wecom = EnemyWatchStore.wecomOn(ctx) && !EnemyWatchStore.webhook(ctx).isEmpty();
+            boolean smsOk = EnemyWatchStore.smsOn(ctx) && !EnemyWatchStore.smsPhone(ctx).isEmpty() && sms;
+            if (wecom) WECOM_QUEUE.offer(text);
+            if (smsOk) SMS_QUEUE.offer("[守护] " + text.split("\n")[0]);
+            EnemyWatchStore.log(ctx, "告警推送 微信=" + wecom + " 短信=" + smsOk + ": " + text.split("\n")[0]);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void glog2(Context c, String line) {
+        try {
+            java.io.File f = new java.io.File(c.getFilesDir(), "guardian_log.txt");
+            try (java.io.FileWriter w = new java.io.FileWriter(f, true)) {
+                w.write(new java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.CHINA)
+                        .format(new java.util.Date()) + " " + line + "\n");
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     // ------------------------------------------------------------------ 双通道发送
 
     private static void send(Context ctx, String text, boolean escalate) {

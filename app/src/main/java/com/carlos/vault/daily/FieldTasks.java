@@ -48,6 +48,16 @@ final class FieldTasks {
             }
             int active = countMarches(engine, 4);
             int capacity = Math.min(maxQueues, marchCapacity(engine));
+            // 守护盟友队列预留（设计 §6.10 双池）：守护开启时采集最多占 capacity-2，
+            // 给卡秒驻防留 2 个机动队列（GuardianLaunch 发 type=5 需要空队列）
+            try {
+                if (com.carlos.vault.daily.guardian.GuardianEngine.reserveQueues(engine.appContext(),
+                        engine.lastFpid(), engine.lastServerId()) > 0) {
+                    capacity = Math.max(active, capacity - com.carlos.vault.daily.guardian.GuardianEngine.reserveQueues(
+                            engine.appContext(), engine.lastFpid(), engine.lastServerId()));
+                }
+            } catch (Throwable ignored) {
+            }
             // 策略：只采满矿（req_world_map_search 的 is_full 过滤）
             boolean fullOnly = "full".equals(FnParams.strategy(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "gather", "send", "any"));

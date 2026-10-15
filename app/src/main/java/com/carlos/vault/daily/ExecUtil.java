@@ -10,14 +10,14 @@ import java.util.Map;
 import java.util.TreeMap;
 
 /** 日常执行器公共工具：响应判定 / 通知解析 / 出征编队（移植自网页版 BehemothAccountState 的解析口径）。 */
-final class ExecUtil {
+public final class ExecUtil {
 
     private ExecUtil() {
     }
 
     // ---------- 基础取值 ----------
 
-    static long longOf(Object v) {
+    public static long longOf(Object v) {
         if (v instanceof Number) return ((Number) v).longValue();
         if (v == null) return 0;
         try {
@@ -31,19 +31,19 @@ final class ExecUtil {
         return (int) longOf(v);
     }
 
-    static int codeOf(GameMessage msg) {
+    public static int codeOf(GameMessage msg) {
         if (msg == null || msg.getContent() == null) return -1;
         Object c = msg.getContent().get("code");
         return c == null ? 0 : intOf(c);
     }
 
-    static boolean ok(GameMessage msg) {
+    public static boolean ok(GameMessage msg) {
         return msg != null && msg.getContent() != null && codeOf(msg) == 0
                 && !DailyTasks.isDegraded(msg);
     }
 
     @SuppressWarnings("unchecked")
-    static Map<String, Object> mapOf(Object v) {
+    public static Map<String, Object> mapOf(Object v) {
         return v instanceof Map ? (Map<String, Object>) v : null;
     }
 
@@ -62,7 +62,7 @@ final class ExecUtil {
         return v instanceof List ? (List<Object>) v : null;
     }
 
-    static List<Map<String, Object>> mapsOf(Object v) {
+    public static List<Map<String, Object>> mapsOf(Object v) {
         List<Object> l = listOf(v);
         if (l == null) return new ArrayList<>();
         List<Map<String, Object>> out = new ArrayList<>();
@@ -89,14 +89,14 @@ final class ExecUtil {
         return m;
     }
 
-    static Map<String, Object> point(long x, long y) {
+    public static Map<String, Object> point(long x, long y) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("x", x);
         m.put("y", y);
         return m;
     }
 
-    static Map<String, Object> args(Object... kv) {
+    public static Map<String, Object> args(Object... kv) {
         Map<String, Object> m = new LinkedHashMap<>();
         for (int i = 0; i + 1 < kv.length; i += 2) {
             if (kv[i + 1] != null) m.put(String.valueOf(kv[i]), kv[i + 1]);
@@ -222,7 +222,7 @@ final class ExecUtil {
     }
 
     /** 行军是否成功（响应 march_info.id>0）。 */
-    static long marchId(GameMessage rsp) {
+    public static long marchId(GameMessage rsp) {
         Map<String, Object> info = nest(rsp == null ? null : rsp.getContent(), "march_info");
         return info == null ? 0 : longOf(info.get("id"));
     }

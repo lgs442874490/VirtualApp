@@ -53,6 +53,7 @@ public final class GuardianEngine {
         public volatile long endServerSec;   // 当前预计到达（服务器秒）
         public volatile String stateText = "在途";
         public volatile long landedAtSec = 0;
+        public volatile boolean forceQualified = false;   // 加速来袭已触发过驻防（防重复）
 
         Track(long marchId, long kid, long owner, long type, long targetUid, int x, int y,
               long power, long endServerSec) {
@@ -89,10 +90,15 @@ public final class GuardianEngine {
     /** 攻方战力阈值（策略值即数字字符串；"0"=不限）。 */
     public static long powerMin(Context ctx, String fpid, long sid) {
         try {
-            return Long.parseLong(FnParams.strategy(ctx, fpid, sid, FN_ID, "power_min", "50000"));
+            return Long.parseLong(FnParams.strategy(ctx, fpid, sid, FN_ID, "power_min", "0"));
         } catch (Throwable t) {
-            return 50000L;
+            return 0L;
         }
+    }
+
+    /** 守护开启时为卡秒驻防预留的队列数（采集等日常不得占用）。 */
+    public static int reserveQueues(Context ctx, String fpid, long sid) {
+        return (interceptOn(ctx, fpid, sid) || watchOn(ctx, fpid, sid)) ? 2 : 0;
     }
 
     /** ETA 上限（秒；超过不构成即时威胁）。 */
@@ -116,8 +122,13 @@ public final class GuardianEngine {
             final String fpid = fls.fpid;
             fls.engine.addMessageHook((proto, content) -> {
                 try {
+                    if (proto != null && (proto.startsWith("notify_world_alliance_situation")
+                            || proto.startsWith("notify_world_situation"))) {
+                        glog("hook收到 " + fpid + ":" + kid + " " + proto);
+                    }
                     handle(app, fpid, kid, proto, content);
-                } catch (Throwable ignored) {
+                } catch (Throwable t) {
+                    glog("handle异常 " + proto + ": " + t);
                 }
             });
             glog("已挂载 " + key);
@@ -221,16 +232,29 @@ public final class GuardianEngine {
             t = new Track(id, kid, owner, type, targetUid, xy == null ? 0 : xy[0], xy == null ? 0 : xy[1],
                     power, end);
             THREATS.put(tkey, t);
+            boolean intercept = interceptOn(app, fpid, kid);
+            long pMin = powerMin(app, fpid, kid);
+            long etaMax = etaMaxSec(app, fpid, kid);
+            long etaSec = end - nowS;
+            boolean qualified = intercept && etaSec <= etaMax && (pMin <= 0 || power >= pMin);
             String verdict = evaluate(app, fpid, kid, power, end - nowS);
             event(app, fpid, kid, "🚨检测[" + t.kind() + "] uid" + owner + " → 盟友城(" + t.x + "," + t.y
                     + (targetUid > 0 ? " uid" + targetUid : "") + ") ETA " + (end - nowS) + "s（"
                     + hhmmss(end) + "）power≈" + power + " → " + verdict);
+            if (qualified) {
+                com.carlos.vault.daily.guardian.GuardianLaunch.onThreatQualified(app, fpid, kid, t);
+            }
         } else {
             long prev = t.endServerSec;
             t.endServerSec = end;
             if (end < prev) {
                 event(app, fpid, kid, "⚡加速来袭[" + t.kind() + "] uid" + owner + " 行军" + id
                         + " 剩余 " + (prev - nowS) + "s → " + (end - nowS) + "s（烧道具了）");
+                // 加速来袭 = 敌方真实投入，绕过战力阈值直接触发驻防（公理：防御先于一切）
+                if (interceptOn(app, fpid, kid) && !t.forceQualified) {
+                    t.forceQualified = true;
+                    com.carlos.vault.daily.guardian.GuardianLaunch.onThreatQualified(app, fpid, kid, t);
+                }
             }
         }
     }
