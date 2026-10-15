@@ -35,11 +35,11 @@ import java.util.Map;
 
 /**
  * 新版主界面（设计方案 v1）：底部四 Tab —— 今日 / 账号 / 任务 / 我的。
- * - 今日：Hero（完成度+一键跑全部）+ 号库矩阵（默认，可切列表）+ 限时窗口 + 快捷入口
+ * - 今日：Hero（完成度+切换账号/切换角色）+ 号库矩阵（默认，可切列表）+ 限时窗口 + 快捷入口
  * - 账号：搜索 + 筛选chips + 列表（单击=启动，⋯=日常/管理/删除）
  * - 任务：自动日常 + 分类chips + 折叠任务行（tap→配置页）+ 进阶工具
  * - 我的：授权卡 + 分组列表（运行/数据/初始化/危险区）
- * 主按钮=跑工作区全部（顺序执行 + 执行页可离开）。
+ * Hero 主按钮=切换账号 / 切换角色（数据全自动，切换即刷新全部页面）。
  */
 public class HomeActivity extends AccountVaultActivity {
 
@@ -51,7 +51,6 @@ public class HomeActivity extends AccountVaultActivity {
     // 今日页
     private TextView heroDone, heroSub, statRun, statErr, statWait, topCaption;
     private UiStyle.Ring heroRing;
-    private TextView onlyBtn;
     private TextView autoStateBtn;   // 自动执行状态卡（点=开关自动日常）
     private TextView onlineDot;      // 当前角色在线状态（容器登录态口径）
     private TextView actVal, actTier;      // 活跃度档位进度条（进度表达规范）
@@ -297,19 +296,30 @@ public class HomeActivity extends AccountVaultActivity {
             bar.setBackgroundColor(UiStyle.BRAND);
             item.addView(bar, new LinearLayout.LayoutParams(dp(16), dp(3)));
             bar.setTag("bar" + i);
+            // 图标：定高 22dp + 关闭字体内边距。◉/☰/⚙/▣ 是象形字形，回退字体的
+            // ascent/descent 远超字号，wrap_content 下字形 ink 会溢出视图盒压到
+            // 下方文字上（选中态蓝粗体下尤其明显）。定高盒 + CENTER 重力把字形
+            // 收进盒内，与文字之间再留 2dp 间距，保证永不相叠。
             TextView icon = new TextView(this);
             icon.setText(icons[i]);
             icon.setTextSize(16);
             icon.setGravity(Gravity.CENTER);
+            icon.setIncludeFontPadding(false);
             icon.setTag("icon" + i);
-            item.addView(icon);
+            item.addView(icon, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(22)));
+            // 文字：与图标固定 2dp 间距；同样关字体 padding，10.5sp 粗体也不再侵占图标盒
             TextView label = new TextView(this);
             label.setText(names[i]);
             label.setTextSize(10.5f);
             label.setTypeface(Typeface.DEFAULT_BOLD);
             label.setGravity(Gravity.CENTER);
+            label.setIncludeFontPadding(false);
             label.setTag("label" + i);
-            item.addView(label);
+            LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            llp.topMargin = dp(2);
+            item.addView(label, llp);
             UiStyle.press(item);
             item.setOnClickListener(v -> switchTab(idx));
             navBars[i] = bar;
@@ -380,7 +390,7 @@ public class HomeActivity extends AccountVaultActivity {
         top.addView(menu);
         box.addView(top);
 
-        // —— Hero 卡（原型同款：环+完成度+待跑+切换账号主按钮+仅跑当前+三指标）——
+        // —— Hero 卡（原型同款：环+完成度+当前角色+切换账号/切换角色双按钮）——
         LinearLayout hero = new LinearLayout(this);
         hero.setOrientation(LinearLayout.VERTICAL);
         hero.setPadding(dp(16), dp(16), dp(16), dp(14));
@@ -458,7 +468,7 @@ public class HomeActivity extends AccountVaultActivity {
         heroTop.addView(right, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         hero.addView(heroTop);
 
-        // 双按钮并行一行（规范第一张截图：主按钮+仅跑当前在下方并排）
+        // 双按钮并行一行（规范第一张截图：切换账号 + 切换角色在下方并排）
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -4006,7 +4016,11 @@ public class HomeActivity extends AccountVaultActivity {
             confirmThen("将向盟友城 (" + fx + "," + fy + ") 发起一次真实驻防（type=5）。\n确认执行？",
                     () -> com.carlos.vault.daily.GuardProbe.garrisonLaunch(this, null, fx, fy));
         }));
-        box.addView(btn("⑤ 迁城实测（烧高级迁城 · A-23 c2s）", v ->
+        box.addView(btn("⑤ 加速链·复用在途行军（烧≤8个加速道具 · 推荐）", v ->
+                confirmThen("将复用自动化最近一条在途行军：连用最多 8 个加速道具直至触底，随后召回。\n"
+                        + "若提示无在途行军，等日常采集自动出征后再点。\n确认执行？",
+                        () -> com.carlos.vault.daily.GuardProbe.speedupExisting(this, null))));
+        box.addView(btn("⑥ 迁城实测（烧高级迁城 · A-23 c2s）", v ->
                 confirmThen("将消耗高级迁城道具迁到附近 (+1,0)。\n确认执行？",
                         () -> com.carlos.vault.daily.GuardProbe.moveCity(this, null))));
 
@@ -4504,11 +4518,9 @@ public class HomeActivity extends AccountVaultActivity {
         return v;
     }
 
-    // ================= 一键跑全部（顺序执行 · 可离开） =================
-
-    private void runWorkspaceAll() {
-        runList(workspaceAccounts());
-    }
+    // ================= 批量执行引擎（顺序执行 · 可离开） =================
+    // 入口：账号页角色行「▶ 跑日常」与批量操作条「跑日常」；
+    // 今日页主入口已收敛为切换账号/切换角色（跑全部的旧入口随 v4.1.0 移除）。
 
     private void runList(final List<AccountStore.Account> wsIn) {
         if (RUN.running) {
@@ -4588,21 +4600,6 @@ public class HomeActivity extends AccountVaultActivity {
                 refreshAllPages();
             });
         }, "run-all").start();
-    }
-
-    private void runSingleCurrent() {
-        AccountStore.Account cra = currentRoleAccount();
-        if (cra != null) {
-            RoleStore.setActiveRole(this, cra.fpid, currentRoleSid());
-        }
-
-        AccountStore.Account cur = firstWorkspace();
-        if (cur == null) {
-            toast("没有可用账号");
-            return;
-        }
-        openDaily(cur, null);
-        toast("在弹出页点「执行日常并刷新进度」");
     }
 
     /** 执行页（可离开：线程继续，随时回来看）。 */

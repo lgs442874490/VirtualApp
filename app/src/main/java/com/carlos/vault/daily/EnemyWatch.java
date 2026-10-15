@@ -356,8 +356,8 @@ public final class EnemyWatch {
         try {
             RoleSessionKeeper keeper = RoleSessionKeeper.get(ctx);
             for (RoleSessionKeeper.LiveSession fls : keeper.sessionsSnapshot()) {
-                if (fls.sid == kid && fls.engine != null && fls.engine.sessionState() != null
-                        && "ONLINE".equals(String.valueOf(fls.engine.sessionState()))) return fls;
+                if (fls.sid == kid && fls.engine != null
+                        && com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(fls.engine.sessionState())) return fls;
             }
         } catch (Throwable ignored) {
         }

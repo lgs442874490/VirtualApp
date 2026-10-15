@@ -516,11 +516,18 @@ public class WjdrEngine {
             }
         } catch (Exception ignored) {
         }
-        notifyHook = client.addInboundListener(msg -> {
-            if (msg == null || msg.getProto() == null) return;
-            notifies.put(msg.getProto(), msg.getContent());
-            // 常驻会话：服务端主动断开（notify_logout）按原版码表分类处理
-            if ("notify_logout".equals(msg.getProto())) {
+            notifyHook = client.addInboundListener(msg -> {
+                if (msg == null || msg.getProto() == null) return;
+                notifies.put(msg.getProto(), msg.getContent());
+                // P0 服务器时钟：推送侧校准（notify_game_init.servertime / notify_schedule_update.server_time，秒域实证）
+                if ("notify_game_init".equals(msg.getProto()) || "notify_schedule_update".equals(msg.getProto())) {
+                    try {
+                        serverClock.calibratePush(msg.getContent(), GameServerClock.monoNow());
+                    } catch (Throwable ignored) {
+                    }
+                }
+                // 常驻会话：服务端主动断开（notify_logout）按原版码表分类处理
+                if ("notify_logout".equals(msg.getProto())) {
                 try {
                     handleLogoutPush(msg.getContent());
                 } catch (Throwable ignored) {
@@ -724,6 +731,15 @@ public class WjdrEngine {
     /** 持锁请求（调用方须已持有 requestLock）：成功即记录活动时间。 */
     private GameMessage lockedRequest(String proto, Map<String, Object> args, java.time.Duration timeout) throws Exception {
         ensureClient();
+        // P1 实证辅助：关键协议的出站参数落引擎日志（files/wjdr_log.txt）——自动化成功样本可直接对照复刻
+        if ("req_world_map_search".equals(proto) || "req_world_march".equals(proto)
+                || "req_world_march_speedup".equals(proto) || "req_world_march_recall".equals(proto)
+                || "req_arsenal_league_move_city".equals(proto)) {
+            try {
+                WjdrLog.i("c2s " + proto + " args=" + args);
+            } catch (Throwable ignored) {
+            }
+        }
         GameMessage rsp = client.request(proto, args, timeout);
         this.lastActivityAt = System.currentTimeMillis();
         return rsp;

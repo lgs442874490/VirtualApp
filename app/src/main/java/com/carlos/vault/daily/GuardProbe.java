@@ -51,10 +51,27 @@ public final class GuardProbe {
         }
     }
 
+    private static volatile Context APP;
+
+    /** UI 入口注入 Application 上下文（探针日志落盘用）。 */
+    public static void init(Context ctx) {
+        if (APP == null && ctx != null) APP = ctx.getApplicationContext();
+    }
+
     private static void log(String line) {
         synchronized (RECENT) {
             RECENT.addFirst(stamp() + " " + line);
             while (RECENT.size() > 60) RECENT.removeLast();
+        }
+        // 落盘（files/probe_log.txt，adb run-as 可读）——现场诊断不依赖截图
+        try {
+            Context c = APP;
+            if (c == null) return;
+            java.io.File f = new java.io.File(c.getFilesDir(), "probe_log.txt");
+            try (java.io.FileWriter w = new java.io.FileWriter(f, true)) {
+                w.write(stamp() + " " + line + "\n");
+            }
+        } catch (Throwable ignored) {
         }
     }
 
@@ -67,7 +84,7 @@ public final class GuardProbe {
         List<String> out = new ArrayList<>();
         try {
             for (RoleSessionKeeper.LiveSession f : RoleSessionKeeper.get(ctx).sessionsSnapshot()) {
-                if (f.engine != null && "ONLINE".equals(f.engine.sessionState())) {
+                if (f.engine != null && WjdrEngine.STATE_ONLINE.equals(f.engine.sessionState())) {
                     out.add(f.fpid + ":" + f.sid + " " + f.label);
                 }
             }
@@ -80,10 +97,10 @@ public final class GuardProbe {
         try {
             for (RoleSessionKeeper.LiveSession f : RoleSessionKeeper.get(ctx).sessionsSnapshot()) {
                 String k = f.fpid + ":" + f.sid;
-                if (k.equals(key) && "ONLINE".equals(f.engine.sessionState())) return f;
+                if (k.equals(key) && WjdrEngine.STATE_ONLINE.equals(f.engine.sessionState())) return f;
             }
             for (RoleSessionKeeper.LiveSession f : RoleSessionKeeper.get(ctx).sessionsSnapshot()) {
-                if ("ONLINE".equals(f.engine.sessionState())) return f;   // 兜底取第一个在线
+                if (WjdrEngine.STATE_ONLINE.equals(f.engine.sessionState())) return f;   // 兜底取第一个在线
             }
         } catch (Throwable ignored) {
         }
@@ -93,6 +110,7 @@ public final class GuardProbe {
     // ------------------------------------------------------------------ A-13 使馆查询（无消耗）
 
     public static void embassyQuery(Context ctx, String sessionKey) {
+        init(ctx);
         runAsync(() -> {
             RoleSessionKeeper.LiveSession f = pick(ctx, sessionKey);
             if (f == null) { log("使馆查询：无在线会话"); return; }
@@ -113,6 +131,7 @@ public final class GuardProbe {
     // ------------------------------------------------------------------ A-10 道具快照（无消耗）
 
     public static void itemSnapshot(Context ctx, String sessionKey) {
+        init(ctx);
         runAsync(() -> {
             RoleSessionKeeper.LiveSession f = pick(ctx, sessionKey);
             if (f == null) { log("道具快照：无在线会话"); return; }
@@ -130,6 +149,25 @@ public final class GuardProbe {
                 }
                 log("道具快照(" + total + "种5xx/6xx类): " + (sb.length() == 0 ? "无" : abbrev(sb.toString())));
                 if (total == 0) log("注意：backpack_init 快照为空——看 proto_log 的 SNAPSHOT-LOGIN 段核对形状");
+                // 全量导出（files/backpack_dump.txt，每行 id count）——用道具前后各导一次，diff 锁 id
+                try {
+                    java.io.File dump = new java.io.File(APP.getFilesDir(), "backpack_dump.txt");
+                    try (java.io.FileWriter w = new java.io.FileWriter(dump, false)) {
+                        for (Map<String, Object> it : ExecUtil.mapsOf(bp == null ? null : bp.get("data"))) {
+                            w.write(ExecUtil.longOf(it.get("id")) + " " + ExecUtil.longOf(it.get("count")) + "\n");
+                        }
+                    }
+                    log("全量背包已导出 backpack_dump.txt（" + ExecUtil.mapsOf(bp.get("data")).size() + " 种）");
+                } catch (Throwable t2) {
+                    log("背包导出失败: " + brief(t2));
+                }
+                // P0 服务器时钟读数（本机钟 vs 服务器钟的偏差一目了然）
+                com.carlos.vault.wjdr.GameServerClock ck = f.engine.serverClock();
+                log("服务器时钟：" + (ck.locked()
+                        ? "已锁相 本机-服务器偏差=" + (System.currentTimeMillis() - ck.nowServerMs())
+                          + "ms errBound=" + ck.errBoundMs() + "ms 服务器秒=" + ck.nowServerSec()
+                          + " 距上次校准=" + ck.sinceCalibMs() + "ms"
+                        : "未锁相（登录样本中未发现 server_time）本机秒=" + System.currentTimeMillis() / 1000L));
             } catch (Throwable t) {
                 log("道具快照异常: " + brief(t));
             }
@@ -139,6 +177,7 @@ public final class GuardProbe {
     // ------------------------------------------------------------------ 加速链实测（烧道具，上限 8 发）
 
     public static void speedupChain(Context ctx, String sessionKey) {
+        init(ctx);
         runAsync(() -> {
             if (!RUNNING.compareAndSet(false, true)) { log("已有探针在跑"); return; }
             try {
@@ -150,13 +189,29 @@ public final class GuardProbe {
                 // 1. 找一个远资源点 + 编队，发采集行军
                 Map<String, Object> pt = searchFar(engine);
                 if (pt == null) { log("未搜到资源点，链终止"); return; }
-                Map<String, Object> formation = ExecUtil.formation(engine, 1);
-                if (formation == null) { log("无可用编队，链终止"); return; }
+                log("搜到野怪 (" + ExecUtil.longOf(pt.get("x")) + "," + ExecUtil.longOf(pt.get("y"))
+                        + ") monsterid=" + ExecUtil.longOf(pt.get("monsterid")));
+                Map<String, Object> formation = buildFormationProbe(engine);
+                if (formation == null) { log("编队构建失败（各层数据见诊断行），链终止"); return; }
+                log("编队就绪，发射行军…");
                 GameMessage launch = engine.request("req_world_march", ExecUtil.args(
-                        "type", 4L, "endpoint", pt, "formation", formation,
-                        "extra", new LinkedHashMap<>()));
+                        "type", 3L, "endpoint", ExecUtil.point(ExecUtil.longOf(pt.get("x")), ExecUtil.longOf(pt.get("y"))),
+                        "formation", formation,
+                        "extra", ExecUtil.args("monsterid", ExecUtil.longOf(pt.get("monsterid")))));
                 long marchId = marchIdOf(launch);
-                if (marchId <= 0) { log("行军发射失败 code=" + codeOf(launch) + "，链终止"); return; }
+                if (marchId <= 0) {
+                    log("行军发射失败 code=" + codeOf(launch) + (codeOf(launch) == 51 ? "（体力不足）" : "") + "，重搜一次");
+                    sleep(1200);
+                    Map<String, Object> pt2 = searchFar(engine);
+                    if (pt2 == null) { log("重搜仍无资源点，链终止"); return; }
+                    GameMessage launch2 = engine.request("req_world_march", ExecUtil.args(
+                            "type", 3L, "endpoint", ExecUtil.point(ExecUtil.longOf(pt2.get("x")), ExecUtil.longOf(pt2.get("y"))),
+                            "formation", formation,
+                            "extra", ExecUtil.args("monsterid", ExecUtil.longOf(pt2.get("monsterid")))));
+                    marchId = marchIdOf(launch2);
+                    if (marchId <= 0) { log("重试发射仍失败 code=" + codeOf(launch2) + "，链终止"); return; }
+                    log("重试发射成功 id=" + marchId);
+                }
                 log("行军已发射 id=" + marchId + " → (" + ExecUtil.longOf(pt.get("x")) + "," + ExecUtil.longOf(pt.get("y")) + ")");
 
                 Map<String, Object> bp0 = backpackMap(engine);
@@ -252,10 +307,133 @@ public final class GuardProbe {
         return last;
     }
 
+    // ------------------------------------------------------------------ 加速链·复用在途行军（不搜图不发射）
+
+    /**
+     * 复用自动化日常已发出的在途行军作为加速目标（绕开地图搜索限频/形状问题）。
+     * 数据源：notify_player_march_add（登录后最近一条己方出征推送）。
+     */
+    public static void speedupExisting(Context ctx, String sessionKey) {
+        init(ctx);
+        runAsync(() -> {
+            if (!RUNNING.compareAndSet(false, true)) { log("已有探针在跑"); return; }
+            try {
+                RoleSessionKeeper.LiveSession f = pick(ctx, sessionKey);
+                if (f == null) { log("复用加速链：无在线会话"); return; }
+                WjdrEngine engine = f.engine;
+                long ownerUid = engine.lastUid();
+                log("复用加速链开始 @" + f.fpid + ":" + f.sid + "（等待在途行军，最多 3 分钟）");
+
+                // 等一条在途行军：notify 缓冲 → 登录快照 march_info → 自查 detail
+                long marchId = -1, end = -1, mtype = -1;
+                long deadline = System.currentTimeMillis() + 180_000L;
+                while (System.currentTimeMillis() < deadline && marchId <= 0) {
+                    Map<String, Object> add = engine.notifyContent("notify_player_march_add");
+                    Map<String, Object> march = ExecUtil.mapOf(add == null ? null : add.get("march"));
+                    if (march != null) {
+                        long st = ExecUtil.longOf(march.get("state"));
+                        if (st == 2 || st == 4) {   // 仅在途（出征/回程）；已到达(3)不可加速
+                            marchId = ExecUtil.longOf(march.get("id"));
+                            end = ExecUtil.longOf(march.get("endtime"));
+                            mtype = ExecUtil.longOf(march.get("type"));
+                        }
+                    }
+                    if (marchId <= 0 || end <= nowS()) {
+                        Map<String, Object> wpi = engine.notifyContent("notify_world_player_init");
+                        for (Map<String, Object> mi : ExecUtil.mapsOf(wpi == null ? null : wpi.get("march_info"))) {
+                            long eid = ExecUtil.longOf(mi.get("id"));
+                            long eend = ExecUtil.longOf(mi.get("endtime"));
+                            long st = ExecUtil.longOf(mi.get("state"));
+                            if (eid > 0 && eend > nowS() && (st == 2 || st == 4)) {
+                                marchId = eid; end = eend; mtype = ExecUtil.longOf(mi.get("type")); break;
+                            }
+                        }
+                    }
+                    if (marchId <= 0 || end <= nowS()) {
+                        Map<Long, Long> m = selfMarches(engine);
+                        if (!m.isEmpty()) {
+                            Map.Entry<Long, Long> e = m.entrySet().iterator().next();
+                            marchId = e.getKey(); end = e.getValue(); mtype = -1;
+                        }
+                    }
+                    if (marchId <= 0 || end <= nowS()) { marchId = -1; sleep(20_000L); }
+                }
+                if (marchId <= 0) { log("3 分钟内无在途行军（自动化未出征？）——稍后再点本按钮"); return; }
+                log("目标行军 id=" + marchId + (mtype > 0 ? " type=" + mtype : "") + " 剩余 " + (end - nowS()) + "s");
+
+                // 选道具：301901=二阶加速(50%)、301900=一阶加速(25%)（2026-10-15 受控 diff 实证，A-10）
+                Map<String, Object> bp0 = backpackMap(engine);
+                long itemId = 0;
+                String tier = "";
+                for (Map<String, Object> it : ExecUtil.mapsOf(bp0.get("data"))) {
+                    long iid = ExecUtil.longOf(it.get("id"));
+                    long cnt = ExecUtil.longOf(it.get("count"));
+                    if (iid == 301901L && cnt > 0) { itemId = iid; tier = "二阶50%"; break; }
+                    if (iid == 301900L && cnt > 0 && itemId == 0) { itemId = iid; tier = "一阶25%"; }
+                }
+                if (itemId <= 0) { log("背包无一/二阶加速道具（301900/301901）——只测召回"); }
+
+                // 加速链：schema 实证 {id, itemid, owner}，响应含新 endtime
+                log("开始加速：itemid=" + itemId + "（" + tier + "）owner=" + ownerUid + "（上限 " + SPEEDUP_CAP + " 发）");
+                int used = 0, noMove = 0;
+                boolean burstTested = false;
+                long prevEnd = end;
+                while (used < SPEEDUP_CAP && itemId > 0) {
+                    int round = (!burstTested && used >= 1) ? 2 : 1;   // 首发验证后第二轮 blind-burst×2
+                    boolean anyOk = false;
+                    long lastEnd = 0;
+                    for (int i = 0; i < round && used < SPEEDUP_CAP; i++) {
+                        Map<String, Object> args = new LinkedHashMap<>();
+                        args.put("id", marchId);
+                        args.put("itemid", itemId);
+                        args.put("owner", String.valueOf(ownerUid));   // sproto schema: owner 是 string 字段(type 06)
+                        GameMessage rsp = engine.request("req_world_march_speedup", args);
+                        int code = codeOf(rsp);
+                        used++;
+                        if (code == 0) {
+                            anyOk = true;
+                            long newEnd = ExecUtil.longOf(rsp.getContent().get("endtime"));
+                            if (newEnd > 0) lastEnd = newEnd;
+                            if (!burstTested) log("加速 ok（{id,itemid,owner}）——A-3 实证，newEnd=" + newEnd);
+                        } else {
+                            log("加速拒绝 code=" + code + "（第 " + used + " 发）");
+                        }
+                    }
+                    if (round == 2 && anyOk && !burstTested) {
+                        burstTested = true;
+                        log("A-17：已背靠背连发 2 发未等响应");
+                    }
+                    if (!anyOk) { log("加速连续拒绝，链终止"); break; }
+                    long end2 = lastEnd > 0 ? lastEnd : selfMarchEnd(engine, marchId);
+                    if (end2 <= 0) { log("行军已消失（落地），链提前结束"); break; }
+                    log("第 " + used + " 发后 endtime=" + end2 + "（前移 " + (prevEnd - end2) + "s，剩 " + (end2 - nowS()) + "s）");
+                    if (end2 >= prevEnd - 1) {
+                        if (++noMove >= 2) { log("触底（floor）：连续 2 发无前移——A-16 实证，floor≈" + (end2 - nowS()) + "s"); break; }
+                    } else noMove = 0;
+                    prevEnd = end2;
+                    sleep(400);
+                }
+
+                diffBackpack(bp0, backpackMap(engine));
+                if (marchId > 0) {
+                    Map<String, Object> rargs = new LinkedHashMap<>();
+                    rargs.put("id", marchId);
+                    GameMessage rc = engine.request("req_world_march_recall", rargs);
+                    log("召回 {id} code=" + codeOf(rc) + "（成功即召回参数实证）链结束，共耗 " + used + " 发");
+                }
+            } catch (Throwable t) {
+                log("复用加速链异常: " + brief(t));
+            } finally {
+                RUNNING.set(false);
+            }
+        });
+    }
+
     // ------------------------------------------------------------------ 驻防发起（A-2，烧一条行军）
 
     /** allyX/allyY = 盟友城坐标；type=5 驻防。发完不召回（真实驻防），由用户后续处理。 */
     public static void garrisonLaunch(Context ctx, String sessionKey, long allyX, long allyY) {
+        init(ctx);
         runAsync(() -> {
             try {
                 RoleSessionKeeper.LiveSession f = pick(ctx, sessionKey);
@@ -279,6 +457,7 @@ public final class GuardProbe {
     // ------------------------------------------------------------------ 迁城（A-23 c2s，烧高迁）
 
     public static void moveCity(Context ctx, String sessionKey) {
+        init(ctx);
         runAsync(() -> {
             try {
                 RoleSessionKeeper.LiveSession f = pick(ctx, sessionKey);
@@ -312,25 +491,147 @@ public final class GuardProbe {
         t.start();
     }
 
-    private static Map<String, Object> searchFar(WjdrEngine engine) throws Exception {
-        Map<String, Object> best = null;
-        for (int resId : new int[]{104, 102, 103}) {
-            GameMessage rsp = engine.request("req_world_map_search", ExecUtil.args(
-                    "mapobj_type", 2L, "level_min", 1L, "level_max", 1L,
-                    "res_id", (long) resId, "is_full", false));
-            if (!ExecUtil.ok(rsp)) continue;
-            for (String k : new String[]{"points", "data", "list"}) {
-                for (Map<String, Object> p : ExecUtil.mapsOf(rsp.getContent().get(k))) {
-                    if (p.containsKey("x") && p.containsKey("y")) {
-                        best = p;   // 取第一个（搜索结果按距离排序，够远即可——加速链不在乎距离）
-                        break;
-                    }
-                }
-                if (best != null) break;
+    /** 探针本地编队构建（带逐层诊断）：英雄取 hero_arranges/hero_init，士兵取库存前三 Tier1。 */
+    private static Map<String, Object> buildFormationProbe(WjdrEngine engine) {
+        List<Long> heroes = new ArrayList<>();
+        // 双形状自适应：sproto map 字段解码可能是 Map{"1.0":{..}} 也可能是 List[{k,v}]，两种都吃
+        Map<String, Object> arrange = engine.notifyContent("notify_battle_hero_arrange_data");
+        for (Map<String, Object> m : collectMaps(arrange, "hero_arranges")) {
+            for (Object h : collectAny(m.get("fight_heros"))) {
+                long id = ExecUtil.longOf(h);
+                if (id > 0 && !heroes.contains(id)) heroes.add(id);
             }
-            if (best != null) break;
         }
-        return best;
+        log("诊断①hero_arranges 英雄数=" + heroes.size());
+        if (heroes.isEmpty()) {
+            Map<String, Object> hiC = engine.notifyContent("notify_hero_init");
+            for (Map<String, Object> m : collectMaps(hiC, "data")) {
+                long id = ExecUtil.longOf(m.get("id"));
+                if (id > 0) heroes.add(id);
+            }
+            heroes.sort((a, b) -> Long.compare(b, a));
+            log("诊断②hero_init 兜底英雄数=" + heroes.size());
+        }
+        if (heroes.isEmpty()) return null;
+        while (heroes.size() > 3) heroes.remove(heroes.size() - 1);
+
+        // 兵力：Tier1（10001/20001/30001）库存按 40/30/30 分配（FieldTasks 同款）
+        Map<Long, Long> soldier = new LinkedHashMap<>();
+        Map<String, Object> si = engine.notifyContent("notify_soldier_init");
+        for (Map<String, Object> m : collectMaps(si, "soldier")) {
+            soldier.put(ExecUtil.longOf(m.get("id")), ExecUtil.longOf(m.get("count")));
+        }
+        // 最轻量合法编队：英雄 ×N + 1 个兵（用户实证：不带兵不能出征，最少 1 兵）
+        List<Map<String, Object>> soldierPairs = new ArrayList<>();
+        Long bestId = null;
+        long bestCnt = 0;
+        for (Map.Entry<Long, Long> e : soldier.entrySet()) {
+            if (e.getValue() > bestCnt) { bestCnt = e.getValue(); bestId = e.getKey(); }
+        }
+        log("诊断③兵力池=" + soldier.size() + " 种，最大堆 id=" + bestId + " x" + bestCnt);
+        if (bestId != null && bestCnt > 0) {
+            Map<String, Object> kv = new LinkedHashMap<>();
+            kv.put("k", bestId);
+            kv.put("v", 1L);
+            soldierPairs.add(kv);
+        }
+        List<Map<String, Object>> heroPairs = new ArrayList<>();
+        for (long h : heroes) {
+            Map<String, Object> kv = new LinkedHashMap<>();
+            kv.put("k", h);
+            kv.put("v", 1L);
+            heroPairs.add(kv);
+        }
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("hero_id", heroPairs);
+        f.put("soldier", soldierPairs);
+        return f;
+    }
+
+
+    /** 双形状收集：v 可能是 List[{..}] 或 Map{key:{..}}（sproto map 字段两种解码形态都吃）。 */
+    private static List<Map<String, Object>> collectMaps(Object v, String preferredKey) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (v instanceof List) {
+            for (Object o : (List<?>) v) if (o instanceof Map) out.add((Map<String, Object>) o);
+            return out;
+        }
+        if (v instanceof Map) {
+            Map<?, ?> m = (Map<?, ?>) v;
+            Object pref = m.get(preferredKey);
+            if (pref instanceof Map) {
+                for (Object o : ((Map<?, ?>) pref).values()) if (o instanceof Map) out.add((Map<String, Object>) o);
+                return out;
+            }
+            if (pref instanceof List) {
+                for (Object o : (List<?>) pref) if (o instanceof Map) out.add((Map<String, Object>) o);
+                return out;
+            }
+            for (Object o : m.values()) if (o instanceof Map) out.add((Map<String, Object>) o);
+        }
+        return out;
+    }
+
+    /** 双形状展开：List 直返；Map 取 values。 */
+    private static List<Object> collectAny(Object v) {
+        List<Object> out = new ArrayList<>();
+        if (v instanceof List) {
+            out.addAll((List<?>) v);
+        } else if (v instanceof Map) {
+            out.addAll(((Map<?, ?>) v).values());
+        }
+        return out;
+    }
+
+    private static Map<String, Object> searchFar(WjdrEngine engine) throws Exception {
+        // 野怪点（mapobj_type=3，狩猎行军 type=3）：本区资源矿已被自动化扫空（2872=无空矿，14:23 实证），
+        // 野怪常在；搜索/发射形状与 FieldTasks.hunt 完全一致
+        for (int level = 6; level >= 1; level--) {
+            GameMessage rsp = engine.request("req_world_map_search", ExecUtil.args(
+                    "mapobj_type", 3L, "level_min", level, "level_max", level));
+            if (!ExecUtil.ok(rsp)) continue;
+            Map<String, Object> content = rsp.getContent();
+            Object point = content.get("point");
+            if (point instanceof Map) {
+                Map<?, ?> p = (Map<?, ?>) point;
+                if (p.containsKey("x") && p.containsKey("y")) {
+                    Map<String, Object> out = new LinkedHashMap<>();
+                    for (Map.Entry<?, ?> en : p.entrySet()) out.put(String.valueOf(en.getKey()), en.getValue());
+                    return out;
+                }
+            }
+            for (String k : new String[]{"points", "data", "list"}) {
+                for (Map<String, Object> p : ExecUtil.mapsOf(content.get(k))) {
+                    if (p.containsKey("x") && p.containsKey("y")) return p;
+                }
+            }
+        }
+        return null;
+    }
+    /** 自身在途行军：marchId → endtime（秒）。 */
+    private static Map<Long, Long> selfMarches(WjdrEngine engine) {
+        Map<Long, Long> out = new LinkedHashMap<>();
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("owner", engine.lastUid());
+            args.put("kid", engine.lastServerId());
+            GameMessage rsp = engine.request("req_world_march_detail_4_player_situation", args);
+            if (rsp == null || rsp.getContent() == null) return out;
+            Object code = rsp.getContent().get("code");
+            if (code != null && ExecUtil.longOf(code) != 0) return out;
+            Map<String, Object> detail = ExecUtil.mapOf(rsp.getContent().get("detail"));
+            long now = System.currentTimeMillis() / 1000L;
+            for (String k : new String[]{"marchs", "march_list", "list", "marches"}) {
+                for (Map<String, Object> march : ExecUtil.mapsOf(detail.get(k))) {
+                    long id = ExecUtil.longOf(march.get("id"));
+                    long end = ExecUtil.longOf(march.get("endtime"));
+                    long st = ExecUtil.longOf(march.get("state"));
+                    if (id > 0 && end > now && (st == 2 || st == 4)) out.put(id, end);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
     }
 
     private static long selfMarchEnd(WjdrEngine engine, long marchId) {
@@ -382,10 +683,7 @@ public final class GuardProbe {
 
     private static long marchIdOf(GameMessage msg) {
         try {
-            Map<String, Object> c = msg.getContent();
-            Object m = c == null ? null : c.get("march");
-            if (m instanceof Map) return ExecUtil.longOf(((Map<?, ?>) m).get("id"));
-            return ExecUtil.longOf(c == null ? null : c.get("march_id"));
+            return ExecUtil.marchId(msg);
         } catch (Throwable t) {
             return -1;
         }
@@ -393,7 +691,7 @@ public final class GuardProbe {
 
     private static int codeOf(GameMessage msg) {
         try {
-            return (int) ExecUtil.longOf(msg.getContent().get("code"));
+            return (int) ExecUtil.codeOf(msg);
         } catch (Throwable t) {
             return -999;
         }
@@ -412,7 +710,7 @@ public final class GuardProbe {
 
     private static String brief(Throwable t) {
         String s = String.valueOf(t);
-        return s.length() > 80 ? s.substring(0, 80) : s;
+        return s.length() > 200 ? s.substring(0, 200) : s;
     }
 
     private static String abbrev(String s) {

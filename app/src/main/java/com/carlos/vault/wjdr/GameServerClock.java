@@ -58,7 +58,17 @@ public final class GameServerClock {
     // ------------------------------------------------------------------ 校准
 
     /**
-     * 以一次"请求-响应"往返为样本校准。t0Mono/t1Mono 为请求前后单调毫秒；
+     * 推送侧校准（无 RTT）：notify_game_init.servertime / notify_schedule_update.server_time
+     * （2026-10-15 实证两推送均携带秒域服务器时间）。推送服务端打点时刻不可知，
+     * 按伪 RTT=300ms 计权（请求-响应实测样本 RTT 更小则优先）。
+     */
+    public void calibratePush(Map<String, Object> content, long recvMonoMs) {
+        long serverSec = deepFindServerSec(content, 0);
+        if (serverSec < SEC_MIN || serverSec > SEC_MAX) return;
+        calibrateRaw(serverSec * 1000L, recvMonoMs, 300L);
+    }
+
+    /** 以一次"请求-响应"往返为样本校准。t0Mono/t1Mono 为请求前后单调毫秒；
      * sentLocalSec 为请求方随包携带的本地秒（心跳 time 字段），用于识别服务器原样回显。
      * 响应内深找 server_time 族字段；找不到=无操作（不打扰调用方）。
      */
@@ -72,8 +82,13 @@ public final class GameServerClock {
 
         long serverMs = serverSec >= SEC_MAX / 10 ? serverSec : serverSec * 1000L;
         // 服务器打时间戳发生在 RTT 中段的期望位置
-        long offset = serverMs - (t0Mono + rtt / 2);
-        long nowMono = t1Mono;
+        calibrateRaw(serverMs, t0Mono + rtt / 2, rtt);
+    }
+
+    /** 样本入窗：RTT 最小者胜出为当前 offset，其余进偏差与误差界。 */
+    private void calibrateRaw(long serverMs, long monoMs, long rtt) {
+        long offset = serverMs - monoMs;
+        long nowMono = mono.millis();
         synchronized (lock) {
             if (!everCalibrated || nowMono - windowStartMonoMs > SAMPLE_WINDOW_MS) {
                 bestRttMs = Long.MAX_VALUE;
@@ -94,7 +109,7 @@ public final class GameServerClock {
             offsetMs = bestOffsetMs;
             errBoundMs = (long) Math.ceil(maxDev + drift) + (bestRttMs == Long.MAX_VALUE ? 0 : bestRttMs / 2);
             lastCalibMonoMs = nowMono;
-            lastServerSec = serverSec;
+            lastServerSec = serverMs / 1000L;
             boolean first = !everCalibrated;
             everCalibrated = true;
             if (first) {
