@@ -39,11 +39,23 @@ public final class GuardianEngine {
     /** 在途敌情：kid:marchId → Track。 */
     private static final ConcurrentHashMap<String, Track> THREATS = new ConcurrentHashMap<>();
     private static final ArrayDeque<String> RECENT = new ArrayDeque<>();
+    /** 最近一次战斗邮件到达时刻（ms）——无战报归因用（用户 20261017：后落地/敌撤离开战即无战报）。 */
+    private static final java.util.concurrent.atomic.AtomicLong LAST_BATTLE_MAIL_AT =
+            new java.util.concurrent.atomic.AtomicLong(0L);
+    /** EXTREME 锁存（设计 §5.1）：owner → 锁存到期时刻。压缩≥3 次即锁 24h——其后续行军
+     *  一律"检测即发射+立刻烧加速"（用户 20261017：3min 压缩到 2s 的必须防住）。 */
+    private static final ConcurrentHashMap<Long, Long> EXTREME_LOCK = new ConcurrentHashMap<>();
+
+    public static boolean extremeLocked(long ownerUid) {
+        Long until = EXTREME_LOCK.get(ownerUid);
+        return until != null && System.currentTimeMillis() < until;
+    }
 
     /** 一条威胁行军的跟踪记录。 */
     public static final class Track {
         public final long marchId;
         public final long kid;
+        public final String fpid;       // 检测该威胁的账号（威胁期间该账号日常让位判定用）
         public final long owner;
         public final long type;          // 1=侦查 2=进攻
         public final long targetUid;     // 被打/被侦查的盟友 uid（0=未知）
@@ -54,11 +66,14 @@ public final class GuardianEngine {
         public volatile String stateText = "在途";
         public volatile long landedAtSec = 0;
         public volatile boolean forceQualified = false;   // 加速来袭已触发过驻防（防重复）
+        public volatile int compressCount = 0;            // 敌方压缩事件数（R3 预判触发用）
+        public volatile long lastCompressAt = 0;          // 最近一次压缩时刻（ms）
 
-        Track(long marchId, long kid, long owner, long type, long targetUid, int x, int y,
+        Track(long marchId, long kid, String fpid, long owner, long type, long targetUid, int x, int y,
               long power, long endServerSec) {
             this.marchId = marchId;
             this.kid = kid;
+            this.fpid = fpid == null ? "" : fpid;
             this.owner = owner;
             this.type = type;
             this.targetUid = targetUid;
@@ -101,6 +116,20 @@ public final class GuardianEngine {
         return com.carlos.vault.daily.guardian.GuardianLaunch.isActiveForRole(fpid, sid);
     }
 
+    /**
+     * 威胁期间让位判定（交接 §6.2）：该账号名下有在途敌情（从检测到解除）或驻防任务执行中。
+     * 巨熊陷阱/狩猎/情报等派队类日常在窗口内跳过——既防请求队列饿死卡秒驻防，
+     * 也防它们吃掉保留队列（手册 §4.1 保留池原则；采集已由 reserveQueues 单独限容）。
+     */
+    public static boolean threatBusyForRole(String fpid, long sid) {
+        if (fpid != null) {
+            for (Track t : THREATS.values()) {
+                if (t.kid == sid && fpid.equals(t.fpid)) return true;
+            }
+        }
+        return com.carlos.vault.daily.guardian.GuardianLaunch.isActiveForRole(fpid, sid);
+    }
+
     /** 守护开启时为卡秒驻防预留的队列数（采集等日常不得占用）。 */
     public static int reserveQueues(Context ctx, String fpid, long sid) {
         return (interceptOn(ctx, fpid, sid) || watchOn(ctx, fpid, sid)) ? 2 : 0;
@@ -137,6 +166,20 @@ public final class GuardianEngine {
                 }
             });
             glog("已挂载 " + fls.fpid + ":" + fls.sid);
+            // 孤儿驻防清扫（20261017"驻防完不召回队列"兜底）：挂载后 45s 起每 60s 扫一次
+            final java.util.concurrent.ScheduledExecutorService sweeper =
+                    java.util.concurrent.Executors.newSingleThreadScheduledExecutor(r -> {
+                        Thread t = new Thread(r, "guardian-sweep-" + fpid + ":" + kid);
+                        t.setDaemon(true);
+                        return t;
+                    });
+            sweeper.scheduleWithFixedDelay(() -> {
+                try {
+                    if (!interceptOn(app, fpid, kid) && !watchOn(app, fpid, kid)) return;
+                    com.carlos.vault.daily.guardian.GuardianLaunch.sweepOrphans(app, fpid, kid);
+                } catch (Throwable ignored) {
+                }
+            }, 45, 60, java.util.concurrent.TimeUnit.SECONDS);
         } catch (Throwable ignored) {
         }
     }
@@ -148,6 +191,27 @@ public final class GuardianEngine {
         return THREATS.get(kid + ":" + marchId);
     }
 
+    /** 该区服某盟友城当前是否有活跃威胁（清扫器判断驻防是否还需保留）。
+     *  过期条目（endtime 已过 90s 仍没收到 del——断连丢推送等）先剔除，防死威胁堵住清扫。 */
+    public static boolean hasThreatOn(long kid, long targetUid) {
+        if (targetUid <= 0) return false;
+        long nowS = System.currentTimeMillis() / 1000L;
+        for (Map.Entry<String, Track> e : THREATS.entrySet()) {
+            Track t = e.getValue();
+            if (t.endServerSec + 90 < nowS) {
+                THREATS.remove(e.getKey());   // EXPIRED：落地已久且 del 丢失
+                continue;
+            }
+            if (t.kid == kid && t.targetUid == targetUid) return true;
+        }
+        return false;
+    }
+
+    /** 最近战斗邮件到达时刻（0=从未）——repatriateDelayed 无战报归因用。 */
+    public static long lastBattleMailAt() {
+        return LAST_BATTLE_MAIL_AT.get();
+    }
+
     /** 供发射器感知威胁消失（敌召回/落地）。 */
     public static void dropTrack(long kid, long marchId) {
         THREATS.remove(kid + ":" + marchId);
@@ -157,20 +221,20 @@ public final class GuardianEngine {
         if (content == null) return;
         if (!watchOn(app, fpid, kid) && !interceptOn(app, fpid, kid)) return;
 
-        // 盟友坐标表喂食（任意会话收到的联盟成员位置推送都入表）
+        // 盟友坐标表喂食（本会话账号的联盟成员位置推送——按 fpid 隔离，多账号不同盟不互相污染）
         if ("notify_alliance_member_pos_info".equals(proto)) {
             Map<String, Object> ml = asMap(content.get("member_list"));
             if (ml != null) {
                 for (Object v : ml.values()) {
                     Map<String, Object> p = asMap(v);
-                    AllyMap.put(kid, num(p.get("uid")), num(p.get("x")), num(p.get("y")));
+                    AllyMap.put(fpid, kid, num(p.get("uid")), num(p.get("x")), num(p.get("y")));
                 }
             }
             return;
         }
         if ("notify_alliance_member_pos_update".equals(proto)) {
             Map<String, Object> p = asMap(content.get("member_pos"));
-            if (p != null) AllyMap.put(kid, num(p.get("uid")), num(p.get("x")), num(p.get("y")));
+            if (p != null) AllyMap.put(fpid, kid, num(p.get("uid")), num(p.get("x")), num(p.get("y")));
             return;
         }
 
@@ -178,6 +242,8 @@ public final class GuardianEngine {
         switch (proto) {
             case "notify_world_alliance_situation_add":
             case "notify_world_alliance_situation_update":
+            case "notify_world_alliance_situation_init":
+                // init=登录/回连快照：不处理会漏掉重连窗口内在途的攻击（04:06 顶号 7 分钟实测教训）
                 for (String key : new String[]{"to_marchs", "marchs"}) {
                     Object arr = content.get(key);
                     if (arr instanceof List) {
@@ -215,9 +281,43 @@ public final class GuardianEngine {
                 }
                 break;
             }
+            case "notify_player_march_update": {
+                // 我方行军状态变化 → 维护驻防记录（20:51 死 marchId 发加速的根因防线）
+                long mid = num(marchIdOfPlayerPush(content));
+                if (mid > 0) {
+                    Map<String, Object> ch = asMap(content.get("change"));
+                    long st = ch == null ? 0 : num(ch.get("state"));
+                    if (st > 0) com.carlos.vault.daily.guardian.GuardianLaunch.onOwnMarchState(kid, mid, st);
+                }
+                break;
+            }
+            case "notify_new_mail_syn": {
+                // 驻防成败判定（用户 20261017 裁决：拿到驻防成功邮件才算成功，其余都算失败）。
+                // 战斗类邮件 first_type=30；second_type 码表（recon 模块分类）：4/5=胜利 6/7/8=失败
+                Map<String, Object> cover = asMap(content.get("mail_cover_info"));
+                if (cover != null && num(cover.get("first_type")) == 30) {
+                    LAST_BATTLE_MAIL_AT.set(System.currentTimeMillis());
+                    long st = num(cover.get("second_type"));
+                    String verdict = (st == 4 || st == 5) ? "✅驻防成功（战报邮件 second_type=" + st + "）"
+                            : (st >= 6 && st <= 8) ? "❌驻防失败（战报邮件 second_type=" + st + "）"
+                            : "📮战斗邮件（second_type=" + st + "，码表外样本，留档）";
+                    event(app, fpid, kid, verdict);
+                }
+                break;
+            }
+            case "notify_player_march_del": {
+                long mid = num(marchIdOfPlayerPush(content));
+                if (mid > 0) com.carlos.vault.daily.guardian.GuardianLaunch.onOwnMarchEnded(kid, mid);
+                break;
+            }
             default:
                 break;
         }
+    }
+
+    /** player march 推送的 march id 位置：update={id,...}，del={id,...}（顶层即有）。 */
+    private static Object marchIdOfPlayerPush(Map<String, Object> content) {
+        return content.get("id");
     }
 
     private static void handleMarch(Context app, String fpid, long kid, Map<?, ?> m,
@@ -237,16 +337,18 @@ public final class GuardianEngine {
         long targetUid = targetUid(m);
 
         // 盟友目标判定：优先 atk_city.targetid/point 命中盟友表；world_situation 通用源用坐标匹配
-        boolean allyHit = allyTargeted || (targetUid > 0 && AllyMap.isAlly(kid, targetUid))
-                || (targetUid <= 0 && xy != null && AllyMap.match(kid, xy[0], xy[1]) > 0);
+        boolean allyHit = allyTargeted || (targetUid > 0 && AllyMap.isAlly(fpid, kid, targetUid))
+                || (targetUid <= 0 && xy != null && AllyMap.match(fpid, kid, xy[0], xy[1]) > 0);
         if (!allyHit) return;
 
         Track t = THREATS.get(tkey);
         if (t == null) {
             if (end <= nowS) return;   // 已成历史
-            t = new Track(id, kid, owner, type, targetUid, xy == null ? 0 : xy[0], xy == null ? 0 : xy[1],
+            t = new Track(id, kid, fpid, owner, type, targetUid, xy == null ? 0 : xy[0], xy == null ? 0 : xy[1],
                     power, end);
             THREATS.put(tkey, t);
+            // E2 战时召回（用户 20261017 重申）：威胁一出现就召回全部在途采集（免费、先于开战）
+            com.carlos.vault.daily.guardian.GuardianLaunch.wartimeRecall(app, fpid, kid);
             boolean intercept = interceptOn(app, fpid, kid);
             long pMin = powerMin(app, fpid, kid);
             long etaMax = etaMaxSec(app, fpid, kid);
@@ -263,6 +365,13 @@ public final class GuardianEngine {
             long prev = t.endServerSec;
             t.endServerSec = end;
             if (end < prev) {
+                t.compressCount++;
+                t.lastCompressAt = System.currentTimeMillis();
+                if (t.compressCount >= 3 && !extremeLocked(owner)) {
+                    EXTREME_LOCK.put(owner, System.currentTimeMillis() + 24 * 3600_000L);
+                    event(app, fpid, kid, "🚨EXTREME 锁存 uid" + owner + "（压缩" + t.compressCount
+                            + "次，24h 内其行军一律检测即发射+立刻加速）");
+                }
                 event(app, fpid, kid, "⚡加速来袭[" + t.kind() + "] uid" + owner + " 行军" + id
                         + " 剩余 " + (prev - nowS) + "s → " + (end - nowS) + "s（烧道具了）");
                 // 加速来袭 = 敌方真实投入，绕过战力阈值直接触发驻防（公理：防御先于一切）
@@ -270,9 +379,19 @@ public final class GuardianEngine {
                     t.forceQualified = true;
                     com.carlos.vault.daily.guardian.GuardianLaunch.onThreatQualified(app, fpid, kid, t);
                 }
-                // R3 动态同步：我方驻防已在途时，敌方再加速 → 加速我方驻防保持先至
+                // R3 动态同步：我方驻防已在途时，敌方再加速 → 加速我方驻防保持先至（带 Track 预判触发）
                 if (interceptOn(app, fpid, kid)) {
-                    com.carlos.vault.daily.guardian.GuardianLaunch.raceAccelerate(app, fpid, kid, t.targetUid, id, end);
+                    final GuardianEngine.Track ft = t;
+                    final long fend = end;
+                    final Context fapp = app;
+                    final String ffpid = fpid;
+                    final long fkid = kid;
+                    Thread r3 = new Thread(() ->
+                            com.carlos.vault.daily.guardian.GuardianLaunch.raceAccelerate(
+                                    fapp, ffpid, fkid, ft.targetUid, id, fend, ft, false),
+                            "guardian-r3");
+                    r3.setDaemon(true);
+                    r3.start();   // 异步：加速链有阻塞请求，绝不能卡推送处理线程
                 }
             }
         }
@@ -284,15 +403,21 @@ public final class GuardianEngine {
         String tkey = kid + ":" + id;
         Track t = THREATS.remove(tkey);
         if (t == null) return;
-        // 敌情解除 → 自动撤回我方驻防（打完即撤，释放盟友城驻防位与队列）
+        long nowS = System.currentTimeMillis() / 1000L;
+        long remain = t.endServerSec - nowS;
+        // 撤回条件（用户 20261016 裁决）：①敌方召回 → 立即撤；②敌方落地 → 等战斗结算拿到
+        // 驻防成败战报（约 75s）再撤——绝不在战斗进行中撤防（驻防无条件公理）
         if (interceptOn(app, fpid, kid) && t.targetUid > 0) {
             try {
-                com.carlos.vault.daily.guardian.GuardianLaunch.repatriate(app, fpid, kid, t.targetUid);
+                if (remain > 2) {
+                    com.carlos.vault.daily.guardian.GuardianLaunch.repatriate(app, fpid, kid, t.targetUid);
+                } else {
+                    com.carlos.vault.daily.guardian.GuardianLaunch.repatriateDelayed(
+                            app, fpid, kid, t.targetUid, 10_000L);
+                }
             } catch (Throwable ignored) {
             }
         }
-        long nowS = System.currentTimeMillis() / 1000L;
-        long remain = t.endServerSec - nowS;
         String how = remain > 2 ? "召回解除（距落地 " + remain + "s）" : "已落地";
         event(app, fpid, kid, "✔敌情解除[" + t.kind() + "] uid" + t.owner + " 行军" + id + " " + how);
     }
@@ -333,7 +458,7 @@ public final class GuardianEngine {
                 if (s.contains(":" + kid + " ")) { last = s; break; }
             }
         }
-        return "监测中 · 当前威胁 " + n + " · 盟友坐标 " + AllyMap.size(kid) + " 位"
+        return "监测中 · 当前威胁 " + n + " · 盟友坐标 " + AllyMap.size(fpid, kid) + " 位"
                 + (last == null ? "" : "\n" + last);
     }
 
