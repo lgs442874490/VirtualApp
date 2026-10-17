@@ -72,18 +72,44 @@ public class DailySchedulerService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         running = true;
         scheduleWakeupAlarm();   // onCreate 已排；被系统重启（START_STICKY）走不到 onCreate 的极端路径兜底重排
-        tick();
+        requestTick(true);
         return START_STICKY;
     }
 
+    /**
+     * tick 链单飞标志（P1-2）。
+     * 历史 bug：onStartCommand 每次被 start 都直接 tick()——而 ensureStarted 会被
+     * 每条游戏通知反复调用（真机 lastStartId=5）⇒ 每次都新排一条 10 分钟 postDelayed
+     * 链，N 条通知后 N 条链并存，重复 sweep/重复排闹钟/耗电。
+     * 所有调用都在主线程（handler=主 looper），AtomicBoolean 去重即可，无需加锁。
+     */
+    private final java.util.concurrent.atomic.AtomicBoolean tickQueued =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
+    /** 请求巡检（幂等）：链上已有一个待执行 tick 时不再叠加新链。
+     *  immediate=true 立即跑一轮（服务被 start/闹钟到点），false 走 10 分钟节奏。 */
+    private void requestTick(boolean immediate) {
+        if (!tickQueued.compareAndSet(false, true)) return;   // 已有在链上
+        if (immediate) {
+            handler.post(this::tick);
+        } else {
+            handler.postDelayed(this::tick, CHECK_INTERVAL_MS);
+        }
+    }
+
     private void tick() {
+        // 先释放"在链"标记：本轮 sweep 期间若有通知 requestTick(true)，会排一个
+        // 立即轮接棒，末尾的 10 分钟重排因标记已被占而自动让位——链始终只有一条
+        tickQueued.set(false);
         if (!running) return;
         try {
             sweepDueAccounts();
         } catch (Throwable t) {
             android.util.Log.e("DailySched", "sweep fail", t);
         }
-        handler.postDelayed(this::tick, CHECK_INTERVAL_MS);
+        if (running) {
+            requestTick(false);
+        }
     }
 
     /** 供通知监听等组件拿外部文件目录（事件日志用）。 */
@@ -467,14 +493,18 @@ public class DailySchedulerService extends Service {
     }
 
     /** 精确闹钟（可精确则 setExactAndAllowWhileIdle；否则退化为 AllowWhileIdle）。
-     *  tag 参与 requestCode 派生：多账号共用同一 base 码时 PendingIntent 相互覆盖
-     *  （filterEquals 匹配不到 extras），巡检循环里后排账号会把前排账号的闹钟顶掉——
-     *  每账号一个独立 requestCode，各自到期各自唤醒。 */
+     *  PendingIntent 身份 = Intent(filterEquals，不含 extras) + requestCode。
+     *  P1-2 双保险：requestCode 按 fpid 哈希派生（%900 有碰撞概率）之上，
+     *  再给 Intent 设置 data URI——每账号每闹钟类型拿到独一无二的 PendingIntent，
+     *  彻底消除"后排账号顶掉前排账号闹钟"。 */
     private void scheduleAlarmAt(long atMillis, int requestCodeBase, String tag) {
         try {
             int rc = requestCodeBase + (tag == null ? 0 : Math.floorMod(tag.hashCode(), 900));
             AlarmManager am = (AlarmManager) getSystemService(ALARM_SERVICE);
             Intent i = new Intent(this, DailySchedulerService.class);
+            if (tag != null) {
+                i.setData(android.net.Uri.parse("vault://alarm/" + requestCodeBase + "/" + tag));
+            }
             PendingIntent pi = PendingIntent.getService(this, rc, i,
                     PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
             if (android.os.Build.VERSION.SDK_INT >= 31
