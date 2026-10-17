@@ -10,15 +10,16 @@ import java.util.Set;
 import static org.junit.Assert.*;
 
 /**
- * TC-C01 / TC-D05：功能注册表与默认开关矩阵（33 默认开 / 18 默认关）。
+ * TC-C01 / TC-D05：功能注册表与默认开关矩阵（35 默认开 / 21 默认关）。
  * 开关缺省回落语义（runTasks: null→enabledByDefault）依赖此矩阵，UI 三态显示同样依赖。
+ * 计数变更史：50 → 53（+成就奖励/雪原贸易站/守护盟友）→ 56，新增功能必须同步本类断言。
  */
 public class RegistryAndDefaultsTest {
 
     @Test
     public void fnRegistry_allItems_uniqueAndImplemented() {
         List<FnRegistry.Fn> all = FnRegistry.all();
-        assertEquals(53, all.size());
+        assertEquals(56, all.size());
         Set<String> ids = new HashSet<>();
         Set<String> names = new HashSet<>();
         for (FnRegistry.Fn f : all) {
@@ -28,13 +29,13 @@ public class RegistryAndDefaultsTest {
             ids.add(f.id);
             names.add(f.name);
         }
-        assertEquals("fn id 不得重复", 53, ids.size());
-        assertEquals("fn 名称不得重复", 53, names.size());
+        assertEquals("fn id 不得重复", 56, ids.size());
+        assertEquals("fn 名称不得重复", 56, names.size());
     }
 
     @Test
     public void fnRegistry_categoryCounts() {
-        int[] expected = {9, 11, 14, 7, 6, 2, 4}; // 奖励/城镇/活动/野外/联盟/商店/其他
+        int[] expected = {10, 11, 15, 7, 7, 2, 4}; // 奖励/城镇/活动/野外/联盟/商店/其他
         assertEquals(7, FnRegistry.CAT_NAMES.length);
         for (int cat = 0; cat < 7; cat++) {
             assertEquals("分类 " + FnRegistry.CAT_NAMES[cat] + " 数量",
@@ -52,7 +53,7 @@ public class RegistryAndDefaultsTest {
     @Test
     public void dailyTasks_registryMatchesFnRegistry() {
         List<DailyTasks.TaskDef> defs = DailyTasks.all();
-        assertEquals(53, defs.size());
+        assertEquals(56, defs.size());
         Set<String> fnIds = new HashSet<>();
         for (FnRegistry.Fn f : FnRegistry.all()) fnIds.add(f.id);
         Set<String> defIds = new HashSet<>();
@@ -80,7 +81,7 @@ public class RegistryAndDefaultsTest {
     }
 
     @Test
-    public void defaultOffMatrix_exactly18() {
+    public void defaultOffMatrix_exactly21() {
         Set<String> expectedOff = new HashSet<>();
         expectedOff.add("shop");
         expectedOff.add("adventure_sweep");
@@ -94,6 +95,7 @@ public class RegistryAndDefaultsTest {
         expectedOff.add("act_icehunter");
         expectedOff.add("bank");
         expectedOff.add("act_flamefangs");
+        expectedOff.add("act_snowtrade");
         expectedOff.add("act_frostfire");
         expectedOff.add("social_gift");
         expectedOff.add("gather");
@@ -101,12 +103,26 @@ public class RegistryAndDefaultsTest {
         expectedOff.add("hunt");
         expectedOff.add("alliance_showdown");
         expectedOff.add("alliance_shop");
+        expectedOff.add("guardian");
 
         Set<String> actualOff = new HashSet<>();
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
             if (!d.enabledByDefault) actualOff.add(d.id);
         }
         assertEquals("默认关清单必须逐项一致（高消耗/高风控默认关）", expectedOff, actualOff);
+    }
+
+    /**
+     * 防漂移：FnRegistry 中每个功能都必须有 FnDetail 子项目录（≥1 个子项）。
+     * 历史上新增功能（守护盟友/成就奖励/雪原贸易站）只改了 FnRegistry+DailyTasks，
+     * 测试计数与 FnDetail 容易漏同步——本用例把三处锁死。
+     */
+    @Test
+    public void fnDetail_everyRegistryFnHasSubs() {
+        for (FnRegistry.Fn f : FnRegistry.all()) {
+            assertFalse("FnDetail 缺少功能 " + f.id + " 的子项目录",
+                    FnDetail.of(f.id).isEmpty());
+        }
     }
 
     @Test
