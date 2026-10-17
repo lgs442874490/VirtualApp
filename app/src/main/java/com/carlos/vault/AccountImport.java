@@ -42,7 +42,9 @@ public final class AccountImport {
         /** 跳过（默认）：绝不覆盖任何已有数据。 */
         SKIP,
         /** 覆盖：用户显式选择后才写入。 */
-        OVERWRITE
+        OVERWRITE,
+        /** 仅新增：冲突行记为失败并出现在明细里。 */
+        ERROR
     }
 
     /** 解析出的一行（或一条跨两行的记录）。 */
@@ -294,6 +296,10 @@ public final class AccountImport {
                         exist.label = r.label;
                         overwritten = true;
                         res.ok++;
+                    } else if (policy == ConflictPolicy.ERROR) {
+                        r.error = "号ID已存在（仅新增模式）";
+                        res.failed++;
+                        res.failures.add(r);
                     } else {
                         // 默认策略：跳过，一个字节都不改
                         res.skipped++;

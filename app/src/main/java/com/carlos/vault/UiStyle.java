@@ -40,6 +40,9 @@ public class UiStyle {
     public static final int BRAND_200    = 0xFFBFCCFF;   // 描边（按钮/输入）
     public static final int BRAND_300    = 0xFFC7D4FF;   // 弱描边（白底上的强调框）
     public static final int ICE          = 0xFF0EA5A5;   // ice-500 仅"进行中"
+    public static final int CYAN         = 0xFF22D3EE;   // 今日页「仅跑当前」高亮青
+    public static final int PURPLE       = 0xFF7C3AED;   // 24h 常驻在线图标紫
+    public static final int PURPLE_50    = 0xFFF1EDFF;   // 紫浅底
     public static final int BG_V2        = 0xFFF2F5FA;   // 画布
     public static final int CARD         = 0xFFFFFFFF;   // 卡片面
     public static final int INK          = 0xFF0F1729;   // 主文本（16.4:1）
@@ -67,11 +70,11 @@ public class UiStyle {
     public static final int BLACK_40     = 0x66000000;   // 弹层遮罩
     public static final int SCRIM        = 0x59080C17;   // 底部弹层遮罩（规范：压暗 35%）
     // 状态徽章 bg/ink/solid 三层。type: ok/run/wait/warn/err/idle
-    public static final int OK_BG = 0xFFE7F8F1,  OK_INK = 0xFF047857,  OK_SOLID = 0xFF10B981;
+    public static final int OK_BG = 0xFFE7F8F1,  OK_INK = 0xFF1F9D55,  OK_SOLID = 0xFF1F9D55;
     public static final int RUN_BG = 0xFFE6F6F6,  RUN_INK = 0xFF0F766E, RUN_SOLID = 0xFF0EA5A5;
     public static final int WAIT_BG = 0xFFEEF0FE, WAIT_INK = 0xFF4338CA, WAIT_SOLID = 0xFF6366F1;
-    public static final int WARN_BG = 0xFFFFF4E5, WARN_INK = 0xFFB45309, WARN_SOLID = 0xFFF59E0B;
-    public static final int ERR_BG = 0xFFFEECEC,  ERR_INK = 0xFFB91C1C, ERR_SOLID = 0xFFEF4444;
+    public static final int WARN_BG = 0xFFFFF4E5, WARN_INK = 0xFFB7791F, WARN_SOLID = 0xFFB7791F;
+    public static final int ERR_BG = 0xFFFEECEC,  ERR_INK = 0xFFE5484D, ERR_SOLID = 0xFFE5484D;
     public static final int IDLE_BG = 0xFFF1F3F7, IDLE_INK = 0xFF6B7280;
 
     /** dp → px（四舍五入）。 */
@@ -171,7 +174,7 @@ public class UiStyle {
     public static android.widget.TextView sectionTitle(android.content.Context ctx, String text) {
         android.widget.TextView v = new android.widget.TextView(ctx);
         v.setText(text);
-        v.setTextSize(13);
+        v.setTextSize(14);
         v.setTypeface(Typeface.DEFAULT_BOLD);
         v.setTextColor(INK);
         v.setPadding(dp(ctx, 2), dp(ctx, 18), dp(ctx, 2), dp(ctx, 8));
@@ -640,34 +643,273 @@ public class UiStyle {
     public static class Icon extends android.view.View {
         private final android.graphics.Path path = new android.graphics.Path();
         private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
-        private final int color;
+        private int color;
+        private final int sizeDp;
+        private final boolean filled;
 
         public static final int GEAR = 0;      // 齿轮（角色管理）
         public static final int CLOSE = 1;     // 关闭 ✕
         public static final int CHEVRON = 2;   // 右箭头 ›
+        public static final int HOME = 3;
+        public static final int USERS = 4;
+        public static final int CHECKLIST = 5;
+        public static final int USER = 6;
+        public static final int BELL = 7;
+        public static final int SEARCH = 8;
+        public static final int CHEVRON_DOWN = 9;
+        public static final int ARROW_LEFT = 10;
+        public static final int PLAY = 11;
+        public static final int PLUS = 12;
+        public static final int MORE = 13;
+        public static final int GIFT = 14;
+        public static final int MAIL = 15;
+        public static final int BOX = 16;
+        public static final int COMPASS = 17;
+        public static final int GRID = 18;
+        public static final int LIGHTNING = 19;
+        public static final int CLOCK = 20;
+        public static final int TARGET = 21;
+        public static final int SHIELD = 22;
+        public static final int CLOUD = 23;
+        public static final int UPLOAD = 24;
+        public static final int TRASH = 25;
+        public static final int DOC = 26;
+        public static final int LOCK = 27;
+        public static final int EYE = 28;
+        public static final int SNOW = 29;
+        public static final int DOTS = 30;
+        public static final int CHECK = 31;
 
         public Icon(android.content.Context ctx, int which, int colorDp) {
+            this(ctx, which, colorDp, 18);
+        }
+
+        public Icon(android.content.Context ctx, int which, int colorDp, int size) {
             super(ctx);
             color = colorDp;
-            p.setStyle(android.graphics.Paint.Style.STROKE);
+            sizeDp = size;
+            boolean fill = which == PLAY || which == LIGHTNING || which == MORE || which == DOTS;
+            filled = fill;
+            p.setStyle(fill ? android.graphics.Paint.Style.FILL
+                    : android.graphics.Paint.Style.STROKE);
             p.setStrokeCap(android.graphics.Paint.Cap.ROUND);
             p.setStrokeJoin(android.graphics.Paint.Join.ROUND);
+            build(which);
+        }
+
+        public void setColor(int c) {
+            color = c;
+            invalidate();
+        }
+
+        private void line(float x1, float y1, float x2, float y2) {
+            path.moveTo(x1, y1);
+            path.lineTo(x2, y2);
+        }
+
+        private void circle(float cx, float cy, float r) {
+            path.addCircle(cx, cy, r, android.graphics.Path.Direction.CW);
+        }
+
+        private void roundRect(float l, float t, float r, float b, float rad) {
+            android.graphics.RectF rf = new android.graphics.RectF(l, t, r, b);
+            path.addRoundRect(rf, rad, rad, android.graphics.Path.Direction.CW);
+        }
+
+        private void build(int which) {
             switch (which) {
                 case GEAR:
-                    // 外圈 8 齿 + 中心圆
-                    path.addCircle(12, 12, 3.2f, android.graphics.Path.Direction.CW);
-                    float r1 = 8.6f, r2 = 10.6f;
+                    circle(12, 12, 3.2f);
                     for (int k = 0; k < 8; k++) {
                         double a = Math.PI * 2 * k / 8;
-                        path.moveTo((float) (12 + r1 * Math.cos(a)), (float) (12 + r1 * Math.sin(a)));
-                        path.lineTo((float) (12 + r2 * Math.cos(a)), (float) (12 + r2 * Math.sin(a)));
+                        line((float) (12 + 8.6 * Math.cos(a)), (float) (12 + 8.6 * Math.sin(a)),
+                                (float) (12 + 10.6 * Math.cos(a)), (float) (12 + 10.6 * Math.sin(a)));
                     }
                     break;
                 case CLOSE:
-                    path.moveTo(7, 7); path.lineTo(17, 17);
-                    path.moveTo(17, 7); path.lineTo(7, 17);
+                    line(7, 7, 17, 17);
+                    line(17, 7, 7, 17);
                     break;
-                default: // CHEVRON
+                case CHEVRON:
+                    path.moveTo(9, 6); path.lineTo(15, 12); path.lineTo(9, 18);
+                    break;
+                case CHEVRON_DOWN:
+                    path.moveTo(6, 9); path.lineTo(12, 15); path.lineTo(18, 9);
+                    break;
+                case ARROW_LEFT:
+                    line(20, 12, 4, 12);
+                    path.moveTo(10, 6); path.lineTo(4, 12); path.lineTo(10, 18);
+                    break;
+                case HOME:
+                    path.moveTo(3, 10); path.lineTo(12, 3); path.lineTo(21, 10);
+                    path.moveTo(5, 9); path.lineTo(5, 20); path.lineTo(10, 20);
+                    path.lineTo(10, 14); path.lineTo(14, 14); path.lineTo(14, 20);
+                    path.lineTo(19, 20); path.lineTo(19, 9);
+                    break;
+                case USERS:
+                    circle(9, 8, 3.2f);
+                    path.moveTo(3, 20);
+                    path.cubicTo(3, 16, 6, 14, 9, 14);
+                    path.cubicTo(12, 14, 15, 16, 15, 20);
+                    circle(17, 9, 2.6f);
+                    path.moveTo(16.5f, 14.5f);
+                    path.cubicTo(18.8f, 14.5f, 21, 16, 21, 19.5f);
+                    break;
+                case CHECKLIST:
+                    line(4, 6, 20, 6);
+                    line(4, 12, 14, 12);
+                    line(4, 18, 10, 18);
+                    path.moveTo(16, 16); path.lineTo(18, 18); path.lineTo(21, 14);
+                    break;
+                case USER:
+                    circle(12, 8, 3.6f);
+                    path.moveTo(4.5f, 20);
+                    path.cubicTo(4.5f, 16, 7.5f, 14, 12, 14);
+                    path.cubicTo(16.5f, 14, 19.5f, 16, 19.5f, 20);
+                    break;
+                case BELL:
+                    path.moveTo(6, 17);
+                    path.cubicTo(6, 14, 7, 12.5f, 7, 9.5f);
+                    path.cubicTo(7, 6.5f, 9, 4, 12, 4);
+                    path.cubicTo(15, 4, 17, 6.5f, 17, 9.5f);
+                    path.cubicTo(17, 12.5f, 18, 14, 18, 17);
+                    path.close();
+                    path.moveTo(10, 20);
+                    path.cubicTo(10.5f, 21.5f, 13.5f, 21.5f, 14, 20);
+                    break;
+                case SEARCH:
+                    circle(11, 11, 6);
+                    line(16, 16, 21, 21);
+                    break;
+                case PLAY:
+                    path.moveTo(8, 5); path.lineTo(19, 12); path.lineTo(8, 19); path.close();
+                    break;
+                case PLUS:
+                    line(12, 5, 12, 19);
+                    line(5, 12, 19, 12);
+                    break;
+                case MORE:
+                case DOTS:
+                    circle(5, 12, 1.7f);
+                    circle(12, 12, 1.7f);
+                    circle(19, 12, 1.7f);
+                    break;
+                case GIFT:
+                    roundRect(3, 8, 21, 21, 2);
+                    line(3, 12, 21, 12);
+                    line(12, 8, 12, 21);
+                    path.moveTo(12, 8);
+                    path.cubicTo(9, 8, 8, 5, 10, 4);
+                    path.cubicTo(12, 3, 13, 6, 12, 8);
+                    path.moveTo(12, 8);
+                    path.cubicTo(15, 8, 16, 5, 14, 4);
+                    path.cubicTo(12, 3, 11, 6, 12, 8);
+                    break;
+                case MAIL:
+                    roundRect(3, 5, 21, 19, 2);
+                    path.moveTo(3, 6); path.lineTo(12, 13); path.lineTo(21, 6);
+                    break;
+                case BOX:
+                    path.moveTo(3, 7); path.lineTo(12, 3); path.lineTo(21, 7);
+                    path.lineTo(21, 17); path.lineTo(12, 21); path.lineTo(3, 17); path.close();
+                    line(3, 7, 12, 11);
+                    line(12, 11, 21, 7);
+                    line(12, 11, 12, 21);
+                    break;
+                case COMPASS:
+                    circle(12, 12, 9);
+                    path.moveTo(15.5f, 8.5f); path.lineTo(13.5f, 13.5f);
+                    path.lineTo(8.5f, 15.5f); path.lineTo(10.5f, 10.5f); path.close();
+                    break;
+                case GRID:
+                    roundRect(4, 4, 10.5f, 10.5f, 2);
+                    roundRect(13.5f, 4, 20, 10.5f, 2);
+                    roundRect(4, 13.5f, 10.5f, 20, 2);
+                    roundRect(13.5f, 13.5f, 20, 20, 2);
+                    break;
+                case LIGHTNING:
+                    path.moveTo(13, 2); path.lineTo(5, 14); path.lineTo(11, 14);
+                    path.lineTo(10, 22); path.lineTo(19, 10); path.lineTo(13, 10); path.close();
+                    break;
+                case CLOCK:
+                    circle(12, 12, 9);
+                    line(12, 7, 12, 12);
+                    line(12, 12, 16, 14);
+                    break;
+                case TARGET:
+                    circle(12, 12, 9);
+                    circle(12, 12, 5);
+                    circle(12, 12, 1.4f);
+                    break;
+                case SHIELD:
+                    path.moveTo(12, 3);
+                    path.lineTo(20, 6);
+                    path.lineTo(20, 12);
+                    path.cubicTo(20, 17, 16, 20, 12, 21);
+                    path.cubicTo(8, 20, 4, 17, 4, 12);
+                    path.lineTo(4, 6);
+                    path.close();
+                    path.moveTo(8.5f, 12); path.lineTo(11, 14.5f); path.lineTo(15.5f, 9.5f);
+                    break;
+                case CLOUD:
+                    path.moveTo(7, 18);
+                    path.cubicTo(4, 18, 3, 16, 3, 14);
+                    path.cubicTo(3, 11, 5, 10, 7, 10);
+                    path.cubicTo(7, 6, 10, 4, 13, 4);
+                    path.cubicTo(17, 4, 20, 7, 20, 11);
+                    path.cubicTo(22, 11, 22, 18, 19, 18);
+                    path.close();
+                    break;
+                case UPLOAD:
+                    line(12, 16, 12, 4);
+                    path.moveTo(7, 9); path.lineTo(12, 4); path.lineTo(17, 9);
+                    line(5, 16, 5, 20);
+                    line(5, 20, 19, 20);
+                    line(19, 20, 19, 16);
+                    break;
+                case TRASH:
+                    line(4, 7, 20, 7);
+                    path.moveTo(9, 7); path.lineTo(9, 4); path.lineTo(15, 4); path.lineTo(15, 7);
+                    path.moveTo(6, 7); path.lineTo(7, 21); path.lineTo(17, 21); path.lineTo(18, 7);
+                    line(10, 11, 10, 18);
+                    line(14, 11, 14, 18);
+                    break;
+                case DOC:
+                    roundRect(6, 3, 18, 21, 2);
+                    line(9, 8, 15, 8);
+                    line(9, 12, 15, 12);
+                    line(9, 16, 13, 16);
+                    break;
+                case LOCK:
+                    roundRect(5, 11, 19, 21, 2);
+                    path.moveTo(8, 11); path.lineTo(8, 8);
+                    path.cubicTo(8, 5, 16, 5, 16, 8);
+                    path.lineTo(16, 11);
+                    break;
+                case EYE:
+                    path.moveTo(2, 12);
+                    path.cubicTo(6, 5, 18, 5, 22, 12);
+                    path.cubicTo(18, 19, 6, 19, 2, 12);
+                    path.close();
+                    circle(12, 12, 3);
+                    break;
+                case SNOW:
+                    for (int k = 0; k < 6; k++) {
+                        double a = Math.PI / 3 * k - Math.PI / 2;
+                        float x = (float) (12 + 9 * Math.cos(a));
+                        float y = (float) (12 + 9 * Math.sin(a));
+                        line(12, 12, x, y);
+                        for (int s = -1; s <= 1; s += 2) {
+                            double ba = a + s * Math.PI / 4;
+                            line(x - (float) (2.6 * Math.cos(a)), y - (float) (2.6 * Math.sin(a)),
+                                    x - (float) (5.2 * Math.cos(ba)), y - (float) (5.2 * Math.sin(ba)));
+                        }
+                    }
+                    break;
+                case CHECK:
+                    path.moveTo(5, 12); path.lineTo(10, 17); path.lineTo(20, 7);
+                    break;
+                default:
                     path.moveTo(9, 6); path.lineTo(15, 12); path.lineTo(9, 18);
                     break;
             }
@@ -675,12 +917,12 @@ public class UiStyle {
 
         @Override
         protected void onMeasure(int ws, int hs) {
-            setMeasuredDimension(dp(getContext(), 18), dp(getContext(), 18));
+            setMeasuredDimension(dp(getContext(), sizeDp), dp(getContext(), sizeDp));
         }
 
         @Override
         protected void onDraw(android.graphics.Canvas c) {
-            p.setStrokeWidth(dp(getContext(), 2));
+            p.setStrokeWidth(filled ? 0 : 1.9f);
             p.setColor(color);
             float scale = getWidth() / 24f;
             c.save();
@@ -690,7 +932,47 @@ public class UiStyle {
         }
     }
 
-    /** 圆环进度（自绘 drawArc，stroke 7dp，起点 -90°，白系：置于品牌渐变 Hero 上）。 */
+    /** 生成一个定色定尺的单色矢量图标。 */
+    public static Icon icon(android.content.Context ctx, int which, int color, int sizeDp) {
+        return new Icon(ctx, which, color, sizeDp);
+    }
+
+    /** 图标底盒：圆角浅底 + 居中图标（设计稿功能行/工具行的统一构件）。 */
+    public static android.widget.FrameLayout iconTile(android.content.Context ctx, int which,
+                                                      int iconColor, int bgColor,
+                                                      int boxDp, int iconDp, int radiusDp) {
+        android.widget.FrameLayout box = new android.widget.FrameLayout(ctx);
+        box.setBackground(roundRectDp(ctx, bgColor, radiusDp));
+        Icon ic = new Icon(ctx, which, iconColor, iconDp);
+        android.widget.FrameLayout.LayoutParams lp = new android.widget.FrameLayout.LayoutParams(
+                dp(ctx, iconDp), dp(ctx, iconDp), Gravity.CENTER);
+        box.addView(ic, lp);
+        return box;
+    }
+
+    /** 圆形雪花头像（设计稿 S3/S4）：蓝/青/橙/紫四色按种子稳定取色。 */
+    public static android.widget.FrameLayout snowAvatar(android.content.Context ctx,
+                                                        int sizeDp, String seed) {
+        android.widget.FrameLayout f = new android.widget.FrameLayout(ctx);
+        int h = Math.abs((seed == null ? "" : seed).hashCode());
+        int[][] colors = {
+                {0xFF2E5BFF, 0xFF22D3EE},
+                {0xFF0EA5A5, 0xFF2DD4BF},
+                {0xFFF59E0B, 0xFFF97316},
+                {0xFF6366F1, 0xFF8B5CF6},
+        };
+        int[] c = colors[h % colors.length];
+        GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, c);
+        g.setShape(GradientDrawable.OVAL);
+        f.setBackground(g);
+        int iconDp = Math.max(16, Math.round(sizeDp * 0.46f));
+        f.addView(new Icon(ctx, Icon.SNOW, WHITE, iconDp),
+                new android.widget.FrameLayout.LayoutParams(dp(ctx, iconDp), dp(ctx, iconDp),
+                        Gravity.CENTER));
+        return f;
+    }
+
+    /** 圆环进度（自绘 drawArc，stroke 9dp，起点 -90°，白/青渐变：置于品牌 Hero 上）。 */
     public static class Ring extends android.view.View {
         private float fraction;   // 0..1
         private String big = "", caption = "", suffix = "";
@@ -721,23 +1003,38 @@ public class UiStyle {
             invalidate();
         }
 
+        /** 环心文字：百分比（今日页 Hero 的 82% 样式）。 */
+        public void setPercent(int pct, String cap) {
+            this.big = pct + "%";
+            this.suffix = "";
+            this.caption = cap;
+            invalidate();
+        }
+
         @Override
         protected void onMeasure(int ws, int hs) {
-            setMeasuredDimension(dp(getContext(), 86), dp(getContext(), 86));
+            setMeasuredDimension(dp(getContext(), 96), dp(getContext(), 96));
         }
 
         @Override
         protected void onDraw(android.graphics.Canvas c) {
             float w = getWidth(), h = getHeight();
-            float stroke = dp(getContext(), 7);
+            float stroke = dp(getContext(), 8);
             p.setStyle(Paint.Style.STROKE);
             p.setStrokeWidth(stroke);
             p.setColor(0x33FFFFFF);
             android.graphics.RectF r = new android.graphics.RectF(stroke / 2, stroke / 2,
                     w - stroke / 2, h - stroke / 2);
             c.drawArc(r, 0, 360, false, p);
-            p.setColor(WHITE);
+            android.graphics.SweepGradient grad = new android.graphics.SweepGradient(
+                    w / 2, h / 2, new int[]{CYAN, WHITE, WHITE, CYAN},
+                    new float[]{0f, 0.35f, 0.98f, 1f});
+            android.graphics.Matrix m = new android.graphics.Matrix();
+            m.setRotate(-90, w / 2, h / 2);
+            grad.setLocalMatrix(m);
+            p.setShader(grad);
             c.drawArc(r, -90, 360 * fraction, false, p);
+            p.setShader(null);
             if (big != null && !big.isEmpty()) {
                 p.setStyle(Paint.Style.FILL);
                 p.setTextAlign(Paint.Align.CENTER);
@@ -746,28 +1043,28 @@ public class UiStyle {
                 float cx = w / 2;
                 if (suffix != null && !suffix.isEmpty()) {
                     p.setTypeface(Typeface.DEFAULT_BOLD);
-                    p.setTextSize(dp(getContext(), 17));
+                    p.setTextSize(dp(getContext(), 20));
                     float w1 = p.measureText(big);
                     p.setTypeface(Typeface.DEFAULT);
                     p.setTextSize(dp(getContext(), 12));
                     float w2 = p.measureText(suffix);
                     float x0 = w / 2 - (w1 + w2) / 2;
                     p.setTypeface(Typeface.DEFAULT_BOLD);
-                    p.setTextSize(dp(getContext(), 17));
-                    c.drawText(big, x0 + w1 / 2, h / 2 + dp(getContext(), 1), p);
+                    p.setTextSize(dp(getContext(), 20));
+                    c.drawText(big, x0 + w1 / 2, h / 2 + dp(getContext(), 2), p);
                     p.setTypeface(Typeface.DEFAULT);
                     p.setTextSize(dp(getContext(), 12));
                     p.setColor(BRAND_100);
-                    c.drawText(suffix, x0 + w1 + w2 / 2, h / 2 + dp(getContext(), 1), p);
+                    c.drawText(suffix, x0 + w1 + w2 / 2, h / 2 + dp(getContext(), 2), p);
                 } else {
                     p.setTypeface(Typeface.DEFAULT_BOLD);
-                    p.setTextSize(dp(getContext(), 17));
-                    c.drawText(big, cx, h / 2 + dp(getContext(), 1), p);
+                    p.setTextSize(dp(getContext(), 24));
+                    c.drawText(big, cx, h / 2 + dp(getContext(), 4), p);
                 }
                 p.setTypeface(Typeface.DEFAULT);
-                p.setTextSize(dp(getContext(), 8));
+                p.setTextSize(dp(getContext(), 10));
                 p.setColor(BRAND_100);
-                c.drawText(caption, cx, h / 2 + dp(getContext(), 13), p);
+                c.drawText(caption, cx, h / 2 + dp(getContext(), 20), p);
             }
         }
     }

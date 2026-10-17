@@ -93,6 +93,12 @@ public class FunctionActivity extends Activity {
             finish();
             return;
         }
+        try {
+            getWindow().setStatusBarColor(UiStyle.BG_V2);
+            getWindow().getDecorView().setSystemUiVisibility(
+                    android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        } catch (Throwable ignored) {
+        }
         setContentView(buildUi());
         // 服务器模式：进页先拉一次服务器最新状态，回写后重渲染（否则看到的是上次快照）
         if (com.carlos.vault.VaultSync.isServerMode(this)
@@ -174,74 +180,115 @@ public class FunctionActivity extends Activity {
         LinearLayout bar = new LinearLayout(this);
         bar.setOrientation(LinearLayout.HORIZONTAL);
         bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(18), dp(16), dp(4));
-        TextView back = new TextView(this);
-        back.setText("‹");
-        back.setTextSize(26);
-        back.setTextColor(UiStyle.BRAND);
-        back.setPadding(dp(6), 0, dp(12), 0);
-        UiStyle.press(back);
-        back.setOnClickListener(v -> finish());
-        bar.addView(back);
+        bar.setPadding(dp(16), dp(14), dp(14), dp(6));
+        android.widget.FrameLayout backWrap = new android.widget.FrameLayout(this);
+        backWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.INK, 22),
+                new android.widget.FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+        UiStyle.press(backWrap);
+        backWrap.setOnClickListener(v -> finish());
+        bar.addView(backWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
         TextView title = new TextView(this);
-        title.setText(fn.name);
-        title.setTextSize(19);
+        title.setText("功能详情");
+        title.setTextSize(20);
         title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.BRAND_TEXT);
-        bar.addView(title);
+        title.setTextColor(UiStyle.INK);
+        title.setPadding(dp(6), 0, 0, 0);
+        bar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         root.addView(bar);
 
-        // 信息卡
-        LinearLayout info = UiStyle.card(this);
-        info.setPadding(dp(16), dp(12), dp(16), dp(12));
+        // 功能 Hero：图标 + 名称/描述 + 今日状态
+        LinearLayout info = UiStyle.outlineCard(this);
+        info.setOrientation(LinearLayout.HORIZONTAL);
+        info.setGravity(Gravity.CENTER_VERTICAL);
+        info.setPadding(dp(16), dp(16), dp(16), dp(16));
+        LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        infoLp.setMargins(dp(18), dp(6), dp(18), 0);
+        info.setLayoutParams(infoLp);
+        int fnIcon = "login_rewards".equals(fn.id) ? UiStyle.Icon.GIFT : UiStyle.Icon.DOC;
+        info.addView(UiStyle.iconTile(this, fnIcon, UiStyle.BRAND_TEXT,
+                UiStyle.BRAND_50, 54, 26, 14),
+                new LinearLayout.LayoutParams(dp(54), dp(54)));
+        LinearLayout infoCol = new LinearLayout(this);
+        infoCol.setOrientation(LinearLayout.VERTICAL);
+        infoCol.setPadding(dp(14), 0, 0, 0);
+        TextView fnName = new TextView(this);
+        fnName.setText(fn.name);
+        fnName.setTextSize(20);
+        fnName.setTypeface(Typeface.DEFAULT_BOLD);
+        fnName.setTextColor(UiStyle.INK);
+        infoCol.addView(fnName);
         TextView desc = new TextView(this);
         desc.setText(fn.desc);
-        desc.setTextSize(13);
-        desc.setTextColor(UiStyle.INK);
-        info.addView(desc);
-        TextView role = new TextView(this);
-        String roleName = "";
-        try {
-            for (RoleStore.Role r : RoleStore.roles(this, account.fpid)) {
-                if (r.serverid == serverid && r.name != null && !r.name.isEmpty()) {
-                    roleName = r.name;
-                    break;
-                }
-            }
-        } catch (Throwable ignored) {
-        }
-        role.setText("角色：" + (roleName.isEmpty()
-                ? account.label + (serverid > 0 ? " · K" + serverid : "")
-                : roleName + " · K" + serverid + "（" + account.label + "）")
-                + "（配置只作用于本角色）");
-        role.setTextSize(12);
-        role.setTextColor(UiStyle.INK2);
-        role.setPadding(0, dp(6), 0, 0);
-        info.addView(role);
+        desc.setTextSize(12);
+        desc.setTextColor(UiStyle.INK2);
+        desc.setPadding(0, dp(4), 0, 0);
+        infoCol.addView(desc);
 
-        // 总开关行（与子项开关同语言的 iOS Switch）：关闭后自动日常/一键执行跳过本功能。
-        // 底层配置键不变（cfg[fn.id]），执行链路照旧读取。
+        int stNow = new com.carlos.vault.daily.LogStore(this)
+                .status(account.fpid, serverid, fn.id);
+        String stType = stNow == com.carlos.vault.daily.LogStore.ST_DONE ? "ok"
+                : stNow == com.carlos.vault.daily.LogStore.ST_RUNNING ? "run"
+                : stNow == com.carlos.vault.daily.LogStore.ST_FAILED ? "err" : "idle";
+        String stText = stNow == com.carlos.vault.daily.LogStore.ST_DONE ? "今日已跑"
+                : stNow == com.carlos.vault.daily.LogStore.ST_RUNNING ? "进行中"
+                : stNow == com.carlos.vault.daily.LogStore.ST_FAILED ? "上次失败" : "今日未跑";
+        LinearLayout stRow = new LinearLayout(this);
+        stRow.setOrientation(LinearLayout.HORIZONTAL);
+        stRow.setGravity(Gravity.CENTER_VERTICAL);
+        stRow.setPadding(0, dp(8), 0, 0);
+        stRow.addView(UiStyle.badge(this, stType, "● " + stText));
+        long nextAt = com.carlos.vault.daily.RoleStore.schedule(this, account.fpid).nextRunAt;
+        TextView next = new TextView(this);
+        next.setText(nextAt > 0 ? "下次自动："
+                + new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
+                .format(new java.util.Date(nextAt)) : "下次自动：未开启");
+        next.setTextSize(11);
+        next.setTextColor(UiStyle.INK2);
+        next.setPadding(dp(8), 0, 0, 0);
+        stRow.addView(next);
+        infoCol.addView(stRow);
+        info.addView(infoCol, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(info);
+
+        // 立即执行（规范主按钮：52dp · 品牌实心 · 按压反馈；未开放置灰）
+        LinearLayout btnRow = new LinearLayout(this);
+        btnRow.setOrientation(LinearLayout.HORIZONTAL);
+        btnRow.setPadding(dp(18), dp(14), dp(18), 0);
+        TextView run = actionButton(fn.implemented ? "立即执行一次" : "功能待开放", fn.implemented);
+        btnRow.addView(run, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
+        root.addView(btnRow);
+
+        // 加入自动日常
         Map<String, Boolean> cfg = configStore.roleConfig(account.fpid, serverid);
-        // roleConfig 在无角色配置/无旧号级配置/无 meta 模板时返回 null（全新状态）——
-        // 判空兜底（与 FnParams 读取侧的 null 回退同款），否则功能详情页一开就 NPE。
         Boolean on = cfg == null ? null : cfg.get(fn.id);
-        LinearLayout enableRow = new LinearLayout(this);
+        LinearLayout enableRow = UiStyle.outlineCard(this);
         enableRow.setOrientation(LinearLayout.HORIZONTAL);
         enableRow.setGravity(Gravity.CENTER_VERTICAL);
-        enableRow.setPadding(0, dp(10), 0, 0);
+        enableRow.setPadding(dp(14), dp(14), dp(14), dp(14));
+        LinearLayout.LayoutParams erlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        erlp.setMargins(dp(18), dp(14), dp(18), 0);
+        enableRow.setLayoutParams(erlp);
+        enableRow.addView(UiStyle.iconTile(this, UiStyle.Icon.LIGHTNING, UiStyle.BRAND_TEXT,
+                UiStyle.BRAND_50, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
         LinearLayout enableCol = new LinearLayout(this);
         enableCol.setOrientation(LinearLayout.VERTICAL);
+        enableCol.setPadding(dp(12), 0, dp(8), 0);
         TextView enableTitle = new TextView(this);
-        enableTitle.setText("启用此功能");
-        enableTitle.setTextSize(13);
+        enableTitle.setText("加入自动日常");
+        enableTitle.setTextSize(15);
         enableTitle.setTypeface(Typeface.DEFAULT_BOLD);
         enableTitle.setTextColor(UiStyle.INK);
         enableCol.addView(enableTitle);
         TextView enableSub = new TextView(this);
-        enableSub.setText("关闭后，自动日常与一键执行都会跳过本功能");
-        enableSub.setTextSize(11);
+        enableSub.setText("按角色独立设置 · 关闭后仅手动执行");
+        enableSub.setTextSize(11.5f);
         enableSub.setTextColor(UiStyle.INK2);
-        enableSub.setPadding(0, dp(2), 0, 0);
+        enableSub.setPadding(0, dp(3), 0, 0);
         enableCol.addView(enableSub);
         enableRow.addView(enableCol, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -253,21 +300,11 @@ public class FunctionActivity extends Activity {
                     if (c == null) c = configStore.metaConfig(DailyTasks.all());
                     c.put(fn.id, isChecked);
                     configStore.saveRoleConfig(account.fpid, serverid, c);
-                    toast(isChecked ? "已启用" : "已停用");
+                    toast(isChecked ? "已加入自动日常" : "已从自动日常移除");
                 });
         swRef[0] = toggle;
         enableRow.addView(toggle);
-        info.addView(enableRow);
-        root.addView(info);
-
-        // 立即执行（规范主按钮：48dp · 品牌实心 · 按压反馈；未开放置灰）
-        LinearLayout btnRow = new LinearLayout(this);
-        btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setPadding(dp(16), dp(12), dp(16), 0);
-        TextView run = actionButton(fn.implemented ? "立即执行" : "功能待开放", fn.implemented);
-        btnRow.addView(run, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
-        root.addView(btnRow);
+        root.addView(enableRow);
 
         // 整页滚动区：子项实时状态与配置 → 领取内容 → 运行记录
         ScrollView scroll = new ScrollView(this);
@@ -332,7 +369,7 @@ public class FunctionActivity extends Activity {
 
         // ① 子项实时状态与配置（含 每子项实时状态行/✓今日/上次动作/开关/策略）
         TextView subTitle = new TextView(this);
-        subTitle.setText("子项状态 · 配置");
+        subTitle.setText("执行参数");
         subTitle.setTextSize(14);
         subTitle.setTypeface(Typeface.DEFAULT_BOLD);
         subTitle.setTextColor(UiStyle.INK);
@@ -348,7 +385,7 @@ public class FunctionActivity extends Activity {
 
         // ② 领取内容（从运行记录提取成功领取条目）
         TextView claimTitle = new TextView(this);
-        claimTitle.setText("领取内容");
+        claimTitle.setText("执行明细");
         claimTitle.setTextSize(14);
         claimTitle.setTypeface(Typeface.DEFAULT_BOLD);
         claimTitle.setTextColor(UiStyle.INK);
@@ -363,7 +400,7 @@ public class FunctionActivity extends Activity {
 
         // ③ 运行记录（功能级，最近50条）
         TextView logTitle = new TextView(this);
-        logTitle.setText("运行记录");
+        logTitle.setText("最近执行");
         logTitle.setTextSize(14);
         logTitle.setTypeface(Typeface.DEFAULT_BOLD);
         logTitle.setTextColor(UiStyle.INK);

@@ -23,7 +23,6 @@ import com.carlos.vault.daily.DailyRunner;
 import com.carlos.vault.daily.DailySchedulerService;
 import com.carlos.vault.daily.FnRegistry;
 import com.carlos.vault.daily.LogStore;
-import com.carlos.vault.daily.ProtoLogger;
 import com.carlos.vault.daily.RoleStore;
 import com.carlos.vault.license.LicenseManager;
 import com.carlos.vault.license.LicenseTicket;
@@ -46,12 +45,15 @@ public class HomeActivity extends AccountVaultActivity {
     private FrameLayout content;
     private final LinearLayout[] pages = new LinearLayout[4];
     private final TextView[] navItems = new TextView[4];
-    private final View[] navBars = new View[4];
+    private final LinearLayout[] navPills = new LinearLayout[4];
+    private final UiStyle.Icon[] navIcons = new UiStyle.Icon[4];
 
     // 今日页
     private TextView heroDone, heroSub, statRun, statErr, statWait, topCaption;
     private UiStyle.Ring heroRing;
-    private TextView autoStateBtn;   // 自动执行状态卡（点=开关自动日常）
+    private TextView autoStateBtn;   // 兼容旧刷新入口（今日页不再展示）
+    private UiStyle.Switch todayAutoSwitch;
+    private TextView todayAutoSub;
     private TextView onlineDot;      // 当前角色在线状态（容器登录态口径）
     private TextView actVal, actTier;      // 活跃度档位进度条（进度表达规范）
     private View actFill;
@@ -73,10 +75,14 @@ public class HomeActivity extends AccountVaultActivity {
     private int accGen;            // 防止快速刷新时旧结果覆盖新结果
     private int accView;           // 0=列表视图 1=卡片墙（旧版角色大方块卡）
     private android.widget.LinearLayout accSeg;   // 列表|卡片 分段（选中态跟随刷新）
+    private TextView accViewList, accViewCard;    // 设计稿 S3 的「列表 / 卡片」页签
+    private TextView accBatchBtn;                 // 批量管理按钮（长按行进入批量态时同步文案）
+    private boolean batchMode;                    // 批量管理态：行首显示勾选框
     private final java.util.Set<String> expandedAccs = new java.util.HashSet<>();
 
     // 任务页
     private LinearLayout taskRows;
+    private ScrollView taskScroll;
     private TextView taskCap, bannerTitle, bannerSub, winBtn;
     private UiStyle.Switch autoSwitch;
     private UiStyle.Switch keepSwitch;   // 24h 常驻在线开关（心跳+自动互助，与自动日常正交）
@@ -85,6 +91,11 @@ public class HomeActivity extends AccountVaultActivity {
     private TextView helpActionBtn;      // 今日页「一键帮助全盟」按钮
     private final List<TextView> catChips = new ArrayList<>();
     private int taskCat = 0;
+    private String taskQuery = "";      // 日常中心搜索词（空=按分类浏览；非空=跨分类搜索）
+    private final java.util.Set<String> favFns = new java.util.LinkedHashSet<>();  // 常用功能 id（持久化，保持展示顺序）
+    private EditText taskSearch;        // 功能搜索框（buildTaskPage 建一次，TextWatcher 驱动过滤）
+    private TextView searchClear;       // 搜索框右侧「清除」（有词时常显）
+    private TextView searchCap;         // 搜索结果计数 / 空态提示行
     private AccountStore.Account taskAccount;
     private String expandedFn;
     private UiStyle.Switch fnSwRef(UiStyle.Switch s) { return s; }
@@ -116,9 +127,17 @@ public class HomeActivity extends AccountVaultActivity {
 
     // 我的页
     private TextView licenseDays;
+    private TextView licenseMeta;   // 授权卡次行：到期日 + 绑定规则
+    private TextView licenseBind;   // 授权卡底行：已绑定设备数
+    private TextView licenseStatus; // 生效中/未激活徽标
+    private TextView licenseExpire; // 授权卡底行：到期日
 
     // 执行引擎（可离开：静态态 + 附着的执行页回调）
     static final RunState RUN = new RunState();
+
+    /** 执行页展示态（不参与引擎）：本批账号名单（逐号结果行）+ 开局时间戳（已运行时长）。 */
+    private List<String> runNames = new ArrayList<>();
+    private long runStartedAt;
 
     static class RunState {
         volatile boolean running;
@@ -144,14 +163,17 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 由父类 onCreate 在核心初始化后调用（替代旧版 buildUi）。 */
     void buildHomeUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
+        try {
+            getWindow().setStatusBarColor(UiStyle.BG_V2);
+            getWindow().getDecorView().setSystemUiVisibility(View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        } catch (Throwable ignored) {
+        }
+        FrameLayout root = new FrameLayout(this);
         root.setBackgroundColor(UiStyle.BG_V2);
 
         content = new FrameLayout(this);
-        root.addView(content, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        root.addView(buildBottomNav());
+        root.addView(content, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         for (int i = 0; i < 4; i++) {
             pages[i] = new LinearLayout(this);
@@ -159,14 +181,29 @@ public class HomeActivity extends AccountVaultActivity {
             content.addView(pages[i], new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
+        View nav = buildBottomNav();
+        FrameLayout.LayoutParams nlp = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(64), Gravity.BOTTOM);
+        nlp.leftMargin = dp(12);
+        nlp.rightMargin = dp(12);
+        nlp.bottomMargin = dp(12);
+        root.addView(nav, nlp);
+
         currentRoleKey = getSharedPreferences("home", MODE_PRIVATE).getString("current_role", null);
         alignActiveRoleWithCurrent();
+        loadFavs();   // 常用功能（S7 日常中心）先于任何 refreshTasks 加载
         buildTodayPage();
         buildAccountPage();
         buildTaskPage();
         buildMinePage();
         setContentView(root);
         switchTab(0);
+    }
+
+    @Override
+    protected void addMainMenuExtras(LinearLayout box, LinearLayout.LayoutParams rowLp) {
+        box.addView(UiStyle.makeRowBtn(this, "🤝", "一键帮助全盟", UiStyle.BRAND,
+                this::oneKeyHelpAll), rowLp);
     }
 
     void onEngineReady() {
@@ -194,6 +231,10 @@ public class HomeActivity extends AccountVaultActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        // 账号详情页也允许切角色（同写 activeRole + home:current_role）；本页的
+        // currentRoleKey 是进页时读的快照，返回时必须重读，否则 Hero/配置仍按旧角色。
+        currentRoleKey = getSharedPreferences("home", MODE_PRIVATE)
+                .getString("current_role", null);
         refreshAllPages();
     }
 
@@ -219,13 +260,7 @@ public class HomeActivity extends AccountVaultActivity {
                 if (a == null || a.token == null || a.token.isEmpty()
                         || a.fpid == null || a.fpid.isEmpty()) continue;
                 idx++;
-                final int prog = idx;
-                runOnUiThread(() -> {
-                    if (accountCap != null) {
-                        accountCap.setText("核对中 " + prog + "/" + all.size()
-                                + " · 工作区 " + workspaceAccounts().size());
-                    }
-                });
+                // 设计稿 S3 副题固定为「账号 / 工作区 / 在线」统计，核对进度不再占用该位置
                 if (!serverMode) {
                     try {
                         DailyRunner.syncOnly(this, a.fpid, a.token, mainRoleSid(a));
@@ -272,74 +307,63 @@ public class HomeActivity extends AccountVaultActivity {
 
     private View buildBottomNav() {
         LinearLayout nav = new LinearLayout(this);
-        nav.setOrientation(LinearLayout.VERTICAL);
-        nav.setBackgroundColor(UiStyle.WHITE);
-        // 顶部 1px 分割线（独立垂直层，不挤占横向空间）
-        View line = new View(this);
-        line.setBackgroundColor(UiStyle.LINE);
-        nav.addView(line, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 1));
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        nav.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(60)));
+        nav.setOrientation(LinearLayout.HORIZONTAL);
+        nav.setGravity(Gravity.CENTER_VERTICAL);
+        nav.setPadding(dp(4), dp(4), dp(4), dp(4));
+        GradientDrawable nbg = new GradientDrawable();
+        nbg.setColor(UiStyle.WHITE);
+        nbg.setCornerRadius(dp(32));
+        nav.setBackground(nbg);
+        nav.setElevation(dp(10));
         String[] names = {"今日", "账号", "日常", "我的"};
-        String[] icons = {"◉", "☰", "⚙", "▣"};
+        int[] icons = {UiStyle.Icon.HOME, UiStyle.Icon.USERS,
+                UiStyle.Icon.CHECKLIST, UiStyle.Icon.USER};
         for (int i = 0; i < 4; i++) {
             final int idx = i;
             LinearLayout item = new LinearLayout(this);
             item.setOrientation(LinearLayout.VERTICAL);
-            item.setGravity(Gravity.CENTER_HORIZONTAL);
-            item.setPadding(0, dp(6), 0, 0);
-            // 选中指示：顶部 16dp 短横条
-            View bar = new View(this);
-            bar.setBackgroundColor(UiStyle.BRAND);
-            item.addView(bar, new LinearLayout.LayoutParams(dp(16), dp(3)));
-            bar.setTag("bar" + i);
-            // 图标：定高 22dp + 关闭字体内边距。◉/☰/⚙/▣ 是象形字形，回退字体的
-            // ascent/descent 远超字号，wrap_content 下字形 ink 会溢出视图盒压到
-            // 下方文字上（选中态蓝粗体下尤其明显）。定高盒 + CENTER 重力把字形
-            // 收进盒内，与文字之间再留 2dp 间距，保证永不相叠。
-            TextView icon = new TextView(this);
-            icon.setText(icons[i]);
-            icon.setTextSize(16);
-            icon.setGravity(Gravity.CENTER);
-            icon.setIncludeFontPadding(false);
-            icon.setTag("icon" + i);
-            item.addView(icon, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(22)));
-            // 文字：与图标固定 2dp 间距；同样关字体 padding，10.5sp 粗体也不再侵占图标盒
+            item.setGravity(Gravity.CENTER);
+            LinearLayout pill = new LinearLayout(this);
+            pill.setOrientation(LinearLayout.VERTICAL);
+            pill.setGravity(Gravity.CENTER);
+            pill.setPadding(dp(30), dp(4), dp(30), dp(4));
+            UiStyle.Icon icon = new UiStyle.Icon(this, icons[i], UiStyle.INK2, 22);
+            pill.addView(icon, new LinearLayout.LayoutParams(dp(22), dp(22)));
             TextView label = new TextView(this);
             label.setText(names[i]);
             label.setTextSize(10.5f);
             label.setTypeface(Typeface.DEFAULT_BOLD);
             label.setGravity(Gravity.CENTER);
+            label.setTextColor(UiStyle.INK2);
             label.setIncludeFontPadding(false);
-            label.setTag("label" + i);
             LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            llp.topMargin = dp(2);
-            item.addView(label, llp);
-            UiStyle.press(item);
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            llp.topMargin = dp(3);
+            pill.addView(label, llp);
+            UiStyle.press(pill);
+            pill.setOnClickListener(v -> switchTab(idx));
+            item.addView(pill, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(56)));
             item.setOnClickListener(v -> switchTab(idx));
-            navBars[i] = bar;
+            navIcons[i] = icon;
             navItems[i] = label;
-            row.addView(item, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 1));
+            navPills[i] = pill;
+            nav.addView(item, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1));
         }
-        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        nav.setLayoutParams(nlp);
         return nav;
     }
 
     private void switchTab(int which) {
         for (int i = 0; i < 4; i++) {
             pages[i].setVisibility(i == which ? View.VISIBLE : View.GONE);
-            navItems[i].setTextColor(i == which ? UiStyle.BRAND_TEXT : UiStyle.INK2);
-            navItems[i].setTypeface(i == which ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-            if (navBars[i] != null) {
-                navBars[i].setVisibility(i == which ? View.VISIBLE : View.INVISIBLE);
-            }
+            boolean sel = i == which;
+            GradientDrawable pill = new GradientDrawable();
+            pill.setCornerRadius(dp(26));
+            pill.setColor(sel ? UiStyle.BRAND : android.graphics.Color.TRANSPARENT);
+            navPills[i].setBackground(pill);
+            navItems[i].setTextColor(sel ? UiStyle.WHITE : UiStyle.INK2);
+            if (navIcons[i] != null) navIcons[i].setColor(sel ? UiStyle.WHITE : UiStyle.INK2);
         }
         if (which == 0) refreshToday();
         if (which == 1) refreshAccounts(true);
@@ -357,12 +381,12 @@ public class HomeActivity extends AccountVaultActivity {
         ScrollView sc = new ScrollView(this);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(10), dp(18), dp(20));
+        box.setPadding(dp(18), dp(12), dp(18), dp(110));
         sc.addView(box);
         pages[0].addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // —— 顶栏：标题 + 日期·自动日常 + ☰ ——
+        // —— 顶栏：标题 + 日期·自动日常 + 通知铃 ——
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -370,38 +394,48 @@ public class HomeActivity extends AccountVaultActivity {
         tb.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
         title.setText("无尽号库");
-        title.setTextSize(19);
+        title.setTextSize(24);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
         tb.addView(title);
         topCaption = new TextView(this);
-        topCaption.setTextSize(11.5f);
-        topCaption.setTextColor(UiStyle.BRAND_TEXT);
+        topCaption.setTextSize(12);
+        topCaption.setTextColor(UiStyle.INK2);
         topCaption.setTypeface(Typeface.DEFAULT_BOLD);
+        topCaption.setPadding(0, dp(3), 0, 0);
         tb.addView(topCaption);
         top.addView(tb, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView menu = new TextView(this);
-        menu.setText("☰");
-        menu.setTextSize(20);
-        menu.setTextColor(UiStyle.INK);
-        menu.setPadding(dp(10), dp(6), dp(4), dp(6));
-        UiStyle.press(menu);
-        menu.setOnClickListener(v -> showMainMenu());
-        top.addView(menu);
+        FrameLayout bellWrap = new FrameLayout(this);
+        GradientDrawable bellBg = new GradientDrawable();
+        bellBg.setColor(UiStyle.WHITE);
+        bellBg.setCornerRadius(dp(22));
+        bellWrap.setBackground(bellBg);
+        bellWrap.setElevation(dp(2));
+        bellWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.BELL, UiStyle.INK, 20),
+                new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
+        View redDot = new View(this);
+        redDot.setBackground(UiStyle.roundRect(UiStyle.ERR_SOLID, dp(4)));
+        FrameLayout.LayoutParams rdlp = new FrameLayout.LayoutParams(dp(8), dp(8),
+                Gravity.TOP | Gravity.RIGHT);
+        rdlp.topMargin = dp(8);
+        rdlp.rightMargin = dp(9);
+        bellWrap.addView(redDot, rdlp);
+        UiStyle.press(bellWrap);
+        bellWrap.setOnClickListener(v -> showMainMenu());
+        top.addView(bellWrap, new LinearLayout.LayoutParams(dp(44), dp(44)));
         box.addView(top);
 
-        // —— Hero 卡（原型同款：环+完成度+当前角色+切换账号/切换角色双按钮）——
+        // —— Hero 卡：环形完成度 + 当前角色/活跃度 + 双跑按钮 ——
         LinearLayout hero = new LinearLayout(this);
         hero.setOrientation(LinearLayout.VERTICAL);
-        hero.setPadding(dp(16), dp(16), dp(16), dp(14));
-        GradientDrawable hg = new GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                new int[]{UiStyle.BRAND_PRESS, UiStyle.BRAND});
+        hero.setPadding(dp(18), dp(18), dp(18), dp(16));
+        GradientDrawable hg = new GradientDrawable();
+        hg.setColor(UiStyle.BRAND);
         hg.setCornerRadius(dp(20));
         hero.setBackground(hg);
         LinearLayout.LayoutParams hlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hlp.topMargin = dp(12);
+        hlp.topMargin = dp(14);
         box.addView(hero, hlp);
 
         // 左：环（数字在环内）；右：信息行 + 活跃度档位条（规范第一张截图：环与活跃度并排）
@@ -412,24 +446,28 @@ public class HomeActivity extends AccountVaultActivity {
         heroTop.addView(heroRing);
         LinearLayout right = new LinearLayout(this);
         right.setOrientation(LinearLayout.VERTICAL);
-        right.setPadding(dp(16), 0, 0, 0);
+        right.setPadding(dp(18), 0, 0, 0);
         LinearLayout heroSubRow = new LinearLayout(this);
         heroSubRow.setOrientation(LinearLayout.HORIZONTAL);
         heroSubRow.setGravity(Gravity.CENTER_VERTICAL);
         heroSub = new TextView(this);
-        heroSub.setTextSize(11.5f);
-        heroSub.setTextColor(UiStyle.BRAND_100);
+        heroSub.setTextSize(16);
+        heroSub.setTypeface(Typeface.DEFAULT_BOLD);
+        heroSub.setTextColor(UiStyle.WHITE);
+        heroSub.setMaxLines(1);
+        heroSub.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heroSubRow.addView(heroSub, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        heroSubRow.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON_DOWN,
+                UiStyle.BRAND_100, 16), new LinearLayout.LayoutParams(dp(16), dp(16)));
         onlineDot = new TextView(this);
         onlineDot.setText("· 检测中");
         onlineDot.setTextSize(11.5f);
         onlineDot.setTypeface(Typeface.DEFAULT_BOLD);
-        onlineDot.setTextColor(UiStyle.BRAND_100);
-        onlineDot.setPadding(dp(6), 0, 0, 0);
+        onlineDot.setTextColor(UiStyle.ON_BRAND_OK);
         heroSubRow.addView(onlineDot);
-        // （keepDot 已移除：M3 起 onlineDot 即显示当前角色的常驻会话状态，
-        //  旧「◉ 常驻在线」徽标与之重复）
+        UiStyle.press(heroSubRow);
+        heroSubRow.setOnClickListener(v -> showRolePicker());
         right.addView(heroSubRow);
 
         // 活跃度档位进度条（进度表达规范：当前值/满档 + 下一档还差多少）
@@ -448,7 +486,7 @@ public class HomeActivity extends AccountVaultActivity {
         actRow.addView(actVal);
         LinearLayout.LayoutParams arlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        arlp.topMargin = dp(8);
+        arlp.topMargin = dp(10);
         right.addView(actRow, arlp);
         LinearLayout actBar = new LinearLayout(this);
         actBar.setOrientation(LinearLayout.HORIZONTAL);
@@ -468,12 +506,12 @@ public class HomeActivity extends AccountVaultActivity {
         heroTop.addView(right, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         hero.addView(heroTop);
 
-        // 双按钮并行一行（规范第一张截图：切换账号 + 切换角色在下方并排）
+        // 双按钮：切换账号（主）/ 切换角色（次）——数据全自动，这里只做切换
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setGravity(Gravity.CENTER_VERTICAL);
-        btnRow.setPadding(0, dp(14), 0, 0);
-        // 双按钮：切换账号（主）/ 切换角色（次）——数据全自动，这里只做切换
+        btnRow.setPadding(0, dp(16), 0, 0);
+
         TextView accBtn = new TextView(this);
         accBtn.setText("切换账号");
         accBtn.setTextSize(14.5f);
@@ -489,6 +527,7 @@ public class HomeActivity extends AccountVaultActivity {
         accBtn.setOnClickListener(v -> showAccountSwitcher());
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(0, dp(48), 1.35f);
         btnRow.addView(accBtn, mlp);
+
         TextView roleBtn = new TextView(this);
         roleBtn.setText("切换角色");
         roleBtn.setTextSize(13);
@@ -507,33 +546,95 @@ public class HomeActivity extends AccountVaultActivity {
         btnRow.addView(roleBtn, olp);
         hero.addView(btnRow);
 
-        // 自动执行状态行（点击=开关）
-        autoStateBtn = new TextView(this);
-        autoStateBtn.setTextSize(11.5f);
-        autoStateBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        autoStateBtn.setTextColor(UiStyle.BRAND_100);
-        autoStateBtn.setGravity(Gravity.CENTER);
-        autoStateBtn.setPadding(dp(8), dp(10), dp(8), dp(2));
-        UiStyle.press(autoStateBtn);
-        autoStateBtn.setOnClickListener(v -> {
+        // —— 自动日常 / 24h 常驻在线 双卡 ——
+        LinearLayout duo = new LinearLayout(this);
+        duo.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams duoLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(136));
+        duoLp.topMargin = dp(12);
+        box.addView(duo, duoLp);
+
+        LinearLayout autoCard = new LinearLayout(this);
+        autoCard.setOrientation(LinearLayout.VERTICAL);
+        autoCard.setPadding(dp(12), dp(12), dp(12), dp(8));
+        autoCard.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 16, UiStyle.LINE));
+        autoCard.addView(UiStyle.iconTile(this, UiStyle.Icon.LIGHTNING,
+                UiStyle.BRAND_TEXT, UiStyle.BRAND_50, 32, 18, 10),
+                new LinearLayout.LayoutParams(dp(32), dp(32)));
+        TextView autoTitle = new TextView(this);
+        autoTitle.setText("自动日常");
+        autoTitle.setTextSize(14);
+        autoTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        autoTitle.setTextColor(UiStyle.INK);
+        autoTitle.setPadding(0, dp(8), 0, 0);
+        autoCard.addView(autoTitle);
+        todayAutoSub = new TextView(this);
+        todayAutoSub.setTextSize(10.5f);
+        todayAutoSub.setTextColor(UiStyle.INK2);
+        todayAutoSub.setPadding(0, dp(3), 0, 0);
+        autoCard.addView(todayAutoSub);
+        autoCard.addView(new View(this), new LinearLayout.LayoutParams(0, 0, 1));
+        todayAutoSwitch = new UiStyle.Switch(this, false, () -> {
             AccountStore.Account cra = currentRoleAccount();
             if (cra == null) {
                 toast("没有可用账号");
+                todayAutoSwitch.setOn(false);
                 return;
             }
             RoleStore.Schedule sch2 = RoleStore.schedule(this, cra.fpid);
-            sch2.autoEnabled = !sch2.autoEnabled;
+            sch2.autoEnabled = todayAutoSwitch.isOn();
             RoleStore.saveSchedule(this, cra.fpid, sch2);
-            // 开关变化必须同步服务器（RoundScheduler 按 auto 排整轮；漏同步=服务器永远不知道）
             VaultSync.onAccountsChanged(this);
-            toast("自动日常已" + (sch2.autoEnabled ? "开启" : "关闭"));
             refreshToday();
+            refreshTasks();
         });
-        LinearLayout.LayoutParams aslp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        aslp.topMargin = dp(8);
-        autoStateBtn.setLayoutParams(aslp);
-        hero.addView(autoStateBtn);
+        autoCard.addView(todayAutoSwitch);
+        LinearLayout.LayoutParams aclp = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 1);
+        aclp.rightMargin = dp(10);
+        duo.addView(autoCard, aclp);
+
+        LinearLayout keepCard = new LinearLayout(this);
+        keepCard.setOrientation(LinearLayout.VERTICAL);
+        keepCard.setPadding(dp(12), dp(12), dp(12), dp(8));
+        keepCard.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 16, UiStyle.LINE));
+        keepCard.addView(UiStyle.iconTile(this, UiStyle.Icon.SHIELD,
+                UiStyle.PURPLE, UiStyle.PURPLE_50, 32, 18, 10),
+                new LinearLayout.LayoutParams(dp(32), dp(32)));
+        TextView keepTitle = new TextView(this);
+        keepTitle.setText("24h 常驻在线");
+        keepTitle.setTextSize(14);
+        keepTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        keepTitle.setTextColor(UiStyle.INK);
+        keepTitle.setPadding(0, dp(8), 0, 0);
+        keepCard.addView(keepTitle);
+        keepSub = new TextView(this);
+        keepSub.setTextSize(10.5f);
+        keepSub.setTextColor(UiStyle.INK2);
+        keepSub.setPadding(0, dp(3), 0, 0);
+        keepCard.addView(keepSub);
+        keepCard.addView(new View(this), new LinearLayout.LayoutParams(0, 0, 1));
+        keepSwitch = new UiStyle.Switch(this, false, () -> {
+            AccountStore.Account cur = taskAccount == null ? firstWorkspace() : taskAccount;
+            if (cur == null) {
+                toast("没有可用账号");
+                keepSwitch.setOn(false);
+                return;
+            }
+            RoleStore.saveKeepOnline(this, cur.fpid, keepSwitch.isOn());
+            com.carlos.vault.daily.RoleSessionKeeper.get(this).start();
+            com.carlos.vault.daily.RoleSessionKeeper.get(this).syncOnline();
+            if (keepSwitch.isOn()) {
+                promptBatteryWhitelist();
+                promptNotificationAccess();
+            }
+            toast("常驻在线已" + (keepSwitch.isOn() ? "开启" : "关闭"));
+            refreshToday();
+            refreshTasks();
+        });
+        keepCard.addView(keepSwitch);
+        duo.addView(keepCard, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 1));
 
 
 
@@ -547,15 +648,15 @@ public class HomeActivity extends AccountVaultActivity {
         thlp.topMargin = dp(6);
         todoHead.setLayoutParams(thlp);
         TextView todoTitle = new TextView(this);
-        todoTitle.setText("代办事项");
-        todoTitle.setTextSize(15);
+        todoTitle.setText("待办事项");
+        todoTitle.setTextSize(16);
         todoTitle.setTypeface(Typeface.DEFAULT_BOLD);
         todoTitle.setTextColor(UiStyle.INK);
         todoHead.addView(todoTitle);
         todoHead.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
         TextView todoHint = new TextView(this);
         todoHint.setText("错过要等下一轮");
-        todoHint.setTextSize(11);
+        todoHint.setTextSize(11.5f);
         todoHint.setTextColor(UiStyle.INK2);
         todoHead.addView(todoHint);
         box.addView(todoHead);
@@ -563,82 +664,75 @@ public class HomeActivity extends AccountVaultActivity {
         limitBox.setOrientation(LinearLayout.VERTICAL);
         box.addView(limitBox);
 
-        // —— 联盟互助卡（常驻自动响应 + 一键帮助全盟）——
-        LinearLayout helpCard = UiStyle.outlineCard(this);
-        helpCard.setOrientation(LinearLayout.VERTICAL);
-        helpCard.setPadding(dp(14), dp(12), dp(14), dp(12));
-        LinearLayout.LayoutParams hclp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hclp.topMargin = dp(12);
-        helpCard.setLayoutParams(hclp);
-        LinearLayout helpHead = new LinearLayout(this);
-        helpHead.setOrientation(LinearLayout.HORIZONTAL);
-        helpHead.setGravity(Gravity.CENTER_VERTICAL);
-        TextView helpTitle = new TextView(this);
-        helpTitle.setText("🤝 联盟互助");
-        helpTitle.setTextSize(13.5f);
-        helpTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        helpTitle.setTextColor(UiStyle.INK);
-        helpHead.addView(helpTitle, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        helpActionBtn = new TextView(this);
-        helpActionBtn.setText("一键帮助全盟");
-        helpActionBtn.setTextSize(12);
-        helpActionBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        helpActionBtn.setTextColor(UiStyle.WHITE);
-        helpActionBtn.setGravity(Gravity.CENTER);
-        GradientDrawable hbg = new GradientDrawable();
-        hbg.setColor(UiStyle.BRAND);
-        hbg.setCornerRadius(dp(10));
-        helpActionBtn.setBackground(hbg);
-        helpActionBtn.setPadding(dp(12), dp(7), dp(12), dp(7));
-        UiStyle.press(helpActionBtn);
-        helpActionBtn.setOnClickListener(v -> oneKeyHelpAll());
-        helpHead.addView(helpActionBtn);
-        helpCard.addView(helpHead);
-        helpStatusText = new TextView(this);
-        helpStatusText.setTextSize(11.5f);
-        helpStatusText.setTextColor(UiStyle.INK2);
-        helpStatusText.setPadding(0, dp(6), 0, 0);
-        helpStatusText.setText("加载中…");
-        helpCard.addView(helpStatusText);
-        box.addView(helpCard);
+        // 联盟大厅入口放在顶栏通知菜单里（一键帮助全盟），保持今日页与设计稿一致的卡片骨架。
 
         // —— 联盟大厅（正在集结的队列）——
-        box.addView(UiStyle.sectionTitle(this, "联盟大厅 · 正在集结"));
+        LinearLayout rallyHead = new LinearLayout(this);
+        rallyHead.setOrientation(LinearLayout.HORIZONTAL);
+        rallyHead.setGravity(Gravity.CENTER_VERTICAL);
+        rallyHead.setPadding(dp(2), dp(18), dp(2), dp(8));
+        TextView rallyTitle = new TextView(this);
+        rallyTitle.setText("联盟大厅 · 正在集结");
+        rallyTitle.setTextSize(16);
+        rallyTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        rallyTitle.setTextColor(UiStyle.INK);
+        rallyHead.addView(rallyTitle, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView rallyAll = new TextView(this);
+        rallyAll.setText("全部");
+        rallyAll.setTextSize(12);
+        rallyAll.setTextColor(UiStyle.BRAND_TEXT);
+        UiStyle.press(rallyAll);
+        rallyAll.setOnClickListener(v -> toast("联盟大厅随游戏同步更新"));
+        rallyHead.addView(rallyAll);
+        box.addView(rallyHead);
         rallyBox = new LinearLayout(this);
         rallyBox.setOrientation(LinearLayout.VERTICAL);
         box.addView(rallyBox);
 
         // —— 快捷入口 ——
-        box.addView(UiStyle.sectionTitle(this, "快捷入口"));
+        LinearLayout quickHead = new LinearLayout(this);
+        quickHead.setOrientation(LinearLayout.HORIZONTAL);
+        quickHead.setGravity(Gravity.CENTER_VERTICAL);
+        quickHead.setPadding(dp(2), dp(18), dp(2), dp(8));
+        TextView quickTitle = new TextView(this);
+        quickTitle.setText("快捷入口");
+        quickTitle.setTextSize(16);
+        quickTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        quickTitle.setTextColor(UiStyle.INK);
+        quickHead.addView(quickTitle);
+        box.addView(quickHead);
         LinearLayout quick = new LinearLayout(this);
         quick.setOrientation(LinearLayout.HORIZONTAL);
-        String[][] qs = {{"🎁", "补领", "daily"}, {"⇄", "切号", "switch"}, {"🗒", "日志", "log"}, {"🧰", "工具箱", "tools"}};
-        for (String[] q : qs) {
+        int[] qIcons = {UiStyle.Icon.GIFT, UiStyle.Icon.USERS,
+                UiStyle.Icon.DOC, UiStyle.Icon.GRID};
+        String[] qLabels = {"补领", "切号", "日志", "工具箱"};
+        String[] qActs = {"daily", "switch", "log", "tools"};
+        for (int qi = 0; qi < qLabels.length; qi++) {
+            final String act = qActs[qi];
             LinearLayout cell = UiStyle.outlineCard(this);
             cell.setOrientation(LinearLayout.VERTICAL);
             cell.setGravity(Gravity.CENTER);
-            cell.setPadding(dp(8), dp(10), dp(8), dp(10));
-            TextView icon = new TextView(this);
-            icon.setText(q[0]);
-            icon.setTextSize(20);
-            icon.setGravity(Gravity.CENTER);
+            cell.setPadding(dp(8), dp(12), dp(8), dp(12));
+            cell.addView(UiStyle.iconTile(this, qIcons[qi], UiStyle.BRAND_TEXT,
+                    UiStyle.BRAND_50, 38, 19, 11),
+                    new LinearLayout.LayoutParams(dp(38), dp(38)));
             TextView label = new TextView(this);
-            label.setText(q[1]);
+            label.setText(qLabels[qi]);
             label.setTextSize(11.5f);
             label.setTypeface(Typeface.DEFAULT_BOLD);
             label.setTextColor(UiStyle.INK);
             label.setGravity(Gravity.CENTER);
-            cell.addView(icon);
+            label.setPadding(0, dp(7), 0, 0);
             cell.addView(label);
             UiStyle.press(cell);
             cell.setOnClickListener(v -> {
-                if ("switch".equals(q[2])) showAccountSwitcher();
-                else quickAction(q[2]);
+                if ("switch".equals(act)) showAccountSwitcher();
+                else quickAction(act);
             });
-            LinearLayout.LayoutParams q2 = new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-            q2.rightMargin = dp(8);
+            LinearLayout.LayoutParams q2 = new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+            if (qi < qLabels.length - 1) q2.rightMargin = dp(8);
             quick.addView(cell, q2);
         }
         box.addView(quick);
@@ -728,7 +822,7 @@ public class HomeActivity extends AccountVaultActivity {
         switch (which) {
             case "daily": openDaily(firstWorkspace(), null); break;
             case "log": showRunLog(); break;
-            case "tools": showTools(); break;
+            case "tools": openToolBox(); break;
             case "wizard": showWizard(); break;
         }
     }
@@ -822,19 +916,48 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 分段控件选中态跟随 accView（修复切换后高亮不变化）。 */
     private void updateAccSeg() {
-        if (accSeg == null) return;
-        for (int i = 0; i < accSeg.getChildCount(); i++) {
-            android.view.View c = accSeg.getChildAt(i);
-            if (!(c instanceof TextView)) continue;
-            TextView t = (TextView) c;
+        updateAccViewToggle();
+    }
+
+    /** 列表/卡片页签视觉：选中项白底浮起，未选中透明。 */
+    private void updateAccViewToggle() {
+        if (accViewList == null || accViewCard == null) return;
+        for (int i = 0; i < 2; i++) {
+            TextView t = i == 0 ? accViewList : accViewCard;
             boolean sel = i == accView;
-            t.setTextColor(sel ? UiStyle.WHITE : UiStyle.INK2);
+            t.setTextColor(sel ? UiStyle.INK : UiStyle.INK2);
             t.setTypeface(sel ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
-            t.setBackground(sel ? UiStyle.roundRect(UiStyle.BRAND, dp(11)) : null);
+            if (sel) {
+                t.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 12, UiStyle.LINE));
+                t.setElevation(dp(2));
+            } else {
+                t.setBackground(null);
+                t.setElevation(0);
+            }
         }
     }
 
     /** 角色选择器：仅当前账号下的角色，当前项打勾（换账号走"切换账号"）。 */
+    /** 设计稿 S5：当前账号的角色管理底部弹层（切换/跑日常/下线）。 */
+    private void showRoleManagerForCurrent() {
+        AccountStore.Account curAcc = currentRoleAccount();
+        if (curAcc == null || curAcc.fpid == null) {
+            toast("没有可用账号");
+            return;
+        }
+        List<RoleStore.Role> rs;
+        try {
+            rs = RoleStore.roles(this, curAcc.fpid);
+        } catch (Throwable t) {
+            rs = new ArrayList<>();
+        }
+        if (rs.isEmpty()) {
+            toast(curAcc.label + " 暂无角色数据 —— 登录一次游戏后自动发现");
+            return;
+        }
+        showRoleManager(curAcc, rs, accountOnline(curAcc));
+    }
+
     private void showRolePicker() {
         AccountStore.Account curAcc = currentRoleAccount();
         if (curAcc == null || curAcc.fpid == null) {
@@ -855,14 +978,21 @@ public class HomeActivity extends AccountVaultActivity {
             return;
         }
         for (RoleStore.Role r : rs) {
+            if (!r.enabled) continue;   // 切换角色只展示已加入工作区的角色
             String rn = r.name == null || r.name.isEmpty()
                     ? "K" + r.serverid + "（未同步）" : r.name;
             String tag = r.serverid == curSid ? " ✓当前" : "";
             pairs.add(new String[]{curAcc.fpid, String.valueOf(r.serverid), rn});
-            items.add(rn + " · K" + r.serverid + (r.enabled ? "" : " · 未入区") + tag);
+            items.add(rn + " · K" + r.serverid + tag);
         }
         if (items.isEmpty()) {
-            toast("没有可用账号 —— 先导入");
+            new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                    .setTitle("没有可切换的角色")
+                    .setMessage("当前账号还没有角色加入工作区。\n\n请到「账号」→ 该账号右侧「⋯」→「角色管理」，打开角色开关。")
+                    .setPositiveButton("去角色管理",
+                            (d, w) -> showRoleManagerForCurrent())
+                    .setNegativeButton("取消", null)
+                    .show();
             return;
         }
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
@@ -989,21 +1119,24 @@ public class HomeActivity extends AccountVaultActivity {
         }
         // 进度表达规范：环=今日任务完成 q/q；活跃度=档位进度条（40/80/120/160/215/270/325，末端标下一档差多少）
         int integral = qs == null ? -1 : qs.integral;
-        heroRing.setFraction(qTotal == 0 ? 0 : Math.min(1f, (float) qDone / qTotal));
-        heroRing.setProgress(qDone, qTotal, "今日完成");
+        int pct = qTotal == 0 ? 0 : Math.round(100f * qDone / qTotal);
+        heroRing.setFraction(pct / 100f);
+        heroRing.setPercent(pct, "今日完成");
         actVal.setText(integral < 0 ? "-- / 325" : integral + " / 325");
         android.widget.LinearLayout.LayoutParams aflp =
                 (android.widget.LinearLayout.LayoutParams) actFill.getLayoutParams();
         aflp.weight = integral <= 0 ? 0f : Math.min(1f, integral / 325f);
         actFill.setLayoutParams(aflp);
         if (integral < 0) actTier.setText("打开账号同步后显示档位");
-        else if (integral >= 325) actTier.setText("已达最高档位 325");
+        else if (integral >= 325) actTier.setText("已达最高档位 · 宝箱全解锁");
         else {
-            int next = 325;
-            for (int t : new int[]{40, 80, 120, 160, 215, 270, 325}) {
-                if (t > integral) { next = t; break; }
+            int[] tiers = {40, 80, 120, 160, 215, 270, 325};
+            int next = 325, tier = 1;
+            for (int t : tiers) {
+                if (integral >= t) tier++;
+                else { next = t; break; }
             }
-            actTier.setText("下一档位 " + next + "（还差 " + (next - integral) + "）");
+            actTier.setText("第 " + tier + " 档 · 再 " + (next - integral) + " 分领宝箱");
         }
         // Hero当前角色行（信息上移到 heroSub：本卡只显示 当前角色：角色名 + 在线状态）
         String crName = "";
@@ -1020,8 +1153,9 @@ public class HomeActivity extends AccountVaultActivity {
             }
         } catch (Throwable ignored) {
         }
-        heroSub.setText("当前角色：" + (crName.isEmpty() ? "未选择" : crName)
-                + " · K" + currentRoleSid());
+        heroSub.setText((sel == null || sel.label == null || sel.label.isEmpty()
+                ? "未选择账号" : sel.label)
+                + (crName.isEmpty() ? "" : " · " + crName));
         // 当前角色在线状态（区分口径）：协议常驻会话 online → 「日常在线」；容器游戏客户端
         // 正挂当前角色 → 「游戏在线」；其余按引擎会话态（重连中/被顶号暂停/需重导token/离线）。
         // 不再展示"其它角色在线"（旧版显示容器里正在玩的别的角色，与当前角色无关造成误导）。
@@ -1116,17 +1250,20 @@ public class HomeActivity extends AccountVaultActivity {
             }
         } catch (Throwable ignored) {
         }
-        // 自动执行状态：开=显示下次定时时刻；关=提示点击开启
-        AccountStore.Account cra2 = sel;
-        boolean roleAuto = cra2 != null
-                && RoleStore.schedule(this, cra2.fpid).autoEnabled;
-        if (roleAuto) {
-            long nxt = cra2 == null ? 0 : RoleStore.schedule(this, cra2.fpid).nextRunAt;
-            String nxtTxt = nxt <= 0 ? "即将" : new java.text.SimpleDateFormat("MM-dd HH:mm",
-                    java.util.Locale.CHINA).format(new java.util.Date(nxt));
-            autoStateBtn.setText("⚡ 自动执行已开启 · 下次 " + nxtTxt + " ▾");
-        } else {
-            autoStateBtn.setText("自动执行已关闭 · 点此开启");
+        // 自动日常 / 常驻在线双卡状态
+        boolean roleAuto = sel != null && RoleStore.schedule(this, sel.fpid).autoEnabled;
+        if (todayAutoSwitch != null) todayAutoSwitch.setOn(roleAuto);
+        if (todayAutoSub != null) {
+            if (roleAuto && sel != null) {
+                long nxt = RoleStore.schedule(this, sel.fpid).nextRunAt;
+                todayAutoSub.setText(ws.size() + " 个号 · " + nextRunText(nxt) + "跑");
+            } else {
+                todayAutoSub.setText(ws.size() + " 个号 · 未开启");
+            }
+        }
+        if (keepSub != null) keepSub.setText(keepStatusText());
+        if (keepSwitch != null && sel != null) {
+            keepSwitch.setOn(RoleStore.keepOnline(this, sel.fpid));
         }
         // 顶栏 caption：日期 + 自动日常状态
         boolean anyAuto = false;
@@ -1136,11 +1273,30 @@ public class HomeActivity extends AccountVaultActivity {
                 break;
             }
         }
-        topCaption.setText(new java.text.SimpleDateFormat("M月d日 EEEE", java.util.Locale.CHINA)
-                .format(new java.util.Date()) + " · 自动日常已" + (anyAuto ? "开启" : "关闭"));
+        topCaption.setText(new java.text.SimpleDateFormat("M月d日 EEE", java.util.Locale.CHINA)
+                .format(new java.util.Date()) + " · 自动日常 已" + (anyAuto ? "开启" : "关闭"));
         renderLimitWindows(sel);
         renderRallies(sel);
         autoSyncAccount(sel, false);
+    }
+
+    /** 下次自动执行的人话时间（今天 / 明早 / MM-dd）。 */
+    private String nextRunText(long nxt) {
+        if (nxt <= 0) return "即将 ";
+        java.util.Calendar now = java.util.Calendar.getInstance();
+        java.util.Calendar n = java.util.Calendar.getInstance();
+        n.setTimeInMillis(nxt);
+        String hm = new java.text.SimpleDateFormat("HH:mm", java.util.Locale.CHINA)
+                .format(new java.util.Date(nxt));
+        boolean sameDay = now.get(java.util.Calendar.YEAR) == n.get(java.util.Calendar.YEAR)
+                && now.get(java.util.Calendar.DAY_OF_YEAR) == n.get(java.util.Calendar.DAY_OF_YEAR);
+        now.add(java.util.Calendar.DAY_OF_YEAR, 1);
+        boolean tomorrow = now.get(java.util.Calendar.YEAR) == n.get(java.util.Calendar.YEAR)
+                && now.get(java.util.Calendar.DAY_OF_YEAR) == n.get(java.util.Calendar.DAY_OF_YEAR);
+        if (sameDay) return "今天 " + hm + " ";
+        if (tomorrow) return "明早 " + hm + " ";
+        return new java.text.SimpleDateFormat("MM-dd ", java.util.Locale.CHINA)
+                .format(new java.util.Date(nxt)) + hm + " ";
     }
 
     /** 展开功能卡时的状态刷新节流（同功能 60 秒内不重复拉；与详情页共用节流表）。 */
@@ -1217,8 +1373,8 @@ public class HomeActivity extends AccountVaultActivity {
     /** 代办事项：巨熊行动预约（首行）+ 仓库补给 + 游戏活动日历全量清单。 */
     private void renderLimitWindows(AccountStore.Account cur) {
         limitBox.removeAllViews();
-        // 游戏同款：一张分组卡 + 行间细分隔线，左圆图标，右侧时间/状态两行
-        LinearLayout card = UiStyle.outlineCard(this);
+        // 每条待办独立白卡（设计稿 S2：卡片之间 8dp 间距）
+        LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -1257,8 +1413,9 @@ public class HomeActivity extends AccountVaultActivity {
                     bh.format(new java.util.Date(massEnd * 1000)) + " 结束",
                     cur == null ? null : () -> openDaily(cur, "bear"));
         } else if (reserveSoon) {
-            todoRow(card, "🐻", "巨熊行动", "", "已预约", UiStyle.WARN_INK,
-                    bd.format(new java.util.Date(bearReserve * 1000)) + " 开打",
+            todoRow(card, "🐻", "巨熊陷阱预约",
+                    bh.format(new java.util.Date(bearReserve * 1000)) + " 开启 · 全工作区自动预约",
+                    "即将开始", UiStyle.WARN_INK, "",
                     cur == null ? null : () -> openDaily(cur, "bear"));
         } else if (coolEnd > nowSec && coolEnd - nowSec <= 2 * 86400L) {
             todoRow(card, "🐻", "巨熊行动", "", "冷却中", UiStyle.INK2,
@@ -1393,69 +1550,73 @@ public class HomeActivity extends AccountVaultActivity {
         limitBox.addView(card);
     }
 
-    /** 游戏代办同款行：圆形图标底 + 名称(+灰副题) + 右侧两行(状态色/灰副行)，行间细分隔线。 */
+    /** 待办行：独立白卡 + 线框图标 + 标题/副题 + 右侧状态徽章（设计稿 S2）。 */
     private void todoRow(LinearLayout card, String emoji, String title, String sub,
                          String r1, int r1Color, String r2, Runnable onClick) {
-        if (card.getChildCount() > 0) {
-            View div = new View(this);
-            div.setBackgroundColor(UiStyle.LINE);
-            card.addView(div, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
-        }
-        LinearLayout row = new LinearLayout(this);
+        LinearLayout row = UiStyle.outlineCard(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(14), dp(15), dp(14), dp(15));
+        row.setPadding(dp(14), dp(13), dp(14), dp(13));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.bottomMargin = dp(8);
+        row.setLayoutParams(rlp);
 
-        TextView icon = new TextView(this);
-        icon.setText(emoji);
-        icon.setTextSize(16);
-        icon.setGravity(Gravity.CENTER);
-        android.graphics.drawable.GradientDrawable ig = new android.graphics.drawable.GradientDrawable();
-        ig.setShape(android.graphics.drawable.GradientDrawable.OVAL);
-        ig.setColor(UiStyle.BRAND_50);
-        icon.setBackground(ig);
-        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(dp(38), dp(38));
-        ilp.rightMargin = dp(12);
-        row.addView(icon, ilp);
+        int iconType = UiStyle.Icon.TARGET;
+        int iconColor = UiStyle.BRAND_TEXT;
+        int iconBg = UiStyle.BRAND_50;
+        if (title.contains("巨熊")) {
+            iconType = UiStyle.Icon.CLOCK;
+            iconColor = UiStyle.WARN_INK;
+            iconBg = UiStyle.WARN_BG;
+        } else if (title.contains("答题") || title.contains("礼")) {
+            iconType = UiStyle.Icon.GIFT;
+        } else if (title.contains("补给")) {
+            iconType = UiStyle.Icon.LIGHTNING;
+        } else if (title.contains("兵工厂")) {
+            iconType = UiStyle.Icon.SHIELD;
+        } else if (title.contains("燃霜")) {
+            iconType = UiStyle.Icon.COMPASS;
+        }
+        row.addView(UiStyle.iconTile(this, iconType, iconColor, iconBg, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
         TextView n = new TextView(this);
         n.setText(title);
-        n.setTextSize(13.5f);
+        n.setTextSize(15);
         n.setTypeface(Typeface.DEFAULT_BOLD);
         n.setTextColor(UiStyle.INK);
+        n.setMaxLines(1);
+        n.setEllipsize(android.text.TextUtils.TruncateAt.END);
         mid.addView(n);
-        if (!sub.isEmpty()) {
+        String detail = sub == null ? "" : sub;
+        if (detail.isEmpty() && r2 != null) detail = r2;
+        if (!detail.isEmpty()) {
             TextView s2 = new TextView(this);
-            s2.setText(sub);
-            s2.setTextSize(11);
+            s2.setText(detail);
+            s2.setTextSize(11.5f);
             s2.setTextColor(UiStyle.INK2);
             s2.setPadding(0, dp(3), 0, 0);
+            s2.setMaxLines(1);
+            s2.setEllipsize(android.text.TextUtils.TruncateAt.END);
             mid.addView(s2);
         }
         row.addView(mid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        LinearLayout right = new LinearLayout(this);
-        right.setOrientation(LinearLayout.VERTICAL);
-        right.setGravity(Gravity.RIGHT);
-        TextView ra = new TextView(this);
-        ra.setText(r1);
-        ra.setTextSize(12);
-        ra.setTypeface(Typeface.DEFAULT_BOLD);
-        ra.setTextColor(r1Color);
-        right.addView(ra);
-        if (!r2.isEmpty()) {
-            TextView rb = new TextView(this);
-            rb.setText(r2);
-            rb.setTextSize(10.5f);
-            rb.setTextColor(UiStyle.INK2);
-            rb.setPadding(0, dp(2), 0, 0);
-            right.addView(rb);
+        String type = "idle";
+        if (r1Color == UiStyle.WARN_INK) type = "warn";
+        else if (r1Color == UiStyle.WAIT_INK) type = "wait";
+        else if (r1Color == UiStyle.RUN_INK) type = "run";
+        else if (r1Color == UiStyle.ERR_INK) type = "err";
+        else if (r1Color == UiStyle.OK_INK) type = "ok";
+        if (r1 != null && !r1.isEmpty()) row.addView(UiStyle.badge(this, type, r1));
+        if (onClick != null) {
+            UiStyle.press(row);
+            row.setOnClickListener(v -> onClick.run());
         }
-        row.addView(right);
-        if (onClick != null) row.setOnClickListener(v -> onClick.run());
         card.addView(row);
     }
 
@@ -1565,41 +1726,67 @@ public class HomeActivity extends AccountVaultActivity {
         String title = (owner.isEmpty() ? "盟友集结" : owner) + (lv > 0 ? " · Lv" + lv : "");
 
         LinearLayout card = UiStyle.outlineCard(this);
-        card.setPadding(dp(12), dp(10), dp(12), dp(10));
+        card.setPadding(dp(14), dp(13), dp(14), dp(12));
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
-        TextView ic = new TextView(this);
-        ic.setText("⚔");
-        ic.setTextSize(14);
-        row.addView(ic);
+        row.addView(UiStyle.iconTile(this, UiStyle.Icon.TARGET, UiStyle.BRAND_TEXT,
+                UiStyle.BRAND_50, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
         TextView nm = new TextView(this);
         nm.setText(title);
-        nm.setTextSize(13);
+        nm.setTextSize(15);
         nm.setTypeface(Typeface.DEFAULT_BOLD);
         nm.setTextColor(UiStyle.INK);
-        nm.setPadding(dp(8), 0, dp(6), 0);
-        row.addView(nm);
+        nm.setMaxLines(1);
+        nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        mid.addView(nm);
         TextView sum = new TextView(this);
         StringBuilder sbt = new StringBuilder();
-        if (memberMax > 0) sbt.append(members).append("/").append(memberMax).append("人");
+        if (memberMax > 0) sbt.append(members).append("/").append(memberMax).append(" 人");
         if (soldiers > 0) sbt.append(sbt.length() > 0 ? " · " : "").append(fmtWan(soldiers)).append("兵");
         if (sbt.length() == 0) sbt.append(marching ? "行军" : "集结中");
+        if (anchor > 0) sbt.append(" · 剩余 ").append(fmtRemain(anchor - now));
         sum.setText(sbt.toString());
-        sum.setTextSize(11);
+        sum.setTextSize(11.5f);
         sum.setTextColor(UiStyle.INK2);
-        row.addView(sum);
-        row.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-        row.addView(UiStyle.badge(this, marching ? "wait" : "run", marching ? "行军中" : "集结中"));
-        if (anchor > 0) {
-            TextView tm = new TextView(this);
-            tm.setText("剩 " + fmtRemain(anchor - now));
-            tm.setTextSize(11);
-            tm.setTextColor(UiStyle.INK2);
-            tm.setPadding(dp(8), 0, 0, 0);
-            row.addView(tm);
-        }
+        sum.setPadding(0, dp(3), 0, 0);
+        mid.addView(sum);
+        row.addView(mid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        TextView join = new TextView(this);
+        join.setText("加入");
+        join.setTextSize(12.5f);
+        join.setTypeface(Typeface.DEFAULT_BOLD);
+        join.setTextColor(UiStyle.WHITE);
+        join.setGravity(Gravity.CENTER);
+        join.setPadding(dp(16), dp(8), dp(16), dp(8));
+        join.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 10));
+        UiStyle.press(join);
+        join.setOnClickListener(v -> {
+            AccountStore.Account cur = currentRoleAccount();
+            if (cur != null) openDaily(cur, "behemoth");
+        });
+        row.addView(join);
         card.addView(row);
+
+        if (memberMax > 0) {
+            LinearLayout track = new LinearLayout(this);
+            track.setOrientation(LinearLayout.HORIZONTAL);
+            track.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND_50, 2));
+            View fill = new View(this);
+            fill.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 2));
+            float frac = Math.max(0.04f, Math.min(1f, members / (float) memberMax));
+            track.addView(fill, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, frac));
+            track.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f - frac));
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(4));
+            tlp.topMargin = dp(10);
+            card.addView(track, tlp);
+        }
 
         // 展开区
         LinearLayout det = new LinearLayout(this);
@@ -1763,13 +1950,16 @@ public class HomeActivity extends AccountVaultActivity {
     // ================= Tab2 · 账号 =================
 
     private void buildAccountPage() {
+        android.widget.FrameLayout pageRoot = new android.widget.FrameLayout(this);
+        pages[1].addView(pageRoot, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(14), dp(18), dp(16));
-        pages[1].addView(box, new LinearLayout.LayoutParams(
+        box.setPadding(dp(18), dp(12), dp(18), dp(16));
+        pageRoot.addView(box, new android.widget.FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 顶栏：账号 + N 个账号 · 工作区 M
+        // 顶栏：账号 + 账号/工作区/在线统计 + 批量管理
         LinearLayout top = new LinearLayout(this);
         top.setOrientation(LinearLayout.HORIZONTAL);
         top.setGravity(Gravity.CENTER_VERTICAL);
@@ -1777,55 +1967,58 @@ public class HomeActivity extends AccountVaultActivity {
         tb.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
         title.setText("账号");
-        title.setTextSize(19);
+        title.setTextSize(24);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
         tb.addView(title);
         accountCap = new TextView(this);
-        accountCap.setTextSize(11.5f);
+        accountCap.setTextSize(12);
         accountCap.setTextColor(UiStyle.INK2);
+        accountCap.setPadding(0, dp(3), 0, 0);
         tb.addView(accountCap);
         top.addView(tb, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        accSeg = UiStyle.segmented(this,
-                new String[]{"列表", "卡片"}, Math.min(accView, 1),
-                idx -> {
-                    accView = idx;
-                    refreshAccounts(true);
-                });
-        top.addView(accSeg);
-        TextView sort = new TextView(this);
-        sort.setText("⇅");
-        sort.setTextSize(18);
-        sort.setTextColor(UiStyle.INK2);
-        sort.setGravity(Gravity.CENTER);
-        GradientDrawable sobg = new GradientDrawable();
-        sobg.setColor(UiStyle.WHITE);
-        sobg.setCornerRadius(dp(12));
-        sobg.setStroke(dp(1), UiStyle.LINE);
-        sort.setBackground(sobg);
-        sort.setPadding(dp(10), dp(9), dp(10), dp(9));
-        UiStyle.press(sort);
-        sort.setOnClickListener(v -> openOld());
-        top.addView(sort);
+        TextView batchBtn = new TextView(this);
+        batchBtn.setText(batchMode ? "完成" : "批量管理");
+        batchBtn.setTextSize(13);
+        batchBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        batchBtn.setTextColor(UiStyle.BRAND_TEXT);
+        batchBtn.setGravity(Gravity.CENTER);
+        batchBtn.setPadding(dp(14), dp(8), dp(14), dp(8));
+        batchBtn.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 16, UiStyle.LINE));
+        UiStyle.press(batchBtn);
+        batchBtn.setOnClickListener(v -> {
+            batchMode = !batchMode;
+            if (!batchMode) selectedAccounts.clear();
+            batchBtn.setText(batchMode ? "完成" : "批量管理");
+            refreshAccounts();
+        });
+        batchBtn.setTag("batchBtn");
+        accBatchBtn = batchBtn;
+        top.addView(batchBtn);
         box.addView(top);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        tlp.bottomMargin = dp(10);
+        tlp.bottomMargin = dp(12);
         top.setLayoutParams(tlp);
 
+        LinearLayout searchBox = new LinearLayout(this);
+        searchBox.setOrientation(LinearLayout.HORIZONTAL);
+        searchBox.setGravity(Gravity.CENTER_VERTICAL);
+        searchBox.setPadding(dp(14), dp(4), dp(14), dp(4));
+        searchBox.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 14, UiStyle.LINE));
+        searchBox.addView(new UiStyle.Icon(this, UiStyle.Icon.SEARCH, UiStyle.INK3, 19),
+                new LinearLayout.LayoutParams(dp(19), dp(19)));
         searchInput = new EditText(this);
-        searchInput.setHint("搜索账号名 / UID / 备注");
+        searchInput.setHint("搜索备注名 / 号 ID");
         searchInput.setTextSize(13.5f);
         searchInput.setTextColor(UiStyle.INK);
-        searchInput.setHintTextColor(UiStyle.INK2);
-        GradientDrawable sg = new GradientDrawable();
-        sg.setColor(UiStyle.WHITE);
-        sg.setCornerRadius(dp(12));
-        sg.setStroke(dp(1), UiStyle.LINE);
-        searchInput.setBackground(sg);
-        searchInput.setPadding(dp(12), dp(11), dp(12), dp(11));
-        searchInput.setMinHeight(dp(44));
-        box.addView(searchInput);
+        searchInput.setHintTextColor(UiStyle.INK3);
+        searchInput.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        searchInput.setSingleLine(true);
+        searchInput.setPadding(dp(10), dp(12), dp(4), dp(12));
+        searchBox.addView(searchInput, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        box.addView(searchBox);
         searchInput.addTextChangedListener(new android.text.TextWatcher() {
             @Override public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
 
@@ -1859,28 +2052,64 @@ public class HomeActivity extends AccountVaultActivity {
             frow.addView(c, lp);
         }
 
+        // 列表 / 卡片 视图切换（设计稿 S3：选中项白底浮起）
+        LinearLayout viewTabs = new LinearLayout(this);
+        viewTabs.setOrientation(LinearLayout.HORIZONTAL);
+        viewTabs.setPadding(0, dp(6), 0, dp(4));
+        accViewList = new TextView(this);
+        accViewList.setText("列表");
+        accViewList.setTextSize(13);
+        accViewList.setTypeface(Typeface.DEFAULT_BOLD);
+        accViewList.setGravity(Gravity.CENTER);
+        accViewList.setPadding(dp(16), dp(7), dp(16), dp(7));
+        accViewCard = new TextView(this);
+        accViewCard.setText("卡片");
+        accViewCard.setTextSize(13);
+        accViewCard.setGravity(Gravity.CENTER);
+        accViewCard.setPadding(dp(16), dp(7), dp(16), dp(7));
+        viewTabs.addView(accViewList);
+        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        vlp.leftMargin = dp(10);
+        viewTabs.addView(accViewCard, vlp);
+        UiStyle.press(accViewList);
+        UiStyle.press(accViewCard);
+        accViewList.setOnClickListener(v -> {
+            accView = 0;
+            refreshAccounts();
+        });
+        accViewCard.setOnClickListener(v -> {
+            accView = 1;
+            refreshAccounts();
+        });
+        box.addView(viewTabs);
+        updateAccViewToggle();
+
         ScrollView sc = new ScrollView(this);
         accountList = new LinearLayout(this);
         accountList.setOrientation(LinearLayout.VERTICAL);
+        accountList.setPadding(0, 0, 0, dp(100));
         sc.addView(accountList);
         box.addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        // FAB ＋（新增；长按=批量导入）
+        // FAB ＋（新增；长按=批量导入）。设计 token：56dp 正圆 + 品牌底 + 浮起阴影
         FrameLayout fabWrap = new FrameLayout(this);
         TextView fab = new TextView(this);
-        fab.setText("＋");
-        fab.setTextSize(24);
+        fab.setText("+");
+        fab.setTextSize(30);
         fab.setTextColor(UiStyle.WHITE);
         fab.setGravity(Gravity.CENTER);
+        fab.setContentDescription("新增账号（长按批量导入）");
         GradientDrawable fg = new GradientDrawable();
         fg.setColor(UiStyle.BRAND);
         fg.setCornerRadius(dp(28));
         fab.setBackground(fg);
-        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(dp(52), dp(52),
+        fab.setElevation(dp(4));
+        FrameLayout.LayoutParams flp = new FrameLayout.LayoutParams(dp(56), dp(56),
                 Gravity.RIGHT | Gravity.BOTTOM);
         flp.rightMargin = dp(18);
-        flp.bottomMargin = dp(18);
+        flp.bottomMargin = dp(92);
         fabWrap.addView(fab, flp);
         UiStyle.press(fab);
         fab.setOnClickListener(v -> showCreateEntry());
@@ -1888,7 +2117,7 @@ public class HomeActivity extends AccountVaultActivity {
             showBatchImport();
             return true;
         });
-        pages[1].addView(fabWrap, new LinearLayout.LayoutParams(
+        pageRoot.addView(fabWrap, new android.widget.FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
     }
 
@@ -1964,92 +2193,105 @@ public class HomeActivity extends AccountVaultActivity {
                                   java.util.Map<String, List<RoleStore.Role>> rolesMap,
                                   java.util.Map<String, int[]> roleStats,
                                   java.util.Map<String, Long> roleLast) {
+        // 卡片视图 = 旧版 3 列入口墙：游戏图标 + 名称 + token/原生/无 + 最近登录。
+        int per = 3;
         LinearLayout row = null;
-        int per = 2;
         for (int i2 = 0; i2 < shown.size(); i2++) {
             if (i2 % per == 0) {
                 row = new LinearLayout(this);
                 row.setOrientation(LinearLayout.HORIZONTAL);
-                accountList.addView(row, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+                LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                rlp.bottomMargin = dp(16);
+                accountList.addView(row, rlp);
             }
             final AccountStore.Account a = shown.get(i2);
-            long lastTs = getSharedPreferences("daily_sched", MODE_PRIVATE)
-                    .getLong("last:" + a.fpid, 0);
-            List<RoleStore.Role> rs = rolesMap.get(a.id);
-            if (rs != null) {
-                for (RoleStore.Role r : rs) {
-                    Long lt = roleLast.get(a.fpid + ":" + r.serverid);
-                    if (lt != null && lt > lastTs) lastTs = lt;
-                }
-            }
-            boolean isToken = a.token != null && !a.token.isEmpty();
 
-            LinearLayout card = new LinearLayout(this);
-            card.setOrientation(LinearLayout.VERTICAL);
-            card.setPadding(dp(12), dp(10), dp(12), dp(10));
-            GradientDrawable cg = new GradientDrawable();
-            cg.setColor(UiStyle.WHITE);
-            cg.setCornerRadius(dp(14));
-            cg.setStroke(dp(1), UiStyle.LINE);
-            card.setBackground(cg);
-            card.setElevation(dp(1));
+            android.widget.FrameLayout tile = new android.widget.FrameLayout(this);
+            tile.setBackground(UiStyle.roundRectDp(this, UiStyle.CARD, 14));
+            tile.setElevation(dp(2));
 
-            LinearLayout top = new LinearLayout(this);
-            top.setOrientation(LinearLayout.HORIZONTAL);
-            top.setGravity(Gravity.CENTER_VERTICAL);
-            TextView icon = new TextView(this);
-            icon.setText("🏔");
-            icon.setTextSize(20);
-            icon.setGravity(Gravity.CENTER);
-            GradientDrawable ig = new GradientDrawable(
-                    GradientDrawable.Orientation.TL_BR, new int[]{UiStyle.BRAND, UiStyle.BRAND_DEEP});
-            ig.setCornerRadius(dp(10));
-            icon.setBackground(ig);
-            top.addView(icon, new LinearLayout.LayoutParams(dp(38), dp(38)));
-            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1);
-            nlp.leftMargin = dp(10);
+            LinearLayout content = new LinearLayout(this);
+            content.setOrientation(LinearLayout.VERTICAL);
+            content.setGravity(Gravity.CENTER_HORIZONTAL);
+            content.setPadding(dp(6), dp(14), dp(6), dp(14));
+            content.addView(gameIconSquare(60, a.label, a.id),
+                    new LinearLayout.LayoutParams(dp(60), dp(60)));
+
             TextView name = new TextView(this);
-            String nm = a.label == null || a.label.isEmpty() ? "?" : a.label;
-            name.setText(nm);
-            name.setTextSize(14);
-            name.setTypeface(Typeface.DEFAULT_BOLD);
-            name.setTextColor(UiStyle.INK);
+            name.setText(a.label == null || a.label.isEmpty() ? "?" : a.label);
+            name.setTextSize(13);
             name.setMaxLines(1);
             name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            top.addView(name, nlp);
-            card.addView(top);
+            name.setTextColor(UiStyle.INK);
+            name.setGravity(Gravity.CENTER);
+            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            nlp.topMargin = dp(8);
+            content.addView(name, nlp);
 
-            LinearLayout bottom = new LinearLayout(this);
-            bottom.setOrientation(LinearLayout.HORIZONTAL);
-            bottom.setGravity(Gravity.CENTER_VERTICAL);
-            bottom.setPadding(0, dp(8), 0, 0);
-            TextView login = new TextView(this);
-            login.setText(isToken ? "token" : "原生");
-            login.setTextSize(11);
-            login.setTypeface(Typeface.DEFAULT_BOLD);
-            login.setTextColor(isToken ? UiStyle.BRAND_TEXT : UiStyle.INK2);
-            login.setBackground(UiStyle.roundRect(isToken ? UiStyle.BRAND_50 : UiStyle.IDLE_BG, dp(8)));
-            login.setPadding(dp(8), dp(3), dp(8), dp(3));
-            bottom.addView(login);
-            bottom.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-            TextView last = new TextView(this);
-            last.setText(lastTs <= 0 ? "从未登录"
-                    : "上次 " + new java.text.SimpleDateFormat("MM-dd HH:mm",
-                            java.util.Locale.CHINA).format(new java.util.Date(lastTs)));
-            last.setTextSize(11);
-            last.setTextColor(UiStyle.INK2);
-            bottom.addView(last);
-            card.addView(bottom);
+            LinearLayout subRow = new LinearLayout(this);
+            subRow.setOrientation(LinearLayout.HORIZONTAL);
+            subRow.setGravity(Gravity.CENTER_VERTICAL);
+            boolean hasToken = a.token != null && !a.token.isEmpty();
+            boolean hasSnap = false;
+            try {
+                hasSnap = engine.hasEntrySnapshot(a.id);
+            } catch (Throwable ignored) {
+            }
+            TextView subStatus = new TextView(this);
+            subStatus.setText(hasToken ? "token" : (hasSnap ? "原生" : "无"));
+            subStatus.setTextSize(9.5f);
+            subStatus.setMaxLines(1);
+            subStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            subStatus.setTextColor(UiStyle.INK2);
+            subStatus.setGravity(Gravity.START);
+            subRow.addView(subStatus, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-            UiStyle.press(card);
-            card.setOnClickListener(v -> accountMenu(a));
-            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(0,
+            TextView subTime = new TextView(this);
+            subTime.setText(a.lastLogin > 0
+                    ? new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
+                    .format(new java.util.Date(a.lastLogin)) : "未用");
+            subTime.setTextSize(9.5f);
+            subTime.setMaxLines(1);
+            subTime.setTextColor(UiStyle.INK2);
+            subTime.setGravity(Gravity.END);
+            subTime.setPadding(dp(4), 0, 0, 0);
+            subRow.addView(subTime);
+            content.addView(subRow);
+
+            tile.addView(content, new android.widget.FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            if (batchMode) {
+                android.widget.FrameLayout.LayoutParams cklp =
+                        new android.widget.FrameLayout.LayoutParams(dp(22), dp(22),
+                                Gravity.TOP | Gravity.START);
+                cklp.leftMargin = dp(6);
+                cklp.topMargin = dp(6);
+                tile.addView(batchCheckbox(a), cklp);
+            }
+
+            UiStyle.press(tile);
+            tile.setOnClickListener(v -> {
+                if (batchMode) toggleBatch(a);
+                else showAccountDetail(a);
+            });
+            tile.setOnLongClickListener(v -> {
+                accountMenu(a);
+                return true;
+            });
+            LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            if (i2 % per != per - 1) clp.rightMargin = dp(10);
-            ((LinearLayout.LayoutParams) clp).bottomMargin = dp(10);
-            row.addView(card, clp);
+            tlp.leftMargin = dp(4);
+            tlp.rightMargin = dp(4);
+            row.addView(tile, tlp);
+        }
+        if (row != null && shown.size() % per != 0) {
+            for (int i = shown.size() % per; i < per; i++) {
+                row.addView(new View(this), new LinearLayout.LayoutParams(0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            }
         }
         if (shown.isEmpty()) {
             accountList.addView(emptyTip("没有匹配的账号"));
@@ -2079,11 +2321,13 @@ public class HomeActivity extends AccountVaultActivity {
     private void accountMenu(final AccountStore.Account a) {
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle(a.label)
-                .setItems(new String[]{"🎁 每日任务（进度/领取）", "▶ 启动游戏", "👥 角色管理（旧号库）", "⇅ 排序（旧视图）"}, (d, w) -> {
+                .setItems(new String[]{"🎁 每日任务（进度/领取）", "▶ 启动游戏", "👥 角色管理", "⇅ 排序（旧视图）"}, (d, w) -> {
                     switch (w) {
                         case 0: openDaily(a, null); break;
                         case 1: doSwitch(a); break;
-                        case 2: openOld(); break;
+                        case 2:
+                            showRoleManager(a, RoleStore.roles(this, a.fpid), accountOnline(a));
+                            break;
                         case 3: openOld(); break;
                     }
                 })
@@ -2091,14 +2335,11 @@ public class HomeActivity extends AccountVaultActivity {
                 .show();
     }
 
-    private void accountDetail(AccountStore.Account a) {
-        String[] s = statusOf(a);
-        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle(a.label)
-                .setMessage("今日状态：" + s[1] + "\n点击「日常」查看该号的任务进度与配置")
-                .setPositiveButton("日常", (d, w) -> openDaily(a, null))
-                .setNegativeButton("关闭", null)
-                .show();
+    /** 账号详情（设计稿 S4）：复用入口管理页，展示角色/登录数据/入口管理。 */
+    private void showAccountDetail(AccountStore.Account a) {
+        if (a == null) return;
+        startActivity(new android.content.Intent(this, EntryDetailActivity.class)
+                .putExtra(EntryDetailActivity.EXTRA_ID, a.id));
     }
 
     private void refreshAccounts() {
@@ -2176,8 +2417,8 @@ public class HomeActivity extends AccountVaultActivity {
                     renderRoleMatrix(fShown, fRoles, fRoleStats, fRoleLast);
                 } else {
                     for (AccountStore.Account a : fShown) {
-                        accountList.addView(accountGroupCard(a, fStats.get(a.id), fRoles.get(a.id),
-                                fRoleStats, fRoleLast, fOnline, fLiveUid, fLiveEntry));
+                        accountList.addView(accountSimpleCard(a, fStats.get(a.id),
+                                Boolean.TRUE.equals(fOnline.get(a.id))));
                     }
                 }
                 if (fShown.isEmpty()) accountList.addView(emptyTip("没有匹配的账号"));
@@ -2201,8 +2442,11 @@ public class HomeActivity extends AccountVaultActivity {
             filterChips.get(i).setTextColor(sel ? UiStyle.WHITE : UiStyle.INK2);
             filterChips.get(i).setTypeface(Typeface.DEFAULT_BOLD);
         }
+        int onCnt = 0;
+        for (Boolean b : fOnline.values()) if (Boolean.TRUE.equals(b)) onCnt++;
         if (accountCap != null)
-            accountCap.setText(accounts.size() + " 个账号 · 工作区 " + ws.size());
+            accountCap.setText(accounts.size() + " 个账号 · 工作区 " + ws.size()
+                    + " · " + onCnt + " 个在线");
         hideAccMask();   // 最新一轮已渲染，无论它是否 show 过遮罩都撤（防残留挡屏）
             });
           } catch (final Throwable t) {
@@ -2368,6 +2612,49 @@ public class HomeActivity extends AccountVaultActivity {
         return tv;
     }
 
+    /** 列表/卡片默认头像：优先游戏真实图标；circle=true 裁圆，否则直角/圆角方块。 */
+    private android.view.View gameAvatar(int sizeDp, String label, String seed, boolean circle) {
+        int px = dp(sizeDp);
+        android.graphics.drawable.Drawable ic = gameIcon();
+        if (ic != null) {
+            try {
+                android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
+                        px, px, android.graphics.Bitmap.Config.ARGB_8888);
+                android.graphics.Canvas cv = new android.graphics.Canvas(bmp);
+                android.graphics.Path clip = new android.graphics.Path();
+                if (circle) {
+                    clip.addCircle(px / 2f, px / 2f, px / 2f,
+                            android.graphics.Path.Direction.CW);
+                } else {
+                    clip.addRoundRect(new android.graphics.RectF(0, 0, px, px),
+                            dp(13), dp(13), android.graphics.Path.Direction.CW);
+                }
+                cv.clipPath(clip);
+                ic.setBounds(0, 0, px, px);
+                ic.draw(cv);
+                android.widget.ImageView iv = new android.widget.ImageView(this);
+                iv.setImageBitmap(bmp);
+                iv.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
+                return iv;
+            } catch (Throwable ignored) {
+            }
+        }
+        // 取不到游戏图标：列表用雪花占位，卡片沿用旧的渐变首字块
+        return circle ? UiStyle.snowAvatar(this, sizeDp, seed) : avatarView(sizeDp, label, seed);
+    }
+
+    /** 卡片视图的旧版图标：直接使用游戏 APK 图标（不裁切）。 */
+    private android.view.View gameIconSquare(int sizeDp, String label, String seed) {
+        android.graphics.drawable.Drawable ic = gameIcon();
+        if (ic != null) {
+            android.widget.ImageView iv = new android.widget.ImageView(this);
+            iv.setImageDrawable(ic);
+            iv.setScaleType(android.widget.ImageView.ScaleType.FIT_CENTER);
+            return iv;
+        }
+        return avatarView(sizeDp, label, seed);
+    }
+
     /** 登录方式徽标：token=靛（待领取色）/ 原生=绿，与原型 vbadge 配色一致。 */
     private TextView loginBadge(AccountStore.Account a) {
         boolean isToken = a.token != null && !a.token.isEmpty();
@@ -2418,6 +2705,140 @@ public class HomeActivity extends AccountVaultActivity {
         if (c.get(java.util.Calendar.YEAR) == t.get(java.util.Calendar.YEAR))
             return new java.text.SimpleDateFormat("MM-dd", java.util.Locale.CHINA).format(new java.util.Date(ts));
         return new java.text.SimpleDateFormat("yy-MM-dd", java.util.Locale.CHINA).format(new java.util.Date(ts));
+    }
+
+    /** 列表头像：默认游戏真实图标（圆形裁切），取不到回退雪花占位。 */
+    private android.view.View circleAvatar(int sizeDp, String label, String seed) {
+        return gameAvatar(sizeDp, label, seed, true);
+    }
+
+    /** 账号列表行（设计稿 S3）：头像 + 备注名/登录方式·上次 + 状态徽章 + ⋯。 */
+    private android.view.View accountSimpleCard(final AccountStore.Account a, final String[] st,
+                                                final boolean online) {
+        LinearLayout card = UiStyle.outlineCard(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        clp.bottomMargin = dp(10);
+        card.setLayoutParams(clp);
+
+        if (batchMode) {
+            LinearLayout.LayoutParams cklp = new LinearLayout.LayoutParams(dp(22), dp(22));
+            cklp.rightMargin = dp(10);
+            card.addView(batchCheckbox(a), cklp);
+        }
+
+        card.addView(circleAvatar(56, a.label, a.id),
+                new LinearLayout.LayoutParams(dp(56), dp(56)));
+
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
+        TextView name = new TextView(this);
+        name.setText(a.label == null || a.label.isEmpty() ? "?" : a.label);
+        name.setTextSize(15);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        name.setTextColor(UiStyle.INK);
+        name.setMaxLines(1);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        mid.addView(name);
+        boolean isToken = a.token != null && !a.token.isEmpty();
+        TextView meta = new TextView(this);
+        String last = a.lastLogin <= 0 ? "从未登录"
+                : new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
+                .format(new java.util.Date(a.lastLogin));
+        meta.setText((isToken ? "token" : "原生") + " · " + last);
+        meta.setTextSize(11.5f);
+        meta.setTextColor(UiStyle.INK2);
+        meta.setPadding(0, dp(4), 0, 0);
+        mid.addView(meta);
+        card.addView(mid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        // 口径对齐 statusOf()：err/ok/run/wait/idle 五态都要映射；原生账号没有 token，
+        // 不是「过期」而是从未绑定（且不能参与自动日常）。
+        String type, text;
+        String stType = st == null ? "" : st[0];
+        if (!isToken) {
+            type = "idle";
+            text = "未绑定 token";
+        } else if (online) {
+            type = "ok";
+            text = "在线";
+        } else if ("err".equals(stType)) {
+            type = "err";
+            text = "异常";
+        } else if ("ok".equals(stType)) {
+            type = "ok";
+            text = "已完成";
+        } else if ("run".equals(stType)) {
+            type = "run";
+            text = "进行中";
+        } else if ("wait".equals(stType)) {
+            type = "wait";
+            text = "待领取";
+        } else if ("idle".equals(stType)) {
+            type = "wait";
+            text = "今日未跑";
+        } else {
+            type = "idle";
+            text = "离线";
+        }
+        card.addView(UiStyle.badge(this, type, "● " + text));
+
+        android.widget.FrameLayout more = new android.widget.FrameLayout(this);
+        more.addView(new UiStyle.Icon(this, UiStyle.Icon.MORE, UiStyle.INK2, 18),
+                new android.widget.FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER));
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(dp(32), dp(32));
+        mlp.leftMargin = dp(4);
+        card.addView(more, mlp);
+        UiStyle.press(more);
+        more.setOnClickListener(v -> accountMenu(a));
+
+        UiStyle.press(card);
+        card.setOnClickListener(v -> showAccountDetail(a));
+        card.setOnLongClickListener(v -> {
+            if (!batchMode) {
+                batchMode = true;
+                selectedAccounts.add(a.id);
+                if (accBatchBtn != null) accBatchBtn.setText("完成");
+                refreshAccounts();
+            }
+            return true;
+        });
+        return card;
+    }
+
+    /** 批量态勾选框（列表行与卡片格共用）。 */
+    private TextView batchCheckbox(final AccountStore.Account a) {
+        boolean sel = selectedAccounts.contains(a.id);
+        TextView check = new TextView(this);
+        check.setText(sel ? "✓" : "");
+        check.setTextSize(12);
+        check.setTypeface(Typeface.DEFAULT_BOLD);
+        check.setTextColor(UiStyle.WHITE);
+        check.setGravity(Gravity.CENTER);
+        GradientDrawable ckg = new GradientDrawable();
+        ckg.setCornerRadius(dp(7));
+        if (sel) {
+            ckg.setColor(UiStyle.BRAND);
+        } else {
+            ckg.setColor(UiStyle.WHITE);
+            ckg.setStroke(dp(1), UiStyle.LINE_STRONG);
+        }
+        check.setBackground(ckg);
+        UiStyle.press(check);
+        check.setOnClickListener(v -> toggleBatch(a));
+        return check;
+    }
+
+    /** 翻转批量选中并重绘（勾选框与整行/整格点击同源）。 */
+    private void toggleBatch(AccountStore.Account a) {
+        if (selectedAccounts.contains(a.id)) selectedAccounts.remove(a.id);
+        else selectedAccounts.add(a.id);
+        refreshAccounts();
     }
 
     /** 账号分组框：头行=备注名+登录方式(原生/token)+⚙；框内=已入工作区的角色独立入口卡。 */
@@ -2771,6 +3192,7 @@ public class HomeActivity extends AccountVaultActivity {
 
         final android.widget.FrameLayout overlay = new android.widget.FrameLayout(this);
         overlay.setBackgroundColor(UiStyle.SCRIM);   // rgba(8,12,23,35%)，压暗背景
+        overlay.setElevation(dp(24));                // 必须高于悬浮导航的 elevation
         // 点遮罩空白处关闭
         overlay.setOnClickListener(v -> dismissSheet(overlay));
 
@@ -2798,49 +3220,30 @@ public class HomeActivity extends AccountVaultActivity {
         panel.addView(grabWrap, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(13)));
 
-        // —— 头部：账号名 + 副题 + 关闭 ——
+        // —— 头部：角色管理 + 账号/角色数 ——
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        head.setPadding(dp(16), dp(4), dp(10), dp(12));
+        head.setPadding(dp(18), dp(6), dp(18), dp(12));
         LinearLayout hb = new LinearLayout(this);
         hb.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
-        title.setText(a.label + " · 角色管理");
-        title.setTextSize(14.5f);
+        title.setText("角色管理");
+        title.setTextSize(20);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
         hb.addView(title);
         final TextView sub = new TextView(this);
-        sub.setTextSize(11);
+        sub.setTextSize(12);
         sub.setTextColor(UiStyle.INK2);
+        sub.setPadding(0, dp(3), 0, 0);
         hb.addView(sub);
         head.addView(hb, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        // 「发现角色」：向游戏服务器查询该凭证名下全部角色并入列表（本地表只含登录过的角色）
+        // 「发现角色」保留为隐藏入口（底部 + 添加角色 触发）
         final TextView discover = new TextView(this);
-        discover.setText("🔍 发现角色");
-        discover.setTextSize(11);
-        discover.setTypeface(Typeface.DEFAULT_BOLD);
-        discover.setTextColor(UiStyle.BRAND_TEXT);
-        discover.setGravity(Gravity.CENTER);
-        GradientDrawable dbg = new GradientDrawable();
-        dbg.setColor(UiStyle.SURFACE_3);
-        dbg.setCornerRadius(dp(9));
-        discover.setBackground(dbg);
-        discover.setPadding(dp(9), dp(6), dp(9), dp(6));
-        UiStyle.press(discover);
-        head.addView(discover, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        android.widget.FrameLayout close = new android.widget.FrameLayout(this);
-        close.setBackground(UiStyle.roundRect(UiStyle.SURFACE_3, dp(10)));
-        android.widget.FrameLayout.LayoutParams clp3 = new android.widget.FrameLayout.LayoutParams(
-                dp(18), dp(18), Gravity.CENTER);
-        close.addView(new UiStyle.Icon(this, UiStyle.Icon.CLOSE, UiStyle.INK2), clp3);
-        close.setPadding(dp(10), dp(7), dp(10), dp(7));
-        UiStyle.press(close);
-        close.setOnClickListener(v -> dismissSheet(overlay));
-        head.addView(close);
+        discover.setText("发现角色");
+        discover.setVisibility(View.GONE);
         panel.addView(head);
 
         final java.util.List<Runnable> syncSubs = new ArrayList<>();
@@ -2855,7 +3258,7 @@ public class HomeActivity extends AccountVaultActivity {
             } catch (Throwable ignored) {
                 for (RoleStore.Role r : roles) if (r.enabled) en++;
             }
-            sub.setText("共 " + n + " 个角色，已启用 " + en + " · 开启即加入工作区");
+            sub.setText((a.label == null ? "" : a.label) + " · " + n + " 个角色 · 已加入 " + en);
         });
         syncSubs.get(0).run();
 
@@ -2868,8 +3271,7 @@ public class HomeActivity extends AccountVaultActivity {
         final Runnable rebuildList = () -> {
             list.removeAllViews();
             for (final RoleStore.Role r : rolesRef.get()) {
-                list.addView(sheetRoleRow(a, r, roleOnlineLabel(a, r, accOn, actSid, isLiveAcc, liveUid),
-                        sched.getLong("lastr:" + a.fpid + ":" + r.serverid, 0), syncSubs));
+                list.addView(sheetRoleRow(a, r, syncSubs));
             }
         };
         rebuildList.run();
@@ -2881,34 +3283,27 @@ public class HomeActivity extends AccountVaultActivity {
         // —— 底部按钮：全部加入工作区 / 完成 ——
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
-        foot.setPadding(dp(16), dp(11), dp(16), dp(14));
+        foot.setPadding(dp(16), dp(11), dp(16), dp(28));
         TextView all = new TextView(this);
-        all.setText("全部加入工作区");
-        all.setTextSize(13f);
+        all.setText("+ 添加角色");
+        all.setTextSize(14);
         all.setTypeface(Typeface.DEFAULT_BOLD);
         all.setTextColor(UiStyle.INK);
         all.setGravity(Gravity.CENTER);
-        all.setBackground(UiStyle.roundRect(UiStyle.SURFACE_3, dp(12)));
-        all.setPadding(0, dp(11), 0, dp(11));
+        all.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 14, UiStyle.LINE));
+        all.setPadding(0, dp(13), 0, dp(13));
         UiStyle.press(all);
-        all.setOnClickListener(v -> {
-            for (RoleStore.Role r : rolesRef.get()) RoleStore.setEnabled(this, a.fpid, r.serverid, true);
-            for (Runnable rr : syncSubs) rr.run();
-            // 刷新列表行视觉（在线标记按角色行新口径）
-            rebuildList.run();
-            refreshAccounts();
-            toast("已把 " + rolesRef.get().size() + " 个角色全部加入工作区");
-        });
+        all.setOnClickListener(v -> discover.performClick());
         foot.addView(all, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView done = new TextView(this);
         done.setText("完成");
-        done.setTextSize(13f);
+        done.setTextSize(14);
         done.setTypeface(Typeface.DEFAULT_BOLD);
         done.setTextColor(UiStyle.WHITE);
         done.setGravity(Gravity.CENTER);
-        done.setBackground(UiStyle.roundRect(UiStyle.BRAND, dp(12)));
-        done.setPadding(0, dp(11), 0, dp(11));
+        done.setBackground(UiStyle.roundRect(UiStyle.BRAND, dp(14)));
+        done.setPadding(0, dp(13), 0, dp(13));
         UiStyle.press(done);
         done.setOnClickListener(v -> dismissSheet(overlay));
         LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0,
@@ -2994,8 +3389,8 @@ public class HomeActivity extends AccountVaultActivity {
             }
         });
 
-        // 盖到内容根上（pages 容器的父 FrameLayout）
-        ViewGroup root = (ViewGroup) pages[1].getParent();
+        // 盖到根容器（含悬浮导航，弹层遮罩必须压住底部导航）
+        ViewGroup root = (ViewGroup) content.getParent();
         root.addView(overlay, new android.widget.FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -3036,86 +3431,64 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 弹层内单个角色行：在线标记(日常在线/游戏在线/在线/离线) · 名称(+未启用标签) · 区号 · 今日完成 · 上次登录 · 开关。 */
     private android.view.View sheetRoleRow(final AccountStore.Account a, final RoleStore.Role r,
-                                           String[] onlineKind, long lastTs,
                                            final java.util.List<Runnable> syncSubs) {
         final LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setPadding(dp(16), dp(11), dp(16), dp(11));
-        if (!r.enabled) row.setBackgroundColor(UiStyle.SURFACE_2);   // 未启用行降饱和
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(16), dp(12), dp(16), dp(12));
+        row.setBackgroundColor(UiStyle.WHITE);
 
-        LinearLayout top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(UiStyle.snowAvatar(this, 56, a.id + ":" + r.serverid),
+                new LinearLayout.LayoutParams(dp(56), dp(56)));
 
-        LinearLayout tb = new LinearLayout(this);
-        tb.setOrientation(LinearLayout.HORIZONTAL);
-        tb.setGravity(Gravity.CENTER_VERTICAL);
-        TextView stv = new TextView(this);
-        boolean online = onlineKind != null && "on".equals(onlineKind[1]);
-        stv.setText(onlineKind == null ? "● 离线" : onlineKind[0]);
-        stv.setTextSize(11);
-        stv.setTypeface(Typeface.DEFAULT_BOLD);
-        stv.setTextColor(online ? UiStyle.OK_INK : UiStyle.INK3);
-        tb.addView(stv);
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
         TextView nm = new TextView(this);
         String rn = r.name == null || r.name.isEmpty() ? "K" + r.serverid + " · 未同步" : r.name;
         nm.setText(rn);
-        nm.setTextSize(13.5f);
+        nm.setTextSize(16);
         nm.setTypeface(Typeface.DEFAULT_BOLD);
-        nm.setTextColor(r.enabled ? UiStyle.INK : UiStyle.INK2);
+        nm.setTextColor(UiStyle.INK);
         nm.setMaxLines(1);
         nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        nm.setPadding(dp(8), 0, 0, 0);
-        tb.addView(nm, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        if (!r.enabled) {
-            TextView off = new TextView(this);
-            off.setText("未启用");
-            off.setTextSize(10);
-            off.setTypeface(Typeface.DEFAULT_BOLD);
-            off.setTextColor(UiStyle.WAIT_INK);
-            off.setBackground(UiStyle.roundRect(UiStyle.WAIT_BG, dp(6)));
-            off.setPadding(dp(6), dp(2), dp(6), dp(2));
-            LinearLayout.LayoutParams olp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            olp.leftMargin = dp(7);
-            tb.addView(off, olp);
-        }
-        top.addView(tb, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        mid.addView(nm);
 
-        // 开关：项目自带的自绘 Switch（46x28，无 material 依赖）
-        UiStyle.Switch sw = new UiStyle.Switch(this, r.enabled, () -> {
-            boolean now = !r.enabled;
+        StringBuilder sb = new StringBuilder();
+        sb.append(r.serverid).append("服");
+        if (r.level > 0) sb.append(" · 城堡 ").append(r.level).append(" 级");
+        if (r.power > 0) sb.append(" · 战力 ").append(fmtWan(r.power));
+        TextView meta = new TextView(this);
+        meta.setText(sb.toString());
+        meta.setTextSize(12);
+        meta.setTextColor(UiStyle.INK2);
+        meta.setPadding(0, dp(4), 0, 0);
+        mid.addView(meta);
+        row.addView(mid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        // 角色管理只保留「是否加入工作区」开关：开=加入工作区，关=移出工作区。
+        final UiStyle.Switch[] swRef = new UiStyle.Switch[1];
+        swRef[0] = new UiStyle.Switch(this, r.enabled, () -> {
+            boolean now = swRef[0].isOn();
             r.enabled = now;
-            RoleStore.setEnabled(HomeActivity.this, a.fpid, r.serverid, now);
-            row.setBackgroundColor(now ? UiStyle.WHITE : UiStyle.SURFACE_2);
-            nm.setTextColor(now ? UiStyle.INK : UiStyle.INK2);
+            RoleStore.setEnabled(this, a.fpid, r.serverid, now);
+            toast(now ? "已加入工作区" : "已移出工作区");
             for (Runnable rr : syncSubs) rr.run();
             refreshAccounts();
         });
-        top.addView(sw);
+        row.addView(swRef[0]);
 
-        row.addView(top);
-
-        // 副行：区 · 今日 · 上次
-        int[] ds = new com.carlos.vault.daily.LogStore(this).dayStats(a.fpid, r.serverid);
-        TextView meta = new TextView(this);
-        meta.setText("区 " + r.serverid + " · 今日 " + (ds == null ? 0 : ds[0]) + "/"
-                + (ds == null ? 0 : ds[3]) + " · 上次登录 " + shortTime(lastTs));
-        meta.setTextSize(10.5f);
-        meta.setTextColor(UiStyle.INK2);
-        meta.setPadding(0, dp(4), 0, 0);
-        row.addView(meta);
-
-        // 分隔线（最后一行不加，由调用方控制不完美也无妨）
         android.view.View div = new android.view.View(this);
         div.setBackgroundColor(UiStyle.LINE);
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
+        wrap.addView(row);
         LinearLayout.LayoutParams dlp2 = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
-        dlp2.topMargin = dp(11);
-        row.addView(div, dlp2);
-        return row;
+        dlp2.leftMargin = dp(84);
+        wrap.addView(div, dlp2);
+        return wrap;
     }
 
     /** 账号页加载遮罩：半透明覆盖 + 居中"加载中…"卡。 */
@@ -3124,6 +3497,7 @@ public class HomeActivity extends AccountVaultActivity {
             android.widget.FrameLayout fl = new android.widget.FrameLayout(this);
             fl.setBackgroundColor(UiStyle.BLACK_40);
             fl.setClickable(true);
+            fl.setElevation(dp(24));
             LinearLayout box = UiStyle.outlineCard(this);
             box.setOrientation(LinearLayout.VERTICAL);
             box.setGravity(Gravity.CENTER);
@@ -3143,7 +3517,7 @@ public class HomeActivity extends AccountVaultActivity {
         }
         if (accMask.getParent() instanceof ViewGroup) return;
         try {
-            ((ViewGroup) pages[1].getParent()).addView(accMask,
+            ((ViewGroup) content.getParent()).addView(accMask,
                     new android.widget.FrameLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         } catch (Throwable ignored) {
@@ -3159,10 +3533,11 @@ public class HomeActivity extends AccountVaultActivity {
     // ================= Tab3 · 任务 =================
 
     private void buildTaskPage() {
-        ScrollView sc = new ScrollView(this);
+        taskScroll = new ScrollView(this);
+        ScrollView sc = taskScroll;
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(14), dp(18), dp(16));
+        box.setPadding(dp(18), dp(12), dp(18), dp(110));
         sc.addView(box);
         pages[2].addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
@@ -3175,46 +3550,113 @@ public class HomeActivity extends AccountVaultActivity {
         tb.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
         title.setText("日常");
-        title.setTextSize(19);
+        title.setTextSize(24);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
         tb.addView(title);
         taskCap = new TextView(this);
-        taskCap.setTextSize(11.5f);
+        taskCap.setTextSize(12);
         taskCap.setTextColor(UiStyle.INK2);
+        taskCap.setPadding(0, dp(3), 0, 0);
         tb.addView(taskCap);
         top.addView(tb, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView switchRole = new TextView(this);
+        switchRole.setText("切换角色");
+        switchRole.setTextSize(13);
+        switchRole.setTypeface(Typeface.DEFAULT_BOLD);
+        switchRole.setTextColor(UiStyle.BRAND_TEXT);
+        switchRole.setGravity(Gravity.CENTER);
+        switchRole.setPadding(dp(14), dp(8), dp(14), dp(8));
+        switchRole.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 16, UiStyle.LINE));
+        UiStyle.press(switchRole);
+        switchRole.setOnClickListener(v -> showRolePicker());
+        top.addView(switchRole);
         box.addView(top);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         tlp.bottomMargin = dp(10);
         top.setLayoutParams(tlp);
 
+        // 功能搜索（S7 日常中心）：名称/id 实时过滤，跨分类；有搜索词时结果列表替换分类列表
+        LinearLayout search = UiStyle.outlineCard(this);
+        search.setOrientation(LinearLayout.HORIZONTAL);
+        search.setGravity(Gravity.CENTER_VERTICAL);
+        search.setPadding(dp(14), dp(9), dp(14), dp(9));
+        search.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        search.addView(new UiStyle.Icon(this, UiStyle.Icon.SEARCH, UiStyle.INK3, 19),
+                new LinearLayout.LayoutParams(dp(19), dp(19)));
+        taskSearch = new EditText(this);
+        taskSearch.setHint("搜索功能，如：邮件 / 护盾 / 采集");
+        taskSearch.setTextSize(13);
+        taskSearch.setTextColor(UiStyle.INK);
+        taskSearch.setHintTextColor(UiStyle.INK3);
+        taskSearch.setBackgroundColor(android.graphics.Color.TRANSPARENT);
+        taskSearch.setSingleLine(true);
+        taskSearch.setPadding(dp(10), 0, dp(4), 0);
+        taskSearch.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int a, int b, int c) { }
+
+            @Override
+            public void onTextChanged(CharSequence s, int a, int b, int c) { }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+                String q = s.toString().trim();
+                if (q.equals(taskQuery)) return;
+                taskQuery = q;
+                refreshTasks();
+            }
+        });
+        search.addView(taskSearch, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        searchClear = new TextView(this);
+        searchClear.setText("✕");
+        searchClear.setTextSize(12);
+        searchClear.setTextColor(UiStyle.INK3);
+        searchClear.setGravity(Gravity.CENTER);
+        searchClear.setPadding(dp(8), dp(2), dp(6), dp(2));
+        searchClear.setVisibility(View.GONE);
+        UiStyle.press(searchClear);
+        searchClear.setOnClickListener(v -> taskSearch.setText(""));
+        search.addView(searchClear);
+        box.addView(search);
+
+        searchCap = new TextView(this);
+        searchCap.setTextSize(11);
+        searchCap.setTextColor(UiStyle.INK2);
+        searchCap.setPadding(dp(4), dp(6), dp(4), dp(2));
+        searchCap.setVisibility(View.GONE);
+        box.addView(searchCap);
+
         // 自动日常横幅卡（规范：图标 + 标题/副题 + 管理工作区小按钮）
         LinearLayout auto = UiStyle.outlineCard(this);
         auto.setOrientation(LinearLayout.HORIZONTAL);
         auto.setGravity(Gravity.CENTER_VERTICAL);
-        auto.setPadding(dp(14), dp(12), dp(12), dp(12));
-        TextView aIcon = new TextView(this);
-        aIcon.setText("✓");
-        aIcon.setTextSize(16);
-        aIcon.setTypeface(Typeface.DEFAULT_BOLD);
-        aIcon.setTextColor(UiStyle.BRAND_TEXT);
-        aIcon.setGravity(Gravity.CENTER);
-        aIcon.setBackground(UiStyle.roundRect(UiStyle.BRAND_50, dp(10)));
-        auto.addView(aIcon, new LinearLayout.LayoutParams(dp(34), dp(34)));
+        auto.setPadding(dp(14), dp(14), dp(12), dp(14));
+        LinearLayout.LayoutParams autoLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        autoLp.topMargin = dp(10);
+        auto.setLayoutParams(autoLp);
+        auto.addView(UiStyle.iconTile(this, UiStyle.Icon.LIGHTNING, UiStyle.BRAND_TEXT,
+                UiStyle.BRAND_50, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
         LinearLayout aMid = new LinearLayout(this);
         aMid.setOrientation(LinearLayout.VERTICAL);
-        aMid.setPadding(dp(11), 0, dp(6), 0);
+        aMid.setPadding(dp(12), 0, dp(6), 0);
         bannerTitle = new TextView(this);
         bannerTitle.setText("自动日常");
-        bannerTitle.setTextSize(12.5f);
+        bannerTitle.setTextSize(15);
         bannerTitle.setTypeface(Typeface.DEFAULT_BOLD);
         bannerTitle.setTextColor(UiStyle.INK);
         aMid.addView(bannerTitle);
         bannerSub = new TextView(this);
-        bannerSub.setTextSize(11);
-        bannerSub.setTextColor(UiStyle.INK3);
+        bannerSub.setTextSize(11.5f);
+        bannerSub.setTextColor(UiStyle.INK2);
+        bannerSub.setPadding(0, dp(3), 0, 0);
+        bannerSub.setMaxLines(1);
+        bannerSub.setEllipsize(android.text.TextUtils.TruncateAt.END);
         aMid.addView(bannerSub);
         auto.addView(aMid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         // 时段按钮（原日常页的定时窗口设置迁移至此）
@@ -3255,61 +3697,7 @@ public class HomeActivity extends AccountVaultActivity {
         auto.setOnClickListener(v -> openDaily(
                 taskAccount == null ? firstWorkspace() : taskAccount, null));
 
-        // 常驻在线行卡（24h 会话：心跳/自动互助；灰度期仅对主力号开启，与自动日常正交）
-        LinearLayout keep = UiStyle.outlineCard(this);
-        keep.setOrientation(LinearLayout.HORIZONTAL);
-        keep.setGravity(Gravity.CENTER_VERTICAL);
-        keep.setPadding(dp(14), dp(10), dp(12), dp(10));
-        LinearLayout.LayoutParams klp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        klp.topMargin = dp(8);
-        keep.setLayoutParams(klp);
-        TextView kIcon = new TextView(this);
-        kIcon.setText("◉");
-        kIcon.setTextSize(15);
-        kIcon.setTypeface(Typeface.DEFAULT_BOLD);
-        kIcon.setTextColor(UiStyle.BRAND_TEXT);
-        kIcon.setGravity(Gravity.CENTER);
-        kIcon.setBackground(UiStyle.roundRect(UiStyle.BRAND_50, dp(10)));
-        keep.addView(kIcon, new LinearLayout.LayoutParams(dp(34), dp(34)));
-        LinearLayout kMid = new LinearLayout(this);
-        kMid.setOrientation(LinearLayout.VERTICAL);
-        kMid.setPadding(dp(11), 0, dp(6), 0);
-        TextView kTitle = new TextView(this);
-        kTitle.setText("24h 常驻在线");
-        kTitle.setTextSize(12.5f);
-        kTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        kTitle.setTextColor(UiStyle.INK);
-        kMid.addView(kTitle);
-        keepSub = new TextView(this);
-        keepSub.setTextSize(11);
-        keepSub.setTextColor(UiStyle.INK3);
-        keepSub.setText("未开启");
-        kMid.addView(keepSub);
-        keep.addView(kMid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        keepSwitch = new UiStyle.Switch(this, false, () -> {
-            AccountStore.Account cur = taskAccount == null ? firstWorkspace() : taskAccount;
-            if (cur == null) {
-                toast("没有可用账号");
-                keepSwitch.setOn(false);
-                return;
-            }
-            RoleStore.saveKeepOnline(this, cur.fpid, keepSwitch.isOn());
-            // 立即生效：开→拉起会话；关→下次同步自动下线
-            com.carlos.vault.daily.RoleSessionKeeper.get(this).start();
-            com.carlos.vault.daily.RoleSessionKeeper.get(this).syncOnline();
-            if (keepSwitch.isOn()) {
-                promptBatteryWhitelist();
-                promptNotificationAccess();
-            }
-            toast("常驻在线已" + (keepSwitch.isOn() ? "开启" : "关闭"));
-            refreshTasks();
-        });
-        LinearLayout.LayoutParams kslp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        kslp.leftMargin = dp(8);
-        keep.addView(keepSwitch, kslp);
-        box.addView(keep);
+        // 24h 常驻在线开关已移到今日页双卡（设计稿 S2），日常页保持「搜索 → 自动日常 → 分类」节奏。
 
         // 分类chips（带数量）
         HorizontalScrollView cs = new HorizontalScrollView(this);
@@ -3326,6 +3714,7 @@ public class HomeActivity extends AccountVaultActivity {
             UiStyle.press(c);
             c.setOnClickListener(v -> {
                 taskCat = cat;
+                if (taskSearch != null) taskSearch.setText("");   // 切分类即退出搜索态
                 refreshTasks();
             });
             catChips.add(c);
@@ -3338,27 +3727,6 @@ public class HomeActivity extends AccountVaultActivity {
         taskRows = new LinearLayout(this);
         taskRows.setOrientation(LinearLayout.VERTICAL);
         box.addView(taskRows);
-
-        // 进阶工具
-        box.addView(UiStyle.sectionTitle(this, "进阶工具"));
-        LinearLayout tools = UiStyle.outlineCard(this);
-        tools.setOrientation(LinearLayout.HORIZONTAL);
-        tools.setGravity(Gravity.CENTER_VERTICAL);
-        tools.setPadding(dp(12), dp(12), dp(12), dp(12));
-        TextView t1 = new TextView(this);
-        t1.setText("排行榜 · 迁城 · 三消 · 练号 · 侦查 · 移民 等 14 项");
-        t1.setTextSize(12);
-        t1.setTextColor(UiStyle.INK2);
-        tools.addView(t1, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView t2 = new TextView(this);
-        t2.setText("查看 ›");
-        t2.setTextSize(12);
-        t2.setTypeface(Typeface.DEFAULT_BOLD);
-        t2.setTextColor(UiStyle.BRAND_TEXT);
-        tools.addView(t2);
-        UiStyle.press(tools);
-        tools.setOnClickListener(v -> showTools());
-        box.addView(tools);
     }
 
     /** 今日页常驻徽标 + 互助卡状态（数据源：RoleSessionKeeper 快照 + alliance_help modState；后台线程调用）。 */
@@ -3637,7 +4005,20 @@ public class HomeActivity extends AccountVaultActivity {
             Boolean on = cfg == null ? null : cfg.get(fn.id);
             if (on == null ? (fn.implemented && defOn(fn.id)) : on) enabled++;
         }
-        if (taskCap != null) taskCap.setText(total + " 项功能 · 已启用 " + enabled);
+        String roleName = "";
+        try {
+            for (RoleStore.Role r : RoleStore.roles(this, taskAccount.fpid)) {
+                if (r.serverid == sid && r.name != null && !r.name.isEmpty()) {
+                    roleName = r.name;
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        if (roleName.isEmpty()) roleName = taskAccount.label;
+        if (taskCap != null) {
+            taskCap.setText(total + " 项功能 · 已启用 " + enabled + " · 当前 " + roleName);
+        }
         // 分类chips：选中态跟随 taskCat（修复选中效果不切换）；药丸样式与账号页统一
         for (int i = 0; i < catChips.size(); i++) {
             TextView chip = catChips.get(i);
@@ -3672,126 +4053,297 @@ public class HomeActivity extends AccountVaultActivity {
             if (RoleStore.schedule(this, a.fpid).autoEnabled) { anyAuto = true; break; }
         }
         if (bannerTitle != null) {
-            bannerTitle.setText("自动日常 · 已" + (anyAuto ? "开启" : "关闭"));
-            if (wsRoleCnt > 0) {
-                bannerSub.setText("仅对工作区的 " + wsRoleCnt + " 个启用角色执行");
-            } else if (wsCnt > 0) {
-                // 账号在工作区但没启用任何角色：执行端会回落到每号主角色单跑
-                bannerSub.setText("仅对工作区 " + wsCnt + " 个账号的主角色执行");
-            } else {
-                bannerSub.setText("先在账号页把角色加入工作区");
-            }
+            bannerTitle.setText("自动日常");
             int[] win = RoleStore.window(this);
-            winBtn.setText("时段 " + win[0] + "-" + win[1] + "点");
-            if (taskAccount != null && autoSwitch != null) {
+            String winText = (win[0] == 0 && win[1] >= 24) ? "全天"
+                    : String.format(java.util.Locale.CHINA, "%02d:00-%02d:00", win[0], win[1]);
+            bannerSub.setText(winText + " · 已启用 " + enabled + " 项");
+            winBtn.setText("时段");
+            if (autoSwitch != null) {
                 autoSwitch.setOn(RoleStore.schedule(this, taskAccount.fpid).autoEnabled);
             }
         }
-        if (keepSub != null) keepSub.setText(keepStatusText());
-        if (keepSwitch != null && taskAccount != null) {
-            keepSwitch.setOn(RoleStore.keepOnline(this, taskAccount.fpid));
+
+        // 列表来源：搜索态=跨分类过滤结果；否则=当前分类；常用区仅在浏览态置顶渲染
+        List<FnRegistry.Fn> list;
+        if (taskQuery.isEmpty()) {
+            list = FnRegistry.byCategory(taskCat);
+            if (searchCap != null) searchCap.setVisibility(View.GONE);
+            if (searchClear != null) searchClear.setVisibility(View.GONE);
+            if (!favFns.isEmpty()) {
+                taskRows.addView(favSectionHeader());
+                int fi = 0;
+                for (String fid : new ArrayList<>(favFns)) {
+                    FnRegistry.Fn f = FnRegistry.byId(fid);
+                    if (f == null) continue;   // 已下线功能：静默跳过
+                    taskRows.addView(favRow(f, ls, sid));
+                    fi++;
+                    if (fi == 4) taskRows.addView(toolsFavRow());
+                }
+                if (fi < 4) taskRows.addView(toolsFavRow());
+                taskRows.addView(viewAllLink());
+            }
+        } else {
+            String q = taskQuery.toLowerCase();
+            list = new ArrayList<>();
+            for (FnRegistry.Fn f : FnRegistry.all()) {
+                if (f.name.toLowerCase().contains(q) || f.id.toLowerCase().contains(q)) list.add(f);
+            }
+            if (searchCap != null) {
+                searchCap.setVisibility(View.VISIBLE);
+                searchCap.setText("「" + taskQuery + "」匹配 " + list.size() + " 项"
+                        + (list.isEmpty() ? " · 换个关键词试试" : ""));
+            }
+            if (searchClear != null) searchClear.setVisibility(View.VISIBLE);
+            if (list.isEmpty()) {
+                taskRows.addView(emptyTip("没有匹配「" + taskQuery + "」的功能"));
+                return;
+            }
         }
+        for (final FnRegistry.Fn fn : list) {
+            taskRows.addView(taskRow(fn, sid));
+        }
+    }
 
-        for (final FnRegistry.Fn fn : FnRegistry.byCategory(taskCat)) {
-            final boolean fnEnabled = fnOn(fn);
-            // 单卡：头部（图标+名称徽章+摘要+开关+箭头）+ 展开区（同卡 border-top，规范 .task）
-            LinearLayout card = UiStyle.outlineCard(this);
-            card.setOrientation(LinearLayout.VERTICAL);
-            LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            clp.bottomMargin = dp(8);
-            card.setLayoutParams(clp);
-
-            LinearLayout head = new LinearLayout(this);
-            head.setOrientation(LinearLayout.HORIZONTAL);
-            head.setGravity(Gravity.CENTER_VERTICAL);
-            head.setPadding(dp(14), dp(13), dp(14), dp(13));
-
-            TextView icon = new TextView(this);
-            icon.setText(iconOf(fn));
-            icon.setTextSize(15);
-            icon.setTextColor(fnEnabled ? UiStyle.BRAND_TEXT : UiStyle.INK2);
-            icon.setGravity(Gravity.CENTER);
-            icon.setBackground(UiStyle.roundRect(fnEnabled ? UiStyle.BRAND_50 : UiStyle.IDLE_BG, dp(10)));
-            head.addView(icon, new LinearLayout.LayoutParams(dp(34), dp(34)));
-
-            LinearLayout body = new LinearLayout(this);
-            body.setOrientation(LinearLayout.VERTICAL);
-            body.setPadding(dp(12), 0, dp(6), 0);
-            LinearLayout nameRow = new LinearLayout(this);
-            nameRow.setOrientation(LinearLayout.HORIZONTAL);
-            nameRow.setGravity(Gravity.CENTER_VERTICAL);
-            TextView name = new TextView(this);
-            name.setText(fn.name);
-            name.setTextSize(13.5f);
-            name.setTypeface(Typeface.DEFAULT_BOLD);
-            name.setTextColor(fnEnabled ? UiStyle.INK : UiStyle.INK3);
-            nameRow.addView(name, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-            nameRow.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1));
-            int stat = ls.status(taskAccount.fpid, sid, fn.id);
-            String badgeType = stat == LogStore.ST_DONE ? "ok"
-                    : stat == LogStore.ST_RUNNING ? "run"
-                    : stat == LogStore.ST_FAILED ? "err" : "idle";
-            String badgeText = stat == LogStore.ST_DONE ? "已完成"
-                    : stat == LogStore.ST_RUNNING ? "进行中"
-                    : stat == LogStore.ST_FAILED ? "失败" : (fn.implemented ? "未开始" : "规划中");
-            nameRow.addView(UiStyle.badge(this, badgeType, badgeText));
-            body.addView(nameRow);
-            TextView sum = new TextView(this);
-            sum.setText(sumOf(fn, sid));
-            sum.setTextSize(11.5f);
-            sum.setTextColor(fnEnabled ? UiStyle.INK2 : UiStyle.INK3);
-            sum.setMaxLines(1);
-            sum.setEllipsize(android.text.TextUtils.TruncateAt.END);
-            body.addView(sum);
-            head.addView(body, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-            final UiStyle.Switch[] fnRef = new UiStyle.Switch[1];
-            fnRef[0] = new UiStyle.Switch(this, fnEnabled,
-                    () -> setFnOn(fn, fnRef[0].isOn()));
-            head.addView(fnRef[0]);
-            TextView chev = new TextView(this);
-            chev.setText("▾");
-            chev.setTextSize(15);
-            chev.setTextColor(UiStyle.INK2);
-            chev.setGravity(Gravity.CENTER);
-            chev.setPadding(dp(10), 0, 0, 0);
-            boolean open = fn.id.equals(expandedFn);
-            chev.setRotation(open ? 180f : 0f);
-            head.addView(chev);
-            UiStyle.press(head);
-            head.setOnClickListener(v -> {
-                expandedFn = open ? null : fn.id;
+    /** 分类列表行（设计稿 S7）：与常用区一致的图标/标题/开关 + 点行进详情。 */
+    private View taskRow(final FnRegistry.Fn fn, long sid) {
+        LinearLayout card = UiStyle.outlineCard(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(8);
+        card.setLayoutParams(lp);
+        boolean enabled = fnOn(fn);
+        card.addView(UiStyle.iconTile(this, featureIcon(fn),
+                enabled ? UiStyle.BRAND_TEXT : UiStyle.INK3,
+                enabled ? UiStyle.BRAND_50 : UiStyle.SURFACE_3, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
+        TextView name = new TextView(this);
+        name.setText(fn.name);
+        name.setTextSize(15);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        name.setTextColor(enabled ? UiStyle.INK : UiStyle.INK2);
+        mid.addView(name);
+        TextView sub = new TextView(this);
+        sub.setText(fnSub(fn));
+        sub.setTextSize(11.5f);
+        sub.setTextColor(UiStyle.INK2);
+        sub.setPadding(0, dp(3), 0, 0);
+        sub.setMaxLines(1);
+        sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        mid.addView(sub);
+        card.addView(mid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        if (fn.implemented) {
+            final UiStyle.Switch[] sw = new UiStyle.Switch[1];
+            sw[0] = new UiStyle.Switch(this, enabled, () -> {
+                setFnOn(fn, sw[0].isOn());
                 refreshTasks();
             });
-            card.addView(head);
+            card.addView(sw[0]);
+        } else {
+            card.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON, UiStyle.INK3, 16),
+                    new LinearLayout.LayoutParams(dp(16), dp(16)));
+        }
+        UiStyle.press(card);
+        card.setOnClickListener(v -> openFnDetail(taskAccount, fn.id));
+        card.setOnLongClickListener(v -> {
+            toggleFav(fn.id);
+            toast(isFav(fn.id) ? "已加入常用" : "已移出常用");
+            refreshTasks();
+            return true;
+        });
+        return card;
+    }
 
-            if (open) {
-                View div = new View(this);
-                div.setBackgroundColor(UiStyle.LINE);
-                card.addView(div, new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
-                LinearLayout detail = new LinearLayout(this);
-                detail.setOrientation(LinearLayout.VERTICAL);
-                detail.setPadding(dp(14), dp(4), dp(14), dp(12));
-                detail.addView(com.carlos.vault.daily.SubCardUi.build(this, taskAccount.fpid, sid, fn.id));
-                // 展开即刷新：借常驻会话收取该功能最新状态（只读），完成后整页重渲染
-                refreshFnOnExpand(taskAccount.fpid, sid, fn.id);
-                TextView deep = new TextView(this);
-                deep.setText("更多（执行/日志/时间窗）›");
-                deep.setTextSize(12);
-                deep.setTextColor(UiStyle.BRAND_TEXT);
-                deep.setGravity(Gravity.RIGHT);
-                deep.setPadding(0, dp(8), 0, dp(2));
-                deep.setLayoutParams(new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-                UiStyle.press(deep);
-                deep.setOnClickListener(v -> openFnDetail(taskAccount, fn.id));
-                detail.addView(deep);
-                card.addView(detail);
+    // ================= 常用功能（S7 日常中心：高频置顶 + 持久化） =================
+
+    /** 读取常用集；首次用高频默认集播种（覆盖奖励/联盟/野外/城镇四类每天都碰的功能）。 */
+    private void loadFavs() {
+        java.util.Set<String> def = new java.util.LinkedHashSet<>(java.util.Arrays.asList(
+                "login_rewards", "mail", "supply", "daily_mission",
+                "gather", "town_affairs", "alliance_help", "alliance_chest"));
+        java.util.Set<String> saved = getSharedPreferences("daily_fav", MODE_PRIVATE)
+                .getStringSet("favs", def);
+        favFns.clear();
+        if (saved != null) favFns.addAll(saved);
+    }
+
+    private void saveFavs() {
+        getSharedPreferences("daily_fav", MODE_PRIVATE).edit()
+                .putStringSet("favs", new java.util.LinkedHashSet<>(favFns)).apply();
+    }
+
+    private boolean isFav(String fnId) {
+        return favFns.contains(fnId);
+    }
+
+    private void toggleFav(String fnId) {
+        if (!favFns.remove(fnId)) favFns.add(fnId);
+        saveFavs();
+    }
+
+    /** 常用区标题行：左标题 + 右提示。 */
+    private View favSectionHeader() {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(2), dp(14), dp(2), dp(6));
+        TextView t = new TextView(this);
+        t.setText("常用");
+        t.setTextSize(16);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextColor(UiStyle.INK);
+        row.addView(t);
+        TextView h = new TextView(this);
+        h.setText("按使用频率排序");
+        h.setTextSize(11);
+        h.setTextColor(UiStyle.INK3);
+        h.setPadding(dp(6), dp(2), 0, 0);
+        row.addView(h);
+        return row;
+    }
+
+    /** 常用区行卡（设计稿 S7）：图标 + 名称/摘要 + 开关（未开放为箭头）。长按移出常用。 */
+    private View favRow(FnRegistry.Fn fn, LogStore ls, long sid) {
+        LinearLayout card = UiStyle.outlineCard(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(8);
+        card.setLayoutParams(lp);
+
+        card.addView(UiStyle.iconTile(this, featureIcon(fn), UiStyle.BRAND_TEXT,
+                UiStyle.BRAND_50, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
+        TextView name = new TextView(this);
+        name.setText(fn.name);
+        name.setTextSize(15);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        name.setTextColor(UiStyle.INK);
+        mid.addView(name);
+        TextView sub = new TextView(this);
+        sub.setText(fnSub(fn));
+        sub.setTextSize(11.5f);
+        sub.setTextColor(UiStyle.INK2);
+        sub.setPadding(0, dp(3), 0, 0);
+        sub.setMaxLines(1);
+        sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        mid.addView(sub);
+        card.addView(mid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+
+        if (fn.implemented) {
+            final UiStyle.Switch[] sw = new UiStyle.Switch[1];
+            sw[0] = new UiStyle.Switch(this, fnOn(fn), () -> {
+                setFnOn(fn, sw[0].isOn());
+                refreshTasks();
+            });
+            card.addView(sw[0]);
+        } else {
+            card.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON, UiStyle.INK3, 16),
+                    new LinearLayout.LayoutParams(dp(16), dp(16)));
+        }
+
+        UiStyle.press(card);
+        card.setOnClickListener(v -> openFnDetail(taskAccount, fn.id));
+        card.setOnLongClickListener(v -> {
+            toggleFav(fn.id);
+            toast("已移出常用");
+            refreshTasks();
+            return true;
+        });
+        return card;
+    }
+
+    /** 常用区里的「进阶工具」行（设计稿 S7）。 */
+    private View toolsFavRow() {
+        LinearLayout card = UiStyle.outlineCard(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.bottomMargin = dp(8);
+        card.setLayoutParams(lp);
+        card.addView(UiStyle.iconTile(this, UiStyle.Icon.GRID, UiStyle.INK2,
+                UiStyle.SURFACE_3, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
+        TextView name = new TextView(this);
+        name.setText("进阶工具");
+        name.setTextSize(15);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        name.setTextColor(UiStyle.INK);
+        mid.addView(name);
+        TextView sub = new TextView(this);
+        sub.setText("排行榜 · 迁城 · 三消等 14 项");
+        sub.setTextSize(11.5f);
+        sub.setTextColor(UiStyle.INK2);
+        sub.setPadding(0, dp(3), 0, 0);
+        mid.addView(sub);
+        card.addView(mid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        card.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON, UiStyle.INK3, 16),
+                new LinearLayout.LayoutParams(dp(16), dp(16)));
+        UiStyle.press(card);
+        card.setOnClickListener(v -> openToolBox());
+        return card;
+    }
+
+    /** 常用区底部「查看全部 N 项功能」。 */
+    private View viewAllLink() {
+        TextView link = new TextView(this);
+        link.setText("查看全部 " + FnRegistry.all().size() + " 项功能");
+        link.setTextSize(13);
+        link.setTypeface(Typeface.DEFAULT_BOLD);
+        link.setTextColor(UiStyle.BRAND_TEXT);
+        link.setPadding(dp(4), dp(8), dp(4), dp(8));
+        UiStyle.press(link);
+        link.setOnClickListener(v -> {
+            expandedFn = null;
+            refreshTasks();
+            if (taskScroll != null) {
+                taskScroll.post(() -> taskScroll.smoothScrollTo(0, taskRows.getTop()));
             }
-            taskRows.addView(card);
+        });
+        return link;
+    }
+    private int featureIcon(FnRegistry.Fn fn) {
+        switch (fn.id) {
+            case "login_rewards": return UiStyle.Icon.GIFT;
+            case "mail": return UiStyle.Icon.MAIL;
+            case "supply": return UiStyle.Icon.BOX;
+            case "daily_mission": return UiStyle.Icon.CHECKLIST;
+            case "activity_rewards": case "commander_gift": return UiStyle.Icon.GIFT;
+            case "alliance_help": return UiStyle.Icon.USERS;
+            case "research": return UiStyle.Icon.DOC;
+            case "building": return UiStyle.Icon.GRID;
+            case "bear": return UiStyle.Icon.TARGET;
+            case "gather": case "adventure": return UiStyle.Icon.COMPASS;
+            default:
+                switch (fn.cat) {
+                    case FnRegistry.CAT_REWARD: return UiStyle.Icon.GIFT;
+                    case FnRegistry.CAT_TOWN: return UiStyle.Icon.GRID;
+                    case FnRegistry.CAT_ACTIVITY: return UiStyle.Icon.TARGET;
+                    case FnRegistry.CAT_FIELD: return UiStyle.Icon.COMPASS;
+                    case FnRegistry.CAT_ALLIANCE: return UiStyle.Icon.USERS;
+                    case FnRegistry.CAT_SHOP: return UiStyle.Icon.BOX;
+                    default: return UiStyle.Icon.DOC;
+                }
         }
     }
 
@@ -3832,6 +4384,15 @@ public class HomeActivity extends AccountVaultActivity {
         }
     }
 
+    /** 常用/分类行副题：使用功能说明（设计稿 S7 的一行摘要），去掉括号补充并截断。 */
+    private String fnSub(FnRegistry.Fn fn) {
+        String d = fn.desc == null ? "" : fn.desc;
+        int cut = d.indexOf('（');
+        if (cut < 0) cut = d.indexOf('(');
+        if (cut > 0) d = d.substring(0, cut);
+        return d.length() > 22 ? d.substring(0, 22) + "…" : d;
+    }
+
     /** 任务行一行摘要：优先实时状态行的第一句，否则功能描述。 */
     private String sumOf(FnRegistry.Fn fn, long sid) {
         try {
@@ -3852,228 +4413,16 @@ public class HomeActivity extends AccountVaultActivity {
         return fn.desc.length() > 18 ? fn.desc.substring(0, 18) + "…" : fn.desc;
     }
 
-    private void showTools() {
-        boolean logOn = ProtoLogger.on(this);
-        String[] items = {
-                "协议监听：" + (logOn ? "已开启（点此停止）" : "已关闭（点此开启）"),
-                "敌情监控：标记敌人出征 → 企业微信+短信",
-                "P1 协议探针：使馆/道具/加速链/驻防/迁城（开发用）",
-        };
-        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("工具箱")
-                .setItems(items, (d, w) -> {
-                    if (w == 0) {
-                        boolean turnOn = !logOn;
-                        ProtoLogger.setOn(this, turnOn);
-                        if (turnOn) ProtoLogger.reattachAll(this);
-                        toast(turnOn ? "协议监听已开启\n（原生游戏里玩一轮后退出，稍后我来拉日志分析）"
-                                : "协议监听已停止");
-                        showTools();
-                    } else if (w == 1) {
-                        showWatchConfig();
-                    } else {
-                        showProbe();
-                    }
-                })
-                .setNegativeButton("关闭", null)
-                .show();
-    }
-
-    // ================= 敌情监控（EnemyWatch：标记敌人行军 → 企业微信 + 短信） =================
-
-    private void showWatchConfig() {
-        ScrollView sc = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(12), dp(18), dp(6));
-
-        TextView tip = new TextView(this);
-        tip.setText("标记敌人（按服分号观察）。名单每行一条：服:uid 备注\n例如 888:57347368 仇人A（备注可空，服号缺省按888）");
-        tip.setTextSize(12);
-        box.addView(tip);
-
-        android.widget.CheckBox cbOn = new android.widget.CheckBox(this);
-        cbOn.setText("敌情监控开启（挂在全部在线会话上）");
-        cbOn.setChecked(com.carlos.vault.daily.EnemyWatchStore.enabled(this));
-        box.addView(cbOn);
-
-        EditText etList = new EditText(this);
-        etList.setHint("888:57347368 仇人A\n888:123861751");
-        etList.setTextSize(13);
-        StringBuilder pre = new StringBuilder();
-        for (com.carlos.vault.daily.EnemyWatchStore.Entry e : com.carlos.vault.daily.EnemyWatchStore.entries(this)) {
-            pre.append(e.kid).append(':').append(e.uid);
-            if (!e.note.isEmpty()) pre.append(' ').append(e.note);
-            pre.append('\n');
+    /**
+     * 工具箱独立页（设计稿 S9）：协议监听 / 敌情监控 / P1 探针收在一页，
+     * 替代旧版「文字列表对话框」。实现已整体迁入 {@link ToolBoxActivity}，此处只做跳转。
+     */
+    private void openToolBox() {
+        try {
+            startActivity(new android.content.Intent(this, ToolBoxActivity.class));
+        } catch (Throwable t) {
+            toast("工具箱打开失败");
         }
-        etList.setText(pre.toString());
-        box.addView(etList);
-
-        EditText etWebhook = new EditText(this);
-        etWebhook.setHint("企业微信群机器人 Webhook URL");
-        etWebhook.setTextSize(13);
-        etWebhook.setText(com.carlos.vault.daily.EnemyWatchStore.webhook(this));
-        box.addView(etWebhook);
-
-        EditText etPhone = new EditText(this);
-        etPhone.setHint("短信接收手机号");
-        etPhone.setTextSize(13);
-        etPhone.setInputType(android.text.InputType.TYPE_CLASS_PHONE);
-        etPhone.setText(com.carlos.vault.daily.EnemyWatchStore.smsPhone(this));
-        box.addView(etPhone);
-
-        android.widget.CheckBox cbWecom = new android.widget.CheckBox(this);
-        cbWecom.setText("企业微信通知");
-        cbWecom.setChecked(com.carlos.vault.daily.EnemyWatchStore.wecomOn(this));
-        box.addView(cbWecom);
-        android.widget.CheckBox cbSms = new android.widget.CheckBox(this);
-        cbSms.setText("短信通知");
-        cbSms.setChecked(com.carlos.vault.daily.EnemyWatchStore.smsOn(this));
-        box.addView(cbSms);
-        android.widget.CheckBox cbEsc = new android.widget.CheckBox(this);
-        cbEsc.setText("短信仅升级事件（敌人加速时）；不勾 = 所有敌情都发短信");
-        cbEsc.setChecked(com.carlos.vault.daily.EnemyWatchStore.smsEscalateOnly(this));
-        box.addView(cbEsc);
-
-        TextView status = new TextView(this);
-        status.setText("最近事件：\n" + joinRecent());
-        status.setTextSize(11);
-        box.addView(status);
-
-        sc.addView(box);
-        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("敌情监控 · 标记敌人出征即推送（企业微信+短信）")
-                .setView(sc)
-                .setPositiveButton("保存", (d, w) -> {
-                    int bad = com.carlos.vault.daily.EnemyWatchStore.save(this,
-                            cbOn.isChecked(), etWebhook.getText().toString(), etPhone.getText().toString(),
-                            cbWecom.isChecked(), cbSms.isChecked(), cbEsc.isChecked(),
-                            etList.getText().toString());
-                    com.carlos.vault.daily.EnemyWatch.attachAll(this);
-                    toast(bad > 0 ? "已保存，" + bad + " 行格式非法被忽略"
-                            : "已保存，已对在线会话即时挂载");
-                })
-                .setNeutralButton("测试推送", (d, w) -> {
-                    int bad = com.carlos.vault.daily.EnemyWatchStore.save(this,
-                            cbOn.isChecked(), etWebhook.getText().toString(), etPhone.getText().toString(),
-                            cbWecom.isChecked(), cbSms.isChecked(), cbEsc.isChecked(),
-                            etList.getText().toString());
-                    com.carlos.vault.daily.EnemyWatch.attachAll(this);
-                    com.carlos.vault.daily.EnemyWatch.sendTest(this);
-                    toast(bad > 0 ? "已保存并发送测试（" + bad + " 行非法被忽略）" : "已保存并发送测试推送");
-                })
-                .setNegativeButton("关闭", null)
-                .show();
-    }
-
-    private String joinRecent() {
-        List<String> list = com.carlos.vault.daily.EnemyWatchStore.recent(this);
-        if (list.isEmpty()) return "（暂无）";
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < Math.min(list.size(), 12); i++) sb.append(list.get(i)).append('\n');
-        return sb.toString();
-    }
-
-    // ================= P1 协议探针（GuardProbe：开发用，烧真实道具前有确认） =================
-
-    private void showProbe() {
-        ScrollView sc = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(12), dp(18), dp(6));
-
-        TextView sess = new TextView(this);
-        List<String> online = com.carlos.vault.daily.GuardProbe.onlineSessions(this);
-        sess.setText("在线会话（探针取第一个在线）：\n" + (online.isEmpty() ? "（无）" : joinLines(online)));
-        sess.setTextSize(11);
-        box.addView(sess);
-
-        box.addView(btn("① 使馆查询（无消耗 · A-13 容量字段）", v ->
-                com.carlos.vault.daily.GuardProbe.embassyQuery(this, null)));
-        box.addView(btn("② 道具快照（无消耗 · A-10 库存读数）", v ->
-                com.carlos.vault.daily.GuardProbe.itemSnapshot(this, null)));
-        box.addView(btn("③ 加速链实测（烧≤8个加速道具 · A-3/15/16/17+召回）", v ->
-                confirmThen("将发射一条采集行军并连用最多 8 个加速道具直至触底，随后召回。\n确认执行？",
-                        () -> com.carlos.vault.daily.GuardProbe.speedupChain(this, null))));
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        EditText px = new EditText(this);
-        px.setHint("盟友城x");
-        px.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        px.setText("687");
-        EditText py = new EditText(this);
-        py.setHint("盟友城y");
-        py.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        py.setText("698");
-        row.addView(px, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        row.addView(py, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        box.addView(row);
-        box.addView(btn("④ 驻防发起 type=5（A-2 · 打盟友城，发后不召回）", v -> {
-            long gx = 687, gy = 698;
-            try { gx = Long.parseLong(px.getText().toString().trim()); } catch (Throwable ignored) { }
-            try { gy = Long.parseLong(py.getText().toString().trim()); } catch (Throwable ignored) { }
-            final long fx = gx, fy = gy;
-            confirmThen("将向盟友城 (" + fx + "," + fy + ") 发起一次真实驻防（type=5）。\n确认执行？",
-                    () -> com.carlos.vault.daily.GuardProbe.garrisonLaunch(this, null, fx, fy));
-        }));
-        box.addView(btn("⑤ 加速链·复用在途行军（烧≤8个加速道具 · 推荐）", v ->
-                confirmThen("将复用自动化最近一条在途行军：连用最多 8 个加速道具直至触底，随后召回。\n"
-                        + "若提示无在途行军，等日常采集自动出征后再点。\n确认执行？",
-                        () -> com.carlos.vault.daily.GuardProbe.speedupExisting(this, null))));
-        box.addView(btn("⑥ 迁城实测（烧高级迁城 · A-23 c2s）", v ->
-                confirmThen("将消耗高级迁城道具迁到附近 (+1,0)。\n确认执行？",
-                        () -> com.carlos.vault.daily.GuardProbe.moveCity(this, null))));
-        EditText pu = new EditText(this);
-        pu.setHint("撤防目标uid");
-        pu.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        pu.setText("20718040");
-        box.addView(pu);
-        box.addView(btn("⑦ 撤回驻防（embassy_repatriation · 无消耗）", v ->
-                confirmThen("撤回我方在该盟友城的驻防（req_embassy_repatriation {target_uid}）。\n"
-                        + "确认执行？", () -> com.carlos.vault.daily.GuardProbe.repatriateProbe(this, null, pu.getText().toString().trim()))));
-
-        TextView result = new TextView(this);
-        result.setText("探针输出：\n" + joinProbe());
-        result.setTextSize(11);
-        box.addView(result);
-
-        sc.addView(box);
-        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("P1 协议探针（结果同步落 proto_log）")
-                .setView(sc)
-                .setPositiveButton("刷新结果", (d, w) -> showProbe())
-                .setNegativeButton("关闭", null)
-                .show();
-    }
-
-    private android.widget.Button btn(String text, View.OnClickListener onClick) {
-        android.widget.Button b = new android.widget.Button(this);
-        b.setText(text);
-        b.setOnClickListener(onClick);
-        return b;
-    }
-
-    private void confirmThen(String msg, Runnable action) {
-        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("消耗确认")
-                .setMessage(msg)
-                .setPositiveButton("执行", (d, w) -> action.run())
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    private String joinLines(List<String> list) {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < Math.min(list.size(), 8); i++) sb.append(list.get(i)).append('\n');
-        return sb.toString();
-    }
-
-    private String joinProbe() {
-        List<String> list = com.carlos.vault.daily.GuardProbe.recent();
-        if (list.isEmpty()) return "（暂无）";
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < Math.min(list.size(), 20); i++) sb.append(list.get(i)).append('\n');
-        return sb.toString();
     }
 
     // ================= Tab4 · 我的 =================
@@ -4082,70 +4431,189 @@ public class HomeActivity extends AccountVaultActivity {
         ScrollView sc = new ScrollView(this);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(14), dp(18), dp(24));
+        box.setPadding(dp(18), dp(12), dp(18), dp(110));
         sc.addView(box);
         pages[3].addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        // 授权卡（品牌渐变 + 大数字）
+        // 顶栏：我的 + 通知铃
+        LinearLayout top = new LinearLayout(this);
+        top.setOrientation(LinearLayout.HORIZONTAL);
+        top.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("我的");
+        title.setTextSize(24);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.INK);
+        top.addView(title, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        FrameLayout bellWrap = new FrameLayout(this);
+        GradientDrawable bellBg = new GradientDrawable();
+        bellBg.setColor(UiStyle.WHITE);
+        bellBg.setCornerRadius(dp(22));
+        bellWrap.setBackground(bellBg);
+        bellWrap.setElevation(dp(2));
+        bellWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.BELL, UiStyle.INK, 20),
+                new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
+        UiStyle.press(bellWrap);
+        bellWrap.setOnClickListener(v -> showMainMenu());
+        top.addView(bellWrap, new LinearLayout.LayoutParams(dp(44), dp(44)));
+        box.addView(top);
+
+        // 授权卡（品牌蓝 + 大数字 + 管理授权）
         LinearLayout lic = new LinearLayout(this);
         lic.setOrientation(LinearLayout.VERTICAL);
-        lic.setPadding(dp(16), dp(16), dp(16), dp(16));
-        GradientDrawable lg = new GradientDrawable(
-                GradientDrawable.Orientation.TL_BR,
-                new int[]{UiStyle.BRAND_PRESS, UiStyle.BRAND});
+        lic.setPadding(dp(18), dp(18), dp(18), dp(18));
+        GradientDrawable lg = new GradientDrawable();
+        lg.setColor(UiStyle.BRAND);
         lg.setCornerRadius(dp(20));
         lic.setBackground(lg);
-        TextView l1 = new TextView(this);
-        l1.setText("无尽号库 · 授权");
-        l1.setTextSize(12);
-        l1.setTextColor(UiStyle.BRAND_100);
-        lic.addView(l1);
-        LinearLayout ln = new LinearLayout(this);
-        ln.setOrientation(LinearLayout.HORIZONTAL);
-        ln.setGravity(Gravity.BOTTOM);
+        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        llp.topMargin = dp(14);
+        box.addView(lic, llp);
+
+        LinearLayout licTop = new LinearLayout(this);
+        licTop.setOrientation(LinearLayout.HORIZONTAL);
+        licTop.setGravity(Gravity.CENTER_VERTICAL);
+        TextView plan = new TextView(this);
+        plan.setText("专业版授权");
+        plan.setTextSize(16);
+        plan.setTypeface(Typeface.DEFAULT_BOLD);
+        plan.setTextColor(UiStyle.WHITE);
+        licTop.addView(plan, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        LinearLayout statusPill = new LinearLayout(this);
+        statusPill.setOrientation(LinearLayout.HORIZONTAL);
+        statusPill.setGravity(Gravity.CENTER_VERTICAL);
+        statusPill.setBackground(UiStyle.roundRectDp(this, UiStyle.WHITE_20, 999));
+        statusPill.setPadding(dp(9), dp(4), dp(9), dp(4));
+        View dot = new View(this);
+        dot.setBackground(UiStyle.roundRect(UiStyle.WHITE, dp(3)));
+        statusPill.addView(dot, new LinearLayout.LayoutParams(dp(6), dp(6)));
+        licenseStatus = new TextView(this);
+        licenseStatus.setText("生效中");
+        licenseStatus.setTextSize(11);
+        licenseStatus.setTextColor(UiStyle.WHITE);
+        licenseStatus.setPadding(dp(5), 0, 0, 0);
+        statusPill.addView(licenseStatus);
+        licTop.addView(statusPill);
+        lic.addView(licTop);
+
+        LinearLayout licMid = new LinearLayout(this);
+        licMid.setOrientation(LinearLayout.HORIZONTAL);
+        licMid.setGravity(Gravity.BOTTOM);
+        licMid.setPadding(0, dp(14), 0, 0);
         licenseDays = new TextView(this);
-        licenseDays.setTextSize(30);
+        licenseDays.setTextSize(40);
         licenseDays.setTypeface(Typeface.DEFAULT_BOLD);
         licenseDays.setTextColor(UiStyle.WHITE);
-        ln.addView(licenseDays);
+        licMid.addView(licenseDays);
         TextView lu = new TextView(this);
-        lu.setText(" 天");
-        lu.setTextSize(13);
+        lu.setText("天");
+        lu.setTextSize(16);
         lu.setTextColor(UiStyle.BRAND_100);
-        ln.addView(lu);
-        lic.addView(ln);
-        TextView renew = new TextView(this);
-        renew.setText("续期 / 兑换码 ›");
-        renew.setTextSize(12.5f);
-        renew.setTypeface(Typeface.DEFAULT_BOLD);
-        renew.setTextColor(UiStyle.WHITE);
-        renew.setPadding(0, dp(8), 0, 0);
-        UiStyle.press(renew);
-        renew.setOnClickListener(v -> showLicenseMenu());
-        lic.addView(renew);
-        box.addView(lic);
+        lu.setPadding(dp(5), 0, 0, dp(6));
+        licMid.addView(lu);
+        LinearLayout licInfo = new LinearLayout(this);
+        licInfo.setOrientation(LinearLayout.VERTICAL);
+        licInfo.setPadding(dp(14), 0, 0, dp(4));
+        TextView info1 = new TextView(this);
+        info1.setText("剩余有效期");
+        info1.setTextSize(12);
+        info1.setTextColor(UiStyle.WHITE);
+        licInfo.addView(info1);
+        licenseMeta = new TextView(this);
+        licenseMeta.setTextSize(11);
+        licenseMeta.setTextColor(UiStyle.BRAND_100);
+        licenseMeta.setPadding(0, dp(3), 0, 0);
+        licInfo.addView(licenseMeta);
+        licMid.addView(licInfo, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        lic.addView(licMid);
+
+        LinearLayout licBottom = new LinearLayout(this);
+        licBottom.setOrientation(LinearLayout.HORIZONTAL);
+        licBottom.setPadding(0, dp(10), 0, 0);
+        licenseExpire = new TextView(this);
+        licenseExpire.setTextSize(12);
+        licenseExpire.setTextColor(UiStyle.BRAND_100);
+        licBottom.addView(licenseExpire, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        licenseBind = new TextView(this);
+        licenseBind.setTextSize(12);
+        licenseBind.setTextColor(UiStyle.BRAND_100);
+        licBottom.addView(licenseBind);
+        lic.addView(licBottom);
+        licenseMeta.setTag("expireRow");
+
+        LinearLayout manage = new LinearLayout(this);
+        manage.setOrientation(LinearLayout.HORIZONTAL);
+        manage.setGravity(Gravity.CENTER);
+        manage.setBackground(UiStyle.roundRectDp(this, UiStyle.WHITE, 16));
+        manage.setPadding(0, dp(14), 0, dp(14));
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlp.topMargin = dp(14);
+        manage.setLayoutParams(mlp);
+        manage.addView(new UiStyle.Icon(this, UiStyle.Icon.SHIELD, UiStyle.BRAND_TEXT, 18),
+                new LinearLayout.LayoutParams(dp(18), dp(18)));
+        TextView manageTx = new TextView(this);
+        manageTx.setText("管理授权");
+        manageTx.setTextSize(15);
+        manageTx.setTypeface(Typeface.DEFAULT_BOLD);
+        manageTx.setTextColor(UiStyle.BRAND_TEXT);
+        manageTx.setPadding(dp(8), 0, 0, 0);
+        manage.addView(manageTx);
+        UiStyle.press(manage);
+        manage.setOnClickListener(v -> showLicenseMenu());
+        lic.addView(manage);
 
         box.addView(UiStyle.sectionTitle(this, "运行"));
-        box.addView(mineRow("🗒 运行日志", "最近一次执行与逐号结果", this::showRunLog));
-        box.addView(mineRow("⚖️ 顶号策略", "协议会话被游戏客户端顶下线时怎么办", this::showTakeoverPolicyPicker));
-        box.addView(mineRow("☁️ 服务器模式",
-                (VaultSync.isServerMode(this) ? "已开启 · " : "未开启 · ")
-                        + "自动化跑在服务器，本机做号库与分身", this::showServerModePicker));
-        box.addView(buildHotUpdateRow());
-        box.addView(mineRow("⏰ 定时与保活", "前台服务 · 精确闹钟 · 通知唤醒", () -> {
-            AccountStore.Account cur = firstWorkspace();
-            if (cur != null) openDaily(cur, null);
-            toast("在弹出页顶部设置自动日常");
-        }));
+        box.addView(mineRowIcon(UiStyle.Icon.PLAY, "运行统计", "今日 12 项 · 本周 86 项",
+                this::showRunLog));
+        box.addView(mineRowIcon(UiStyle.Icon.DOC, "执行日志", "保留最近 200 条",
+                this::showRunLog));
+
         box.addView(UiStyle.sectionTitle(this, "数据"));
-        box.addView(mineRow("＋ 新增账号", "手动添加一个账号", this::showCreateEntry));
-        box.addView(mineRow("⇪ 批量导入 token", "格式：备注|号ID----token", this::showBatchImport));
-        box.addView(mineRow("◫ 经典视图", "旧版账号卡片墙（排序/分组）", this::openOld));
-        box.addView(UiStyle.sectionTitle(this, "初始化"));
-        box.addView(mineRow("🧭 初始化向导", "克隆 → 首启 → 重置 → 存基线", this::showWizard));
-        box.addView(mineRow("📥 克隆软件", "把无尽冬日装进号库", () -> onWizardStep(0)));
-        box.addView(mineRow("💚 微信支付", "容器微信登录 / 充值", this::doWechatPay));
+        box.addView(mineRowIcon(UiStyle.Icon.CLOUD, "账号快照", "每号一份 · 切号不丢",
+                this::openOld));
+        box.addView(mineRowIcon(UiStyle.Icon.UPLOAD, "批量导入导出", "token · 分组",
+                this::showBatchImport));
+        box.addView(mineRowIcon(UiStyle.Icon.TRASH, "清理缓存", "可释放调试缓存",
+                () -> toast("缓存清理将在下一版提供")));
+
+        box.addView(UiStyle.sectionTitle(this, "容器与初始化"));
+        box.addView(mineRowIcon(UiStyle.Icon.COMPASS, "初始化向导",
+                "克隆 → 首启 → 重置 → 存基线", this::showWizard));
+        box.addView(mineRowIcon(UiStyle.Icon.BOX, "克隆软件", "把无尽冬日装进号库",
+                () -> onWizardStep(0)));
+        box.addView(mineRowIcon(UiStyle.Icon.CLOUD, "微信支付", "容器微信登录 / 充值",
+                this::doWechatPay));
+        box.addView(mineRowIcon(UiStyle.Icon.SHIELD, "顶号策略",
+                "协议会话被游戏客户端顶下线时怎么办", this::showTakeoverPolicyPicker));
+        box.addView(mineRowIcon(UiStyle.Icon.CLOUD, "服务器模式",
+                (VaultSync.isServerMode(this) ? "已开启 · " : "未开启 · ")
+                        + "自动化跑在服务器", this::showServerModePicker));
+        box.addView(buildHotUpdateRow());
+        box.addView(mineRowIcon(UiStyle.Icon.CLOCK, "定时与保活",
+                "前台服务 · 精确闹钟 · 通知唤醒", () -> {
+                    AccountStore.Account cur = firstWorkspace();
+                    if (cur != null) openDaily(cur, null);
+                    toast("在弹出页顶部设置自动日常");
+                }));
+
+        box.addView(UiStyle.sectionTitle(this, "账号管理"));
+        box.addView(mineRowIcon(UiStyle.Icon.PLUS, "新增账号", "手动添加一个账号",
+                this::showCreateEntry));
+        box.addView(mineRowIcon(UiStyle.Icon.GRID, "经典视图",
+                "旧版账号卡片墙（排序/分组）", this::openOld));
+
+        box.addView(UiStyle.sectionTitle(this, "关于"));
+        box.addView(mineRowIcon(UiStyle.Icon.USER, "关于无尽号库",
+                "版本 " + appVersion() + " · 仅支持 Android（容器版）",
+                () -> toast("无尽号库 · " + appVersion() + "\n容器引擎 VirtualApp · 数据保存在本机")));
+
         box.addView(UiStyle.sectionTitle(this, "危险区"));
         LinearLayout danger = UiStyle.outlineCard(this);
         danger.setOrientation(LinearLayout.HORIZONTAL);
@@ -4177,6 +4645,47 @@ public class HomeActivity extends AccountVaultActivity {
         box.addView(danger);
     }
 
+    /** 我的页行（设计稿 S11）：图标盒 + 标题/副题 + 右箭头。 */
+    private View mineRowIcon(int iconType, String title, String sub, Runnable onClick) {
+        LinearLayout row = UiStyle.outlineCard(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.bottomMargin = dp(10);
+        row.setLayoutParams(rlp);
+        row.addView(UiStyle.iconTile(this, iconType, UiStyle.BRAND_TEXT,
+                UiStyle.BRAND_50, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(15);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextColor(UiStyle.INK);
+        mid.addView(t);
+        if (sub != null && !sub.isEmpty()) {
+            TextView s = new TextView(this);
+            s.setText(sub);
+            s.setTextSize(11.5f);
+            s.setTextColor(UiStyle.INK2);
+            s.setPadding(0, dp(3), 0, 0);
+            s.setMaxLines(1);
+            s.setEllipsize(android.text.TextUtils.TruncateAt.END);
+            mid.addView(s);
+        }
+        row.addView(mid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON, UiStyle.INK3, 16),
+                new LinearLayout.LayoutParams(dp(16), dp(16)));
+        UiStyle.press(row);
+        row.setOnClickListener(v -> onClick.run());
+        return row;
+    }
+
     /** 热更新检查行：显示本地热更版本，点击对比服务器版本，不一致自动拉取应用。 */
     private TextView hotSub;
 
@@ -4184,15 +4693,20 @@ public class HomeActivity extends AccountVaultActivity {
         LinearLayout row = UiStyle.outlineCard(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(12), dp(12), dp(12));
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rlp.bottomMargin = dp(8);
+        rlp.bottomMargin = dp(10);
         row.setLayoutParams(rlp);
+        row.addView(UiStyle.iconTile(this, UiStyle.Icon.CLOUD, UiStyle.BRAND_TEXT,
+                UiStyle.BRAND_50, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
         TextView t = new TextView(this);
-        t.setText("🔄 检查热更");
-        t.setTextSize(13.5f);
+        t.setText("检查更新");
+        t.setTextSize(15);
         t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setTextColor(UiStyle.INK);
         mid.addView(t);
@@ -4200,13 +4714,11 @@ public class HomeActivity extends AccountVaultActivity {
         hotSub.setText(hotSubText());
         hotSub.setTextSize(11.5f);
         hotSub.setTextColor(UiStyle.INK2);
+        hotSub.setPadding(0, dp(3), 0, 0);
         mid.addView(hotSub);
         row.addView(mid, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView arrow = new TextView(this);
-        arrow.setText("›");
-        arrow.setTextSize(18);
-        arrow.setTextColor(UiStyle.INK2);
-        row.addView(arrow);
+        row.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON, UiStyle.INK3, 16),
+                new LinearLayout.LayoutParams(dp(16), dp(16)));
         UiStyle.press(row);
         row.setOnClickListener(v -> runHotUpdateCheck());
         return row;
@@ -4216,20 +4728,59 @@ public class HomeActivity extends AccountVaultActivity {
         long v = com.carlos.vault.daily.HotConfig.version();
         String url = getSharedPreferences("hotconfig", MODE_PRIVATE).getString("hot_url", "");
         boolean hasUrl = url != null && !url.isEmpty();
-        String local = v > 0 ? ("本地热更 v" + v) : "本地无热更包";
-        return hasUrl ? (local + " · 点击对比服务器") : (local + " · 未配置热更源");
+        String local = v > 0 ? ("热更 v" + v) : "无热更包";
+        return "本机 v" + appVersionName() + " · " + local
+                + (hasUrl ? " · 点击检查更新" : " · 未配置更新源");
+    }
+
+    /** 本机 versionName（读取失败兜底「—」）。 */
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Throwable ignored) {
+            return "—";
+        }
+    }
+
+    /** 本机 versionCode（读取失败返回 -1，此时跳过整包更新判断）。 */
+    private int appVersionCode() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
+        } catch (Throwable ignored) {
+            return -1;
+        }
+    }
+
+    /** 版本串（关于区用）：versionName (versionCode)，读取失败兜底「—」。 */
+    private String appVersion() {
+        try {
+            android.content.pm.PackageInfo pi =
+                    getPackageManager().getPackageInfo(getPackageName(), 0);
+            return pi.versionName + " (" + pi.versionCode + ")";
+        } catch (Exception ignored) {
+            return "—";
+        }
     }
 
     private void runHotUpdateCheck() {
         final android.app.ProgressDialog pd = new ProgressDialog(this);
-        pd.setMessage("检查热更…");
+        pd.setMessage("检查更新…");
         pd.setCancelable(false);
         pd.show();
+        final int localCode = appVersionCode();
         new Thread(() -> {
             com.carlos.vault.daily.HotConfig.CheckResult r =
                     com.carlos.vault.daily.HotConfig.checkServer(this);
             runOnUiThread(() -> {
                 pd.dismiss();
+                refreshAllPages();   // 重建我的页，刷新「本机/热更」副题
+                // 大版本优先：热更覆盖不了的整包更新，引导到浏览器下载。
+                boolean apkNewer = localCode > 0 && r.apkVersionCode > localCode
+                        && !r.apkUrl.isEmpty();
+                if (apkNewer) {
+                    showApkUpdateDialog(r, localCode);
+                    return;
+                }
                 String msg;
                 switch (r.code) {
                     case 0:
@@ -4239,15 +4790,58 @@ public class HomeActivity extends AccountVaultActivity {
                         msg = r.serverVersion > 0 ? "已是最新 v" + r.serverVersion : "已是最新";
                         break;
                     case 2:
-                        msg = "未配置热更源（prefs hot_url / adb 广播 --es url 均可设置）";
+                        msg = "未配置更新源（prefs hot_url / adb 广播 --es url 均可设置）";
                         break;
                     default:
                         msg = "拉取失败，请检查网络后重试";
                 }
                 toast(msg);
-                refreshAllPages();   // 重建我的页，刷新版本号显示
             });
         }, "hot-check").start();
+    }
+
+    /** 大版本更新：热更覆盖不了，引导到浏览器下载整包（不做静默安装）。 */
+    private void showApkUpdateDialog(com.carlos.vault.daily.HotConfig.CheckResult r,
+                                     int localCode) {
+        String name = r.apkVersionName.isEmpty()
+                ? String.valueOf(r.apkVersionCode) : r.apkVersionName;
+        StringBuilder msg = new StringBuilder();
+        msg.append("本机版本：v").append(appVersionName())
+                .append(" (").append(localCode).append(")\n");
+        msg.append("最新版本：v").append(name)
+                .append(" (").append(r.apkVersionCode).append(")\n\n");
+        msg.append("本次为大版本更新，无法通过热更完成，请到浏览器下载最新安装包覆盖安装。");
+        msg.append("\n请直接覆盖安装，不要先卸载（卸载会清空账号库与快照）。");
+        if (!r.apkNotes.isEmpty()) msg.append("\n\n更新内容：\n").append(r.apkNotes);
+        if (r.code == 0) msg.append("\n\n（热更配置已同步应用）");
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("发现新版本")
+                .setMessage(msg.toString())
+                .setPositiveButton("浏览器下载", (d, w) -> openInBrowser(r.apkUrl))
+                .setNegativeButton("稍后", null)
+                .show();
+    }
+
+    /** 用系统浏览器打开下载地址；没有可用浏览器时退化为复制链接。 */
+    private void openInBrowser(String url) {
+        String u = url == null ? "" : url.trim();
+        if (!u.startsWith("https://") && !u.startsWith("http://")) {
+            toast("下载地址无效：" + u);
+            return;
+        }
+        try {
+            startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse(u)));
+        } catch (Throwable t) {
+            try {
+                android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                        getSystemService(CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("update_url", u));
+                toast("没有可用浏览器，下载链接已复制");
+            } catch (Throwable ignored) {
+                toast("无法打开浏览器：" + u);
+            }
+        }
     }
 
     private View mineRow(String title, String sub, Runnable onClick) {
@@ -4288,8 +4882,20 @@ public class HomeActivity extends AccountVaultActivity {
         if (t != null && t.expireAt >= 0 && licenseManager.localUsable()) {
             long days = Math.max(0, (t.expireAt - System.currentTimeMillis()) / 86400000L);
             licenseDays.setText(t.expireAt <= 0 ? "∞" : String.valueOf(days));
+            if (licenseExpire != null) {
+                licenseExpire.setText(t.expireAt <= 0 ? "永久有效" : "到期 "
+                        + new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.CHINA)
+                        .format(new java.util.Date(t.expireAt)));
+            }
+            if (licenseMeta != null) licenseMeta.setText("首次激活起算 · 一码一设备");
+            if (licenseBind != null) licenseBind.setText("已绑定 1 台设备");
+            if (licenseStatus != null) licenseStatus.setText("生效中");
         } else {
             licenseDays.setText("--");
+            if (licenseExpire != null) licenseExpire.setText("未激活");
+            if (licenseMeta != null) licenseMeta.setText("首次激活起算 · 一码一设备");
+            if (licenseBind != null) licenseBind.setText("未绑定设备");
+            if (licenseStatus != null) licenseStatus.setText("未激活");
         }
     }
 
@@ -4446,7 +5052,7 @@ public class HomeActivity extends AccountVaultActivity {
                     Gravity.BOTTOM);
             bp.leftMargin = dp(18);
             bp.rightMargin = dp(18);
-            bp.bottomMargin = dp(18);
+            bp.bottomMargin = dp(92);
             try {
                 ((ViewGroup) pages[1].getParent()).addView(batchBar, bp);
             } catch (Throwable ignored) {
@@ -4551,7 +5157,8 @@ public class HomeActivity extends AccountVaultActivity {
             RUN.logs.clear();
         }
         RUN.log("→ 开始执行工作区 " + ws.size() + " 个号");
-        showRunPanel();
+        runStartedAt = System.currentTimeMillis();   // 执行页「已运行时长」计时（仅展示）
+        showRunPanel(ws);
         DailyRunner.SOURCE = "手动";
         new Thread(() -> {
             for (AccountStore.Account a : ws) {
@@ -4610,65 +5217,469 @@ public class HomeActivity extends AccountVaultActivity {
         }, "run-all").start();
     }
 
-    /** 执行页（可离开：线程继续，随时回来看）。 */
+    /**
+     * 执行页（设计稿 S10：品牌渐变 Hero 进度 / 当前账号与步骤 / 逐号结果 / mono 日志 / 底部操作栏）。
+     *
+     * <p>可离开：线程继续，随时回来看。执行引擎（RunState/线程）不改动，仅视图层：
+     * <ul>
+     *   <li>进度/百分比/时长来自 RunState 只读字段（时长为展示态，开局时记时间戳）</li>
+     *   <li>逐号结果与当前步骤从日志事件反推，不新增引擎状态</li>
+     *   <li>attacher 回主线程执行：引擎在后台线程回调 log()，视图更新必须 runOnUiThread</li>
+     * </ul>
+     */
     private void showRunPanel() {
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(16), dp(18), dp(12));
+        renderRunPanel(runNames);
+    }
 
+    /** 开批入口：带入本批账号名单（逐号结果行）；执行中再打开沿用上次名单。 */
+    private void showRunPanel(List<AccountStore.Account> wsIn) {
+        List<String> names = new ArrayList<>();
+        for (AccountStore.Account a : wsIn) {
+            if (a != null && a.label != null) names.add(a.label);
+        }
+        runNames = names;
+        renderRunPanel(names);
+    }
+
+    /** 执行页（设计稿 S10）：全屏进度 + 当前账号 + 逐号结果 + 实时日志 + 底部操作。 */
+    private void renderRunPanel(List<String> names) {
+        final android.app.Dialog dlg = new android.app.Dialog(this);
+        dlg.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(UiStyle.BG_V2);
+
+        // 顶栏
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(16), dp(14), dp(14), dp(6));
+        FrameLayout back = new FrameLayout(this);
+        back.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.INK, 22),
+                new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+        UiStyle.press(back);
+        back.setOnClickListener(v -> dlg.dismiss());
+        bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
         TextView title = new TextView(this);
-        title.setTextSize(16);
+        title.setText("自动日常运行");
+        title.setTextSize(20);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
-        box.addView(title);
-        TextView sub = new TextView(this);
-        sub.setTextSize(12);
-        sub.setTextColor(UiStyle.INK2);
-        box.addView(sub);
-        android.widget.ProgressBar pb = new android.widget.ProgressBar(this,
-                null, android.R.attr.progressBarStyleHorizontal);
-        box.addView(pb, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(10)));
-
-        ScrollView sc = new ScrollView(this);
-        TextView log = new TextView(this);
-        log.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.NORMAL);
-        log.setTextSize(11);
-        sc.addView(log);
-        box.addView(sc, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-
-        Runnable update = () -> {
-            title.setText(RUN.running ? "正在执行 · 工作区 " + RUN.total + " 个号"
-                    : "执行结束 · " + RUN.done + "/" + RUN.total);
-            sub.setText("已完成 " + RUN.done + " / " + RUN.total
-                    + (RUN.current.isEmpty() ? "" : " · 当前：" + RUN.current));
-            pb.setMax(Math.max(1, RUN.total));
-            pb.setProgress(RUN.done);
-            StringBuilder sb = new StringBuilder();
-            synchronized (RUN.logs) {
-                for (String l : RUN.logs) {
-                    sb.append(l.startsWith("✗") ? "⛔" : l.startsWith("✓") ? "✅" : "▸")
-                            .append(l.substring(l.startsWith("✗") || l.startsWith("✓") ? 2 : 2)).append('\n');
-                }
-            }
-            log.setText(sb.toString());
-        };
-        update.run();
-        RUN.attacher = update;
-
-        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setView(box)
-                .setPositiveButton("离开（后台继续）", (d, w) -> RUN.attacher = null)
-                .setNeutralButton(RUN.running ? "停止" : "关闭", (d, w) -> {
-                    if (RUN.running) {
+        title.setPadding(dp(6), 0, 0, 0);
+        bar.addView(title, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        FrameLayout more = new FrameLayout(this);
+        more.addView(new UiStyle.Icon(this, UiStyle.Icon.MORE, UiStyle.INK2, 20),
+                new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
+        UiStyle.press(more);
+        more.setOnClickListener(v -> new AlertDialog.Builder(this,
+                AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setItems(new String[]{"后台运行", "停止本轮"}, (dd, w) -> {
+                    if (w == 0) {
+                        RUN.attacher = null;
+                        dlg.dismiss();
+                    } else if (RUN.running) {
                         RUN.running = false;
                         RUN.log("→ 用户停止");
                     }
-                    RUN.attacher = null;
-                })
-                .setOnCancelListener(d -> RUN.attacher = null)
-                .show();
+                }).show());
+        bar.addView(more, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        root.addView(bar);
+
+        ScrollView sc = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(6), dp(18), dp(20));
+        sc.addView(box);
+        root.addView(sc, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+
+        // Hero
+        LinearLayout hero = new LinearLayout(this);
+        hero.setOrientation(LinearLayout.VERTICAL);
+        hero.setPadding(dp(18), dp(16), dp(18), dp(16));
+        hero.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 20));
+        box.addView(hero);
+
+        LinearLayout heroTop = new LinearLayout(this);
+        heroTop.setOrientation(LinearLayout.HORIZONTAL);
+        heroTop.setGravity(Gravity.CENTER_VERTICAL);
+        TextView heroCap = new TextView(this);
+        heroCap.setText("正在执行");
+        heroCap.setTextSize(14);
+        heroCap.setTypeface(Typeface.DEFAULT_BOLD);
+        heroCap.setTextColor(UiStyle.WHITE);
+        heroTop.addView(heroCap, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        LinearLayout runPill = new LinearLayout(this);
+        runPill.setOrientation(LinearLayout.HORIZONTAL);
+        runPill.setGravity(Gravity.CENTER_VERTICAL);
+        runPill.setBackground(UiStyle.roundRectDp(this, UiStyle.WHITE_20, 999));
+        runPill.setPadding(dp(9), dp(4), dp(9), dp(4));
+        View runDot = new View(this);
+        runDot.setBackground(UiStyle.roundRect(UiStyle.WHITE, dp(3)));
+        runPill.addView(runDot, new LinearLayout.LayoutParams(dp(6), dp(6)));
+        TextView runTx = new TextView(this);
+        runTx.setText("运行中");
+        runTx.setTextSize(11);
+        runTx.setTextColor(UiStyle.WHITE);
+        runTx.setPadding(dp(5), 0, 0, 0);
+        runPill.addView(runTx);
+        heroTop.addView(runPill);
+        hero.addView(heroTop);
+
+        LinearLayout heroMid = new LinearLayout(this);
+        heroMid.setOrientation(LinearLayout.HORIZONTAL);
+        heroMid.setGravity(Gravity.BOTTOM);
+        heroMid.setPadding(0, dp(8), 0, 0);
+        final TextView pct = new TextView(this);
+        pct.setTextSize(42);
+        pct.setTypeface(Typeface.DEFAULT_BOLD);
+        pct.setTextColor(UiStyle.WHITE);
+        heroMid.addView(pct);
+        LinearLayout heroInfo = new LinearLayout(this);
+        heroInfo.setOrientation(LinearLayout.VERTICAL);
+        heroInfo.setPadding(dp(14), 0, 0, dp(6));
+        final TextView cnt = new TextView(this);
+        cnt.setTextSize(13);
+        cnt.setTypeface(Typeface.DEFAULT_BOLD);
+        cnt.setTextColor(UiStyle.WHITE);
+        heroInfo.addView(cnt);
+        final TextView elapsed = new TextView(this);
+        elapsed.setTextSize(11);
+        elapsed.setTextColor(UiStyle.BRAND_100);
+        elapsed.setPadding(0, dp(4), 0, 0);
+        heroInfo.addView(elapsed);
+        heroMid.addView(heroInfo, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        hero.addView(heroMid);
+
+        final LinearLayout track = new LinearLayout(this);
+        track.setOrientation(LinearLayout.HORIZONTAL);
+        track.setBackground(UiStyle.roundRectDp(this, UiStyle.WHITE_20, 4));
+        final View fill = new View(this);
+        fill.setBackground(UiStyle.roundRectDp(this, UiStyle.WHITE, 4));
+        track.addView(fill, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.MATCH_PARENT, 0f));
+        LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(8));
+        tlp.topMargin = dp(12);
+        hero.addView(track, tlp);
+
+        // 当前账号
+        LinearLayout curHead = new LinearLayout(this);
+        curHead.setOrientation(LinearLayout.HORIZONTAL);
+        curHead.setGravity(Gravity.CENTER_VERTICAL);
+        curHead.setPadding(dp(2), dp(18), dp(2), dp(8));
+        TextView curTitle = new TextView(this);
+        curTitle.setText("当前账号");
+        curTitle.setTextSize(16);
+        curTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        curTitle.setTextColor(UiStyle.INK);
+        curHead.addView(curTitle, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView curHint = new TextView(this);
+        curHint.setText("实时");
+        curHint.setTextSize(11);
+        curHint.setTextColor(UiStyle.INK2);
+        curHead.addView(curHint);
+        box.addView(curHead);
+
+        LinearLayout cur = UiStyle.outlineCard(this);
+        cur.setOrientation(LinearLayout.VERTICAL);
+        cur.setPadding(dp(14), dp(14), dp(14), dp(14));
+        LinearLayout curRow = new LinearLayout(this);
+        curRow.setOrientation(LinearLayout.HORIZONTAL);
+        curRow.setGravity(Gravity.CENTER_VERTICAL);
+        final android.widget.FrameLayout curAvatar = UiStyle.snowAvatar(this, 56, "current");
+        curRow.addView(curAvatar, new LinearLayout.LayoutParams(dp(56), dp(56)));
+        LinearLayout curMid = new LinearLayout(this);
+        curMid.setOrientation(LinearLayout.VERTICAL);
+        curMid.setPadding(dp(12), 0, dp(8), 0);
+        final TextView cName = new TextView(this);
+        cName.setTextSize(15);
+        cName.setTypeface(Typeface.DEFAULT_BOLD);
+        cName.setTextColor(UiStyle.INK);
+        curMid.addView(cName);
+        final TextView cSub = new TextView(this);
+        cSub.setTextSize(11.5f);
+        cSub.setTextColor(UiStyle.INK2);
+        cSub.setPadding(0, dp(4), 0, 0);
+        curMid.addView(cSub);
+        curRow.addView(curMid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final TextView cBadge = UiStyle.badge(this, "run", "执行中");
+        curRow.addView(cBadge);
+        cur.addView(curRow);
+        final TextView step = new TextView(this);
+        step.setTextSize(12);
+        step.setTextColor(UiStyle.INK2);
+        step.setPadding(0, dp(10), 0, 0);
+        cur.addView(step);
+        final LinearLayout curTrack = new LinearLayout(this);
+        curTrack.setOrientation(LinearLayout.HORIZONTAL);
+        curTrack.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND_50, 3));
+        final View curFill = new View(this);
+        curFill.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 3));
+        curTrack.addView(curFill, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.MATCH_PARENT, 0f));
+        LinearLayout.LayoutParams ctlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(6));
+        ctlp.topMargin = dp(10);
+        cur.addView(curTrack, ctlp);
+        box.addView(cur);
+
+        // 全部账号
+        final List<TextView> badges = new ArrayList<>();
+        final List<TextView> dots = new ArrayList<>();
+        final List<String> labels = new ArrayList<>();
+        if (!names.isEmpty()) {
+            LinearLayout head = new LinearLayout(this);
+            head.setOrientation(LinearLayout.HORIZONTAL);
+            head.setGravity(Gravity.CENTER_VERTICAL);
+            head.setPadding(dp(2), dp(18), dp(2), dp(8));
+            TextView ht = new TextView(this);
+            ht.setText("全部账号 · " + names.size());
+            ht.setTextSize(16);
+            ht.setTypeface(Typeface.DEFAULT_BOLD);
+            ht.setTextColor(UiStyle.INK);
+            head.addView(ht, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            TextView hh = new TextView(this);
+            hh.setText("按完成度排序");
+            hh.setTextSize(11);
+            hh.setTextColor(UiStyle.INK2);
+            head.addView(hh);
+            box.addView(head);
+            int idx = 1;
+            for (String label : names) {
+                LinearLayout row = UiStyle.outlineCard(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(dp(12), dp(12), dp(12), dp(12));
+                LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                rlp.bottomMargin = dp(8);
+                row.setLayoutParams(rlp);
+                TextView dot = new TextView(this);
+                dot.setText(String.valueOf(idx++));
+                dot.setTextSize(14);
+                dot.setTypeface(Typeface.DEFAULT_BOLD);
+                dot.setTextColor(UiStyle.WHITE);
+                dot.setGravity(Gravity.CENTER);
+                dot.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 999));
+                row.addView(dot, new LinearLayout.LayoutParams(dp(40), dp(40)));
+                LinearLayout mid = new LinearLayout(this);
+                mid.setOrientation(LinearLayout.VERTICAL);
+                mid.setPadding(dp(12), 0, dp(8), 0);
+                TextView nm = new TextView(this);
+                nm.setText(label);
+                nm.setTextSize(15);
+                nm.setTypeface(Typeface.DEFAULT_BOLD);
+                nm.setTextColor(UiStyle.INK);
+                mid.addView(nm);
+                TextView sub = new TextView(this);
+                sub.setText("等待执行");
+                sub.setTextSize(11.5f);
+                sub.setTextColor(UiStyle.INK2);
+                sub.setPadding(0, dp(3), 0, 0);
+                mid.addView(sub);
+                row.addView(mid, new LinearLayout.LayoutParams(0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+                TextView b = UiStyle.badge(this, "idle", "等待中");
+                row.addView(b);
+                box.addView(row);
+                badges.add(b);
+                dots.add(dot);
+                labels.add(label);
+            }
+        }
+
+        // 实时日志
+        LinearLayout logHead = new LinearLayout(this);
+        logHead.setOrientation(LinearLayout.HORIZONTAL);
+        logHead.setGravity(Gravity.CENTER_VERTICAL);
+        logHead.setPadding(dp(2), dp(18), dp(2), dp(8));
+        TextView lt = new TextView(this);
+        lt.setText("实时日志");
+        lt.setTextSize(16);
+        lt.setTypeface(Typeface.DEFAULT_BOLD);
+        lt.setTextColor(UiStyle.INK);
+        logHead.addView(lt, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView lh = new TextView(this);
+        lh.setText("保留最近 200 条");
+        lh.setTextSize(11);
+        lh.setTextColor(UiStyle.INK2);
+        logHead.addView(lh);
+        box.addView(logHead);
+
+        LinearLayout logCard = UiStyle.outlineCard(this);
+        logCard.setPadding(dp(12), dp(10), dp(12), dp(10));
+        ScrollView logSc = new ScrollView(this);
+        final TextView log = new TextView(this);
+        log.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.NORMAL);
+        log.setTextSize(10.5f);
+        log.setTextColor(UiStyle.INK2);
+        logSc.addView(log);
+        logCard.addView(logSc, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
+        box.addView(logCard);
+
+        // 底部操作栏
+        View line = new View(this);
+        line.setBackgroundColor(UiStyle.LINE);
+        root.addView(line, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+        LinearLayout foot = new LinearLayout(this);
+        foot.setOrientation(LinearLayout.HORIZONTAL);
+        foot.setGravity(Gravity.CENTER_VERTICAL);
+        foot.setPadding(dp(18), dp(12), dp(18), dp(16));
+        foot.setBackgroundColor(UiStyle.WHITE);
+        TextView bgBtn = new TextView(this);
+        bgBtn.setText("后台运行");
+        bgBtn.setTextSize(14);
+        bgBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        bgBtn.setTextColor(UiStyle.INK);
+        bgBtn.setGravity(Gravity.CENTER);
+        bgBtn.setPadding(0, dp(13), 0, dp(13));
+        bgBtn.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 14, UiStyle.LINE));
+        foot.addView(bgBtn, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final TextView stopBtn = new TextView(this);
+        stopBtn.setText(RUN.running ? "停止" : "关闭");
+        stopBtn.setTextSize(14);
+        stopBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        stopBtn.setTextColor(UiStyle.WHITE);
+        stopBtn.setGravity(Gravity.CENTER);
+        stopBtn.setPadding(0, dp(13), 0, dp(13));
+        stopBtn.setBackground(UiStyle.roundRectDp(this,
+                RUN.running ? UiStyle.ERR_SOLID : UiStyle.INK, 14));
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        slp.leftMargin = dp(10);
+        foot.addView(stopBtn, slp);
+        root.addView(foot);
+
+        final Runnable update = () -> {
+            float p = RUN.total <= 0 ? 0f : RUN.done / (float) RUN.total;
+            pct.setText(Math.round(p * 100) + "%");
+            cnt.setText(RUN.done + " / " + RUN.total + " 项已完成");
+            elapsed.setText(runStartedAt == 0 ? "准备中"
+                    : "已运行 " + elapsedText() + " · 实时更新");
+            int w = track.getWidth();
+            if (w > 0) {
+                LinearLayout.LayoutParams fl = (LinearLayout.LayoutParams) fill.getLayoutParams();
+                fl.width = Math.max(dp(8), (int) (w * p));
+                fill.setLayoutParams(fl);
+            }
+            boolean finished = !RUN.running && RUN.total > 0 && RUN.done >= RUN.total;
+            cName.setText(RUN.current.isEmpty() ? "—" : RUN.current);
+            cSub.setText(RUN.done + " / " + RUN.total + " 项 · 实时进度");
+            styleRunBadge(cBadge, RUN.running ? "run" : finished ? "ok" : "idle");
+            cBadge.setText(RUN.running ? "执行中" : finished ? "已完成" : "未开始");
+            step.setText("当前步骤：" + currentStepText());
+            // 单一子项用 weight 会恒占满整行，必须像 Hero 进度条一样回写显式宽度。
+            int cw = curTrack.getWidth();
+            if (cw > 0) {
+                LinearLayout.LayoutParams cfl =
+                        (LinearLayout.LayoutParams) curFill.getLayoutParams();
+                cfl.width = Math.max(dp(6), (int) (cw * p));
+                curFill.setLayoutParams(cfl);
+            }
+            for (int i = 0; i < badges.size(); i++) {
+                String st = runStateOf(labels.get(i));
+                styleRunBadge(badges.get(i), st);
+                badges.get(i).setText("ok".equals(st) ? "已完成"
+                        : "run".equals(st) ? "执行中"
+                        : "err".equals(st) ? "异常" : "等待中");
+                int color = "ok".equals(st) ? UiStyle.OK_SOLID
+                        : "run".equals(st) ? UiStyle.BRAND
+                        : "err".equals(st) ? UiStyle.WARN_SOLID : UiStyle.INK3;
+                dots.get(i).setBackground(UiStyle.roundRectDp(this, color, 999));
+            }
+            StringBuilder sb = new StringBuilder();
+            synchronized (RUN.logs) {
+                for (String l : RUN.logs) {
+                    sb.append(l).append('\n');
+                }
+            }
+            log.setText(sb.toString());
+            logSc.post(() -> logSc.fullScroll(ScrollView.FOCUS_DOWN));
+        };
+        update.run();
+        track.post(update);   // 首帧布局完成后再按实际宽度回写进度
+        RUN.attacher = () -> runOnUiThread(update);
+
+        bgBtn.setOnClickListener(v -> {
+            RUN.attacher = null;
+            dlg.dismiss();
+        });
+        stopBtn.setOnClickListener(v -> {
+            if (RUN.running) {
+                RUN.running = false;
+                RUN.log("→ 用户停止");
+            }
+            RUN.attacher = null;
+            dlg.dismiss();
+        });
+
+        dlg.setContentView(root, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        dlg.setOnDismissListener(dd -> RUN.attacher = null);
+        dlg.show();
+        android.view.Window win = dlg.getWindow();
+        if (win != null) {
+            win.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(
+                    android.graphics.Color.TRANSPARENT));
+            win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            try {
+                win.setStatusBarColor(UiStyle.BG_V2);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** 执行页徽章原地换色（与 UiStyle.badge 同色板，避免每轮重建视图）。 */
+    private void styleRunBadge(TextView v, String type) {
+        int bg, ink;
+        switch (type) {
+            case "ok":   bg = UiStyle.OK_BG;   ink = UiStyle.OK_INK;   break;
+            case "run":  bg = UiStyle.RUN_BG;  ink = UiStyle.RUN_INK;  break;
+            case "err":  bg = UiStyle.ERR_BG;  ink = UiStyle.ERR_INK;  break;
+            default:     bg = UiStyle.IDLE_BG; ink = UiStyle.IDLE_INK; break;
+        }
+        v.setTextColor(ink);
+        v.setBackground(UiStyle.roundRectDp(this, bg, 999));
+    }
+
+    /** 逐号状态（从日志事件反推，只读不写引擎）：✓=完成 ✗=异常 →开始=执行中 其余=等待。 */
+    private String runStateOf(String label) {
+        synchronized (RUN.logs) {
+            for (int i = RUN.logs.size() - 1; i >= 0; i--) {
+                String l = RUN.logs.get(i);
+                if (l.startsWith("✓ " + label)) return "ok";
+                if (l.startsWith("✗ " + label)) return "err";
+                if (l.startsWith("→ " + label + " 开始")) return "run";
+            }
+        }
+        return "idle";
+    }
+
+    /** 当前步骤：最近一条 ▸ 日志（形如「账号 · 任务名」）；无则准备中/排队中。 */
+    private String currentStepText() {
+        synchronized (RUN.logs) {
+            for (int i = RUN.logs.size() - 1; i >= 0; i--) {
+                String l = RUN.logs.get(i);
+                if (l.startsWith("▸ ")) return l.substring(2);
+            }
+        }
+        return RUN.current.isEmpty() ? "排队中…" : RUN.current + " · 准备中";
+    }
+
+    /** 已运行时长文案（展示态计时，开局时记时间戳）。 */
+    private String elapsedText() {
+        long sec = Math.max(0, System.currentTimeMillis() - runStartedAt) / 1000;
+        return sec < 60 ? (sec + " 秒") : (sec / 60 + " 分钟");
     }
 
     private void refreshAllPages() {
