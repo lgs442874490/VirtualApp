@@ -943,75 +943,130 @@ public class DailyRunner {
         return sum;
     }
 
+    /** P1-1：按 fpid 的执行串行锁。
+     *  通知线程（部队返回/治疗完成/反应式开盾）、手动「立即执行」、定时整轮 worker
+     *  会并发调 runSingle；无会话路径会 closeAccountSessions + fresh 登录——
+     *  游戏服务器按 fpid 唯一会话，两条并发互相踢，现场已出现
+     *  （notify_events.txt: target gather … IllegalStateException: req_players_base_info）。
+     *  同号必须排队；跨号互不影响。 */
+    private static final java.util.concurrent.ConcurrentHashMap<String, java.util.concurrent.locks.ReentrantLock>
+            FPID_LOCKS = new java.util.concurrent.ConcurrentHashMap<>();
+
     public static DailyResult runSingle(Context context, String fpid, String sdkToken,
                                         long serverid, String fnId) {
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
             if (!d.id.equals(fnId)) continue;
-            // 在线会话复用：该角色已有常驻会话 → 直接执行（切角色寻址/免登录秒回/防自顶）
-            RoleSessionKeeper.LiveSession live = liveOf(context, fpid, serverid);
-            if (live != null) {
-                long lt0 = System.currentTimeMillis();
-                DailyResult r;
-                try {
-                    r = d.executor.run(live.engine);
-                } catch (Throwable t) {
-                    return DailyTasks.classifyException(t, d.name);
-                }
-                r.durationMs = System.currentTimeMillis() - lt0;
-                r.attempt = 1;
-                try {
-                    captureQuestState(context, live.engine, fpid, live.sid, null);
-                } catch (Throwable ignored) {
-                }
-                return r;
-            }
-            long singleT0 = System.currentTimeMillis();
-            // 同账号单会话约束：fresh 登录前关掉该账号已有的常驻会话——服务器按 fpid 唯一会话，
-            // 不关也会被服务端踢掉（code 46/5，终判实验见 RoleSessionKeeper 类注释），先关更干净。
-            // 临时会话结束后，keeper 下次 syncOnline 会把常驻角色拉回。
+            java.util.concurrent.locks.ReentrantLock lk =
+                    FPID_LOCKS.computeIfAbsent(fpid, k -> new java.util.concurrent.locks.ReentrantLock());
+            // 排队上限 15s：覆盖"两条通知相隔 1-2s"的常见合并场景；
+            // 超时按跳过返回（反应式开盾循环里一个卡死的号不拖死其他号）
+            boolean got = false;
             try {
-                RoleSessionKeeper.get(context).closeAccountSessions(fpid);
-            } catch (Throwable ignored) {
+                got = lk.tryLock(15, java.util.concurrent.TimeUnit.SECONDS);
+            } catch (InterruptedException ignored) {
             }
-            WjdrEngine engine = WjdrAndroid.newEngine(context);
+            if (!got) {
+                return new DailyResult(d.id, d.name, DailyResult.Category.SKIPPED,
+                        "该账号正在执行其他任务，本次触发已跳过");
+            }
             try {
-                try {
-                    engine.initialize();
-                } catch (Throwable t) {
-                    DailyResult x = DailyTasks.classifyException(t, d.name);
-                    return new DailyResult(d.id, d.name, x.category, x.message);
-                }
-                try {
-                    HotConfig.init(context);
-                    applyRoleIdentity(context, engine, fpid, serverid);
-                    RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);
-                    persistRoleIdentity(context, engine, fpid, serverid);
-                } catch (Throwable t) {
-                    return DailyTasks.classifyException(t, d.name);
-                }
-                DailyResult r;
-                try {
-                    r = d.executor.run(engine);
-                } catch (Throwable t) {
-                    return DailyTasks.classifyException(t, d.name);
-                }
-                r.durationMs = System.currentTimeMillis() - singleT0;
-                r.attempt = 1;
-                engine.collectNotifies(1200);
-                captureQuestState(context, engine, fpid, serverid, null);
-                captureCalendar(context, engine, fpid, serverid);
-                return r;
+                return runSingleLocked(context, fpid, sdkToken, serverid, d);
             } finally {
-                engine.close();
-                // fresh 登录已把该账号的多角色竞速会话踢掉（服务器登录即踢旧），
-                // 收尾立即让 keeper 整号重赛建回
-                try {
-                    RoleSessionKeeper.get(context).syncOnline();
-                } catch (Throwable ignored) {
-                }
+                lk.unlock();
             }
         }
         return new DailyResult(fnId, fnId, DailyResult.Category.ERROR, "未知功能");
+    }
+
+    private static DailyResult runSingleLocked(Context context, String fpid, String sdkToken,
+                                               long serverid, DailyTasks.TaskDef d) {
+        // 在线会话复用：该角色已有常驻会话 → 直接执行（切角色寻址/免登录秒回/防自顶）。
+        // 判定在锁内做：排队期间前一个执行可能刚建好/刚关掉会话，锁外快照会失真
+        RoleSessionKeeper.LiveSession live = liveOf(context, fpid, serverid);
+        if (live != null) {
+            long lt0 = System.currentTimeMillis();
+            DailyResult r;
+            try {
+                r = d.executor.run(live.engine);
+            } catch (Throwable t) {
+                return withSessionNote(DailyTasks.classifyException(t, d.name), live.engine);
+            }
+            r.durationMs = System.currentTimeMillis() - lt0;
+            r.attempt = 1;
+            try {
+                captureQuestState(context, live.engine, fpid, live.sid, null);
+            } catch (Throwable ignored) {
+            }
+            return withSessionNote(r, live.engine);
+        }
+        long singleT0 = System.currentTimeMillis();
+        // 同账号单会话约束：fresh 登录前关掉该账号已有的常驻会话——服务器按 fpid 唯一会话，
+        // 不关也会被服务端踢掉（code 46/5，终判实验见 RoleSessionKeeper 类注释），先关更干净。
+        // 临时会话结束后，keeper 下次 syncOnline 会把常驻角色拉回。
+        try {
+            RoleSessionKeeper.get(context).closeAccountSessions(fpid);
+        } catch (Throwable ignored) {
+        }
+        WjdrEngine engine = WjdrAndroid.newEngine(context);
+        try {
+            try {
+                engine.initialize();
+            } catch (Throwable t) {
+                DailyResult x = DailyTasks.classifyException(t, d.name);
+                return withSessionNote(new DailyResult(d.id, d.name, x.category, x.message), engine);
+            }
+            try {
+                HotConfig.init(context);
+                applyRoleIdentity(context, engine, fpid, serverid);
+                RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);
+                persistRoleIdentity(context, engine, fpid, serverid);
+            } catch (Throwable t) {
+                return withSessionNote(DailyTasks.classifyException(t, d.name), engine);
+            }
+            DailyResult r;
+            try {
+                r = d.executor.run(engine);
+            } catch (Throwable t) {
+                return withSessionNote(DailyTasks.classifyException(t, d.name), engine);
+            }
+            r.durationMs = System.currentTimeMillis() - singleT0;
+            r.attempt = 1;
+            engine.collectNotifies(1200);
+            captureQuestState(context, engine, fpid, serverid, null);
+            captureCalendar(context, engine, fpid, serverid);
+            return withSessionNote(r, engine);
+        } finally {
+            engine.close();
+            // fresh 登录已把该账号的多角色竞速会话踢掉（服务器登录即踢旧），
+            // 收尾立即让 keeper 整号重赛建回
+            try {
+                RoleSessionKeeper.get(context).syncOnline();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /**
+     * 失败结果附加会话状态（P1-1）：ERROR/SESSION_CLOSED 时把引擎六态
+     * （online/recovering/takeover/need_token…）与 lastFailure 带进消息，
+     * notify_events / 运行日志里能直接看出"是断线、被顶号还是凭证失效"，
+     * 不用再猜 req_players_base_info 这类裸异常从哪来。
+     */
+    private static DailyResult withSessionNote(DailyResult r, WjdrEngine engine) {
+        if (r == null || engine == null) return r;
+        if (r.category != DailyResult.Category.ERROR
+                && r.category != DailyResult.Category.SESSION_CLOSED) {
+            return r;
+        }
+        String extra = "（会话:" + engine.sessionState()
+                + (engine.lastFailure() == null || engine.lastFailure().isEmpty()
+                ? "" : "·" + engine.lastFailure()) + "）";
+        DailyResult n = new DailyResult(r.taskId, r.taskName, r.category, r.message + extra);
+        n.rewards = r.rewards;
+        n.subResults.putAll(r.subResults);
+        n.durationMs = r.durationMs;
+        n.attempt = r.attempt;
+        return n;
     }
 
     static void saveRallies(Context context, WjdrEngine engine, String fpid, long sid) {
