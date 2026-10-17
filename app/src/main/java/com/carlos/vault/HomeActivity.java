@@ -51,7 +51,6 @@ public class HomeActivity extends AccountVaultActivity {
     // 今日页
     private TextView heroDone, heroSub, statRun, statErr, statWait, topCaption;
     private UiStyle.Ring heroRing;
-    private TextView autoStateBtn;   // 兼容旧刷新入口（今日页不再展示）
     private UiStyle.Switch todayAutoSwitch;
     private TextView todayAutoSub;
     private TextView onlineDot;      // 当前角色在线状态（容器登录态口径）
@@ -74,7 +73,6 @@ public class HomeActivity extends AccountVaultActivity {
     private View accMask;          // 账号页加载遮罩（状态计算后台化期间的兜底）
     private int accGen;            // 防止快速刷新时旧结果覆盖新结果
     private int accView;           // 0=列表视图 1=卡片墙（旧版角色大方块卡）
-    private android.widget.LinearLayout accSeg;   // 列表|卡片 分段（选中态跟随刷新）
     private TextView accViewList, accViewCard;    // 设计稿 S3 的「列表 / 卡片」页签
     private TextView accBatchBtn;                 // 批量管理按钮（长按行进入批量态时同步文案）
     private boolean batchMode;                    // 批量管理态：行首显示勾选框
@@ -97,7 +95,6 @@ public class HomeActivity extends AccountVaultActivity {
     private TextView searchClear;       // 搜索框右侧「清除」（有词时常显）
     private TextView searchCap;         // 搜索结果计数 / 空态提示行
     private AccountStore.Account taskAccount;
-    private String expandedFn;
     private UiStyle.Switch fnSwRef(UiStyle.Switch s) { return s; }
     private boolean fnOn(FnRegistry.Fn fn) {
         if (taskAccount == null) return false;
@@ -138,6 +135,7 @@ public class HomeActivity extends AccountVaultActivity {
     /** 执行页展示态（不参与引擎）：本批账号名单（逐号结果行）+ 开局时间戳（已运行时长）。 */
     private List<String> runNames = new ArrayList<>();
     private long runStartedAt;
+    private long runEndedAt;      // 本轮结束时刻（0=未结束），用于冻结执行页时长
 
     static class RunState {
         volatile boolean running;
@@ -413,13 +411,6 @@ public class HomeActivity extends AccountVaultActivity {
         bellWrap.setElevation(dp(2));
         bellWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.BELL, UiStyle.INK, 20),
                 new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
-        View redDot = new View(this);
-        redDot.setBackground(UiStyle.roundRect(UiStyle.ERR_SOLID, dp(4)));
-        FrameLayout.LayoutParams rdlp = new FrameLayout.LayoutParams(dp(8), dp(8),
-                Gravity.TOP | Gravity.RIGHT);
-        rdlp.topMargin = dp(8);
-        rdlp.rightMargin = dp(9);
-        bellWrap.addView(redDot, rdlp);
         UiStyle.press(bellWrap);
         bellWrap.setOnClickListener(v -> showMainMenu());
         top.addView(bellWrap, new LinearLayout.LayoutParams(dp(44), dp(44)));
@@ -615,7 +606,8 @@ public class HomeActivity extends AccountVaultActivity {
         keepCard.addView(keepSub);
         keepCard.addView(new View(this), new LinearLayout.LayoutParams(0, 0, 1));
         keepSwitch = new UiStyle.Switch(this, false, () -> {
-            AccountStore.Account cur = taskAccount == null ? firstWorkspace() : taskAccount;
+            // 显示态来自 refreshToday 的 sel（currentRoleAccount），写入必须同源。
+            AccountStore.Account cur = currentRoleAccount();
             if (cur == null) {
                 toast("没有可用账号");
                 keepSwitch.setOn(false);
@@ -1119,7 +1111,8 @@ public class HomeActivity extends AccountVaultActivity {
         }
         // 进度表达规范：环=今日任务完成 q/q；活跃度=档位进度条（40/80/120/160/215/270/325，末端标下一档差多少）
         int integral = qs == null ? -1 : qs.integral;
-        int pct = qTotal == 0 ? 0 : Math.round(100f * qDone / qTotal);
+        int pct = qTotal == 0 ? 0
+                : (qDone >= qTotal ? 100 : Math.min(99, (int) (100L * qDone / qTotal)));
         heroRing.setFraction(pct / 100f);
         heroRing.setPercent(pct, "今日完成");
         actVal.setText(integral < 0 ? "-- / 325" : integral + " / 325");
@@ -1297,36 +1290,6 @@ public class HomeActivity extends AccountVaultActivity {
         if (tomorrow) return "明早 " + hm + " ";
         return new java.text.SimpleDateFormat("MM-dd ", java.util.Locale.CHINA)
                 .format(new java.util.Date(nxt)) + hm + " ";
-    }
-
-    /** 展开功能卡时的状态刷新节流（同功能 60 秒内不重复拉；与详情页共用节流表）。 */
-    private static final java.util.Map<String, Long> FN_EXPAND_REFRESH = new java.util.concurrent.ConcurrentHashMap<>();
-
-    private void refreshFnOnExpand(final String fpid, final long sid, final String fnId) {
-        try {
-            String key = fpid + ":" + sid + ":" + fnId;
-            long now = System.currentTimeMillis();
-            Long last = FN_EXPAND_REFRESH.get(key);
-            if (last != null && now - last < 60_000L) return;
-            FN_EXPAND_REFRESH.put(key, now);
-            new Thread(() -> {
-                com.carlos.vault.daily.RoleSessionKeeper.LiveSession live =
-                        com.carlos.vault.daily.DailyRunner.liveOf(this, fpid, sid);
-                android.util.Log.i("FnRefresh", "expand live=" + (live == null
-                        ? "null" : live.fpid + ":" + live.sid + " " + live.engine.sessionState()));
-                if (live == null) return;
-                boolean ok = com.carlos.vault.daily.DailyRunner.refreshFnState(
-                        this, live.engine, fpid, sid, fnId);
-                if (!ok) return;
-                runOnUiThread(() -> {
-                    // 仍展开该功能才重渲染（用户可能已切走）
-                    if (fnId.equals(expandedFn) && fpid.equals(taskAccount == null ? "" : taskAccount.fpid)) {
-                        refreshTasks();
-                    }
-                });
-            }, "fn-expand-refresh").start();
-        } catch (Throwable ignored) {
-        }
     }
 
     /** 角色区服对应的游戏 uid（找不到返回 0）。 */
@@ -2188,7 +2151,7 @@ public class HomeActivity extends AccountVaultActivity {
         }
     }
 
-    /** 卡片墙（旧版真实样式·账号级）：2列边框卡，游戏图标+备注名；下行左=登录方式(原生/token)、右=上次登录时间。 */
+    /** 卡片视图：3 列账号图标墙（游戏图标 + 备注名 + 登录方式/上次登录）。 */
     private void renderRoleMatrix(List<AccountStore.Account> shown,
                                   java.util.Map<String, List<RoleStore.Role>> rolesMap,
                                   java.util.Map<String, int[]> roleStats,
@@ -2798,7 +2761,10 @@ public class HomeActivity extends AccountVaultActivity {
         more.setOnClickListener(v -> accountMenu(a));
 
         UiStyle.press(card);
-        card.setOnClickListener(v -> showAccountDetail(a));
+        card.setOnClickListener(v -> {
+            if (batchMode) toggleBatch(a);
+            else showAccountDetail(a);
+        });
         card.setOnLongClickListener(v -> {
             if (!batchMode) {
                 batchMode = true;
@@ -4081,7 +4047,6 @@ public class HomeActivity extends AccountVaultActivity {
                     if (fi == 4) taskRows.addView(toolsFavRow());
                 }
                 if (fi < 4) taskRows.addView(toolsFavRow());
-                taskRows.addView(viewAllLink());
             }
         } else {
             String q = taskQuery.toLowerCase();
@@ -4165,18 +4130,31 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 读取常用集；首次用高频默认集播种（覆盖奖励/联盟/野外/城镇四类每天都碰的功能）。 */
     private void loadFavs() {
+        favFns.clear();
+        android.content.SharedPreferences sp = getSharedPreferences("daily_fav", MODE_PRIVATE);
+        // 逗号串保存以保序；旧版 StringSet 无序，读取时做一次迁移。
+        String raw = sp.getString("fav_list", null);
+        if (raw != null) {
+            for (String id : raw.split(",")) {
+                if (!id.isEmpty()) favFns.add(id);
+            }
+            return;
+        }
         java.util.Set<String> def = new java.util.LinkedHashSet<>(java.util.Arrays.asList(
                 "login_rewards", "mail", "supply", "daily_mission",
                 "gather", "town_affairs", "alliance_help", "alliance_chest"));
-        java.util.Set<String> saved = getSharedPreferences("daily_fav", MODE_PRIVATE)
-                .getStringSet("favs", def);
-        favFns.clear();
+        java.util.Set<String> saved = sp.getStringSet("favs", def);
         if (saved != null) favFns.addAll(saved);
     }
 
     private void saveFavs() {
+        StringBuilder sb = new StringBuilder();
+        for (String id : favFns) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(id);
+        }
         getSharedPreferences("daily_fav", MODE_PRIVATE).edit()
-                .putStringSet("favs", new java.util.LinkedHashSet<>(favFns)).apply();
+                .putString("fav_list", sb.toString()).apply();
     }
 
     private boolean isFav(String fnId) {
@@ -4201,7 +4179,7 @@ public class HomeActivity extends AccountVaultActivity {
         t.setTextColor(UiStyle.INK);
         row.addView(t);
         TextView h = new TextView(this);
-        h.setText("按使用频率排序");
+        h.setText("长按可移出");
         h.setTextSize(11);
         h.setTextColor(UiStyle.INK3);
         h.setPadding(dp(6), dp(2), 0, 0);
@@ -4304,24 +4282,6 @@ public class HomeActivity extends AccountVaultActivity {
         return card;
     }
 
-    /** 常用区底部「查看全部 N 项功能」。 */
-    private View viewAllLink() {
-        TextView link = new TextView(this);
-        link.setText("查看全部 " + FnRegistry.all().size() + " 项功能");
-        link.setTextSize(13);
-        link.setTypeface(Typeface.DEFAULT_BOLD);
-        link.setTextColor(UiStyle.BRAND_TEXT);
-        link.setPadding(dp(4), dp(8), dp(4), dp(8));
-        UiStyle.press(link);
-        link.setOnClickListener(v -> {
-            expandedFn = null;
-            refreshTasks();
-            if (taskScroll != null) {
-                taskScroll.post(() -> taskScroll.smoothScrollTo(0, taskRows.getTop()));
-            }
-        });
-        return link;
-    }
     private int featureIcon(FnRegistry.Fn fn) {
         switch (fn.id) {
             case "login_rewards": return UiStyle.Icon.GIFT;
@@ -4545,7 +4505,6 @@ public class HomeActivity extends AccountVaultActivity {
         licenseBind.setTextColor(UiStyle.BRAND_100);
         licBottom.addView(licenseBind);
         lic.addView(licBottom);
-        licenseMeta.setTag("expireRow");
 
         LinearLayout manage = new LinearLayout(this);
         manage.setOrientation(LinearLayout.HORIZONTAL);
@@ -4570,8 +4529,8 @@ public class HomeActivity extends AccountVaultActivity {
         lic.addView(manage);
 
         box.addView(UiStyle.sectionTitle(this, "运行"));
-        box.addView(mineRowIcon(UiStyle.Icon.PLAY, "运行统计", "今日 12 项 · 本周 86 项",
-                this::showRunLog));
+        box.addView(mineRowIcon(UiStyle.Icon.PLAY, "执行进度",
+                "当前/最近一轮的账号与逐号结果", this::showRunPanel));
         box.addView(mineRowIcon(UiStyle.Icon.DOC, "执行日志", "保留最近 200 条",
                 this::showRunLog));
 
@@ -4888,7 +4847,7 @@ public class HomeActivity extends AccountVaultActivity {
                         .format(new java.util.Date(t.expireAt)));
             }
             if (licenseMeta != null) licenseMeta.setText("首次激活起算 · 一码一设备");
-            if (licenseBind != null) licenseBind.setText("已绑定 1 台设备");
+            if (licenseBind != null) licenseBind.setText("已绑定本机");
             if (licenseStatus != null) licenseStatus.setText("生效中");
         } else {
             licenseDays.setText("--");
@@ -5158,6 +5117,7 @@ public class HomeActivity extends AccountVaultActivity {
         }
         RUN.log("→ 开始执行工作区 " + ws.size() + " 个号");
         runStartedAt = System.currentTimeMillis();   // 执行页「已运行时长」计时（仅展示）
+        runEndedAt = 0;
         showRunPanel(ws);
         DailyRunner.SOURCE = "手动";
         new Thread(() -> {
@@ -5208,6 +5168,7 @@ public class HomeActivity extends AccountVaultActivity {
                 } catch (Throwable ignored) {
                 }
             }
+            runEndedAt = System.currentTimeMillis();
             RUN.running = false;
             RUN.log("→ 全部完成 " + RUN.done + "/" + RUN.total);
             runOnUiThread(() -> {
@@ -5279,6 +5240,7 @@ public class HomeActivity extends AccountVaultActivity {
                         RUN.attacher = null;
                         dlg.dismiss();
                     } else if (RUN.running) {
+                        if (runEndedAt == 0) runEndedAt = System.currentTimeMillis();
                         RUN.running = false;
                         RUN.log("→ 用户停止");
                     }
@@ -5562,10 +5524,10 @@ public class HomeActivity extends AccountVaultActivity {
 
         final Runnable update = () -> {
             float p = RUN.total <= 0 ? 0f : RUN.done / (float) RUN.total;
-            pct.setText(Math.round(p * 100) + "%");
+            int pctVal = RUN.total <= 0 ? 0
+                    : (RUN.done >= RUN.total ? 100 : Math.min(99, (int) (100L * RUN.done / RUN.total)));
+            pct.setText(pctVal + "%");
             cnt.setText(RUN.done + " / " + RUN.total + " 项已完成");
-            elapsed.setText(runStartedAt == 0 ? "准备中"
-                    : "已运行 " + elapsedText() + " · 实时更新");
             int w = track.getWidth();
             if (w > 0) {
                 LinearLayout.LayoutParams fl = (LinearLayout.LayoutParams) fill.getLayoutParams();
@@ -5573,10 +5535,29 @@ public class HomeActivity extends AccountVaultActivity {
                 fill.setLayoutParams(fl);
             }
             boolean finished = !RUN.running && RUN.total > 0 && RUN.done >= RUN.total;
+            boolean ended = !RUN.running && RUN.total > 0;   // 含中途停止
+            if (ended && runEndedAt == 0) runEndedAt = System.currentTimeMillis();
+            heroCap.setText(RUN.running ? "正在执行"
+                    : finished ? "执行结束" : ended ? "已停止" : "未开始");
+            runTx.setText(RUN.running ? "运行中"
+                    : finished ? "已结束" : ended ? "已停止" : "空闲");
+            curHint.setText(RUN.running ? "实时" : (RUN.total > 0 ? "最近一轮" : "暂无"));
+            elapsed.setText(runStartedAt == 0 ? "准备中"
+                    : "已运行 " + elapsedText()
+                    + (RUN.running ? " · 实时更新" : finished ? " · 已结束" : " · 已停止"));
+            String stopLabel = RUN.running ? "停止" : "关闭";
+            if (!stopLabel.contentEquals(stopBtn.getText())) {
+                stopBtn.setText(stopLabel);
+                stopBtn.setBackground(UiStyle.roundRectDp(this,
+                        RUN.running ? UiStyle.ERR_SOLID : UiStyle.INK, 14));
+            }
             cName.setText(RUN.current.isEmpty() ? "—" : RUN.current);
-            cSub.setText(RUN.done + " / " + RUN.total + " 项 · 实时进度");
+            cSub.setText(RUN.done + " / " + RUN.total + " 项"
+                    + (RUN.running ? " · 实时进度"
+                    : finished ? " · 已结束" : ended ? " · 已停止" : " · 未开始"));
             styleRunBadge(cBadge, RUN.running ? "run" : finished ? "ok" : "idle");
-            cBadge.setText(RUN.running ? "执行中" : finished ? "已完成" : "未开始");
+            cBadge.setText(RUN.running ? "执行中" : finished ? "已完成"
+                    : ended ? "已停止" : "未开始");
             step.setText("当前步骤：" + currentStepText());
             // 单一子项用 weight 会恒占满整行，必须像 Hero 进度条一样回写显式宽度。
             int cw = curTrack.getWidth();
@@ -5616,6 +5597,7 @@ public class HomeActivity extends AccountVaultActivity {
         });
         stopBtn.setOnClickListener(v -> {
             if (RUN.running) {
+                if (runEndedAt == 0) runEndedAt = System.currentTimeMillis();
                 RUN.running = false;
                 RUN.log("→ 用户停止");
             }
@@ -5673,12 +5655,15 @@ public class HomeActivity extends AccountVaultActivity {
                 if (l.startsWith("▸ ")) return l.substring(2);
             }
         }
-        return RUN.current.isEmpty() ? "排队中…" : RUN.current + " · 准备中";
+        return RUN.current.isEmpty()
+                ? (RUN.running ? "排队中…" : "暂无记录")
+                : RUN.current + " · 准备中";
     }
 
     /** 已运行时长文案（展示态计时，开局时记时间戳）。 */
     private String elapsedText() {
-        long sec = Math.max(0, System.currentTimeMillis() - runStartedAt) / 1000;
+        long end = runEndedAt > 0 ? runEndedAt : System.currentTimeMillis();
+        long sec = Math.max(0, end - runStartedAt) / 1000;
         return sec < 60 ? (sec + " 秒") : (sec / 60 + " 分钟");
     }
 
