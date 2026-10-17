@@ -728,13 +728,34 @@ public class WjdrEngine {
         }
     }
 
+    /**
+     * 短超时请求（卡秒路径专用）：超时仍会断连触发恢复，但把"无响应协议"的占坑时间
+     * 从 20s 压到秒级，保住发射窗（守护盟友 R3 加速跟进用）。
+     */
+    public GameMessage request(String proto, Map<String, Object> args, int timeoutSec) throws Exception {
+        requestLock.lock();
+        try {
+            return lockedRequest(proto, args == null ? new LinkedHashMap<String, Object>() : args,
+                    java.time.Duration.ofSeconds(Math.max(1, timeoutSec)));
+        } catch (Exception e) {
+            if (STATE_ONLINE.equals(sessionState)) beginRecovery(e);
+            throw e;
+        } finally {
+            requestLock.unlock();
+        }
+    }
+
     /** 持锁请求（调用方须已持有 requestLock）：成功即记录活动时间。 */
     private GameMessage lockedRequest(String proto, Map<String, Object> args, java.time.Duration timeout) throws Exception {
         ensureClient();
         // P1 实证辅助：关键协议的出站参数落引擎日志（files/wjdr_log.txt）——自动化成功样本可直接对照复刻
         if ("req_world_map_search".equals(proto) || "req_world_march".equals(proto)
                 || "req_world_march_speedup".equals(proto) || "req_world_march_recall".equals(proto)
-                || "req_arsenal_league_move_city".equals(proto)) {
+                || "req_arsenal_league_move_city".equals(proto)
+                || "req_arsenal_league_march_speedup".equals(proto)
+                || "req_embassy_help_simple_info".equals(proto) || "req_embassy_repatriation".equals(proto)
+                || "req_arsenal_league_embassy_help_simple_info".equals(proto)
+                || "req_arsenal_league_embassy_repatriation".equals(proto)) {
             try {
                 WjdrLog.i("c2s " + proto + " args=" + args);
             } catch (Throwable ignored) {

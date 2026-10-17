@@ -4023,6 +4023,14 @@ public class HomeActivity extends AccountVaultActivity {
         box.addView(btn("⑥ 迁城实测（烧高级迁城 · A-23 c2s）", v ->
                 confirmThen("将消耗高级迁城道具迁到附近 (+1,0)。\n确认执行？",
                         () -> com.carlos.vault.daily.GuardProbe.moveCity(this, null))));
+        EditText pu = new EditText(this);
+        pu.setHint("撤防目标uid");
+        pu.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        pu.setText("20718040");
+        box.addView(pu);
+        box.addView(btn("⑦ 撤回驻防（embassy_repatriation · 无消耗）", v ->
+                confirmThen("撤回我方在该盟友城的驻防（req_embassy_repatriation {target_uid}）。\n"
+                        + "确认执行？", () -> com.carlos.vault.daily.GuardProbe.repatriateProbe(this, null, pu.getText().toString().trim()))));
 
         TextView result = new TextView(this);
         result.setText("探针输出：\n" + joinProbe());
