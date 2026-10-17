@@ -70,11 +70,12 @@ public class UiStyle {
     public static final int BLACK_40     = 0x66000000;   // 弹层遮罩
     public static final int SCRIM        = 0x59080C17;   // 底部弹层遮罩（规范：压暗 35%）
     // 状态徽章 bg/ink/solid 三层。type: ok/run/wait/warn/err/idle
-    public static final int OK_BG = 0xFFE7F8F1,  OK_INK = 0xFF1F9D55,  OK_SOLID = 0xFF1F9D55;
+    // INK 用于 10.5sp 小字，必须过 4.5:1；SOLID 只作圆点/底块（配白字），可比 INK 亮。
+    public static final int OK_BG = 0xFFE7F8F1,  OK_INK = 0xFF047857,  OK_SOLID = 0xFF1F9D55;
     public static final int RUN_BG = 0xFFE6F6F6,  RUN_INK = 0xFF0F766E, RUN_SOLID = 0xFF0EA5A5;
     public static final int WAIT_BG = 0xFFEEF0FE, WAIT_INK = 0xFF4338CA, WAIT_SOLID = 0xFF6366F1;
-    public static final int WARN_BG = 0xFFFFF4E5, WARN_INK = 0xFFB7791F, WARN_SOLID = 0xFFB7791F;
-    public static final int ERR_BG = 0xFFFEECEC,  ERR_INK = 0xFFE5484D, ERR_SOLID = 0xFFE5484D;
+    public static final int WARN_BG = 0xFFFFF4E5, WARN_INK = 0xFFB45309, WARN_SOLID = 0xFFB7791F;
+    public static final int ERR_BG = 0xFFFEECEC,  ERR_INK = 0xFFB91C1C, ERR_SOLID = 0xFFE5484D;
     public static final int IDLE_BG = 0xFFF1F3F7, IDLE_INK = 0xFF6B7280;
 
     /** dp → px（四舍五入）。 */
@@ -972,7 +973,7 @@ public class UiStyle {
         return f;
     }
 
-    /** 圆环进度（自绘 drawArc，stroke 9dp，起点 -90°，白/青渐变：置于品牌 Hero 上）。 */
+    /** 圆环进度（自绘 drawArc，stroke 8dp，起点 -90°，白/青渐变：置于品牌 Hero 上）。 */
     public static class Ring extends android.view.View {
         private float fraction;   // 0..1
         private String big = "", caption = "", suffix = "";

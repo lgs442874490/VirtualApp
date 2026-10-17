@@ -235,11 +235,11 @@ public class AccountVaultActivity extends Activity {
 
     // ---------- 右上角 ☰ 功能菜单 ----------
 
-    /** 功能菜单：初始化向导 / 克隆软件 / 微信支付 / 授权管理（替换原头部三按钮）。 */
     /** 子类可向主菜单追加条目（HomeActivity 用于「一键帮助全盟」）。 */
     protected void addMainMenuExtras(LinearLayout box, LinearLayout.LayoutParams rowLp) {
     }
 
+    /** 功能菜单：初始化向导 / 克隆软件 / 微信支付 / 授权管理（替换原头部三按钮）。 */
     protected void showMainMenu() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);

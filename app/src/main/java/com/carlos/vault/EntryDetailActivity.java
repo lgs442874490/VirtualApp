@@ -9,13 +9,11 @@ import android.content.DialogInterface;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
-import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.ViewGroup;
-import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -352,12 +350,14 @@ public class EntryDetailActivity extends Activity {
             mid.addView(sub);
             row.addView(mid, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            // 只表达本地已知事实：激活角色 / 是否加入工作区。
+            // 在线态需要会话快照，这里不臆断「在线/离线」。
             if (r.serverid == active) {
-                row.addView(UiStyle.badge(this, "wait", "当前 · 在线"));
+                row.addView(UiStyle.badge(this, "wait", "当前角色"));
             } else if (!r.enabled) {
-                row.addView(UiStyle.badge(this, "wait", "今日未跑"));
+                row.addView(UiStyle.badge(this, "wait", "未加入工作区"));
             } else {
-                row.addView(UiStyle.badge(this, "idle", "离线"));
+                row.addView(UiStyle.badge(this, "idle", "工作区"));
             }
             row.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON, UiStyle.INK3, 16),
                     new LinearLayout.LayoutParams(dp(16), dp(16)));
