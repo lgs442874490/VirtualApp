@@ -261,6 +261,72 @@ public class VaultEngine {
         return lastLaunchError;
     }
 
+    // ---------- 启动/切号串行化（P0-3） ----------
+
+    /**
+     * 启动/切号全局串行锁。live 目录与游戏进程是<b>全库共享</b>资源（不是按账号隔离的），
+     * 任何时刻只允许一条 kill → 存档 → wipe/还原/注入 → 启动 流程在跑。
+     * 双击账号卡、主页/管理页/通知多入口并发、切号与提 token 撞车，都由它挡住。
+     * ReentrantLock 可重入：launchEntry 持锁期间内部调 launchGame 不自锁。
+     */
+    private static final java.util.concurrent.locks.ReentrantLock LAUNCH_LOCK =
+            new java.util.concurrent.locks.ReentrantLock();
+
+    /** 跨实例互斥文件（小米双开/应用分身场景下两个宿主实例同时操作同一份 live 数据）。
+     *  文件锁由内核持有，进程退出自动释放，不会留下死锁。 */
+    private static final String LAUNCH_LOCK_FILE = "vault_launch.lock";
+
+    /** 当前是否有启动/切号/快照流程在跑（UI 可用来禁用入口）。 */
+    public static boolean launchBusy() {
+        return LAUNCH_LOCK.isLocked();
+    }
+
+    /** 忙时统一话术，写进 lastLaunchError 通道供 UI 展示。 */
+    private static final String BUSY_MSG = "正在切换/启动账号，请稍候再试";
+
+    /**
+     * 尝试获取跨实例文件锁。返回 null 表示被其他实例持有（或不可用）。
+     * 同 JVM 内已有 LAUNCH_LOCK 串行，理论上不会触发 OverlappingFileLockException，
+     * 仍按"忙"处理以防异常路径漏释放。
+     */
+    private java.nio.channels.FileLock acquireInstanceLock() {
+        java.io.RandomAccessFile raf = null;
+        try {
+            raf = new java.io.RandomAccessFile(
+                    new File(ctx.getFilesDir(), LAUNCH_LOCK_FILE), "rw");
+            java.nio.channels.FileLock lock = raf.getChannel().tryLock();
+            if (lock == null) {
+                // 其他实例持有：关掉自己的句柄，返回 null 表示忙
+                try {
+                    raf.close();
+                } catch (Throwable ignored) {
+                }
+            }
+            // 拿到锁时句柄由锁保管（channel 不能先关，否则锁失效），
+            // releaseInstanceLock 负责 release + close
+            return lock;
+        } catch (java.nio.channels.OverlappingFileLockException e) {
+            if (raf != null) try { raf.close(); } catch (Throwable ignored) { }
+            return null;
+        } catch (Throwable t) {
+            // 文件锁不可用（极端 ROM）不阻断流程：单实例场景 LAUNCH_LOCK 已足够
+            if (raf != null) try { raf.close(); } catch (Throwable ignored) { }
+            return null;
+        }
+    }
+
+    private static void releaseInstanceLock(java.nio.channels.FileLock lock) {
+        if (lock == null) return;
+        try {
+            lock.release();
+        } catch (Throwable ignored) {
+        }
+        try {
+            lock.acquiredBy().close();
+        } catch (Throwable ignored) {
+        }
+    }
+
     /**
      * 启动容器内的游戏。
      *
@@ -274,6 +340,21 @@ public class VaultEngine {
      * category 回退、同样带 FLAG_ACTIVITY_NEW_TASK + setClassName），但不经过那两道闸门。
      */
     public boolean launchGame() {
+        // 启动串行化：与 launchEntry/切号/提取 token 互斥。tryLock 零阻塞——
+        // 本方法会在 UI 线程（向导①、重置后的 onPostExecute）被调用。
+        // launchEntry 内部调用时同线程已持锁（ReentrantLock 可重入），不受影响。
+        if (!LAUNCH_LOCK.tryLock()) {
+            lastLaunchError = BUSY_MSG;
+            return false;
+        }
+        try {
+            return launchGameLocked();
+        } finally {
+            LAUNCH_LOCK.unlock();
+        }
+    }
+
+    private boolean launchGameLocked() {
         lastLaunchError = null;
         // —— 授权硬闸门（纯本地、无网络、不阻塞）——
         // gateForLaunch 只读内存状态 + 本地时钟判定，绝不联网：本方法会在 UI 线程
@@ -670,10 +751,19 @@ public class VaultEngine {
     /**
      * 先等待游戏完全退出，再读取当前会话。
      * 读取过程只读，不会覆盖账号库和快照。
+     * 与启动/切号互斥（P0-3）：提取会先杀游戏，若此刻正在切号，两边会互相打断对方的
+     * kill/wait 与 wipe/注入序列——忙时直接抛出可读异常，UI 提示稍后再试。
      */
     public SessionToken extractCurrentSession() throws Exception {
-        if (!killGameAndWait(10000)) throw new IOException("游戏仍在运行，无法安全读取");
-        return readCurrentSession();
+        if (!LAUNCH_LOCK.tryLock()) {
+            throw new IOException(BUSY_MSG);
+        }
+        try {
+            if (!killGameAndWait(10000)) throw new IOException("游戏仍在运行，无法安全读取");
+            return readCurrentSession();
+        } finally {
+            LAUNCH_LOCK.unlock();
+        }
     }
 
     // ---------- token 注入 ----------
@@ -822,6 +912,20 @@ public class VaultEngine {
      * @return true 表示写了新快照；false 表示判定为无变化（**没有**写）
      */
     public boolean autoSaveEntrySnapshot(String entryId) throws IOException {
+        // P0-3：SessionSaver 的后台自动存档可能与切号（wipe/还原 live 目录）交错，
+        // 打出一个不自洽的 zip。切号进行中直接跳过本轮，immediate 标记留给下次机会。
+        // launchEntry 持锁调用时同线程可重入，不受影响。
+        if (!LAUNCH_LOCK.tryLock()) {
+            return false;
+        }
+        try {
+            return autoSaveEntrySnapshotLocked(entryId);
+        } finally {
+            LAUNCH_LOCK.unlock();
+        }
+    }
+
+    private boolean autoSaveEntrySnapshotLocked(String entryId) throws IOException {
         if (!hasLiveContent()) return false;
         // 【新增】写 zip 之前先把「入口 ↔ 会话」归属校准（用户语义：同一入口内切换登录，以最新登录为准）。
         // 位置刻意在**指纹判定之前**：否则"内容没变"时会提前 return，归属同步会被一起跳过。
@@ -1044,8 +1148,32 @@ public class VaultEngine {
      *  2. (R2) 离开会话前把 live 按**真实归属**存回快照，不再以"是否切号"为条件。
      *  3. (R4) 本方法**不判断 token/session 是否过期**。会话有效性由游戏向服务端校验，
      *     过期时游戏自然要求重新验证码登录。这里没有任何"跳过 / 伪造 / 延长会话"的逻辑。
+     *
+     * <p><b>P0-3 串行化</b>：live 目录与游戏进程全库共享，并发启动/切号（双击、
+     * 主页+管理页同时点、通知触发的操作撞车）会在"旧进程未死"之上再叠"wipe 与注入
+     * 交错"。入口先抢进程内全局锁，再抢跨实例文件锁（双开/分身两个宿主实例互斥），
+     * 任一拿不到立即失败并给出可读原因，绝不排队等——等出来的二次 wipe 同样危险。
      */
     public boolean launchEntry(String autoSaveToId, AccountStore.Account acc) {
+        if (!LAUNCH_LOCK.tryLock()) {
+            lastLaunchError = BUSY_MSG;
+            return false;
+        }
+        java.nio.channels.FileLock instanceLock = acquireInstanceLock();
+        if (instanceLock == null) {
+            lastLaunchError = "另一个号库实例正在启动游戏（双开/分身请稍后分开操作）";
+            LAUNCH_LOCK.unlock();
+            return false;
+        }
+        try {
+            return launchEntryLocked(autoSaveToId, acc);
+        } finally {
+            releaseInstanceLock(instanceLock);
+            LAUNCH_LOCK.unlock();
+        }
+    }
+
+    private boolean launchEntryLocked(String autoSaveToId, AccountStore.Account acc) {
         try {
             // 【#72 F2】纵深防御：**一律按 id 重新读最新账户**，不要用调用方传进来的对象。
             // 管理页的 acc 只在 onCreate 取过一次（改完 token 就陈旧）⇒ useToken 判空 ⇒ 不注入。
@@ -1249,8 +1377,13 @@ public class VaultEngine {
         }
     }
 
-    /** 保存当前登录到入口：先过 {@link #captureGuardReason}，再 杀游戏 → 快照 */
+    /** 保存当前登录到入口：先过 {@link #captureGuardReason}，再 杀游戏 → 快照。
+     *  与启动/切号互斥（P0-3），忙时返回 false（SessionSaver/管理页下轮再试）。 */
     public boolean captureEntrySnapshot(String entryId) {
+        if (!LAUNCH_LOCK.tryLock()) {
+            android.util.Log.w("VaultEngine", "captureEntrySnapshot busy: " + entryId);
+            return false;
+        }
         try {
             // 【#72 F4】纵深防御：即使调用方忘了先问校验，这里也不放行（保住了过去那个
             // 无条件打包 live 的写法会造成的错位）。
@@ -1259,6 +1392,8 @@ public class VaultEngine {
             return saveEntrySnapshot(entryId);
         } catch (Throwable t) {
             return false;
+        } finally {
+            LAUNCH_LOCK.unlock();
         }
     }
 
