@@ -200,8 +200,23 @@ public class VaultEngine {
         }
     }
 
-    /** 容器游戏进程是否还活着（它跑在本App的UID下，可直接枚举） */
+    /**
+     * 容器游戏进程是否还活着。
+     *
+     * <p><b>历史缺陷（2026-10-18 审查定位）</b>：旧实现只查
+     * {@code ActivityManager.getRunningAppProcesses()} 且按 {@code processName.startsWith(GAME_PKG)}
+     * 匹配。但 VA 容器里游戏跑在宿主包的 stub 进程上，系统记录的进程名是
+     * {@code com.carlos.multiapp:p0}（真机 ANR 原文：{@code Process: com.carlos.multiapp:p0} +
+     * {@code Cmd line: com.gof.china}），{@code /proc/<pid>/cmdline} 才是 {@code com.gof.china}。
+     * 于是本方法对运行中的游戏恒返回 false ⇒ {@link #killGameAndWait} 立即放行 ⇒
+     * 旧游戏进程未死就执行 wipe/还原/注入/存档（快照与 live 数据竞争，多开/快速切号时放大）。
+     *
+     * <p>现以 {@link #scanGameProcessAlive()}（/proc cmdline，权威口径）为主；
+     * ActivityManager 按游戏包名匹配保留为兜底（个别 ROM 若上报 guest 名仍可命中）。
+     * 任一命中即视为存活——宁可多等，绝不误判已死。
+     */
     public boolean isContainerGameAlive() {
+        if (scanGameProcessAlive()) return true;
         try {
             android.app.ActivityManager am = (android.app.ActivityManager)
                     ctx.getSystemService(Context.ACTIVITY_SERVICE);
@@ -215,19 +230,28 @@ public class VaultEngine {
         return false;
     }
 
-    /** 杀游戏并等待其进程真正退出（最多 timeoutMs 毫秒） */
+    /** 杀游戏并等待其进程真正退出（最多 timeoutMs 毫秒）。
+     *  逐次直扫 /proc（不吃 5s 缓存），超时未退返回 false——调用方必须中止后续
+     *  wipe/注入/存档，不能带着存活的旧进程继续。 */
     public boolean killGameAndWait(long timeoutMs) {
         killGame();
+        resetProcScanCache();
         long t0 = System.currentTimeMillis();
+        boolean alive = true;
         while (System.currentTimeMillis() - t0 < timeoutMs) {
-            if (!isContainerGameAlive()) return true;
+            alive = scanGameProcessAlive();
+            if (!alive) break;
             try {
                 Thread.sleep(400);
             } catch (InterruptedException e) {
+                android.util.Log.w("VaultEngine",
+                        "killGameAndWait interrupted, cost=" + (System.currentTimeMillis() - t0) + "ms");
                 return false;
             }
         }
-        return !isContainerGameAlive();
+        android.util.Log.i("VaultEngine", "killGameAndWait cost="
+                + (System.currentTimeMillis() - t0) + "ms stillAlive=" + alive);
+        return !alive;
     }
 
     private volatile String lastLaunchError = null;
@@ -867,7 +891,27 @@ public class VaultEngine {
         synchronized (PROC_SCAN_LOCK) {
             if (now - procScanAt < 5000) return procScanCached;
         }
-        boolean running = false;
+        boolean running = scanGameProcessAlive();
+        synchronized (PROC_SCAN_LOCK) {
+            procScanAt = now;
+            procScanCached = running;
+        }
+        return running;
+    }
+
+    /** 失效 /proc 扫描缓存（kill/启动等改变进程状态的动作后调用，防止旧值短窗误判）。 */
+    static void resetProcScanCache() {
+        synchronized (PROC_SCAN_LOCK) {
+            procScanAt = 0;
+        }
+    }
+
+    /**
+     * 直扫 /proc 判断游戏进程是否存在（不经过 5s 缓存）。
+     * killGameAndWait 的轮询必须用它：等死期间进程状态每 400ms 变化，
+     * 吃缓存会在 10s 预算里白等最多 5s。
+     */
+    static boolean scanGameProcessAlive() {
         try {
             File[] dirs = new File("/proc").listFiles();
             if (dirs != null) {
@@ -878,20 +922,27 @@ public class VaultEngine {
                         if (!Character.isDigit(name.charAt(i))) numeric = false;
                     }
                     if (!numeric) continue;
-                    String cmd = readCmdline(name);
-                    if (GAME_PKG.equals(cmd)) {
-                        running = true;
-                        break;
+                    if (isGameCmdline(readCmdline(name))) {
+                        return true;
                     }
                 }
             }
         } catch (Throwable ignored) {
         }
-        synchronized (PROC_SCAN_LOCK) {
-            procScanAt = now;
-            procScanCached = running;
-        }
-        return running;
+        return false;
+    }
+
+    /**
+     * /proc cmdline 是否属于容器游戏进程。
+     * 主进程 cmdline = {@code com.gof.china}（真机 ANR 实证）；子进程带冒号后缀
+     * （如推送服务 {@code com.gof.china:xg_vip_service}）——只要任一进程还活着
+     * 就可能仍在写文件，等死与快照判定都必须算"存活"。
+     * 纯函数，供 JVM 单测锁定口径（防 :p0 误判回归）。
+     */
+    static boolean isGameCmdline(String cmd) {
+        if (cmd == null) return false;
+        String c = cmd.trim();
+        return GAME_PKG.equals(c) || c.startsWith(GAME_PKG + ":");
     }
 
     private static final Object PROC_SCAN_LOCK = new Object();
