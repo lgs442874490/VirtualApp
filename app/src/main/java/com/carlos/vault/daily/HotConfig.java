@@ -36,6 +36,14 @@ import okhttp3.Response;
  *               "notify":"notify_z"} ],
  *   "disabled": ["act_joy"] }</pre>
  *
+ * <p><b>整包更新（大版本）</b>：同一 JSON 可带 apk 块，用于热更覆盖不了的版本：
+ * <pre>{ "version": 2026101801,
+ *   "apk": { "versionCode": 420, "versionName": "4.2.0",
+ *            "url": "https://example.com/download/app.apk",
+ *            "notes": "本次更新内容…" } }</pre>
+ * 检查时若 apk.versionCode 高于本机 versionCode，由界面引导到浏览器下载，
+ * 不做静默安装；热更仍按 version 字段独立比对。
+ *
  * <p><b>声明式领取语义</b>（Tier 2）：每日轮收尾按 claims 顺序执行——collectNotifies
  * 后发 {@code proto}（args 原样透传，空=无参），code==0 记 CLAIMED 否则按码记
  * SKIPPED。覆盖"无参/固定参/单步"领取类需求；复杂逻辑（阈值/循环/战斗）仍走正式发版。
@@ -151,16 +159,31 @@ public final class HotConfig {
         public final int code;        // 0=已更新到服务器版 1=已是最新 2=未配置热更源 3=拉取失败
         public final long serverVersion;
         public final long localVersion;
+        // 整包（大版本）信息：服务端 JSON 未带 apk 块时 versionCode=0 / 其余为空
+        public final long apkVersionCode;
+        public final String apkVersionName;
+        public final String apkUrl;
+        public final String apkNotes;
 
         CheckResult(int code, long serverVersion, long localVersion) {
+            this(code, serverVersion, localVersion, 0, "", "", "");
+        }
+
+        CheckResult(int code, long serverVersion, long localVersion,
+                    long apkVersionCode, String apkVersionName, String apkUrl, String apkNotes) {
             this.code = code;
             this.serverVersion = serverVersion;
             this.localVersion = localVersion;
+            this.apkVersionCode = apkVersionCode;
+            this.apkVersionName = apkVersionName == null ? "" : apkVersionName;
+            this.apkUrl = apkUrl == null ? "" : apkUrl;
+            this.apkNotes = apkNotes == null ? "" : apkNotes;
         }
     }
 
     /**
-     * 检查服务器热更包版本并与本地比对，不一致即拉取应用（"检查更新"按钮语义）。
+     * 检查服务器版本：热更包按 version 比对并立即应用；apk 块原样带回给界面，
+     * 由界面比较本机 versionCode 后决定是否引导整包下载。
      */
     public static synchronized CheckResult checkServer(Context ctx) {
         long local = version;
@@ -173,21 +196,31 @@ public final class HotConfig {
             lastFetchAt = System.currentTimeMillis();
             OkHttpClient client = new OkHttpClient.Builder().build();
             Request request = new Request.Builder().url(url).build();
-            long remote;
+            String text;
             try (Response response = client.newCall(request).execute()) {
-                String text = response.body() == null ? "" : response.body().string();
-                if (text.isEmpty() || text.length() > 2_000_000L) {
-                    return new CheckResult(3, -1, local);
+                text = response.body() == null ? "" : response.body().string();
+            }
+            if (text.isEmpty() || text.length() > 2_000_000L) {
+                return new CheckResult(3, -1, local);
+            }
+            JSONObject o = new JSONObject(text);
+            long remote = o.optLong("version", 0);
+            JSONObject apk = o.optJSONObject("apk");
+            long apkCode = apk == null ? 0 : apk.optLong("versionCode", 0);
+            String apkName = apk == null ? "" : apk.optString("versionName", "");
+            String apkUrl = apk == null ? "" : apk.optString("url", "");
+            String apkNotes = apk == null ? "" : apk.optString("notes", "");
+            boolean hotUpdated = remote > local;
+            if (hotUpdated) {
+                try (FileOutputStream out = new FileOutputStream(file(ctx))) {
+                    out.write(text.getBytes("UTF-8"));
                 }
-                remote = new JSONObject(text).optLong("version", 0);
+                apply(o);
             }
-            if (remote <= local) {
-                return new CheckResult(1, remote, local);
-            }
-            fetchAndApply(ctx, url);
-            return new CheckResult(0, remote, local);
+            return new CheckResult(hotUpdated ? 0 : 1, remote, local,
+                    apkCode, apkName, apkUrl, apkNotes);
         } catch (Throwable t) {
-            Log.w(TAG, "检查热更失败: " + t.getMessage());
+            Log.w(TAG, "检查更新失败: " + t.getMessage());
             return new CheckResult(3, -1, local);
         }
     }

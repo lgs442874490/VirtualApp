@@ -4705,7 +4705,7 @@ public class HomeActivity extends AccountVaultActivity {
         mid.setOrientation(LinearLayout.VERTICAL);
         mid.setPadding(dp(12), 0, dp(8), 0);
         TextView t = new TextView(this);
-        t.setText("检查热更");
+        t.setText("检查更新");
         t.setTextSize(15);
         t.setTypeface(Typeface.DEFAULT_BOLD);
         t.setTextColor(UiStyle.INK);
@@ -4728,8 +4728,27 @@ public class HomeActivity extends AccountVaultActivity {
         long v = com.carlos.vault.daily.HotConfig.version();
         String url = getSharedPreferences("hotconfig", MODE_PRIVATE).getString("hot_url", "");
         boolean hasUrl = url != null && !url.isEmpty();
-        String local = v > 0 ? ("本地热更 v" + v) : "本地无热更包";
-        return hasUrl ? (local + " · 点击对比服务器") : (local + " · 未配置热更源");
+        String local = v > 0 ? ("热更 v" + v) : "无热更包";
+        return "本机 v" + appVersionName() + " · " + local
+                + (hasUrl ? " · 点击检查更新" : " · 未配置更新源");
+    }
+
+    /** 本机 versionName（读取失败兜底「—」）。 */
+    private String appVersionName() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+        } catch (Throwable ignored) {
+            return "—";
+        }
+    }
+
+    /** 本机 versionCode（读取失败返回 -1，此时跳过整包更新判断）。 */
+    private int appVersionCode() {
+        try {
+            return getPackageManager().getPackageInfo(getPackageName(), 0).versionCode;
+        } catch (Throwable ignored) {
+            return -1;
+        }
     }
 
     /** 版本串（关于区用）：versionName (versionCode)，读取失败兜底「—」。 */
@@ -4745,14 +4764,23 @@ public class HomeActivity extends AccountVaultActivity {
 
     private void runHotUpdateCheck() {
         final android.app.ProgressDialog pd = new ProgressDialog(this);
-        pd.setMessage("检查热更…");
+        pd.setMessage("检查更新…");
         pd.setCancelable(false);
         pd.show();
+        final int localCode = appVersionCode();
         new Thread(() -> {
             com.carlos.vault.daily.HotConfig.CheckResult r =
                     com.carlos.vault.daily.HotConfig.checkServer(this);
             runOnUiThread(() -> {
                 pd.dismiss();
+                refreshAllPages();   // 重建我的页，刷新「本机/热更」副题
+                // 大版本优先：热更覆盖不了的整包更新，引导到浏览器下载。
+                boolean apkNewer = localCode > 0 && r.apkVersionCode > localCode
+                        && !r.apkUrl.isEmpty();
+                if (apkNewer) {
+                    showApkUpdateDialog(r, localCode);
+                    return;
+                }
                 String msg;
                 switch (r.code) {
                     case 0:
@@ -4762,15 +4790,58 @@ public class HomeActivity extends AccountVaultActivity {
                         msg = r.serverVersion > 0 ? "已是最新 v" + r.serverVersion : "已是最新";
                         break;
                     case 2:
-                        msg = "未配置热更源（prefs hot_url / adb 广播 --es url 均可设置）";
+                        msg = "未配置更新源（prefs hot_url / adb 广播 --es url 均可设置）";
                         break;
                     default:
                         msg = "拉取失败，请检查网络后重试";
                 }
                 toast(msg);
-                refreshAllPages();   // 重建我的页，刷新版本号显示
             });
         }, "hot-check").start();
+    }
+
+    /** 大版本更新：热更覆盖不了，引导到浏览器下载整包（不做静默安装）。 */
+    private void showApkUpdateDialog(com.carlos.vault.daily.HotConfig.CheckResult r,
+                                     int localCode) {
+        String name = r.apkVersionName.isEmpty()
+                ? String.valueOf(r.apkVersionCode) : r.apkVersionName;
+        StringBuilder msg = new StringBuilder();
+        msg.append("本机版本：v").append(appVersionName())
+                .append(" (").append(localCode).append(")\n");
+        msg.append("最新版本：v").append(name)
+                .append(" (").append(r.apkVersionCode).append(")\n\n");
+        msg.append("本次为大版本更新，无法通过热更完成，请到浏览器下载最新安装包覆盖安装。");
+        msg.append("\n请直接覆盖安装，不要先卸载（卸载会清空账号库与快照）。");
+        if (!r.apkNotes.isEmpty()) msg.append("\n\n更新内容：\n").append(r.apkNotes);
+        if (r.code == 0) msg.append("\n\n（热更配置已同步应用）");
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("发现新版本")
+                .setMessage(msg.toString())
+                .setPositiveButton("浏览器下载", (d, w) -> openInBrowser(r.apkUrl))
+                .setNegativeButton("稍后", null)
+                .show();
+    }
+
+    /** 用系统浏览器打开下载地址；没有可用浏览器时退化为复制链接。 */
+    private void openInBrowser(String url) {
+        String u = url == null ? "" : url.trim();
+        if (!u.startsWith("https://") && !u.startsWith("http://")) {
+            toast("下载地址无效：" + u);
+            return;
+        }
+        try {
+            startActivity(new android.content.Intent(android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse(u)));
+        } catch (Throwable t) {
+            try {
+                android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                        getSystemService(CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(android.content.ClipData.newPlainText("update_url", u));
+                toast("没有可用浏览器，下载链接已复制");
+            } catch (Throwable ignored) {
+                toast("无法打开浏览器：" + u);
+            }
+        }
     }
 
     private View mineRow(String title, String sub, Runnable onClick) {
