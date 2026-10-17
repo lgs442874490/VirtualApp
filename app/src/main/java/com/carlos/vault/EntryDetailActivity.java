@@ -303,7 +303,7 @@ public class EntryDetailActivity extends Activity {
                         return;
                     }
                     RoleStore.Role r = roles.get(w);
-                    RoleStore.setActiveRole(this, acc.fpid, r.serverid);
+                    setCurrentRole(r.serverid);
                     toast("已设为当前角色：" + (r.name == null ? "K" + r.serverid : r.name));
                     refreshInfo();
                 }).show();
@@ -363,12 +363,22 @@ public class EntryDetailActivity extends Activity {
                     new LinearLayout.LayoutParams(dp(16), dp(16)));
             UiStyle.press(row);
             row.setOnClickListener(v -> {
-                RoleStore.setActiveRole(this, acc.fpid, r.serverid);
+                setCurrentRole(r.serverid);
                 toast("已设为当前角色");
                 rebuildRoles();
             });
             roleBox.addView(row);
         }
+    }
+
+    /**
+     * 切角色：activeRole 与主页 current_role 必须同写。HomeActivity.setCurrentRole 是
+     * 同一口径——只写 activeRole 会让主页徽章/配置按旧角色，重启时还会被启动对齐改回去。
+     */
+    private void setCurrentRole(long sid) {
+        RoleStore.setActiveRole(this, acc.fpid, sid);
+        getSharedPreferences("home", MODE_PRIVATE).edit()
+                .putString("current_role", acc.fpid + ":" + sid).apply();
     }
 
     private String fmtWan(long n) {

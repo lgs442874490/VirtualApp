@@ -553,24 +553,12 @@ public class ToolBoxActivity extends Activity {
         return sb.toString();
     }
 
+    /** 探针结果读 GuardProbe 的内存队列（最新在前）；与旧 HomeActivity 实现同源。 */
     private String joinProbe() {
+        List<String> list = com.carlos.vault.daily.GuardProbe.recent();
+        if (list.isEmpty()) return "（暂无）";
         StringBuilder sb = new StringBuilder();
-        try {
-            java.io.File f = new java.io.File(getExternalFilesDir(null), "proto_log.txt");
-            if (f.exists() && f.length() > 0 && f.length() < 1024L * 1024) {
-                java.util.List<String> lines = new java.util.ArrayList<>();
-                java.io.BufferedReader br = new java.io.BufferedReader(
-                        new java.io.FileReader(f));
-                String l;
-                while ((l = br.readLine()) != null) {
-                    lines.add(l);
-                    if (lines.size() > 60) lines.remove(0);
-                }
-                br.close();
-                for (String s : lines) sb.append(s, 0, Math.min(120, s.length())).append('\n');
-            }
-        } catch (Exception ignored) {
-        }
-        return sb.length() == 0 ? "（暂无）" : sb.toString();
+        for (int i = 0; i < Math.min(list.size(), 20); i++) sb.append(list.get(i)).append('\n');
+        return sb.toString();
     }
 }

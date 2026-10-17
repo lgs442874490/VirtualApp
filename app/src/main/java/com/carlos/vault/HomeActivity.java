@@ -231,6 +231,10 @@ public class HomeActivity extends AccountVaultActivity {
     @Override
     protected void onResume() {
         super.onResume();
+        // 账号详情页也允许切角色（同写 activeRole + home:current_role）；本页的
+        // currentRoleKey 是进页时读的快照，返回时必须重读，否则 Hero/配置仍按旧角色。
+        currentRoleKey = getSharedPreferences("home", MODE_PRIVATE)
+                .getString("current_role", null);
         refreshAllPages();
     }
 
@@ -2259,9 +2263,20 @@ public class HomeActivity extends AccountVaultActivity {
 
             tile.addView(content, new android.widget.FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+            if (batchMode) {
+                android.widget.FrameLayout.LayoutParams cklp =
+                        new android.widget.FrameLayout.LayoutParams(dp(22), dp(22),
+                                Gravity.TOP | Gravity.START);
+                cklp.leftMargin = dp(6);
+                cklp.topMargin = dp(6);
+                tile.addView(batchCheckbox(a), cklp);
+            }
 
             UiStyle.press(tile);
-            tile.setOnClickListener(v -> showAccountDetail(a));
+            tile.setOnClickListener(v -> {
+                if (batchMode) toggleBatch(a);
+                else showAccountDetail(a);
+            });
             tile.setOnLongClickListener(v -> {
                 accountMenu(a);
                 return true;
@@ -2710,31 +2725,9 @@ public class HomeActivity extends AccountVaultActivity {
         card.setLayoutParams(clp);
 
         if (batchMode) {
-            final TextView check = new TextView(this);
-            boolean sel = selectedAccounts.contains(a.id);
-            check.setText(sel ? "✓" : "");
-            check.setTextSize(12);
-            check.setTypeface(Typeface.DEFAULT_BOLD);
-            check.setTextColor(UiStyle.WHITE);
-            check.setGravity(Gravity.CENTER);
-            GradientDrawable ckg = new GradientDrawable();
-            ckg.setCornerRadius(dp(7));
-            if (sel) {
-                ckg.setColor(UiStyle.BRAND);
-            } else {
-                ckg.setColor(UiStyle.WHITE);
-                ckg.setStroke(dp(1), UiStyle.LINE_STRONG);
-            }
-            check.setBackground(ckg);
-            UiStyle.press(check);
-            check.setOnClickListener(v -> {
-                if (selectedAccounts.contains(a.id)) selectedAccounts.remove(a.id);
-                else selectedAccounts.add(a.id);
-                refreshAccounts();
-            });
             LinearLayout.LayoutParams cklp = new LinearLayout.LayoutParams(dp(22), dp(22));
             cklp.rightMargin = dp(10);
-            card.addView(check, cklp);
+            card.addView(batchCheckbox(a), cklp);
         }
 
         card.addView(circleAvatar(56, a.label, a.id),
@@ -2764,20 +2757,29 @@ public class HomeActivity extends AccountVaultActivity {
         card.addView(mid, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
+        // 口径对齐 statusOf()：err/ok/run/wait/idle 五态都要映射；原生账号没有 token，
+        // 不是「过期」而是从未绑定（且不能参与自动日常）。
         String type, text;
+        String stType = st == null ? "" : st[0];
         if (!isToken) {
-            type = "err";
-            text = "token过期";
+            type = "idle";
+            text = "未绑定 token";
         } else if (online) {
             type = "ok";
             text = "在线";
-        } else if ("err".equals(st == null ? "" : st[0])) {
+        } else if ("err".equals(stType)) {
             type = "err";
             text = "异常";
-        } else if ("ok".equals(st == null ? "" : st[0])) {
+        } else if ("ok".equals(stType)) {
             type = "ok";
             text = "已完成";
-        } else if ("idle".equals(st == null ? "" : st[0])) {
+        } else if ("run".equals(stType)) {
+            type = "run";
+            text = "进行中";
+        } else if ("wait".equals(stType)) {
+            type = "wait";
+            text = "待领取";
+        } else if ("idle".equals(stType)) {
             type = "wait";
             text = "今日未跑";
         } else {
@@ -2807,6 +2809,36 @@ public class HomeActivity extends AccountVaultActivity {
             return true;
         });
         return card;
+    }
+
+    /** 批量态勾选框（列表行与卡片格共用）。 */
+    private TextView batchCheckbox(final AccountStore.Account a) {
+        boolean sel = selectedAccounts.contains(a.id);
+        TextView check = new TextView(this);
+        check.setText(sel ? "✓" : "");
+        check.setTextSize(12);
+        check.setTypeface(Typeface.DEFAULT_BOLD);
+        check.setTextColor(UiStyle.WHITE);
+        check.setGravity(Gravity.CENTER);
+        GradientDrawable ckg = new GradientDrawable();
+        ckg.setCornerRadius(dp(7));
+        if (sel) {
+            ckg.setColor(UiStyle.BRAND);
+        } else {
+            ckg.setColor(UiStyle.WHITE);
+            ckg.setStroke(dp(1), UiStyle.LINE_STRONG);
+        }
+        check.setBackground(ckg);
+        UiStyle.press(check);
+        check.setOnClickListener(v -> toggleBatch(a));
+        return check;
+    }
+
+    /** 翻转批量选中并重绘（勾选框与整行/整格点击同源）。 */
+    private void toggleBatch(AccountStore.Account a) {
+        if (selectedAccounts.contains(a.id)) selectedAccounts.remove(a.id);
+        else selectedAccounts.add(a.id);
+        refreshAccounts();
     }
 
     /** 账号分组框：头行=备注名+登录方式(原生/token)+⚙；框内=已入工作区的角色独立入口卡。 */
@@ -5475,9 +5507,14 @@ public class HomeActivity extends AccountVaultActivity {
             styleRunBadge(cBadge, RUN.running ? "run" : finished ? "ok" : "idle");
             cBadge.setText(RUN.running ? "执行中" : finished ? "已完成" : "未开始");
             step.setText("当前步骤：" + currentStepText());
-            LinearLayout.LayoutParams cfl = (LinearLayout.LayoutParams) curFill.getLayoutParams();
-            cfl.weight = Math.max(0.02f, p);
-            curFill.setLayoutParams(cfl);
+            // 单一子项用 weight 会恒占满整行，必须像 Hero 进度条一样回写显式宽度。
+            int cw = curTrack.getWidth();
+            if (cw > 0) {
+                LinearLayout.LayoutParams cfl =
+                        (LinearLayout.LayoutParams) curFill.getLayoutParams();
+                cfl.width = Math.max(dp(6), (int) (cw * p));
+                curFill.setLayoutParams(cfl);
+            }
             for (int i = 0; i < badges.size(); i++) {
                 String st = runStateOf(labels.get(i));
                 styleRunBadge(badges.get(i), st);

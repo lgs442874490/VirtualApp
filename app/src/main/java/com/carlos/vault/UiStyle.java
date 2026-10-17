@@ -965,9 +965,9 @@ public class UiStyle {
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, c);
         g.setShape(GradientDrawable.OVAL);
         f.setBackground(g);
-        int ic = Math.max(dp(ctx, 16), (int) (sizeDp * 0.46f));
-        f.addView(new Icon(ctx, Icon.SNOW, WHITE, ic),
-                new android.widget.FrameLayout.LayoutParams(dp(ctx, ic), dp(ctx, ic),
+        int iconDp = Math.max(16, Math.round(sizeDp * 0.46f));
+        f.addView(new Icon(ctx, Icon.SNOW, WHITE, iconDp),
+                new android.widget.FrameLayout.LayoutParams(dp(ctx, iconDp), dp(ctx, iconDp),
                         Gravity.CENTER));
         return f;
     }
