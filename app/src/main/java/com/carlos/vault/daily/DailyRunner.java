@@ -816,10 +816,11 @@ public class DailyRunner {
     }
     public static Summary run(Context context, String fpid, String sdkToken, long serverid,
                               Map<String, Boolean> cfg, ProgressListener listener) {
-        // 守护盟友威胁执行中 → 本角色日常轮让位（卡秒驻防优先，设计 §6.10.5/E1-lite）
-        if (com.carlos.vault.daily.guardian.GuardianLaunch.isActiveForRole(fpid, serverid)) {
+        // 战时任务闸（设计 E1，用户 20261017 重申：战争态放弃一切占队日常，全部留驻防）：
+        // 有在途威胁或驻防执行中 → 本轮日常整轮让位
+        if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(fpid, serverid)) {
             Summary skip = new Summary();
-            skip.loginError = "守护盟友驻防任务执行中，本轮日常让位";
+            skip.loginError = "战争态：敌情在途/驻防执行中，本轮日常让位（队列全部留给驻防）";
             if (listener != null) listener.onFinish(skip);
             return skip;
         }
@@ -870,8 +871,8 @@ public class DailyRunner {
                             boolean closeEngine) {
         HotConfig.init(context);
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
-            // 守护盟友威胁执行中 → 本角色日常让位（卡秒驻防优先，设计 §6.10.5）
-            if (com.carlos.vault.daily.guardian.GuardianLaunch.isActiveForRole(fpid, serverid)) {
+            // 战时任务闸（E1）：威胁在途或驻防执行中 → 本任务让位（全 6 队留给驻防）
+            if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(fpid, serverid)) {
                 DailyResult r = new DailyResult(d.id, d.name, DailyResult.Category.SKIPPED, "守护盟友驻防执行中，本轮让位");
                 sum.results.add(r);
                 if (listener != null) listener.onTaskDone(r);
