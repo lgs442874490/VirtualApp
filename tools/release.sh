@@ -96,7 +96,8 @@ fi
 cp "$PATCHED_AAR" "$AAR"
 # flatDir AAR 会被 Gradle transforms-3 缓存吞掉：停 daemon + 删缓存，确保 APK 用的是补丁 so
 ./gradlew --stop >/dev/null 2>&1 || true
-find "$HOME/.gradle/caches/transforms-3" -maxdepth 3 -name "*lib-release*" -type d \
+# 注意：macOS 是 BSD find，不支持 -maxdepth；这里不限制深度，直接删所有 lib-release 缓存目录
+find "$HOME/.gradle/caches/transforms-3" -type d -name "*lib-release*" \
   -exec rm -rf {} + 2>/dev/null || true
 
 # ---- 构建（clean 保证 merged native libs 不残留旧 so） ----

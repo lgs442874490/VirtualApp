@@ -196,18 +196,32 @@ public final class ResourceStateSync {
             if (!diff) return false;
 
             // 备份（保留最近一份）
-            copyFile(prefs, new File(prefs.getParentFile(), PREFS_NAME + ".res_sync_bak"));
+            File prefsBak = new File(prefs.getParentFile(), PREFS_NAME + ".res_sync_bak");
+            copyFile(prefs, prefsBak);
 
-            // 写 prefs：DOM 只动白名单键
-            writeWhitelist(prefs, md5Patch, md5Split, rv);
+            // 写 prefs：DOM 只动白名单键；失败必须回滚到备份（备份失败时 risk 已在日志里）
+            try {
+                writeWhitelist(prefs, md5Patch, md5Split, rv);
+            } catch (Throwable t) {
+                copyFile(prefsBak, prefs);
+                appendLog(ctx, "apply prefs fail, rolled back: " + t);
+                return false;
+            }
 
-            // htpUpdate.config 原样覆盖（32B 纯状态，无账号字段）
+            // htpUpdate.config 原样覆盖（32B 纯状态，无账号字段）；失败同样回滚
             String htp = canon.optString("htp", "");
             if (!htp.isEmpty()) {
                 File hf = new File(new File(eng.gameDataDir(), "files"), HTP_NAME);
                 if (hf.isFile()) {
-                    copyFile(hf, new File(hf.getParentFile(), HTP_NAME + ".res_sync_bak"));
-                    atomicWrite(hf, htp.getBytes(StandardCharsets.UTF_8));
+                    File htpBak = new File(hf.getParentFile(), HTP_NAME + ".res_sync_bak");
+                    copyFile(hf, htpBak);
+                    try {
+                        atomicWrite(hf, htp.getBytes(StandardCharsets.UTF_8));
+                    } catch (Throwable t) {
+                        copyFile(htpBak, hf);
+                        appendLog(ctx, "apply htp fail, rolled back: " + t);
+                        return false;
+                    }
                 }
             }
             appendLog(ctx, "apply before{md5Patch=" + get(cur, "__KEY_MD5_PATCH__")
@@ -277,8 +291,9 @@ public final class ResourceStateSync {
         try (FileOutputStream fos = new FileOutputStream(tmp)) {
             t.transform(new DOMSource(doc), new StreamResult(fos));
         }
-        if (out.exists() && !out.delete()) throw new IllegalStateException("无法替换 " + out);
-        if (!tmp.renameTo(out)) throw new IllegalStateException("原子替换失败 " + out);
+        // 不能先 delete 原文件：rename 一旦失败就永久丢 prefs。
+        // Os.rename(2) 在 Linux/Android 上是原子替换（目标存在也覆盖）。
+        atomicReplace(tmp, out);
     }
 
     private static void removeChild(Element root, String name) {
@@ -338,8 +353,22 @@ public final class ResourceStateSync {
             fos.write(data);
             fos.getFD().sync();
         }
-        if (f.exists() && !f.delete()) throw new IllegalStateException("无法替换 " + f);
-        if (!tmp.renameTo(f)) throw new IllegalStateException("原子替换失败 " + f);
+        atomicReplace(tmp, f);
+    }
+
+    /**
+     * 原子替换：优先 android.system.Os.rename（rename(2)，目标存在也原子覆盖），
+     * 失败再退回 File.renameTo；两者都不行才抛异常。绝不先删目标文件——
+     * 否则 rename 失败会永久丢掉 prefs/htp 这类关键状态。
+     */
+    private static void atomicReplace(File tmp, File dst) throws Exception {
+        try {
+            android.system.Os.rename(tmp.getAbsolutePath(), dst.getAbsolutePath());
+            return;
+        } catch (Throwable osErr) {
+            if (tmp.renameTo(dst)) return;
+            throw new IllegalStateException("原子替换失败 " + dst, osErr);
+        }
     }
 
     private static void copyFile(File src, File dst) {

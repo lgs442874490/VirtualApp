@@ -954,6 +954,11 @@ public class DailyRunner {
 
     public static DailyResult runSingle(Context context, String fpid, String sdkToken,
                                         long serverid, String fnId) {
+        // ConcurrentHashMap 不接受 null key；且无 fpid 无法定位账号，直接给可读错误，
+        // 避免通知路径在异常数据上抛 NPE 把整条反应式线程打断。
+        if (fpid == null || fpid.isEmpty()) {
+            return new DailyResult(fnId, fnId, DailyResult.Category.ERROR, "账号ID为空，无法执行");
+        }
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
             if (!d.id.equals(fnId)) continue;
             java.util.concurrent.locks.ReentrantLock lk =

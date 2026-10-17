@@ -49,4 +49,20 @@ public class VaultEngineProcessTest {
     public void whitespace_isTolerated() {
         assertTrue(VaultEngine.isGameCmdline("  com.gof.china  "));
     }
+
+    @Test
+    public void containerUid_only() {
+        int host = 10373;   // 宿主 u0_a373
+        // 容器游戏：同 cmdline + 宿主 UID
+        assertTrue(VaultEngine.isContainerGameProcess("com.gof.china", host, host));
+        assertTrue(VaultEngine.isContainerGameProcess("com.gof.china:xg_vip_service", host, host));
+        // 原生游戏：同 cmdline，但 UID 是它自己的（u0_a113）——绝不算容器在线，
+        // 否则 killGameAndWait 会等一个 VirtualCore 永远杀不掉的原生进程到超时
+        assertFalse(VaultEngine.isContainerGameProcess("com.gof.china", 10113, host));
+        assertFalse(VaultEngine.isContainerGameProcess("com.gof.china:xg_vip_service", 10113, host));
+        // 宿主 stub 进程名 + 宿主 UID 也不算（cmdline 不是游戏包名）
+        assertFalse(VaultEngine.isContainerGameProcess("com.carlos.multiapp:p0", host, host));
+        // UID 读取失败（-1）不得误判为容器游戏
+        assertFalse(VaultEngine.isContainerGameProcess("com.gof.china", -1, host));
+    }
 }

@@ -70,7 +70,7 @@ fi
 
 # ---- 4) GameKeepAliveService 必须在宿主主进程 ----
 TREE="$("$AAPT2" dump xmltree "$APK" --file AndroidManifest.xml 2>/dev/null)"
-SVC_BLOCK="$(echo "$TREE" | grep -A6 'GameKeepAliveService')"
+SVC_BLOCK="$(echo "$TREE" | grep -A6 'GameKeepAliveService' || true)"
 if [ -z "$SVC_BLOCK" ]; then
   bad "清单中找不到 GameKeepAliveService"
 elif echo "$SVC_BLOCK" | grep -q 'android:process'; then

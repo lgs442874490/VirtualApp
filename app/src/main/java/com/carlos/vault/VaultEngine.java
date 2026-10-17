@@ -285,33 +285,55 @@ public class VaultEngine {
     private static final String BUSY_MSG = "正在切换/启动账号，请稍候再试";
 
     /**
-     * 尝试获取跨实例文件锁。返回 null 表示被其他实例持有（或不可用）。
-     * 同 JVM 内已有 LAUNCH_LOCK 串行，理论上不会触发 OverlappingFileLockException，
-     * 仍按"忙"处理以防异常路径漏释放。
+     * 跨实例文件锁的获取结果。必须区分三种状态：
+     * <ul>
+     *   <li>{@link #HELD}：拿到锁；</li>
+     *   <li>{@link #BUSY}：另一个宿主实例正持有——调用方应拒绝本次启动；</li>
+     *   <li>{@link #UNAVAILABLE}：文件锁机制不可用（极端 ROM/沙箱）——不能误判为忙，
+     *       降级为仅进程内 LAUNCH_LOCK 串行，否则该 ROM 上启动功能直接不可用。</li>
+     * </ul>
      */
-    private java.nio.channels.FileLock acquireInstanceLock() {
+    private enum InstanceLockState { HELD, BUSY, UNAVAILABLE }
+
+    private static final class InstanceLock {
+        final InstanceLockState state;
+        final java.nio.channels.FileLock lock;
+
+        InstanceLock(InstanceLockState state, java.nio.channels.FileLock lock) {
+            this.state = state;
+            this.lock = lock;
+        }
+    }
+
+    /**
+     * 尝试获取跨实例文件锁。区分“被其他实例持有”与“机制不可用”：
+     * 同 JVM 内已有 LAUNCH_LOCK 串行，OverlappingFileLockException 仍按忙处理
+     * 以防异常路径漏释放。
+     */
+    private InstanceLock acquireInstanceLock() {
         java.io.RandomAccessFile raf = null;
         try {
             raf = new java.io.RandomAccessFile(
                     new File(ctx.getFilesDir(), LAUNCH_LOCK_FILE), "rw");
             java.nio.channels.FileLock lock = raf.getChannel().tryLock();
             if (lock == null) {
-                // 其他实例持有：关掉自己的句柄，返回 null 表示忙
+                // 其他实例持有：关掉自己的句柄，明确返回 BUSY
                 try {
                     raf.close();
                 } catch (Throwable ignored) {
                 }
+                return new InstanceLock(InstanceLockState.BUSY, null);
             }
             // 拿到锁时句柄由锁保管（channel 不能先关，否则锁失效），
             // releaseInstanceLock 负责 release + close
-            return lock;
+            return new InstanceLock(InstanceLockState.HELD, lock);
         } catch (java.nio.channels.OverlappingFileLockException e) {
             if (raf != null) try { raf.close(); } catch (Throwable ignored) { }
-            return null;
+            return new InstanceLock(InstanceLockState.BUSY, null);
         } catch (Throwable t) {
             // 文件锁不可用（极端 ROM）不阻断流程：单实例场景 LAUNCH_LOCK 已足够
             if (raf != null) try { raf.close(); } catch (Throwable ignored) { }
-            return null;
+            return new InstanceLock(InstanceLockState.UNAVAILABLE, null);
         }
     }
 
@@ -952,7 +974,8 @@ public class VaultEngine {
         // 会把"上次在容器里玩过的号"永久误判成"游戏在线"，拦掉它的同步/补跑/角色补全
         // （真机：94450730 在容器登录一次后，后续所有 syncOnly 恒被"游戏在线·跳过"拦截，
         // 角色表永远空）。容器游戏跑在宿主 uid 下，ActivityManager 只返回自身 uid 的进程，
-        // 匹配到 com.gof.china 即为存活。
+        // 匹配到「宿主 UID + com.gof.china cmdline」的进程即为容器游戏存活
+        // （原生游戏 cmdline 相同但 UID 不同，不算）。
         if (!isContainerGameRunning()) return "";
         try {
             File f = new File(new File(gameDataDir(), "shared_prefs"), PREF_NAME + ".xml");
@@ -988,7 +1011,9 @@ public class VaultEngine {
      * Android 11+ 只返回调用方包名自己的进程，VA 容器里的游戏进程（同 uid 但包名为
      * GAME_PKG）看不到 → 护栏恒失效 → keeper 被顶后立即重赛，把正在玩游戏的人反复顶下线
      * （真机 2026-10-12 02:23-02:37 实证：80971192 每几分钟一双角色竞速登录）。
-     * /proc/<pid>/cmdline 对任意 uid 可读（ps 同源），同时覆盖容器与原生两种玩法。
+     * /proc/<pid>/cmdline 对任意 uid 可读（ps 同源）；<b>必须同时校验 UID</b>——
+     * 原生游戏 cmdline 相同但 UID 不同，不能算作容器游戏在线，否则
+     * {@link #killGameAndWait} 会等一个永远杀不掉的原生进程到超时。
      */
     public boolean isContainerGameRunning() {
         long now = System.currentTimeMillis();
@@ -1011,12 +1036,20 @@ public class VaultEngine {
     }
 
     /**
-     * 直扫 /proc 判断游戏进程是否存在（不经过 5s 缓存）。
+     * 直扫 /proc 判断<b>容器内</b>游戏进程是否存在（不经过 5s 缓存）。
      * killGameAndWait 的轮询必须用它：等死期间进程状态每 400ms 变化，
      * 吃缓存会在 10s 预算里白等最多 5s。
+     *
+     * <p><b>UID 过滤是硬要求</b>：原生游戏与容器游戏的 cmdline 都是
+     * {@code com.gof.china}，但原生游戏跑在自己的 UID（如 u0_a113），
+     * 容器游戏跑在宿主 UID（u0_a373）。只按 cmdline 会把原生游戏也算成
+     * "容器游戏还活着"——killGameAndWait 只杀容器应用，永远等不到它退出，
+     * 10 秒后误报启动失败；快照/SessionSaver 同样被卡住。
+     * 因此只认 {@code uid == Process.myUid()} 的进程（游戏子进程同 UID）。
      */
     static boolean scanGameProcessAlive() {
         try {
+            int hostUid = android.os.Process.myUid();
             File[] dirs = new File("/proc").listFiles();
             if (dirs != null) {
                 for (File d : dirs) {
@@ -1026,9 +1059,8 @@ public class VaultEngine {
                         if (!Character.isDigit(name.charAt(i))) numeric = false;
                     }
                     if (!numeric) continue;
-                    if (isGameCmdline(readCmdline(name))) {
-                        return true;
-                    }
+                    if (!isGameCmdline(readCmdline(name))) continue;
+                    if (readUid(name) == hostUid) return true;
                 }
             }
         } catch (Throwable ignored) {
@@ -1037,7 +1069,7 @@ public class VaultEngine {
     }
 
     /**
-     * /proc cmdline 是否属于容器游戏进程。
+     * /proc cmdline 是否属于游戏进程（不含 UID 过滤）。
      * 主进程 cmdline = {@code com.gof.china}（真机 ANR 实证）；子进程带冒号后缀
      * （如推送服务 {@code com.gof.china:xg_vip_service}）——只要任一进程还活着
      * 就可能仍在写文件，等死与快照判定都必须算"存活"。
@@ -1047,6 +1079,34 @@ public class VaultEngine {
         if (cmd == null) return false;
         String c = cmd.trim();
         return GAME_PKG.equals(c) || c.startsWith(GAME_PKG + ":");
+    }
+
+    /**
+     * 判断某进程是否属于容器游戏：cmdline 命中且 UID 与宿主一致。
+     * 单独成纯函数：原生游戏同 cmdline 不同 UID，必须排除（否则 killGameAndWait
+     * 永远等不到原生游戏退出）；JVM 单测覆盖两种 UID 输入。
+     */
+    static boolean isContainerGameProcess(String cmdline, int uid, int hostUid) {
+        return isGameCmdline(cmdline) && uid == hostUid;
+    }
+
+    /** 读 /proc/<pid>/status 的 real UID（解析失败返回 -1；不可读同）。 */
+    private static int readUid(String pid) {
+        try (java.io.BufferedReader r = new java.io.BufferedReader(
+                new java.io.InputStreamReader(
+                        new java.io.FileInputStream("/proc/" + pid + "/status"),
+                        java.nio.charset.StandardCharsets.UTF_8))) {
+            String line;
+            while ((line = r.readLine()) != null) {
+                if (line.startsWith("Uid:")) {
+                    String[] parts = line.trim().split("\\s+");
+                    if (parts.length >= 2) return Integer.parseInt(parts[1]);
+                    break;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return -1;
     }
 
     private static final Object PROC_SCAN_LOCK = new Object();
@@ -1159,16 +1219,17 @@ public class VaultEngine {
             lastLaunchError = BUSY_MSG;
             return false;
         }
-        java.nio.channels.FileLock instanceLock = acquireInstanceLock();
-        if (instanceLock == null) {
+        InstanceLock il = acquireInstanceLock();
+        if (il.state == InstanceLockState.BUSY) {
             lastLaunchError = "另一个号库实例正在启动游戏（双开/分身请稍后分开操作）";
             LAUNCH_LOCK.unlock();
             return false;
         }
+        // UNAVAILABLE：文件锁机制不可用，降级为仅进程内 LAUNCH_LOCK 串行（不阻断启动）
         try {
             return launchEntryLocked(autoSaveToId, acc);
         } finally {
-            releaseInstanceLock(instanceLock);
+            releaseInstanceLock(il.lock);
             LAUNCH_LOCK.unlock();
         }
     }
