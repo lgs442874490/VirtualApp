@@ -1,0 +1,2 @@
+94a48e7eb0d62c91ea514896c9d5daf5627f2556e7fd1096135ff62125fbd0cb  lib-release.aar.patched
+0dd16cb7f9dc5a2e2eac5ba6cda3c59aa42897754b3c5c0127e4f3f7b2666e39  libvbox.so.patched (AAR内 arm64 so 期望值)

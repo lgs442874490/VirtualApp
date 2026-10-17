@@ -64,29 +64,70 @@ fi
 sed -i '' -E "s/^([[:space:]]*VA_VERSION_CODE[[:space:]]*=[[:space:]]*)[0-9]+/\1${NEW_CODE}/" "$CFG"
 sed -i '' -E "s/^([[:space:]]*VA_VERSION[[:space:]]*=[[:space:]]*)'[^']*'/\1'${NEW_VER}'/" "$CFG"
 
-restore_cfg() {
-  git checkout -- "$CFG"
-}
+AAR="app/sdk/lib-release.aar"
+PATCHED_AAR="tools/engine/lib-release.aar.patched"
 
+restore_all() {
+  git checkout -- "$CFG" 2>/dev/null || true
+  # 仓库 AAR 是 committed 原版；构建期临时换入补丁版，退出前必须按字节还原
+  git checkout -- "$AAR" 2>/dev/null || true
+}
+trap restore_all EXIT
+
+# ---- 门禁 1：单测全绿（发版前必须通过，禁止带红发版） ----
+echo "[release] 门禁 1/3：单元测试…"
+if ! ./gradlew :app:testDebugUnitTest --offline --console=plain; then
+  echo "[release] 单元测试未通过，发版中止"
+  exit 1
+fi
+
+# ---- 门禁 2：补丁引擎 AAR 就位并校验哈希 ----
+# 背景：仓库 AAR 内 libvbox.so 是原版（a0f06e48…），Android 14+ renameat2 丢 flags
+# ⇒ EINVAL ⇒ 容器内游戏下载/更新失败。修复版 so=0dd16cb7…，发版必须强制换入。
+echo "[release] 门禁 2/3：补丁引擎 AAR…"
+if [ ! -f "$PATCHED_AAR" ]; then
+  echo "[release] 缺少 $PATCHED_AAR（tools/engine/），发版中止"
+  exit 1
+fi
+if ! (cd tools/engine && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1); then
+  echo "[release] tools/engine/SHA256SUMS 校验失败（AAR 可能被改动），发版中止"
+  exit 1
+fi
+cp "$PATCHED_AAR" "$AAR"
+# flatDir AAR 会被 Gradle transforms-3 缓存吞掉：停 daemon + 删缓存，确保 APK 用的是补丁 so
+./gradlew --stop >/dev/null 2>&1 || true
+find "$HOME/.gradle/caches/transforms-3" -maxdepth 3 -name "*lib-release*" -type d \
+  -exec rm -rf {} + 2>/dev/null || true
+
+# ---- 构建（clean 保证 merged native libs 不残留旧 so） ----
 echo "[release] 构建 release…"
-if ! ./gradlew :app:assembleRelease --offline; then
-  echo "[release] 构建失败，已还原 $CFG"
-  restore_cfg
+if ! ./gradlew :app:clean :app:assembleRelease --offline; then
+  echo "[release] 构建失败，已还原 $CFG 与 $AAR"
   exit 1
 fi
 
 APK_SRC="app/build/outputs/apk/release/app-release.apk"
 if [ ! -f "$APK_SRC" ]; then
-  echo "[release] 未找到 ${APK_SRC}，已还原 ${CFG}"
-  restore_cfg
+  echo "[release] 未找到 ${APK_SRC}，发版中止"
   exit 1
 fi
+
+# ---- 门禁 3：APK 内容校验（引擎哈希/签名/版本/服务进程/权限） ----
+echo "[release] 门禁 3/3：APK 校验…"
+if ! tools/verify_apk.sh "$APK_SRC" "$NEW_CODE" "$NEW_VER"; then
+  echo "[release] APK 门禁未通过，发版中止（未产出安装包）"
+  exit 1
+fi
+
+# AAR 立即还原（verify 已确认 APK 内是补丁 so，源码目录保持 committed 原版）
+git checkout -- "$AAR"
 
 cp "$APK_SRC" "$ROOT/$APK_NAME"
 
 git add "$CFG"
 git commit -m "chore(release): v${NEW_VER} (${NEW_CODE})"
 
+trap - EXIT
 echo "[release] 完成：$ROOT/$APK_NAME"
 echo "[release] 热更 JSON 记得同步 apk 块："
 echo "  \"apk\": { \"versionCode\": ${NEW_CODE}, \"versionName\": \"${NEW_VER}\", \"url\": \"<下载地址>\" }"

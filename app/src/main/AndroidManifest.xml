@@ -36,6 +36,9 @@
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 13+ 前台服务通知需要运行时授权；不声明该权限时
+         AccountVaultActivity.requestNotifPermission 的请求不会弹窗，保活/调度通知在 13+ 不可见 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- 24h 常驻在线：引导用户把号库加入电池优化白名单（否则 Doze 会掐心跳连接） -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.INTERNET" />
