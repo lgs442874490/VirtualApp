@@ -134,6 +134,8 @@ public class WjdrEngine {
     private long lastUid;
     private String lastFpid;
     private long lastServerId;
+    /** 游戏服务器时钟（P0）：登录/心跳响应校准，单调外推；waitUntil 供行军类毫秒到点用。 */
+    private final GameServerClock serverClock = new GameServerClock();
     /** 账号固定设备指纹（AccountStore.settings 注入；未注入时每次随机并经 identityJson 导出固化）。 */
     private String pinnedDistinctId;
     private String pinnedDeviceId;
@@ -262,8 +264,11 @@ public class WjdrEngine {
             try {
                 Map<String, Object> payload = buildLoginPayload(fpid, sdkToken, serverid);
                 if (extraParams != null) payload.putAll(extraParams);
+                long t0 = GameServerClock.monoNow();
                 GameMessage auth = lockedRequest("loginauth", payload, seconds(15));
+                long t1 = GameServerClock.monoNow();
                 validate(auth, "loginauth");
+                serverClock.calibrate(auth.getContent(), t0, t1, System.currentTimeMillis() / 1000L);
                 LoginResult result = new LoginResult();
                 result.authContent = auth.getContent();
                 result.uid = toLong(auth.getContent().get("uid"));
@@ -284,8 +289,11 @@ public class WjdrEngine {
                                     + "（serverid=" + result.serverId + "）");
                 }
 
+                long t2 = GameServerClock.monoNow();
                 GameMessage load = lockedRequest("req_loaddata", new LinkedHashMap<String, Object>(), seconds(20));
+                long t3 = GameServerClock.monoNow();
                 validate(load, "req_loaddata");
+                serverClock.calibrate(load.getContent(), t2, t3, System.currentTimeMillis() / 1000L);
                 result.loadSummary = summarize(load.getContent());
                 // 角色元数据源1：loaddata 顶层/浅层字段（字段名形状防御式深找）
                 result.level = toLong(load.getContent().get("level"));
@@ -508,11 +516,18 @@ public class WjdrEngine {
             }
         } catch (Exception ignored) {
         }
-        notifyHook = client.addInboundListener(msg -> {
-            if (msg == null || msg.getProto() == null) return;
-            notifies.put(msg.getProto(), msg.getContent());
-            // 常驻会话：服务端主动断开（notify_logout）按原版码表分类处理
-            if ("notify_logout".equals(msg.getProto())) {
+            notifyHook = client.addInboundListener(msg -> {
+                if (msg == null || msg.getProto() == null) return;
+                notifies.put(msg.getProto(), msg.getContent());
+                // P0 服务器时钟：推送侧校准（notify_game_init.servertime / notify_schedule_update.server_time，秒域实证）
+                if ("notify_game_init".equals(msg.getProto()) || "notify_schedule_update".equals(msg.getProto())) {
+                    try {
+                        serverClock.calibratePush(msg.getContent(), GameServerClock.monoNow());
+                    } catch (Throwable ignored) {
+                    }
+                }
+                // 常驻会话：服务端主动断开（notify_logout）按原版码表分类处理
+                if ("notify_logout".equals(msg.getProto())) {
                 try {
                     handleLogoutPush(msg.getContent());
                 } catch (Throwable ignored) {
@@ -713,9 +728,39 @@ public class WjdrEngine {
         }
     }
 
+    /**
+     * 短超时请求（卡秒路径专用）：超时仍会断连触发恢复，但把"无响应协议"的占坑时间
+     * 从 20s 压到秒级，保住发射窗（守护盟友 R3 加速跟进用）。
+     */
+    public GameMessage request(String proto, Map<String, Object> args, int timeoutSec) throws Exception {
+        requestLock.lock();
+        try {
+            return lockedRequest(proto, args == null ? new LinkedHashMap<String, Object>() : args,
+                    java.time.Duration.ofSeconds(Math.max(1, timeoutSec)));
+        } catch (Exception e) {
+            if (STATE_ONLINE.equals(sessionState)) beginRecovery(e);
+            throw e;
+        } finally {
+            requestLock.unlock();
+        }
+    }
+
     /** 持锁请求（调用方须已持有 requestLock）：成功即记录活动时间。 */
     private GameMessage lockedRequest(String proto, Map<String, Object> args, java.time.Duration timeout) throws Exception {
         ensureClient();
+        // P1 实证辅助：关键协议的出站参数落引擎日志（files/wjdr_log.txt）——自动化成功样本可直接对照复刻
+        if ("req_world_map_search".equals(proto) || "req_world_march".equals(proto)
+                || "req_world_march_speedup".equals(proto) || "req_world_march_recall".equals(proto)
+                || "req_arsenal_league_move_city".equals(proto)
+                || "req_arsenal_league_march_speedup".equals(proto)
+                || "req_embassy_help_simple_info".equals(proto) || "req_embassy_repatriation".equals(proto)
+                || "req_arsenal_league_embassy_help_simple_info".equals(proto)
+                || "req_arsenal_league_embassy_repatriation".equals(proto)) {
+            try {
+                WjdrLog.i("c2s " + proto + " args=" + args);
+            } catch (Throwable ignored) {
+            }
+        }
         GameMessage rsp = client.request(proto, args, timeout);
         this.lastActivityAt = System.currentTimeMillis();
         return rsp;
@@ -737,7 +782,11 @@ public class WjdrEngine {
             if (requestLock.tryLock()) {
                 try {
                     lastHeartbeatSentAt = System.currentTimeMillis();
-                    lockedRequest("req_heartbeat", new LinkedHashMap<String, Object>(), seconds(5));
+                    long sentLocalSec = lastHeartbeatSentAt / 1000L;
+                    long t0 = GameServerClock.monoNow();
+                    GameMessage hb = lockedRequest("req_heartbeat", new LinkedHashMap<String, Object>(), seconds(5));
+                    long t1 = GameServerClock.monoNow();
+                    serverClock.calibrate(hb == null ? null : hb.getContent(), t0, t1, sentLocalSec);
                     long n = heartbeatCount.incrementAndGet();
                     if (n % 20 == 0) {
                         com.carlos.vault.wjdr.WjdrLog.i("session alive fpid={} sid={} heartbeats={}",
@@ -759,6 +808,11 @@ public class WjdrEngine {
 
     public String sessionState() {
         return sessionState;
+    }
+
+    /** 游戏服务器时钟（P0）：校准状态/nowServerMs/waitUntil，驻防类毫秒到点的统一入口。 */
+    public GameServerClock serverClock() {
+        return serverClock;
     }
 
     public String lastFailure() {

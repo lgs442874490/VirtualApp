@@ -35,11 +35,11 @@ import java.util.Map;
 
 /**
  * 新版主界面（设计方案 v1）：底部四 Tab —— 今日 / 账号 / 任务 / 我的。
- * - 今日：Hero（完成度+一键跑全部）+ 号库矩阵（默认，可切列表）+ 限时窗口 + 快捷入口
+ * - 今日：Hero（完成度+切换账号/切换角色）+ 号库矩阵（默认，可切列表）+ 限时窗口 + 快捷入口
  * - 账号：搜索 + 筛选chips + 列表（单击=启动，⋯=日常/管理/删除）
  * - 任务：自动日常 + 分类chips + 折叠任务行（tap→配置页）+ 进阶工具
  * - 我的：授权卡 + 分组列表（运行/数据/初始化/危险区）
- * 主按钮=跑工作区全部（顺序执行 + 执行页可离开）。
+ * Hero 主按钮=切换账号 / 切换角色（数据全自动，切换即刷新全部页面）。
  */
 public class HomeActivity extends AccountVaultActivity {
 
@@ -51,7 +51,6 @@ public class HomeActivity extends AccountVaultActivity {
     // 今日页
     private TextView heroDone, heroSub, statRun, statErr, statWait, topCaption;
     private UiStyle.Ring heroRing;
-    private TextView onlyBtn;
     private TextView autoStateBtn;   // 自动执行状态卡（点=开关自动日常）
     private TextView onlineDot;      // 当前角色在线状态（容器登录态口径）
     private TextView actVal, actTier;      // 活跃度档位进度条（进度表达规范）
@@ -297,19 +296,30 @@ public class HomeActivity extends AccountVaultActivity {
             bar.setBackgroundColor(UiStyle.BRAND);
             item.addView(bar, new LinearLayout.LayoutParams(dp(16), dp(3)));
             bar.setTag("bar" + i);
+            // 图标：定高 22dp + 关闭字体内边距。◉/☰/⚙/▣ 是象形字形，回退字体的
+            // ascent/descent 远超字号，wrap_content 下字形 ink 会溢出视图盒压到
+            // 下方文字上（选中态蓝粗体下尤其明显）。定高盒 + CENTER 重力把字形
+            // 收进盒内，与文字之间再留 2dp 间距，保证永不相叠。
             TextView icon = new TextView(this);
             icon.setText(icons[i]);
             icon.setTextSize(16);
             icon.setGravity(Gravity.CENTER);
+            icon.setIncludeFontPadding(false);
             icon.setTag("icon" + i);
-            item.addView(icon);
+            item.addView(icon, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(22)));
+            // 文字：与图标固定 2dp 间距；同样关字体 padding，10.5sp 粗体也不再侵占图标盒
             TextView label = new TextView(this);
             label.setText(names[i]);
             label.setTextSize(10.5f);
             label.setTypeface(Typeface.DEFAULT_BOLD);
             label.setGravity(Gravity.CENTER);
+            label.setIncludeFontPadding(false);
             label.setTag("label" + i);
-            item.addView(label);
+            LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            llp.topMargin = dp(2);
+            item.addView(label, llp);
             UiStyle.press(item);
             item.setOnClickListener(v -> switchTab(idx));
             navBars[i] = bar;
@@ -380,7 +390,7 @@ public class HomeActivity extends AccountVaultActivity {
         top.addView(menu);
         box.addView(top);
 
-        // —— Hero 卡（原型同款：环+完成度+待跑+切换账号主按钮+仅跑当前+三指标）——
+        // —— Hero 卡（原型同款：环+完成度+当前角色+切换账号/切换角色双按钮）——
         LinearLayout hero = new LinearLayout(this);
         hero.setOrientation(LinearLayout.VERTICAL);
         hero.setPadding(dp(16), dp(16), dp(16), dp(14));
@@ -458,7 +468,7 @@ public class HomeActivity extends AccountVaultActivity {
         heroTop.addView(right, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         hero.addView(heroTop);
 
-        // 双按钮并行一行（规范第一张截图：主按钮+仅跑当前在下方并排）
+        // 双按钮并行一行（规范第一张截图：切换账号 + 切换角色在下方并排）
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
         btnRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -3843,37 +3853,227 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     private void showTools() {
-        // 名称与原版 wjdr 模块对齐（括号内为原版 moduleId，便于按原版实现文档逐个搬运）
-        String[] tools = {"排行榜(ranking)", "进攻/撞矿(attack)", "起号(bootstrap)", "活动榜单(activityrank)",
-                "迁城(movecity)", "三消(threetiles)", "爆兵(training)", "宠物洗练(petwash)",
-                "巨兽批量(behemoth)", "坐标查询(coordinate)", "侦察战报(recon)", "移民抢位(migrant)",
-                "充值记录(recharge)", "编队管理(formation)"};
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < tools.length; i++) {
-            sb.append(i + 1).append(". ").append(tools[i]).append(" · 规划中\n");
-        }
-        sb.append("\n按日常模块稳定后逐个开放。");
         boolean logOn = ProtoLogger.on(this);
+        String[] items = {
+                "协议监听：" + (logOn ? "已开启（点此停止）" : "已关闭（点此开启）"),
+                "敌情监控：标记敌人出征 → 企业微信+短信",
+                "P1 协议探针：使馆/道具/加速链/驻防/迁城（开发用）",
+        };
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("工具箱 · 协议监听" + (logOn ? "已开启" : "已关闭"))
-                .setMessage((logOn
-                        ? "🔍 协议监听运行中 · 已记录 " + (ProtoLogger.logSize(this) / 1024) + " KB\n"
-                          + "玩法：原生游戏里进新活动界面操作一轮 → 退出游戏 → 稍等本应用\n"
-                          + "常驻会话自动回连，登录全量推送即被记录（files/proto_log.txt）。\n\n"
-                        : "🔍 协议监听（诊断）：记录常驻会话收到的全部服务端推送，用于逆向\n"
-                          + "新功能（如史诗与远方/成长支线）的协议。开启后去原生游戏操作一轮\n"
-                          + "再退出，回连后的 init 推送会落在 proto_log.txt。\n\n")
-                        + sb)
-                .setPositiveButton(logOn ? "停止监听" : "开启监听", (d, w) -> {
-                    boolean turnOn = !logOn;
-                    ProtoLogger.setOn(this, turnOn);
-                    if (turnOn) ProtoLogger.reattachAll(this);
-                    toast(turnOn ? "协议监听已开启\n（原生游戏里玩一轮后退出，稍后我来拉日志分析）"
-                            : "协议监听已停止");
-                    showTools();
+                .setTitle("工具箱")
+                .setItems(items, (d, w) -> {
+                    if (w == 0) {
+                        boolean turnOn = !logOn;
+                        ProtoLogger.setOn(this, turnOn);
+                        if (turnOn) ProtoLogger.reattachAll(this);
+                        toast(turnOn ? "协议监听已开启\n（原生游戏里玩一轮后退出，稍后我来拉日志分析）"
+                                : "协议监听已停止");
+                        showTools();
+                    } else if (w == 1) {
+                        showWatchConfig();
+                    } else {
+                        showProbe();
+                    }
                 })
-                .setNegativeButton("知道了", null)
+                .setNegativeButton("关闭", null)
                 .show();
+    }
+
+    // ================= 敌情监控（EnemyWatch：标记敌人行军 → 企业微信 + 短信） =================
+
+    private void showWatchConfig() {
+        ScrollView sc = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(12), dp(18), dp(6));
+
+        TextView tip = new TextView(this);
+        tip.setText("标记敌人（按服分号观察）。名单每行一条：服:uid 备注\n例如 888:57347368 仇人A（备注可空，服号缺省按888）");
+        tip.setTextSize(12);
+        box.addView(tip);
+
+        android.widget.CheckBox cbOn = new android.widget.CheckBox(this);
+        cbOn.setText("敌情监控开启（挂在全部在线会话上）");
+        cbOn.setChecked(com.carlos.vault.daily.EnemyWatchStore.enabled(this));
+        box.addView(cbOn);
+
+        EditText etList = new EditText(this);
+        etList.setHint("888:57347368 仇人A\n888:123861751");
+        etList.setTextSize(13);
+        StringBuilder pre = new StringBuilder();
+        for (com.carlos.vault.daily.EnemyWatchStore.Entry e : com.carlos.vault.daily.EnemyWatchStore.entries(this)) {
+            pre.append(e.kid).append(':').append(e.uid);
+            if (!e.note.isEmpty()) pre.append(' ').append(e.note);
+            pre.append('\n');
+        }
+        etList.setText(pre.toString());
+        box.addView(etList);
+
+        EditText etWebhook = new EditText(this);
+        etWebhook.setHint("企业微信群机器人 Webhook URL");
+        etWebhook.setTextSize(13);
+        etWebhook.setText(com.carlos.vault.daily.EnemyWatchStore.webhook(this));
+        box.addView(etWebhook);
+
+        EditText etPhone = new EditText(this);
+        etPhone.setHint("短信接收手机号");
+        etPhone.setTextSize(13);
+        etPhone.setInputType(android.text.InputType.TYPE_CLASS_PHONE);
+        etPhone.setText(com.carlos.vault.daily.EnemyWatchStore.smsPhone(this));
+        box.addView(etPhone);
+
+        android.widget.CheckBox cbWecom = new android.widget.CheckBox(this);
+        cbWecom.setText("企业微信通知");
+        cbWecom.setChecked(com.carlos.vault.daily.EnemyWatchStore.wecomOn(this));
+        box.addView(cbWecom);
+        android.widget.CheckBox cbSms = new android.widget.CheckBox(this);
+        cbSms.setText("短信通知");
+        cbSms.setChecked(com.carlos.vault.daily.EnemyWatchStore.smsOn(this));
+        box.addView(cbSms);
+        android.widget.CheckBox cbEsc = new android.widget.CheckBox(this);
+        cbEsc.setText("短信仅升级事件（敌人加速时）；不勾 = 所有敌情都发短信");
+        cbEsc.setChecked(com.carlos.vault.daily.EnemyWatchStore.smsEscalateOnly(this));
+        box.addView(cbEsc);
+
+        TextView status = new TextView(this);
+        status.setText("最近事件：\n" + joinRecent());
+        status.setTextSize(11);
+        box.addView(status);
+
+        sc.addView(box);
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("敌情监控 · 标记敌人出征即推送（企业微信+短信）")
+                .setView(sc)
+                .setPositiveButton("保存", (d, w) -> {
+                    int bad = com.carlos.vault.daily.EnemyWatchStore.save(this,
+                            cbOn.isChecked(), etWebhook.getText().toString(), etPhone.getText().toString(),
+                            cbWecom.isChecked(), cbSms.isChecked(), cbEsc.isChecked(),
+                            etList.getText().toString());
+                    com.carlos.vault.daily.EnemyWatch.attachAll(this);
+                    toast(bad > 0 ? "已保存，" + bad + " 行格式非法被忽略"
+                            : "已保存，已对在线会话即时挂载");
+                })
+                .setNeutralButton("测试推送", (d, w) -> {
+                    int bad = com.carlos.vault.daily.EnemyWatchStore.save(this,
+                            cbOn.isChecked(), etWebhook.getText().toString(), etPhone.getText().toString(),
+                            cbWecom.isChecked(), cbSms.isChecked(), cbEsc.isChecked(),
+                            etList.getText().toString());
+                    com.carlos.vault.daily.EnemyWatch.attachAll(this);
+                    com.carlos.vault.daily.EnemyWatch.sendTest(this);
+                    toast(bad > 0 ? "已保存并发送测试（" + bad + " 行非法被忽略）" : "已保存并发送测试推送");
+                })
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private String joinRecent() {
+        List<String> list = com.carlos.vault.daily.EnemyWatchStore.recent(this);
+        if (list.isEmpty()) return "（暂无）";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(list.size(), 12); i++) sb.append(list.get(i)).append('\n');
+        return sb.toString();
+    }
+
+    // ================= P1 协议探针（GuardProbe：开发用，烧真实道具前有确认） =================
+
+    private void showProbe() {
+        ScrollView sc = new ScrollView(this);
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(12), dp(18), dp(6));
+
+        TextView sess = new TextView(this);
+        List<String> online = com.carlos.vault.daily.GuardProbe.onlineSessions(this);
+        sess.setText("在线会话（探针取第一个在线）：\n" + (online.isEmpty() ? "（无）" : joinLines(online)));
+        sess.setTextSize(11);
+        box.addView(sess);
+
+        box.addView(btn("① 使馆查询（无消耗 · A-13 容量字段）", v ->
+                com.carlos.vault.daily.GuardProbe.embassyQuery(this, null)));
+        box.addView(btn("② 道具快照（无消耗 · A-10 库存读数）", v ->
+                com.carlos.vault.daily.GuardProbe.itemSnapshot(this, null)));
+        box.addView(btn("③ 加速链实测（烧≤8个加速道具 · A-3/15/16/17+召回）", v ->
+                confirmThen("将发射一条采集行军并连用最多 8 个加速道具直至触底，随后召回。\n确认执行？",
+                        () -> com.carlos.vault.daily.GuardProbe.speedupChain(this, null))));
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        EditText px = new EditText(this);
+        px.setHint("盟友城x");
+        px.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        px.setText("687");
+        EditText py = new EditText(this);
+        py.setHint("盟友城y");
+        py.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        py.setText("698");
+        row.addView(px, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        row.addView(py, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        box.addView(row);
+        box.addView(btn("④ 驻防发起 type=5（A-2 · 打盟友城，发后不召回）", v -> {
+            long gx = 687, gy = 698;
+            try { gx = Long.parseLong(px.getText().toString().trim()); } catch (Throwable ignored) { }
+            try { gy = Long.parseLong(py.getText().toString().trim()); } catch (Throwable ignored) { }
+            final long fx = gx, fy = gy;
+            confirmThen("将向盟友城 (" + fx + "," + fy + ") 发起一次真实驻防（type=5）。\n确认执行？",
+                    () -> com.carlos.vault.daily.GuardProbe.garrisonLaunch(this, null, fx, fy));
+        }));
+        box.addView(btn("⑤ 加速链·复用在途行军（烧≤8个加速道具 · 推荐）", v ->
+                confirmThen("将复用自动化最近一条在途行军：连用最多 8 个加速道具直至触底，随后召回。\n"
+                        + "若提示无在途行军，等日常采集自动出征后再点。\n确认执行？",
+                        () -> com.carlos.vault.daily.GuardProbe.speedupExisting(this, null))));
+        box.addView(btn("⑥ 迁城实测（烧高级迁城 · A-23 c2s）", v ->
+                confirmThen("将消耗高级迁城道具迁到附近 (+1,0)。\n确认执行？",
+                        () -> com.carlos.vault.daily.GuardProbe.moveCity(this, null))));
+        EditText pu = new EditText(this);
+        pu.setHint("撤防目标uid");
+        pu.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        pu.setText("20718040");
+        box.addView(pu);
+        box.addView(btn("⑦ 撤回驻防（embassy_repatriation · 无消耗）", v ->
+                confirmThen("撤回我方在该盟友城的驻防（req_embassy_repatriation {target_uid}）。\n"
+                        + "确认执行？", () -> com.carlos.vault.daily.GuardProbe.repatriateProbe(this, null, pu.getText().toString().trim()))));
+
+        TextView result = new TextView(this);
+        result.setText("探针输出：\n" + joinProbe());
+        result.setTextSize(11);
+        box.addView(result);
+
+        sc.addView(box);
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("P1 协议探针（结果同步落 proto_log）")
+                .setView(sc)
+                .setPositiveButton("刷新结果", (d, w) -> showProbe())
+                .setNegativeButton("关闭", null)
+                .show();
+    }
+
+    private android.widget.Button btn(String text, View.OnClickListener onClick) {
+        android.widget.Button b = new android.widget.Button(this);
+        b.setText(text);
+        b.setOnClickListener(onClick);
+        return b;
+    }
+
+    private void confirmThen(String msg, Runnable action) {
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("消耗确认")
+                .setMessage(msg)
+                .setPositiveButton("执行", (d, w) -> action.run())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private String joinLines(List<String> list) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(list.size(), 8); i++) sb.append(list.get(i)).append('\n');
+        return sb.toString();
+    }
+
+    private String joinProbe() {
+        List<String> list = com.carlos.vault.daily.GuardProbe.recent();
+        if (list.isEmpty()) return "（暂无）";
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < Math.min(list.size(), 20); i++) sb.append(list.get(i)).append('\n');
+        return sb.toString();
     }
 
     // ================= Tab4 · 我的 =================
@@ -4326,11 +4526,9 @@ public class HomeActivity extends AccountVaultActivity {
         return v;
     }
 
-    // ================= 一键跑全部（顺序执行 · 可离开） =================
-
-    private void runWorkspaceAll() {
-        runList(workspaceAccounts());
-    }
+    // ================= 批量执行引擎（顺序执行 · 可离开） =================
+    // 入口：账号页角色行「▶ 跑日常」与批量操作条「跑日常」；
+    // 今日页主入口已收敛为切换账号/切换角色（跑全部的旧入口随 v4.1.0 移除）。
 
     private void runList(final List<AccountStore.Account> wsIn) {
         if (RUN.running) {
@@ -4410,21 +4608,6 @@ public class HomeActivity extends AccountVaultActivity {
                 refreshAllPages();
             });
         }, "run-all").start();
-    }
-
-    private void runSingleCurrent() {
-        AccountStore.Account cra = currentRoleAccount();
-        if (cra != null) {
-            RoleStore.setActiveRole(this, cra.fpid, currentRoleSid());
-        }
-
-        AccountStore.Account cur = firstWorkspace();
-        if (cur == null) {
-            toast("没有可用账号");
-            return;
-        }
-        openDaily(cur, null);
-        toast("在弹出页点「执行日常并刷新进度」");
     }
 
     /** 执行页（可离开：线程继续，随时回来看）。 */

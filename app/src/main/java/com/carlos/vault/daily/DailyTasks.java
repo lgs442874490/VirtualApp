@@ -53,6 +53,11 @@ public final class DailyTasks {
         list.add(new TaskDef("alliance_chest", "联盟宝箱", true, DailyTasks::allianceChest));
         list.add(new TaskDef("alliance_donate", "联盟捐献", true, DailyTasks::allianceDonate));
         list.add(new TaskDef("battle_shield", "战斗护盾", true, DailyTasks::freeShield));
+        list.add(new TaskDef("guardian", "守护盟友", false, engine -> {
+            String note = com.carlos.vault.daily.guardian.GuardianEngine.summary(
+                    engine.appContext(), engine.lastFpid(), engine.lastServerId());
+            return new DailyResult("guardian", "守护盟友", DailyResult.Category.SKIPPED, note);
+        }));
         list.add(new TaskDef("shop", "商店购买", false, ShopTasks::shopBuy));
         list.add(new TaskDef("commander_gift", "统帅礼包", true, DailyTasks::commanderGift));
         list.add(new TaskDef("achievement_claim", "成就奖励", true, DailyTasks::achievementClaim));

@@ -48,6 +48,16 @@ final class FieldTasks {
             }
             int active = countMarches(engine, 4);
             int capacity = Math.min(maxQueues, marchCapacity(engine));
+            // 守护盟友队列预留（设计 §6.10 双池）：守护开启时采集最多占 capacity-2，
+            // 给卡秒驻防留 2 个机动队列（GuardianLaunch 发 type=5 需要空队列）
+            try {
+                if (com.carlos.vault.daily.guardian.GuardianEngine.reserveQueues(engine.appContext(),
+                        engine.lastFpid(), engine.lastServerId()) > 0) {
+                    capacity = Math.max(active, capacity - com.carlos.vault.daily.guardian.GuardianEngine.reserveQueues(
+                            engine.appContext(), engine.lastFpid(), engine.lastServerId()));
+                }
+            } catch (Throwable ignored) {
+            }
             // 策略：只采满矿（req_world_map_search 的 is_full 过滤）
             boolean fullOnly = "full".equals(FnParams.strategy(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "gather", "send", "any"));
@@ -170,6 +180,15 @@ final class FieldTasks {
     static DailyResult intel(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 守护盟友威胁期间让位：情报派队同样占行军队列，威胁窗口内让给卡秒驻防
+            if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId())) {
+                m.skip("守护盟友威胁执行中，本轮让位");
+                DailyResult yd = new DailyResult("intel", "情报任务", m.cat(), m.note() + " " + m.sb);
+                yd.rewards = m.rewardsText();
+                yd.subResults.putAll(m.subResults);
+                return yd;
+            }
             // 子开关门控：events=处理情报（本功能唯一动作）
             if (!FnParams.subOn(engine.appContext(),
                     engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
@@ -277,6 +296,15 @@ final class FieldTasks {
     static DailyResult bear(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 守护盟友威胁期间让位（交接 §6.2：防请求队列饿死卡秒驻防 + 保留队列不被日常吃掉）
+            if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId())) {
+                m.skip("守护盟友威胁执行中，本轮让位");
+                DailyResult yd = new DailyResult("bear", "巨熊行动", m.cat(), m.note() + " " + m.sb);
+                yd.rewards = m.rewardsText();
+                yd.subResults.putAll(m.subResults);
+                return yd;
+            }
             // 子开关门控：trap=巨熊陷阱同步（本功能唯一动作）
             if (!FnParams.subOn(engine.appContext(),
                     engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
@@ -377,6 +405,15 @@ final class FieldTasks {
     static DailyResult hunt(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // 守护盟友威胁期间让位：狩猎占行军队列，威胁窗口内不与卡秒驻防抢队
+            if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId())) {
+                m.skip("守护盟友威胁执行中，本轮让位");
+                DailyResult yd = new DailyResult("hunt", "自动狩猎", m.cat(), m.note() + " " + m.sb);
+                yd.rewards = m.rewardsText();
+                yd.subResults.putAll(m.subResults);
+                return yd;
+            }
             // 子开关门控：hunt=自动狩猎（本功能唯一动作；参数只管等级区间/次数）
             if (!FnParams.subOn(engine.appContext(),
                     engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),

@@ -816,6 +816,14 @@ public class DailyRunner {
     }
     public static Summary run(Context context, String fpid, String sdkToken, long serverid,
                               Map<String, Boolean> cfg, ProgressListener listener) {
+        // 战时任务闸（设计 E1，用户 20261017 重申：战争态放弃一切占队日常，全部留驻防）：
+        // 有在途威胁或驻防执行中 → 本轮日常整轮让位
+        if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(fpid, serverid)) {
+            Summary skip = new Summary();
+            skip.loginError = "战争态：敌情在途/驻防执行中，本轮日常让位（队列全部留给驻防）";
+            if (listener != null) listener.onFinish(skip);
+            return skip;
+        }
         Summary sum = new Summary();
         WjdrEngine engine = WjdrAndroid.newEngine(context);
         try {
@@ -863,6 +871,13 @@ public class DailyRunner {
                             boolean closeEngine) {
         HotConfig.init(context);
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
+            // 战时任务闸（E1）：威胁在途或驻防执行中 → 本任务让位（全 6 队留给驻防）
+            if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(fpid, serverid)) {
+                DailyResult r = new DailyResult(d.id, d.name, DailyResult.Category.SKIPPED, "守护盟友驻防执行中，本轮让位");
+                sum.results.add(r);
+                if (listener != null) listener.onTaskDone(r);
+                continue;
+            }
             Boolean on = cfg == null ? null : cfg.get(d.id);
             boolean enabled = on != null ? on : d.enabledByDefault;
             if (HotConfig.isDisabled(d.id)) {

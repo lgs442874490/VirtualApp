@@ -180,6 +180,15 @@ public final class FnDetail {
                 new Sub("reactive", "反应式开盾", "收到战争/侦查通知时立即登录开盾（需通知使用权）", true, null));
 
         // ===== 联盟 =====
+        fn("guardian",
+                new Sub("watch", "敌情监测（dry_run）", "监测指向本盟盟友城的侦查/进攻行军并告警（只看不发）", true, null),
+                new Sub("intercept", "自动卡秒驻防", "检测到威胁后自动向盟友城卡秒驻防（P3 接线，当前标记）", false, null),
+                new Sub("power_min", "攻方战力阈值", "低于该战力的进攻仅观察不告警", true,
+                        new String[][]{{"0", "不限"}, {"30000", "3万"}, {"50000", "5万"}, {"100000", "10万"}}),
+                new Sub("eta_max", "ETA 告警窗口", "到达时间超过该窗口的行军仅观察", true,
+                        new String[][]{{"300", "5分钟"}, {"600", "10分钟"}, {"1800", "30分钟"}, {"3600", "1小时"}}),
+                new Sub("delta_ms", "卡秒提前量 Δ", "我方落地早于敌人的目标裕量（标定后自动卡秒用）", true,
+                        new String[][]{{"1000", "1秒"}, {"1500", "1.5秒"}, {"2500", "2.5秒"}}));
         fn("alliance_chest",
                 new Sub("chest", "联盟宝箱", "批量领取可领的联盟宝箱", true, null));
         fn("alliance_donate",
