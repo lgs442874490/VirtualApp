@@ -1217,6 +1217,16 @@ public class VaultEngine {
                 }
             }
 
+            // P1-4（默认关）：wipe 前从即将让位的 live 采集资源更新状态（白名单键），
+            // 写入全库共享 canonical——其他账号启动时据此跳过重复的 hotfix/split 校验。
+            // 此时游戏进程已死（上面 killGameAndWait），prefs 是静止的，读取安全。
+            if (ResourceStateSync.enabled(ctx)) {
+                try {
+                    ResourceStateSync.captureFromLive(this, ctx);
+                } catch (Throwable ignored) {
+                }
+            }
+
             // —— R1：live 归属本入口且内容还在 ⇒ 保留，不 wipe、不还原 ——
             boolean keepLive = acc.id != null && !acc.id.isEmpty()
                     && acc.id.equals(liveOwner) && hasLiveContent();
@@ -1273,6 +1283,16 @@ public class VaultEngine {
 
             // live 现在属于本入口（上面的 wipe/restore 路径已在 wipe 时清掉旧归属）
             store.setLiveEntryId(acc.id);
+
+            // P1-4（默认关）：把 canonical 的资源更新状态应用到本账号 live。
+            // 位置约束：必须在快照还原/注入**之后**（否则会被旧快照盖回）、
+            // launchGame **之前**（游戏只在启动时读 prefs）；游戏进程已死，写入安全。
+            if (ResourceStateSync.enabled(ctx)) {
+                try {
+                    ResourceStateSync.applyToLive(this, ctx);
+                } catch (Throwable ignored) {
+                }
+            }
 
             Thread.sleep(200);
             return launchGame();
