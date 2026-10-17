@@ -21,6 +21,8 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.carlos.vault.daily.RoleStore;
+
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -37,6 +39,10 @@ public class EntryDetailActivity extends Activity {
     private AccountStore.Account acc;
     private TextView modeView;
     private TextView infoView;
+    private TextView profileMeta;
+    private TextView profileBadge;
+    private TextView roleTitle;
+    private LinearLayout roleBox;
     private final SimpleDateFormat FMT = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
 
     @Override
@@ -59,6 +65,12 @@ public class EntryDetailActivity extends Activity {
     }
 
     private void buildUi() {
+        try {
+            getWindow().setStatusBarColor(UiStyle.BG_V2);
+            getWindow().getDecorView().setSystemUiVisibility(
+                    android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        } catch (Throwable ignored) {
+        }
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(UiStyle.BG_V2);
 
@@ -70,111 +82,156 @@ public class EntryDetailActivity extends Activity {
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
         topBar.setGravity(Gravity.CENTER_VERTICAL);
-        topBar.setBackgroundColor(Color.WHITE);
-        topBar.setPadding(dp(16), dp(28), dp(16), dp(14));
-
-        TextView back = new TextView(this);
-        back.setText("←");
-        back.setTextSize(22);
-        back.setTextColor(UiStyle.BRAND);
-        back.setPadding(dp(8), dp(8), dp(16), dp(8));
-        UiStyle.press(back);
-        back.setOnClickListener(v -> finish());
-        topBar.addView(back);
+        topBar.setPadding(dp(16), dp(14), dp(14), dp(8));
+        android.widget.FrameLayout backWrap = new android.widget.FrameLayout(this);
+        backWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.BRAND_TEXT, 22),
+                new android.widget.FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+        UiStyle.press(backWrap);
+        backWrap.setOnClickListener(v -> finish());
+        topBar.addView(backWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
 
         TextView title = new TextView(this);
-        title.setText("应用管理");
-        title.setTextSize(18);
+        title.setText("账号详情");
+        title.setTextSize(20);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
-        topBar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        title.setPadding(dp(6), 0, 0, 0);
+        topBar.addView(title, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        root.addView(topBar, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        android.widget.FrameLayout moreWrap = new android.widget.FrameLayout(this);
+        moreWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.MORE, UiStyle.INK2, 20),
+                new android.widget.FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
+        UiStyle.press(moreWrap);
+        moreWrap.setOnClickListener(v -> new AlertDialog.Builder(this,
+                AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setItems(new String[]{"移动到分组", "删除本入口"}, (d, w) -> {
+                    if (w == 0) showMoveToGroupDialog();
+                    else confirmDelete();
+                }).show());
+        topBar.addView(moreWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        root.addView(topBar);
 
-        // 头像卡片：游戏图标 + 入口名 + 模式
+        // 资料卡
         LinearLayout headCard = new LinearLayout(this);
         headCard.setOrientation(LinearLayout.HORIZONTAL);
         headCard.setGravity(Gravity.CENTER_VERTICAL);
-        headCard.setBackground(UiStyle.roundRect(UiStyle.CARD, 14));
-        headCard.setPadding(dp(20), dp(20), dp(20), dp(20));
+        headCard.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 16, UiStyle.LINE));
+        headCard.setPadding(dp(16), dp(16), dp(16), dp(16));
         LinearLayout.LayoutParams hclp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hclp.setMargins(dp(16), dp(14), dp(16), 0);
+        hclp.setMargins(dp(18), dp(6), dp(18), 0);
         headCard.setLayoutParams(hclp);
-
-        ImageView icon = new ImageView(this);
-        try {
-            Drawable d = getPackageManager().getApplicationIcon(VaultEngine.GAME_PKG);
-            icon.setImageDrawable(d);
-        } catch (Throwable ignored) {}
-        headCard.addView(icon, new LinearLayout.LayoutParams(dp(64), dp(64)));
-
+        headCard.addView(UiStyle.snowAvatar(this, 64, acc.id),
+                new LinearLayout.LayoutParams(dp(64), dp(64)));
         LinearLayout headText = new LinearLayout(this);
         headText.setOrientation(LinearLayout.VERTICAL);
-        headText.setPadding(dp(16), 0, 0, 0);
-
+        headText.setPadding(dp(14), 0, 0, 0);
         TextView name = new TextView(this);
         name.setText(acc.label);
-        name.setTextSize(18);
+        name.setTextSize(20);
         name.setTypeface(Typeface.DEFAULT_BOLD);
         name.setTextColor(UiStyle.INK);
         headText.addView(name);
-
-        modeView = new TextView(this);
-        modeView.setTextSize(13);
-        modeView.setTextColor(UiStyle.BRAND);
-        modeView.setPadding(0, dp(4), 0, 0);
-        headText.addView(modeView);
-
-        headCard.addView(headText, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        profileMeta = new TextView(this);
+        profileMeta.setTextSize(12);
+        profileMeta.setTextColor(UiStyle.INK2);
+        profileMeta.setPadding(0, dp(5), 0, 0);
+        headText.addView(profileMeta);
+        profileBadge = UiStyle.badge(this, "ok", "已保存登录 · 备有 token");
+        LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        blp.topMargin = dp(8);
+        headText.addView(profileBadge, blp);
+        headCard.addView(headText, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         root.addView(headCard);
 
-        // 信息卡片
-        LinearLayout infoCard = UiStyle.card(this);
-        infoView = new TextView(this);
-        infoView.setTextSize(13);
-        infoView.setTextColor(UiStyle.INK2);
-        infoCard.addView(infoView);
-        root.addView(infoCard);
-
-        // 启动按钮
-        TextView launchBtn = new TextView(this);
-        launchBtn.setText("▶  启 动 分 身");
-        launchBtn.setTextSize(17);
-        launchBtn.setTextColor(Color.WHITE);
-        launchBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        // 启动分身
+        LinearLayout launchBtn = new LinearLayout(this);
+        launchBtn.setOrientation(LinearLayout.HORIZONTAL);
         launchBtn.setGravity(Gravity.CENTER);
-        launchBtn.setBackground(UiStyle.roundRect(UiStyle.BRAND, 14));
-        launchBtn.setPadding(0, dp(16), 0, dp(16));
+        launchBtn.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 16));
+        launchBtn.setPadding(0, dp(15), 0, dp(15));
         LinearLayout.LayoutParams lblp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lblp.setMargins(dp(16), dp(14), dp(16), 0);
+        lblp.setMargins(dp(18), dp(14), dp(18), 0);
         launchBtn.setLayoutParams(lblp);
+        launchBtn.addView(new UiStyle.Icon(this, UiStyle.Icon.PLAY, UiStyle.WHITE, 18),
+                new LinearLayout.LayoutParams(dp(18), dp(18)));
+        TextView launchTx = new TextView(this);
+        launchTx.setText("启动分身");
+        launchTx.setTextSize(16);
+        launchTx.setTypeface(Typeface.DEFAULT_BOLD);
+        launchTx.setTextColor(Color.WHITE);
+        launchTx.setPadding(dp(8), 0, 0, 0);
+        launchBtn.addView(launchTx);
         UiStyle.press(launchBtn);
         launchBtn.setOnClickListener(v -> doLaunch());
         root.addView(launchBtn);
 
-        // 登录设置卡片
-        LinearLayout loginCard = UiStyle.card(this);
-        loginCard.addView(sectionTitle("登录设置"));
-        loginCard.addView(UiStyle.makeRowBtn(this, "🔑", "设置 token（号ID----token）", UiStyle.INK, this::showTokenDialog));
-        addDivider(loginCard);
-        loginCard.addView(UiStyle.makeRowBtn(this, "📋", "提取并复制当前登录 token", UiStyle.INK, this::confirmExtractToken));
-        addDivider(loginCard);
-        loginCard.addView(UiStyle.makeRowBtn(this, "💾", "保存当前登录现场到本入口", UiStyle.INK, this::captureSnapshot));
+        // 角色卡
+        LinearLayout roleCard = UiStyle.outlineCard(this);
+        roleCard.setOrientation(LinearLayout.VERTICAL);
+        roleCard.setPadding(dp(16), dp(14), dp(16), dp(8));
+        LinearLayout.LayoutParams rclp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rclp.setMargins(dp(18), dp(14), dp(18), 0);
+        roleCard.setLayoutParams(rclp);
+        LinearLayout roleHead = new LinearLayout(this);
+        roleHead.setOrientation(LinearLayout.HORIZONTAL);
+        roleHead.setGravity(Gravity.CENTER_VERTICAL);
+        roleTitle = new TextView(this);
+        roleTitle.setTextSize(16);
+        roleTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        roleTitle.setTextColor(UiStyle.INK);
+        roleHead.addView(roleTitle, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView roleManage = new TextView(this);
+        roleManage.setText("管理");
+        roleManage.setTextSize(12.5f);
+        roleManage.setTypeface(Typeface.DEFAULT_BOLD);
+        roleManage.setTextColor(UiStyle.BRAND_TEXT);
+        UiStyle.press(roleManage);
+        roleManage.setOnClickListener(v -> showRoleActions());
+        roleHead.addView(roleManage);
+        roleCard.addView(roleHead);
+        roleBox = new LinearLayout(this);
+        roleBox.setOrientation(LinearLayout.VERTICAL);
+        roleCard.addView(roleBox);
+        root.addView(roleCard);
+
+        // 登录数据
+        LinearLayout loginCard = UiStyle.outlineCard(this);
+        loginCard.setOrientation(LinearLayout.VERTICAL);
+        loginCard.setPadding(dp(16), dp(14), dp(16), dp(8));
+        LinearLayout.LayoutParams lclp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lclp.setMargins(dp(18), dp(14), dp(18), 0);
+        loginCard.setLayoutParams(lclp);
+        loginCard.addView(sectionTitle("登录数据"));
+        loginCard.addView(actionRow(UiStyle.Icon.USER, "设置 token",
+                "粘贴：号 ID----token", this::showTokenDialog));
+        loginCard.addView(actionRow(UiStyle.Icon.DOC, "提取并复制当前 token",
+                "读取游戏当前登录，复制为 号ID----token", this::confirmExtractToken));
+        loginCard.addView(actionRow(UiStyle.Icon.CLOUD, "保存当前登录现场",
+                "把登录态存进本入口快照，切号不丢", this::captureSnapshot));
         root.addView(loginCard);
 
-        // 入口管理卡片
-        LinearLayout mgmtCard = UiStyle.card(this);
+        // 入口管理
+        LinearLayout mgmtCard = UiStyle.outlineCard(this);
+        mgmtCard.setOrientation(LinearLayout.VERTICAL);
+        mgmtCard.setPadding(dp(16), dp(14), dp(16), dp(8));
+        LinearLayout.LayoutParams mclp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mclp.setMargins(dp(18), dp(14), dp(18), 0);
+        mgmtCard.setLayoutParams(mclp);
         mgmtCard.addView(sectionTitle("入口管理"));
-        mgmtCard.addView(UiStyle.makeRowBtn(this, "✏️", "修改备注名", UiStyle.INK, this::showRenameDialog));
-        addDivider(mgmtCard);
-        mgmtCard.addView(UiStyle.makeRowBtn(this, "🗂", "移动到分组…", UiStyle.INK, this::showMoveToGroupDialog));
-        addDivider(mgmtCard);
-        mgmtCard.addView(UiStyle.makeRowBtn(this, "📱", "设备伪装（下一版）", UiStyle.INK2, () -> toast("设备伪装将在下一版提供")));
-        addDivider(mgmtCard);
-        mgmtCard.addView(UiStyle.makeRowBtn(this, "🗑", "删除本入口", UiStyle.ERR_INK, this::confirmDelete));
+        mgmtCard.addView(actionRow(UiStyle.Icon.DOC, "修改备注名", "", this::showRenameDialog));
+        mgmtCard.addView(actionRow(UiStyle.Icon.GRID, "移动到分组", groupDisplay(),
+                this::showMoveToGroupDialog));
+        mgmtCard.addView(actionRow(UiStyle.Icon.TRASH, "删除本入口", "", UiStyle.ERR_INK,
+                this::confirmDelete));
         root.addView(mgmtCard);
 
         scroll.addView(root, new ViewGroup.LayoutParams(
@@ -183,37 +240,187 @@ public class EntryDetailActivity extends Activity {
         refreshInfo();
     }
 
+    /** 详情页行：图标盒 + 标题/副题 + 右箭头。 */
+    private LinearLayout actionRow(int iconType, String title, String sub, Runnable onClick) {
+        return actionRow(iconType, title, sub, UiStyle.INK, onClick);
+    }
+
+    private LinearLayout actionRow(int iconType, String title, String sub, int titleColor,
+                                   Runnable onClick) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(9), 0, dp(9));
+        row.addView(UiStyle.iconTile(this, iconType,
+                titleColor == UiStyle.ERR_INK ? UiStyle.ERR_INK : UiStyle.BRAND_TEXT,
+                UiStyle.BRAND_50, 36, 18, 10),
+                new LinearLayout.LayoutParams(dp(36), dp(36)));
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        mid.setPadding(dp(12), 0, dp(8), 0);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(14.5f);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextColor(titleColor);
+        mid.addView(t);
+        if (sub != null && !sub.isEmpty()) {
+            TextView s = new TextView(this);
+            s.setText(sub);
+            s.setTextSize(11.5f);
+            s.setTextColor(UiStyle.INK2);
+            s.setPadding(0, dp(3), 0, 0);
+            mid.addView(s);
+        }
+        row.addView(mid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON, UiStyle.INK3, 16),
+                new LinearLayout.LayoutParams(dp(16), dp(16)));
+        UiStyle.press(row);
+        row.setOnClickListener(v -> onClick.run());
+        return row;
+    }
+
+    /** 角色「管理」：当前角色的快捷动作。 */
+    private void showRoleActions() {
+        final List<RoleStore.Role> roles = RoleStore.roles(this, acc.fpid);
+        if (roles.isEmpty()) {
+            toast("暂无角色数据 —— 登录一次游戏后自动发现");
+            return;
+        }
+        String[] items = new String[roles.size() + 1];
+        for (int i = 0; i < roles.size(); i++) {
+            RoleStore.Role r = roles.get(i);
+            items[i] = (r.name == null || r.name.isEmpty() ? "K" + r.serverid : r.name)
+                    + " · " + r.serverid + "服" + (r.enabled ? " · 工作区" : "");
+        }
+        items[roles.size()] = "发现全部角色（服务器查询）";
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("角色管理")
+                .setItems(items, (d, w) -> {
+                    if (w >= roles.size()) {
+                        toast("请在主界面「账号 → 角色管理」中执行发现");
+                        return;
+                    }
+                    RoleStore.Role r = roles.get(w);
+                    RoleStore.setActiveRole(this, acc.fpid, r.serverid);
+                    toast("已设为当前角色：" + (r.name == null ? "K" + r.serverid : r.name));
+                    refreshInfo();
+                }).show();
+    }
+
+    private void rebuildRoles() {
+        if (roleBox == null) return;
+        roleBox.removeAllViews();
+        List<RoleStore.Role> roles = RoleStore.roles(this, acc.fpid);
+        long active = RoleStore.activeRole(this, acc.fpid);
+        if (roleTitle != null) roleTitle.setText("角色（" + roles.size() + "）");
+        if (roles.isEmpty()) {
+            TextView tip = new TextView(this);
+            tip.setText("暂无角色数据（登录一次自动发现）");
+            tip.setTextSize(12);
+            tip.setTextColor(UiStyle.INK2);
+            tip.setPadding(dp(2), dp(10), 0, dp(10));
+            roleBox.addView(tip);
+            return;
+        }
+        for (final RoleStore.Role r : roles) {
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(10), 0, dp(10));
+            row.addView(UiStyle.snowAvatar(this, 44, acc.id + ":" + r.serverid),
+                    new LinearLayout.LayoutParams(dp(44), dp(44)));
+            LinearLayout mid = new LinearLayout(this);
+            mid.setOrientation(LinearLayout.VERTICAL);
+            mid.setPadding(dp(12), 0, dp(8), 0);
+            TextView nm = new TextView(this);
+            nm.setText(r.name == null || r.name.isEmpty() ? "K" + r.serverid : r.name);
+            nm.setTextSize(15);
+            nm.setTypeface(Typeface.DEFAULT_BOLD);
+            nm.setTextColor(UiStyle.INK);
+            mid.addView(nm);
+            StringBuilder sb = new StringBuilder();
+            sb.append(r.serverid).append("服");
+            if (r.level > 0) sb.append(" · 城堡 ").append(r.level).append(" 级");
+            if (r.power > 0) sb.append(" · 战力 ").append(fmtWan(r.power));
+            TextView sub = new TextView(this);
+            sub.setText(sb.toString());
+            sub.setTextSize(11.5f);
+            sub.setTextColor(UiStyle.INK2);
+            sub.setPadding(0, dp(3), 0, 0);
+            mid.addView(sub);
+            row.addView(mid, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            if (r.serverid == active) {
+                row.addView(UiStyle.badge(this, "wait", "当前 · 在线"));
+            } else if (!r.enabled) {
+                row.addView(UiStyle.badge(this, "wait", "今日未跑"));
+            } else {
+                row.addView(UiStyle.badge(this, "idle", "离线"));
+            }
+            row.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON, UiStyle.INK3, 16),
+                    new LinearLayout.LayoutParams(dp(16), dp(16)));
+            UiStyle.press(row);
+            row.setOnClickListener(v -> {
+                RoleStore.setActiveRole(this, acc.fpid, r.serverid);
+                toast("已设为当前角色");
+                rebuildRoles();
+            });
+            roleBox.addView(row);
+        }
+    }
+
+    private String fmtWan(long n) {
+        return n >= 10000 ? String.format(Locale.CHINA, "%.0f万", n / 10000f) : String.valueOf(n);
+    }
+
     private TextView sectionTitle(String text) {
         TextView t = new TextView(this);
         t.setText(text);
-        t.setTextSize(12);
-        t.setTextColor(UiStyle.INK2);
-        t.setPadding(dp(4), dp(2), 0, dp(10));
+        t.setTextSize(15);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextColor(UiStyle.INK);
+        t.setPadding(0, dp(2), 0, dp(6));
         return t;
     }
 
-    private void addDivider(LinearLayout card) {
-        TextView div = new TextView(this);
-        div.setBackgroundColor(UiStyle.LINE);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
-        lp.setMargins(dp(16), dp(4), dp(16), dp(4));
-        div.setLayoutParams(lp);
-        card.addView(div);
-    }
-
     private void refreshInfo() {
-        // 【#72 F1】判据以 token 为准（与主页卡片 #71 同口径）：原来要求 fpid *也*非空，
-        // 于是"有 fpid、没 token"的入口会显示成"备有 token"，可实际并没有 token 可用。
         boolean hasToken = acc.token != null && !acc.token.isEmpty();
         boolean hasSnap = engine.hasEntrySnapshot(acc.id);
-        String mode = hasSnap ? "已保存登录" + (hasToken ? " · 备有token" : "")
-                : (hasToken ? "token 登录" : "原生登录（未绑定）");
-        modeView.setText(mode);
-        String when = acc.lastLogin > 0 ? FMT.format(new Date(acc.lastLogin)) : "未使用";
-        infoView.setText((hasToken ? "号ID: " + acc.fpid + "\n" : "")
-                + "分组: " + groupDisplay() + "\n"
-                + "上次使用: " + when);
+        long sid = RoleStore.activeRole(this, acc.fpid);
+        if (sid <= 0) {
+            List<RoleStore.Role> rs = RoleStore.roles(this, acc.fpid);
+            if (!rs.isEmpty()) sid = rs.get(0).serverid;
+        }
+        if (profileMeta != null) {
+            StringBuilder sb = new StringBuilder();
+            if (hasToken && acc.fpid != null && !acc.fpid.isEmpty()) {
+                sb.append("号ID ").append(acc.fpid);
+            } else {
+                sb.append("未绑定 token");
+            }
+            if (sid > 0) sb.append(" · ").append(sid).append("服");
+            sb.append(" · 上次 ").append(acc.lastLogin > 0
+                    ? FMT.format(new Date(acc.lastLogin)) : "未使用");
+            profileMeta.setText(sb.toString());
+        }
+        if (profileBadge != null) {
+            if (hasSnap) {
+                profileBadge.setText("已保存登录 · 备有 token");
+                profileBadge.setTextColor(UiStyle.OK_INK);
+                profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.OK_BG, 999));
+            } else if (hasToken) {
+                profileBadge.setText("token 登录 · 未保存现场");
+                profileBadge.setTextColor(UiStyle.WAIT_INK);
+                profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.WAIT_BG, 999));
+            } else {
+                profileBadge.setText("原生登录 · 未绑定 token");
+                profileBadge.setTextColor(UiStyle.INK2);
+                profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.IDLE_BG, 999));
+            }
+        }
+        rebuildRoles();
     }
 
     /** 当前分组的展示名（"" 显示为"未分组"）。 */

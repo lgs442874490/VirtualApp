@@ -24,6 +24,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -98,6 +99,12 @@ public class AccountVaultActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        try {
+            getWindow().setStatusBarColor(UiStyle.BG_V2);
+            getWindow().getDecorView().setSystemUiVisibility(
+                    android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
+        } catch (Throwable ignored) {
+        }
 
         // R3：注册全局生命周期回调（尽最大努力补快照；内部一次性保护，重复调用安全）。
         // 应用级 Application（com.carlos.common.App）来自预编译依赖、源码不在本仓库，无法就地
@@ -229,6 +236,10 @@ public class AccountVaultActivity extends Activity {
     // ---------- 右上角 ☰ 功能菜单 ----------
 
     /** 功能菜单：初始化向导 / 克隆软件 / 微信支付 / 授权管理（替换原头部三按钮）。 */
+    /** 子类可向主菜单追加条目（HomeActivity 用于「一键帮助全盟」）。 */
+    protected void addMainMenuExtras(LinearLayout box, LinearLayout.LayoutParams rowLp) {
+    }
+
     protected void showMainMenu() {
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -262,6 +273,8 @@ public class AccountVaultActivity extends Activity {
         LinearLayout r4 = UiStyle.makeRowBtn(this, "🔑", "授权管理（兑换码/到期详情）",
                 UiStyle.RUN_INK, this::showLicenseMenu);
         box.addView(r4, new LinearLayout.LayoutParams(rowLp));
+
+        addMainMenuExtras(box, rowLp);
 
         TextView close = new TextView(this);
         close.setText("关闭");
@@ -846,86 +859,34 @@ public class AccountVaultActivity extends Activity {
      * 与一次事务化提交。冲突策略默认 <b>跳过</b>，绝不覆盖已有数据。
      */
     protected void showBatchImport() {
-        final boolean[] overwrite = {false};
+        final AccountImport.ConflictPolicy[] policy = {AccountImport.ConflictPolicy.SKIP};
 
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(UiStyle.roundRect(UiStyle.CARD, 16));
-        box.setPadding(dp(24), dp(18), dp(24), dp(8));
+        box.setBackground(UiStyle.roundRect(UiStyle.CARD, dp(20)));
+        box.setPadding(dp(20), dp(20), dp(20), dp(18));
 
         TextView title = new TextView(this);
-        title.setText("批量导入账号");
-        title.setTextSize(17);
+        title.setText("批量导入 token");
+        title.setTextSize(20);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
         box.addView(title);
 
+        LinearLayout subRow = new LinearLayout(this);
+        subRow.setOrientation(LinearLayout.HORIZONTAL);
+        subRow.setGravity(Gravity.CENTER_VERTICAL);
+        subRow.setPadding(0, dp(8), 0, 0);
         TextView hint = new TextView(this);
-        hint.setText("格式一：备注|号ID----token\n"
-                + "格式二：表格粘贴 —— 备注⇥account=号ID，紧跟一行 sdkToken=...\n"
-                + "空行与 # 开头的行会被忽略；与库内重复的号ID 默认跳过、不覆盖。");
+        hint.setText("每行一条，格式：备注|号ID----token");
         hint.setTextSize(12);
         hint.setTextColor(UiStyle.INK2);
-        LinearLayout.LayoutParams hintLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hintLp.topMargin = dp(10);
-        box.addView(hint, hintLp);
-
-        final EditText et = new EditText(this);
-        et.setHint("在此粘贴账号列表，或点「选择文件」…");
-        et.setTextSize(13);
-        et.setTextColor(UiStyle.INK);
-        et.setMinLines(6);
-        et.setMaxLines(12);
-        et.setGravity(Gravity.TOP);
-        et.setBackground(UiStyle.roundRect(UiStyle.SURFACE_2, 10));
-        et.setPadding(dp(14), dp(12), dp(14), dp(12));
-        LinearLayout.LayoutParams etLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        etLp.topMargin = dp(14);
-        box.addView(et, etLp);
-        importInput = et;
-
-        // —— 冲突策略（默认「跳过」，绝不覆盖已有数据）——
-        final TextView policy = new TextView(this);
-        policy.setTextSize(13);
-        policy.setPadding(dp(10), dp(10), dp(10), dp(10));
-        policy.setBackground(UiStyle.roundRect(UiStyle.SURFACE_3, 10));
-        LinearLayout.LayoutParams pLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        pLp.topMargin = dp(10);
-        box.addView(policy, pLp);
-        final Runnable syncPolicy = new Runnable() {
-            @Override
-            public void run() {
-                if (overwrite[0]) {
-                    policy.setText("冲突策略：覆盖已有账号（同号ID 将被改写）— 点此切回");
-                    policy.setTextColor(UiStyle.ERR_INK);
-                } else {
-                    policy.setText("冲突策略：跳过冲突（默认，不覆盖任何已有数据）— 点此切换");
-                    policy.setTextColor(UiStyle.RUN_INK);
-                }
-            }
-        };
-        syncPolicy.run();
-        UiStyle.press(policy);
-        policy.setOnClickListener(v -> {
-            overwrite[0] = !overwrite[0];
-            syncPolicy.run();
-        });
-
-        // —— 选择文件（SAF）——
+        subRow.addView(hint, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView pick = new TextView(this);
         pick.setText("选择文件");
-        pick.setTextSize(14);
-        pick.setTextColor(UiStyle.BRAND);
-        pick.setTypeface(Typeface.DEFAULT_BOLD);
-        pick.setGravity(Gravity.CENTER);
-        pick.setPadding(dp(10), dp(10), dp(10), dp(10));
-        LinearLayout.LayoutParams pickLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        pickLp.topMargin = dp(8);
-        box.addView(pick, pickLp);
+        pick.setTextSize(11);
+        pick.setTextColor(UiStyle.BRAND_TEXT);
         UiStyle.press(pick);
         pick.setOnClickListener(v -> {
             try {
@@ -937,27 +898,114 @@ public class AccountVaultActivity extends Activity {
                 toast("无法打开文件选择器");
             }
         });
+        subRow.addView(pick);
+        box.addView(subRow);
+
+        final EditText et = new EditText(this);
+        et.setHint("温柔888|91347205----eyJhbGciOi...\n丢丢888|91351620----eyJhbGciOi...\n老大888|91359041----eyJhbGciOi...");
+        et.setTextSize(12);
+        et.setTextColor(UiStyle.INK);
+        et.setHintTextColor(UiStyle.INK3);
+        et.setGravity(Gravity.TOP);
+        et.setMinLines(5);
+        et.setMaxLines(8);
+        et.setBackground(UiStyle.roundRectDp(this, UiStyle.SURFACE_2, 12));
+        et.setPadding(dp(14), dp(12), dp(14), dp(12));
+        LinearLayout.LayoutParams etLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(150));
+        etLp.topMargin = dp(14);
+        box.addView(et, etLp);
+        importInput = et;
+
+        TextView policyTitle = new TextView(this);
+        policyTitle.setText("冲突策略（号 ID 已存在时）");
+        policyTitle.setTextSize(13);
+        policyTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        policyTitle.setTextColor(UiStyle.INK);
+        policyTitle.setPadding(0, dp(16), 0, dp(6));
+        box.addView(policyTitle);
+
+        final LinearLayout policyBox = new LinearLayout(this);
+        policyBox.setOrientation(LinearLayout.VERTICAL);
+        box.addView(policyBox);
+        final Runnable[] renderPolicies = new Runnable[1];
+        renderPolicies[0] = () -> {
+            policyBox.removeAllViews();
+            String[] labels = {"跳过冲突（推荐）", "覆盖旧 token", "仅新增，冲突报错"};
+            AccountImport.ConflictPolicy[] values = {
+                    AccountImport.ConflictPolicy.SKIP,
+                    AccountImport.ConflictPolicy.OVERWRITE,
+                    AccountImport.ConflictPolicy.ERROR,
+            };
+            for (int i = 0; i < labels.length; i++) {
+                final AccountImport.ConflictPolicy val = values[i];
+                boolean sel = policy[0] == val;
+                LinearLayout row = new LinearLayout(this);
+                row.setOrientation(LinearLayout.HORIZONTAL);
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                row.setPadding(0, dp(8), 0, dp(8));
+                android.widget.FrameLayout radio = new android.widget.FrameLayout(this);
+                GradientDrawable ring = new GradientDrawable();
+                ring.setShape(GradientDrawable.OVAL);
+                ring.setColor(sel ? UiStyle.BRAND_50 : UiStyle.WHITE);
+                ring.setStroke(dp(2), sel ? UiStyle.BRAND : UiStyle.LINE_STRONG);
+                radio.setBackground(ring);
+                if (sel) {
+                    View dot = new View(this);
+                    dot.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 999));
+                    radio.addView(dot, new android.widget.FrameLayout.LayoutParams(
+                            dp(8), dp(8), Gravity.CENTER));
+                }
+                row.addView(radio, new LinearLayout.LayoutParams(dp(20), dp(20)));
+                TextView tx = new TextView(this);
+                tx.setText(labels[i]);
+                tx.setTextSize(13.5f);
+                tx.setTextColor(sel ? UiStyle.INK : UiStyle.INK2);
+                tx.setPadding(dp(10), 0, 0, 0);
+                row.addView(tx);
+                UiStyle.press(row);
+                row.setOnClickListener(v -> {
+                    policy[0] = val;
+                    renderPolicies[0].run();
+                });
+                policyBox.addView(row);
+            }
+        };
+        renderPolicies[0].run();
 
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setGravity(Gravity.END);
-        btnRow.setPadding(0, dp(14), 0, 0);
-
+        btnRow.setPadding(0, dp(16), 0, 0);
         TextView cancel = new TextView(this);
         cancel.setText("取消");
         cancel.setTextSize(14);
+        cancel.setTypeface(Typeface.DEFAULT_BOLD);
         cancel.setTextColor(UiStyle.INK2);
-        cancel.setPadding(dp(16), dp(10), dp(16), dp(10));
-        btnRow.addView(cancel);
-
+        cancel.setGravity(Gravity.CENTER);
+        cancel.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 14, UiStyle.LINE));
+        cancel.setPadding(0, dp(13), 0, dp(13));
+        btnRow.addView(cancel, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         TextView go = new TextView(this);
-        go.setText("开始导入");
+        go.setText("导入");
         go.setTextSize(14);
-        go.setTextColor(UiStyle.BRAND);
         go.setTypeface(Typeface.DEFAULT_BOLD);
-        go.setPadding(dp(16), dp(10), dp(16), dp(10));
-        btnRow.addView(go);
+        go.setTextColor(UiStyle.WHITE);
+        go.setGravity(Gravity.CENTER);
+        go.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 14));
+        go.setPadding(0, dp(13), 0, dp(13));
+        LinearLayout.LayoutParams glp = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1);
+        glp.leftMargin = dp(10);
+        btnRow.addView(go, glp);
         box.addView(btnRow);
+
+        TextView note = new TextView(this);
+        note.setText("导入后可导出失败明细；token 等同登录凭证，请勿外传");
+        note.setTextSize(11);
+        note.setTextColor(UiStyle.INK3);
+        note.setPadding(0, dp(10), 0, 0);
+        box.addView(note);
 
         AlertDialog dlg = new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setView(box).create();
@@ -972,9 +1020,7 @@ public class AccountVaultActivity extends Activity {
         go.setOnClickListener(v -> {
             String text = et.getText() == null ? "" : et.getText().toString();
             dlg.dismiss();
-            runImport(text, overwrite[0]
-                    ? AccountImport.ConflictPolicy.OVERWRITE
-                    : AccountImport.ConflictPolicy.SKIP);
+            runImport(text, policy[0]);
         });
         dlg.show();
     }
@@ -1230,92 +1276,227 @@ public class AccountVaultActivity extends Activity {
     // ---------- 初始化向导 ----------
 
     protected void showWizard() {
+        final android.app.Dialog dlg = new android.app.Dialog(this);
+        dlg.requestWindowFeature(android.view.Window.FEATURE_NO_TITLE);
+        LinearLayout root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(UiStyle.BG_V2);
+
+        LinearLayout bar = new LinearLayout(this);
+        bar.setOrientation(LinearLayout.HORIZONTAL);
+        bar.setGravity(Gravity.CENTER_VERTICAL);
+        bar.setPadding(dp(16), dp(14), dp(14), dp(6));
+        android.widget.FrameLayout back = new android.widget.FrameLayout(this);
+        back.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.INK, 22),
+                new android.widget.FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
+        UiStyle.press(back);
+        back.setOnClickListener(v -> dlg.dismiss());
+        bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        TextView title = new TextView(this);
+        title.setText("初始化向导");
+        title.setTextSize(24);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.INK);
+        title.setPadding(dp(6), 0, 0, 0);
+        bar.addView(title, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        root.addView(bar);
+
+        ScrollView sc = new ScrollView(this);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(UiStyle.roundRect(UiStyle.CARD, 16));
-        box.setPadding(dp(24), dp(20), dp(24), dp(8));
+        box.setPadding(dp(18), dp(2), dp(18), dp(28));
+        sc.addView(box);
+        root.addView(sc, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        TextView tvTitle = new TextView(this);
-        tvTitle.setText("初始化向导（只需一次）");
-        tvTitle.setTextSize(18);
-        tvTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        tvTitle.setTextColor(UiStyle.INK);
-        box.addView(tvTitle);
+        TextView subtitle = new TextView(this);
+        subtitle.setText("只需一次 · 把无尽冬日装进号库并锁定干净登录态");
+        subtitle.setTextSize(12);
+        subtitle.setTextColor(UiStyle.INK2);
+        box.addView(subtitle);
 
-        String[] steps = {
-                "① 克隆游戏：从手机已装的无尽冬日引用，秒完成",
-                "② 首次启动：进游戏下载约 2.2GB 资源（仅此一次）",
-                "③ 重置到登录界面：清数据并重启，出现登录界面后退回",
-                "④ 保存基线：锁定干净登录状态，之后即可添加账号"
-        };
-        for (int i = 0; i < steps.length; i++) {
-            TextView t = new TextView(this);
-            t.setText(steps[i]);
-            t.setTextSize(13);
-            t.setTextColor(UiStyle.INK2);
-            t.setPadding(0, dp(10), 0, 0);
-            box.addView(t);
-        }
+        boolean installed = engine.isGameInstalled();
+        boolean hasBase = engine.hasBaseline();
+        int curStep = !installed ? 0 : !hasBase ? 1 : 3;
 
-        // 步骤按钮
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setPadding(0, dp(18), 0, dp(4));
-        String[] labels = {"① 克隆", "② 首开", "③ 重置", "④ 存基线"};
-        int[] colors = {UiStyle.BRAND, UiStyle.BRAND, UiStyle.RUN_INK, UiStyle.BRAND_DEEP};
+        LinearLayout segs = new LinearLayout(this);
+        segs.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams segsLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(4));
+        segsLp.topMargin = dp(16);
+        box.addView(segs, segsLp);
         for (int i = 0; i < 4; i++) {
-            final int step = i;
-            TextView b = new TextView(this);
-            b.setText(labels[i]);
-            b.setTextSize(13);
-            b.setTextColor(Color.WHITE);
-            b.setGravity(Gravity.CENTER);
-            b.setBackground(UiStyle.roundRect(colors[i], 10));
-            b.setPadding(dp(6), dp(12), dp(6), dp(12));
-            LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(0, dp(44), 1);
-            blp.setMargins(dp(3), 0, dp(3), 0);
-            b.setLayoutParams(blp);
-            UiStyle.press(b);
-            b.setOnClickListener(v -> onWizardStep(step));
-            row.addView(b);
+            View seg = new View(this);
+            seg.setBackground(UiStyle.roundRectDp(this,
+                    i <= curStep ? UiStyle.BRAND : UiStyle.LINE, 2));
+            LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(0, dp(4), 1);
+            if (i > 0) lp.leftMargin = dp(8);
+            segs.addView(seg, lp);
         }
-        box.addView(row);
+        String[] labels = {"① 克隆", "② 首启", "③ 重置", "④ 基线"};
+        LinearLayout labelRow = new LinearLayout(this);
+        labelRow.setOrientation(LinearLayout.HORIZONTAL);
+        labelRow.setPadding(0, dp(8), 0, 0);
+        for (int i = 0; i < 4; i++) {
+            TextView t = new TextView(this);
+            t.setText(labels[i]);
+            t.setTextSize(11.5f);
+            t.setGravity(Gravity.CENTER);
+            t.setTextColor(i <= curStep ? UiStyle.BRAND_TEXT : UiStyle.INK2);
+            t.setTypeface(i == curStep ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+            labelRow.addView(t, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        }
+        box.addView(labelRow);
 
-        // ⑤ 容器微信（旧版支付试验）：未装→从下载目录装入；已装→打开
-        TextView wxBtn = new TextView(this);
-        wxBtn.setTextSize(13);
-        wxBtn.setTextColor(Color.WHITE);
-        wxBtn.setGravity(Gravity.CENTER);
-        wxBtn.setBackground(UiStyle.roundRect(UiStyle.WECHAT_GREEN, 10));
-        wxBtn.setPadding(dp(6), dp(12), dp(6), dp(12));
-        LinearLayout.LayoutParams wxlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
-        wxlp.setMargins(0, dp(8), 0, dp(4));
-        wxBtn.setLayoutParams(wxlp);
-        boolean wxInstalled = engine.isWechatInstalled();
-        wxBtn.setText(wxInstalled ? "⑤ 打开/更新容器微信（登录后游戏内充值可拉起）"
-                                  : "⑤ 装入微信进号库（自动用下载目录最新包）");
-        UiStyle.press(wxBtn);
-        wxBtn.setOnClickListener(v -> doWechatPay());
-        box.addView(wxBtn);
+        // 步骤 1 卡
+        LinearLayout step1 = UiStyle.outlineCard(this);
+        step1.setOrientation(LinearLayout.VERTICAL);
+        step1.setPadding(dp(18), dp(16), dp(18), dp(16));
+        LinearLayout.LayoutParams s1lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        s1lp.topMargin = dp(16);
+        step1.setLayoutParams(s1lp);
+        LinearLayout s1head = new LinearLayout(this);
+        s1head.setOrientation(LinearLayout.HORIZONTAL);
+        s1head.setGravity(Gravity.CENTER_VERTICAL);
+        s1head.addView(UiStyle.iconTile(this, UiStyle.Icon.BOX, UiStyle.BRAND_TEXT,
+                UiStyle.BRAND_50, 36, 18, 10),
+                new LinearLayout.LayoutParams(dp(36), dp(36)));
+        TextView s1title = new TextView(this);
+        s1title.setText("克隆游戏");
+        s1title.setTextSize(18);
+        s1title.setTypeface(Typeface.DEFAULT_BOLD);
+        s1title.setTextColor(UiStyle.INK);
+        s1title.setPadding(dp(10), 0, dp(8), 0);
+        s1head.addView(s1title);
+        s1head.addView(UiStyle.badge(this, installed ? "ok" : "run",
+                installed ? "已完成" : "进行中"));
+        step1.addView(s1head);
+        TextView s1desc = new TextView(this);
+        s1desc.setText("从手机已安装的无尽冬日引用克隆，秒完成，不重复下载 2.2GB 资源。");
+        s1desc.setTextSize(12);
+        s1desc.setTextColor(UiStyle.INK2);
+        s1desc.setPadding(0, dp(8), 0, 0);
+        step1.addView(s1desc);
+        TextView s1btn = UiStyle.primaryBtn(this, installed ? "重新克隆" : "开始克隆", null);
+        LinearLayout.LayoutParams s1blp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(48));
+        s1blp.topMargin = dp(12);
+        s1btn.setLayoutParams(s1blp);
+        UiStyle.press(s1btn);
+        s1btn.setOnClickListener(v -> onWizardStep(0));
+        step1.addView(s1btn);
+        box.addView(step1);
 
-        // 关闭按钮
-        TextView close = new TextView(this);
-        close.setText("关闭");
-        close.setTextSize(14);
-        close.setTextColor(UiStyle.INK2);
-        close.setGravity(Gravity.CENTER);
-        close.setPadding(0, dp(16), 0, dp(8));
+        // 步骤 2-4 卡
+        LinearLayout step2 = UiStyle.outlineCard(this);
+        step2.setOrientation(LinearLayout.VERTICAL);
+        step2.setPadding(dp(16), dp(6), dp(16), dp(6));
+        LinearLayout.LayoutParams s2lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        s2lp.topMargin = dp(12);
+        step2.setLayoutParams(s2lp);
+        String[][] rows = {
+                {"首次启动", "进游戏下载约 2.2GB 资源（仅此一次）"},
+                {"重置到登录界面", "清数据并重启，出现登录界面后退回"},
+                {"保存基线", "锁定干净登录态，之后即可添加账号"},
+        };
+        for (int i = 0; i < rows.length; i++) {
+            final int step = i + 1;
+            LinearLayout row = new LinearLayout(this);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(12), 0, dp(12));
+            TextView num = new TextView(this);
+            num.setText(String.valueOf(step + 1));
+            num.setTextSize(13);
+            num.setTypeface(Typeface.DEFAULT_BOLD);
+            num.setTextColor(UiStyle.INK2);
+            num.setGravity(Gravity.CENTER);
+            num.setBackground(UiStyle.roundRectDp(this, UiStyle.SURFACE_3, 999));
+            row.addView(num, new LinearLayout.LayoutParams(dp(32), dp(32)));
+            LinearLayout mid = new LinearLayout(this);
+            mid.setOrientation(LinearLayout.VERTICAL);
+            mid.setPadding(dp(12), 0, dp(8), 0);
+            TextView t = new TextView(this);
+            t.setText(rows[i][0]);
+            t.setTextSize(15);
+            t.setTypeface(Typeface.DEFAULT_BOLD);
+            t.setTextColor(UiStyle.INK);
+            mid.addView(t);
+            TextView s = new TextView(this);
+            s.setText(rows[i][1]);
+            s.setTextSize(11.5f);
+            s.setTextColor(UiStyle.INK2);
+            s.setPadding(0, dp(3), 0, 0);
+            mid.addView(s);
+            row.addView(mid, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            row.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON, UiStyle.INK3, 16),
+                    new LinearLayout.LayoutParams(dp(16), dp(16)));
+            UiStyle.press(row);
+            row.setOnClickListener(v -> onWizardStep(step));
+            step2.addView(row);
+        }
+        box.addView(step2);
 
-        AlertDialog dlg = new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setView(box)
-                .create();
-        if (dlg.getWindow() != null)
-            dlg.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
-        UiStyle.press(close);
-        close.setOnClickListener(v -> dlg.dismiss());
-        box.addView(close);
+        LinearLayout why = new LinearLayout(this);
+        why.setOrientation(LinearLayout.VERTICAL);
+        why.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND_50, 16));
+        why.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout.LayoutParams wlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        wlp.topMargin = dp(12);
+        why.setLayoutParams(wlp);
+        TextView w1 = new TextView(this);
+        w1.setText("为什么需要初始化？");
+        w1.setTextSize(15);
+        w1.setTypeface(Typeface.DEFAULT_BOLD);
+        w1.setTextColor(UiStyle.BRAND_TEXT);
+        why.addView(w1);
+        TextView w2 = new TextView(this);
+        w2.setText("基线 = 一份干净的未登录存档。之后每个账号都从基线还原再注入 token，才能做到秒切号、不串号。");
+        w2.setTextSize(11.5f);
+        w2.setTextColor(UiStyle.INK2);
+        w2.setPadding(0, dp(5), 0, 0);
+        why.addView(w2);
+        box.addView(why);
+
+        TextView skip = new TextView(this);
+        skip.setText("跳过 · 稍后在「我的 → 初始化」完成");
+        skip.setTextSize(12);
+        skip.setTextColor(UiStyle.INK2);
+        skip.setGravity(Gravity.CENTER);
+        skip.setPadding(0, dp(16), 0, dp(4));
+        UiStyle.press(skip);
+        skip.setOnClickListener(v -> dlg.dismiss());
+        box.addView(skip);
+
+        TextView wx = new TextView(this);
+        wx.setText("⑤ 容器微信（登录后游戏内充值可拉起）");
+        wx.setTextSize(11.5f);
+        wx.setTextColor(UiStyle.BRAND_TEXT);
+        wx.setGravity(Gravity.CENTER);
+        wx.setPadding(0, dp(8), 0, 0);
+        UiStyle.press(wx);
+        wx.setOnClickListener(v -> doWechatPay());
+        box.addView(wx);
+
+        dlg.setContentView(root, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         dlg.show();
+        android.view.Window win = dlg.getWindow();
+        if (win != null) {
+            win.setBackgroundDrawable(new android.graphics.drawable.ColorDrawable(
+                    android.graphics.Color.TRANSPARENT));
+            win.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+            try {
+                win.setStatusBarColor(UiStyle.BG_V2);
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     /**

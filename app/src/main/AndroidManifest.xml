@@ -111,6 +111,10 @@
             android:exported="false"
             android:theme="@style/AppTheme" />
         <activity
+            android:name="com.carlos.vault.ToolBoxActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+        <activity
             android:name="com.carlos.vault.EntryDetailActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />

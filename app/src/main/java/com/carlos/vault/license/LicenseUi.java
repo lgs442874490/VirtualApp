@@ -56,38 +56,58 @@ public final class LicenseUi {
     public static View buildActivateView(final Activity act, final LicenseManager lm,
                                          final OnChanged onChanged) {
         LinearLayout root = pageRoot(act);
+        root.setGravity(Gravity.CENTER_HORIZONTAL);
 
-        root.addView(titleBar(act, "无尽号库 · 激活"));
+        // 品牌 Logo
+        android.widget.FrameLayout logo = new android.widget.FrameLayout(act);
+        GradientDrawable logoBg = new GradientDrawable();
+        logoBg.setColor(UiStyle.BRAND);
+        logoBg.setCornerRadius(dp(act, 28));
+        logo.setBackground(logoBg);
+        logo.addView(new UiStyle.Icon(act, UiStyle.Icon.SNOW, UiStyle.WHITE, 52),
+                new android.widget.FrameLayout.LayoutParams(dp(act, 52), dp(act, 52),
+                        Gravity.CENTER));
+        LinearLayout.LayoutParams logoLp = new LinearLayout.LayoutParams(dp(act, 96), dp(act, 96));
+        logoLp.topMargin = dp(act, 54);
+        logoLp.gravity = Gravity.CENTER_HORIZONTAL;
+        root.addView(logo, logoLp);
 
-        LinearLayout card = UiStyle.card(act);
-        card.setGravity(Gravity.CENTER_HORIZONTAL);
+        TextView title = new TextView(act);
+        title.setText("无尽号库");
+        title.setTextSize(28);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.INK);
+        title.setGravity(Gravity.CENTER);
+        root.addView(title, marginTop(act, 18));
 
-        TextView icon = new TextView(act);
-        icon.setText("🔑");
-        icon.setTextSize(44);
-        icon.setGravity(Gravity.CENTER);
-        card.addView(icon, marginTop(act, 8));
+        TextView subtitle = new TextView(act);
+        subtitle.setText("账号库 · 自动日常 · 多开容器");
+        subtitle.setTextSize(13);
+        subtitle.setTextColor(UiStyle.INK2);
+        subtitle.setGravity(Gravity.CENTER);
+        root.addView(subtitle, marginTop(act, 6));
 
-        TextView intro = new TextView(act);
-        intro.setText("请使用兑换码激活本应用");
-        intro.setTextSize(15);
-        intro.setTypeface(Typeface.DEFAULT_BOLD);
-        intro.setTextColor(UiStyle.INK);
-        intro.setGravity(Gravity.CENTER);
-        card.addView(intro, marginTop(act, 12));
+        LinearLayout card = new LinearLayout(act);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setBackground(UiStyle.roundRectStroke(act, UiStyle.WHITE, 20, UiStyle.LINE));
+        card.setPadding(dp(act, 20), dp(act, 20), dp(act, 20), dp(act, 20));
+        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cardLp.setMargins(dp(act, 18), dp(act, 26), dp(act, 18), 0);
+        card.setLayoutParams(cardLp);
 
         TextView label = new TextView(act);
-        label.setText("兑换码");
-        label.setTextSize(13);
+        label.setText("授权码 / 兑换码");
+        label.setTextSize(12);
         label.setTextColor(UiStyle.INK2);
-        card.addView(label, marginTop(act, 20));
+        card.addView(label);
 
         final EditText input = new EditText(act);
-        input.setHint("XXXX-XXXX-XXXX-XXXX");
+        input.setHint("WJDR-XXXX-XXXX-XXXX");
         input.setTextSize(16);
         input.setSingleLine(true);
         input.setTextColor(UiStyle.INK);
-        input.setGravity(Gravity.CENTER);
+        input.setHintTextColor(UiStyle.INK3);
         input.setInputType(android.text.InputType.TYPE_CLASS_TEXT
                 | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
         input.setBackground(UiStyle.roundRectStroke(act, UiStyle.CARD, 12, UiStyle.LINE_STRONG));
@@ -98,14 +118,61 @@ public final class LicenseUi {
         card.addView(input, inputLp);
 
         final TextView error = new TextView(act);
-        error.setTextSize(13);
-        error.setTextColor(UiStyle.ERR_INK);
-        error.setGravity(Gravity.CENTER);
-        error.setVisibility(View.GONE);
-        card.addView(error, marginTop(act, 10));
+        error.setText("⚠ 未激活 · 激活后自动绑定本机");
+        error.setTextSize(12);
+        error.setTextColor(UiStyle.WARN_INK);
+        error.setPadding(dp(act, 2), dp(act, 12), dp(act, 2), 0);
+        card.addView(error);
 
-        final TextView submit = UiStyle.primaryBtn(act, "激  活", null);
-        card.addView(submit, marginTop(act, 14));
+        final TextView submit = UiStyle.primaryBtn(act, "激活授权", null);
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(act, 52));
+        slp.topMargin = dp(act, 14);
+        card.addView(submit, slp);
+
+        View div = new View(act);
+        div.setBackgroundColor(UiStyle.LINE);
+        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(act, 1));
+        dlp.topMargin = dp(act, 18);
+        card.addView(div, dlp);
+
+        String[] features = {
+                "一码一设备 · 首次激活即绑定，防复用",
+                "支持按月 / 永久 · 服务端可随时吊销",
+        };
+        for (String f : features) {
+            LinearLayout row = new LinearLayout(act);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            row.setPadding(0, dp(act, 10), 0, 0);
+            row.addView(new UiStyle.Icon(act, UiStyle.Icon.CHECK, UiStyle.OK_INK, 16),
+                    new LinearLayout.LayoutParams(dp(act, 16), dp(act, 16)));
+            TextView tx = new TextView(act);
+            tx.setText(f);
+            tx.setTextSize(12);
+            tx.setTextColor(UiStyle.INK2);
+            tx.setPadding(dp(act, 8), 0, 0, 0);
+            row.addView(tx);
+            card.addView(row);
+        }
+        root.addView(card);
+
+        String fp = "";
+        try {
+            String h = DeviceId.withSalt(act, "ardot-display");
+            fp = h.length() >= 12
+                    ? h.substring(0, 4) + "-" + h.substring(4, 8) + "-" + h.substring(8, 12)
+                    : h;
+        } catch (Throwable ignored) {
+        }
+        TextView footer = new TextView(act);
+        footer.setText("设备指纹 " + (fp.isEmpty() ? "—" : fp)
+                + " · 购买 / 续期请联系上级代理");
+        footer.setTextSize(11);
+        footer.setTextColor(UiStyle.INK3);
+        footer.setGravity(Gravity.CENTER);
+        root.addView(footer, marginTop(act, 18));
 
         final ProgressDialog[] holder = new ProgressDialog[1];
 
@@ -138,7 +205,7 @@ public final class LicenseUi {
                             }
                         }
                         submit.setEnabled(true);
-                        submit.setText("激  活");
+                        submit.setText("激活授权");
                         if (state != null && state.usable()) {
                             UiStyle.toast(act, message);
                             if (onChanged != null) onChanged.onChanged();
@@ -149,15 +216,6 @@ public final class LicenseUi {
                 });
             }
         });
-
-        root.addView(card);
-
-        TextView footer = new TextView(act);
-        footer.setText("购买 / 续费请联系运营方");
-        footer.setTextSize(12);
-        footer.setTextColor(UiStyle.INK2);
-        footer.setGravity(Gravity.CENTER);
-        root.addView(footer, marginTop(act, 24));
 
         return wrapScroll(root);
     }
