@@ -1005,11 +1005,10 @@ public class DailyRunner {
             return withSessionNote(r, live.engine);
         }
         long singleT0 = System.currentTimeMillis();
-        // 同账号单会话约束：fresh 登录前关掉该账号已有的常驻会话——服务器按 fpid 唯一会话，
-        // 不关也会被服务端踢掉（code 46/5，终判实验见 RoleSessionKeeper 类注释），先关更干净。
-        // 临时会话结束后，keeper 下次 syncOnline 会把常驻角色拉回。
+        // 与原版 startOne 对齐：fresh 登录前只 detach **同一角色**会话，
+        // 不连坐关闭同账号的兄弟角色（多角色同时在线时关闭整号会打断兄弟会话）。
         try {
-            RoleSessionKeeper.get(context).closeAccountSessions(fpid);
+            RoleSessionKeeper.get(context).closeRoleSession(fpid, serverid);
         } catch (Throwable ignored) {
         }
         WjdrEngine engine = WjdrAndroid.newEngine(context);

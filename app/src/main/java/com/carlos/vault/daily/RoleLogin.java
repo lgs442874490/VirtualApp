@@ -40,7 +40,7 @@ public final class RoleLogin {
         long knownUid = role == null ? 0 : role.uid;
         WjdrEngine.LoginResult lr;
         if (knownUid > 0) {
-            lr = engine.loginByRole(fpid, sdkToken, knownUid);
+            lr = engine.loginByRole(fpid, sdkToken, knownUid, sid);
             if (lr.uid != knownUid || (lr.serverId > 0 && lr.serverId != sid)) {
                 throw wrongRole(ctx, engine, fpid, sid, knownUid, lr);
             }

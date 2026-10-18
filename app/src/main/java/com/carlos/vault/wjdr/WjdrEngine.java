@@ -212,11 +212,20 @@ public class WjdrEngine {
      * 按角色登录（2026-10-09 实证）：loginauth 的选角参数是 <b>uid（角色 uid）</b>——
      * serverid 参数对角色绑定无效（实测被忽略，恒落「最近角色」）。
      * 绑定结果以 auth 返回的 uid 为准，调用方应校验 {@link LoginResult#uid} == roleUid。
+     *
+     * <p>与原版 ConfigJsonLoader 对齐：原版 account map 同时携带 uid 与 server_id
+     * （映射为协议字段 serverid）；这里把 serverid 也一并放进载荷。服务器仍以 uid 选角，
+     * 但载荷形态与原版一致，便于日志/服务端校验对齐。
      */
-    public LoginResult loginByRole(String fpid, String sdkToken, long roleUid) throws Exception {
+    public LoginResult loginByRole(String fpid, String sdkToken, long roleUid, Long serverid) throws Exception {
         Map<String, Object> extra = new LinkedHashMap<>();
         extra.put("uid", roleUid);
-        return login(fpid, sdkToken, null, extra);
+        return login(fpid, sdkToken, serverid, extra);
+    }
+
+    /** 兼容旧调用：只钉扎 uid，不额外带 serverid。 */
+    public LoginResult loginByRole(String fpid, String sdkToken, long roleUid) throws Exception {
+        return loginByRole(fpid, sdkToken, roleUid, null);
     }
 
     /**
