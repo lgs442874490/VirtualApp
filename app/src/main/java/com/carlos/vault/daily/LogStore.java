@@ -110,8 +110,17 @@ public class LogStore {
 
     public static final int ST_NOT_STARTED = 0;
     public static final int ST_RUNNING = 1;
+    /** 已领取：任务成功且有到账证据。 */
     public static final int ST_DONE = 2;
     public static final int ST_FAILED = 3;
+    /**
+     * 已检查但无可领/已领/活动未开放（SKIPPED）。
+     *
+     * <p>2026-10 新增：历史上 SKIPPED 与 CLAIMED 都写 ST_DONE，UI 显示“已完成”，
+     * 造成“日常任务显示已完成但游戏内奖励未触发领取”的误判。独立状态让界面能显示
+     * “无可领/已领”，而不是“已完成”。
+     */
+    public static final int ST_SKIPPED = 4;
 
     private static String today() {
         return dayKey(0);
@@ -168,7 +177,7 @@ public class LogStore {
 
     // ---------- B表子项级（六维②③）：每 子项 当日状态 + 最近动作 ----------
 
-    /** 子项当日状态（0未开始/2成功/3失败；skip 算成功）。 */
+    /** 子项当日状态（0未开始/2已领取/3失败/4已检查无可领）。 */
     public int subStatus(String fpid, long serverid, String fnId, String subId) {
         return prefs.getInt(stKey(fpid, serverid) + ":" + fnId + ":" + subId, ST_NOT_STARTED);
     }
@@ -186,22 +195,21 @@ public class LogStore {
         for (java.util.Map.Entry<String, String> e : subs.entrySet()) {
             try {
                 String v = e.getValue();
-                boolean ok = v.startsWith("ok:") || v.startsWith("skip:");
+                boolean skip = v.startsWith("skip:");
+                boolean fail = v.startsWith("fail:");
                 String note = v.substring(v.indexOf(':') + 1);
-                append(fpid, serverid, fnId + ":" + e.getKey(), ok, note, "");
-                if (ok) {
-                    setStatus(fpid, serverid, fnId + ":" + e.getKey(), ST_DONE);
-                } else if (subStatus(fpid, serverid, fnId, e.getKey()) != ST_DONE) {
-                    setStatus(fpid, serverid, fnId + ":" + e.getKey(), ST_FAILED);
-                }
+                append(fpid, serverid, fnId + ":" + e.getKey(), !fail, note, "");
+                // “已检查但无可领”不能再标成已完成，否则界面显示完成、游戏里却没奖励。
+                int st = skip ? ST_SKIPPED : (fail ? ST_FAILED : ST_DONE);
+                setStatus(fpid, serverid, fnId + ":" + e.getKey(), st);
             } catch (Throwable ignored) {
             }
         }
     }
 
-    /** 当日某角色完成统计：{done, failed, running, total(implemented)}。 */
+    /** 当日某角色完成统计：{claimed, failed, running, total(implemented), skipped}。 */
     public int[] dayStats(String fpid, long serverid) {
-        int done = 0, failed = 0, running = 0, total = 0;
+        int done = 0, failed = 0, running = 0, total = 0, skipped = 0;
         for (FnRegistry.Fn f : FnRegistry.all()) {
             if (!f.implemented) continue;
             total++;
@@ -209,7 +217,8 @@ public class LogStore {
             if (st == ST_DONE) done++;
             else if (st == ST_FAILED) failed++;
             else if (st == ST_RUNNING) running++;
+            else if (st == ST_SKIPPED) skipped++;
         }
-        return new int[]{done, failed, running, total};
+        return new int[]{done, failed, running, total, skipped};
     }
 }

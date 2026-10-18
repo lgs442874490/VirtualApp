@@ -214,13 +214,16 @@ public final class VaultStore {
                 merged.token = in.token;
                 merged.label = in.label;
                 merged.group = in.group;
-                merged.keep = in.keep;
+                // 统一自动化：auto（整轮调度）与 keep（常驻会话）必须同值。
+                // 旧客户端可能只开其中一个；任一为真都视为统一自动化开启。
+                boolean automation = in.auto || in.keep;
+                merged.keep = automation;
                 merged.activeSid = in.activeSid;
                 merged.identity = in.identity;
                 merged.proxy = in.proxy;
                 // 整轮调度三件套必须跟随 incoming（曾遗漏：每次同步把 auto 抹回 false，
                 // 表现为 App 端开了自动执行、服务器端永远不自动跑整轮）
-                merged.auto = in.auto;
+                merged.auto = automation;
                 merged.windowStart = in.windowStart;
                 merged.windowEnd = in.windowEnd;
                 Account prev = old.get(in.fpid);
@@ -248,6 +251,23 @@ public final class VaultStore {
                     saveLocked();
                     return true;
                 }
+            }
+            return false;
+        }
+    }
+
+    /**
+     * 统一自动化开关：auto（整轮调度）与 keep（常驻会话）同值。
+     * 客户端登录按钮/总开关都会走这里，保证服务器侧不会出现“开但没会话”的半开状态。
+     */
+    public boolean setAutomation(String fpid, boolean on) {
+        synchronized (lock) {
+            for (Account a : accounts) {
+                if (!a.fpid.equals(fpid)) continue;
+                a.auto = on;
+                a.keep = on;
+                saveLocked();
+                return true;
             }
             return false;
         }

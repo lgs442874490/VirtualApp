@@ -128,19 +128,58 @@ public final class Exec {
     }
 
     public static List<Long> allHeroes(WjdrEngine engine) {
+        return heroesFrom(engine.notifyData("notify_hero_init"));
+    }
+
+    /** 英雄推送解析（独立方法便于用真机形状做单测）。 */
+    static List<Long> heroesFrom(Map<String, Object> hi) {
         List<Long> out = new ArrayList<>();
-        Map<String, Object> hi = engine.notifyData("notify_hero_init");
         if (hi == null) return out;
-        for (Map<String, Object> m : mapsOf(hi.get("data"))) {
-            long id = longOf(m.get("id"));
-            if (id > 0) out.add(id);
+        Object data = hi.get("data");
+        if (data == null) data = hi.get("heros");
+        if (data != null) {
+            for (Map<String, Object> m : mapsOf(data)) {
+                long id = longOf(m.get("id"));
+                if (id > 0) out.add(id);
+            }
+            if (out.isEmpty() && data instanceof Map) {
+                for (Map.Entry<?, ?> e : ((Map<?, ?>) data).entrySet()) {
+                    long id = idFromKeyOrValue(e);
+                    if (id > 0) out.add(id);
+                }
+            }
+        }
+        // 实证：notify_hero_init 推送是 { "50022.0": {hero}, … }（无 data 包装）。
+        if (out.isEmpty()) {
+            for (Map.Entry<String, Object> e : hi.entrySet()) {
+                long id = idFromKeyOrValue(e);
+                if (id > 0) out.add(id);
+            }
         }
         out.sort((a, b) -> Long.compare(b, a));
         return out;
     }
 
+    /** map 的 key 是 "50022.0" 或 value 里带 id 时取英雄 id。 */
+    private static long idFromKeyOrValue(Map.Entry<?, ?> e) {
+        Object v = e.getValue();
+        if (v instanceof Map) {
+            long id = longOf(((Map<?, ?>) v).get("id"));
+            if (id > 0) return id;
+        }
+        try {
+            return (long) Double.parseDouble(String.valueOf(e.getKey()).trim());
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
     public static Map<Long, Long> soldiers(WjdrEngine engine) {
-        Map<String, Object> si = engine.notifyData("notify_soldier_init");
+        return soldiersFrom(engine.notifyData("notify_soldier_init"));
+    }
+
+    /** 兵力推送解析（独立方法便于用真机形状做单测）。 */
+    static Map<Long, Long> soldiersFrom(Map<String, Object> si) {
         Map<Long, Long> out = new TreeMap<>();
         if (si == null) return out;
         Object soldier = si.get("soldier");
@@ -152,7 +191,11 @@ public final class Exec {
                         Object k = e.getKey();
                         long id = k instanceof Number ? ((Number) k).longValue()
                                 : (long) Double.parseDouble(String.valueOf(k).trim());
-                        out.put(id, longOf(e.getValue()));
+                        // 真机形状：{ "11000.0": {id,count} }（value 是对象，不是数量）。
+                        Object v = e.getValue();
+                        long count = v instanceof Map
+                                ? longOf(((Map<?, ?>) v).get("count")) : longOf(v);
+                        out.put(id, count);
                     } catch (Throwable ignored) {
                     }
                 }
@@ -175,14 +218,36 @@ public final class Exec {
     }
 
     public static long[] baseSoldiers(WjdrEngine engine) {
+        Map<Long, Long> sol = soldiers(engine);
+        long[] ids = bestSoldierIds(sol);
         long[] out = new long[3];
-        for (Map.Entry<Long, Long> e : soldiers(engine).entrySet()) {
-            long tier = e.getKey() / 10000;
-            long idx = (e.getKey() % 10000) / 100;
-            if (idx != 1) continue;
-            if (tier >= 1 && tier <= 3) out[(int) (tier - 1)] += e.getValue();
+        for (Map.Entry<Long, Long> e : sol.entrySet()) {
+            long id = e.getKey();
+            int line = (int) (id / 10000);
+            if (line < 1 || line > 3) continue;
+            if (id == ids[line - 1]) out[line - 1] += e.getValue();
         }
         return out;
+    }
+
+    /**
+     * 各兵种当前最高档士兵 id（兵种*10000 + 等级*100，实证 11000=盾T10）。
+     * 旧实现写死 10001/20001/30001（实为无效 id）→ 编队 soldier 恒为空。
+     */
+    public static long[] bestSoldierIds(Map<Long, Long> sol) {
+        long[] ids = new long[]{11000L, 21000L, 31000L};
+        int[] best = new int[]{-1, -1, -1};
+        for (Map.Entry<Long, Long> e : sol.entrySet()) {
+            long id = e.getKey();
+            int line = (int) (id / 10000);
+            int tier = (int) ((id % 10000) / 100);
+            if (line < 1 || line > 3) continue;
+            if (e.getValue() != null && e.getValue() > 0 && tier > best[line - 1]) {
+                best[line - 1] = tier;
+                ids[line - 1] = id;
+            }
+        }
+        return ids;
     }
 
     /** 构造出征编队：优先用客户端第 N 队布阵英雄，兵种按 40/30/30 比例。 */
@@ -192,16 +257,27 @@ public final class Exec {
             List<Long> all = allHeroes(engine);
             heroes = all.subList(0, Math.min(3, all.size()));
         }
-        if (heroes.isEmpty()) return null;
+        return formationWithHeroes(engine, heroes);
+    }
+
+    /** 指定英雄构造编队（301=英雄不在城时用于轮换候选）。 */
+    public static Map<String, Object> formationWithHeroes(WjdrEngine engine, List<Long> heroes) {
+        if (heroes == null || heroes.isEmpty()) return null;
+        Map<Long, Long> sol = soldiers(engine);
         long[] base = baseSoldiers(engine);
-        long total = base[0] + base[1] + base[2];
+        long stock = base[0] + base[1] + base[2];
+        // 单队出征上限：全库存（几十万）会被服务端以参数错误拒绝（code=2）。
+        long total = Math.min(stock, 50000L);
         List<Map<String, Object>> soldierPairs = new ArrayList<>();
         if (total > 0) {
-            long[] want = new long[]{(long) (total * 0.4), (long) (total * 0.3), 0};
-            want[2] = total - want[0] - want[1];
-            long[] tier1Ids = new long[]{10001, 20001, 30001};
+            // 必须按各兵种实际库存夹取：40/30/30 直接按总数算会超出盾/矛存量 → code=2。
+            long wantShield = Math.min(base[0], Math.round(total * 0.4));
+            long wantSpear = Math.min(base[1], Math.round(total * 0.3));
+            long wantBow = Math.min(base[2], Math.max(0, total - wantShield - wantSpear));
+            long[] want = new long[]{wantShield, wantSpear, wantBow};
+            long[] ids = bestSoldierIds(sol);
             for (int i = 0; i < 3; i++) {
-                if (want[i] > 0) soldierPairs.add(kv(tier1Ids[i], want[i]));
+                if (want[i] > 0) soldierPairs.add(kv(ids[i], want[i]));
             }
         }
         List<Map<String, Object>> heroPairs = new ArrayList<>();

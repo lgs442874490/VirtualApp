@@ -173,53 +173,81 @@ public final class ServerShopLeagueTasks {
             }
             List<Object> arr = new ArrayList<>();
             for (long sid : shopIds) arr.add(sid);
-            GameMessage info = tc.engine.request("req_shop_info_array", Exec.args("arr_id", arr));
-            if (!Exec.ok(info)) {
-                m.skip("商店数据拉取失败(码" + Exec.codeOf(info) + ")");
-                return Exec.result(m, fnId, fnName);
-            }
-            Map<String, Object> mapInfo = Exec.mapOf(info.getContent().get("map_info"));
-            if (mapInfo == null) {
-                m.skip("商店响应缺商品表");
-                return Exec.result(m, fnId, fnName);
-            }
             Map<Long, Good> catalog = new HashMap<>();
             for (List<Good> gl : shops().values()) {
                 for (Good g : gl) catalog.put(g.configId, g);
             }
-            int bought = 0;
-            for (Map.Entry<String, Object> e : mapInfo.entrySet()) {
-                long shopId = Long.parseLong(e.getKey());
-                Map<String, Object> shopInfo = Exec.mapOf(e.getValue());
-                if (shopInfo == null) continue;
-                for (Map<String, Object> g : Exec.mapsOf(shopInfo.get("goods"))) {
-                    long confId = Exec.longOf(g.get("conf_id"));
-                    Long w = want.get(confId);
-                    if (w == null || w <= 0) continue;
-                    long goodsId = Exec.longOf(g.get("id"));
-                    long boughtCount = Exec.longOf(g.get("buy_count"));
-                    Good meta = catalog.get(confId);
-                    long limit = meta == null ? 0 : meta.limit;
-                    long remaining = limit > 0 ? Math.max(0, limit - boughtCount) : w;
-                    if (remaining <= 0) continue;
-                    long count = Math.min(w, remaining);
-                    GameMessage buy = tc.engine.request("req_shop_buy", Exec.args(
-                            "shop_id", shopId, "goods_id", goodsId, "count", count));
-                    int code = Exec.codeOf(buy);
-                    if (Exec.ok(buy)) {
-                        bought++;
-                        m.claimed((meta == null ? confId : meta.name) + "×" + count);
-                        m.rewards(meta == null ? "商品" + confId : meta.name, buy);
-                    } else if (code >= 800 && code <= 830) {
-                        m.skip((meta == null ? confId : meta.name) + "条件不满足");
-                    } else if (code == 10521 || code == 40240) {
-                        m.skip((meta == null ? confId : meta.name) + "条件不满足");
-                    } else {
-                        m.skip((meta == null ? confId : meta.name) + "码" + code);
+            JSONObject refreshCfg = p.optJSONObject("refresh");
+            int refreshRounds = refreshCfg == null ? 0
+                    : Math.max(0, Math.min(5, refreshCfg.optInt("rounds", 0)));
+            int targetPurchases = refreshCfg == null ? 0
+                    : Math.max(0, refreshCfg.optInt("target_purchases", 0));
+            boolean allowDiamond = refreshCfg != null
+                    && refreshCfg.optBoolean("allow_diamond", false);
+            int boughtTotal = 0;
+            for (int round = 0; round <= refreshRounds; round++) {
+                GameMessage info = tc.engine.request("req_shop_info_array",
+                        Exec.args("arr_id", arr));
+                if (!Exec.ok(info)) {
+                    if (round == 0) m.skip("商店数据拉取失败(码" + Exec.codeOf(info) + ")");
+                    break;
+                }
+                Map<String, Object> mapInfo = Exec.mapOf(info.getContent().get("map_info"));
+                if (mapInfo == null) {
+                    if (round == 0) m.skip("商店响应缺商品表");
+                    break;
+                }
+                int bought = 0;
+                for (Map.Entry<String, Object> e : mapInfo.entrySet()) {
+                    long shopId = Long.parseLong(e.getKey());
+                    Map<String, Object> shopInfo = Exec.mapOf(e.getValue());
+                    if (shopInfo == null) continue;
+                    for (Map<String, Object> g : Exec.mapsOf(shopInfo.get("goods"))) {
+                        long confId = Exec.longOf(g.get("conf_id"));
+                        Long w = want.get(confId);
+                        if (w == null || w <= 0) continue;
+                        long goodsId = Exec.longOf(g.get("id"));
+                        long boughtCount = Exec.longOf(g.get("buy_count"));
+                        Good meta = catalog.get(confId);
+                        long limit = meta == null ? 0 : meta.limit;
+                        long remaining = limit > 0 ? Math.max(0, limit - boughtCount) : w;
+                        if (remaining <= 0) continue;
+                        long count = Math.min(w, remaining);
+                        GameMessage buy = tc.engine.request("req_shop_buy", Exec.args(
+                                "shop_id", shopId, "goods_id", goodsId, "count", count));
+                        int code = Exec.codeOf(buy);
+                        if (Exec.ok(buy)) {
+                            bought++;
+                            m.claimed((meta == null ? confId : meta.name) + "×" + count);
+                            m.rewards(meta == null ? "商品" + confId : meta.name, buy);
+                        } else if (code >= 800 && code <= 830) {
+                            m.skip((meta == null ? confId : meta.name) + "条件不满足");
+                        } else if (code == 10521 || code == 40240) {
+                            m.skip((meta == null ? confId : meta.name) + "条件不满足");
+                        } else {
+                            m.skip((meta == null ? confId : meta.name) + "码" + code);
+                        }
                     }
                 }
+                boughtTotal += bought;
+                if (targetPurchases > 0 && boughtTotal >= targetPurchases) break;
+                if (round == refreshRounds) break;
+                boolean refreshed = false;
+                for (long shopId : shopIds) {
+                    GameMessage rr = tc.engine.request("req_shop_refresh",
+                            Exec.args("shop_id", shopId));
+                    int rc = Exec.codeOf(rr);
+                    if (Exec.ok(rr)) {
+                        refreshed = true;
+                    } else if (rc == 51 && !allowDiamond) {
+                        // 免费次数用完且未允许钻石刷新：停止，避免误花钻石。
+                        m.skip("刷新需钻石，已按配置停止");
+                        break;
+                    }
+                }
+                if (!refreshed) break;
             }
-            if (bought == 0 && m.sb.length() == 0) m.skip("货架无勾选商品");
+            if (boughtTotal == 0 && m.sb.length() == 0) m.skip("货架无勾选商品");
         } catch (Exception e) {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, fnName);
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
@@ -554,7 +582,9 @@ public final class ServerShopLeagueTasks {
         Exec.Multi m = new Exec.Multi();
         try {
             tc.engine.collectNotifies(2000);
-            GameMessage info = tc.engine.request("req_mobilization_open_info", null);
+            // 该协议没有请求字段；传 null 会被编码器当成缺失 Map，传空对象最稳。
+            GameMessage info = tc.engine.request("req_mobilization_open_info",
+                    new LinkedHashMap<String, Object>());
             if (!Exec.ok(info)) {
                 m.skip("总动员未开启(码" + Exec.codeOf(info) + ")");
             } else {

@@ -13,14 +13,21 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.content.Context;
+import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.LinearLayout;
+import android.widget.NumberPicker;
+import android.widget.RadioButton;
+import android.widget.RadioGroup;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import com.carlos.vault.AccountStore;
 import com.carlos.vault.UiStyle;
+import com.carlos.vault.VaultSync;
+
+import org.json.JSONObject;
 
 import java.util.List;
 import java.util.Map;
@@ -228,9 +235,11 @@ public class FunctionActivity extends Activity {
         int stNow = new com.carlos.vault.daily.LogStore(this)
                 .status(account.fpid, serverid, fn.id);
         String stType = stNow == com.carlos.vault.daily.LogStore.ST_DONE ? "ok"
+                : stNow == com.carlos.vault.daily.LogStore.ST_SKIPPED ? "ok"
                 : stNow == com.carlos.vault.daily.LogStore.ST_RUNNING ? "run"
                 : stNow == com.carlos.vault.daily.LogStore.ST_FAILED ? "err" : "idle";
-        String stText = stNow == com.carlos.vault.daily.LogStore.ST_DONE ? "今日已跑"
+        String stText = stNow == com.carlos.vault.daily.LogStore.ST_DONE ? "今日已领"
+                : stNow == com.carlos.vault.daily.LogStore.ST_SKIPPED ? "已检查·无可领"
                 : stNow == com.carlos.vault.daily.LogStore.ST_RUNNING ? "进行中"
                 : stNow == com.carlos.vault.daily.LogStore.ST_FAILED ? "上次失败" : "今日未跑";
         LinearLayout stRow = new LinearLayout(this);
@@ -240,7 +249,8 @@ public class FunctionActivity extends Activity {
         stRow.addView(UiStyle.badge(this, stType, "● " + stText));
         long nextAt = com.carlos.vault.daily.RoleStore.schedule(this, account.fpid).nextRunAt;
         TextView next = new TextView(this);
-        next.setText(nextAt > 0 ? "下次自动："
+        next.setText(com.carlos.vault.VaultSync.isServerMode(this) ? "执行：服务器调度"
+                : nextAt > 0 ? "下次自动："
                 + new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
                 .format(new java.util.Date(nextAt)) : "下次自动：未开启");
         next.setTextSize(11);
@@ -279,7 +289,7 @@ public class FunctionActivity extends Activity {
         enableCol.setOrientation(LinearLayout.VERTICAL);
         enableCol.setPadding(dp(12), 0, dp(8), 0);
         TextView enableTitle = new TextView(this);
-        enableTitle.setText("加入自动日常");
+        enableTitle.setText("加入自动化任务");
         enableTitle.setTextSize(15);
         enableTitle.setTypeface(Typeface.DEFAULT_BOLD);
         enableTitle.setTextColor(UiStyle.INK);
@@ -300,11 +310,81 @@ public class FunctionActivity extends Activity {
                     if (c == null) c = configStore.metaConfig(DailyTasks.all());
                     c.put(fn.id, isChecked);
                     configStore.saveRoleConfig(account.fpid, serverid, c);
-                    toast(isChecked ? "已加入自动日常" : "已从自动日常移除");
+                    com.carlos.vault.VaultSync.onAccountsChanged(FunctionActivity.this);
+                    toast(isChecked ? "已加入自动化任务" : "已从自动化任务移除");
                 });
         swRef[0] = toggle;
         enableRow.addView(toggle);
         root.addView(enableRow);
+
+        // 采集：直接弹窗选编队/矿种/等级/队列，替代高级 JSON 参数。
+        if ("gather".equals(fn.id)) {
+            LinearLayout pick = UiStyle.outlineCard(this);
+            pick.setOrientation(LinearLayout.HORIZONTAL);
+            pick.setGravity(Gravity.CENTER_VERTICAL);
+            pick.setPadding(dp(14), dp(14), dp(14), dp(14));
+            LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            plp.setMargins(dp(18), dp(10), dp(18), 0);
+            pick.setLayoutParams(plp);
+            pick.addView(UiStyle.iconTile(this, UiStyle.Icon.LIGHTNING, UiStyle.BRAND_TEXT,
+                    UiStyle.BRAND_50, 40, 20, 12),
+                    new LinearLayout.LayoutParams(dp(40), dp(40)));
+            LinearLayout mid = new LinearLayout(this);
+            mid.setOrientation(LinearLayout.VERTICAL);
+            mid.setPadding(dp(12), 0, dp(8), 0);
+            TextView t = new TextView(this);
+            t.setText("采集编队");
+            t.setTextSize(15);
+            t.setTypeface(Typeface.DEFAULT_BOLD);
+            t.setTextColor(UiStyle.INK);
+            mid.addView(t);
+            TextView s = new TextView(this);
+            s.setText("选择编队、矿种、矿点等级与队列数");
+            s.setTextSize(11.5f);
+            s.setTextColor(UiStyle.INK2);
+            mid.addView(s);
+            pick.addView(mid, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            UiStyle.press(pick);
+            pick.setOnClickListener(v -> showGatherFormationDialog());
+            root.addView(pick);
+        }
+
+        // 高级参数（商店刷新/宠物技能/军医所/野外方案）：统一 JSON 编辑，
+        // 保存到 FnParams 后立刻上传服务器，避免“界面能改、服务器收不到”。
+        if (supportsAdvancedConfig(fn.id)) {
+            LinearLayout adv = UiStyle.outlineCard(this);
+            adv.setOrientation(LinearLayout.HORIZONTAL);
+            adv.setGravity(Gravity.CENTER_VERTICAL);
+            adv.setPadding(dp(14), dp(14), dp(14), dp(14));
+            LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            alp.setMargins(dp(18), dp(10), dp(18), 0);
+            adv.setLayoutParams(alp);
+            adv.addView(UiStyle.iconTile(this, UiStyle.Icon.DOC, UiStyle.BRAND_TEXT,
+                    UiStyle.BRAND_50, 40, 20, 12),
+                    new LinearLayout.LayoutParams(dp(40), dp(40)));
+            LinearLayout mid = new LinearLayout(this);
+            mid.setOrientation(LinearLayout.VERTICAL);
+            mid.setPadding(dp(12), 0, dp(8), 0);
+            TextView t = new TextView(this);
+            t.setText("高级参数（JSON）");
+            t.setTextSize(15);
+            t.setTypeface(Typeface.DEFAULT_BOLD);
+            t.setTextColor(UiStyle.INK);
+            mid.addView(t);
+            TextView s = new TextView(this);
+            s.setText("编队/刷新/技能/治疗/野外方案 · 保存即同步服务器");
+            s.setTextSize(11.5f);
+            s.setTextColor(UiStyle.INK2);
+            mid.addView(s);
+            adv.addView(mid, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            UiStyle.press(adv);
+            adv.setOnClickListener(v -> showAdvancedConfig());
+            root.addView(adv);
+        }
 
         // 整页滚动区：子项实时状态与配置 → 领取内容 → 运行记录
         ScrollView scroll = new ScrollView(this);
@@ -1118,8 +1198,11 @@ public class FunctionActivity extends Activity {
         // 服务器模式：执行提交给 vault-server（本地不 fresh 登录，防互踢）；结果经 fetchState 回写后在记录区查看
         if (com.carlos.vault.VaultSync.isServerMode(this) && account != null
                 && account.fpid != null && !account.fpid.isEmpty()) {
-            com.carlos.vault.VaultSync.runTask(this, account.fpid, fn.id);
-            toast("已提交服务器执行「" + fn.name + "」\n稍后下拉/重进本页查看结果");
+            com.carlos.vault.VaultSync.triggerAutomation(this, account.fpid, fn.id,
+                    (code, message, data) -> runOnUiThread(() ->
+                            toast(code == 0 && data != null && data.optBoolean("accepted", false)
+                                    ? "已提交服务器执行「" + fn.name + "」\n稍后重进本页查看结果"
+                                    : "服务器未受理：" + message)));
             // 已回传的状态先渲染一次（本轮结果要等服务器跑完，重进页面再取）
             com.carlos.vault.VaultSync.fetchState(this, (code, message, data) ->
                     runOnUiThread(() -> {
@@ -1152,8 +1235,9 @@ public class FunctionActivity extends Activity {
                         r.rewards == null ? "" : r.rewards,
                         "手动", r.durationMs, r.category.name(), r.attempt);
                 logStore.setStatus(acc.fpid, sid, fn.id,
-                        r.category == DailyResult.Category.CLAIMED || r.category == DailyResult.Category.SKIPPED
-                                ? LogStore.ST_DONE : LogStore.ST_FAILED);
+                        r.category == DailyResult.Category.CLAIMED ? LogStore.ST_DONE
+                                : r.category == DailyResult.Category.SKIPPED
+                                ? LogStore.ST_SKIPPED : LogStore.ST_FAILED);
                 logStore.applySubResults(acc.fpid, sid, fn.id, r.subResults);
                 refreshRecords();
                 refreshQuestSection();
@@ -1166,6 +1250,180 @@ public class FunctionActivity extends Activity {
                         .show();
             }
         }.execute();
+    }
+
+    /** 采集编队弹窗：编队/矿种/矿点等级/队列数，保存即同步服务器。 */
+    private void showGatherFormationDialog() {
+        if (account == null) return;
+        JSONObject p = FnParams.params(this, account.fpid, serverid, "gather");
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(18), dp(8), dp(18), dp(8));
+
+        TextView squadLabel = new TextView(this);
+        squadLabel.setText("编队");
+        squadLabel.setTextSize(13);
+        squadLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        squadLabel.setTextColor(UiStyle.INK);
+        box.addView(squadLabel);
+
+        final RadioGroup squadGroup = new RadioGroup(this);
+        squadGroup.setOrientation(RadioGroup.VERTICAL);
+        String[] squadNames = {"自动（沿用游戏当前编队）", "第1队", "第2队", "第3队", "第4队", "第5队"};
+        for (int i = 0; i < squadNames.length; i++) {
+            RadioButton rb = new RadioButton(this);
+            // 0 是合法 id 但不是合法的选中态标记，统一用 100+i 再换算回队号。
+            rb.setId(100 + i);
+            rb.setText(squadNames[i]);
+            rb.setTextSize(13);
+            rb.setTextColor(UiStyle.INK);
+            squadGroup.addView(rb);
+        }
+        int curSquad = Math.max(0, Math.min(5, p.optInt("squad_index", 0)));
+        squadGroup.check(100 + curSquad);
+        box.addView(squadGroup);
+
+        TextView resLabel = new TextView(this);
+        resLabel.setText("采集矿种");
+        resLabel.setTextSize(13);
+        resLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        resLabel.setTextColor(UiStyle.INK);
+        resLabel.setPadding(0, dp(10), 0, 0);
+        box.addView(resLabel);
+
+        String[] resNames = {"肉", "木", "煤", "铁"};
+        String[] resKeys = {"MEAT", "WOOD", "COAL", "IRON"};
+        org.json.JSONArray curRes = p.optJSONArray("resources_named");
+        final CheckBox[] resBoxes = new CheckBox[4];
+        for (int i = 0; i < 4; i++) {
+            CheckBox cb = new CheckBox(this);
+            cb.setText(resNames[i]);
+            cb.setTextSize(13);
+            cb.setTextColor(UiStyle.INK);
+            boolean on = curRes == null || curRes.length() == 0;
+            if (!on) {
+                for (int j = 0; j < curRes.length(); j++) {
+                    if (resKeys[i].equalsIgnoreCase(curRes.optString(j, ""))) { on = true; break; }
+                }
+            }
+            cb.setChecked(on);
+            resBoxes[i] = cb;
+            box.addView(cb);
+        }
+
+        LinearLayout levelRow = new LinearLayout(this);
+        levelRow.setOrientation(LinearLayout.HORIZONTAL);
+        levelRow.setGravity(Gravity.CENTER_VERTICAL);
+        levelRow.setPadding(0, dp(10), 0, 0);
+        TextView levelLabel = new TextView(this);
+        levelLabel.setText("矿点等级");
+        levelLabel.setTextSize(13);
+        levelLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        levelLabel.setTextColor(UiStyle.INK);
+        levelRow.addView(levelLabel, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final NumberPicker levelPick = new NumberPicker(this);
+        levelPick.setMinValue(1);
+        levelPick.setMaxValue(6);
+        levelPick.setWrapSelectorWheel(false);
+        levelPick.setValue(Math.max(1, Math.min(6, p.optInt("min_level", 5))));
+        levelRow.addView(levelPick, new LinearLayout.LayoutParams(dp(80), dp(90)));
+        box.addView(levelRow);
+
+        LinearLayout queueRow = new LinearLayout(this);
+        queueRow.setOrientation(LinearLayout.HORIZONTAL);
+        queueRow.setGravity(Gravity.CENTER_VERTICAL);
+        queueRow.setPadding(0, dp(6), 0, 0);
+        TextView queueLabel = new TextView(this);
+        queueLabel.setText("队列数");
+        queueLabel.setTextSize(13);
+        queueLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        queueLabel.setTextColor(UiStyle.INK);
+        queueRow.addView(queueLabel, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final NumberPicker queuePick = new NumberPicker(this);
+        queuePick.setMinValue(1);
+        queuePick.setMaxValue(5);
+        queuePick.setWrapSelectorWheel(false);
+        queuePick.setValue(Math.max(1, Math.min(5, p.optInt("max_queues", 3))));
+        queueRow.addView(queuePick, new LinearLayout.LayoutParams(dp(80), dp(90)));
+        box.addView(queueRow);
+
+        final CheckBox fullBox = new CheckBox(this);
+        fullBox.setText("只采满矿");
+        fullBox.setTextSize(13);
+        fullBox.setTextColor(UiStyle.INK);
+        fullBox.setChecked("full".equals(p.optJSONObject("strategy") == null
+                ? "any" : p.optJSONObject("strategy").optString("send", "any")));
+        box.addView(fullBox);
+
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("采集编队")
+                .setView(box)
+                .setPositiveButton("保存", (d, w) -> {
+                    try {
+                        JSONObject next = FnParams.params(this, account.fpid, serverid, "gather");
+                        next.put("squad_index",
+                                Math.max(0, squadGroup.getCheckedRadioButtonId() - 100));
+                        org.json.JSONArray names = new org.json.JSONArray();
+                        for (int i = 0; i < 4; i++) {
+                            if (resBoxes[i].isChecked()) names.put(resKeys[i]);
+                        }
+                        next.put("resources_named", names);
+                        next.put("min_level", levelPick.getValue());
+                        next.put("max_queues", queuePick.getValue());
+                        JSONObject strategy = next.optJSONObject("strategy");
+                        if (strategy == null) strategy = new JSONObject();
+                        strategy.put("send", fullBox.isChecked() ? "full" : "any");
+                        next.put("strategy", strategy);
+                        // 采集改为编队选择后，清掉旧的 JSON 高级参数，避免两套配置互相覆盖。
+                        next.remove("hero_ids");
+                        next.remove("troop_count");
+                        next.remove("target_amount");
+                        next.remove("carry_per_troop");
+                        FnParams.saveParams(this, account.fpid, serverid, "gather", next);
+                        VaultSync.onAccountsChanged(this);
+                        toast("采集编队已保存并同步服务器");
+                    } catch (Throwable t) {
+                        toast("保存失败：" + t.getMessage());
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 需要新参数模型的功能：统一用 JSON 高级参数，避免为每个功能单做一套面板。 */
+    private static boolean supportsAdvancedConfig(String fnId) {
+        return "hunt".equals(fnId) || "shop".equals(fnId)
+                || "alliance_shop".equals(fnId) || "pet".equals(fnId) || "medic".equals(fnId)
+                || "intel".equals(fnId) || "behemoth".equals(fnId)
+                || "activity_rewards".equals(fnId);
+    }
+
+    private void showAdvancedConfig() {
+        if (account == null) return;
+        JSONObject current = FnParams.params(this, account.fpid, serverid, fn.id);
+        String prefill;
+        try {
+            prefill = current.toString(2);
+        } catch (Throwable t) {
+            prefill = current.toString();
+        }
+        UiStyle.showInputDialog(this, "高级参数 · " + fn.name,
+                "JSON（例：{\"hero_ids\":[10001,10002,10003],\"troop_count\":50000}）",
+                prefill, true, text -> {
+                    try {
+                        String raw = text == null ? "" : text.trim();
+                        JSONObject next = raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+                        FnParams.saveParams(FunctionActivity.this, account.fpid, serverid,
+                                fn.id, next);
+                        VaultSync.onAccountsChanged(FunctionActivity.this);
+                        toast("已保存并同步服务器");
+                    } catch (Throwable t) {
+                        toast("JSON 格式错误：" + t.getMessage());
+                    }
+                });
     }
 
     private void toast(String s) {

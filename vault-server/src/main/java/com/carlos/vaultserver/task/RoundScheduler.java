@@ -28,8 +28,21 @@ public final class RoundScheduler {
     private final VaultStore store;
     private final StateStore stateStore;
     private final KeeperFacade keeper;
+    /** 手动触发请求：fn 为空表示整轮；deadline 前允许等待会话登录。 */
+    private static final class ManualRequest {
+        final String fn;
+        final String trigger;
+        final long deadline;
+
+        ManualRequest(String fn, String trigger, long deadline) {
+            this.fn = fn == null || fn.isEmpty() ? null : fn;
+            this.trigger = trigger;
+            this.deadline = deadline;
+        }
+    }
+
     private final Map<String, Long> nextRunAt = new ConcurrentHashMap<>();
-    private final Map<String, String> manualQueue = new ConcurrentHashMap<>();
+    private final Map<String, ManualRequest> manualQueue = new ConcurrentHashMap<>();
     private final Map<String, Long> supplyFiredAt = new ConcurrentHashMap<>();
     private volatile boolean stopped;
 
@@ -43,6 +56,9 @@ public final class RoundScheduler {
 
         /** 会话是否在线。 */
         boolean sessionOnline(String fpid);
+
+        /** 确保账号有会话并开始登录（账号页“登录”按钮/手动触发用）。 */
+        boolean ensureSession(String fpid);
     }
 
     public RoundScheduler(VaultStore store, StateStore stateStore, KeeperFacade keeper) {
@@ -75,24 +91,34 @@ public final class RoundScheduler {
         stopped = true;
     }
 
-    /** 手动触发入口（policy action=run）。 */
+    /** 手动触发入口（policy/automation action=run）。请求会等待会话登录，最多 5 分钟。 */
     public boolean requestRun(String fpid, String fn) {
         if (store.find(fpid) == null) return false;
-        manualQueue.put(fpid, fn == null ? "" : fn);
+        manualQueue.put(fpid, new ManualRequest(fn, "手动",
+                System.currentTimeMillis() + 5 * 60_000L));
         return true;
     }
 
     void tick() {
         long now = System.currentTimeMillis();
         String today = com.carlos.vaultserver.Beijing.fmt("yyyy-MM-dd").format(new Date());
-        // 1) 手动触发（最高优先级）
-        for (Map.Entry<String, String> e : manualQueue.entrySet()) {
-            manualQueue.remove(e.getKey());
-            String fn = e.getValue().isEmpty() ? null : e.getValue();
-            if (keeper.submitRound(e.getKey(), fn, "手动")) {
-                FileLog.info("手动整轮 fpid={} fn={}", e.getKey(), String.valueOf(fn));
+        // 1) 手动触发（最高优先级）：会话未在线则继续排队并推动登录，超时才丢弃
+        for (Map.Entry<String, ManualRequest> e : manualQueue.entrySet()) {
+            String fpid = e.getKey();
+            ManualRequest req = e.getValue();
+            if (keeper.sessionOnline(fpid)) {
+                manualQueue.remove(fpid, req);
+                if (keeper.submitRound(fpid, req.fn, req.trigger)) {
+                    FileLog.info("手动整轮启动 fpid={} fn={}", fpid, String.valueOf(req.fn));
+                } else {
+                    FileLog.warn("手动整轮未受理 fpid={}（会话不可用）", fpid);
+                }
+            } else if (now > req.deadline) {
+                manualQueue.remove(fpid, req);
+                FileLog.warn("手动整轮超时 fpid={}（5 分钟内会话未上线）", fpid);
             } else {
-                FileLog.warn("手动整轮未受理 fpid={}（无会话/未常驻）", e.getKey());
+                keeper.ensureSession(fpid);
+                FileLog.info("手动整轮等待会话 fpid={} fn={}", fpid, String.valueOf(req.fn));
             }
         }
         for (VaultStore.Account acc : store.snapshot()) {

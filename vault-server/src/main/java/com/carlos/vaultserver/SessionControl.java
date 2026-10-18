@@ -8,6 +8,9 @@ public interface SessionControl {
     /** 账号库变更后重对齐会话（sync / token 更新后调用）。 */
     void reconcile();
 
+    /** 按需建会话并开始登录（账号页登录/手动触发用）；账号不存在或无 token 返回 false。 */
+    boolean ensureSession(String fpid);
+
     /** 单账号状态快照。 */
     List<SessionStatus> status();
 
@@ -31,6 +34,11 @@ public interface SessionControl {
         public String sid;
         /** 服务器上是否有可用 token。 */
         public boolean hasToken;
+        /** 登录后学到的角色元数据（App 端角色卡回填用；未登录时为空/0）。 */
+        public String roleName = "";
+        public long roleLevel;
+        public long rolePower;
+        public String roleAlliance = "";
         /** 状态进入时刻（epoch ms）。 */
         public long sinceTs;
     }

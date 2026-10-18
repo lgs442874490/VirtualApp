@@ -34,6 +34,31 @@ public final class FnParams {
         }
     }
 
+    /** 角色发现前写入 sid=0 的参数迁移到真实 sid；目标已有参数时以目标为准。 */
+    public static void migrateRole(Context ctx, String fpid, long fromSid, long toSid) {
+        if (fpid == null || fpid.isEmpty() || fromSid == toSid) return;
+        try {
+            SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+            String fromPrefix = "p:" + fpid + ":" + fromSid + ":";
+            String toPrefix = "p:" + fpid + ":" + toSid + ":";
+            java.util.Map<String, ?> all = sp.getAll();
+            SharedPreferences.Editor ed = sp.edit();
+            boolean changed = false;
+            for (java.util.Map.Entry<String, ?> e : all.entrySet()) {
+                String k = e.getKey();
+                if (!k.startsWith(fromPrefix)) continue;
+                String target = toPrefix + k.substring(fromPrefix.length());
+                if (!all.containsKey(target) && e.getValue() instanceof String) {
+                    ed.putString(target, (String) e.getValue());
+                }
+                ed.remove(k);
+                changed = true;
+            }
+            if (changed) ed.apply();
+        } catch (Exception ignored) {
+        }
+    }
+
     // ================= 子项开关 / 策略 =================
 
     /** 子项开关（存于 fnId 参数的 sub:{subId:bool}，缺省用 def）。 */

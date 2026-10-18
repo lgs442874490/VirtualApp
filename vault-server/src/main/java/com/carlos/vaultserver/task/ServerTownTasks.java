@@ -3,6 +3,7 @@ package com.carlos.vaultserver.task;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.FileLog;
+import com.carlos.vaultserver.automation.services.MedicService;
 
 import org.json.JSONObject;
 
@@ -131,42 +132,14 @@ public final class ServerTownTasks {
     // ---------- 军医所：治疗伤兵 + 联盟求助 ----------
 
     public static TaskOutcome medic(TaskContext tc) {
-        Exec.Multi m = new Exec.Multi();
-        try {
-            tc.engine.collectNotifies(1500);
-            Map<String, Object> hi = tc.engine.notifyData("notify_hospital_init");
-            Object w = hi == null ? null : hi.get("wound_soldiers");
-            if (w instanceof Map) w = ((Map<?, ?>) w).get("soldiers");
-            Map<Long, Long> wound = Exec.kvPairs(w);
-            long total = 0;
-            for (long v : wound.values()) total += v;
-            if (total <= 0) {
-                m.skip("无伤兵");
-                m.subSkip("heal", "无伤兵");
-                tc.saveModText("medic", "heal", "当前无伤兵 · " + com.carlos.vaultserver.Beijing.fmt(
-                        "HH:mm").format(new java.util.Date()) + "检查");
-            } else {
-                List<Map<String, Object>> batch = new ArrayList<>();
-                for (Map.Entry<Long, Long> e : wound.entrySet()) {
-                    if (e.getValue() > 0) batch.add(Exec.kv(e.getKey(), e.getValue()));
-                }
-                GameMessage rsp = tc.engine.request("req_hospital_heal_soldier",
-                        Exec.args("soldiers", batch, "immediate", false));
-                int code = Exec.codeOf(rsp);
-                if (Exec.ok(rsp)) {
-                    m.claimed("治疗" + total + "伤兵");
-                    m.subOk("heal", "治疗" + total + "伤兵");
-                    tc.saveModText("medic", "heal", "治疗中 " + total + " 伤兵");
-                } else if (code == 2301) { m.skip("上批仍在治疗中"); m.subSkip("heal", "上批治疗中"); }
-                else if (code == 51) { m.skip("资源不足，未治疗"); m.subSkip("heal", "资源不足"); }
-                else { m.fail("治疗码" + code); m.subFail("heal", "码" + code); }
-            }
-        } catch (Exception e) {
-            if (sessionLost(e)) return ServerTasks.classifyException(e, "军医所");
-            m.fail("治疗:" + ServerTasks.brief(String.valueOf(e.getMessage())));
-        }
-        // 联盟互助已收敛到 alliance_help（常驻响应器 + 定时兜底），军医所不再附带重复请求
-        return Exec.result(m, "medic", "军医所");
+        // 伤兵统计/治疗/援助统一收敛到 MedicService：
+        // 合并 notify_hospital_init + notify_hospital_wound_soldiers（及跨服军医所），
+        // 按兵种取 max 防漏计/重复计；heal_count/request_help 从 medic 参数读取。
+        JSONObject p = tc.params("medic");
+        return new MedicService().heal(tc,
+                p.optInt("heal_count", 0),
+                p.optBoolean("immediate", false),
+                p.optBoolean("request_help", true));
     }
 
     // ---------- 兵营训练：三营独立收兵/训练 + 实时状态 ----------
@@ -469,11 +442,20 @@ public final class ServerTownTasks {
             tc.engine.collectNotifies(2000);
             JSONObject pp2 = tc.params("pet");
             List<Object> skills = new ArrayList<>();
-            for (long s : new long[]{550051L, 550071L, 550081L, 550091L, 550101L,
-                    550111L, 550121L, 550131L, 550141L}) {
-                skills.add(s);
+            // 指定技能优先；未配置时沿用旧默认技能集合，保证零配置账号行为不变。
+            org.json.JSONArray selectedSkills = pp2.optJSONArray("selected_skills");
+            if (selectedSkills != null && selectedSkills.length() > 0) {
+                for (int i = 0; i < selectedSkills.length(); i++) {
+                    long sid = selectedSkills.optLong(i, 0);
+                    if (sid > 0) skills.add(sid);
+                }
+            } else {
+                for (long s : new long[]{550051L, 550071L, 550081L, 550091L, 550101L,
+                        550111L, 550121L, 550131L, 550141L}) {
+                    skills.add(s);
+                }
             }
-            if (pp2.optBoolean("skills", true)) {
+            if (pp2.optBoolean("skills", pp2.optBoolean("auto_skills", true))) {
                 GameMessage sk = tc.engine.request("req_pet_use_skill",
                         Exec.args("skill_id_lst", skills));
                 if (Exec.ok(sk)) { m.claimed("宠物技能"); m.subOk("skills", "技能已开"); }
@@ -834,7 +816,7 @@ public final class ServerTownTasks {
             m.claimed(name);
             m.rewards(name, rsp);
             if (subId != null) m.subOk(subId, name + "✓");
-        } else if (code == 15005 || code == 15029 || code == 15048 || code == 2 || code == 7401 || code == 7404) {
+        } else if (code == 15002 || code == 15005 || code == 15029 || code == 15048 || code == 2 || code == 7401 || code == 7404) {
             m.skip(name + "无可收");
             if (subId != null) m.subSkip(subId, "无可收");
         } else {
@@ -843,7 +825,7 @@ public final class ServerTownTasks {
         }
     }
 
-    static boolean sessionLost(Exception e) {
+    public static boolean sessionLost(Exception e) {
         return ServerTasks.classifyException(e, "x").category == TaskOutcome.Category.SESSION_CLOSED;
     }
 }

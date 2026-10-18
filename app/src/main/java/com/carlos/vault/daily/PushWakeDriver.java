@@ -140,7 +140,10 @@ final class PushWakeDriver {
                 log.append(ls.fpid, ls.sid, fnId, ok, r.toString(),
                         r.rewards == null ? "" : r.rewards,
                         "通知", r.durationMs, r.category.name(), 1);
-                log.setStatus(ls.fpid, ls.sid, fnId, ok ? LogStore.ST_DONE : LogStore.ST_FAILED);
+                log.setStatus(ls.fpid, ls.sid, fnId,
+                        r.category == DailyResult.Category.CLAIMED ? LogStore.ST_DONE
+                                : r.category == DailyResult.Category.SKIPPED
+                                ? LogStore.ST_SKIPPED : LogStore.ST_FAILED);
                 log.applySubResults(ls.fpid, ls.sid, fnId, r.subResults);
                 if (r.category == DailyResult.Category.CLAIMED) {
                     android.util.Log.i("PushWake", ls.label + " " + proto + " → " + fnId

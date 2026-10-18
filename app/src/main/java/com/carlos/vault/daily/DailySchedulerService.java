@@ -123,47 +123,11 @@ public class DailySchedulerService extends Service {
      * - WAR/RECON → 逐个自动账号反应式开盾（幂等，已开过返回6151跳过）
      */
     public static void onGameEvent(final android.content.Context ctx, final String type, String detail) {
-        GameNotifyListenerService.logEvent("dispatch " + type);
-        try {
-            ensureStarted(ctx);
-        } catch (Throwable t) {
-            GameNotifyListenerService.logEvent("service start fail: " + t);
-        }
-        DailySchedulerService svc = instance;
-        if (svc != null) {
-            svc.handler.post(svc::sweepDueAccounts);
-        }
-        if ("WAR".equals(type) || "RECON".equals(type)) {
-            new Thread(() -> {
-                try {
-                    android.os.PowerManager.WakeLock wl = acquireWake(ctx, "game-event-shield", 10 * 60_000L);
-                    try {
-                        for (com.carlos.vault.AccountStore.Account a : new com.carlos.vault.AccountStore(ctx).all()) {
-                            if (a == null || a.token == null || a.token.isEmpty()
-                                    || a.fpid == null || a.fpid.isEmpty()) continue;
-                            RoleStore.Schedule s2 = RoleStore.schedule(ctx, a.fpid);
-                            if (!s2.autoEnabled) continue;
-                            // 子开关门控：reactive=反应式开盾（关掉后战争/侦查通知不再自动开盾，
-                            // 每日定时免费盾由 battle_shield.free 单独控制）
-                            if (!FnParams.subOn(ctx, a.fpid, s2.serverid, "battle_shield", "reactive", true)) {
-                                continue;
-                            }
-                            DailyResult r = DailyRunner.runSingle(ctx, a.fpid, a.token, s2.serverid, "battle_shield");
-                            GameNotifyListenerService.logEvent("reactive shield " + a.label + ": " + r.message);
-                        }
-                    } finally {
-                        if (wl != null) try { wl.release(); } catch (Throwable ignored) { }
-                    }
-                } catch (Throwable t) {
-                    GameNotifyListenerService.logEvent("shield fail: " + t);
-                }
-            }, "reactive-shield").start();
-        }
-        // T3定向触发：通知文案含账号/角色名 → 只对那个号定向执行（部队返回=补采集、治疗完成=续批、建造研究完成=刷新状态）
-        if ("MARCH_RETURN".equals(type) || "HEAL_DONE".equals(type) || "BUILD_DONE".equals(type)) {
-            final String hint = detail == null ? "" : detail;
-            new Thread(() -> targetedRun(ctx, type, hint), "game-event-target").start();
-        }
+        // 统一自动化：任务只在 vault-server 执行，客户端收到游戏通知时不再本地跑任务。
+        // 联盟互助/被打开盾等实时逻辑由服务器常驻会话（ServerHelpResponder）承担；
+        // 服务器尚未迁移的反应式开盾属于已知缺口，见自动化验证报告。
+        GameNotifyListenerService.logEvent("server-only ignore event " + type
+                + (detail == null || detail.isEmpty() ? "" : " · " + detail));
     }
 
     /** T3定向：匹配账号后执行对应功能；匹配不到只记日志（不打扰全部账号）。 */
@@ -240,42 +204,13 @@ public class DailySchedulerService extends Service {
         }
     }
 
-    /** 巡检：到期（nextRunAt<=now）且开自动的账号逐个执行。 */
+    /**
+     * 巡检：2026-10 起客户端不再本地执行任何自动化任务。
+     * 整轮/补给补领由 vault-server 的 RoundScheduler 负责；本机只同步“服务器模式”会话状态
+     * （服务器模式下 syncOnline 会关闭本地常驻会话，防止与服务器互踢）。
+     */
     private void sweepDueAccounts() {
-        // 服务器模式：整轮/补给补领由 vault-server 的 RoundScheduler 执行，
-        // 本机不再 fresh 登录跑任务（防互踢）；只保留状态拉取。
-        if (com.carlos.vault.VaultSync.isServerMode(this)) {
-            RoleSessionKeeper.get(this).syncOnline();
-            return;
-        }
-        AccountStore store = new AccountStore(this);
-        for (AccountStore.Account acc : store.all()) {
-            if (acc == null || acc.token == null || acc.token.isEmpty()
-                    || acc.fpid == null || acc.fpid.isEmpty()) continue;
-            RoleStore.Schedule s = RoleStore.schedule(this, acc.fpid);
-            if (!s.autoEnabled) continue;
-            if (s.nextRunAt <= 0) {
-                s.nextRunAt = nextRunInWindow(s.lastRunAt);
-                RoleStore.saveSchedule(this, acc.fpid, s);
-                scheduleAlarmAt(s.nextRunAt + 1500, 1002, acc.fpid);
-                continue;
-            }
-            scheduleAlarmAt(s.nextRunAt + 1500, 1002, acc.fpid);   // 到点精确唤醒（Handler 可能被冻结）
-            if (System.currentTimeMillis() >= s.nextRunAt) {
-                runAccountNow(acc, s);
-            }
-            // 任务级 wake：补给"到点可领"早于整轮 nextRunAt 时单独补领（只跑 supply，不重跑整轮）
-            long wake = RoleStore.wakeAt(this, acc.fpid);
-            if (wake > 0) {
-                if (System.currentTimeMillis() >= wake) {
-                    RoleStore.saveWakeAt(this, acc.fpid, 0);   // 先清防重复触发，补领后再顺延
-                    runSupplyTopup(acc, s);
-                } else {
-                    scheduleAlarmAt(wake + 1500, 1003, acc.fpid);
-                }
-            }
-        }
-        // 常驻在线同步：自动日常开启的账号，工作区角色各保持一条在线会话（24h 心跳+自动互助）
+        com.carlos.vault.VaultSync.ensureServerMode(this);
         RoleSessionKeeper.get(this).syncOnline();
     }
 

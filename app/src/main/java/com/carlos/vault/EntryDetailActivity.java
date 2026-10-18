@@ -168,6 +168,29 @@ public class EntryDetailActivity extends Activity {
         launchBtn.setOnClickListener(v -> doLaunch());
         root.addView(launchBtn);
 
+        // 登录并运行自动化（服务器执行）
+        LinearLayout autoBtn = new LinearLayout(this);
+        autoBtn.setOrientation(LinearLayout.HORIZONTAL);
+        autoBtn.setGravity(Gravity.CENTER);
+        autoBtn.setBackground(UiStyle.roundRectStroke(this, Color.WHITE, 16, UiStyle.BRAND_300));
+        autoBtn.setPadding(0, dp(13), 0, dp(13));
+        LinearLayout.LayoutParams ablp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        ablp.setMargins(dp(18), dp(10), dp(18), 0);
+        autoBtn.setLayoutParams(ablp);
+        autoBtn.addView(new UiStyle.Icon(this, UiStyle.Icon.LIGHTNING, UiStyle.BRAND_TEXT, 18),
+                new LinearLayout.LayoutParams(dp(18), dp(18)));
+        TextView autoTx = new TextView(this);
+        autoTx.setText("登录并运行自动化");
+        autoTx.setTextSize(15);
+        autoTx.setTypeface(Typeface.DEFAULT_BOLD);
+        autoTx.setTextColor(UiStyle.BRAND_TEXT);
+        autoTx.setPadding(dp(8), 0, 0, 0);
+        autoBtn.addView(autoTx);
+        UiStyle.press(autoBtn);
+        autoBtn.setOnClickListener(v -> loginAndRunAutomation(autoBtn, autoTx));
+        root.addView(autoBtn);
+
         // 角色卡
         LinearLayout roleCard = UiStyle.outlineCard(this);
         roleCard.setOrientation(LinearLayout.VERTICAL);
@@ -519,6 +542,63 @@ public class EntryDetailActivity extends Activity {
                 }
             }
         }.execute();
+    }
+
+    /**
+     * 登录并运行自动化：选该账号主角色 → 打开统一自动化 → 上传配置 →
+     * 服务器确保会话并排队整轮。按钮在请求期间禁用以防重复触发。
+     */
+    private void loginAndRunAutomation(android.view.View btn, TextView label) {
+        if (acc == null || acc.fpid == null || acc.fpid.isEmpty()
+                || acc.token == null || acc.token.isEmpty()) {
+            toast("该账号没有可用 token");
+            return;
+        }
+        long sid = 0;
+        try {
+            for (RoleStore.Role r : RoleStore.roles(this, acc.fpid)) {
+                if (r.enabled) { sid = r.serverid; break; }
+            }
+            if (sid <= 0) {
+                for (RoleStore.Role r : RoleStore.roles(this, acc.fpid)) {
+                    if (r.serverid > 0) { sid = r.serverid; break; }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        if (sid > 0) setCurrentRole(sid);
+        RoleStore.saveAutomation(this, acc.fpid, true);
+        VaultSync.ensureServerMode(this);
+        btn.setEnabled(false);
+        label.setText("登录中…");
+        VaultSync.syncAll(this, (code, message, data) -> {
+            if (code != 0) {
+                runOnUiThread(() -> {
+                    btn.setEnabled(true);
+                    label.setText("登录并运行自动化");
+                    toast("配置同步失败：" + message);
+                });
+                return;
+            }
+            VaultSync.triggerAutomation(this, acc.fpid, null, (c2, m2, d2) -> {
+                boolean ok = c2 == 0 && d2 != null && d2.optBoolean("accepted", false);
+                String state = d2 == null ? "" : d2.optString("state", "");
+                String sidText = d2 == null ? "" : d2.optString("sid", "");
+                runOnUiThread(() -> {
+                    btn.setEnabled(true);
+                    label.setText("登录并运行自动化");
+                    if (ok) {
+                        toast("已登录并触发服务器自动化"
+                                + (sidText.isEmpty() ? "" : " · sid=" + sidText)
+                                + (state.isEmpty() ? "" : " · 会话=" + state));
+                        refreshInfo();
+                        VaultSync.fetchState(this);
+                    } else {
+                        toast("服务器未受理：" + m2);
+                    }
+                });
+            });
+        });
     }
 
     // ---------- token ----------

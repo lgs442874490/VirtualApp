@@ -1,6 +1,7 @@
 package com.carlos.vaultserver;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.json.JSONArray;
@@ -44,6 +45,11 @@ public class VaultHttpApiTest {
         @Override
         public void reconcile() {
             reconcileCalls++;
+        }
+
+        @Override
+        public boolean ensureSession(String fpid) {
+            return !"missing".equals(fpid);
         }
 
         @Override
@@ -205,6 +211,45 @@ public class VaultHttpApiTest {
         assertEquals(270L, states.getLong("act:111:913"));
         assertEquals("online", rsp.getJSONObject("data").getJSONArray("accounts")
                 .getJSONObject(0).getString("state"));
+    }
+
+    @Test
+    public void automation_read_returnsConfigSnapshot() throws Exception {
+        JSONArray accounts = new JSONArray();
+        JSONObject a = new JSONObject();
+        a.put("fpid", "48460403");
+        a.put("token", "tk-new");
+        a.put("label", "新测试号");
+        a.put("keep", false);
+        a.put("auto", false);
+        a.put("activeSid", "888");
+        JSONArray roles = new JSONArray();
+        JSONObject r = new JSONObject();
+        r.put("sid", "888");
+        JSONObject cfg = new JSONObject();
+        cfg.put("mail", true);
+        cfg.put("daily_mission", true);
+        r.put("config", cfg);
+        roles.put(r);
+        a.put("roles", roles);
+        accounts.put(a);
+        Map<String, Object> sf = new LinkedHashMap<>();
+        sf.put("pkg", "com.carlos.vault");
+        sf.put("accountsJson", accounts.toString());
+        assertEquals(0, post("/v1/vault/sync", "vaultSync", sf).getInt("code"));
+
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("action", "read");
+        f.put("fpid", "48460403");
+        JSONObject rsp = post("/v1/vault/automation", "vaultAutomation", f);
+        assertEquals(0, rsp.getInt("code"));
+        JSONObject data = rsp.getJSONObject("data");
+        assertEquals("48460403", data.getString("fpid"));
+        assertEquals("888", data.getString("sid"));
+        assertFalse(data.getBoolean("auto"));
+        assertTrue(data.getBoolean("hasToken"));
+        assertTrue(data.getJSONObject("config").getBoolean("mail"));
+        assertEquals("offline", data.getString("state"));
     }
 
     @Test

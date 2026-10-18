@@ -1292,7 +1292,7 @@ final class TownTasks {
             m.claimed(name);
             m.rewards(name, rsp);
             if (subId != null) m.subOk(subId, name + "✓");
-        } else if (code == 15005 || code == 15029 || code == 15048 || code == 2 || code == 7401 || code == 7404) {
+        } else if (code == 15002 || code == 15005 || code == 15029 || code == 15048 || code == 2 || code == 7401 || code == 7404) {
             m.skip(name + "无可收");
             if (subId != null) m.subSkip(subId, "无可收");
         } else {

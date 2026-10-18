@@ -357,8 +357,16 @@ public class AccountStore {
     public void remove(String id) {
         List<Account> list = all();
         List<Account> out = new ArrayList<>();
-        for (Account a : list) if (!a.id.equals(id)) out.add(a);
+        Account removed = null;
+        for (Account a : list) {
+            if (!a.id.equals(id)) out.add(a);
+            else removed = a;
+        }
         save(out);
+        // 同时清掉该凭证的角色表/当前角色/任务开关，避免“删除后旧角色仍被当成当前角色”。
+        if (removed != null) {
+            com.carlos.vault.daily.RoleStore.removeAccount(appCtx, removed.fpid);
+        }
     }
 
     public String getLastEntry() {

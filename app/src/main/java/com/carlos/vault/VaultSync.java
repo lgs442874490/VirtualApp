@@ -55,11 +55,13 @@ public final class VaultSync {
     private static final String PATH_STATUS = "/v1/vault/status";
     private static final String PATH_STATE = "/v1/vault/state";
     private static final String PATH_POLICY = "/v1/vault/policy";
+    private static final String PATH_AUTOMATION = "/v1/vault/automation";
     private static final String OP_SYNC = "vaultSync";
     private static final String OP_TOKEN = "vaultToken";
     private static final String OP_STATUS = "vaultStatus";
     private static final String OP_STATE = "vaultState";
     private static final String OP_POLICY = "vaultPolicy";
+    private static final String OP_AUTOMATION = "vaultAutomation";
 
     /** 与服务端 VAULT_SECRET 同值（base64 + 循环 XOR 混淆，防反编译明文）。 */
     private static final String SECRET_OBF = "ABIMAhdBQkQbRFFHWllZWxcQVAUGSw==";
@@ -164,12 +166,28 @@ public final class VaultSync {
         }
     }
 
+    /**
+     * 统一自动化只允许服务器执行：App 启动时强制打开服务器模式。
+     * 返回 true 表示本次发生了模式切换（已触发一次全量同步）。
+     */
+    public static boolean ensureServerMode(Context ctx) {
+        if (isServerMode(ctx)) return false;
+        setServerMode(ctx, true);
+        Log.i(TAG, "已强制启用服务器模式（自动化任务仅服务器执行）");
+        return true;
+    }
+
     // ---------- 业务接口 ----------
 
     /** 全量同步身份库（账号/token/指纹/keep/active 角色）。异步、失败静默。 */
     public static void syncAll(Context ctx) {
+        syncAll(ctx, null);
+    }
+
+    /** 全量同步并回调结果（回调在 OkHttp 线程；账号页登录按钮用它串起“同步→触发”）。 */
+    public static void syncAll(Context ctx, Callback done) {
         final Context app = ctx.getApplicationContext();
-        new Thread(() -> post(app, PATH_SYNC, OP_SYNC, syncFields(app), null), "vault-sync").start();
+        new Thread(() -> post(app, PATH_SYNC, OP_SYNC, syncFields(app), done), "vault-sync").start();
     }
 
     /** 账号数据变更钩子（token 更新/导入/keep 切换）：去抖后全量同步。 */
@@ -250,12 +268,46 @@ public final class VaultSync {
             JSONObject cache = new JSONObject();
             for (int i = 0; i < accounts.length(); i++) {
                 JSONObject o = accounts.getJSONObject(i);
-                cache.put(o.optString("fpid", ""), o);
+                String fpid = o.optString("fpid", "");
+                cache.put(fpid, o);
+                // 服务器登录后才知道实际落地 sid/角色名（App 端尚未本地发现角色时）：
+                // 回写角色表 + active/current_role，保证角色卡与 st:…:sid:fn 都能命中。
+                learnServerRole(app, fpid, o);
             }
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .putString("status_cache", cache.toString())
                     .putLong("status_at", System.currentTimeMillis())
                     .apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 把服务器实际 sid/角色元数据落到本地角色表与当前角色；已有别的账号 current_role 时不覆盖。 */
+    private static void learnServerRole(Context app, String fpid, JSONObject status) {
+        if (fpid == null || fpid.isEmpty() || status == null) return;
+        String sidText = status.optString("sid", "");
+        if (sidText == null || sidText.isEmpty()) return;
+        try {
+            long sid = Long.parseLong(sidText.trim());
+            if (sid <= 0) return;
+            // 角色发现前用户可能已改过开关/参数（写到 sid=0）；服务器登录学到真实 sid 后
+            // 立刻迁移，否则这些修改永远不会进入 roles[].config/params。
+            new com.carlos.vault.daily.DailyConfigStore(app).migrateRole(fpid, 0, sid);
+            com.carlos.vault.daily.FnParams.migrateRole(app, fpid, 0, sid);
+            String name = status.optString("roleName", "");
+            if (!name.isEmpty()) {
+                RoleStore.registerRole(app, fpid, sid, 0, name,
+                        status.optLong("roleLevel", 0), status.optLong("rolePower", 0),
+                        status.optString("roleAlliance", ""));
+            }
+            RoleStore.setActiveRole(app, fpid, sid);
+            android.content.SharedPreferences home =
+                    app.getSharedPreferences("home", Context.MODE_PRIVATE);
+            String cur = home.getString("current_role", "");
+            if (cur == null || cur.isEmpty() || cur.startsWith(fpid + ":")) {
+                home.edit().putString("current_role", fpid + ":" + sid).apply();
+            }
+            Log.i(TAG, "采纳服务器角色 fpid=" + fpid + " sid=" + sid + " name=" + name);
         } catch (Throwable ignored) {
         }
     }
@@ -324,6 +376,30 @@ public final class VaultSync {
         Log.i(TAG, "已提交服务器执行 fpid=" + fpid + " fn=" + fn);
     }
 
+    /**
+     * 登录并触发服务器自动化：服务端确保该账号有常驻会话，读取/返回当前配置，
+     * 排队执行整轮（fn=null）或单任务。回调在 OkHttp 线程。
+     */
+    public static void triggerAutomation(Context ctx, String fpid, String fn, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        Map<String, Object> f = commonFields(app);
+        f.put("action", "run");
+        f.put("fpid", fpid);
+        if (fn != null && !fn.isEmpty()) f.put("fn", fn);
+        f.put("includeConfig", true);
+        new Thread(() -> post(app, PATH_AUTOMATION, OP_AUTOMATION, f, done), "vault-automation-run").start();
+        Log.i(TAG, "已提交服务器自动化 fpid=" + fpid + " fn=" + fn);
+    }
+
+    /** 只读账号自动化配置（账号页登录前展示/排障用）。 */
+    public static void readAutomation(Context ctx, String fpid, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        Map<String, Object> f = commonFields(app);
+        f.put("action", "read");
+        f.put("fpid", fpid);
+        new Thread(() -> post(app, PATH_AUTOMATION, OP_AUTOMATION, f, done), "vault-automation-read").start();
+    }
+
     // ---------- 状态缓存（UI 读） ----------
 
     /** 服务器回传的账号状态（无缓存/该号缺项返回 null）。 */
@@ -363,14 +439,16 @@ public final class VaultSync {
                 o.put("token", a.token == null ? "" : a.token);
                 o.put("label", a.label == null ? "" : a.label);
                 o.put("group", a.group == null ? "" : a.group);
-                o.put("keep", RoleStore.keepOnline(ctx, a.fpid));
+                // 统一自动化：keep（服务器常驻会话）与 auto（服务器整轮调度）必须同值，
+                // 否则旧数据会出现“有开关但没有会话/不跑整轮”的半开状态。
+                boolean automation = RoleStore.automationEnabled(ctx, a.fpid);
+                o.put("keep", automation);
                 long active = RoleStore.activeRole(ctx, a.fpid);
                 o.put("activeSid", active > 0 ? String.valueOf(active) : "");
                 String identity = store.getSettings(a.fpid);
                 o.put("identity", identity == null ? "" : identity);
-                // 自动日常与时间窗（服务器整轮调度依据）
-                RoleStore.Schedule sched = RoleStore.schedule(ctx, a.fpid);
-                o.put("auto", sched.autoEnabled);
+                // 统一自动化与时间窗（服务器整轮调度依据）
+                o.put("auto", automation);
                 int[] win = RoleStore.window(ctx);
                 o.put("windowStart", win[0]);
                 o.put("windowEnd", win[1]);

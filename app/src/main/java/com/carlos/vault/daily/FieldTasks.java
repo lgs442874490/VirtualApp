@@ -131,6 +131,9 @@ final class FieldTasks {
                 "mapobj_type", 2L, "level_min", level, "level_max", level,
                 "res_id", resId, "is_full", fullOnly));
         if (!ExecUtil.ok(rsp)) return null;
+        // 协议：坐标在单对象 point{x,y}（不是 points/data/list）。
+        Map<String, Object> point = ExecUtil.mapOf(rsp.getContent().get("point"));
+        if (point != null && point.containsKey("x") && point.containsKey("y")) return point;
         for (String k : new String[]{"points", "data", "list"}) {
             for (Map<String, Object> p : ExecUtil.mapsOf(rsp.getContent().get(k))) {
                 if (p.containsKey("x") && p.containsKey("y")) return p;
@@ -491,6 +494,8 @@ final class FieldTasks {
         GameMessage rsp = engine.request("req_world_map_search", ExecUtil.args(
                 "mapobj_type", 3L, "level_min", level, "level_max", level));
         if (!ExecUtil.ok(rsp)) return null;
+        Map<String, Object> point = ExecUtil.mapOf(rsp.getContent().get("point"));
+        if (point != null && point.containsKey("x") && point.containsKey("y")) return point;
         for (String k : new String[]{"points", "data", "list"}) {
             for (Map<String, Object> p : ExecUtil.mapsOf(rsp.getContent().get(k))) {
                 if (p.containsKey("x") && p.containsKey("y")) return p;

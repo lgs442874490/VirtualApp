@@ -33,7 +33,7 @@ public final class RoundRunner {
         Map<String, Boolean> config = acc.roleConfig.get(String.valueOf(sid));
         TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger);
         StringBuilder summary = new StringBuilder();
-        int done = 0, claimed = 0, abnormal = 0;
+        int done = 0, claimed = 0, skipped = 0, abnormal = 0;
         List<ServerTasks.TaskDef> defs = ServerTasks.all();
         for (ServerTasks.TaskDef def : defs) {
             if (fnOnly != null && !fnOnly.equals(def.id)) continue;
@@ -55,6 +55,7 @@ public final class RoundRunner {
             applyResult(store, fpid, sid, def.id, r, trigger);
             if (r.successLike()) done++;
             if (r.category == TaskOutcome.Category.CLAIMED) claimed++;
+            else if (r.category == TaskOutcome.Category.SKIPPED) skipped++;
             if (r.category == TaskOutcome.Category.DEGRADED
                     || r.category == TaskOutcome.Category.ERROR) abnormal++;
             if (summary.length() > 0) summary.append('\n');
@@ -80,11 +81,14 @@ public final class RoundRunner {
         } catch (Throwable ignored) {
         }
         String head = "服务器整轮 · " + com.carlos.vaultserver.Beijing.fmt("MM-dd HH:mm")
-                .format(new Date()) + " · 成功" + done + "(领取" + claimed + ")"
+                .format(new Date()) + " · 成功" + done + "(领取" + claimed + " 跳过" + skipped + ")"
                 + (abnormal > 0 ? " 异常" + abnormal : "");
         String text = head + "\n" + summary;
         store.putString("summary:" + fpid, text);
-        store.putLong("srv:lastrun:" + fpid, System.currentTimeMillis());
+        // 只有整轮才消耗“今日已跑”；单任务（补给补领/账号页单功能）不能把整轮标记为已完成。
+        if (fnOnly == null) {
+            store.putLong("srv:lastrun:" + fpid, System.currentTimeMillis());
+        }
         store.flush();
         FileLog.info("整轮完成 fpid={} sid={}：{}", fpid, String.valueOf(sid), head);
         return text;
@@ -123,7 +127,10 @@ public final class RoundRunner {
 
             String day = com.carlos.vaultserver.Beijing.fmt("yyyy-MM-dd").format(new Date());
             String stKey = "st:" + day + ":" + fpid + ":" + sid + ":" + fnId;
-            int st = r.category == TaskOutcome.Category.CLAIMED || r.category == TaskOutcome.Category.SKIPPED ? 2
+            // 2=已领取，4=已检查但无可领（SKIPPED），1=会话中断，3=异常。
+            // SKIPPED 不再伪装成 DONE，避免“界面已完成但游戏内没领到奖励”。
+            int st = r.category == TaskOutcome.Category.CLAIMED ? 2
+                    : r.category == TaskOutcome.Category.SKIPPED ? 4
                     : r.category == TaskOutcome.Category.SESSION_CLOSED ? 1 : 3;
             store.putLong(stKey, st);
 
@@ -131,11 +138,13 @@ public final class RoundRunner {
             for (Map.Entry<String, String> sub : r.subResults.entrySet()) {
                 try {
                     String v = sub.getValue();
-                    boolean ok = v.startsWith("ok:") || v.startsWith("skip:");
+                    boolean fail = v.startsWith("fail:");
                     String note = v.substring(v.indexOf(':') + 1);
-                    appendSub(store, fpid, sid, fnId + ":" + sub.getKey(), ok, note, trigger);
+                    appendSub(store, fpid, sid, fnId + ":" + sub.getKey(), !fail, note, trigger);
+                    // skip 是“已检查但无可领”，不能记成已领取；fail 记异常。
+                    int subStatus = v.startsWith("skip:") ? 4 : (fail ? 3 : 2);
                     store.putLong("st:" + day + ":" + fpid + ":" + sid + ":"
-                            + fnId + ":" + sub.getKey(), 2);
+                            + fnId + ":" + sub.getKey(), subStatus);
                 } catch (Throwable ignored) {
                 }
             }

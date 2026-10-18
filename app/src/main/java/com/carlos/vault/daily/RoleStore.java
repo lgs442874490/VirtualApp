@@ -221,6 +221,36 @@ public class RoleStore {
         return o instanceof Number ? ((Number) o).longValue() : 0L;
     }
 
+    /** 删除账号时清理该凭证的角色/当前角色/任务开关，避免旧账号残留污染新账号状态。 */
+    public static void removeAccount(Context ctx, String fpid) {
+        if (fpid == null || fpid.isEmpty()) return;
+        ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE).edit()
+                .remove("roles:" + fpid)
+                .remove("active:" + fpid)
+                .remove("picked:" + fpid)
+                .apply();
+        ctx.getSharedPreferences("daily_sched", Context.MODE_PRIVATE).edit()
+                .remove("auto:" + fpid)
+                .remove("keep:" + fpid)
+                .remove("server:" + fpid)
+                .remove("next:" + fpid)
+                .remove("last:" + fpid)
+                .remove("wake:" + fpid)
+                .apply();
+        SharedPreferences dc = ctx.getSharedPreferences("daily_config", Context.MODE_PRIVATE);
+        SharedPreferences.Editor dce = dc.edit().remove("acc:" + fpid);
+        for (String k : dc.getAll().keySet()) {
+            if (k.startsWith("acc:" + fpid + ":")) dce.remove(k);
+        }
+        dce.apply();
+        SharedPreferences dp = ctx.getSharedPreferences("daily_params", Context.MODE_PRIVATE);
+        SharedPreferences.Editor dpe = dp.edit();
+        for (String k : dp.getAll().keySet()) {
+            if (k.startsWith("p:" + fpid + ":")) dpe.remove(k);
+        }
+        dpe.apply();
+    }
+
     /** 当前选中的角色（工作区内切换）。 */
     public static long activeRole(Context ctx, String fpid) {
         return ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
@@ -329,6 +359,32 @@ public class RoleStore {
     public static void saveKeepOnline(Context ctx, String fpid, boolean on) {
         ctx.getSharedPreferences("daily_sched", Context.MODE_PRIVATE).edit()
                 .putBoolean("keep:" + fpid, on).apply();
+    }
+
+    // ---------- 统一自动化开关（2026-10 起替代 auto + keep 双开关） ----------
+
+    /**
+     * 统一自动化开关：账号是否交给服务器执行任务。
+     *
+     * <p>迁移兼容：旧数据里 auto/keep 可能只有一个为 true（自动日常开、常驻关，或反之），
+     * 任一为 true 都视为统一自动化已开启；下一次写入会把两者对齐。
+     */
+    public static boolean automationEnabled(Context ctx, String fpid) {
+        if (fpid == null || fpid.isEmpty()) return false;
+        return schedule(ctx, fpid).autoEnabled || keepOnline(ctx, fpid);
+    }
+
+    /**
+     * 写统一开关：auto（服务器整轮调度）与 keep（服务器常驻会话）同时置位，
+     * 保证“开关打开 = 服务器有会话且会跑整轮”。同时清掉本地 nextRunAt（本地调度已停用）。
+     */
+    public static void saveAutomation(Context ctx, String fpid, boolean on) {
+        if (fpid == null || fpid.isEmpty()) return;
+        Schedule s = schedule(ctx, fpid);
+        s.autoEnabled = on;
+        s.nextRunAt = 0;
+        saveSchedule(ctx, fpid, s);
+        saveKeepOnline(ctx, fpid, on);
     }
 
     // ---------- 全局时间窗 ----------

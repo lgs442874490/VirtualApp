@@ -65,6 +65,23 @@ public class DailyConfigStore {
         writeJson("acc:" + fpid + ":" + serverid, config);
     }
 
+    /**
+     * 角色发现前写入 sid=0 的配置迁移到真实 sid（服务器登录学到的区服）。
+     * 目标已有配置时以目标为准，只补缺失项，避免覆盖用户后来的修改。
+     */
+    public void migrateRole(String fpid, long fromSid, long toSid) {
+        if (fpid == null || fpid.isEmpty() || fromSid == toSid) return;
+        Map<String, Boolean> from = readJson("acc:" + fpid + ":" + fromSid);
+        if (from == null || from.isEmpty()) return;
+        Map<String, Boolean> to = readJson("acc:" + fpid + ":" + toSid);
+        if (to == null) to = new LinkedHashMap<>();
+        for (Map.Entry<String, Boolean> e : from.entrySet()) {
+            if (!to.containsKey(e.getKey())) to.put(e.getKey(), e.getValue());
+        }
+        writeJson("acc:" + fpid + ":" + toSid, to);
+        prefs.edit().remove("acc:" + fpid + ":" + fromSid).apply();
+    }
+
     public void saveAccountConfig(String fpid, Map<String, Boolean> config) {
         writeJson("acc:" + fpid, config);
     }

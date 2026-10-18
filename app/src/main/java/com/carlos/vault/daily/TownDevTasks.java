@@ -191,6 +191,8 @@ final class TownDevTasks {
                 m.skip("科研所正在升级");
             } else if (code == 806) {
                 m.skip("前置科技/建筑等级不足");
+            } else if (code == 4104) {
+                m.skip("科技目标已满级或当前不可研究（码4104）");
             } else {
                 m.fail("研究码" + code);
             }

@@ -558,7 +558,7 @@ public class DailyRunner {
                     return new DailyResult("quest", "任务领取", DailyResult.Category.CLAIMED,
                             "任务 " + questId + " 奖励已领取");
                 }
-                return DailyTasks.classifyServerCode(ExecUtil.codeOf(rsp), "任务领取");
+                return DailyTasks.classifyServerCode(ExecUtil.codeOf(rsp), "daily_mission", "任务领取");
             } catch (Exception e) {
                 return DailyTasks.classifyException(e, "任务领取");
             }
@@ -578,7 +578,7 @@ public class DailyRunner {
                 return new DailyResult("quest", "任务领取", DailyResult.Category.CLAIMED,
                         "任务 " + questId + " 奖励已领取");
             }
-            return DailyTasks.classifyServerCode(ExecUtil.codeOf(rsp), "任务领取");
+            return DailyTasks.classifyServerCode(ExecUtil.codeOf(rsp), "daily_mission", "任务领取");
         } catch (Exception e) {
             return DailyTasks.classifyException(e, "任务领取");
         } finally {
@@ -1220,7 +1220,9 @@ public class DailyRunner {
                                 res.rewards == null ? "" : res.rewards,
                                 DailyRunner.SOURCE, res.durationMs, res.category.name(), res.attempt);
                         ls.setStatus(acc.fpid, sidF, res.taskId,
-                                ok ? LogStore.ST_DONE : LogStore.ST_FAILED);
+                                res.category == DailyResult.Category.CLAIMED ? LogStore.ST_DONE
+                                        : res.category == DailyResult.Category.SKIPPED
+                                        ? LogStore.ST_SKIPPED : LogStore.ST_FAILED);
                         ls.applySubResults(acc.fpid, sidF, res.taskId, res.subResults);
                     } catch (Throwable ignored) {
                     }

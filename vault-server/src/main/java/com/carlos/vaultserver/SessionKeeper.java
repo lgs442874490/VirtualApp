@@ -53,6 +53,11 @@ public final class SessionKeeper implements SessionControl,
         volatile long nextCaptureAt;
         volatile long stateSince = System.currentTimeMillis();
         volatile String state = WjdrEngine.STATE_OFFLINE;
+        /** 登录学到的角色元数据（/status 回传 App 角色卡）。 */
+        volatile String roleName = "";
+        volatile long roleLevel;
+        volatile long rolePower;
+        volatile String roleAlliance = "";
 
         LiveSession(VaultStore.Account acc) {
             this.fpid = acc.fpid;
@@ -197,6 +202,22 @@ public final class SessionKeeper implements SessionControl,
                 }
                 String identity = nick + "@k" + kid
                         + (alliance.isEmpty() ? "" : "(" + alliance + ")") + " 熔炉" + stove;
+                // 回传 App 角色卡用（名称/等级/联盟；战力 base_info 未必有，取到就带）
+                if (!nick.isEmpty()) roleName = nick;
+                if (!alliance.isEmpty()) roleAlliance = alliance;
+                try {
+                    roleLevel = (long) Double.parseDouble(stove);
+                } catch (Throwable ignored) {
+                }
+                try {
+                    Object pw = result instanceof Map
+                            ? ((Map<?, ?>) result).values().stream().findFirst().orElse(null) : null;
+                    Map<String, Object> pm = com.carlos.vaultserver.task.Exec.mapOf(pw);
+                    if (pm != null && pm.get("power") != null) {
+                        rolePower = (long) Double.parseDouble(String.valueOf(pm.get("power")));
+                    }
+                } catch (Throwable ignored) {
+                }
                 String idKey = "srv:uid:" + fpid + ":" + resolveSid();
                 String idnKey = "srv:identity:" + fpid + ":" + resolveSid();
                 String prevUid = stateStore.getString(idKey);
@@ -236,6 +257,10 @@ public final class SessionKeeper implements SessionControl,
                 FileLog.info("登录成功 fpid={} sid={} uid={} 角色={}",
                         fpid, String.valueOf(sid), String.valueOf(r.uid),
                         r.gameName == null ? "" : r.gameName);
+                roleName = r.gameName == null ? "" : r.gameName;
+                roleLevel = r.level;
+                rolePower = r.power;
+                roleAlliance = r.alliance == null ? "" : r.alliance;
                 verifyIdentity(r.uid);
                 String learned = engine.identityJson();
                 if (!learned.isEmpty()) store.learnIdentity(fpid, sid, learned);
@@ -315,6 +340,29 @@ public final class SessionKeeper implements SessionControl,
 
     // ---------- 整轮调度面（RoundScheduler / policy run 使用） ----------
 
+    /**
+     * 按需建会话并开始登录（账号页“登录并运行自动化”/手动触发用）。
+     * 与 reconcile 的区别：不要求账号 keep=true——手动登录是一次显式请求，
+     * 服务器临时保活该会话，跑完仍由统一开关决定是否常驻。
+     */
+    public boolean ensureSession(String fpid) {
+        if (stopped) return false;
+        VaultStore.Account acc = store.find(fpid);
+        if (acc == null || acc.token == null || acc.token.isEmpty()) return false;
+        // 显式登录即开启该账号的统一自动化，避免下一次 reconcile 把会话停掉。
+        store.setAutomation(fpid, true);
+        acc = store.find(fpid);
+        LiveSession ls = sessions.get(fpid);
+        if (ls == null) {
+            ls = new LiveSession(acc);
+            sessions.put(fpid, ls);
+            FileLog.info("按需建会话 fpid={} activeSid={}", fpid, String.valueOf(acc.activeSid));
+            ls.start();
+        }
+        ls.wantOnline = true;
+        return true;
+    }
+
     /** 提交整轮（fn=null）或单任务到该账号会话线程；返回是否受理。 */
     public boolean submitRound(String fpid, String fn, String trigger) {
         LiveSession ls = sessions.get(fpid);
@@ -340,8 +388,13 @@ public final class SessionKeeper implements SessionControl,
                         }
                     }
                 }
-                com.carlos.vaultserver.task.RoundRunner.runRound(
-                        ls.engine, acc, sid, stateStore, params, fn, trigger);
+                if ("1".equals(System.getenv("VAULT_LEGACY_ROUND"))) {
+                    com.carlos.vaultserver.task.RoundRunner.runRound(
+                            ls.engine, acc, sid, stateStore, params, fn, trigger);
+                } else {
+                    com.carlos.vaultserver.task.ModularRoundRunner.runRound(
+                            ls.engine, acc, sid, stateStore, params, fn, trigger);
+                }
             } catch (Throwable t) {
                 FileLog.warn("整轮异常 fpid={}：{}", fpid, String.valueOf(t));
             }
@@ -385,6 +438,10 @@ public final class SessionKeeper implements SessionControl,
                 s.state = ls.engine.sessionState();
                 s.lastFailure = ls.engine.lastFailure();
                 s.sid = ls.sid;
+                s.roleName = ls.roleName;
+                s.roleLevel = ls.roleLevel;
+                s.rolePower = ls.rolePower;
+                s.roleAlliance = ls.roleAlliance;
                 s.sinceTs = ls.stateSince;
             } else {
                 s.state = a.keep ? WjdrEngine.STATE_OFFLINE : "offline";

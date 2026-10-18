@@ -68,6 +68,7 @@ public final class VaultHttpApi {
         server.createContext("/v1/vault/status", ex -> guard(ex, "POST", "vaultStatus", this::handleStatus));
         server.createContext("/v1/vault/state", ex -> guard(ex, "POST", "vaultState", this::handleState));
         server.createContext("/v1/vault/policy", ex -> guard(ex, "POST", "vaultPolicy", this::handlePolicy));
+        server.createContext("/v1/vault/automation", ex -> guard(ex, "POST", "vaultAutomation", this::handleAutomation));
         server.createContext("/healthz", ex -> {
             writeJson(ex, 200, envelope(0, "ok", new JSONObject()));
         });
@@ -250,6 +251,10 @@ public final class VaultHttpApi {
             o.put("lastFailure", s.lastFailure == null ? "" : s.lastFailure);
             o.put("sid", s.sid == null ? "" : s.sid);
             o.put("hasToken", s.hasToken);
+            o.put("roleName", s.roleName == null ? "" : s.roleName);
+            o.put("roleLevel", s.roleLevel);
+            o.put("rolePower", s.rolePower);
+            o.put("roleAlliance", s.roleAlliance == null ? "" : s.roleAlliance);
             o.put("sinceTs", s.sinceTs);
             arr.put(o);
         }
@@ -295,6 +300,89 @@ public final class VaultHttpApi {
             return data;
         }
         throw new IllegalArgumentException("未知 action: " + action);
+    }
+
+    /**
+     * 账号自动化：read 返回服务器侧配置快照；run 打开统一开关、确保会话并排队整轮/单任务。
+     * 这是账号页“登录”按钮的服务端入口（App 不再本地执行任务）。
+     */
+    private JSONObject handleAutomation(Map<String, Object> fields) throws Exception {
+        String action = str(fields, "action");
+        String fpid = str(fields, "fpid");
+        if (fpid == null || fpid.isEmpty()) throw new IllegalArgumentException("缺少 fpid");
+        VaultStore.Account acc = store.find(fpid);
+        if (acc == null) throw new BizError(CODE_ACCOUNT_NOT_FOUND, "账号不存在: " + fpid);
+        if ("read".equals(action)) {
+            return automationSnapshot(acc);
+        }
+        if ("run".equals(action)) {
+            if (acc.token == null || acc.token.isEmpty()) {
+                throw new BizError(CODE_ACCOUNT_NOT_FOUND, "账号没有 token: " + fpid);
+            }
+            if (roundScheduler == null) throw new BizError(3002, "整轮调度器未启用");
+            String fn = str(fields, "fn");
+            store.setAutomation(fpid, true);
+            keeper.reconcile();
+            boolean hasSession = keeper.ensureSession(fpid);
+            boolean queued = roundScheduler.requestRun(fpid, fn == null ? "" : fn);
+            acc = store.find(fpid);
+            JSONObject data = automationSnapshot(acc);
+            data.put("accepted", hasSession && queued);
+            data.put("queued", queued);
+            data.put("fn", fn == null ? "" : fn);
+            FileLog.info("自动化登录触发 fpid={} fn={} session={} queued={}",
+                    fpid, String.valueOf(fn), hasSession, queued);
+            return data;
+        }
+        throw new IllegalArgumentException("未知 action: " + action);
+    }
+
+    private JSONObject automationSnapshot(VaultStore.Account acc) {
+        JSONObject data = new JSONObject();
+        try {
+            String sid = acc.activeSid == null ? "" : acc.activeSid;
+            data.put("fpid", acc.fpid);
+            data.put("sid", sid);
+            data.put("auto", acc.auto);
+            data.put("keep", acc.keep);
+            data.put("windowStart", acc.windowStart);
+            data.put("windowEnd", acc.windowEnd);
+            data.put("hasToken", acc.token != null && !acc.token.isEmpty());
+            data.put("state", sessionStateOf(acc.fpid));
+            Object last = stateStore.snapshot().get("srv:lastrun:" + acc.fpid);
+            data.put("lastRun", last instanceof Number ? ((Number) last).longValue() : 0L);
+            Map<String, Boolean> cfg = acc.roleConfig.get(sid);
+            JSONObject config = new JSONObject();
+            if (cfg != null) {
+                for (Map.Entry<String, Boolean> e : cfg.entrySet()) {
+                    config.put(e.getKey(), Boolean.TRUE.equals(e.getValue()));
+                }
+            }
+            data.put("config", config);
+            Map<String, String> prm = acc.roleParams.get(sid);
+            JSONObject params = new JSONObject();
+            if (prm != null) {
+                for (Map.Entry<String, String> e : prm.entrySet()) {
+                    if (e.getValue() != null && !e.getValue().isEmpty()) {
+                        params.put(e.getKey(), e.getValue());
+                    }
+                }
+            }
+            data.put("params", params);
+        } catch (Throwable t) {
+            FileLog.warn("自动化快照组装失败 fpid={}：{}", acc.fpid, String.valueOf(t));
+        }
+        return data;
+    }
+
+    private String sessionStateOf(String fpid) {
+        try {
+            for (SessionControl.SessionStatus s : keeper.status()) {
+                if (fpid.equals(s.fpid)) return s.state == null ? "offline" : s.state;
+            }
+        } catch (Throwable ignored) {
+        }
+        return "offline";
     }
 
     // ---------- 工具 ----------

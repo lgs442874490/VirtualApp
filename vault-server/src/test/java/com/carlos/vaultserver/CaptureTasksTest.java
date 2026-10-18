@@ -99,7 +99,8 @@ public class CaptureTasksTest {
     public void calendar_familyNameAndText() {
         FakeEngine e = new FakeEngine();
         Map<String, Object> sched = new HashMap<>();
-        long begin = System.currentTimeMillis() / 1000L + 3600;
+        long now = System.currentTimeMillis() / 1000L;
+        long begin = now + 3600;   // 未来 1 小时开启（语义：即将开启，不依赖固定“今日”文案）
         long end = begin + 7200;
         sched.put("begin_ts", begin);
         sched.put("end_ts", end);
@@ -117,7 +118,21 @@ public class CaptureTasksTest {
         JSONObject t = todos.getJSONObject(0);
         assertEquals("烈焰与獠牙", t.getString("name"));
         assertEquals("act_flamefangs", t.getString("fn"));
-        assertTrue(t.getString("text").contains("今日开启"));
+        // 文案期望按同一时间语义推导：begin 在北京时间“今天”内 → “今日开启”，否则 → “明日 HH:mm 开始”。
+        // 回归：旧断言恒定 contains("今日开启")，在 23:00-24:00（+1h 跨日）必红（存量时钟 flake）。
+        java.util.Calendar dayStart = java.util.Calendar.getInstance(
+                com.carlos.vaultserver.Beijing.TZ);
+        dayStart.set(java.util.Calendar.HOUR_OF_DAY, 0);
+        dayStart.set(java.util.Calendar.MINUTE, 0);
+        dayStart.set(java.util.Calendar.SECOND, 0);
+        dayStart.set(java.util.Calendar.MILLISECOND, 0);
+        long todayStart = dayStart.getTimeInMillis() / 1000L;
+        java.text.SimpleDateFormat hm = com.carlos.vaultserver.Beijing.fmt("HH:mm");
+        String beginHm = hm.format(new java.util.Date(begin * 1000));
+        String expectedText = (begin - todayStart) < 86400L
+                ? "今日开启 " + beginHm
+                : "明日 " + beginHm + " 开始";
+        assertEquals(expectedText, t.getString("text"));
         JSONObject mod = new JSONObject(store.getString("mod:111:913:act_flamefangs"));
         assertEquals(begin + " 时段已写入活动功能状态", true, mod.has("open"));
     }

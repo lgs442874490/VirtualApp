@@ -132,8 +132,10 @@ public final class DailyTasks {
 
             // ① 登录好礼（十四天双轨）
             GameMessage rsp = engine.request("req_fourteen_sign_get_all_reward", null);
-            DailyResult r = classifySimple(rsp, "req_fourteen_sign_get_all_reward", "登录好礼",
-                    new String[]{"code"}, "已一键领取全部可领签到奖励");
+            // code=0 只是“请求成功”，不能证明有奖励到账；必须有奖励字段才算 CLAIMED。
+            DailyResult r = classifySimple(rsp, "login_rewards", "登录好礼",
+                    new String[]{"awards", "rewards", "items", "award_success_list", "gain"},
+                    "已一键领取全部可领签到奖励");
             if (r.category == DailyResult.Category.CLAIMED) {
                 claimed++;
                 String d = r.rewards.isEmpty() ? loginGiftDetail(mod) : r.rewards;
@@ -248,7 +250,7 @@ public final class DailyTasks {
             }
             Object code = rsp.getContent().get("code");
             if (code != null && toInt(code) != 0) {
-                return classifyServerCode(toInt(code), "成就奖励");
+                return classifyServerCode(toInt(code), "achievement_claim", "成就奖励");
             }
             String d = descRewards(rsp.getContent().get("rewards") != null
                     ? rsp.getContent().get("rewards") : rsp.getContent().get("awards"));
@@ -386,7 +388,7 @@ public final class DailyTasks {
             }
             Object code = claim.getContent().get("code");
             if (code != null && toInt(code) != 0) {
-                return classifyServerCode(toInt(code), "邮件奖励");
+                return classifyServerCode(toInt(code), "mail", "邮件奖励");
             }
             List<Object> readList = listOfRaw(claim.getContent().get("readlist_new"));
             int confirmed = readList == null ? pendingIds.size() : readList.size();
@@ -617,6 +619,7 @@ public final class DailyTasks {
                         "子开关「批量领奖」已关闭");
             }
             Map<String, Object> args = new LinkedHashMap<>();
+            int unclaimedBefore = unclaimedQuestAwards(engine);
             List<Integer> ids = dailyQuestIds(engine);
             args.put("quest_ids", ids);
             GameMessage rsp = engine.request("req_get_all_dailyquest_award", args);
@@ -625,21 +628,43 @@ public final class DailyTasks {
                         "响应异常（协议可能变更）");
             }
             Object code = rsp.getContent().get("code");
-            if (code != null && toInt(code) != 0) {
-                return classifyServerCode(toInt(code), "每日任务奖励");
+            int c = code == null ? 0 : toInt(code);
+            if (c != 0) {
+                if ((c == 4302 || c == 4303) && unclaimedBefore == 0) {
+                    return new DailyResult("daily_mission", "每日任务奖励",
+                            DailyResult.Category.SKIPPED,
+                            "今日任务奖励已全部领取（码" + c + "）");
+                }
+                if (c == 4302 || c == 4303) {
+                    return new DailyResult("daily_mission", "每日任务奖励",
+                            DailyResult.Category.DEGRADED,
+                            "仍有 " + unclaimedBefore + " 个已完成未领任务，服务端返回码" + c);
+                }
+                return classifyServerCode(c, "daily_mission", "每日任务奖励");
             }
-            // 成功证据：奖励列表字段（原版为 awards / rewards 之一）
-            boolean hasAward = rsp.getContent().containsKey("awards")
-                    || rsp.getContent().containsKey("rewards")
-                    || rsp.getContent().containsKey("quest_ids");
-            if (hasAward) {
-                DailyResult r = new DailyResult("daily_mission", "每日任务奖励", DailyResult.Category.CLAIMED,
-                        "已完成任务奖励批量领取（未完成的任务由服务端自动跳过）");
-                r.rewards = RewardText.fromContent(rsp.getContent());
+            // code=0：响应只有 integral/geted_boxid；用领取前后未领任务数/宝箱/积分作为证据。
+            int unclaimedAfter = unclaimedQuestAwards(engine);
+            List<Object> boxes = listOfRaw(rsp.getContent().get("geted_boxid"));
+            int integralAfter = toInt(rsp.getContent().get("integral"));
+            int newly = Math.max(0, unclaimedBefore - unclaimedAfter);
+            if (newly > 0) {
+                return new DailyResult("daily_mission", "每日任务奖励",
+                        DailyResult.Category.CLAIMED, "任务奖励已领取×" + newly);
+            }
+            if (boxes != null && !boxes.isEmpty()) {
+                DailyResult r = new DailyResult("daily_mission", "每日任务奖励",
+                        DailyResult.Category.CLAIMED,
+                        "活跃度宝箱已领取×" + boxes.size());
+                r.rewards = "宝箱" + boxes;
                 return r;
             }
+            if (unclaimedBefore == 0) {
+                return new DailyResult("daily_mission", "每日任务奖励",
+                        DailyResult.Category.SKIPPED,
+                        "今日任务奖励已全部领取（活跃度 " + integralAfter + "）");
+            }
             return new DailyResult("daily_mission", "每日任务奖励", DailyResult.Category.DEGRADED,
-                    "响应无奖励字段，未确认到账（不视为成功）");
+                    "仍有 " + unclaimedBefore + " 个已完成未领任务，响应无到账证据");
         } catch (Exception e) {
             return classifyException(e, "每日任务奖励");
         }
@@ -671,6 +696,31 @@ public final class DailyTasks {
         List<Integer> out = new ArrayList<>();
         for (long id : ids) out.add((int) id);
         return out;
+    }
+
+    /** notify_dailyquests.finishs 中已完成但未领（isgetaward=false/缺失）的数量。 */
+    static int unclaimedQuestAwards(WjdrEngine engine) {
+        try {
+            engine.collectNotifies(600);
+            Map<String, Object> q = engine.notifyData("notify_dailyquests");
+            if (q == null) return 0;
+            Object finishs = q.get("finishs");
+            if (!(finishs instanceof Map)) return 0;
+            int n = 0;
+            for (Object v : ((Map<?, ?>) finishs).values()) {
+                if (v instanceof Map) {
+                    Object g = ((Map<?, ?>) v).get("isgetaward");
+                    boolean claimed = g instanceof Boolean
+                            ? (Boolean) g : "true".equalsIgnoreCase(String.valueOf(g));
+                    if (!claimed) n++;
+                } else {
+                    n++;
+                }
+            }
+            return n;
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     // ---------- 4b. 章节奖励 + 章节任务 + 成长任务 ----------
@@ -798,7 +848,7 @@ public final class DailyTasks {
                 }
                 Object code = view.getContent().get("code");
                 if (code != null && toInt(code) != 0) {
-                    DailyResult r = classifyServerCode(toInt(code), "探险挂机");
+                    DailyResult r = classifyServerCode(toInt(code), "adventure", "探险挂机");
                     if (toInt(code) == 4004 || toInt(code) == 4003) {
                         return new DailyResult("adventure", "探险挂机奖励", DailyResult.Category.SKIPPED,
                                 "挂机奖励尚未解锁或间隔未到");
@@ -821,7 +871,7 @@ public final class DailyTasks {
                     return new DailyResult("adventure", "探险挂机奖励", DailyResult.Category.SKIPPED,
                             "探险挂机尚未解锁（需通关首个探险关卡）");
                 }
-                return classifyServerCode(toInt(code), "探险挂机");
+                return classifyServerCode(toInt(code), "adventure", "探险挂机");
             }
             if (claim.getContent().containsKey("rewards")
                     || claim.getContent().containsKey("reward")) {
@@ -988,7 +1038,7 @@ public final class DailyTasks {
                     return new DailyResult("alliance_chest", "联盟宝箱", DailyResult.Category.SKIPPED,
                             "暂无可领取的宝箱");
                 }
-                return classifyServerCode(c, "联盟宝箱");
+                return classifyServerCode(c, "alliance_chest", "联盟宝箱");
             }
             DailyResult r = new DailyResult("alliance_chest", "联盟宝箱", DailyResult.Category.CLAIMED,
                     "联盟宝箱已批量领取" + descRewards(rsp.getContent().get("rewards")));
@@ -1079,7 +1129,7 @@ public final class DailyTasks {
                     return new DailyResult("battle_shield", "战斗护盾", DailyResult.Category.SKIPPED,
                             "今日已使用或不可用");
                 }
-                return classifyServerCode(c, "战斗护盾");
+                return classifyServerCode(c, "battle_shield", "战斗护盾");
             }
             return new DailyResult("battle_shield", "战斗护盾", DailyResult.Category.CLAIMED,
                     "8小时免费护盾已开启（被袭击时生效）");
@@ -1149,7 +1199,7 @@ public final class DailyTasks {
         }
         Object code = msg.getContent().get("code");
         if (code != null && toInt(code) != 0) {
-            return classifyServerCode(toInt(code), name);
+            return classifyServerCode(toInt(code), proto, name);
         }
         for (String k : evidenceKeys) {
             if (msg.getContent().containsKey(k)) {
@@ -1174,41 +1224,52 @@ public final class DailyTasks {
         }
     }
 
-    /** 服务端业务错误码 → 合理跳过（带原因）或异常。码表来自原版各服务。 */
-    static DailyResult classifyServerCode(int code, String name) {
+    /**
+     * 服务端业务错误码 → 合理跳过（带原因）或异常。
+     *
+     * <p>fnId 必须始终是功能注册表 id（例如 daily_mission），不能传显示名：
+     * 否则日志/当日状态会落到中文键，功能详情按 id 查不到，显示成“今日未跑”。
+     */
+    static DailyResult classifyServerCode(int code, String fnId, String name) {
         switch (code) {
             case 2:
-                return new DailyResult("supply", name, DailyResult.Category.SKIPPED, "尚未到可领时间（冷却中）");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "尚未到可领时间（冷却中）");
             case 6151:
-                return new DailyResult("supply", name, DailyResult.Category.SKIPPED, "当前不可领取，等待下一窗口");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "当前不可领取，等待下一窗口");
             case 6158:
-                return new DailyResult("supply", name, DailyResult.Category.SKIPPED, "本窗口已领过");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "本窗口已领过");
             case 6152:
-                return new DailyResult("supply", name, DailyResult.Category.SKIPPED, "体力补给不可领取");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "体力补给不可领取");
             case 7501:
-                return new DailyResult(name, name, DailyResult.Category.SKIPPED, "今日已领取或暂无可领奖励");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "今日已领取或暂无可领奖励");
             case 4303:
-                return new DailyResult(name, name, DailyResult.Category.SKIPPED, "暂无可领取的任务奖励");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "暂无可领取的任务奖励");
+            case 4302:
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED,
+                        "任务奖励已领取或暂无可领（码4302）");
+            case 4104:
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED,
+                        "科技目标已满级或当前不可研究（码4104）");
             case 4004:
-                return new DailyResult("adventure", name, DailyResult.Category.SKIPPED, "领取间隔未到");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "领取间隔未到");
             case 4003:
-                return new DailyResult("adventure", name, DailyResult.Category.SKIPPED, "功能尚未解锁");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "功能尚未解锁");
             case 21:
-                return new DailyResult(name, name, DailyResult.Category.SKIPPED, "今日已领取或次数已用");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "今日已领取或次数已用");
             case 7401: case 7404:
-                return new DailyResult("activity", name, DailyResult.Category.SKIPPED, "活动未开启或已结束");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "活动未开启或已结束");
             case 40611: case 61:
-                return new DailyResult("activity", name, DailyResult.Category.SKIPPED, "今日已领取");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "今日已领取");
             case 1201:
-                return new DailyResult("mail", name, DailyResult.Category.SKIPPED, "邮件不存在（已被领）");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "邮件不存在（已被领）");
             case 1202:
-                return new DailyResult("mail", name, DailyResult.Category.SKIPPED, "附件已领取");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "附件已领取");
             case 1204: case 1215:
-                return new DailyResult("mail", name, DailyResult.Category.SKIPPED, "邮件状态不允许领取");
+                return new DailyResult(fnId, name, DailyResult.Category.SKIPPED, "邮件状态不允许领取");
             case 40271:
-                return new DailyResult(name, name, DailyResult.Category.SESSION_CLOSED, "被服务端强制下线");
+                return new DailyResult(fnId, name, DailyResult.Category.SESSION_CLOSED, "被服务端强制下线");
             default:
-                return new DailyResult(name, name, DailyResult.Category.ERROR, "服务端返回错误码 " + code);
+                return new DailyResult(fnId, name, DailyResult.Category.ERROR, "服务端返回错误码 " + code);
         }
     }
 

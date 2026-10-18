@@ -2,6 +2,7 @@ package com.carlos.vaultserver.task;
 
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
+import com.carlos.vaultserver.FileLog;
 
 import org.json.JSONObject;
 
@@ -30,13 +31,31 @@ public final class ServerFieldTasks {
             int minLevel = Math.max(1, Math.min(6, p.optInt("min_level", 5)));
             int maxQueues = Math.max(1, Math.min(5, p.optInt("max_queues", 3)));
             List<Integer> resList = new ArrayList<>();
-            org.json.JSONArray resArr = p.optJSONArray("resources");
-            if (resArr == null || resArr.length() == 0) {
-                resList.add(1);
-                resList.add(2);
-            } else {
-                for (int i = 0; i < resArr.length(); i++) {
-                    resList.add(resArr.optInt(i) - 101);
+            org.json.JSONArray named = p.optJSONArray("resources_named");
+            if (named != null && named.length() > 0) {
+                // 业务名 → 游戏资源 id：肉102/木103/煤104/铁105 → 采集 res_id 1/2/3/4
+                for (int i = 0; i < named.length(); i++) {
+                    String n = named.optString(i, "").trim().toUpperCase();
+                    int raw;
+                    switch (n) {
+                        case "MEAT": raw = 102; break;
+                        case "WOOD": raw = 103; break;
+                        case "COAL": raw = 104; break;
+                        case "IRON": raw = 105; break;
+                        default: raw = 0;
+                    }
+                    if (raw > 0) resList.add(raw - 101);
+                }
+            }
+            if (resList.isEmpty()) {
+                org.json.JSONArray resArr = p.optJSONArray("resources");
+                if (resArr == null || resArr.length() == 0) {
+                    resList.add(1);
+                    resList.add(2);
+                } else {
+                    for (int i = 0; i < resArr.length(); i++) {
+                        resList.add(resArr.optInt(i) - 101);
+                    }
                 }
             }
             int active = countMarches(tc.engine, 4);
@@ -52,7 +71,7 @@ public final class ServerFieldTasks {
                     for (int level = Math.min(6, minLevel); level >= 1 && sent < slots; level--) {
                         Map<String, Object> pt = searchResource(tc.engine, res, level, fullOnly);
                         if (pt == null) continue;
-                        Map<String, Object> formation = Exec.formation(tc.engine, 1 + (sent % 3));
+                        Map<String, Object> formation = formationFor(tc, "gather", 1 + (sent % 3));
                         if (formation == null) {
                             m.skip("无英雄可派");
                             return Exec.result(m, "gather", "野外采集");
@@ -84,12 +103,82 @@ public final class ServerFieldTasks {
         return Exec.result(m, "gather", "野外采集");
     }
 
+    /**
+     * 编队：配置了 hero_ids 时按“英雄 id + 动态兵力”构造；否则回退旧 Exec.formation。
+     *
+     * <p>字段（存于 daily_params 的 fnId 参数）：
+     * hero_ids:[id1,id2,id3]、troop_count、full_troops、
+     * shield_ratio/spear_ratio/bow_ratio。
+     * 采集/打野兽共用同一套，避免两处算法漂移。
+     */
+    static Map<String, Object> formationFor(TaskContext tc, String fnId, int fallbackSquad) {
+        org.json.JSONObject p = tc.params(fnId);
+        // App 采集弹窗的“编队”选择：直接使用游戏内第 N 队布阵。
+        int squad = p.optInt("squad_index", 0);
+        if (squad > 0) return Exec.formation(tc.engine, squad);
+        org.json.JSONArray heroArr = p.optJSONArray("hero_ids");
+        if (heroArr == null || heroArr.length() == 0) {
+            return Exec.formation(tc.engine, fallbackSquad);
+        }
+        List<Map<String, Object>> heroPairs = new ArrayList<>();
+        for (int i = 0; i < heroArr.length(); i++) {
+            long hid = heroArr.optLong(i, 0);
+            if (hid > 0) heroPairs.add(Exec.kv(hid, 1));
+        }
+        if (heroPairs.isEmpty()) return Exec.formation(tc.engine, fallbackSquad);
+
+        long[] base = Exec.baseSoldiers(tc.engine); // 盾/矛/弓 tier1 可用量
+        long available = base[0] + base[1] + base[2];
+        if (available <= 0) return null;
+        long requested = p.optLong("troop_count", 0);
+        if (requested <= 0) {
+            long target = p.optLong("target_amount", 0);
+            if (target > 0) {
+                double carry = Math.max(1.0, p.optDouble("carry_per_troop", 100)
+                        * (1.0 + p.optDouble("hero_carry_bonus", 0.30)));
+                requested = (long) Math.ceil(target / carry
+                        * (1.0 + p.optDouble("buffer_pct", 5.0) / 100.0));
+            }
+        }
+        long total = p.optBoolean("full_troops", false)
+                ? available : Math.min(available, Math.max(1, requested > 0 ? requested : available));
+        double sh = Math.max(0, p.optDouble("shield_ratio", 0.40));
+        double sp = Math.max(0, p.optDouble("spear_ratio", 0.30));
+        double bw = Math.max(0, p.optDouble("bow_ratio", 0.30));
+        double sum = sh + sp + bw;
+        if (sum <= 0) { sh = 0.4; sp = 0.3; bw = 0.3; sum = 1.0; }
+        long wantShield = Math.min(base[0], Math.round(total * sh / sum));
+        long wantSpear = Math.min(base[1], Math.round(total * sp / sum));
+        long wantBow = Math.min(base[2], Math.max(0, total - wantShield - wantSpear));
+        List<Map<String, Object>> soldierPairs = new ArrayList<>();
+        long[] want = {wantShield, wantSpear, wantBow};
+        // 兵种*10000 + 等级*100；用账号当前最高档，不能写死 10001/20001/30001。
+        long[] ids = Exec.bestSoldierIds(Exec.soldiers(tc.engine));
+        for (int i = 0; i < 3; i++) {
+            if (want[i] > 0) soldierPairs.add(Exec.kv(ids[i], want[i]));
+        }
+        if (soldierPairs.isEmpty()) return null;
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("hero_id", heroPairs);
+        f.put("soldier", soldierPairs);
+        return f;
+    }
+
     private static Map<String, Object> searchResource(WjdrEngine engine, int resId, int level,
                                                       boolean fullOnly) throws Exception {
         GameMessage rsp = engine.request("req_world_map_search", Exec.args(
                 "mapobj_type", 2L, "level_min", level, "level_max", level,
                 "res_id", resId, "is_full", fullOnly));
-        if (!Exec.ok(rsp)) return null;
+        if (!Exec.ok(rsp)) {
+            // 2872=本区无空矿，属正常状态，不刷日志。
+            int code = Exec.codeOf(rsp);
+            if (code != 2872) FileLog.warn("采集搜索失败 res={} lv={} code={}", resId, level, code);
+            return null;
+        }
+        // 协议（req_world_map_search.response）：坐标在单对象 point{x,y}，
+        // 旧代码只找 points/data/list，导致每次都判定“附近未搜到资源点”。
+        Map<String, Object> point = Exec.mapOf(rsp.getContent().get("point"));
+        if (point != null && point.containsKey("x") && point.containsKey("y")) return point;
         for (String k : new String[]{"points", "data", "list"}) {
             for (Map<String, Object> p : Exec.mapsOf(rsp.getContent().get(k))) {
                 if (p.containsKey("x") && p.containsKey("y")) return p;
@@ -184,6 +273,52 @@ public final class ServerFieldTasks {
                 if (handled > 0) m.claimed("处理情报×" + handled);
                 else m.skip("无可派情报");
             }
+
+            // 专家额外情报页：notify_expert_quests.finishs 中 isgetaward=false 的项，
+            // 逐个 req_get_expert_quest_award{quest_id}；按天台账去重，避免重复领取/弹窗。
+            if (tc.subOn("intel", "expert_extra", true)) {
+                Map<String, Object> eq = tc.engine.notifyData("notify_expert_quests");
+                if (eq == null) {
+                    m.subSkip("expert_extra", "专家情报未同步");
+                    tc.saveModText("intel", "expert_extra", "未同步");
+                } else {
+                    List<Long> pending = ServerTasks.unclaimedFinishIds(eq.get("finishs"));
+                    int claimed = 0, failed = 0;
+                    int skipped = Math.max(0, ServerTasks.finishCount(eq.get("finishs")) - pending.size());
+                    for (long qid : pending) {
+                        String key = String.valueOf(qid);
+                        if (ClaimLedger.isClaimed(tc, "expert_extra", key)) {
+                            skipped++;
+                            continue;
+                        }
+                        int[] c = ServerTasks.tryClaim(tc, "专家情报", "req_get_expert_quest_award",
+                                Exec.args("quest_id", qid), null);
+                        if (c[0] > 0) {
+                            claimed++;
+                            ClaimLedger.mark(tc, "expert_extra", key);
+                        } else if (c[1] > 0) {
+                            // 已领/未开放等账号状态：记台账，后续轮次不再请求也不再提示。
+                            skipped++;
+                            ClaimLedger.mark(tc, "expert_extra", key);
+                        } else {
+                            failed++;
+                        }
+                    }
+                    if (claimed > 0) {
+                        m.claimed("专家额外情报×" + claimed);
+                        m.subOk("expert_extra", "领取×" + claimed);
+                        tc.saveModText("intel", "expert_extra", "已领取 " + claimed + " 项");
+                    } else if (failed > 0) {
+                        m.fail("专家额外情报失败×" + failed);
+                        m.subFail("expert_extra", "失败×" + failed);
+                        tc.saveModText("intel", "expert_extra", "失败 " + failed + " 项");
+                    } else {
+                        m.subSkip("expert_extra", "无可领（已领/去重 " + skipped + "）");
+                        tc.saveModText("intel", "expert_extra",
+                                "无可领 · 已领/去重 " + skipped + " 项");
+                    }
+                }
+            }
         } catch (Exception e) {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "情报任务");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
@@ -203,6 +338,9 @@ public final class ServerFieldTasks {
             int maxTimes = Math.max(1, Math.min(20, hp.optInt("max_times", 5)));
             int hunted = 0;
             int noTarget = 0;
+            List<Long> allHeroes = Exec.allHeroes(tc.engine);
+            boolean heroConfigured = hp.has("hero_ids") || hp.optInt("squad_index", 0) > 0;
+            int heroOffset = 0;
             for (int round = 0; round < maxTimes; round++) {
                 Map<String, Object> target = null;
                 for (int lv = lvMax; lv >= lvMin && target == null; lv--) {
@@ -212,21 +350,41 @@ public final class ServerFieldTasks {
                     noTarget++;
                     break;
                 }
-                Map<String, Object> formation = Exec.formation(tc.engine, 1 + (round % 3));
+                Map<String, Object> formation;
+                if (!heroConfigured && heroOffset + 3 <= allHeroes.size()) {
+                    // 301=英雄不在城（正在采集/狩猎）：每队轮换下一组 3 个空闲候选。
+                    formation = Exec.formationWithHeroes(tc.engine,
+                            allHeroes.subList(heroOffset, heroOffset + 3));
+                } else {
+                    formation = formationFor(tc, "hunt", 1 + (round % 3));
+                }
                 if (formation == null) {
                     m.skip("无英雄可派");
                     break;
                 }
                 long monsterId = Exec.longOf(target.get("monsterid"));
+                Map<String, Object> extra = monsterId > 0
+                        ? Exec.args("monsterid", monsterId) : new LinkedHashMap<>();
                 GameMessage march = tc.engine.request("req_world_march", Exec.args(
                         "type", 3L,
                         "endpoint", Exec.point(Exec.longOf(target.get("x")), Exec.longOf(target.get("y"))),
                         "formation", formation,
-                        "extra", Exec.args("monsterid", monsterId)));
+                        "extra", extra));
                 if (Exec.marchId(march) > 0) {
                     hunted++;
+                    heroOffset += 3;
                 } else {
                     int code = Exec.codeOf(march);
+                    if (code == 301) {
+                        // 301=目标/英雄当前不可出征：换下一组候选重试同一目标。
+                        heroOffset += 3;
+                        if (!heroConfigured && heroOffset + 3 > allHeroes.size()) {
+                            m.skip("暂无空闲英雄或目标不可出征(301)");
+                            break;
+                        }
+                        Exec.sleep(300);
+                        continue;
+                    }
                     if (code == 51) {
                         m.skip("体力不足");
                         break;
@@ -294,8 +452,12 @@ public final class ServerFieldTasks {
             int swept = 0;
             for (int i = 0; i < maxSweep; i++) {
                 long next = passed + 1;
+                // 协议：fight_heros_data 是对象 {source, fight_heros[]}，直接传数组会报
+                // “Struct field expects Map”。
+                Map<String, Object> fightData = Exec.args(
+                        "source", 1L, "fight_heros", heroes);
                 GameMessage begin = tc.engine.request("req_begin_adventure_pve", Exec.args(
-                        "checkpoint", next, "fight_heros_data", heroes, "is_fast", true));
+                        "checkpoint", next, "fight_heros_data", fightData, "is_fast", true));
                 if (!Exec.ok(begin)) {
                     int code = Exec.codeOf(begin);
                     m.skip("第" + next + "关无法速刷(码" + code + ")"
@@ -345,6 +507,26 @@ public final class ServerFieldTasks {
         GameMessage rsp = engine.request("req_world_map_search", Exec.args(
                 "mapobj_type", 3L, "level_min", level, "level_max", level));
         if (!Exec.ok(rsp)) return null;
+        Map<String, Object> point = Exec.mapOf(rsp.getContent().get("point"));
+        if (point != null && point.containsKey("x") && point.containsKey("y")) {
+            // 搜索只给坐标；野怪 id 要用 req_world_mapobj{kid,point} 查该格的地图对象。
+            try {
+                GameMessage obj = engine.request("req_world_mapobj", Exec.args(
+                        "kid", engine.lastServerId(),
+                        "point", Exec.point(Exec.longOf(point.get("x")), Exec.longOf(point.get("y")))));
+                Map<String, Object> mo = obj == null ? null : Exec.mapOf(obj.getContent().get("mapobj"));
+                Map<String, Object> mon = mo == null ? null : Exec.mapOf(mo.get("map_monster"));
+                if (mon != null) {
+                    long mid = Exec.longOf(mon.get("id"));
+                    if (mid > 0) point.put("monsterid", mid);
+                    Map<String, Object> ap = Exec.mapOf(mon.get("atk_point"));
+                    if (ap != null) point.put("atk_point", ap);
+                }
+            } catch (Throwable t) {
+                FileLog.warn("野怪对象查询失败 {}", String.valueOf(t));
+            }
+            return point;
+        }
         for (String k : new String[]{"points", "data", "list"}) {
             for (Map<String, Object> p : Exec.mapsOf(rsp.getContent().get(k))) {
                 if (p.containsKey("x") && p.containsKey("y")) return p;
@@ -501,6 +683,9 @@ public final class ServerFieldTasks {
                 m.skip("科研所正在升级");
             } else if (code == 806) {
                 m.skip("前置科技/建筑等级不足");
+            } else if (code == 4104) {
+                // 实测：目标科技已满级/当前路线不可研究，不是异常。
+                m.skip("科技目标已满级或当前不可研究（码4104）");
             } else {
                 m.fail("研究码" + code);
             }

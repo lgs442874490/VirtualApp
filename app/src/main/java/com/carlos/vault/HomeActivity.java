@@ -97,11 +97,34 @@ public class HomeActivity extends AccountVaultActivity {
     private TextView searchCap;         // 搜索结果计数 / 空态提示行
     private AccountStore.Account taskAccount;
     private UiStyle.Switch fnSwRef(UiStyle.Switch s) { return s; }
+    /**
+     * 配置写入的 sid：优先当前角色；角色尚未发现时回退 activeRole/已发现角色。
+     * 不能直接用 currentRoleSid()=0：新账号首次打开日常页时角色可能还没同步，
+     * 写进 acc:fpid:0 的配置永远不会被 syncFields 上传（服务端只收 roles[] 的 sid）。
+     */
+    private long configSid(AccountStore.Account a) {
+        long sid = currentRoleSid();
+        if (sid > 0) return sid;
+        if (a == null) return 0;
+        sid = activeSid(a);
+        if (sid > 0) return sid;
+        try {
+            for (RoleStore.Role r : RoleStore.roles(this, a.fpid)) {
+                if (r.enabled && r.serverid > 0) return r.serverid;
+            }
+            for (RoleStore.Role r : RoleStore.roles(this, a.fpid)) {
+                if (r.serverid > 0) return r.serverid;
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0;
+    }
+
     private boolean fnOn(FnRegistry.Fn fn) {
         if (taskAccount == null) return false;
         // 口径统一：日常页一切读写跟随「全局当前角色」（与 refreshTasks 状态徽章同源），
         // 不走 activeSid——否则切换角色后开关仍读写旧角色配置（配置残留/串写）。
-        long sid = currentRoleSid();
+        long sid = configSid(taskAccount);
         Map<String, Boolean> cfg = new com.carlos.vault.daily.DailyConfigStore(this)
                 .roleConfig(taskAccount.fpid, sid);
         Boolean on = cfg == null ? null : cfg.get(fn.id);
@@ -109,12 +132,15 @@ public class HomeActivity extends AccountVaultActivity {
     }
     private void setFnOn(FnRegistry.Fn fn, boolean on) {
         if (taskAccount == null) return;
-        long sid = currentRoleSid();
+        long sid = configSid(taskAccount);
         com.carlos.vault.daily.DailyConfigStore cs = new com.carlos.vault.daily.DailyConfigStore(this);
         Map<String, Boolean> cfg = cs.roleConfig(taskAccount.fpid, sid);
         if (cfg == null) cfg = new java.util.LinkedHashMap<>();
         cfg.put(fn.id, on);
         cs.saveRoleConfig(taskAccount.fpid, sid, cfg);
+        // 关键：服务端执行依据是上传后的 roleConfig；不调用会等下一次全量同步，
+        // 表现为“App 里开了，服务器整轮仍按旧配置跑”。
+        VaultSync.onAccountsChanged(this);
     }
     private boolean defOn(String fnId) {
         for (com.carlos.vault.daily.DailyTasks.TaskDef d : com.carlos.vault.daily.DailyTasks.all()) {
@@ -206,8 +232,10 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     void onEngineReady() {
+        // 统一自动化：客户端不再本地执行任务，启动即锁定服务器模式。
+        VaultSync.ensureServerMode(this);
         refreshAllPages();
-        // 打开即全量核对：所有token账号后台逐个登录核对资料；开了自动且今天没跑的号直接补跑
+        // 打开即上传身份库并拉回服务器状态；本地不再补跑日常。
         new Thread(this::kickFullSync, "fullsync-kick").start();
     }
 
@@ -239,63 +267,27 @@ public class HomeActivity extends AccountVaultActivity {
 
     private boolean fullSyncing;
 
-    /** 打开App后台全量自动化：①逐账号核对资料(syncOnly) ②auto开启且今日未跑的账号补跑日常。 */
+    /**
+     * App 前台同步：只做“上传身份库 + 拉回服务器状态”。
+     *
+     * <p>2026-10 起自动化任务全部由 vault-server 执行，客户端不再在打开 App 时本地补跑；
+     * 服务器自己的 30 秒调度器负责整轮/补给，App 只负责展示与手动触发。
+     */
     private void kickFullSync() {
         if (fullSyncing) return;
         long lastFull = getSharedPreferences("home", MODE_PRIVATE).getLong("last_fullsync", 0);
         if (System.currentTimeMillis() - lastFull < 10 * 60_000L) return;   // 10分钟防抖
-        // 服务器模式：资料核对由服务器常驻会话负责，本地全量上传一次 + 拉回传状态与采集数据；②补跑日常仍走本地
-        final boolean serverMode = VaultSync.isServerMode(this);
-        if (serverMode) {
-            VaultSync.syncAll(this);
-            VaultSync.fetchState(this);
-        }
         fullSyncing = true;
         try {
-            List<AccountStore.Account> all = new ArrayList<>(accounts == null
-                    ? new ArrayList<>() : accounts);
-            int idx = 0;
-            for (AccountStore.Account a : all) {
-                if (a == null || a.token == null || a.token.isEmpty()
-                        || a.fpid == null || a.fpid.isEmpty()) continue;
-                idx++;
-                // 设计稿 S3 副题固定为「账号 / 工作区 / 在线」统计，核对进度不再占用该位置
-                if (!serverMode) {
-                    try {
-                        DailyRunner.syncOnly(this, a.fpid, a.token, mainRoleSid(a));
-                    } catch (Throwable ignored) {
-                    }
-                }
-                runOnUiThread(this::refreshAccounts);
-            }
-            // ②补跑：开了自动且今天还没跑过的账号
-            java.text.SimpleDateFormat dayFmt = new java.text.SimpleDateFormat("yyyy-MM-dd",
-                    java.util.Locale.CHINA);
-            String today = dayFmt.format(new java.util.Date());
-            for (AccountStore.Account a : all) {
-                if (a == null || a.token == null || a.token.isEmpty()
-                        || a.fpid == null || a.fpid.isEmpty()) continue;
-                RoleStore.Schedule sc = RoleStore.schedule(this, a.fpid);
-                if (!sc.autoEnabled) continue;
-                long lastRun = sc.lastRunAt;
-                boolean ranToday = lastRun > 0 && dayFmt.format(new java.util.Date(lastRun)).equals(today);
-                if (ranToday) continue;
-                runOnUiThread(() -> toast("自动补跑：" + a.label + "（今天还没跑）"));
-                try {
-                    String r = DailyRunner.runAccountRoles(this, a);
-                    if (r != null) {
-                        sc.lastRunAt = System.currentTimeMillis();
-                        RoleStore.saveSchedule(this, a.fpid, sc);
-                    }
-                } catch (Throwable ignored) {
-                }
-                runOnUiThread(this::refreshAllPages);
-            }
-            getSharedPreferences("home", MODE_PRIVATE).edit()
-                    .putLong("last_fullsync", System.currentTimeMillis()).apply();
-            runOnUiThread(() -> {
-                if (accountCap != null) refreshAccounts();
-                refreshAllPages();
+            VaultSync.ensureServerMode(this);
+            VaultSync.syncAll(this);
+            VaultSync.fetchState(this, (code, message, data) -> {
+                getSharedPreferences("home", MODE_PRIVATE).edit()
+                        .putLong("last_fullsync", System.currentTimeMillis()).apply();
+                runOnUiThread(() -> {
+                    if (accountCap != null) refreshAccounts();
+                    refreshAllPages();
+                });
             });
         } finally {
             fullSyncing = false;
@@ -538,34 +530,35 @@ public class HomeActivity extends AccountVaultActivity {
         btnRow.addView(roleBtn, olp);
         hero.addView(btnRow);
 
-        // —— 自动日常 / 24h 常驻在线 双卡 ——
-        LinearLayout duo = new LinearLayout(this);
-        duo.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams duoLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(136));
-        duoLp.topMargin = dp(12);
-        box.addView(duo, duoLp);
-
+        // —— 统一自动化任务卡（2026-10 起替代“自动日常 + 24h 常驻在线”双卡）——
         LinearLayout autoCard = new LinearLayout(this);
-        autoCard.setOrientation(LinearLayout.VERTICAL);
-        autoCard.setPadding(dp(12), dp(12), dp(12), dp(8));
+        autoCard.setOrientation(LinearLayout.HORIZONTAL);
+        autoCard.setGravity(Gravity.CENTER_VERTICAL);
+        autoCard.setPadding(dp(14), dp(14), dp(12), dp(14));
         autoCard.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 16, UiStyle.LINE));
+        LinearLayout.LayoutParams duoLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        duoLp.topMargin = dp(12);
+        autoCard.setLayoutParams(duoLp);
         autoCard.addView(UiStyle.iconTile(this, UiStyle.Icon.LIGHTNING,
-                UiStyle.BRAND_TEXT, UiStyle.BRAND_50, 32, 18, 10),
-                new LinearLayout.LayoutParams(dp(32), dp(32)));
+                UiStyle.BRAND_TEXT, UiStyle.BRAND_50, 40, 20, 12),
+                new LinearLayout.LayoutParams(dp(40), dp(40)));
+        LinearLayout aMid = new LinearLayout(this);
+        aMid.setOrientation(LinearLayout.VERTICAL);
+        aMid.setPadding(dp(12), 0, dp(8), 0);
         TextView autoTitle = new TextView(this);
-        autoTitle.setText("自动日常");
-        autoTitle.setTextSize(14);
+        autoTitle.setText("自动化任务");
+        autoTitle.setTextSize(15);
         autoTitle.setTypeface(Typeface.DEFAULT_BOLD);
         autoTitle.setTextColor(UiStyle.INK);
-        autoTitle.setPadding(0, dp(8), 0, 0);
-        autoCard.addView(autoTitle);
+        aMid.addView(autoTitle);
         todayAutoSub = new TextView(this);
-        todayAutoSub.setTextSize(10.5f);
+        todayAutoSub.setTextSize(11f);
         todayAutoSub.setTextColor(UiStyle.INK2);
         todayAutoSub.setPadding(0, dp(3), 0, 0);
-        autoCard.addView(todayAutoSub);
-        autoCard.addView(new View(this), new LinearLayout.LayoutParams(0, 0, 1));
+        aMid.addView(todayAutoSub);
+        autoCard.addView(aMid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         todayAutoSwitch = new UiStyle.Switch(this, false, () -> {
             AccountStore.Account cra = currentRoleAccount();
             if (cra == null) {
@@ -573,61 +566,18 @@ public class HomeActivity extends AccountVaultActivity {
                 todayAutoSwitch.setOn(false);
                 return;
             }
-            RoleStore.Schedule sch2 = RoleStore.schedule(this, cra.fpid);
-            sch2.autoEnabled = todayAutoSwitch.isOn();
-            RoleStore.saveSchedule(this, cra.fpid, sch2);
+            boolean on = todayAutoSwitch.isOn();
+            RoleStore.saveAutomation(this, cra.fpid, on);
+            VaultSync.ensureServerMode(this);
             VaultSync.onAccountsChanged(this);
+            com.carlos.vault.daily.RoleSessionKeeper.get(this).start();
+            com.carlos.vault.daily.RoleSessionKeeper.get(this).syncOnline();
+            toast(on ? "自动化任务已开启 · 服务器执行" : "自动化任务已关闭");
             refreshToday();
             refreshTasks();
         });
         autoCard.addView(todayAutoSwitch);
-        LinearLayout.LayoutParams aclp = new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.MATCH_PARENT, 1);
-        aclp.rightMargin = dp(10);
-        duo.addView(autoCard, aclp);
-
-        LinearLayout keepCard = new LinearLayout(this);
-        keepCard.setOrientation(LinearLayout.VERTICAL);
-        keepCard.setPadding(dp(12), dp(12), dp(12), dp(8));
-        keepCard.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 16, UiStyle.LINE));
-        keepCard.addView(UiStyle.iconTile(this, UiStyle.Icon.SHIELD,
-                UiStyle.PURPLE, UiStyle.PURPLE_50, 32, 18, 10),
-                new LinearLayout.LayoutParams(dp(32), dp(32)));
-        TextView keepTitle = new TextView(this);
-        keepTitle.setText("24h 常驻在线");
-        keepTitle.setTextSize(14);
-        keepTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        keepTitle.setTextColor(UiStyle.INK);
-        keepTitle.setPadding(0, dp(8), 0, 0);
-        keepCard.addView(keepTitle);
-        keepSub = new TextView(this);
-        keepSub.setTextSize(10.5f);
-        keepSub.setTextColor(UiStyle.INK2);
-        keepSub.setPadding(0, dp(3), 0, 0);
-        keepCard.addView(keepSub);
-        keepCard.addView(new View(this), new LinearLayout.LayoutParams(0, 0, 1));
-        keepSwitch = new UiStyle.Switch(this, false, () -> {
-            // 显示态来自 refreshToday 的 sel（currentRoleAccount），写入必须同源。
-            AccountStore.Account cur = currentRoleAccount();
-            if (cur == null) {
-                toast("没有可用账号");
-                keepSwitch.setOn(false);
-                return;
-            }
-            RoleStore.saveKeepOnline(this, cur.fpid, keepSwitch.isOn());
-            com.carlos.vault.daily.RoleSessionKeeper.get(this).start();
-            com.carlos.vault.daily.RoleSessionKeeper.get(this).syncOnline();
-            if (keepSwitch.isOn()) {
-                promptBatteryWhitelist();
-                promptNotificationAccess();
-            }
-            toast("常驻在线已" + (keepSwitch.isOn() ? "开启" : "关闭"));
-            refreshToday();
-            refreshTasks();
-        });
-        keepCard.addView(keepSwitch);
-        duo.addView(keepCard, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.MATCH_PARENT, 1));
+        box.addView(autoCard);
 
 
 
@@ -836,10 +786,16 @@ public class HomeActivity extends AccountVaultActivity {
                 || a.fpid == null || a.fpid.isEmpty()) return new String[]{"err", "失败·token"};
         long sid = activeSid(a);
         int[] st = new LogStore(this).dayStats(a.fpid, sid);
-        if (st[1] > 0) return new String[]{"err", "失败"};
-        if (st[2] > 0) return new String[]{"run", "进行中"};
-        if (st[3] > 0 && st[0] >= st[3]) return new String[]{"ok", "已完成"};
-        if (st[0] > 0) return new String[]{"wait", "待领取"};
+        int claimed = st[0], failed = st[1], running = st[2], total = st[3], skipped = st[4];
+        if (failed > 0) return new String[]{"err", "有异常"};
+        if (running > 0) return new String[]{"run", "进行中"};
+        if (total > 0 && claimed + skipped >= total) {
+            // 只有真实领取（CLAIMED）才显示“已完成”；全跳过显示“已检查”，
+            // 避免“显示已完成但游戏内没领到奖励”的误判。
+            return claimed > 0 ? new String[]{"ok", "已完成"} : new String[]{"ok", "已检查"};
+        }
+        if (claimed > 0) return new String[]{"wait", "待领取"};
+        if (skipped > 0) return new String[]{"wait", "已检查"};
         return new String[]{"idle", "未开始"};
     }
 
@@ -1244,31 +1200,26 @@ public class HomeActivity extends AccountVaultActivity {
             }
         } catch (Throwable ignored) {
         }
-        // 自动日常 / 常驻在线双卡状态
-        boolean roleAuto = sel != null && RoleStore.schedule(this, sel.fpid).autoEnabled;
+        // 统一自动化任务状态（服务器执行；不再区分自动日常/常驻在线）
+        boolean roleAuto = sel != null && RoleStore.automationEnabled(this, sel.fpid);
         if (todayAutoSwitch != null) todayAutoSwitch.setOn(roleAuto);
         if (todayAutoSub != null) {
-            if (roleAuto && sel != null) {
-                long nxt = RoleStore.schedule(this, sel.fpid).nextRunAt;
-                todayAutoSub.setText(ws.size() + " 个号 · " + nextRunText(nxt) + "跑");
-            } else {
-                todayAutoSub.setText(ws.size() + " 个号 · 未开启");
-            }
+            int[] win = RoleStore.window(this);
+            String winText = (win[0] == 0 && win[1] >= 24) ? "全天"
+                    : String.format(java.util.Locale.CHINA, "%02d:00-%02d:00", win[0], win[1]);
+            todayAutoSub.setText("服务器执行 · " + ws.size() + " 个号 · "
+                    + (roleAuto ? winText : "未开启"));
         }
-        if (keepSub != null) keepSub.setText(keepStatusText());
-        if (keepSwitch != null && sel != null) {
-            keepSwitch.setOn(RoleStore.keepOnline(this, sel.fpid));
-        }
-        // 顶栏 caption：日期 + 自动日常状态
+        // 顶栏 caption：日期 + 统一自动化状态
         boolean anyAuto = false;
         for (AccountStore.Account a : ws) {
-            if (RoleStore.schedule(this, a.fpid).autoEnabled) {
+            if (RoleStore.automationEnabled(this, a.fpid)) {
                 anyAuto = true;
                 break;
             }
         }
         topCaption.setText(new java.text.SimpleDateFormat("M月d日 EEE", java.util.Locale.CHINA)
-                .format(new java.util.Date()) + " · 自动日常 已" + (anyAuto ? "开启" : "关闭"));
+                .format(new java.util.Date()) + " · 自动化任务 已" + (anyAuto ? "开启" : "关闭"));
         renderLimitWindows(sel);
         renderRallies(sel);
         autoSyncAccount(sel, false);
@@ -1417,7 +1368,7 @@ public class HomeActivity extends AccountVaultActivity {
             limitBox.addView(card);
             return;
         }
-        long sid = currentRoleSid();
+        long sid = configSid(cur);
         android.content.SharedPreferences sp = getSharedPreferences("daily_state", MODE_PRIVATE);
         // 仓库补给（真实下次可领时间）
         try {
@@ -2274,6 +2225,7 @@ public class HomeActivity extends AccountVaultActivity {
                         case 2: doSwitch(a); break;
                         case 3:
                             RoleStore.setEnabled(this, a.fpid, r.serverid, !r.enabled);
+                            VaultSync.onAccountsChanged(this);
                             refreshAccounts();
                             break;
                     }
@@ -2285,18 +2237,73 @@ public class HomeActivity extends AccountVaultActivity {
     private void accountMenu(final AccountStore.Account a) {
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle(a.label)
-                .setItems(new String[]{"🎁 每日任务（进度/领取）", "▶ 启动游戏", "👥 角色管理", "⇅ 排序（旧视图）"}, (d, w) -> {
+                .setItems(new String[]{"⏻ 登录并运行自动化", "🎁 每日任务（进度/领取）",
+                        "▶ 启动游戏", "👥 角色管理", "⇅ 排序（旧视图）"}, (d, w) -> {
                     switch (w) {
-                        case 0: openDaily(a, null); break;
-                        case 1: doSwitch(a); break;
-                        case 2:
+                        case 0: loginAndRun(a, null); break;
+                        case 1: openDaily(a, null); break;
+                        case 2: doSwitch(a); break;
+                        case 3:
                             showRoleManager(a, RoleStore.roles(this, a.fpid), accountOnline(a));
                             break;
-                        case 3: openOld(); break;
+                        case 4: openOld(); break;
                     }
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    /**
+     * 账号页“登录”按钮：切换当前角色 → 打开统一自动化 → 全量上传配置 →
+     * 服务器确保常驻会话并排队整轮。回调在主线程收尾，按钮由调用方恢复。
+     */
+    private void loginAndRun(final AccountStore.Account a, final Runnable done) {
+        if (a == null || a.fpid == null || a.fpid.isEmpty()
+                || a.token == null || a.token.isEmpty()) {
+            toast("该账号没有可用 token");
+            if (done != null) done.run();
+            return;
+        }
+        long sid = mainRoleSid(a);
+        if (sid <= 0) sid = activeSid(a);
+        if (sid > 0) setCurrentRole(a.fpid, sid);
+        RoleStore.saveAutomation(this, a.fpid, true);
+        VaultSync.ensureServerMode(this);
+        toast("正在上传配置并登录服务器…");
+        VaultSync.syncAll(this, (code, message, data) -> {
+            if (code != 0) {
+                runOnUiThread(() -> {
+                    toast("配置同步失败：" + message);
+                    if (done != null) done.run();
+                });
+                return;
+            }
+            VaultSync.triggerAutomation(this, a.fpid, null, (c2, m2, d2) -> {
+                boolean ok = c2 == 0 && d2 != null && d2.optBoolean("accepted", false);
+                String state = d2 == null ? "" : d2.optString("state", "");
+                String sidText = d2 == null ? "" : d2.optString("sid", "");
+                int cfgCount = 0;
+                try {
+                    org.json.JSONObject cfg = d2 == null ? null : d2.optJSONObject("config");
+                    if (cfg != null) cfgCount = cfg.length();
+                } catch (Throwable ignored) {
+                }
+                final int fCfgCount = cfgCount;
+                runOnUiThread(() -> {
+                    if (ok) {
+                        toast("已登录并触发服务器自动化"
+                                + (sidText.isEmpty() ? "" : " · sid=" + sidText)
+                                + (state.isEmpty() ? "" : " · 会话=" + state)
+                                + (fCfgCount > 0 ? " · 配置 " + fCfgCount + " 项" : ""));
+                        refreshAllPages();
+                        VaultSync.fetchState(this);
+                    } else {
+                        toast("服务器未受理：" + m2);
+                    }
+                    if (done != null) done.run();
+                });
+            });
+        });
     }
 
     /** 账号详情（设计稿 S4）：复用入口管理页，展示角色/登录数据/入口管理。 */
@@ -2751,6 +2758,31 @@ public class HomeActivity extends AccountVaultActivity {
             text = "离线";
         }
         card.addView(UiStyle.badge(this, type, "● " + text));
+
+        // 服务器自动化登录按钮：切到该账号主角色 → 上传配置 → 服务器建会话并触发整轮。
+        if (isToken) {
+            TextView loginBtn = new TextView(this);
+            loginBtn.setText("登录");
+            loginBtn.setTextSize(12);
+            loginBtn.setTypeface(Typeface.DEFAULT_BOLD);
+            loginBtn.setTextColor(UiStyle.WHITE);
+            loginBtn.setGravity(Gravity.CENTER);
+            loginBtn.setPadding(dp(12), dp(7), dp(12), dp(7));
+            loginBtn.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 999));
+            LinearLayout.LayoutParams lbp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            lbp.leftMargin = dp(6);
+            card.addView(loginBtn, lbp);
+            UiStyle.press(loginBtn);
+            loginBtn.setOnClickListener(v -> {
+                loginBtn.setEnabled(false);
+                loginBtn.setText("登录中");
+                loginAndRun(a, () -> {
+                    loginBtn.setEnabled(true);
+                    loginBtn.setText("登录");
+                });
+            });
+        }
 
         android.widget.FrameLayout more = new android.widget.FrameLayout(this);
         more.addView(new UiStyle.Icon(this, UiStyle.Icon.MORE, UiStyle.INK2, 18),
@@ -3440,6 +3472,7 @@ public class HomeActivity extends AccountVaultActivity {
             boolean now = swRef[0].isOn();
             r.enabled = now;
             RoleStore.setEnabled(this, a.fpid, r.serverid, now);
+            VaultSync.onAccountsChanged(this);
             toast(now ? "已加入工作区" : "已移出工作区");
             for (Runnable rr : syncSubs) rr.run();
             refreshAccounts();
@@ -3613,7 +3646,7 @@ public class HomeActivity extends AccountVaultActivity {
         aMid.setOrientation(LinearLayout.VERTICAL);
         aMid.setPadding(dp(12), 0, dp(6), 0);
         bannerTitle = new TextView(this);
-        bannerTitle.setText("自动日常");
+        bannerTitle.setText("自动化任务");
         bannerTitle.setTextSize(15);
         bannerTitle.setTypeface(Typeface.DEFAULT_BOLD);
         bannerTitle.setTextColor(UiStyle.INK);
@@ -3641,7 +3674,7 @@ public class HomeActivity extends AccountVaultActivity {
         UiStyle.press(winBtn);
         winBtn.setOnClickListener(v -> showWindowPicker());
         auto.addView(winBtn);
-        // 自动日常开关（原日常页顶部开关迁移至此）
+        // 统一自动化开关（服务器执行；原“自动日常 + 常驻在线”合并）
         autoSwitch = new UiStyle.Switch(this, false, () -> {
             AccountStore.Account cur = taskAccount == null ? firstWorkspace() : taskAccount;
             if (cur == null) {
@@ -3649,9 +3682,13 @@ public class HomeActivity extends AccountVaultActivity {
                 autoSwitch.setOn(false);
                 return;
             }
-            RoleStore.Schedule sch = RoleStore.schedule(this, cur.fpid);
-            sch.autoEnabled = autoSwitch.isOn();
-            RoleStore.saveSchedule(this, cur.fpid, sch);
+            boolean on = autoSwitch.isOn();
+            RoleStore.saveAutomation(this, cur.fpid, on);
+            VaultSync.ensureServerMode(this);
+            VaultSync.onAccountsChanged(this);
+            com.carlos.vault.daily.RoleSessionKeeper.get(this).start();
+            com.carlos.vault.daily.RoleSessionKeeper.get(this).syncOnline();
+            toast(on ? "自动化任务已开启 · 服务器执行" : "自动化任务已关闭");
             refreshTasks();
         });
         LinearLayout.LayoutParams swlp = new LinearLayout.LayoutParams(
@@ -3764,26 +3801,18 @@ public class HomeActivity extends AccountVaultActivity {
             toast("当前账号没有 token");
             return;
         }
-        final long sid = currentRoleSid();
         if (helpActionBtn != null) helpActionBtn.setEnabled(false);
         final AccountStore.Account facc = cur;
-        new Thread(() -> {
-            DailyResult r = null;
-            try {
-                r = DailyRunner.runSingle(HomeActivity.this, facc.fpid, facc.token, sid, "alliance_help");
-            } catch (Throwable ignored) {
-            }
-            final DailyResult fr = r;
+        // 统一自动化：互助也提交服务器执行（服务器常驻会话已有联盟互助推送响应）。
+        VaultSync.ensureServerMode(this);
+        VaultSync.triggerAutomation(this, facc.fpid, "alliance_help", (code, message, data) -> {
+            boolean ok = code == 0 && data != null && data.optBoolean("accepted", false);
             runOnUiThread(() -> {
                 if (helpActionBtn != null) helpActionBtn.setEnabled(true);
-                if (fr == null) {
-                    toast("互助执行异常");
-                    return;
-                }
-                toast(fr.symbol() + " " + fr.message);
+                toast(ok ? "已提交服务器：一键帮助全盟" : "服务器未受理：" + message);
                 refreshToday();
             });
-        }, "one-key-help").start();
+        });
     }
 
     /** 顶号策略选择：人玩优先(30分钟探测) / 立即抢回 / 只让位。存 daily_sched:takeover_policy。 */
@@ -3817,45 +3846,22 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     /**
-     * 服务器模式开关：自动化（常驻在线/互助）跑在 vault-server，本机只做号库 + token 补给 + 分身游玩。
-     * 开启时全量上传身份库并停用本地常驻会话（防互踢）；关闭则回本地常驻。
+     * 自动化执行位置（固定服务器）：2026-10 起客户端不再本地跑任务，
+     * 本页只提供状态说明与“立即同步”，不提供关闭服务器模式的入口。
      */
     private void showServerModePicker() {
-        boolean on = VaultSync.isServerMode(this);
-        final String[] names = {"开启——常驻在线跑在服务器（本机号库+分身游玩）",
-                "关闭——回到本地常驻在线"};
-        int idx = on ? 0 : 1;
-        new android.app.AlertDialog.Builder(this)
-                .setTitle("服务器模式")
-                .setSingleChoiceItems(names, idx, (d, w) -> {
-                })
-                .setPositiveButton("确定", (d, w) -> {
-                    try {
-                        android.widget.ListView lv = ((android.app.AlertDialog) d).getListView();
-                        int sel = lv.getCheckedItemPosition();
-                        boolean turnOn = sel == 0;
-                        if (turnOn != VaultSync.isServerMode(this)) {
-                            VaultSync.setServerMode(this, turnOn);
-                            toast(turnOn ? "服务器模式已开启，正在上传身份库…"
-                                    : "已回到本地常驻在线");
-                        }
-                        // 两个方向都要重对齐会话（开=停本地建会话，关=恢复本地会话）
-                        new Thread(() -> {
-                            try {
-                                com.carlos.vault.daily.RoleSessionKeeper.get(HomeActivity.this).syncOnline();
-                            } catch (Throwable ignored) {
-                            }
-                        }, "keeper-sync").start();
-                        refreshAllPages();
-                    } catch (Throwable ignored) {
-                    }
-                })
-                .setNeutralButton("立即同步", (d, w) -> {
+        VaultSync.ensureServerMode(this);
+        new android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("自动化执行位置")
+                .setMessage("统一自动化任务固定由 vault-server 执行。\n\n"
+                        + "本机只负责：账号/token/配置上传、服务器状态展示、分身游玩。\n\n"
+                        + "如需立即对齐配置，点“立即同步”。")
+                .setPositiveButton("立即同步", (d, w) -> {
                     VaultSync.syncAll(this);
                     VaultSync.refreshStatus(this);
                     toast("已触发同步（见运行日志/状态行）");
                 })
-                .setNegativeButton("取消", null)
+                .setNegativeButton("关闭", null)
                 .show();
     }
 
@@ -3961,7 +3967,7 @@ public class HomeActivity extends AccountVaultActivity {
             taskRows.addView(emptyTip("没有可用账号 —— 先在「我的」导入 token"));
             return;
         }
-        long sid = currentRoleSid();
+        long sid = configSid(taskAccount);
         LogStore ls = new LogStore(this);
         com.carlos.vault.daily.DailyConfigStore cfgStore = new com.carlos.vault.daily.DailyConfigStore(this);
         Map<String, Boolean> cfg = cfgStore.roleConfig(taskAccount.fpid, sid);
@@ -4015,19 +4021,15 @@ public class HomeActivity extends AccountVaultActivity {
             } catch (Throwable ignored) {
             }
         }
-        boolean anyAuto = false;
-        for (AccountStore.Account a : workspaceAccounts()) {
-            if (RoleStore.schedule(this, a.fpid).autoEnabled) { anyAuto = true; break; }
-        }
         if (bannerTitle != null) {
-            bannerTitle.setText("自动日常");
+            bannerTitle.setText("自动化任务");
             int[] win = RoleStore.window(this);
             String winText = (win[0] == 0 && win[1] >= 24) ? "全天"
                     : String.format(java.util.Locale.CHINA, "%02d:00-%02d:00", win[0], win[1]);
-            bannerSub.setText(winText + " · 已启用 " + enabled + " 项");
+            bannerSub.setText("服务器执行 · " + winText + " · 已启用 " + enabled + " 项");
             winBtn.setText("时段");
             if (autoSwitch != null) {
-                autoSwitch.setOn(RoleStore.schedule(this, taskAccount.fpid).autoEnabled);
+                autoSwitch.setOn(RoleStore.automationEnabled(this, taskAccount.fpid));
             }
         }
 
@@ -5113,6 +5115,7 @@ public class HomeActivity extends AccountVaultActivity {
                         return;
                     }
                     RoleStore.saveWindow(this, st, en);
+                    VaultSync.onAccountsChanged(this);
                     // 窗口变更即时生效：开自动的账号清掉旧 nextRunAt，调度器下轮 tick 按新窗口重算
                     for (AccountStore.Account a : accounts) {
                         if (a == null || a.fpid == null) continue;
@@ -5163,6 +5166,11 @@ public class HomeActivity extends AccountVaultActivity {
             toast("没有可跑的账号（需有效令牌）");
             return;
         }
+        // 统一自动化：批量“跑日常”只提交服务器，不再本地执行。
+        if (VaultSync.isServerMode(this)) {
+            runListServer(ws);
+            return;
+        }
         RUN.running = true;
         RUN.done = 0;
         RUN.total = ws.size();
@@ -5196,9 +5204,12 @@ public class HomeActivity extends AccountVaultActivity {
                                         boolean ok = r.category == DailyResult.Category.CLAIMED
                                                 || r.category == DailyResult.Category.SKIPPED;
                                         ls.append(a.fpid, sid, r.taskId, ok, r.toString(), "");
-                                        ls.setStatus(a.fpid, sid, r.taskId, ok
-                                                ? com.carlos.vault.daily.LogStore.ST_DONE
-                                                : com.carlos.vault.daily.LogStore.ST_FAILED);
+                                        ls.setStatus(a.fpid, sid, r.taskId,
+                                                r.category == DailyResult.Category.CLAIMED
+                                                        ? com.carlos.vault.daily.LogStore.ST_DONE
+                                                        : r.category == DailyResult.Category.SKIPPED
+                                                        ? com.carlos.vault.daily.LogStore.ST_SKIPPED
+                                                        : com.carlos.vault.daily.LogStore.ST_FAILED);
                                         ls.applySubResults(a.fpid, sid, r.taskId, r.subResults);
                                     } catch (Throwable ignored) {
                                     }
@@ -5231,6 +5242,64 @@ public class HomeActivity extends AccountVaultActivity {
                 refreshAllPages();
             });
         }, "run-all").start();
+    }
+
+    /**
+     * 服务器批量执行：逐账号同步配置后提交整轮，执行页只展示“提交/受理”结果。
+     * 真正的任务进度与领取结果由服务器写 state，App 通过 fetchState 回写后展示。
+     */
+    private void runListServer(final List<AccountStore.Account> ws) {
+        RUN.running = true;
+        RUN.done = 0;
+        RUN.total = ws.size();
+        RUN.current = "";
+        synchronized (RUN.logs) {
+            RUN.logs.clear();
+        }
+        RUN.log("→ 提交服务器执行 " + ws.size() + " 个号");
+        runStartedAt = System.currentTimeMillis();
+        runEndedAt = 0;
+        showRunPanel(ws);
+        VaultSync.ensureServerMode(this);
+        final java.util.concurrent.atomic.AtomicInteger left =
+                new java.util.concurrent.atomic.AtomicInteger(ws.size());
+        for (final AccountStore.Account a : ws) {
+            RUN.current = a.label;
+            RUN.log("→ " + a.label + " 上传配置并登录服务器…");
+            // 先全量上报（配置/参数/角色）再由服务器建会话触发，保证“配置读取→任务触发”同源。
+            VaultSync.syncAll(this, (sc, sm, sd) -> {
+                if (sc != 0) {
+                    RUN.log("✗ " + a.label + " · 配置同步失败：" + sm);
+                    if (left.decrementAndGet() == 0) finishRunListServer();
+                    return;
+                }
+                VaultSync.triggerAutomation(this, a.fpid, null, (code, message, data) -> {
+                    boolean ok = code == 0 && data != null && data.optBoolean("accepted", false);
+                    String state = data == null ? "" : data.optString("state", "");
+                    String sid = data == null ? "" : data.optString("sid", "");
+                    if (ok) {
+                        RUN.done++;
+                        RUN.log("✓ " + a.label + " · 服务器已受理"
+                                + (sid.isEmpty() ? "" : " sid=" + sid)
+                                + (state.isEmpty() ? "" : " 会话=" + state));
+                    } else {
+                        RUN.log("✗ " + a.label + " · 服务器未受理：" + message);
+                    }
+                    if (left.decrementAndGet() == 0) finishRunListServer();
+                });
+            });
+        }
+    }
+
+    private void finishRunListServer() {
+        runEndedAt = System.currentTimeMillis();
+        RUN.running = false;
+        RUN.log("→ 服务器已受理 " + RUN.done + "/" + RUN.total + " 个号；结果稍后自动回写");
+        VaultSync.fetchState(this);
+        runOnUiThread(() -> {
+            toast("已提交服务器 · " + RUN.done + "/" + RUN.total + " 个号");
+            refreshAllPages();
+        });
     }
 
     /**
