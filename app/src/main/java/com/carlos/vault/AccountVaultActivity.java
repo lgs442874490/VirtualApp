@@ -112,6 +112,10 @@ public class AccountVaultActivity extends Activity {
         // 拦截都能装上（否则门禁页期间的"回到前台"也会漏掉一次存档机会）。
         SessionSaver.install(getApplication());
 
+        // P2-1：未捕获异常环形缓冲（我的→崩溃日志可查看/复制）。放在门禁判断之前，
+        // 保证激活页/锁定页期间的崩溃也能留下现场。
+        CrashGuard.install(getApplication());
+
         // —— 授权门禁 ——
         // 未激活 / 票据被篡改 / 已失效时，只渲染门禁页（激活页或锁定页）并 return，
         // 不执行 buildUi() / refresh() / 向导，因此界面上不存在任何进入主功能的入口。
@@ -454,6 +458,10 @@ public class AccountVaultActivity extends Activity {
         if (!expire.isEmpty()) {
             msg.append("\n到期日：").append(expire);
         }
+        msg.append("\n\n本机：").append(com.carlos.vault.license.DeviceId.label());
+        msg.append("\n\n一码一设备：兑换码绑定首次激活的设备。");
+        msg.append("\n双开/手机分身属于另一个设备实例，需要独立兑换码；");
+        msg.append("\n同一码不能在两个实例同时激活。");
         msg.append("\n\n如已购买新的兑换码，可点「更换」重新激活。");
 
         UiStyle.showConfirmDialog(this, "授权状态", msg.toString(), "更换", UiStyle.BRAND,

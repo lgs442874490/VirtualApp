@@ -131,9 +131,13 @@
              放宿主主进程后，宿主主线程此时是空闲的（用户正看着宿主界面），能按时
              startForeground()；而前台服务提升的是同 UID 的进程优先级，
              com.gof.china 与宿主同为 u0_a373，游戏进程同样受保护，保活目的仍达成。 -->
+        <!-- foregroundServiceType=dataSync：targetSdk 26 暂不强制，先为后续升级到
+             34/35 铺路；注意 Android 15 对 dataSync 有 6h/24h 限制，长期保活
+             应优先走 vault-server 服务器模式（见 design/targetSdk-兼容评估-20261018.md）。 -->
         <service
             android:name="com.carlos.vault.GameKeepAliveService"
-            android:exported="false" />
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
 
 
         <activity

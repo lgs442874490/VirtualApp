@@ -24,6 +24,7 @@ import com.carlos.vault.daily.DailySchedulerService;
 import com.carlos.vault.daily.FnRegistry;
 import com.carlos.vault.daily.LogStore;
 import com.carlos.vault.daily.RoleStore;
+import com.carlos.vault.license.DeviceId;
 import com.carlos.vault.license.LicenseManager;
 import com.carlos.vault.license.LicenseTicket;
 
@@ -4533,6 +4534,8 @@ public class HomeActivity extends AccountVaultActivity {
                 "当前/最近一轮的账号与逐号结果", this::showRunPanel));
         box.addView(mineRowIcon(UiStyle.Icon.DOC, "执行日志", "保留最近 200 条",
                 this::showRunLog));
+        box.addView(mineRowIcon(UiStyle.Icon.DOC, "崩溃日志",
+                "最近崩溃现场 · 可复制", this::showCrashLog));
 
         box.addView(UiStyle.sectionTitle(this, "数据"));
         box.addView(mineRowIcon(UiStyle.Icon.CLOUD, "账号快照", "每号一份 · 切号不丢",
@@ -4846,16 +4849,32 @@ public class HomeActivity extends AccountVaultActivity {
                         + new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.CHINA)
                         .format(new java.util.Date(t.expireAt)));
             }
-            if (licenseMeta != null) licenseMeta.setText("首次激活起算 · 一码一设备");
+            if (licenseMeta != null) {
+                // P2-2：明确展示绑定设备与掩码码，避免用户把"一码一设备"误解为 bug；
+                // 双开/手机分身是独立实例，需另发一码（见 showLicenseMenu 说明）。
+                licenseMeta.setText("本机 " + DeviceId.label()
+                        + (maskCode(t.code).isEmpty() ? "" : " · " + maskCode(t.code))
+                        + " · 一码一设备");
+            }
             if (licenseBind != null) licenseBind.setText("已绑定本机");
             if (licenseStatus != null) licenseStatus.setText("生效中");
         } else {
             licenseDays.setText("--");
             if (licenseExpire != null) licenseExpire.setText("未激活");
-            if (licenseMeta != null) licenseMeta.setText("首次激活起算 · 一码一设备");
+            if (licenseMeta != null) {
+                licenseMeta.setText("本机 " + DeviceId.label() + " · 一码一设备");
+            }
             if (licenseBind != null) licenseBind.setText("未绑定设备");
             if (licenseStatus != null) licenseStatus.setText("未激活");
         }
+    }
+
+    /** 兑换码掩码：只露前 4 与后 4，中间固定星号（不用于校验，仅展示）。 */
+    private static String maskCode(String code) {
+        if (code == null) return "";
+        String c = code.trim();
+        if (c.length() < 10) return c;
+        return c.substring(0, 4) + "-****-" + c.substring(c.length() - 4);
     }
 
     private void showRunLog() {
@@ -4891,6 +4910,42 @@ public class HomeActivity extends AccountVaultActivity {
 
     private void openOld() {
         startActivity(new android.content.Intent(this, AccountVaultActivity.class));
+    }
+
+    /** P2-1：查看/复制/清空最近崩溃现场（CrashGuard 环形缓冲）。 */
+    private void showCrashLog() {
+        String log = CrashGuard.readLog(this);
+        if (log == null || log.trim().isEmpty()) {
+            toast("暂无崩溃记录");
+            return;
+        }
+        ScrollView sc = new ScrollView(this);
+        TextView tv = new TextView(this);
+        tv.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.NORMAL);
+        tv.setTextSize(10.5f);
+        tv.setTextIsSelectable(true);
+        tv.setText(log);
+        tv.setPadding(dp(16), dp(12), dp(16), dp(12));
+        sc.addView(tv);
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("崩溃日志（最近 " + CrashGuard.MAX_ENTRIES + " 条）")
+                .setView(sc)
+                .setPositiveButton("复制", (d, w) -> {
+                    try {
+                        android.content.ClipboardManager cm = (android.content.ClipboardManager)
+                                getSystemService(CLIPBOARD_SERVICE);
+                        cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", log));
+                        toast("已复制崩溃日志");
+                    } catch (Throwable t) {
+                        toast("复制失败");
+                    }
+                })
+                .setNeutralButton("清空", (d, w) -> {
+                    CrashGuard.clear(this);
+                    toast("已清空崩溃日志");
+                })
+                .setNegativeButton("关闭", null)
+                .show();
     }
 
     /** 全部"日常"入口统一去功能详情页；moduleId 空 = 每日任务页（旧日常页已废弃）。 */

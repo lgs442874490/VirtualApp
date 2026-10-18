@@ -75,8 +75,10 @@ if [ -z "$SVC_BLOCK" ]; then
   bad "清单中找不到 GameKeepAliveService"
 elif echo "$SVC_BLOCK" | grep -q 'android:process'; then
   bad "GameKeepAliveService 声明了 android:process（FGS 5 秒超时崩溃会回归）"
+elif ! echo "$SVC_BLOCK" | grep -q 'foregroundServiceType'; then
+  bad "GameKeepAliveService 未声明 foregroundServiceType（targetSdk 升级会崩）"
 else
-  ok "GameKeepAliveService 位于宿主主进程"
+  ok "GameKeepAliveService 位于宿主主进程且声明了 FGS 类型"
 fi
 
 # ---- 5) 通知权限 ----
