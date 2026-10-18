@@ -1,6 +1,7 @@
 package com.carlos.vaultserver.task;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
@@ -152,6 +153,42 @@ public class RoundRunnerTest {
         assertEquals("end30", tc.strategy("supply", "spec", "now"));
         assertEquals(45, tc.strategyMinutes("supply", "spec", 30));
         assertEquals("now", tc.strategy("mail", "read", "now"));
+    }
+
+    @Test
+    public void subResults_categoriesMatchSkipFailOk() {
+        // P2-1：子项 skip 不得记成 CLAIMED/ok=true（"已检查但无可领"≠领取成功）
+        TaskOutcome r = new TaskOutcome("supply", "仓库补给", TaskOutcome.Category.CLAIMED, "ok");
+        r.subResults.put("online", "ok:已领wood:5");
+        r.subResults.put("spec", "skip:暂不可领");
+        r.subResults.put("extra", "fail:请求炸了");
+
+        RoundRunner.applyResult(store, "111", 913L, "supply", r, "定时");
+
+        JSONObject okEntry = new JSONArray(
+                store.getString("log:111:913:supply:online")).getJSONObject(0);
+        assertEquals("CLAIMED", okEntry.getString("cat"));
+        assertTrue(okEntry.getBoolean("ok"));
+        JSONObject skipEntry = new JSONArray(
+                store.getString("log:111:913:supply:spec")).getJSONObject(0);
+        assertEquals("SKIPPED", skipEntry.getString("cat"));
+        assertFalse(skipEntry.getBoolean("ok"));
+        assertEquals("暂不可领", skipEntry.getString("reason"));
+        JSONObject failEntry = new JSONArray(
+                store.getString("log:111:913:supply:extra")).getJSONObject(0);
+        assertEquals("ERROR", failEntry.getString("cat"));
+        assertFalse(failEntry.getBoolean("ok"));
+        // 当日子项状态机与 cat 同口径：ok=2 / skip=4 / fail=3
+        String day = new java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.CHINA)
+                .format(new java.util.Date());
+        assertEquals(2L, num(store, "st:" + day + ":111:913:supply:online"));
+        assertEquals(4L, num(store, "st:" + day + ":111:913:supply:spec"));
+        assertEquals(3L, num(store, "st:" + day + ":111:913:supply:extra"));
+    }
+
+    private static long num(StateStore store, String key) {
+        Object v = store.snapshot().get(key);
+        return v instanceof Number ? ((Number) v).longValue() : -1;
     }
 
     private static String stKey(String suffix) {

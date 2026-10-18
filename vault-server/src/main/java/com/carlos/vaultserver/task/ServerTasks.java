@@ -17,10 +17,26 @@ import java.util.Map;
  */
 public final class ServerTasks {
 
-    /** 会话中断关键字（与 App DailyTasks.SESSION_CLOSED_MARKS 一致）。 */
+    /** 会话中断关键字（与 App DailyTasks.SESSION_CLOSED_MARKS 一致；P1-A 二轮增补网络层专有词）。 */
     private static final String[] SESSION_CLOSED_MARKS = {
             "不在线", "会话已", "连接已关闭", "断开", "强制下线", "连接失败", "发送协议数据失败",
-            "等待协议响应超时", "Socket", "socket", "EOF"};
+            "等待协议响应超时", "Socket", "socket", "EOF",
+            // P1-A 二轮（ZCode 复验 §5.4）：connect() 路径抛 "连接游戏服务器失败"——
+            // "连接失败"不是它的连续子串，round-1 漏判；其 cause 为 ConnectException
+            // ("Connection refused")。增补词均为网络层专有文案，不误伤业务错误码文案。
+            "连接游戏服务器失败", "Connection refused", "Connection reset", "Broken pipe"};
+
+    /**
+     * 网络层异常类型白名单（P1-A 二轮）：cause 链上任一出现即判会话中断。
+     * 覆盖文案被本地化/裁剪、无关键字可匹配的静默断线形态。
+     * 注意 SocketTimeoutException 是 SocketException 子类，一并显式列出只为口径自文档。
+     */
+    private static final Class<?>[] SESSION_CLOSED_TYPES = {
+            java.net.ConnectException.class,
+            java.net.SocketException.class,
+            java.net.SocketTimeoutException.class,
+            java.io.EOFException.class,
+            java.nio.channels.ClosedChannelException.class};
 
     /** 与 App DailyTasks.DAILY_QUEST_IDS 一致（缺失段由服务端忽略）。 */
     static final int[] DAILY_QUEST_IDS = {
@@ -1196,7 +1212,8 @@ public final class ServerTasks {
         }
     }
 
-    static TaskOutcome freeShield(TaskContext tc) throws Exception {
+    /** 免费护盾执行器（整轮与 ServerShieldResponder 反应式开盾复用；free_id 动态取，码表归 SKIPPED）。 */
+    public static TaskOutcome freeShield(TaskContext tc) throws Exception {
         try {
             // free_id 来自 notify_city_item_init.data[].free_id，不能写死 1。
             long freeId = 0;
@@ -1375,18 +1392,72 @@ public final class ServerTasks {
         }
     }
 
-    public static TaskOutcome classifyException(Throwable e, String name) {
-        String msg = String.valueOf(e.getMessage());
+    /**
+     * cause 链最大追溯层数（P1-A）：GameProtocolClient 把协议异常包装为
+     * "协议调用失败: &lt;proto&gt;"，真实原因在 cause（"连接已关闭"/"连接游戏服务器失败"/
+     * "等待协议响应超时"/"发送协议数据失败"…）。只看顶层 message 会把真实断线误判 ERROR。
+     * 上限同时防止自环/互环 cause 造成死循环。
+     */
+    private static final int MAX_CAUSE_DEPTH = 5;
+
+    /**
+     * 是否会话中断（P1-A 二轮，ZCode 复验 §5.4/§6）：文案命中 SESSION_CLOSED_MARKS。
+     * 供 {@link Exec.Multi} 聚合路径复用——子项聚合不经过 classifyException，
+     * 只能拿到异常 message 文案，故提供 String 版判定入口。
+     */
+    public static boolean isSessionClosed(String text) {
+        if (text == null || text.isEmpty()) return false;
         for (String mark : SESSION_CLOSED_MARKS) {
-            if (msg.contains(mark)) {
-                return new TaskOutcome(name, name, TaskOutcome.Category.SESSION_CLOSED,
-                        "会话中断（可重试）：" + brief(msg));
-            }
+            if (text.contains(mark)) return true;
         }
-        Throwable cause = e.getCause();
-        String causeMsg = cause == null ? "" : " cause=" + cause.getMessage();
+        return false;
+    }
+
+    /**
+     * 异常链版会话中断判定：逐层查文案 + 查网络层异常类型
+     * （ConnectException/SocketException/SocketTimeoutException/EOFException/ClosedChannelException）。
+     * 覆盖 connect() 路径 "连接游戏服务器失败" + cause "Connection refused"（无关键字文案）
+     * 与一切 cause 携带网络异常的包装形态。
+     */
+    public static boolean isSessionClosed(Throwable e) {
+        if (e == null) return false;
+        Throwable cur = e;
+        for (int hop = 0; cur != null && hop <= MAX_CAUSE_DEPTH; hop++) {
+            if (isSessionClosed(String.valueOf(cur.getMessage()))) return true;
+            for (Class<?> t : SESSION_CLOSED_TYPES) {
+                if (t.isInstance(cur)) return true;
+            }
+            cur = cur.getCause();
+        }
+        return false;
+    }
+
+    public static TaskOutcome classifyException(Throwable e, String name) {
+        // P1-A（ZCode 真机回归实证）：杀出口后整轮 19 个任务全落 ERROR(st=3)、summary 无
+        // "会话中断"、srv:lastrun 被写 → RoundScheduler 当日不再自动重试，与"断线可重试"相反。
+        // 根因 = 只匹配顶层 message，而协议异常的断线关键字在 cause 链上。
+        // round-1：cause 链拼接匹配；round-2：判定统一走 isSessionClosed（文案 + 异常类型），
+        // 覆盖 connect() 拒绝形态。brief 仅用于展示截断，不参与判定。
+        String chain = causeChain(e);
+        if (isSessionClosed(e)) {
+            return new TaskOutcome(name, name, TaskOutcome.Category.SESSION_CLOSED,
+                    "会话中断（可重试）：" + brief(chain));
+        }
         return new TaskOutcome(name, name, TaskOutcome.Category.ERROR,
-                brief(e.getClass().getSimpleName() + ": " + msg + causeMsg));
+                brief(e.getClass().getSimpleName() + ": " + chain));
+    }
+
+    /** 沿 cause 链拼接各级 message（"顶层 cause=… cause=…"；超出层数的截断处记 …）。 */
+    private static String causeChain(Throwable e) {
+        StringBuilder sb = new StringBuilder();
+        Throwable cur = e;
+        for (int hop = 0; cur != null && hop <= MAX_CAUSE_DEPTH; hop++) {
+            if (hop > 0) sb.append(" cause=");
+            sb.append(String.valueOf(cur.getMessage()));
+            cur = cur.getCause();
+        }
+        if (cur != null) sb.append(" cause=…");
+        return sb.toString();
     }
 
     static String brief(String s) {

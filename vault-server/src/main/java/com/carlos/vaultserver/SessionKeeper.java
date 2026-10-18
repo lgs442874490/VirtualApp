@@ -49,6 +49,8 @@ public final class SessionKeeper implements SessionControl,
         final ScheduledExecutorService exec;
         /** 互助自动响应（登录成功后按真实 sid 惰性挂载）。 */
         volatile ServerHelpResponder help;
+        /** 反应式开盾（WAR/RECON 推送驱动；登录成功后按真实 sid 惰性挂载）。 */
+        volatile ServerShieldResponder shield;
         /** 下次全量采集时刻（登录后 3s 首采，之后每 10 分钟）。 */
         volatile long nextCaptureAt;
         volatile long stateSince = System.currentTimeMillis();
@@ -94,6 +96,9 @@ public final class SessionKeeper implements SessionControl,
                     break;
                 case WjdrEngine.STATE_ONLINE:
                     engine.heartbeatTick();
+                    // 反应式开盾优先于采集/互助：攻击行军按分钟计，开盾早一秒是一秒
+                    ServerShieldResponder s = shield;
+                    if (s != null) s.tick(engine);
                     ServerHelpResponder h = help;
                     long now = System.currentTimeMillis();
                     if (now >= nextCaptureAt) {
@@ -269,6 +274,10 @@ public final class SessionKeeper implements SessionControl,
                 if (help == null) {
                     help = new ServerHelpResponder(fpid, resolveSid(), stateStore);
                     help.attach(engine);
+                }
+                if (shield == null) {
+                    shield = new ServerShieldResponder(fpid, resolveSid(), stateStore, store);
+                    shield.attach(engine);
                 }
                 nextCaptureAt = System.currentTimeMillis() + 3000;
             } catch (Throwable t) {

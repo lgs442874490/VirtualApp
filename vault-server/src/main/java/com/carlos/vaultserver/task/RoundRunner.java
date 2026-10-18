@@ -139,8 +139,12 @@ public final class RoundRunner {
                 try {
                     String v = sub.getValue();
                     boolean fail = v.startsWith("fail:");
+                    boolean skip = v.startsWith("skip:");
                     String note = v.substring(v.indexOf(':') + 1);
-                    appendSub(store, fpid, sid, fnId + ":" + sub.getKey(), !fail, note, trigger);
+                    // P2-1：skip 是"已检查但无可领"，不能记成已领取（cat=CLAIMED/ok=true）；
+                    // fail 记异常。cat 与 st 口径保持一致（2/4/3）。
+                    String cat = fail ? "ERROR" : (skip ? "SKIPPED" : "CLAIMED");
+                    appendSub(store, fpid, sid, fnId + ":" + sub.getKey(), cat, note, trigger);
                     // skip 是“已检查但无可领”，不能记成已领取；fail 记异常。
                     int subStatus = v.startsWith("skip:") ? 4 : (fail ? 3 : 2);
                     store.putLong("st:" + day + ":" + fpid + ":" + sid + ":"
@@ -153,7 +157,7 @@ public final class RoundRunner {
     }
 
     private static void appendSub(StateStore store, String fpid, long sid, String fnSub,
-                                  boolean ok, String note, String trigger) {
+                                  String cat, String note, String trigger) {
         try {
             String logKey = "log:" + fpid + ":" + sid + ":" + fnSub;
             JSONArray arr = new JSONArray();
@@ -166,12 +170,13 @@ public final class RoundRunner {
             }
             JSONObject e = new JSONObject();
             e.put("ts", System.currentTimeMillis());
-            e.put("ok", ok);
+            // 仅 CLAIMED 记 ok=true；SKIPPED（已检查无可领）/ERROR 都不是领取成功
+            e.put("ok", "CLAIMED".equals(cat));
             e.put("reason", note);
             e.put("detail", "");
             e.put("trg", trigger);
             e.put("dur", 0);
-            e.put("cat", ok ? "CLAIMED" : "ERROR");
+            e.put("cat", cat);
             e.put("att", 1);
             JSONArray out = new JSONArray();
             out.put(e);
