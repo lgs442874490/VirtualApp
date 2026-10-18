@@ -1,7 +1,4 @@
 // Top-level build file where you can add configuration options common to all sub-projects/modules.
-apply from: 'VAConfig.gradle'
-apply from: 'AppConfig.gradle'
-
 buildscript {
     repositories {
         jcenter()
@@ -18,12 +15,28 @@ buildscript {
     }
 }
 
+plugins {
+    // 依赖更新报告（质量门禁第一梯队）：`./gradlew dependencyUpdates`
+    // 0.46.0 为兼容 Gradle 7.3.3 的版本；插件经 Gradle Plugin Portal 解析（见 T5 报告的离线说明）
+    id 'com.github.ben-manes.versions' version '0.46.0'
+}
+
+apply from: 'VAConfig.gradle'
+apply from: 'AppConfig.gradle'
+
 allprojects {
     repositories {
         google()
         mavenCentral()
         jcenter()
     }
+}
+
+// 依赖更新报告：只报告稳定版更新（alpha/beta/rc 默认过滤；需要时 -Drevision=all 放开）
+dependencyUpdates {
+    revision = 'release'
+    outputFormatter = 'plain'
+    outputDir = "${rootProject.buildDir}/dependencyUpdates"
 }
 
 task clean(type: Delete) {
