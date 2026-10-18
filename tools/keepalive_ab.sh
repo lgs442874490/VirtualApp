@@ -12,7 +12,10 @@
 #
 # 采集：电量/温度、Doze/唤醒锁、进程与 oom_score_adj、前台服务、exit-info、
 #       daily_log 尾部。输出 Markdown，便于直接贴进验收报告。
-set -euo pipefail
+# 采集命令允许单项无输出/进程不存在（grep 无匹配、tail 文件缺失、grep|head 的
+# SIGPIPE 都属正常），不能因为某一行采集失败就中止整轮——因此这里不用 set -e，
+# 只保留未定义变量报错与管道错误可见。
+set -uo pipefail
 
 SERIAL="${1:?用法: tools/keepalive_ab.sh <serial> <scenario> [output.md] [duration_sec] [interval_sec]}"
 SCENARIO="${2:-unknown}"
