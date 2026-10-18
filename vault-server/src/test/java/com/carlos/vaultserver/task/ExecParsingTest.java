@@ -8,6 +8,8 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /** 真机推送形状解析：英雄 map、兵力 {id:{count}}、最高档士兵。 */
 public class ExecParsingTest {
@@ -73,5 +75,50 @@ public class ExecParsingTest {
         assertEquals(11100L, ids[0]);
         assertEquals(21000L, ids[1]);
         assertEquals(31000L, ids[2]);
+    }
+
+    // ---------- P1-A 二轮：Exec.Multi 聚合路径的会话中断升级（ZCode 复验 §6：8/9 失败不经 classifyException） ----------
+
+    @Test
+    public void multi_sessionLost_upgradesToSessionClosed() {
+        // 形态 B：任务级 catch 走 m.fail(brief(message))，文案即断线原文
+        Exec.Multi m = new Exec.Multi();
+        m.skip("每日签到·冷却中");
+        m.fail("连接游戏服务器失败");
+        assertEquals("聚合中出现会话中断文案必须升级 SESSION_CLOSED（优先于 ERROR）",
+                TaskOutcome.Category.SESSION_CLOSED, m.cat());
+        assertTrue(m.sessionLost());
+        assertEquals("note() 展示口径不变", "领取0/跳过1/失败1", m.note());
+    }
+
+    @Test
+    public void multi_businessFailure_staysError() {
+        // 形态 d（聚合侧）：业务失败文案仍判 ERROR，不得被误升级
+        Exec.Multi m = new Exec.Multi();
+        m.skip("每日签到·冷却中");
+        m.fail("结算码6158");
+        assertEquals(TaskOutcome.Category.ERROR, m.cat());
+        assertFalse(m.sessionLost());
+    }
+
+    @Test
+    public void multi_sessionLostBeatsDegraded() {
+        // 会话中断优先于 DEGRADED：断线轮必须可重试，不能烧掉当天整轮
+        Exec.Multi m = new Exec.Multi();
+        m.degraded("协议异常重试");
+        m.fail("Connection refused");
+        assertEquals(TaskOutcome.Category.SESSION_CLOSED, m.cat());
+    }
+
+    @Test
+    public void multi_resultCarriesSessionClosedCategory() {
+        // 收口路径：Exec.result 把 Multi 的分类带进 TaskOutcome（RoundRunner 据此截断整轮）
+        Exec.Multi m = new Exec.Multi();
+        m.subFail("train_1", "训练码6158");
+        m.fail("连接游戏服务器失败");
+        TaskOutcome r = Exec.result(m, "t1", "城镇任务");
+        assertEquals(TaskOutcome.Category.SESSION_CLOSED, r.category);
+        assertTrue(r.message.contains("失败1"));
+        assertEquals("fail:训练码6158", r.subResults.get("train_1"));
     }
 }

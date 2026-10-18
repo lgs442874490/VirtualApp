@@ -157,4 +157,131 @@ public class SessionClosedTruncationTest {
         TaskOutcome o = ServerTasks.classifyException(new IllegalStateException("连接已关闭"), "x");
         assertEquals(TaskOutcome.Category.SESSION_CLOSED, o.category);
     }
+
+    // ---------- P1-A：cause 链追溯（ZCode 真机回归：杀出口整轮 19 任务误判 ERROR） ----------
+
+    @Test
+    public void classifyException_wrappedConnectionClosed_isSessionClosed() {
+        // 真实形态（GameProtocolClient.request → ExecutionException 分支）：
+        // IllegalStateException("协议调用失败: req_x", cause=IllegalStateException("连接已关闭"))
+        TaskOutcome o = ServerTasks.classifyException(
+                new IllegalStateException("协议调用失败: req_x",
+                        new IllegalStateException("连接已关闭")), "任务x");
+        assertEquals("包装在 cause 里的真实断线必须判 SESSION_CLOSED",
+                TaskOutcome.Category.SESSION_CLOSED, o.category);
+        assertTrue(o.message.contains("会话中断"));
+    }
+
+    @Test
+    public void classifyException_wrappedTimeout_isSessionClosed() {
+        // timeout 包装形态：协议调用失败 ← 等待协议响应超时 ← TimeoutException
+        TaskOutcome o = ServerTasks.classifyException(
+                new IllegalStateException("协议调用失败: req_x",
+                        new IllegalStateException("等待协议响应超时: req_x",
+                                new java.util.concurrent.TimeoutException("50ms"))), "任务x");
+        assertEquals(TaskOutcome.Category.SESSION_CLOSED, o.category);
+    }
+
+    @Test
+    public void classifyException_deepCauseChain_fiveHops() {
+        // 深层包装（顶层 + 5 层 cause），断线关键字落在最底层
+        Throwable deep = new IllegalStateException("连接已关闭");
+        for (int i = 1; i <= 5; i++) {
+            deep = new IllegalStateException("包装层" + i, deep);
+        }
+        TaskOutcome o = ServerTasks.classifyException(deep, "任务x");
+        assertEquals("5 层 cause 内的断线关键字必须能追溯到",
+                TaskOutcome.Category.SESSION_CLOSED, o.category);
+    }
+
+    @Test
+    public void classifyException_beyondCauseCap_fallsBackToError() {
+        // 超过追溯上限（第 6 层 cause）不再深挖：封顶防爆栈/防环，行为可预期
+        Throwable deep = new IllegalStateException("连接已关闭");
+        for (int i = 1; i <= 6; i++) {
+            deep = new IllegalStateException("包装层" + i, deep);
+        }
+        TaskOutcome o = ServerTasks.classifyException(deep, "任务x");
+        assertEquals(TaskOutcome.Category.ERROR, o.category);
+    }
+
+    @Test
+    public void classifyException_mutualCauseCycle_terminates() {
+        // 互环 cause（a→b→a，JDK 禁自环但不禁互环）不得死循环：上限兜底
+        IllegalStateException a = new IllegalStateException("异常A");
+        IllegalStateException b = new IllegalStateException("异常B", a);
+        a.initCause(b);
+        TaskOutcome o = ServerTasks.classifyException(a, "任务x");
+        assertEquals(TaskOutcome.Category.ERROR, o.category);
+    }
+
+    @Test
+    public void classifyException_topLevelMark_messageUnchanged() {
+        // 顶层即命中：分类与文案与旧行为完全一致（无 cause 时 chain==原 msg）
+        TaskOutcome o = ServerTasks.classifyException(new IllegalStateException("连接已关闭"), "任务x");
+        assertEquals(TaskOutcome.Category.SESSION_CLOSED, o.category);
+        assertEquals("会话中断（可重试）：连接已关闭", o.message);
+    }
+
+    @Test
+    public void classifyException_nonSessionCause_stillError_withChainShown() {
+        // 非断线原因：仍判 ERROR，但 cause 链要进展示（排障需要）
+        TaskOutcome o = ServerTasks.classifyException(
+                new IllegalStateException("协议调用失败: req_x",
+                        new IllegalArgumentException("参数不合法")), "任务x");
+        assertEquals(TaskOutcome.Category.ERROR, o.category);
+        assertTrue(o.message.contains("协议调用失败"));
+        assertTrue(o.message.contains("参数不合法"));
+    }
+
+    // ---------- P1-A 二轮：connect() 拒绝链 + 网络异常类型白名单 + isSessionClosed 复用入口 ----------
+
+    @Test
+    public void classifyException_connectRefusedChain_isSessionClosed() {
+        // 形态 A（ZCode 复验 §5.4）：connect() 路径抛
+        // IllegalStateException("连接游戏服务器失败", cause=ConnectException("Connection refused"))。
+        // "连接失败"不是"连接游戏服务器失败"的连续子串，round-1 漏判。
+        TaskOutcome o = ServerTasks.classifyException(
+                new IllegalStateException("连接游戏服务器失败",
+                        new java.net.ConnectException("Connection refused")), "任务x");
+        assertEquals("connect() 拒绝链必须判 SESSION_CLOSED",
+                TaskOutcome.Category.SESSION_CLOSED, o.category);
+        // 双重保险：类型白名单单独也能命中（文案全无关键字时）
+        assertTrue(ServerTasks.isSessionClosed(
+                new IllegalStateException("连接游戏服务器失败",
+                        new java.net.ConnectException("Connection refused"))));
+        assertTrue(ServerTasks.isSessionClosed(
+                new IllegalStateException("本地化文案无关键字",
+                        new java.net.ConnectException("Connection refused"))));
+    }
+
+    @Test
+    public void classifyException_networkCauseTypes_isSessionClosed() {
+        // 形态 B 变体：cause 为网络层异常、文案无任何断线关键字 → 靠类型白名单兜底
+        for (Throwable net : new Throwable[]{
+                new java.net.SocketException("Connection reset"),
+                new java.net.SocketTimeoutException("Read timed out"),
+                new java.io.EOFException("EOF while reading"),
+                new java.nio.channels.ClosedChannelException()}) {
+            TaskOutcome o = ServerTasks.classifyException(
+                    new IllegalStateException("协议调用失败: req_x", net), "任务x");
+            assertEquals("cause=" + net.getClass().getSimpleName() + " 必须判 SESSION_CLOSED",
+                    TaskOutcome.Category.SESSION_CLOSED, o.category);
+        }
+    }
+
+    @Test
+    public void isSessionClosedString_rejectsBusinessTexts() {
+        // 形态 d（文案侧）：业务失败文案不得误判会话中断（聚合路径直接吃文案）
+        assertFalse(ServerTasks.isSessionClosed("结算码6158"));
+        assertFalse(ServerTasks.isSessionClosed("参数不合法"));
+        assertFalse(ServerTasks.isSessionClosed("免费护盾冷却中"));
+        assertFalse(ServerTasks.isSessionClosed((String) null));
+        assertFalse(ServerTasks.isSessionClosed(""));
+        // P1-A 二轮增补词命中确认（防止关键字漂移后测试变假绿）
+        assertTrue(ServerTasks.isSessionClosed("连接游戏服务器失败"));
+        assertTrue(ServerTasks.isSessionClosed("Connection refused"));
+        assertTrue(ServerTasks.isSessionClosed("Connection reset"));
+        assertTrue(ServerTasks.isSessionClosed("Broken pipe"));
+    }
 }

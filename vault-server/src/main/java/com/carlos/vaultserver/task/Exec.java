@@ -309,6 +309,12 @@ public final class Exec {
         public final java.util.Map<String, String> subResults = new java.util.LinkedHashMap<>();
         /** 领取明细累计（与 App ExecUtil.Multi 一致；随 TaskOutcome.rewards 落盘）。 */
         private final StringBuilder rw = new StringBuilder();
+        /**
+         * P1-A 二轮：聚合过程中是否出现过会话中断文案。
+         * 真实断线最常见形态（8/9）走 Exec 子项聚合路径，不经 classifyException，
+         * 顶层文案形如"连接游戏服务器失败"——命中即置位，cat() 据此升级 SESSION_CLOSED。
+         */
+        private boolean sessionLost;
 
         /** 领取成功时从响应提取物品明细并累计（与 App ExecUtil.Multi.rewards 一致）。 */
         public void rewards(String name, GameMessage rsp) {
@@ -357,6 +363,13 @@ public final class Exec {
         public void fail(String s) {
             fail++;
             sb.append(s).append("✗ ");
+            // P1-A 二轮：异常文案命中会话中断关键字 → 整个任务升级 SESSION_CLOSED
+            if (!sessionLost && ServerTasks.isSessionClosed(s)) sessionLost = true;
+        }
+
+        /** 聚合过程中是否出现过会话中断文案（P1-A）。 */
+        public boolean sessionLost() {
+            return sessionLost;
         }
 
         public String note() {
@@ -366,6 +379,9 @@ public final class Exec {
         }
 
         public TaskOutcome.Category cat() {
+            // P1-A 二轮：会话中断优先于 DEGRADED/ERROR——断线轮必须可重试，
+            // 不能烧掉当天整轮（srv:lastrun 不写、后续模块截断）。
+            if (sessionLost) return TaskOutcome.Category.SESSION_CLOSED;
             if (degraded > 0) return TaskOutcome.Category.DEGRADED;
             if (fail > 0) return TaskOutcome.Category.ERROR;
             return ok > 0 ? TaskOutcome.Category.CLAIMED : TaskOutcome.Category.SKIPPED;
