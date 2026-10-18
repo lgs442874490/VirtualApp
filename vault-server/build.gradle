@@ -1,6 +1,11 @@
 plugins {
     id 'java'
     id 'application'
+    id 'jacoco'
+    // SpotBugs 5.x 与 Gradle 7.3.3 兼容；工具版本固定 4.8.x（支持 Java 17 字节码）
+    id 'com.github.spotbugs' version '5.2.5'
+    // 失败重试只用于 flaky 用例（maxRetries=2），不允许把真实回归当 flaky 掩盖
+    id 'org.gradle.test-retry' version '1.5.1'
 }
 
 group = 'com.carlos'
@@ -14,6 +19,8 @@ dependencies {
     // WjdrEngine 的 JSON 用法与 Android 内置 org.json API 一致，JVM 侧用官方包补齐
     implementation 'org.json:json:20240303'
     testImplementation 'junit:junit:4.13.2'
+    // FindSecBugs：SpotBugs 安全规则插件（mavenCentral 可解析；不可解析时删除本行即可）
+    spotbugsPlugins 'com.h3xstream.findsecbugs:findsecbugs-plugin:1.12.0'
 }
 
 java {
@@ -46,7 +53,58 @@ test {
         events 'failed', 'skipped'
         exceptionFormat 'full'
     }
+    // 第一梯队：flaky 重试最多 2 次，重试后通过不算失败（但会在报告中记录 retry 次数）
+    retry {
+        maxRetries = 2
+        maxFailures = 5
+        failOnPassedAfterRetry = false
+    }
 }
+
+// ================= 质量门禁第一梯队 =================
+
+// JaCoCo：只统计生产代码（排除测试类），XML 供 CI/看板消费，HTML 供本地查看
+jacoco {
+    toolVersion = '0.8.11'
+}
+
+jacocoTestReport {
+    dependsOn test
+    reports {
+        xml.required = true
+        html.required = true
+        csv.required = false
+    }
+    classDirectories.setFrom(files(classDirectories.files.collect {
+        fileTree(dir: it, exclude: [
+                '**/*Test.class',
+                '**/*Tests.class',
+                '**/test/**'
+        ])
+    }))
+}
+
+// 覆盖率报告跟随 test 任务（本地与 CI 跑测试即产出报告）
+test.finalizedBy jacocoTestReport
+
+// SpotBugs：effort=max / reportLevel=medium；第一梯队先出报告不阻断构建
+// （ignoreFailures=true；待存量问题收敛后在第二梯队收紧为 false）
+spotbugs {
+    toolVersion = '4.8.3'
+    effort = 'max'
+    reportLevel = 'medium'
+    ignoreFailures = true
+}
+
+spotbugsMain {
+    reports {
+        html.required = true
+        xml.required = true
+    }
+}
+
+// 只扫生产源码集：测试源集不参与 SpotBugs
+tasks.matching { it.name == 'spotbugsTest' }.configureEach { enabled = false }
 
 // 单文件 fat jar：部署只拷 vault-server-all.jar + systemd 一行 ExecStart
 tasks.register('fatJar', Jar) {

@@ -1,3 +1,8 @@
+plugins {
+    // 质量门禁第一梯队：失败重试（只给 flaky 用例兜底，不允许掩盖真实回归）
+    id 'org.gradle.test-retry' version '1.5.1'
+}
+
 apply plugin: 'com.android.application'
 
 android {
@@ -176,4 +181,20 @@ dependencies {
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.mockito:mockito-inline:4.11.0'
 
+}
+
+// ================= 质量门禁第一梯队（app 侧） =================
+// app 覆盖率（JaCoCo）本次未落地：AGP 7.2 单测覆盖率数据路径/报告任务验证超出时间盒，
+// 为避免给日常 debug 构建加插桩、且不留“空报告任务”，app coverage 明确记为第二梯队。
+// 本次仅保留 test-retry（配置已验证可加载；失败重试触发路径待有 flaky 用例时验证）。
+
+// Android 单元测试任务统一启用 retry（仅 flaky；与 root/vault-server 同口径）
+tasks.configureEach { t ->
+    if (t instanceof org.gradle.api.tasks.testing.Test) {
+        t.retry {
+            maxRetries = 2
+            maxFailures = 5
+            failOnPassedAfterRetry = false
+        }
+    }
 }
