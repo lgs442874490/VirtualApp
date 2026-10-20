@@ -234,6 +234,29 @@ public final class RoleIdentity {
         return false;
     }
 
+    // ---------- 启动双源当前角色对齐（纯函数，2026-10-20） ----------
+
+    /**
+     * 启动时对齐两处当前角色记录（{@code daily_roles.active2} 与 {@code home:current_role}）。
+     *
+     * <p>旧实现无条件用 current_role 覆盖 active2——若 current_role 较旧（历史写入路径
+     * 未同步、或 learnServerRole 曾只改其中一处），重启会把用户刚切的角色回滚，再同步给
+     * 服务器落错角色（真机：切隆科多后重启变回小鹿）。按写入时间取较新者即可消除该回滚。
+     *
+     * @return {@link #SOURCE_ACTIVE}=active2 更新（以 active2 为准）；{@link #SOURCE_CURRENT}=
+     *         current_role 更新或时间相同/缺失（保留旧行为）
+     */
+    public static final int SOURCE_CURRENT = 0;
+    public static final int SOURCE_ACTIVE = 1;
+
+    public static int pickNewerRoleSource(long activeSid, long activeUid, long activeAt,
+                                          long currentSid, long currentUid, long currentAt) {
+        if (currentSid <= 0) return SOURCE_ACTIVE;
+        if (activeSid <= 0) return SOURCE_CURRENT;
+        if (activeAt > currentAt) return SOURCE_ACTIVE;
+        return SOURCE_CURRENT;
+    }
+
     // ---------- 发现角色元数据清洗判定（纯函数） ----------
 
     /**

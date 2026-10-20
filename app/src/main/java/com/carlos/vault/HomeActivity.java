@@ -878,7 +878,22 @@ public class HomeActivity extends AccountVaultActivity {
             long uid = c < 0 ? 0 : Long.parseLong(rest.substring(c + 1));
             if (fpid.isEmpty() || sid <= 0) return;
             RoleStore.ActiveRole act = RoleStore.activeRoleEx(this, fpid);
-            if (act.sid != sid || (uid > 0 && act.uid != uid)) {
+            long activeAt = RoleStore.activeRoleAt(this, fpid);
+            long currentAt = getSharedPreferences("home", MODE_PRIVATE)
+                    .getLong("current_role_at", 0);
+            // 双源对齐（2026-10-20）：按写入时间取较新者。旧实现无条件用 current_role
+            // 覆盖 active2，重启时会把用户刚切的角色回滚（真机已复现）。
+            int source = com.carlos.vault.daily.RoleIdentity.pickNewerRoleSource(
+                    act.sid, act.uid, activeAt, sid, uid, currentAt);
+            if (source == com.carlos.vault.daily.RoleIdentity.SOURCE_ACTIVE) {
+                if (act.sid > 0) {
+                    currentRoleKey = fpid + ":" + act.sid
+                            + (act.uid > 0 ? ":" + act.uid : "");
+                    getSharedPreferences("home", MODE_PRIVATE).edit()
+                            .putString("current_role", currentRoleKey)
+                            .putLong("current_role_at", activeAt).apply();
+                }
+            } else if (act.sid != sid || (uid > 0 && act.uid != uid)) {
                 RoleStore.setActiveRole(this, fpid, sid, uid);
             }
         } catch (Throwable ignored) {
@@ -905,7 +920,10 @@ public class HomeActivity extends AccountVaultActivity {
     private void setCurrentRole(String fpid, long sid, long uid) {
         currentRoleKey = fpid + ":" + sid + (uid > 0 ? ":" + uid : "");
         getSharedPreferences("home", MODE_PRIVATE).edit()
-                .putString("current_role", currentRoleKey).apply();
+                .putString("current_role", currentRoleKey)
+                // 双源对齐时间戳（2026-10-20）：启动时按较新者对齐，防旧 current_role
+                // 覆盖用户刚切的 active 角色（真机：切隆科多后重启回滚成小鹿）
+                .putLong("current_role_at", System.currentTimeMillis()).apply();
         // 关键：同步账号激活角色（RoleStore.activeRole）。activeRole 是功能开关读写
         // （fnOn/setFnOn 经 activeSid）、功能详情页 sid 兜底、多角色竞速会话的主角色指纹
         // 源（RoleSessionKeeper 竞速登录时 roleIdentitySeed 以 activeRole 判主角色）的
