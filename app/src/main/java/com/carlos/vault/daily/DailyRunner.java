@@ -816,6 +816,15 @@ public class DailyRunner {
     }
     public static Summary run(Context context, String fpid, String sdkToken, long serverid,
                               Map<String, Boolean> cfg, ProgressListener listener) {
+        return run(context, fpid, sdkToken, serverid, 0, cfg, listener);
+    }
+
+    /**
+     * 跑日常（角色级）。uid>0 = 同服多角色按 (serverid,uid) 钉扎登录，绝不落到
+     * 同服另一个角色上；uid<=0 = 按角色表已登记值/发现路径（旧行为）。
+     */
+    public static Summary run(Context context, String fpid, String sdkToken, long serverid, long uid,
+                              Map<String, Boolean> cfg, ProgressListener listener) {
         // 战时任务闸（设计 E1，用户 20261017 重申：战争态放弃一切占队日常，全部留驻防）：
         // 有在途威胁或驻防执行中 → 本轮日常整轮让位
         if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(fpid, serverid)) {
@@ -836,7 +845,7 @@ public class DailyRunner {
         WjdrEngine.LoginResult lr;
         applyRoleIdentity(context, engine, fpid, serverid);
         try {
-            lr = RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid);
+            lr = RoleLogin.loginPinned(context, engine, fpid, sdkToken, serverid, uid);
         } catch (Throwable t) {
             sum.loginError = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
             if (listener != null) listener.onFinish(sum);

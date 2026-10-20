@@ -157,6 +157,9 @@ public final class VaultHttpApi {
             a.keep = o.optBoolean("keep", false);
             String sid = o.optString("activeSid", "");
             a.activeSid = sid.isEmpty() ? null : sid;
+            // 同服多角色：App 下发的当前角色 uid（旧客户端无此字段 → null = 旧行为）
+            String auid = o.optString("activeUid", "");
+            a.activeUid = auid.isEmpty() ? null : auid;
             String id = o.optString("identity", "");
             a.identity = id.isEmpty() ? null : id;
             a.proxy = o.optString("proxy", "");
@@ -250,6 +253,7 @@ public final class VaultHttpApi {
             o.put("state", s.state);
             o.put("lastFailure", s.lastFailure == null ? "" : s.lastFailure);
             o.put("sid", s.sid == null ? "" : s.sid);
+            o.put("activeUid", s.activeUid == null ? "" : s.activeUid);
             o.put("hasToken", s.hasToken);
             o.put("roleName", s.roleName == null ? "" : s.roleName);
             o.put("roleLevel", s.roleLevel);
@@ -343,6 +347,7 @@ public final class VaultHttpApi {
             String sid = acc.activeSid == null ? "" : acc.activeSid;
             data.put("fpid", acc.fpid);
             data.put("sid", sid);
+            data.put("activeUid", acc.activeUid == null ? "" : acc.activeUid);
             data.put("auto", acc.auto);
             data.put("keep", acc.keep);
             data.put("windowStart", acc.windowStart);

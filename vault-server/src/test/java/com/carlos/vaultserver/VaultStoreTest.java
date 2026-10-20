@@ -105,4 +105,58 @@ public class VaultStoreTest {
         reloaded.load();
         assertEquals("grab_back", reloaded.policy());
     }
+
+    // ---------- 同服多角色：activeUid（2026-10-20） ----------
+
+    @Test
+    public void activeUid_persistedAcrossReload() {
+        List<VaultStore.Account> in = new ArrayList<>();
+        VaultStore.Account a = acc("48460403", true, "tk");
+        a.activeSid = "888";
+        a.activeUid = "88280792";   // 同服第二角色
+        in.add(a);
+        store.replaceAll(in);
+
+        VaultStore reloaded = new VaultStore(tmp.getRoot().toPath());
+        reloaded.load();
+        VaultStore.Account got = reloaded.find("48460403");
+        assertEquals("888", got.activeSid);
+        assertEquals("88280792", got.activeUid);
+    }
+
+    @Test
+    public void activeUid_absentStaysNull_legacyBehaviour() {
+        List<VaultStore.Account> in = new ArrayList<>();
+        VaultStore.Account a = acc("111", true, "tk");
+        a.activeSid = "913";
+        in.add(a);
+        store.replaceAll(in);
+
+        VaultStore reloaded = new VaultStore(tmp.getRoot().toPath());
+        reloaded.load();
+        VaultStore.Account got = reloaded.find("111");
+        assertEquals("913", got.activeSid);
+        assertNull(got.activeUid);   // 旧客户端/旧数据：缺省 = 旧行为（只按 sid 发现）
+    }
+
+    @Test
+    public void activeUid_followsIncomingOnSync() {
+        List<VaultStore.Account> in = new ArrayList<>();
+        VaultStore.Account a = acc("48460403", true, "tk");
+        a.activeSid = "888";
+        a.activeUid = "35371154";
+        in.add(a);
+        store.replaceAll(in);
+        assertEquals("35371154", store.find("48460403").activeUid);
+
+        // App 切到同服另一个角色：sync 全量覆盖，activeUid 跟随
+        VaultStore.Account b = acc("48460403", true, "tk");
+        b.activeSid = "888";
+        b.activeUid = "88280792";
+        store.replaceAll(List.of(b));
+        assertEquals("88280792", store.find("48460403").activeUid);
+
+        // snapshot 深拷贝带 uid（reconcile 比对角色变化用）
+        assertEquals("88280792", store.snapshot().get(0).activeUid);
+    }
 }

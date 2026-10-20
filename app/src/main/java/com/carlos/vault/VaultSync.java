@@ -4,6 +4,7 @@ import android.content.Context;
 import android.util.Base64;
 import android.util.Log;
 
+import com.carlos.vault.daily.RoleIdentity;
 import com.carlos.vault.daily.RoleStore;
 import com.carlos.vault.license.LicenseCrypto;
 
@@ -187,7 +188,12 @@ public final class VaultSync {
     /** 全量同步并回调结果（回调在 OkHttp 线程；账号页登录按钮用它串起“同步→触发”）。 */
     public static void syncAll(Context ctx, Callback done) {
         final Context app = ctx.getApplicationContext();
-        new Thread(() -> post(app, PATH_SYNC, OP_SYNC, syncFields(app), done), "vault-sync").start();
+        new Thread(() -> post(app, PATH_SYNC, OP_SYNC, syncFields(app), (code, message, data) -> {
+            // 同步成功 = 全部账号的当前角色已上传：清掉防回滚待上传标记
+            // （失败时保留，窗口内继续拦截服务端旧回传，下次成功再清）
+            if (code == 0) RoleStore.clearAllRoleDirty(app);
+            if (done != null) done.onResult(code, message, data);
+        }), "vault-sync").start();
     }
 
     /** 账号数据变更钩子（token 更新/导入/keep 切换）：去抖后全量同步。 */
@@ -213,6 +219,25 @@ public final class VaultSync {
         }
     }
 
+    /**
+     * 用户切换了当前角色（UI 所有切换入口统一走这里）：标记「待上传」并触发去抖全量同步。
+     *
+     * <p>防回滚两件套（2026-10-20 P2，见 {@link #learnServerRole}）：
+     * <ul>
+     *   <li>{@code markRoleDirty}：上传完成前服务端 {@code /state}、{@code /status} 回传仍是
+     *       旧角色，期间一律不回写当前角色——只靠时间戳挡不住「切换后才发起、同步前到达」
+     *       的请求（如 RoleSessionKeeper 巡检、autoSyncAccount 打开页面即拉状态）；</li>
+     *   <li>{@link #onAccountsChanged}：把原本最长 10 分钟（kickFullSync 防抖）的上行窗口
+     *       压缩到约 3 秒，服务端尽快跟上本地选择。</li>
+     * </ul>
+     * 本地模式（无服务器）时 {@link #onAccountsChanged} 自动 no-op，待上传标记不会被读取。
+     */
+    public static void notifyRoleSwitched(Context ctx, String fpid) {
+        if (fpid == null || fpid.isEmpty()) return;
+        RoleStore.markRoleDirty(ctx, fpid);
+        onAccountsChanged(ctx);
+    }
+
     /** 单账号 token 立即补给（NEED_TOKEN 等场景，绕过去抖）。 */
     public static void pushToken(Context ctx, String fpid, String token) {
         if (!isServerMode(ctx) || fpid == null || fpid.isEmpty()) return;
@@ -226,11 +251,13 @@ public final class VaultSync {
     /** 拉取服务器会话状态并缓存（UI 从 cachedStateOf 读）。 */
     public static void refreshStatus(Context ctx) {
         final Context app = ctx.getApplicationContext();
+        // 请求发起时刻：回传角色是否比本地激活更新，按它判定（防回滚，见 learnServerRole）
+        final long requestTs = System.currentTimeMillis();
         Map<String, Object> f = commonFields(app);
         new Thread(() -> post(app, PATH_STATUS, OP_STATUS, f,
                 (code, message, data) -> {
                     if (code == 0 && data != null) {
-                        cacheAccounts(app, data.optJSONArray("accounts"));
+                        cacheAccounts(app, data.optJSONArray("accounts"), requestTs);
                     }
                 }), "vault-status").start();
     }
@@ -247,11 +274,13 @@ public final class VaultSync {
     /** 同上，附带完成回调（回写完成后触发，含失败；回调在 OkHttp 线程）。 */
     public static void fetchState(Context ctx, Callback done) {
         final Context app = ctx.getApplicationContext();
+        // 请求发起时刻：回传角色是否比本地激活更新，按它判定（防回滚，见 learnServerRole）
+        final long requestTs = System.currentTimeMillis();
         Map<String, Object> f = commonFields(app);
         new Thread(() -> post(app, PATH_STATE, OP_STATE, f,
                 (code, message, data) -> {
                     if (code == 0 && data != null) {
-                        cacheAccounts(app, data.optJSONArray("accounts"));
+                        cacheAccounts(app, data.optJSONArray("accounts"), requestTs);
                         JSONObject states = data.optJSONObject("states");
                         if (states != null && states.length() > 0) {
                             writeDailyState(app, states);
@@ -262,7 +291,7 @@ public final class VaultSync {
                 }), "vault-state").start();
     }
 
-    private static void cacheAccounts(Context app, JSONArray accounts) {
+    private static void cacheAccounts(Context app, JSONArray accounts, long requestTs) {
         if (accounts == null) return;
         try {
             JSONObject cache = new JSONObject();
@@ -272,7 +301,7 @@ public final class VaultSync {
                 cache.put(fpid, o);
                 // 服务器登录后才知道实际落地 sid/角色名（App 端尚未本地发现角色时）：
                 // 回写角色表 + active/current_role，保证角色卡与 st:…:sid:fn 都能命中。
-                learnServerRole(app, fpid, o);
+                learnServerRole(app, fpid, o, requestTs);
             }
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .putString("status_cache", cache.toString())
@@ -282,8 +311,25 @@ public final class VaultSync {
         }
     }
 
-    /** 把服务器实际 sid/角色元数据落到本地角色表与当前角色；已有别的账号 current_role 时不覆盖。 */
-    private static void learnServerRole(Context app, String fpid, JSONObject status) {
+    /**
+     * 把服务器实际 sid/角色元数据落到本地角色表与当前角色；已有别的账号 current_role 时不覆盖。
+     *
+     * <p><b>防回滚门控</b>（2026-10-20 P2，QA 报告 §3.1）：切角色只写本地、上传有延迟，
+     * 窗口内服务端回传仍是旧角色。当前角色身份的回写受两层保护，任一命中即跳过
+     * （仅跳过 setActiveRole/current_role）：
+     * <ol>
+     *   <li><b>待上传标记</b>（{@link RoleStore#isRoleDirty}）：本地刚切过角色且全量
+     *       同步尚未成功。只靠时间戳挡不住「切换后才发起、同步前到达」的请求
+     *       （RoleSessionKeeper 巡检、autoSyncAccount 等打开页面即拉状态的路径）；</li>
+     *   <li><b>时间戳</b>（{@link RoleIdentity#shouldLearnActiveRole}）：本地激活身份
+     *       与回传不同、且本地激活不早于请求发起（切换发生在请求发出之后 ⇒ 回传是
+     *       切换前旧快照）；同时本地已知 uid 时拒绝服务端 uid 缺失的降级回写。</li>
+     * </ol>
+     * 另有两项与身份无关的学习：{@code migrateRole}（sid=0 配置迁移）保持无条件；
+     * {@code registerRole} 元数据学习受 {@link RoleIdentity#shouldLearnServerMeta}
+     * 门控（P1-2：uid=0 旧服务器回传不污染同服已知行，见方法内注释）。
+     */
+    private static void learnServerRole(Context app, String fpid, JSONObject status, long requestTs) {
         if (fpid == null || fpid.isEmpty() || status == null) return;
         String sidText = status.optString("sid", "");
         if (sidText == null || sidText.isEmpty()) return;
@@ -295,20 +341,53 @@ public final class VaultSync {
             new com.carlos.vault.daily.DailyConfigStore(app).migrateRole(fpid, 0, sid);
             com.carlos.vault.daily.FnParams.migrateRole(app, fpid, 0, sid);
             String name = status.optString("roleName", "");
-            if (!name.isEmpty()) {
-                RoleStore.registerRole(app, fpid, sid, 0, name,
+            // 服务器实际登录角色的 uid（同服多角色区分依据；旧服务器无此字段=0）
+            long uid = parseUidSafe(status.optString("activeUid", ""));
+            // P1-2（QA 报告 §3.4）：uid=0（旧服务器无 activeUid）时 registerRole 的宽松
+            // 匹配会把会话角色元数据覆盖到同服第一行——该 sid 已有 uid 已知行时跳过本次
+            // 元数据学习；仅首次引导（该 sid 还无已知行，单角色账号）允许 uid=0 登记。
+            boolean learnMeta = RoleIdentity.shouldLearnServerMeta(
+                    sid, uid, RoleStore.roles(app, fpid));
+            if (learnMeta && (!name.isEmpty() || uid > 0)) {
+                RoleStore.registerRole(app, fpid, sid, uid, name,
                         status.optLong("roleLevel", 0), status.optLong("rolePower", 0),
                         status.optString("roleAlliance", ""));
+            } else if (!learnMeta) {
+                Log.i(TAG, "跳过服务器角色元数据学习（防同服串行）fpid=" + fpid
+                        + " sid=" + sid + " uid=" + uid);
             }
-            RoleStore.setActiveRole(app, fpid, sid);
+            // ---- 当前角色身份回写：双层防回滚门控 ----
+            RoleStore.ActiveRole local = RoleStore.activeRoleEx(app, fpid);
+            long localTs = RoleStore.activeRoleAt(app, fpid);
+            boolean dirty = RoleStore.isRoleDirty(app, fpid);
+            if (dirty || !RoleIdentity.shouldLearnActiveRole(
+                    local.sid, local.uid, localTs, sid, uid, requestTs)) {
+                Log.i(TAG, "跳过服务器角色回写（防回滚）fpid=" + fpid
+                        + " local=" + local.sid + ":" + local.uid + "@" + localTs
+                        + " server=" + sid + ":" + uid + " reqTs=" + requestTs
+                        + " dirty=" + dirty);
+                return;
+            }
+            RoleStore.setActiveRole(app, fpid, sid, uid);
             android.content.SharedPreferences home =
                     app.getSharedPreferences("home", Context.MODE_PRIVATE);
             String cur = home.getString("current_role", "");
             if (cur == null || cur.isEmpty() || cur.startsWith(fpid + ":")) {
-                home.edit().putString("current_role", fpid + ":" + sid).apply();
+                home.edit().putString("current_role",
+                        fpid + ":" + sid + (uid > 0 ? ":" + uid : "")).apply();
             }
-            Log.i(TAG, "采纳服务器角色 fpid=" + fpid + " sid=" + sid + " name=" + name);
+            Log.i(TAG, "采纳服务器角色 fpid=" + fpid + " sid=" + sid + " uid=" + uid + " name=" + name);
         } catch (Throwable ignored) {
+        }
+    }
+
+    private static long parseUidSafe(String s) {
+        if (s == null || s.isEmpty()) return 0;
+        try {
+            long v = Long.parseLong(s.trim());
+            return v > 0 ? v : 0;
+        } catch (Throwable t) {
+            return 0;
         }
     }
 
@@ -400,6 +479,34 @@ public final class VaultSync {
         new Thread(() -> post(app, PATH_AUTOMATION, OP_AUTOMATION, f, done), "vault-automation-read").start();
     }
 
+    /**
+     * 「登录」共享后半程（第二轮 UI 统一，2026-10-20）：以<b>脚本模拟登录该角色在线</b>
+     * ——不是启动游戏客户端。
+     *
+     * <p>语义链（调用方先完成角色钉扎 {@code setCurrentRole(fpid, sid, uid)}）：
+     * <ol>
+     *   <li>开统一自动化（keep=auto，服务器常驻会话与整轮调度同开关）；</li>
+     *   <li>强制服务器模式（自动化只允许服务器执行）；</li>
+     *   <li>全量上传身份库（含复合激活角色 activeSid/activeUid）；</li>
+     *   <li>服务器确保会话并排队整轮（fn=null）。</li>
+     * </ol>
+     * 回调语义与 {@link #triggerAutomation} 一致（OkHttp 线程；data 含
+     * {@code accepted/state/sid/config}）。账号页角色行、账号页账号级登录、账号详情页
+     * 角色行三处共用——原先三处各写一份内联实现（详情页那份还漏了 cfg 统计）。
+     */
+    public static void loginRoleOnline(Context ctx, String fpid, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        RoleStore.saveAutomation(app, fpid, true);
+        ensureServerMode(app);
+        syncAll(app, (code, message, data) -> {
+            if (code != 0) {
+                if (done != null) done.onResult(code, message, data);
+                return;
+            }
+            triggerAutomation(app, fpid, null, done);
+        });
+    }
+
     // ---------- 状态缓存（UI 读） ----------
 
     /** 服务器回传的账号状态（无缓存/该号缺项返回 null）。 */
@@ -443,8 +550,10 @@ public final class VaultSync {
                 // 否则旧数据会出现“有开关但没有会话/不跑整轮”的半开状态。
                 boolean automation = RoleStore.automationEnabled(ctx, a.fpid);
                 o.put("keep", automation);
-                long active = RoleStore.activeRole(ctx, a.fpid);
-                o.put("activeSid", active > 0 ? String.valueOf(active) : "");
+                // 当前角色 = 复合身份 (sid, uid)：同服多角色时服务器只拿 sid 无法区分登哪个角色
+                RoleStore.ActiveRole active = RoleStore.activeRoleEx(ctx, a.fpid);
+                o.put("activeSid", active.sid > 0 ? String.valueOf(active.sid) : "");
+                o.put("activeUid", active.uid > 0 ? String.valueOf(active.uid) : "");
                 String identity = store.getSettings(a.fpid);
                 o.put("identity", identity == null ? "" : identity);
                 // 统一自动化与时间窗（服务器整轮调度依据）
@@ -457,6 +566,8 @@ public final class VaultSync {
                     if (r.serverid <= 0) continue;
                     JSONObject ro = new JSONObject();
                     ro.put("sid", String.valueOf(r.serverid));
+                    // 角色 uid（同服多角色区分依据；旧服务器忽略多余字段，前向兼容）
+                    ro.put("uid", r.uid > 0 ? String.valueOf(r.uid) : "");
                     String rid = store.getRoleSettings(a.fpid, r.serverid);
                     ro.put("identity", rid == null ? "" : rid);
                     // 任务开关（服务器按角色执行整轮的依据）
