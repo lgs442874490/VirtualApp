@@ -52,6 +52,7 @@ public class RoleStore {
      * sync payload 带全部账号，故一次性清所有）。
      */
     private static final String DIRTY_KEY = "role_dirty:";
+    private static final String DIRTY_AT_KEY = "role_dirty_at:";
 
     public static class Role implements RoleIdentity.Identity {
         public long serverid;
@@ -429,18 +430,41 @@ public class RoleStore {
                 .getLong(ACTIVE_AT_KEY + fpid, 0);
     }
 
-    /** 标记该凭证的当前角色切换尚未上传（UI 切换入口调用；sync 成功后清除）。 */
+    /**
+     * 标记该凭证的当前角色切换尚未被服务器确认（UI 切换入口调用）。
+     *
+     * <p>2026-10-20 真实回归：sync 成功只代表服务器已收到 payload，会话重启是异步的；
+     * 若此时就清 dirty，紧接着到达的旧快照 status 会通过 P2 门控把本地角色回滚，随后
+     * 去抖 sync 又把旧角色写回服务器（真机：切隆科多后 3 秒服务器变回小鹿）。
+     * 现在的清除时机 = {@code learnServerRole} 收到与本地一致的 activeUid（见
+     * {@link #clearRoleDirty}），另加 {@value #DIRTY_TTL_MS}ms 超时兜底防卡死。
+     */
     public static void markRoleDirty(Context ctx, String fpid) {
         if (fpid == null || fpid.isEmpty()) return;
         ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
-                .edit().putBoolean(DIRTY_KEY + fpid, true).apply();
+                .edit().putBoolean(DIRTY_KEY + fpid, true)
+                .putLong(DIRTY_AT_KEY + fpid, System.currentTimeMillis()).apply();
     }
 
-    /** 该凭证是否有「切了角色但还没上传成功」的待上传标记。 */
+    /** 待上传标记有效期：超时后不再拦截服务器角色回写（防服务端一直不开会话时永久锁死）。 */
+    public static final long DIRTY_TTL_MS = 90_000L;
+
+    /** 该凭证是否仍有「已切换但服务器尚未确认」的待确认标记（带 TTL）。 */
     public static boolean isRoleDirty(Context ctx, String fpid) {
         if (fpid == null || fpid.isEmpty()) return false;
-        return ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
-                .getBoolean(DIRTY_KEY + fpid, false);
+        android.content.SharedPreferences sp =
+                ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE);
+        if (!sp.getBoolean(DIRTY_KEY + fpid, false)) return false;
+        long at = sp.getLong(DIRTY_AT_KEY + fpid, 0);
+        return at > 0 && System.currentTimeMillis() - at < DIRTY_TTL_MS;
+    }
+
+    /** 服务器已确认该凭证当前角色 = 本地角色：清除待确认标记。 */
+    public static void clearRoleDirty(Context ctx, String fpid) {
+        if (fpid == null || fpid.isEmpty()) return;
+        ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
+                .edit().remove(DIRTY_KEY + fpid)
+                .remove(DIRTY_AT_KEY + fpid).apply();
     }
 
     /** 清空全部待上传标记（一次全量 sync 成功后调用：payload 含全部账号的当前角色）。 */

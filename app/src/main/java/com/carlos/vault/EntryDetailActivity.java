@@ -453,7 +453,9 @@ public class EntryDetailActivity extends Activity {
     private void setCurrentRole(long sid, long uid) {
         RoleStore.setActiveRole(this, acc.fpid, sid, uid);
         getSharedPreferences("home", MODE_PRIVATE).edit()
-                .putString("current_role", acc.fpid + ":" + sid + (uid > 0 ? ":" + uid : "")).apply();
+                .putString("current_role", acc.fpid + ":" + sid + (uid > 0 ? ":" + uid : ""))
+                // 双源对齐时间戳（2026-10-20）：启动对齐按时间取较新者
+                .putLong("current_role_at", System.currentTimeMillis()).apply();
         // 同服多角色防回滚（P2）：标记待上传 + 触发去抖同步，避免上传完成前服务端旧
         // activeUid 把刚切的角色回滚（见 VaultSync.learnServerRole 双层门控）。
         try {

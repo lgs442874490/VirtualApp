@@ -284,4 +284,42 @@ public class RoleIdentityTest {
         assertFalse(RoleIdentity.shouldClearStaleMeta(null, "小鹿矿工5号"));
         assertFalse(RoleIdentity.shouldClearStaleMeta("小鹿矿工5号", null));
     }
+
+    // ---------- pickNewerRoleSource（2026-10-20 启动双源对齐） ----------
+
+    @Test
+    public void pickNewerRoleSource_activeNewer_useActive() {
+        assertEquals(RoleIdentity.SOURCE_ACTIVE,
+                RoleIdentity.pickNewerRoleSource(888, 35371154, 2000, 888, 88280792, 1000));
+    }
+
+    @Test
+    public void pickNewerRoleSource_currentNewer_useCurrent() {
+        assertEquals(RoleIdentity.SOURCE_CURRENT,
+                RoleIdentity.pickNewerRoleSource(888, 35371154, 1000, 888, 88280792, 2000));
+    }
+
+    @Test
+    public void pickNewerRoleSource_equalTimestamps_keepCurrentBehavior() {
+        assertEquals(RoleIdentity.SOURCE_CURRENT,
+                RoleIdentity.pickNewerRoleSource(888, 35371154, 1000, 888, 88280792, 1000));
+    }
+
+    @Test
+    public void pickNewerRoleSource_currentInvalid_useActive() {
+        assertEquals(RoleIdentity.SOURCE_ACTIVE,
+                RoleIdentity.pickNewerRoleSource(888, 35371154, 1000, 0, 0, 0));
+    }
+
+    @Test
+    public void pickNewerRoleSource_activeInvalid_useCurrent() {
+        assertEquals(RoleIdentity.SOURCE_CURRENT,
+                RoleIdentity.pickNewerRoleSource(0, 0, 0, 888, 88280792, 1000));
+    }
+
+    @Test
+    public void pickNewerRoleSource_missingTimestamps_legacyCurrentWins() {
+        assertEquals(RoleIdentity.SOURCE_CURRENT,
+                RoleIdentity.pickNewerRoleSource(888, 35371154, 0, 888, 88280792, 0));
+    }
 }

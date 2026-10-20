@@ -146,6 +146,21 @@ public final class VaultSync {
     private static final AtomicLong PENDING_SYNC_AT = new AtomicLong(0);
     private static volatile Thread debounceThread;
 
+    /**
+     * 全量 sync 串行执行器（2026-10-20 修复切角色被旧值回写竞态）：
+     * 旧实现每次 syncAll 各起一条线程，并发请求到达服务器顺序不可控——切换角色时
+     * 「旧角色的慢请求」可能晚于「新角色的快请求」落地，服务端最后一次写入变回旧角色
+     * （真机复现：切到隆科多后 2-3s 服务器又重启回小鹿）。
+     * 单线程串行化后，payload 在任务执行时构建（读当前角色），并按提交顺序完成 HTTP，
+     * 服务器最后一次写入必然是最新状态。
+     */
+    private static final java.util.concurrent.ExecutorService SYNC_EXEC =
+            java.util.concurrent.Executors.newSingleThreadExecutor(r -> {
+                Thread t = new Thread(r, "vault-sync-serial");
+                t.setDaemon(true);
+                return t;
+            });
+
     private VaultSync() {
     }
 
@@ -188,12 +203,15 @@ public final class VaultSync {
     /** 全量同步并回调结果（回调在 OkHttp 线程；账号页登录按钮用它串起“同步→触发”）。 */
     public static void syncAll(Context ctx, Callback done) {
         final Context app = ctx.getApplicationContext();
-        new Thread(() -> post(app, PATH_SYNC, OP_SYNC, syncFields(app), (code, message, data) -> {
-            // 同步成功 = 全部账号的当前角色已上传：清掉防回滚待上传标记
-            // （失败时保留，窗口内继续拦截服务端旧回传，下次成功再清）
-            if (code == 0) RoleStore.clearAllRoleDirty(app);
-            if (done != null) done.onResult(code, message, data);
-        }), "vault-sync").start();
+        // 串行执行（见 SYNC_EXEC）：payload 在任务真正执行时构建，读当前 active 角色；
+        // 多个调用按提交顺序逐条完成 HTTP，杜绝"旧 payload 后到覆盖新角色"。
+        SYNC_EXEC.execute(() -> post(app, PATH_SYNC, OP_SYNC, syncFields(app),
+                (code, message, data) -> {
+                    // 2026-10-20：sync 成功只代表 payload 被接收，会话重启异步——
+                    // 此处不再清 dirty；改由 learnServerRole 收到与本地一致的 activeUid
+                    // 时按 fpid 清除（另有 TTL 兜底），避免旧快照把刚切的角色回滚。
+                    if (done != null) done.onResult(code, message, data);
+                }));
     }
 
     /** 账号数据变更钩子（token 更新/导入/keep 切换）：去抖后全量同步。 */
@@ -360,7 +378,12 @@ public final class VaultSync {
             RoleStore.ActiveRole local = RoleStore.activeRoleEx(app, fpid);
             long localTs = RoleStore.activeRoleAt(app, fpid);
             boolean dirty = RoleStore.isRoleDirty(app, fpid);
-            if (dirty || !RoleIdentity.shouldLearnActiveRole(
+            if (dirty && local.sid == sid && (uid <= 0 || local.uid <= 0 || local.uid == uid)) {
+                // 服务器会话已是我们本地切到的角色：确认完成，清 dirty（不再拦截后续回写）
+                RoleStore.clearRoleDirty(app, fpid);
+                Log.i(TAG, "服务器角色确认一致，清除待确认标记 fpid=" + fpid
+                        + " role=" + sid + ":" + uid);
+            } else if (dirty || !RoleIdentity.shouldLearnActiveRole(
                     local.sid, local.uid, localTs, sid, uid, requestTs)) {
                 Log.i(TAG, "跳过服务器角色回写（防回滚）fpid=" + fpid
                         + " local=" + local.sid + ":" + local.uid + "@" + localTs
@@ -369,12 +392,14 @@ public final class VaultSync {
                 return;
             }
             RoleStore.setActiveRole(app, fpid, sid, uid);
+            RoleStore.clearRoleDirty(app, fpid);   // 服务器已确认本地当前角色
             android.content.SharedPreferences home =
                     app.getSharedPreferences("home", Context.MODE_PRIVATE);
             String cur = home.getString("current_role", "");
             if (cur == null || cur.isEmpty() || cur.startsWith(fpid + ":")) {
                 home.edit().putString("current_role",
-                        fpid + ":" + sid + (uid > 0 ? ":" + uid : "")).apply();
+                                fpid + ":" + sid + (uid > 0 ? ":" + uid : ""))
+                        .putLong("current_role_at", System.currentTimeMillis()).apply();
             }
             Log.i(TAG, "采纳服务器角色 fpid=" + fpid + " sid=" + sid + " uid=" + uid + " name=" + name);
         } catch (Throwable ignored) {
