@@ -270,4 +270,84 @@ public class VaultHttpApiTest {
         }
         assertEquals(2001, rsp.getInt("code"));
     }
+
+    @Test
+    public void activeUid_roundTrips_syncToStatus() throws Exception {
+        // 同服多角色：App sync 带 activeSid + activeUid（888 服第二角色）
+        JSONArray accounts = new JSONArray();
+        JSONObject a1 = new JSONObject();
+        a1.put("fpid", "48460403");
+        a1.put("token", "tk");
+        a1.put("keep", true);
+        a1.put("activeSid", "888");
+        a1.put("activeUid", "88280792");
+        accounts.put(a1);
+        Map<String, Object> sf = new LinkedHashMap<>();
+        sf.put("pkg", "com.carlos.vault");
+        sf.put("accountsJson", accounts.toString());
+        assertEquals(0, post("/v1/vault/sync", "vaultSync", sf).getInt("code"));
+
+        // 无会话：status 回传账号库的 activeUid（App 据此确认服务器记对了角色）
+        SessionControl.SessionStatus s = new SessionControl.SessionStatus();
+        s.fpid = "48460403";
+        s.state = "offline";
+        s.sid = "888";
+        s.activeUid = "88280792";
+        keeper.statuses.add(s);
+        Map<String, Object> f = new LinkedHashMap<>();
+        JSONObject status = post("/v1/vault/status", "vaultStatus", f);
+        JSONArray arr = status.getJSONObject("data").getJSONArray("accounts");
+        assertEquals("888", arr.getJSONObject(0).getString("sid"));
+        assertEquals("88280792", arr.getJSONObject(0).getString("activeUid"));
+    }
+
+    @Test
+    public void activeUid_absentFromLegacyClient_statusEmptyString() throws Exception {
+        // 旧客户端 sync 不带 activeUid → 库存 null → status 回传空串（App 按 0 处理）
+        JSONArray accounts = new JSONArray();
+        JSONObject a1 = new JSONObject();
+        a1.put("fpid", "80971192");
+        a1.put("token", "tk");
+        a1.put("keep", true);
+        a1.put("activeSid", "913");
+        accounts.put(a1);
+        Map<String, Object> sf = new LinkedHashMap<>();
+        sf.put("pkg", "com.carlos.vault");
+        sf.put("accountsJson", accounts.toString());
+        assertEquals(0, post("/v1/vault/sync", "vaultSync", sf).getInt("code"));
+
+        SessionControl.SessionStatus s = new SessionControl.SessionStatus();
+        s.fpid = "80971192";
+        s.state = "offline";
+        s.sid = "913";
+        keeper.statuses.add(s);
+        Map<String, Object> f = new LinkedHashMap<>();
+        JSONObject status = post("/v1/vault/status", "vaultStatus", f);
+        assertEquals("", status.getJSONObject("data").getJSONArray("accounts")
+                .getJSONObject(0).getString("activeUid"));
+    }
+
+    @Test
+    public void automationSnapshot_carriesActiveUid() throws Exception {
+        JSONArray accounts = new JSONArray();
+        JSONObject a = new JSONObject();
+        a.put("fpid", "48460403");
+        a.put("token", "tk-new");
+        a.put("keep", false);
+        a.put("auto", false);
+        a.put("activeSid", "888");
+        a.put("activeUid", "88280792");
+        accounts.put(a);
+        Map<String, Object> sf = new LinkedHashMap<>();
+        sf.put("pkg", "com.carlos.vault");
+        sf.put("accountsJson", accounts.toString());
+        assertEquals(0, post("/v1/vault/sync", "vaultSync", sf).getInt("code"));
+
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("action", "read");
+        f.put("fpid", "48460403");
+        JSONObject rsp = post("/v1/vault/automation", "vaultAutomation", f);
+        assertEquals("888", rsp.getJSONObject("data").getString("sid"));
+        assertEquals("88280792", rsp.getJSONObject("data").getString("activeUid"));
+    }
 }

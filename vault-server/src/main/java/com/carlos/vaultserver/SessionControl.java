@@ -32,6 +32,13 @@ public interface SessionControl {
         public String lastFailure;
         /** 当前会话角色 sid（无会话时给 activeSid）。 */
         public String sid;
+        /**
+         * 当前会话角色 uid（同服多角色区分依据）。
+         *
+         * <p>有会话且已登录：实际落地角色 uid；无会话：账号库里 App 下发的 activeUid。
+         * null/"" = 未知（旧数据/旧客户端）——消费方按 0 处理，走 sid 口径。
+         */
+        public String activeUid;
         /** 服务器上是否有可用 token。 */
         public boolean hasToken;
         /** 登录后学到的角色元数据（App 端角色卡回填用；未登录时为空/0）。 */

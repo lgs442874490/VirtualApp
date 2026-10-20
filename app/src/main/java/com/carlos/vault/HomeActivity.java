@@ -23,6 +23,7 @@ import com.carlos.vault.daily.DailyRunner;
 import com.carlos.vault.daily.DailySchedulerService;
 import com.carlos.vault.daily.FnRegistry;
 import com.carlos.vault.daily.LogStore;
+import com.carlos.vault.daily.RoleDisplay;
 import com.carlos.vault.daily.RoleStore;
 import com.carlos.vault.license.DeviceId;
 import com.carlos.vault.license.LicenseManager;
@@ -682,19 +683,19 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     /** 账号切换（主按钮）：任务页/限时/联盟大厅联动当前账号。 */
-    /** 账号主角色：工作区第一个，无则 activeRole，再无则第一角色。 */
-    private long mainRoleSid(AccountStore.Account a) {
+    /** 账号主角色：工作区第一个，无则 activeRole，再无则第一角色。返回 {sid, uid}（sid=0=无）。 */
+    private long[] mainRole(AccountStore.Account a) {
         try {
             List<RoleStore.Role> rs = RoleStore.roles(this, a.fpid);
             for (RoleStore.Role r : rs) {
-                if (r.enabled) return r.serverid;
+                if (r.enabled) return new long[]{r.serverid, r.uid};
             }
-            long act = RoleStore.activeRole(this, a.fpid);
-            if (act > 0) return act;
-            if (!rs.isEmpty()) return rs.get(0).serverid;
+            RoleStore.ActiveRole act = RoleStore.activeRoleEx(this, a.fpid);
+            if (act.sid > 0) return new long[]{act.sid, act.uid};
+            if (!rs.isEmpty()) return new long[]{rs.get(0).serverid, rs.get(0).uid};
         } catch (Throwable ignored) {
         }
-        return 0;
+        return new long[]{0, 0};
     }
 
     private void showAccountSwitcher() {
@@ -710,24 +711,24 @@ public class HomeActivity extends AccountVaultActivity {
             return;
         }
         // 每个账号显示：备注名 + 主角色名
-        final long[] mainSids = new long[cand.size()];
+        final long[][] mainRoles = new long[cand.size()][];
         String[] names = new String[cand.size()];
         AccountStore.Account cur = currentRoleAccount();
         int checked = 0;
         for (int i = 0; i < cand.size(); i++) {
             AccountStore.Account a = cand.get(i);
-            mainSids[i] = mainRoleSid(a);
+            mainRoles[i] = mainRole(a);
             String mainName = "";
             try {
                 for (RoleStore.Role r : RoleStore.roles(this, a.fpid)) {
-                    if (r.serverid == mainSids[i] && r.name != null && !r.name.isEmpty()) {
+                    if (r.serverid == mainRoles[i][0] && r.name != null && !r.name.isEmpty()) {
                         mainName = r.name;
                         break;
                     }
                 }
             } catch (Throwable ignored) {
             }
-            names[i] = a.label + "（主角色：" + (mainName.isEmpty() ? "K" + mainSids[i] : mainName) + "）";
+            names[i] = a.label + "（主角色：" + (mainName.isEmpty() ? "K" + mainRoles[i][0] : mainName) + "）";
             if (cur != null && a.fpid != null && a.fpid.equals(cur.fpid)) checked = i;
         }
         final AccountStore.Account[] pick = {cand.get(checked)};
@@ -739,9 +740,9 @@ public class HomeActivity extends AccountVaultActivity {
                     selectedAccountId = target.id;
                     getSharedPreferences("home", MODE_PRIVATE).edit()
                             .putString("current_account", selectedAccountId).apply();
-                    long msid = mainSids[cand.indexOf(target)];
-                    if (msid > 0) {
-                        setCurrentRole(target.fpid, msid);
+                    long[] m = mainRoles[cand.indexOf(target)];
+                    if (m[0] > 0) {
+                        setCurrentRole(target.fpid, m[0], m[1]);
                     } else {
                         toast("已切换：" + target.label);
                         refreshAllPages();
@@ -812,16 +813,48 @@ public class HomeActivity extends AccountVaultActivity {
         return currentSelected();
     }
 
-    /** 当前角色 sid（无记录则回退 activeSid）。 */
+    /**
+     * 当前角色 sid（无记录则回退 activeSid）。
+     *
+     * <p>current_role 键格式：{@code "fpid:sid"}（旧）或 {@code "fpid:sid:uid"}（同服多角色，
+     * 2026-10-20 起）。uid 段缺失按 0 处理——调用方需要 uid 时走 {@link #currentRoleUid()}。
+     */
     private long currentRoleSid() {
         if (currentRoleKey != null && currentRoleKey.contains(":")) {
             try {
-                return Long.parseLong(currentRoleKey.substring(currentRoleKey.indexOf(':') + 1));
+                String rest = currentRoleKey.substring(currentRoleKey.indexOf(':') + 1);
+                int c = rest.indexOf(':');
+                return Long.parseLong(c < 0 ? rest : rest.substring(0, c));
             } catch (Throwable ignored) {
             }
         }
         AccountStore.Account a = currentRoleAccount();
         return a == null ? 0 : activeSid(a);
+    }
+
+    /** 当前角色 uid（0=未知/旧格式未带 uid）。同服多角色靠它区分同一 sid 的两个角色。 */
+    private long currentRoleUid() {
+        if (currentRoleKey != null && currentRoleKey.contains(":")) {
+            try {
+                int i1 = currentRoleKey.indexOf(':');
+                int i2 = currentRoleKey.indexOf(':', i1 + 1);
+                if (i2 > 0 && i2 < currentRoleKey.length() - 1) {
+                    return Long.parseLong(currentRoleKey.substring(i2 + 1));
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        AccountStore.Account a = currentRoleAccount();
+        return a == null ? 0 : RoleStore.activeRoleUid(this, a.fpid);
+    }
+
+    /** 某角色行是否就是当前角色：sid 相等，且当前 uid 未知或与该行 uid 相等（同服多角色精确命中）。 */
+    private boolean isCurrentRole(RoleStore.Role r) {
+        if (r == null) return false;
+        long sid = currentRoleSid();
+        if (r.serverid != sid) return false;
+        long uid = currentRoleUid();
+        return uid <= 0 || r.uid == uid;
     }
 
     /**
@@ -830,24 +863,47 @@ public class HomeActivity extends AccountVaultActivity {
      * <p>历史版本「切换角色」只写 home:current_role 不写 activeRole，存量设备上两者可能
      * 不一致（功能开关/详情页兜底/常驻会话选角仍在旧角色）。启动时以 currentRoleKey 为准
      * 做一次对齐，保证所有消费方同源。仅对当前角色所属账号生效，不动其它账号。
+     *
+     * <p>同服多角色：current_role 带 uid 时按复合身份对齐（旧格式只有 sid 时退化为
+     * sid 口径，由 setActiveRole 内部解析 uid）。
      */
     private void alignActiveRoleWithCurrent() {
         if (currentRoleKey == null || !currentRoleKey.contains(":")) return;
         try {
             int idx = currentRoleKey.indexOf(':');
             String fpid = currentRoleKey.substring(0, idx);
-            long sid = Long.parseLong(currentRoleKey.substring(idx + 1));
+            String rest = currentRoleKey.substring(idx + 1);
+            int c = rest.indexOf(':');
+            long sid = Long.parseLong(c < 0 ? rest : rest.substring(0, c));
+            long uid = c < 0 ? 0 : Long.parseLong(rest.substring(c + 1));
             if (fpid.isEmpty() || sid <= 0) return;
-            if (RoleStore.activeRole(this, fpid) != sid) {
-                RoleStore.setActiveRole(this, fpid, sid);
+            RoleStore.ActiveRole act = RoleStore.activeRoleEx(this, fpid);
+            if (act.sid != sid || (uid > 0 && act.uid != uid)) {
+                RoleStore.setActiveRole(this, fpid, sid, uid);
             }
         } catch (Throwable ignored) {
         }
     }
 
-    /** 记住当前角色并立即刷新全部页面。 */
+    /** 记住当前角色并立即刷新全部页面（旧签名：uid 按角色表解析）。 */
     private void setCurrentRole(String fpid, long sid) {
-        currentRoleKey = fpid + ":" + sid;
+        long uid = 0;
+        try {
+            RoleStore.Role r = RoleStore.roleOf(this, fpid, sid);
+            uid = r == null ? 0 : r.uid;
+        } catch (Throwable ignored) {
+        }
+        setCurrentRole(fpid, sid, uid);
+    }
+
+    /**
+     * 记住当前角色（复合身份）并立即刷新全部页面。
+     *
+     * <p>current_role 键：uid>0 时写 {@code "fpid:sid:uid"}（同服多角色区分依据）；
+     * uid 未知时保持旧格式 {@code "fpid:sid"}，兼容旧版本读取。
+     */
+    private void setCurrentRole(String fpid, long sid, long uid) {
+        currentRoleKey = fpid + ":" + sid + (uid > 0 ? ":" + uid : "");
         getSharedPreferences("home", MODE_PRIVATE).edit()
                 .putString("current_role", currentRoleKey).apply();
         // 关键：同步账号激活角色（RoleStore.activeRole）。activeRole 是功能开关读写
@@ -856,7 +912,13 @@ public class HomeActivity extends AccountVaultActivity {
         // 事实源——若只改 currentRoleKey，切换后会出现"页面徽章跟新角色、配置/指纹跟旧角色"
         // 的分裂（真机事故：k888→k913 后兵营训练档位仍显示 k888 的 t3）。
         try {
-            RoleStore.setActiveRole(this, fpid, sid);
+            RoleStore.setActiveRole(this, fpid, sid, uid);
+        } catch (Throwable ignored) {
+        }
+        // 同服多角色防回滚（P2）：标记待上传 + 触发去抖同步。上传完成前服务端回传仍是
+        // 旧角色，若无此标记 learnServerRole 会把刚切的角色回滚（见 VaultSync 双层门控）。
+        try {
+            VaultSync.notifyRoleSwitched(this, fpid);
         } catch (Throwable ignored) {
         }
         refreshAllPages();
@@ -914,8 +976,9 @@ public class HomeActivity extends AccountVaultActivity {
             return;
         }
         List<String> items = new ArrayList<>();
-        final List<String[]> pairs = new ArrayList<>();   // {fpid, sid, 显示名}
+        final List<String[]> pairs = new ArrayList<>();   // {fpid, sid, uid, 显示名}
         long curSid = currentRoleSid();
+        long curUid = currentRoleUid();
         List<RoleStore.Role> rs;
         try {
             rs = RoleStore.roles(this, curAcc.fpid);
@@ -928,11 +991,14 @@ public class HomeActivity extends AccountVaultActivity {
         }
         for (RoleStore.Role r : rs) {
             if (!r.enabled) continue;   // 切换角色只展示已加入工作区的角色
-            String rn = r.name == null || r.name.isEmpty()
-                    ? "K" + r.serverid + "（未同步）" : r.name;
-            String tag = r.serverid == curSid ? " ✓当前" : "";
-            pairs.add(new String[]{curAcc.fpid, String.valueOf(r.serverid), rn});
-            items.add(rn + " · K" + r.serverid + tag);
+            // 标准展示（昵称 + UID/城堡/战力，缺失段「未同步」）——不再用「同服第N角色」
+            String rn = RoleDisplay.roleName(r.name);
+            boolean isCur = r.serverid == curSid && (curUid <= 0 || r.uid == curUid);
+            String tag = isCur ? " ✓当前" : "";
+            pairs.add(new String[]{curAcc.fpid, String.valueOf(r.serverid),
+                    String.valueOf(r.uid), rn});
+            items.add(rn + " · "
+                    + RoleDisplay.roleMetaLine(r.serverid, r.uid, r.level, r.power) + tag);
         }
         if (items.isEmpty()) {
             new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
@@ -949,7 +1015,8 @@ public class HomeActivity extends AccountVaultActivity {
                 .setItems(items.toArray(new String[0]), (d, w) -> {
                     String[] p2 = pairs.get(w);
                     try {
-                        setCurrentRole(p2[0], Long.parseLong(p2[1]));
+                        long uid = p2.length > 2 ? Long.parseLong(p2[2]) : 0;
+                        setCurrentRole(p2[0], Long.parseLong(p2[1]), uid);
                     } catch (Throwable ignored) {
                     }
                 })
@@ -1094,7 +1161,7 @@ public class HomeActivity extends AccountVaultActivity {
             AccountStore.Account cra = currentRoleAccount();
             if (cra != null) {
                 for (RoleStore.Role r : RoleStore.roles(this, cra.fpid)) {
-                    if (r.serverid == currentRoleSid() && r.name != null && !r.name.isEmpty()) {
+                    if (isCurrentRole(r) && r.name != null && !r.name.isEmpty()) {
                         crName = r.name;
                         break;
                     }
@@ -1171,8 +1238,8 @@ public class HomeActivity extends AccountVaultActivity {
                         text = "○ 离线";
                         color = UiStyle.ON_BRAND_IDLE;
                     }
-                } else if (accountOnline(onlineAcc) && roleUidOf(onlineAcc.fpid, curSidF) != 0
-                        && liveOnlineUid() == roleUidOf(onlineAcc.fpid, curSidF)) {
+                } else if (accountOnline(onlineAcc) && roleUidOf(onlineAcc.fpid, curSidF, currentRoleUid()) != 0
+                        && liveOnlineUid() == roleUidOf(onlineAcc.fpid, curSidF, currentRoleUid())) {
                     // 容器游戏客户端正挂着当前角色
                     text = "● 游戏在线";
                     color = UiStyle.ON_BRAND_OK;
@@ -1193,7 +1260,7 @@ public class HomeActivity extends AccountVaultActivity {
         String crName2 = "";
         try {
             for (RoleStore.Role r : RoleStore.roles(this, sel.fpid)) {
-                if (r.serverid == currentRoleSid() && r.name != null && !r.name.isEmpty()) {
+                if (isCurrentRole(r) && r.name != null && !r.name.isEmpty()) {
                     crName2 = r.name;
                     break;
                 }
@@ -1244,10 +1311,24 @@ public class HomeActivity extends AccountVaultActivity {
                 .format(new java.util.Date(nxt)) + hm + " ";
     }
 
-    /** 角色区服对应的游戏 uid（找不到返回 0）。 */
+    /** 角色区服对应的游戏 uid（找不到返回 0）。uid<=0 = 该 sid 第一行（旧口径）。 */
     private long roleUidOf(String fpid, long sid) {
+        return roleUidOf(fpid, sid, 0);
+    }
+
+    /**
+     * 角色区服对应的游戏 uid（同服多角色精确版）：uid>0 按 (sid,uid) 命中，
+     * 找不到再退回该 sid 第一行——容器 live 反查正在玩的角色时不会串到同服另一个角色。
+     */
+    private long roleUidOf(String fpid, long sid, long uid) {
         try {
-            for (RoleStore.Role r : RoleStore.roles(this, fpid)) {
+            List<RoleStore.Role> rs = RoleStore.roles(this, fpid);
+            if (uid > 0) {
+                for (RoleStore.Role r : rs) {
+                    if (r.serverid == sid && r.uid == uid) return r.uid;
+                }
+            }
+            for (RoleStore.Role r : rs) {
                 if (r.serverid == sid) return r.uid;
             }
         } catch (Throwable ignored) {
@@ -2038,12 +2119,17 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 角色行（账号卡展开后）：游戏角色名 · K区服 · 今日状态 · 上次 · ▶跑日常。 */
     /** 跑单个角色：把激活角色对齐到它（数据写读同源）再走执行引擎。 */
-    private void runRole(final AccountStore.Account a, final long sid) {
+    private void runRole(final AccountStore.Account a, final long sid, final long uid) {
         if (RUN.running) {
             showRunPanel();
             return;
         }
-        RoleStore.setActiveRole(this, a.fpid, sid);
+        RoleStore.setActiveRole(this, a.fpid, sid, uid);
+        // 跑日常即把激活角色对齐到它：同样标记待上传 + 触发同步（服务器按 activeUid 绑定角色）
+        try {
+            VaultSync.notifyRoleSwitched(this, a.fpid);
+        } catch (Throwable ignored) {
+        }
         List<AccountStore.Account> one = new ArrayList<>();
         one.add(a);
         runList(one);
@@ -2215,16 +2301,21 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 角色操作菜单（矩阵格子/角色行用）。 */
     private void roleMenu(final AccountStore.Account a, final RoleStore.Role r) {
+        // 标题统一标准展示（昵称 + UID/城堡/战力，缺失段「未同步」）——不再用「同服第N角色」
+        String title = RoleDisplay.roleName(r.name)
+                + " · " + RoleDisplay.roleMetaLine(r.serverid, r.uid, r.level, r.power);
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle((r.name == null || r.name.isEmpty() ? "K" + r.serverid + "（未同步）" : r.name) + " · K" + r.serverid)
-                .setItems(new String[]{"▶ 跑日常（该角色）", "📋 日常详情", "🖥 启动游戏（整个账号）",
+                .setTitle(title)
+                .setItems(new String[]{"▶ 跑日常（该角色）", "📋 日常详情",
+                        "🖥 启动游戏（该角色）", "🖥 启动游戏（整个账号）",
                         r.enabled ? "移出工作区" : "纳入工作区"}, (d, w) -> {
                     switch (w) {
-                        case 0: runRole(a, r.serverid); break;
+                        case 0: runRole(a, r.serverid, r.uid); break;
                         case 1: openFnDetail(a, "daily_mission", r.serverid); break;
-                        case 2: doSwitch(a); break;
-                        case 3:
-                            RoleStore.setEnabled(this, a.fpid, r.serverid, !r.enabled);
+                        case 2: launchRole(a, r); break;
+                        case 3: doSwitch(a); break;
+                        case 4:
+                            RoleStore.setEnabled(this, a.fpid, r.serverid, r.uid, !r.enabled);
                             VaultSync.onAccountsChanged(this);
                             refreshAccounts();
                             break;
@@ -2254,8 +2345,9 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     /**
-     * 账号页“登录”按钮：切换当前角色 → 打开统一自动化 → 全量上传配置 →
-     * 服务器确保常驻会话并排队整轮。回调在主线程收尾，按钮由调用方恢复。
+     * 账号级“登录”按钮（账号菜单/卡片头）：切到该账号<b>主角色</b> → 以该角色
+     * 模拟登录在线。语义与角色行「登录」一致（{@link #loginRole}），只是角色
+     * 取主角色而非钉扎角色。
      */
     private void loginAndRun(final AccountStore.Account a, final Runnable done) {
         if (a == null || a.fpid == null || a.fpid.isEmpty()
@@ -2264,13 +2356,32 @@ public class HomeActivity extends AccountVaultActivity {
             if (done != null) done.run();
             return;
         }
-        long sid = mainRoleSid(a);
+        long[] main = mainRole(a);
+        long sid = main[0];
         if (sid <= 0) sid = activeSid(a);
-        if (sid > 0) setCurrentRole(a.fpid, sid);
-        RoleStore.saveAutomation(this, a.fpid, true);
-        VaultSync.ensureServerMode(this);
+        // setCurrentRole 由 loginRole 统一执行（钉扎 sid+uid，含防回滚标记），避免双写
+        loginRole(a, sid, main[1], done);
+    }
+
+    /**
+     * 角色级“登录”（第二轮 UI 语义）：以指定角色 (sid,uid) <b>模拟登录在线</b> ——
+     * 切到该角色（复合身份钉扎）→ 上行 activeUid → 服务器建会话并排队整轮。
+     * <b>不是启动游戏客户端</b>（启动客户端走 {@link #launchRole}/{@link #doSwitch}）。
+     *
+     * <p>保持既有整轮触发行为：与账号级登录同一后半程
+     * （{@link VaultSync#loginRoleOnline}）。回调在主线程收尾，按钮由调用方恢复。
+     */
+    private void loginRole(final AccountStore.Account a, final long sid, final long uid,
+                           final Runnable done) {
+        if (a == null || a.fpid == null || a.fpid.isEmpty()
+                || a.token == null || a.token.isEmpty()) {
+            toast("该账号没有可用 token");
+            if (done != null) done.run();
+            return;
+        }
+        if (sid > 0) setCurrentRole(a.fpid, sid, uid);
         toast("正在上传配置并登录服务器…");
-        VaultSync.syncAll(this, (code, message, data) -> {
+        VaultSync.loginRoleOnline(this, a.fpid, (code, message, data) -> {
             if (code != 0) {
                 runOnUiThread(() -> {
                     toast("配置同步失败：" + message);
@@ -2278,30 +2389,28 @@ public class HomeActivity extends AccountVaultActivity {
                 });
                 return;
             }
-            VaultSync.triggerAutomation(this, a.fpid, null, (c2, m2, d2) -> {
-                boolean ok = c2 == 0 && d2 != null && d2.optBoolean("accepted", false);
-                String state = d2 == null ? "" : d2.optString("state", "");
-                String sidText = d2 == null ? "" : d2.optString("sid", "");
-                int cfgCount = 0;
-                try {
-                    org.json.JSONObject cfg = d2 == null ? null : d2.optJSONObject("config");
-                    if (cfg != null) cfgCount = cfg.length();
-                } catch (Throwable ignored) {
+            boolean ok = data != null && data.optBoolean("accepted", false);
+            String state = data == null ? "" : data.optString("state", "");
+            String sidText = data == null ? "" : data.optString("sid", "");
+            int cfgCount = 0;
+            try {
+                org.json.JSONObject cfg = data == null ? null : data.optJSONObject("config");
+                if (cfg != null) cfgCount = cfg.length();
+            } catch (Throwable ignored) {
+            }
+            final int fCfgCount = cfgCount;
+            runOnUiThread(() -> {
+                if (ok) {
+                    toast("已登录并触发服务器自动化"
+                            + (sidText.isEmpty() ? "" : " · sid=" + sidText)
+                            + (state.isEmpty() ? "" : " · 会话=" + state)
+                            + (fCfgCount > 0 ? " · 配置 " + fCfgCount + " 项" : ""));
+                    refreshAllPages();
+                    VaultSync.fetchState(this);
+                } else {
+                    toast("服务器未受理：" + message);
                 }
-                final int fCfgCount = cfgCount;
-                runOnUiThread(() -> {
-                    if (ok) {
-                        toast("已登录并触发服务器自动化"
-                                + (sidText.isEmpty() ? "" : " · sid=" + sidText)
-                                + (state.isEmpty() ? "" : " · 会话=" + state)
-                                + (fCfgCount > 0 ? " · 配置 " + fCfgCount + " 项" : ""));
-                        refreshAllPages();
-                        VaultSync.fetchState(this);
-                    } else {
-                        toast("服务器未受理：" + m2);
-                    }
-                    if (done != null) done.run();
-                });
+                if (done != null) done.run();
             });
         });
     }
@@ -2387,9 +2496,13 @@ public class HomeActivity extends AccountVaultActivity {
                 if (accView == 1) {
                     renderRoleMatrix(fShown, fRoles, fRoleStats, fRoleLast);
                 } else {
+                    // 列表视图 = 账号分组框（账号头 + 工作区角色表格，每行可单独登录）。
+                    // 第二轮 UI：弃用只有账号级登录按钮的简单卡片——同服多角色账号的
+                    // 每个工作区角色都必须可达（简单卡片只剩长按菜单一条路）。
                     for (AccountStore.Account a : fShown) {
-                        accountList.addView(accountSimpleCard(a, fStats.get(a.id),
-                                Boolean.TRUE.equals(fOnline.get(a.id))));
+                        accountList.addView(accountGroupCard(a, fStats.get(a.id),
+                                fRoles.get(a.id), fRoleStats, fRoleLast, fOnline,
+                                fLiveUid, fLiveEntry));
                     }
                 }
                 if (fShown.isEmpty()) accountList.addView(emptyTip("没有匹配的账号"));
@@ -2458,26 +2571,44 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 角色级在线判定：live 挂载账号用 uid 反查真实挂机角色；纯快照账号维持激活角色推断。 */
     private boolean roleOnline(AccountStore.Account a, RoleStore.Role r, boolean accOn, long actSid,
-                               boolean isLiveAcc, long liveUid) {
+                               long actUid, boolean isLiveAcc, long liveUid) {
         if (!accOn) return false;
         if (isLiveAcc && liveUid > 0) return r.uid > 0 && r.uid == liveUid;
+        // 激活角色 uid 已知时按 uid 精确命中：同服两个角色不会再被同一个 actSid 同时判成"在线"
+        if (actUid > 0 && r.uid > 0) return r.uid == actUid;
         return r.serverid == actSid;
     }
 
     /**
      * 角色行在线<b>文案与口径</b>（返回 [文案, "on"/"off"]）：
      * <ul>
-     *   <li><b>日常在线</b>：RoleSessionKeeper 协议常驻会话 online（24h 心跳/自动互助），
-     *       角色粒度精确（fpid:sid）——多角色并行在线的主口径；</li>
-     *   <li><b>游戏在线</b>：容器里正挂着该角色（live playerprefs uid 反查，用户在真机客户端玩）；</li>
-     *   <li><b>在线</b>：老口径兜底——快照有效登录态 + 激活角色推断（无法区分角色，仅主角色可能命中）；</li>
-     *   <li><b>离线</b>：以上皆无。</li>
+     *   <li><b>服务器模式</b>（第二轮 UI 统一的主口径）：账号态取
+     *       {@link VaultSync#cachedStatusOf}，按 sid+activeUid 匹配本行
+     *       （{@link RoleDisplay#roleMatchesServerStatus}）；文案走
+     *       {@link RoleDisplay#serverStateLabel}（在线/重连中/被顶号暂停/需重导token/
+     *       离线）——与今日页常驻状态、角色管理行同一状态源；</li>
+     *   <li><b>本地模式</b>（ legacy 兜底）：
+     *       <b>日常在线</b>（RoleSessionKeeper 协议常驻会话 online，fpid:sid 粒度）/
+     *       <b>游戏在线</b>（容器 live playerprefs uid 反查）/
+     *       <b>在线</b>（快照有效登录态 + 激活角色推断）/<b>离线</b>。</li>
      * </ul>
-     * 协议优先于容器：同一角色两条路不会同时成立（游戏客户端登录会顶掉协议会话 code=5）。
      */
     private String[] roleOnlineLabel(AccountStore.Account a, RoleStore.Role r, boolean accOn,
-                                     long actSid, boolean isLiveAcc, long liveUid) {
+                                     long actSid, long actUid, boolean isLiveAcc, long liveUid) {
         try {
+            // 服务器模式：统一服务器状态源（无缓存=刚打开还没同步，显示"同步中"）
+            if (VaultSync.isServerMode(this)) {
+                org.json.JSONObject o = a.fpid == null ? null : VaultSync.cachedStatusOf(this, a.fpid);
+                if (o == null) return new String[]{"● 同步中", "off"};
+                String state = o.optString("state", "");
+                long statusSid = parseLongSafe(o.optString("sid", ""));
+                long statusUid = parseLongSafe(o.optString("activeUid", ""));
+                boolean match = RoleDisplay.roleMatchesServerStatus(
+                        r.serverid, r.uid, statusSid, statusUid, actSid, actUid);
+                if (!match) return new String[]{"● 离线", "off"};
+                boolean on = RoleDisplay.isServerOnline(state);
+                return new String[]{"● " + RoleDisplay.serverStateLabel(state), on ? "on" : "off"};
+            }
             for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
                     : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
                 if (a.fpid != null && a.fpid.equals(ls.fpid) && ls.sid == r.serverid
@@ -2490,10 +2621,21 @@ public class HomeActivity extends AccountVaultActivity {
         if (isLiveAcc && liveUid > 0 && r.uid > 0 && r.uid == liveUid) {
             return new String[]{"● 游戏在线", "on"};
         }
-        if (roleOnline(a, r, accOn, actSid, isLiveAcc, liveUid)) {
+        if (roleOnline(a, r, accOn, actSid, actUid, isLiveAcc, liveUid)) {
             return new String[]{"● 在线", "on"};
         }
         return new String[]{"● 离线", "off"};
+    }
+
+    /** 服务器回传的 sid/uid 字符串安全解析（<=0/非法 → 0）。 */
+    private static long parseLongSafe(String s) {
+        if (s == null || s.isEmpty()) return 0;
+        try {
+            long v = Long.parseLong(s.trim());
+            return v > 0 ? v : 0;
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     private boolean accountOnline(AccountStore.Account a) {
@@ -2583,37 +2725,6 @@ public class HomeActivity extends AccountVaultActivity {
         return tv;
     }
 
-    /** 列表/卡片默认头像：优先游戏真实图标；circle=true 裁圆，否则直角/圆角方块。 */
-    private android.view.View gameAvatar(int sizeDp, String label, String seed, boolean circle) {
-        int px = dp(sizeDp);
-        android.graphics.drawable.Drawable ic = gameIcon();
-        if (ic != null) {
-            try {
-                android.graphics.Bitmap bmp = android.graphics.Bitmap.createBitmap(
-                        px, px, android.graphics.Bitmap.Config.ARGB_8888);
-                android.graphics.Canvas cv = new android.graphics.Canvas(bmp);
-                android.graphics.Path clip = new android.graphics.Path();
-                if (circle) {
-                    clip.addCircle(px / 2f, px / 2f, px / 2f,
-                            android.graphics.Path.Direction.CW);
-                } else {
-                    clip.addRoundRect(new android.graphics.RectF(0, 0, px, px),
-                            dp(13), dp(13), android.graphics.Path.Direction.CW);
-                }
-                cv.clipPath(clip);
-                ic.setBounds(0, 0, px, px);
-                ic.draw(cv);
-                android.widget.ImageView iv = new android.widget.ImageView(this);
-                iv.setImageBitmap(bmp);
-                iv.setScaleType(android.widget.ImageView.ScaleType.CENTER_CROP);
-                return iv;
-            } catch (Throwable ignored) {
-            }
-        }
-        // 取不到游戏图标：列表用雪花占位，卡片沿用旧的渐变首字块
-        return circle ? UiStyle.snowAvatar(this, sizeDp, seed) : avatarView(sizeDp, label, seed);
-    }
-
     /** 卡片视图的旧版图标：直接使用游戏 APK 图标（不裁切）。 */
     private android.view.View gameIconSquare(int sizeDp, String label, String seed) {
         android.graphics.drawable.Drawable ic = gameIcon();
@@ -2678,138 +2789,6 @@ public class HomeActivity extends AccountVaultActivity {
         return new java.text.SimpleDateFormat("yy-MM-dd", java.util.Locale.CHINA).format(new java.util.Date(ts));
     }
 
-    /** 列表头像：默认游戏真实图标（圆形裁切），取不到回退雪花占位。 */
-    private android.view.View circleAvatar(int sizeDp, String label, String seed) {
-        return gameAvatar(sizeDp, label, seed, true);
-    }
-
-    /** 账号列表行（设计稿 S3）：头像 + 备注名/登录方式·上次 + 状态徽章 + ⋯。 */
-    private android.view.View accountSimpleCard(final AccountStore.Account a, final String[] st,
-                                                final boolean online) {
-        LinearLayout card = UiStyle.outlineCard(this);
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setPadding(dp(12), dp(12), dp(12), dp(12));
-        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        clp.bottomMargin = dp(10);
-        card.setLayoutParams(clp);
-
-        if (batchMode) {
-            LinearLayout.LayoutParams cklp = new LinearLayout.LayoutParams(dp(22), dp(22));
-            cklp.rightMargin = dp(10);
-            card.addView(batchCheckbox(a), cklp);
-        }
-
-        card.addView(circleAvatar(56, a.label, a.id),
-                new LinearLayout.LayoutParams(dp(56), dp(56)));
-
-        LinearLayout mid = new LinearLayout(this);
-        mid.setOrientation(LinearLayout.VERTICAL);
-        mid.setPadding(dp(12), 0, dp(8), 0);
-        TextView name = new TextView(this);
-        name.setText(a.label == null || a.label.isEmpty() ? "?" : a.label);
-        name.setTextSize(15);
-        name.setTypeface(Typeface.DEFAULT_BOLD);
-        name.setTextColor(UiStyle.INK);
-        name.setMaxLines(1);
-        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        mid.addView(name);
-        boolean isToken = a.token != null && !a.token.isEmpty();
-        TextView meta = new TextView(this);
-        String last = a.lastLogin <= 0 ? "从未登录"
-                : new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
-                .format(new java.util.Date(a.lastLogin));
-        meta.setText((isToken ? "token" : "原生") + " · " + last);
-        meta.setTextSize(11.5f);
-        meta.setTextColor(UiStyle.INK2);
-        meta.setPadding(0, dp(4), 0, 0);
-        mid.addView(meta);
-        card.addView(mid, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        // 口径对齐 statusOf()：err/ok/run/wait/idle 五态都要映射；原生账号没有 token，
-        // 不是「过期」而是从未绑定（且不能参与自动日常）。
-        String type, text;
-        String stType = st == null ? "" : st[0];
-        if (!isToken) {
-            type = "idle";
-            text = "未绑定 token";
-        } else if (online) {
-            type = "ok";
-            text = "在线";
-        } else if ("err".equals(stType)) {
-            type = "err";
-            text = "异常";
-        } else if ("ok".equals(stType)) {
-            type = "ok";
-            text = "已完成";
-        } else if ("run".equals(stType)) {
-            type = "run";
-            text = "进行中";
-        } else if ("wait".equals(stType)) {
-            type = "wait";
-            text = "待领取";
-        } else if ("idle".equals(stType)) {
-            type = "wait";
-            text = "今日未跑";
-        } else {
-            type = "idle";
-            text = "离线";
-        }
-        card.addView(UiStyle.badge(this, type, "● " + text));
-
-        // 服务器自动化登录按钮：切到该账号主角色 → 上传配置 → 服务器建会话并触发整轮。
-        if (isToken) {
-            TextView loginBtn = new TextView(this);
-            loginBtn.setText("登录");
-            loginBtn.setTextSize(12);
-            loginBtn.setTypeface(Typeface.DEFAULT_BOLD);
-            loginBtn.setTextColor(UiStyle.WHITE);
-            loginBtn.setGravity(Gravity.CENTER);
-            loginBtn.setPadding(dp(12), dp(7), dp(12), dp(7));
-            loginBtn.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 999));
-            LinearLayout.LayoutParams lbp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            lbp.leftMargin = dp(6);
-            card.addView(loginBtn, lbp);
-            UiStyle.press(loginBtn);
-            loginBtn.setOnClickListener(v -> {
-                loginBtn.setEnabled(false);
-                loginBtn.setText("登录中");
-                loginAndRun(a, () -> {
-                    loginBtn.setEnabled(true);
-                    loginBtn.setText("登录");
-                });
-            });
-        }
-
-        android.widget.FrameLayout more = new android.widget.FrameLayout(this);
-        more.addView(new UiStyle.Icon(this, UiStyle.Icon.MORE, UiStyle.INK2, 18),
-                new android.widget.FrameLayout.LayoutParams(dp(18), dp(18), Gravity.CENTER));
-        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(dp(32), dp(32));
-        mlp.leftMargin = dp(4);
-        card.addView(more, mlp);
-        UiStyle.press(more);
-        more.setOnClickListener(v -> accountMenu(a));
-
-        UiStyle.press(card);
-        card.setOnClickListener(v -> {
-            if (batchMode) toggleBatch(a);
-            else showAccountDetail(a);
-        });
-        card.setOnLongClickListener(v -> {
-            if (!batchMode) {
-                batchMode = true;
-                selectedAccounts.add(a.id);
-                if (accBatchBtn != null) accBatchBtn.setText("完成");
-                refreshAccounts();
-            }
-            return true;
-        });
-        return card;
-    }
-
     /** 批量态勾选框（列表行与卡片格共用）。 */
     private TextView batchCheckbox(final AccountStore.Account a) {
         boolean sel = selectedAccounts.contains(a.id);
@@ -2861,6 +2840,7 @@ public class HomeActivity extends AccountVaultActivity {
         // 纯快照账号（未挂载）无法区分角色，维持激活角色（actSid）推断。
         final boolean accOn = online != null && Boolean.TRUE.equals(online.get(a.id));
         final long actSid = RoleStore.activeRole(this, a.fpid);
+        final long actUid = RoleStore.activeRoleUid(this, a.fpid);
         final boolean isLiveAcc = liveEntryId != null && liveEntryId.equals(a.id);
 
         // 头行：☐勾选 | 无尽冬日头像 | 名字 + [登录方式] UID | ⚙ 角色管理
@@ -2952,7 +2932,8 @@ public class HomeActivity extends AccountVaultActivity {
         head.addView(gear);
         box.addView(head);
 
-        // 框内：已启用角色 → 表格（状态/角色/区号/今日完成/上次登录/登录），最多 4 行
+        // 框内：已启用角色 → 表格（状态/角色/区号/今日完成/上次登录/登录），全部可见可滚动
+        // （第二轮 UI：移除"最多 4 行 + 还有 N 个"折叠——同服多角色账号必须全部可达）
         int enN = 0;
         if (roles != null) for (RoleStore.Role r0 : roles) if (r0.enabled) enN++;
         if (enN > 0) {
@@ -2960,7 +2941,7 @@ public class HomeActivity extends AccountVaultActivity {
             secH.setOrientation(LinearLayout.HORIZONTAL);
             secH.setPadding(0, dp(6), 0, 0);
             TextView l = new TextView(this);
-            l.setText("已启用角色 · " + enN);
+            l.setText("工作区角色 · " + enN);
             l.setTextSize(10);
             l.setTextColor(UiStyle.INK3);
             secH.addView(l, new LinearLayout.LayoutParams(0,
@@ -2987,27 +2968,13 @@ public class HomeActivity extends AccountVaultActivity {
             secH.addView(rgt);
             box.addView(secH);
             box.addView(roleTableHead());
-            int shownN = 0;
             for (final RoleStore.Role r : roles) {
                 if (!r.enabled) continue;
-                if (shownN >= 4) break;
-                shownN++;
                 box.addView(roleEntryCard(a, r,
                         roleStats.get(a.fpid + ":" + r.serverid),
                         roleLast.containsKey(a.fpid + ":" + r.serverid)
                                 ? roleLast.get(a.fpid + ":" + r.serverid) : 0L,
-                        roleOnlineLabel(a, r, accOn, actSid, isLiveAcc, liveUid), accOn, roles));
-            }
-            if (enN > 4) {
-                TextView more = new TextView(this);
-                more.setText("还有 " + (enN - 4) + " 个已启用角色，点「角色管理」查看全部 ›");
-                more.setTextSize(11);
-                more.setTypeface(Typeface.DEFAULT_BOLD);
-                more.setTextColor(UiStyle.BRAND_TEXT);
-                more.setPadding(0, dp(8), 0, 0);
-                UiStyle.press(more);
-                more.setOnClickListener(v -> showRoleManager(a, roles, accOn));
-                box.addView(more);
+                        roleOnlineLabel(a, r, accOn, actSid, actUid, isLiveAcc, liveUid), accOn, roles));
             }
         } else {
             TextView tip = new TextView(this);
@@ -3019,6 +2986,12 @@ public class HomeActivity extends AccountVaultActivity {
             tip.setPadding(dp(4), dp(10), dp(4), dp(4));
             box.addView(tip);
         }
+        // 长按账号框 = 账号菜单（批量/登录并运行/启动游戏/角色管理/排序，与简单卡片一致）
+        UiStyle.press(box);
+        box.setOnLongClickListener(v -> {
+            if (!batchMode) accountMenu(a);
+            return true;
+        });
         return box;
     }
 
@@ -3026,8 +2999,12 @@ public class HomeActivity extends AccountVaultActivity {
      * 角色行（账号框内嵌 · 表格化，与原型一致）：
      * {@code 状态（● 日常在线/游戏在线/在线/离线） | 昵称 | 区号 | 今日完成 | 上次登录 | 登录}。
      *
-     * <p>点<b>行</b> = 打开角色管理；点<b>「登录」</b> = 以该角色启动游戏。
+     * <p>点<b>行</b> = 打开角色管理；点<b>「登录」</b> = 以该角色<b>模拟登录在线</b>
+     * （切到该角色 → 上行 activeUid → 服务器建会话在线，不是启动游戏客户端）。
      * 卡片其它区域不响应 —— 避免"想看一个角色却总弹出整张表"。
+     *
+     * <p>同服多角色的可区分性：昵称列显示 {@link RoleDisplay#roleName}，行内元数据
+     * （角色管理弹层）用 UID 段区分——本表不再用「同服第N角色」（序号随行序漂移）。
      */
     private android.view.View roleEntryCard(final AccountStore.Account a, final RoleStore.Role r,
                                             int[] dayStats, long lastTs, String[] onlineKind, boolean accOn,
@@ -3051,9 +3028,9 @@ public class HomeActivity extends AccountVaultActivity {
         stv.setWidth(dp(COL_ONLINE));
         row.addView(stv);
 
-        // ② 昵称
+        // ② 昵称（空=未同步；同服多角色靠角色管理弹层的 UID 段区分）
         TextView nm = new TextView(this);
-        nm.setText(r.name == null || r.name.isEmpty() ? "K" + r.serverid + " · 未同步" : r.name);
+        nm.setText(RoleDisplay.roleName(r.name));
         nm.setTextSize(12.5f);
         nm.setTypeface(Typeface.DEFAULT_BOLD);
         nm.setTextColor(UiStyle.INK);
@@ -3069,7 +3046,7 @@ public class HomeActivity extends AccountVaultActivity {
         row.addView(cellText(done + "/" + total, COL_DONE, 11.5f, dcol, Gravity.END, true));
         row.addView(cellText(shortTime(lastTs), COL_LAST, 10.5f, UiStyle.INK2, Gravity.END, false));
 
-        // ⑥ 登录（以该角色启动游戏）
+        // ⑥ 登录（以该角色模拟登录在线：钉扎 (sid,uid) → 服务器建会话并触发整轮）
         TextView go = new TextView(this);
         go.setText("登录");
         go.setTextSize(11);
@@ -3084,7 +3061,14 @@ public class HomeActivity extends AccountVaultActivity {
         go.setPadding(0, dp(5), 0, dp(5));
         go.setWidth(dp(COL_GO));
         UiStyle.press(go);
-        go.setOnClickListener(v -> launchRole(a, r));
+        go.setOnClickListener(v -> {
+            go.setEnabled(false);
+            go.setText("登录中");
+            loginRole(a, r.serverid, r.uid, () -> {
+                go.setEnabled(true);
+                go.setText("登录");
+            });
+        });
         row.addView(go);
 
         // 点角色行 = 角色管理（与齿轮同一入口）
@@ -3119,11 +3103,15 @@ public class HomeActivity extends AccountVaultActivity {
      */
     private void launchRole(AccountStore.Account a, RoleStore.Role r) {
         try {
-            RoleStore.setActiveRole(this, a.fpid, r.serverid);
+            // 复合身份写激活角色：同服多角色只写 sid 会解析回第一行，钉扎到另一个角色
+            RoleStore.setActiveRole(this, a.fpid, r.serverid, r.uid);
+            // 预登录启动同样改变了当前角色：标记待上传 + 触发去抖同步（防回滚，P2）
+            VaultSync.notifyRoleSwitched(this, a.fpid);
         } catch (Throwable ignored) {
         }
         final ProgressDialog pd = new ProgressDialog(this);
-        pd.setMessage("正在切换到 K" + r.serverid + " «" + r.name + "»（预登录对齐角色…）");
+        pd.setMessage("正在切换到 K" + r.serverid
+                + (r.uid > 0 ? " uid=" + r.uid : "") + " «" + r.name + "»（预登录对齐角色…）");
         pd.setCancelable(false);
         pd.show();
         final AccountStore.Account acc = a;
@@ -3136,7 +3124,7 @@ public class HomeActivity extends AccountVaultActivity {
                 try {
                     pre.initialize();
                     com.carlos.vault.daily.RoleLogin.loginPinned(this, pre,
-                            acc.fpid, acc.token, role.serverid);
+                            acc.fpid, acc.token, role.serverid, role.uid);
                 } finally {
                     pre.close();   // 立即断开：只为翻转服务器端"最近角色"记录
                 }
@@ -3149,346 +3137,25 @@ public class HomeActivity extends AccountVaultActivity {
                 pd.dismiss();
                 if (warnF != null) android.widget.Toast.makeText(this, warnF,
                         android.widget.Toast.LENGTH_LONG).show();
-                // 启动阶段提示角色名（含区服），不再显示账号备注名
+                // 启动阶段提示角色名（含区服/uid），不再显示账号备注名
                 String roleName = (role.name == null || role.name.isEmpty() ? acc.label : role.name)
-                        + "·K" + role.serverid;
+                        + "·K" + role.serverid + (role.uid > 0 ? "·" + role.uid : "");
                 doSwitch(acc, roleName);
             });
         }, "prelaunch-role").start();
     }
 
     /**
-     * ⚙ 角色管理 <b>底部弹层</b>（与原型一致）：列出该账号全部角色 —— 启用与未启用都在。
+     * ⚙ 角色管理底部弹层（实现已抽到 {@link RoleManagerSheet}，账号页/账号详情页共用）：
+     * 列出该账号全部角色 —— 启用与未启用都在。
      *
-     * <p>结构：拖拽条 → 头（账号名 + 副题「共 N 个角色，已启用 M · 开启即加入工作区」+ 关闭）
-     * → 角色列表（未启用行降饱和 + 「未启用」标签 + 开关；每行带 在线/离线 · 区号 · 今日完成 · 上次登录）
-     * → 底部「全部加入工作区 / 完成」。
-     *
-     * <p>打开开关 = 加入工作区并启用；关闭 = 移出。改动后账号卡的角色区会随 refreshAccounts 同步。
-     * 为什么用弹层而不是跳页：角色是账号的属性，管理完就关掉，不该让用户离开账号上下文。
-     *
-     * <p>实现说明：不用 BottomSheetDialog（那要 material 依赖），直接往页面根 FrameLayout
-     * 盖一层半透明遮罩 + 白色圆角面板，带 320ms 上滑入场动画 —— 与原型 spec 的动效一致。
+     * <p>打开开关 = 加入工作区并启用；关闭 = 移出。改动后账号卡的角色区会随
+     * refreshAccounts 同步。为什么用弹层而不是跳页：角色是账号的属性，管理完就关掉，
+     * 不该让用户离开账号上下文。
      */
     private void showRoleManager(final AccountStore.Account a, final List<RoleStore.Role> roles,
                                  boolean accOn) {
-        if (roles == null || roles.isEmpty()) {
-            toast("暂无角色数据 —— 登录一次游戏后自动发现");
-            return;
-        }
-        final long actSid = RoleStore.activeRole(this, a.fpid);
-        // 角色行在线口径所需的 live 信息（一次读全；liveOnlineUid 读 live playerprefs，开弹层时算一次可接受）
-        final boolean isLiveAcc;
-        {
-            String liveEntry = null;
-            try {
-                liveEntry = new AccountStore(this).getLiveEntryId();
-            } catch (Throwable ignored) {
-            }
-            isLiveAcc = liveEntry != null && liveEntry.equals(a.id);
-        }
-        final long liveUid = isLiveAcc ? liveOnlineUid() : 0;
-
-        final android.widget.FrameLayout overlay = new android.widget.FrameLayout(this);
-        overlay.setBackgroundColor(UiStyle.SCRIM);   // rgba(8,12,23,35%)，压暗背景
-        overlay.setElevation(dp(24));                // 必须高于悬浮导航的 elevation
-        // 点遮罩空白处关闭
-        overlay.setOnClickListener(v -> dismissSheet(overlay));
-
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setBackgroundColor(UiStyle.WHITE);
-        GradientDrawable pbg = new GradientDrawable();
-        pbg.setColor(UiStyle.WHITE);
-        pbg.setCornerRadii(new float[]{dp(24), dp(24), dp(24), dp(24), 0, 0, 0, 0});
-        panel.setBackground(pbg);
-        panel.setElevation(dp(16));
-        android.widget.FrameLayout.LayoutParams plp = new android.widget.FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM);
-        panel.setLayoutParams(plp);
-
-        // —— 拖拽条 ——
-        android.view.View grab = new android.view.View(this);
-        grab.setBackgroundColor(UiStyle.LINE_STRONG);
-        android.widget.FrameLayout.LayoutParams glp = new android.widget.FrameLayout.LayoutParams(
-                dp(36), dp(4), Gravity.CENTER_HORIZONTAL | Gravity.TOP);
-        glp.topMargin = dp(9);
-        android.widget.FrameLayout grabWrap = new android.widget.FrameLayout(this);
-        grabWrap.addView(grab, glp);
-        panel.addView(grabWrap, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(13)));
-
-        // —— 头部：角色管理 + 账号/角色数 ——
-        LinearLayout head = new LinearLayout(this);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        head.setPadding(dp(18), dp(6), dp(18), dp(12));
-        LinearLayout hb = new LinearLayout(this);
-        hb.setOrientation(LinearLayout.VERTICAL);
-        TextView title = new TextView(this);
-        title.setText("角色管理");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        hb.addView(title);
-        final TextView sub = new TextView(this);
-        sub.setTextSize(12);
-        sub.setTextColor(UiStyle.INK2);
-        sub.setPadding(0, dp(3), 0, 0);
-        hb.addView(sub);
-        head.addView(hb, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        // 「发现角色」保留为隐藏入口（底部 + 添加角色 触发）
-        final TextView discover = new TextView(this);
-        discover.setText("发现角色");
-        discover.setVisibility(View.GONE);
-        panel.addView(head);
-
-        final java.util.List<Runnable> syncSubs = new ArrayList<>();
-        syncSubs.add(() -> {
-            // 统计行实时读盘：行开关/发现角色落盘后重跑 syncSubs 才能反映最新数
-            // （旧实现数的是打开弹层时捕获的 roles 快照，开关切了计数不动）。
-            int n = roles.size(), en = 0;
-            try {
-                java.util.List<RoleStore.Role> cur = RoleStore.roles(this, a.fpid);
-                n = cur.size();
-                for (RoleStore.Role r : cur) if (r.enabled) en++;
-            } catch (Throwable ignored) {
-                for (RoleStore.Role r : roles) if (r.enabled) en++;
-            }
-            sub.setText((a.label == null ? "" : a.label) + " · " + n + " 个角色 · 已加入 " + en);
-        });
-        syncSubs.get(0).run();
-
-        // —— 角色列表（可重建：发现角色后重拉全量表） ——
-        LinearLayout list = new LinearLayout(this);
-        list.setOrientation(LinearLayout.VERTICAL);
-        final android.content.SharedPreferences sched = getSharedPreferences("daily_sched", MODE_PRIVATE);
-        final java.util.concurrent.atomic.AtomicReference<List<RoleStore.Role>> rolesRef =
-                new java.util.concurrent.atomic.AtomicReference<>(roles);
-        final Runnable rebuildList = () -> {
-            list.removeAllViews();
-            for (final RoleStore.Role r : rolesRef.get()) {
-                list.addView(sheetRoleRow(a, r, syncSubs));
-            }
-        };
-        rebuildList.run();
-        ScrollView sc = new ScrollView(this);
-        sc.addView(list);
-        panel.addView(sc, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
-
-        // —— 底部按钮：全部加入工作区 / 完成 ——
-        LinearLayout foot = new LinearLayout(this);
-        foot.setOrientation(LinearLayout.HORIZONTAL);
-        foot.setPadding(dp(16), dp(11), dp(16), dp(28));
-        TextView all = new TextView(this);
-        all.setText("+ 添加角色");
-        all.setTextSize(14);
-        all.setTypeface(Typeface.DEFAULT_BOLD);
-        all.setTextColor(UiStyle.INK);
-        all.setGravity(Gravity.CENTER);
-        all.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 14, UiStyle.LINE));
-        all.setPadding(0, dp(13), 0, dp(13));
-        UiStyle.press(all);
-        all.setOnClickListener(v -> discover.performClick());
-        foot.addView(all, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView done = new TextView(this);
-        done.setText("完成");
-        done.setTextSize(14);
-        done.setTypeface(Typeface.DEFAULT_BOLD);
-        done.setTextColor(UiStyle.WHITE);
-        done.setGravity(Gravity.CENTER);
-        done.setBackground(UiStyle.roundRect(UiStyle.BRAND, dp(14)));
-        done.setPadding(0, dp(13), 0, dp(13));
-        UiStyle.press(done);
-        done.setOnClickListener(v -> dismissSheet(overlay));
-        LinearLayout.LayoutParams dlp = new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1.15f);
-        dlp.leftMargin = dp(9);
-        foot.addView(done, dlp);
-        panel.addView(foot);
-
-        // 「发现角色」：req_server_list_simple + req_role_list 全量查询（本地表只含登录过的角色，
-        // 玩家在游戏里新开的区服角色不会自动出现——2026-10-12 用户反馈角色管理列表不全）。
-        discover.setOnClickListener(v -> {
-            discover.setEnabled(false);
-            discover.setAlpha(0.5f);
-            sub.setText("发现角色中…（登录游戏服务器查询全角色清单）");
-            new Thread(() -> {
-                String err = null;
-                int found = 0, added = 0;
-                try {
-                    java.util.List<com.carlos.vault.wjdr.WjdrEngine.RoleInfo> roles0 = null;
-                    // 优先借常驻会话（免登录不顶号）；无会话且容器游戏没挂本账号时才临时登录
-                    com.carlos.vault.daily.RoleSessionKeeper.LiveSession live =
-                            DailyRunner.liveOf(this, a.fpid, 0);
-                    if (live != null) {
-                        roles0 = live.engine.discoverRoles();
-                    } else {
-                        String liveFpid = new com.carlos.vault.VaultEngine(this).readLiveSessionFpid();
-                        if (a.fpid != null && a.fpid.equals(liveFpid)) {
-                            err = "该账号正在容器游戏里运行，退出游戏后再发现";
-                        } else {
-                            com.carlos.vault.wjdr.WjdrEngine eng =
-                                    com.carlos.vault.daily.WjdrAndroid.newEngine(this);
-                            try {
-                                com.carlos.vault.daily.HotConfig.init(this);
-                                eng.initialize();
-                                com.carlos.vault.daily.RoleLogin.loginPinned(this, eng,
-                                        a.fpid, a.token, 0);
-                                roles0 = eng.discoverRoles();
-                            } finally {
-                                eng.close();
-                            }
-                        }
-                    }
-                    if (roles0 != null) {
-                        found = roles0.size();
-                        for (com.carlos.vault.wjdr.WjdrEngine.RoleInfo ri : roles0) {
-                            int before = RoleStore.roles(this, a.fpid).size();
-                            // 已存在角色不改变 enabled；新角色默认未启用
-                            RoleStore.registerRole(this, a.fpid, ri.serverid, ri.uid, ri.name);
-                            if (RoleStore.roles(this, a.fpid).size() > before) added++;
-                        }
-                    }
-                } catch (Throwable t) {
-                    err = t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage();
-                }
-                final String fErr = err;
-                final int fFound = found, fAdded = added;
-                runOnUiThread(() -> {
-                    discover.setEnabled(true);
-                    discover.setAlpha(1f);
-                    if (fErr != null) {
-                        sub.setText("发现失败：" + fErr);
-                        return;
-                    }
-                    rolesRef.set(RoleStore.roles(this, a.fpid));
-                    for (Runnable rr : syncSubs) rr.run();
-                    rebuildList.run();
-                    refreshAccounts();
-                    sub.setText("发现完成：服务器共 " + fFound
-                            + " 个角色，新增 " + fAdded + "（新角色默认未启用）");
-                });
-            }, "role-discover").start();
-        });
-
-        overlay.addView(panel, plp);
-
-        // 高度约束：内容自适应，但不超过屏高 80%（原型 spec）
-        overlay.addOnLayoutChangeListener((v2, l, t2, r2, b2, ol, ot, or2, ob) -> {
-            android.view.ViewGroup.LayoutParams lp = panel.getLayoutParams();
-            int max = (int) (getResources().getDisplayMetrics().heightPixels * 0.8f);
-            if (panel.getHeight() > max) {
-                lp.height = max;
-                panel.setLayoutParams(lp);
-            }
-        });
-
-        // 盖到根容器（含悬浮导航，弹层遮罩必须压住底部导航）
-        ViewGroup root = (ViewGroup) content.getParent();
-        root.addView(overlay, new android.widget.FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-
-        // 上滑入场（320ms ease-out，近似原型 ease-out-expo）
-        panel.setTranslationY(dp(48));
-        panel.setAlpha(0.5f);
-        panel.animate().translationY(0).alpha(1f)
-                .setDuration(320)
-                .setInterpolator(new android.view.animation.DecelerateInterpolator(2.5f))
-                .start();
-        overlay.setAlpha(0);
-        overlay.animate().alpha(1f).setDuration(200).start();
-    }
-
-    /** 关闭底部弹层：面板下滑淡出后移除整层。 */
-    private void dismissSheet(final android.widget.FrameLayout overlay) {
-        View panel = null;
-        for (int i = 0; i < overlay.getChildCount(); i++) {
-            android.view.View c = overlay.getChildAt(i);
-            if (c instanceof LinearLayout) { panel = c; break; }
-        }
-        final View p2 = panel;
-        Runnable remove = () -> {
-            if (overlay.getParent() instanceof ViewGroup) {
-                ((ViewGroup) overlay.getParent()).removeView(overlay);
-            }
-        };
-        if (p2 != null) {
-            p2.animate().translationY(dp(48)).alpha(0f)
-                    .setDuration(200)
-                    .setInterpolator(new android.view.animation.AccelerateInterpolator())
-                    .withEndAction(remove).start();
-        } else {
-            remove.run();
-        }
-        overlay.animate().alpha(0f).setDuration(200).start();
-    }
-
-    /** 弹层内单个角色行：在线标记(日常在线/游戏在线/在线/离线) · 名称(+未启用标签) · 区号 · 今日完成 · 上次登录 · 开关。 */
-    private android.view.View sheetRoleRow(final AccountStore.Account a, final RoleStore.Role r,
-                                           final java.util.List<Runnable> syncSubs) {
-        final LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(16), dp(12), dp(16), dp(12));
-        row.setBackgroundColor(UiStyle.WHITE);
-
-        row.addView(UiStyle.snowAvatar(this, 56, a.id + ":" + r.serverid),
-                new LinearLayout.LayoutParams(dp(56), dp(56)));
-
-        LinearLayout mid = new LinearLayout(this);
-        mid.setOrientation(LinearLayout.VERTICAL);
-        mid.setPadding(dp(12), 0, dp(8), 0);
-        TextView nm = new TextView(this);
-        String rn = r.name == null || r.name.isEmpty() ? "K" + r.serverid + " · 未同步" : r.name;
-        nm.setText(rn);
-        nm.setTextSize(16);
-        nm.setTypeface(Typeface.DEFAULT_BOLD);
-        nm.setTextColor(UiStyle.INK);
-        nm.setMaxLines(1);
-        nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        mid.addView(nm);
-
-        StringBuilder sb = new StringBuilder();
-        sb.append(r.serverid).append("服");
-        if (r.level > 0) sb.append(" · 城堡 ").append(r.level).append(" 级");
-        if (r.power > 0) sb.append(" · 战力 ").append(fmtWan(r.power));
-        TextView meta = new TextView(this);
-        meta.setText(sb.toString());
-        meta.setTextSize(12);
-        meta.setTextColor(UiStyle.INK2);
-        meta.setPadding(0, dp(4), 0, 0);
-        mid.addView(meta);
-        row.addView(mid, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        // 角色管理只保留「是否加入工作区」开关：开=加入工作区，关=移出工作区。
-        final UiStyle.Switch[] swRef = new UiStyle.Switch[1];
-        swRef[0] = new UiStyle.Switch(this, r.enabled, () -> {
-            boolean now = swRef[0].isOn();
-            r.enabled = now;
-            RoleStore.setEnabled(this, a.fpid, r.serverid, now);
-            VaultSync.onAccountsChanged(this);
-            toast(now ? "已加入工作区" : "已移出工作区");
-            for (Runnable rr : syncSubs) rr.run();
-            refreshAccounts();
-        });
-        row.addView(swRef[0]);
-
-        android.view.View div = new android.view.View(this);
-        div.setBackgroundColor(UiStyle.LINE);
-        LinearLayout wrap = new LinearLayout(this);
-        wrap.setOrientation(LinearLayout.VERTICAL);
-        wrap.addView(row);
-        LinearLayout.LayoutParams dlp2 = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
-        dlp2.leftMargin = dp(84);
-        wrap.addView(div, dlp2);
-        return wrap;
+        RoleManagerSheet.show(this, a, roles, this::refreshAccounts);
     }
 
     /** 账号页加载遮罩：半透明覆盖 + 居中"加载中…"卡。 */
@@ -3919,30 +3586,18 @@ public class HomeActivity extends AccountVaultActivity {
                 String st = o.optString("state", "offline");
                 String sid = o.optString("sid", "");
                 String head = sid.isEmpty() ? "" : sid + "区·";
-                switch (st) {
-                    case "online": return head + "在线 · 服务器";
-                    case "recovering": return head + "重连中 · 服务器";
-                    case "takeover": return head + "被顶号暂停 · 服务器";
-                    case "need_token": return head + "需重导token · 服务器";
-                    default: return head + st + " · 服务器";
-                }
+                // 文案映射统一走 RoleDisplay.serverStateLabel（账号页角色行/角色管理行同源）
+                return head + RoleDisplay.serverStateLabel(st) + " · 服务器";
             }
             StringBuilder sb = new StringBuilder();
             for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
                     : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
                 if (!cur.fpid.equals(ls.fpid)) continue;
-                // 状态字面量与 WjdrEngine.STATE_* 常量一致（online/recovering/takeover/need_token）
-                String st = ls.engine.sessionState();
-                String s;
-                switch (st) {
-                    case "online": s = ls.sid + "区·在线"; break;
-                    case "recovering": s = ls.sid + "区·重连中"; break;
-                    case "takeover": s = ls.sid + "区·被顶号暂停"; break;
-                    case "need_token": s = ls.sid + "区·需重导token"; break;
-                    default: s = ls.sid + "区·" + st; break;
-                }
+                // 状态字面量与 WjdrEngine.STATE_* 常量一致（online/recovering/takeover/need_token）；
+                // 文案同样走 RoleDisplay.serverStateLabel（本地口径去掉「· 服务器」后缀）
                 if (sb.length() > 0) sb.append("  ");
-                sb.append(s);
+                sb.append(ls.sid).append("区·")
+                        .append(RoleDisplay.serverStateLabel(ls.engine.sessionState()));
             }
             return sb.length() == 0 ? "连接建立中…" : sb.toString();
         } catch (Throwable t) {
@@ -5189,10 +4844,12 @@ public class HomeActivity extends AccountVaultActivity {
                 RUN.current = a.label;
                 RUN.log("→ " + a.label + " 开始");
                 long sid = activeSid(a);
+                // 同服多角色：带上激活角色 uid，本地跑日常钉扎到具体角色（不落同服另一个）
+                long uid = RoleStore.activeRoleUid(HomeActivity.this, a.fpid);
                 try {
                     final com.carlos.vault.daily.LogStore ls = new com.carlos.vault.daily.LogStore(HomeActivity.this);
                     DailyRunner.Summary s2 = DailyRunner.run(HomeActivity.this, a.fpid, a.token,
-                            sid, null, new DailyRunner.ProgressListener() {
+                            sid, uid, null, new DailyRunner.ProgressListener() {
                                 @Override
                                 public void onTaskStart(String name) {
                                     RUN.log("▸ " + a.label + " · " + name);

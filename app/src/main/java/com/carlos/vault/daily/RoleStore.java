@@ -14,6 +14,12 @@ import java.util.List;
  * 凭证（号库账号 fpid+token） → 多个角色（serverid+uid+name）。
  * 登录带 serverid 即选择对应区服的角色；登录成功自动登记角色。
  * 调度：每凭证一份 {autoEnabled, serverid, nextRunAt, lastRunAt, windowStart/End}。
+ *
+ * <p><b>角色身份 = (serverid, uid)</b>（2026-10-20 同服多角色修复）：一个 token 可以在
+ * 同一个区服建多个角色（真机 48460403 的 888 服：隆科多 uid=35371154 / 小鹿矿工5号
+ * uid=88280792），历史上按 serverid 单键去重会把第二个角色覆盖合并、开关与登录目标
+ * 串到另一个角色。所有匹配/去重/开关/uid 更新/当前角色统一走 {@link RoleIdentity}，
+ * 同 sid 不同 uid 视为不同角色；uid=0 的旧记录在 uid 已知时原地升级。
  */
 public class RoleStore {
 
@@ -26,7 +32,28 @@ public class RoleStore {
      */
     private static final Object WRITE_LOCK = new Object();
 
-    public static class Role {
+    /** 当前角色复合键前缀（值 "sid:uid"）；旧键 active:<fpid>（long sid）只读兼容 + 惰性迁移。 */
+    private static final String ACTIVE_KEY = "active2:";
+
+    /**
+     * 当前角色激活时间戳前缀（epoch ms；{@link #setActiveRole} 每次写入时刷新）。
+     *
+     * <p>防回滚用（2026-10-20 P2）：切角色只写本地、上传有延迟，服务端旧回传需按
+     * 「本地激活是否晚于请求发起」判断新旧（见 {@link RoleIdentity#shouldLearnActiveRole}）。
+     */
+    private static final String ACTIVE_AT_KEY = "active2_at:";
+
+    /**
+     * 角色切换待上传标记前缀（boolean）：用户切了当前角色但全量同步尚未成功。
+     *
+     * <p>窗口内服务端 {@code /state}、{@code /status} 回传仍是旧角色，此时
+     * {@code learnServerRole} 不得回写当前角色（会把刚切的角色回滚）。由 UI 切换入口
+     * 置位（{@link #markRoleDirty}），一次成功的全量 sync 清空（{@link #clearAllRoleDirty}，
+     * sync payload 带全部账号，故一次性清所有）。
+     */
+    private static final String DIRTY_KEY = "role_dirty:";
+
+    public static class Role implements RoleIdentity.Identity {
         public long serverid;
         public long uid;
         public String name = "";
@@ -35,6 +62,25 @@ public class RoleStore {
         public long level;            // 熔炉等级（0=未知）
         public long power;            // 战力（0=未知）
         public String alliance = "";  // 联盟名（""=未知/无盟）
+
+        @Override public long serverid() {
+            return serverid;
+        }
+
+        @Override public long uid() {
+            return uid;
+        }
+    }
+
+    /** 当前选中角色（复合身份；sid=-1 表示从未选过）。 */
+    public static final class ActiveRole {
+        public long sid = -1;
+        public long uid;
+
+        public ActiveRole(long sid, long uid) {
+            this.sid = sid;
+            this.uid = uid;
+        }
     }
 
     /** 某凭证下已登记的角色（按发现顺序）。 */
@@ -60,30 +106,33 @@ public class RoleStore {
         return out;
     }
 
-    /** 登录成功后登记/刷新角色（按 serverid 去重；无 serverid 也可登记 uid=0 槽）。 */
+    /** 登录成功后登记/刷新角色（按 (serverid,uid) 去重；无 serverid 也可登记 uid=0 槽）。 */
     public static void registerRole(Context ctx, String fpid, long serverid, long uid, String name) {
         registerRole(ctx, fpid, serverid, uid, name, 0, 0, "");
     }
 
-    /** 带元数据版：等级/战力/联盟名仅在新值有效时覆盖（0/"" 不冲掉旧值，与 uid/name 同策略）。 */
+    /**
+     * 带元数据版：等级/战力/联盟名仅在新值有效时覆盖（0/"" 不冲掉旧值，与 uid/name 同策略）。
+     *
+     * <p>去重口径（{@link RoleIdentity#matches}）：同 sid 且 uid 一侧未知 → 命中旧记录<b>原地升级</b>
+     * （旧数据 uid=0 学到真 uid 后补登到同一行，不产生重复行）；同 sid 两侧 uid 均已知且不同 →
+     * <b>新建角色行</b>（同服多角色不再互相覆盖）。
+     */
     public static void registerRole(Context ctx, String fpid, long serverid, long uid, String name,
                                     long level, long power, String alliance) {
         if (fpid == null || fpid.isEmpty()) return;
         synchronized (WRITE_LOCK) {
             try {
                 List<Role> list = roles(ctx, fpid);
-                Role hit = null;
-                for (Role r : list) {
-                    if (r.serverid == serverid) {
-                        hit = r;
-                        break;
-                    }
-                }
-                if (hit == null) {
+                int hitIdx = RoleIdentity.indexOfLoose(list, serverid, uid);
+                Role hit;
+                if (hitIdx < 0) {
                     hit = new Role();
                     hit.serverid = serverid;
                     hit.enabled = false;   // 新角色默认不进工作区
                     list.add(hit);
+                } else {
+                    hit = list.get(hitIdx);
                 }
                 if (uid > 0) hit.uid = uid;
                 if (name != null && !name.isEmpty()) hit.name = name;
@@ -96,15 +145,64 @@ public class RoleStore {
         }
     }
 
-    /** 更新角色的工作区开关。 */
-    public static void setEnabled(Context ctx, String fpid, long serverid, boolean enabled) {
+    /** 更新角色的工作区开关（按 (serverid,uid)；uid<=0 时退化为该 sid 第一行的旧口径）。 */
+    public static void setEnabled(Context ctx, String fpid, long serverid, long uid, boolean enabled) {
         synchronized (WRITE_LOCK) {
             try {
                 List<Role> list = roles(ctx, fpid);
-                for (Role r : list) {
-                    if (r.serverid == serverid) {
-                        r.enabled = enabled;
-                        break;
+                int idx = RoleIdentity.indexOf(list, serverid, uid);
+                if (idx >= 0) list.get(idx).enabled = enabled;
+                saveRoles(ctx, fpid, list);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** 旧口径开关（只传 sid）：命中该 sid 第一行。同服多角色请改用 (sid,uid) 版。 */
+    public static void setEnabled(Context ctx, String fpid, long serverid, boolean enabled) {
+        setEnabled(ctx, fpid, serverid, 0, enabled);
+    }
+
+    /** 按 (fpid, serverid, uid) 取已登记角色；未登记返回 null。uid<=0 = 该 sid 第一行（旧口径）。 */
+    public static Role roleOf(Context ctx, String fpid, long serverid, long uid) {
+        if (fpid == null || serverid <= 0) return null;
+        List<Role> list = roles(ctx, fpid);
+        int idx = RoleIdentity.indexOf(list, serverid, uid);
+        return idx < 0 ? null : list.get(idx);
+    }
+
+    /** 旧口径查询（只传 sid）：该 sid 第一行。同服多角色请改用 (sid,uid) 版。 */
+    public static Role roleOf(Context ctx, String fpid, long serverid) {
+        return roleOf(ctx, fpid, serverid, 0);
+    }
+
+    /**
+     * 定点改写某角色的 uid（钉扎自愈用：串区时期登记的错 uid 需要纠正）。
+     *
+     * <p>按 (sid, fromUid) 定位（fromUid<=0 或严格找不到时退化该 sid 第一行——历史自愈
+     * 调用点不知道旧 uid）；改为 toUid 后若已存在另一条 (sid, toUid) 记录 → 两条合并
+     * （保留正确那条，enabled 取或，避免凭空丢失工作区成员），绝不留重复行。
+     */
+    public static void updateUid(Context ctx, String fpid, long serverid, long fromUid, long toUid) {
+        if (fpid == null || serverid <= 0) return;
+        synchronized (WRITE_LOCK) {
+            try {
+                List<Role> list = roles(ctx, fpid);
+                int idx = RoleIdentity.indexOf(list, serverid, fromUid);
+                if (idx < 0 && fromUid > 0) idx = RoleIdentity.indexOf(list, serverid, 0);
+                if (idx < 0) return;
+                Role target = list.get(idx);
+                target.uid = toUid;
+                if (toUid > 0) {
+                    int dup = RoleIdentity.indexOf(list, serverid, toUid);
+                    if (dup >= 0 && dup != idx) {
+                        Role keep = list.get(dup);
+                        keep.enabled = keep.enabled || target.enabled;
+                        if (keep.name == null || keep.name.isEmpty()) keep.name = target.name;
+                        if (keep.level <= 0) keep.level = target.level;
+                        if (keep.power <= 0) keep.power = target.power;
+                        if (keep.alliance == null || keep.alliance.isEmpty()) keep.alliance = target.alliance;
+                        list.remove(idx);
                     }
                 }
                 saveRoles(ctx, fpid, list);
@@ -113,28 +211,45 @@ public class RoleStore {
         }
     }
 
-    /** 按 (fpid, serverid) 取已登记角色；未登记返回 null。 */
-    public static Role roleOf(Context ctx, String fpid, long serverid) {
-        if (fpid == null || serverid <= 0) return null;
-        for (Role r : roles(ctx, fpid)) {
-            if (r.serverid == serverid) return r;
-        }
-        return null;
+    /** 旧口径 uid 更新（只传 sid）：该 sid 第一行。同服多角色请改用 (sid, fromUid, toUid) 版。 */
+    public static void updateUid(Context ctx, String fpid, long serverid, long uid) {
+        updateUid(ctx, fpid, serverid, 0, uid);
     }
 
-    /** 直接改写某角色的 uid（含清 0；钉扎自愈用：串区时期登记的错 uid 需要纠正）。 */
-    public static void updateUid(Context ctx, String fpid, long serverid, long uid) {
-        if (fpid == null || serverid <= 0) return;
+    /**
+     * 发现角色登记（req_role_list 全量发现路径，HomeActivity「+ 添加角色」）：
+     * 只带 name 的修正——复用 {@link #registerRole} 的去重/升级语义，并在<b>行内名字
+     * 被修正</b>时清零 level/power/alliance（P3，QA 报告 §3.5）。
+     *
+     * <p>发现路径的 RoleInfo 只带 name，不带等级/战力/联盟。旧名字非空且与新名字不同
+     * ⇒ 旧名字是错的（典型：被 P1-2 串行污染写过别人的元数据），随行的旧元数据同样
+     * 无可信来源，一并清零避免同服两行更难分辨；名字未变（或旧名字为空=补全而非
+     * 修正、新名字为空=不会覆盖）则不动，保住登录/采集学到的可信元数据。
+     * 判定用 {@link RoleIdentity#shouldClearStaleMeta}（纯函数，有单测）。
+     */
+    public static void registerDiscoveredRole(Context ctx, String fpid, long serverid, long uid,
+                                              String name) {
+        if (fpid == null || fpid.isEmpty() || serverid <= 0) return;
         synchronized (WRITE_LOCK) {
             try {
                 List<Role> list = roles(ctx, fpid);
-                for (Role r : list) {
-                    if (r.serverid == serverid) {
-                        r.uid = uid;
-                        break;
+                // registerRole 将命中的行（宽松口径，uid=0 旧行也在内）
+                int idx = RoleIdentity.indexOfLoose(list, serverid, uid);
+                boolean clearMeta = idx >= 0
+                        && RoleIdentity.shouldClearStaleMeta(list.get(idx).name, name);
+                registerRole(ctx, fpid, serverid, uid, name);
+                if (clearMeta) {
+                    // registerRole 后重读定位（uid=0 旧行可能被原地升级）
+                    list = roles(ctx, fpid);
+                    int idx2 = RoleIdentity.indexOfLoose(list, serverid, uid);
+                    if (idx2 >= 0) {
+                        Role r = list.get(idx2);
+                        r.level = 0;
+                        r.power = 0;
+                        r.alliance = "";
+                        saveRoles(ctx, fpid, list);
                     }
                 }
-                saveRoles(ctx, fpid, list);
             } catch (Throwable ignored) {
             }
         }
@@ -227,6 +342,9 @@ public class RoleStore {
         ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE).edit()
                 .remove("roles:" + fpid)
                 .remove("active:" + fpid)
+                .remove(ACTIVE_KEY + fpid)
+                .remove(ACTIVE_AT_KEY + fpid)
+                .remove(DIRTY_KEY + fpid)
                 .remove("picked:" + fpid)
                 .apply();
         ctx.getSharedPreferences("daily_sched", Context.MODE_PRIVATE).edit()
@@ -251,16 +369,100 @@ public class RoleStore {
         dpe.apply();
     }
 
-    /** 当前选中的角色（工作区内切换）。 */
-    public static long activeRole(Context ctx, String fpid) {
-        return ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
-                .getLong("active:" + fpid, -1);
+    /**
+     * 当前选中的角色（复合身份，工作区内切换）。
+     *
+     * <p>读取 {@code active2:<fpid>}（值 {@code "sid:uid"}）；缺省时回退旧键
+     * {@code active:<fpid>}（long sid）并按角色表补 uid 后<b>惰性迁移</b>写回新键——
+     * 存量设备无需手动迁移，之后一切写入都走复合键。从未选过返回 sid=-1。
+     */
+    public static ActiveRole activeRoleEx(Context ctx, String fpid) {
+        if (fpid == null || fpid.isEmpty()) return new ActiveRole(-1, 0);
+        SharedPreferences sp = ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE);
+        String raw = sp.getString(ACTIVE_KEY + fpid, "");
+        if (raw != null && !raw.isEmpty()) {
+            long[] kv = RoleIdentity.parseKey(raw);
+            if (kv != null && kv[0] > 0) return new ActiveRole(kv[0], kv[1]);
+        }
+        long legacy = sp.getLong("active:" + fpid, -1);
+        if (legacy <= 0) return new ActiveRole(-1, 0);
+        // 旧键迁移：sid 已知、uid 按角色表解析（优先工作区内角色），写回复合键
+        List<Role> list = roles(ctx, fpid);
+        long uid = RoleIdentity.resolveUidForSid(list, legacy, r -> ((Role) r).enabled);
+        setActiveRole(ctx, fpid, legacy, uid);
+        return new ActiveRole(legacy, uid);
     }
 
-    public static void setActiveRole(Context ctx, String fpid, long serverid) {
+    /** 当前选中角色的 sid（无记录 -1）。兼容旧签名；同服多角色请用 {@link #activeRoleEx}。 */
+    public static long activeRole(Context ctx, String fpid) {
+        return activeRoleEx(ctx, fpid).sid;
+    }
+
+    /** 当前选中角色的 uid（0=未知/旧数据未迁移）。 */
+    public static long activeRoleUid(Context ctx, String fpid) {
+        return activeRoleEx(ctx, fpid).uid;
+    }
+
+    /** 设置当前角色（复合身份）。uid<=0 时按角色表解析后写入（旧签名行为保持一致）。 */
+    public static void setActiveRole(Context ctx, String fpid, long serverid, long uid) {
+        if (fpid == null || fpid.isEmpty()) return;
+        long sid = serverid;
+        long u = uid;
+        if (sid > 0 && u <= 0) {
+            u = RoleIdentity.resolveUidForSid(roles(ctx, fpid), sid, r -> ((Role) r).enabled);
+        }
         ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
-                .edit().putLong("active:" + fpid, serverid)
+                .edit().putString(ACTIVE_KEY + fpid, RoleIdentity.key(sid, u))
+                .putLong(ACTIVE_AT_KEY + fpid, System.currentTimeMillis())
                 .putBoolean("picked:" + fpid, true).apply();
+    }
+
+    /**
+     * 当前角色激活身份的写入时间（epoch ms；0=无记录/旧数据）。
+     *
+     * <p>与 {@link #activeRoleEx} 同源读取，供防回滚时间戳门控使用
+     * （{@link RoleIdentity#shouldLearnActiveRole} 的 localTs）。
+     */
+    public static long activeRoleAt(Context ctx, String fpid) {
+        if (fpid == null || fpid.isEmpty()) return 0;
+        return ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
+                .getLong(ACTIVE_AT_KEY + fpid, 0);
+    }
+
+    /** 标记该凭证的当前角色切换尚未上传（UI 切换入口调用；sync 成功后清除）。 */
+    public static void markRoleDirty(Context ctx, String fpid) {
+        if (fpid == null || fpid.isEmpty()) return;
+        ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
+                .edit().putBoolean(DIRTY_KEY + fpid, true).apply();
+    }
+
+    /** 该凭证是否有「切了角色但还没上传成功」的待上传标记。 */
+    public static boolean isRoleDirty(Context ctx, String fpid) {
+        if (fpid == null || fpid.isEmpty()) return false;
+        return ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
+                .getBoolean(DIRTY_KEY + fpid, false);
+    }
+
+    /** 清空全部待上传标记（一次全量 sync 成功后调用：payload 含全部账号的当前角色）。 */
+    public static void clearAllRoleDirty(Context ctx) {
+        try {
+            SharedPreferences sp = ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE);
+            SharedPreferences.Editor ed = sp.edit();
+            boolean any = false;
+            for (String k : sp.getAll().keySet()) {
+                if (k != null && k.startsWith(DIRTY_KEY)) {
+                    ed.remove(k);
+                    any = true;
+                }
+            }
+            if (any) ed.apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 旧口径设置（只传 sid）：uid 按角色表解析（优先工作区内同 sid 角色）。 */
+    public static void setActiveRole(Context ctx, String fpid, long serverid) {
+        setActiveRole(ctx, fpid, serverid, 0);
     }
 
     /** 是否已明确选过角色（决定自动同步要不要自动挑主角色）。 */
@@ -272,22 +474,26 @@ public class RoleStore {
     /**
      * 自动挑主角色：优先名字与账号标签匹配的角色（如 913铁柱 → 铁柱、），
      * 否则用登录默认。仅在从未手动选择过时调用。
+     *
+     * <p>同服多角色时标签可能同时命中多行——取<b>第一个</b>匹配行并连同其 uid 一起
+     * 设为当前角色，避免只记 sid 又落回第一行的旧歧义。
      */
     public static long pickMainRole(Context ctx, String fpid, String accountLabel, long loginDefaultSid) {
         try {
             String label = accountLabel == null ? "" : accountLabel.replaceAll("[^\\u4e00-\\u9fa5]", "");
             if (label.length() >= 2) {
-                for (Role r : roles(ctx, fpid)) {
+                List<Role> list = roles(ctx, fpid);
+                for (Role r : list) {
                     if (r.name != null && r.name.contains(label)) {
-                        setActiveRole(ctx, fpid, r.serverid);
+                        setActiveRole(ctx, fpid, r.serverid, r.uid);
                         return r.serverid;
                     }
                 }
                 // 前缀匹配（标签前2字）
                 String head = label.substring(0, Math.min(2, label.length()));
-                for (Role r : roles(ctx, fpid)) {
+                for (Role r : list) {
                     if (r.name != null && r.name.contains(head)) {
-                        setActiveRole(ctx, fpid, r.serverid);
+                        setActiveRole(ctx, fpid, r.serverid, r.uid);
                         return r.serverid;
                     }
                 }

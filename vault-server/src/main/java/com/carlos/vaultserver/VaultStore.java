@@ -31,6 +31,14 @@ public final class VaultStore {
         public boolean keep;
         /** 当前选中角色 sid（null = 服务器默认角色）。 */
         public String activeSid;
+        /**
+         * 当前选中角色 uid（null/"" = 未提供 = 旧行为，只按 sid 发现角色）。
+         *
+         * <p>同服多角色（一个 token 在同一区服有多个角色）时 sid 无法区分登哪个——
+         * App 2026-10-20 起随 sync 下发 activeUid，{@link SessionKeeper#loginBoundRole}
+         * 优先按它直绑。缺省 0/空时保持原有「sid → discoverRoleUid」发现路径。
+         */
+        public String activeUid;
         /** 账号级设备指纹 JSON 串（可为 null）。 */
         public String identity;
         /** 每角色设备指纹：sid → JSON 串。 */
@@ -82,6 +90,8 @@ public final class VaultStore {
                         a.keep = o.optBoolean("keep", false);
                         String sid = o.optString("activeSid", "");
                         a.activeSid = sid.isEmpty() ? null : sid;
+                        String auid = o.optString("activeUid", "");
+                        a.activeUid = auid.isEmpty() ? null : auid;
                         String id = o.optString("identity", "");
                         a.identity = id.isEmpty() ? null : id;
                         a.proxy = o.optString("proxy", "");
@@ -149,6 +159,7 @@ public final class VaultStore {
                 o.put("group", a.group);
                 o.put("keep", a.keep);
                 o.put("activeSid", a.activeSid == null ? "" : a.activeSid);
+                o.put("activeUid", a.activeUid == null ? "" : a.activeUid);
                 o.put("identity", a.identity == null ? "" : a.identity);
                 o.put("proxy", a.proxy == null ? "" : a.proxy);
                 JSONObject roles = new JSONObject();
@@ -219,6 +230,7 @@ public final class VaultStore {
                 boolean automation = in.auto || in.keep;
                 merged.keep = automation;
                 merged.activeSid = in.activeSid;
+                merged.activeUid = in.activeUid;
                 merged.identity = in.identity;
                 merged.proxy = in.proxy;
                 // 整轮调度三件套必须跟随 incoming（曾遗漏：每次同步把 auto 抹回 false，
@@ -331,6 +343,7 @@ public final class VaultStore {
                 c.group = a.group;
                 c.keep = a.keep;
                 c.activeSid = a.activeSid;
+                c.activeUid = a.activeUid;
                 c.identity = a.identity;
                 c.proxy = a.proxy;
                 c.auto = a.auto;
