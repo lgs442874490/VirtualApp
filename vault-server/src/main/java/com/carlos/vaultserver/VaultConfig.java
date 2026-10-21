@@ -17,16 +17,24 @@ public final class VaultConfig {
     public final InetSocketAddress socksProxy;
     /** 默认顶号策略：human_first / grab_back / yield_only。 */
     public final String takeoverPolicy;
+    /** 全局并发上限（账号池 M1d 2026-10-21：按<b>角色会话</b>数计，同账号多角色也各占一个；超限拒绝/跳过并报告）。VAULT_MAX_SESSIONS，默认 8。 */
+    public final int maxConcurrentSessions;
     /** 签名时间窗（±毫秒）。 */
     public final long signWindowMillis = 5 * 60_000L;
 
     VaultConfig(String listen, Path dataDir, String secret,
                 InetSocketAddress socksProxy, String takeoverPolicy) {
+        this(listen, dataDir, secret, socksProxy, takeoverPolicy, 8);
+    }
+
+    VaultConfig(String listen, Path dataDir, String secret,
+                InetSocketAddress socksProxy, String takeoverPolicy, int maxConcurrentSessions) {
         this.listen = listen;
         this.dataDir = dataDir;
         this.secret = secret;
         this.socksProxy = socksProxy;
         this.takeoverPolicy = takeoverPolicy;
+        this.maxConcurrentSessions = Math.max(1, maxConcurrentSessions);
     }
 
     public static VaultConfig fromEnv() {
@@ -44,7 +52,12 @@ public final class VaultConfig {
             proxy = new InetSocketAddress(hp[0], Integer.parseInt(hp[1]));
         }
         String policy = env("VAULT_TAKEOVER_POLICY", "human_first");
-        return new VaultConfig(listen, dataDir, secret, proxy, policy);
+        int maxSessions = 8;
+        try {
+            maxSessions = Integer.parseInt(env("VAULT_MAX_SESSIONS", "8"));
+        } catch (NumberFormatException ignored) {
+        }
+        return new VaultConfig(listen, dataDir, secret, proxy, policy, maxSessions);
     }
 
     private static String env(String key, String def) {

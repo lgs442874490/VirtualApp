@@ -23,6 +23,53 @@ import java.util.Map;
  */
 public final class VaultStore {
 
+    /** 运行态意图值（持久化；与 M1 契约 §2.1 runState 对齐）。 */
+    public static final String RUN_RUNNING = "RUNNING";
+    public static final String RUN_PAUSED = "PAUSED";
+    public static final String RUN_STOPPED = "STOPPED";
+
+    /** 角色 key：sid:uid（同服多角色 sid 相同 uid 不同，uid 缺省用空串）。 */
+    public static String roleKey(String sid, String uid) {
+        return (sid == null ? "" : sid) + ":" + (uid == null ? "" : uid);
+    }
+
+    /**
+     * 账号池角色条目（M1 2026-10-21；2026-10-21 多角色并行修订）：服务器侧每角色持久化意图态。
+     *
+     * <p>desiredOnline/runState 是服务器侧"期望"（显式动作与 sync 重算写入），
+     * 重启后 reconcile 据此恢复会话（desiredOnline 的角色全部恢复，同 fpid 可多个）；
+     * enabled=false = 已收纳（动作拒绝执行）。
+     */
+    public static final class RoleEntry {
+        public String sid;
+        public String uid;
+        public String name = "";
+        public long level;
+        public long power;
+        public boolean enabled = true;
+        public boolean desiredOnline;
+        /** desiredOnline 最近一次置位时刻（诊断用；恢复不看它，desired 的全部恢复）。 */
+        public long desiredAt;
+        public String runState = RUN_STOPPED;
+
+        public RoleEntry(String sid, String uid) {
+            this.sid = sid == null ? "" : sid;
+            this.uid = uid == null ? "" : uid;
+        }
+
+        RoleEntry copy() {
+            RoleEntry c = new RoleEntry(sid, uid);
+            c.name = name;
+            c.level = level;
+            c.power = power;
+            c.enabled = enabled;
+            c.desiredOnline = desiredOnline;
+            c.desiredAt = desiredAt;
+            c.runState = runState;
+            return c;
+        }
+    }
+
     public static final class Account {
         public String fpid;
         public String token = "";
@@ -54,6 +101,8 @@ public final class VaultStore {
         public final Map<String, Map<String, Boolean>> roleConfig = new LinkedHashMap<>();
         /** 每角色任务参数：sid → {fnId:参数JSON串}。 */
         public final Map<String, Map<String, String>> roleParams = new LinkedHashMap<>();
+        /** 账号池角色条目：roleKey(sid:uid) → 条目（M1 2026-10-21，服务器侧意图态）。 */
+        public final Map<String, RoleEntry> roles = new LinkedHashMap<>();
 
         public Account(String fpid) {
             this.fpid = fpid;
@@ -136,6 +185,26 @@ public final class VaultStore {
                                 a.roleParams.put(prmSid, pp);
                             }
                         }
+                        JSONObject rls = o.optJSONObject("roles");
+                        if (rls != null) {
+                            for (Iterator<String> it = rls.keys(); it.hasNext(); ) {
+                                String key = it.next();
+                                JSONObject ro = rls.optJSONObject(key);
+                                if (ro == null) continue;
+                                RoleEntry e = new RoleEntry(ro.optString("sid", ""),
+                                        ro.optString("uid", ""));
+                                e.name = ro.optString("name", "");
+                                e.level = ro.optLong("level", 0);
+                                e.power = ro.optLong("power", 0);
+                                e.enabled = ro.optBoolean("enabled", true);
+                                e.desiredOnline = ro.optBoolean("desiredOnline", false);
+                                e.desiredAt = ro.optLong("desiredAt", 0);
+                                String rs = ro.optString("runState", RUN_STOPPED);
+                                e.runState = RUN_PAUSED.equals(rs) || RUN_RUNNING.equals(rs)
+                                        ? rs : RUN_STOPPED;
+                                a.roles.put(roleKey(e.sid, e.uid), e);
+                            }
+                        }
                         accounts.add(a);
                     }
                     String policy = root.optString("takeoverPolicy", "");
@@ -193,6 +262,22 @@ public final class VaultStore {
                     prms.put(e.getKey(), pm);
                 }
                 o.put("roleParams", prms);
+                JSONObject rls = new JSONObject();
+                for (Map.Entry<String, RoleEntry> e : a.roles.entrySet()) {
+                    RoleEntry r = e.getValue();
+                    JSONObject ro = new JSONObject();
+                    ro.put("sid", r.sid);
+                    ro.put("uid", r.uid);
+                    ro.put("name", r.name);
+                    ro.put("level", r.level);
+                    ro.put("power", r.power);
+                    ro.put("enabled", r.enabled);
+                    ro.put("desiredOnline", r.desiredOnline);
+                    ro.put("desiredAt", r.desiredAt);
+                    ro.put("runState", r.runState);
+                    rls.put(e.getKey(), ro);
+                }
+                o.put("roles", rls);
                 arr.put(o);
             }
             JSONObject root = new JSONObject();
@@ -248,6 +333,7 @@ public final class VaultStore {
                 merged.roleIdentity.putAll(in.roleIdentity);
                 merged.roleConfig.putAll(in.roleConfig);
                 merged.roleParams.putAll(in.roleParams);
+                mergeRolesLocked(prev, merged, in);
                 accounts.add(merged);
             }
             saveLocked();
@@ -255,8 +341,235 @@ public final class VaultStore {
         }
     }
 
-    public boolean updateToken(String fpid, String token) {
+    /**
+     * sync 角色池合并（replaceAll 内部，持锁调用）：
+     * 旧条目保留（服务器侧意图态不丢），App sync 携带的角色元数据（name/level/power/enabled）覆盖；
+     * 期望态重算（2026-10-21 多角色并行）：
+     * <ul>
+     *   <li>keep=false：App 全停意图 —— 全部角色 desired 清空；</li>
+     *   <li>keep=true 且 active 指针相对上次 sync 发生变化（v4.1.4 角色管理切角色会即时
+     *       sync）：按旧单会话语义收敛 —— desired 只留 active 角色；</li>
+     *   <li>keep=true 且 active 未变：active 角色 desired 置位；<b>其它角色的既有
+     *       desired 保留</b>（显式 role-action 的多角色并行意图不因 sync 重算被冲掉）。</li>
+     * </ul>
+     */
+    private static void mergeRolesLocked(Account prev, Account merged, Account in) {
+        if (prev != null) {
+            for (Map.Entry<String, RoleEntry> e : prev.roles.entrySet()) {
+                merged.roles.put(e.getKey(), e.getValue().copy());
+            }
+        }
+        for (RoleEntry r : in.roles.values()) {
+            String key = roleKey(r.sid, r.uid);
+            RoleEntry m = merged.roles.get(key);
+            if (m == null) {
+                m = r.copy();          // App 新带来的角色：元数据全量接收
+                m.desiredOnline = false;
+                m.desiredAt = 0;
+                m.runState = RUN_STOPPED;
+                merged.roles.put(key, m);
+            } else {
+                if (r.name != null && !r.name.isEmpty()) m.name = r.name;
+                if (r.level > 0) m.level = r.level;
+                if (r.power > 0) m.power = r.power;
+                m.enabled = r.enabled;
+            }
+        }
+        // active 角色必有条目（同服多角色直绑 / 账号池视图寻址都依赖它）
+        if (merged.activeSid != null && !merged.activeSid.isEmpty()
+                && merged.activeUid != null && !merged.activeUid.isEmpty()
+                && !merged.roles.containsKey(roleKey(merged.activeSid, merged.activeUid))) {
+            merged.roles.put(roleKey(merged.activeSid, merged.activeUid),
+                    new RoleEntry(merged.activeSid, merged.activeUid));
+        }
+        boolean activeKnown = merged.activeSid != null && !merged.activeSid.isEmpty()
+                && merged.activeUid != null && !merged.activeUid.isEmpty();
+        boolean activeSwitched = prev != null
+                && (!nz(prev.activeSid).equals(nz(merged.activeSid))
+                    || !nz(prev.activeUid).equals(nz(merged.activeUid)));
+        long now = System.currentTimeMillis();
+        for (RoleEntry m : merged.roles.values()) {
+            boolean isActive = activeKnown
+                    && m.sid.equals(merged.activeSid) && m.uid.equals(merged.activeUid);
+            boolean wantOn = merged.keep && isActive;
+            if (wantOn) {
+                if (!m.desiredOnline) {
+                    m.desiredAt = now;
+                    if (RUN_STOPPED.equals(m.runState)) m.runState = RUN_RUNNING;
+                }
+                // 已 desired 的保留 runState（RUNNING/PAUSED 都不因 sync 抹掉）
+                m.desiredOnline = true;
+            } else if (!merged.keep
+                    || (activeSwitched && m.desiredOnline && !isActive)) {
+                if (m.desiredOnline || !RUN_STOPPED.equals(m.runState)) m.runState = RUN_STOPPED;
+                m.desiredOnline = false;
+            }
+        }
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s;
+    }
+
+    /** 解析可寻址角色：精确 (sid,uid) 匹配；回落 active 角色（自动建条目）。找不到返回 null。 */
+    public RoleEntry resolveRole(String fpid, String sid, String uid) {
+        if (sid == null || sid.isEmpty()) return null;
         synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return null;
+            String key = roleKey(sid, uid == null ? "" : uid);
+            RoleEntry e = a.roles.get(key);
+            if (e == null && a.activeSid != null && a.activeSid.equals(sid)
+                    && a.activeUid != null && a.activeUid.equals(uid == null ? "" : uid)) {
+                e = new RoleEntry(sid, uid == null ? "" : uid);
+                a.roles.put(key, e);
+                saveLocked();
+            }
+            return e == null ? null : e.copy();
+        }
+    }
+
+    /** 角色条目快照（深拷贝；无账号返回空表）。 */
+    public List<RoleEntry> roles(String fpid) {
+        synchronized (lock) {
+            List<RoleEntry> out = new ArrayList<>();
+            Account a = findLocked(fpid);
+            if (a != null) {
+                for (RoleEntry e : a.roles.values()) out.add(e.copy());
+            }
+            return out;
+        }
+    }
+
+    /** 确保角色条目存在（登录学到/同步种子用）；返回条目快照。 */
+    public RoleEntry ensureRole(String fpid, String sid, String uid) {
+        if (sid == null || sid.isEmpty()) return null;
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return null;
+            String key = roleKey(sid, uid);
+            RoleEntry e = a.roles.get(key);
+            if (e == null) {
+                e = new RoleEntry(sid, uid);
+                a.roles.put(key, e);
+                saveLocked();
+            }
+            return e.copy();
+        }
+    }
+
+    /** 登录学到角色元数据（不覆盖已有非空名称）。 */
+    public void learnRoleMeta(String fpid, String sid, String uid, String name, long level, long power) {
+        if (sid == null || sid.isEmpty() || uid == null || uid.isEmpty()) return;
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return;
+            RoleEntry e = a.roles.get(roleKey(sid, uid));
+            if (e == null) {
+                e = new RoleEntry(sid, uid);
+                a.roles.put(roleKey(sid, uid), e);
+            }
+            if (name != null && !name.isEmpty() && (e.name == null || e.name.isEmpty())) e.name = name;
+            if (level > 0) e.level = level;
+            if (power > 0) e.power = power;
+            saveLocked();
+        }
+    }
+
+    /**
+     * 显式登录意图（角色级，2026-10-21 多角色并行）：目标角色 desiredOnline（desiredAt=now）、
+     * active 指向目标角色、keep/auto=true；同 fpid 其它角色的期望态<b>保留</b>——
+     * login 不停止兄弟角色，各角色由自己的显式动作管理。
+     */
+    public boolean applyRoleLogin(String fpid, String sid, String uid) {
+        return applyRoleLoginInternal(fpid, sid, uid, false);
+    }
+
+    /**
+     * 账号级登录收敛（automation「登录并运行自动化」用，对齐 sync 切角色旧语义）：
+     * 目标角色 desiredOnline，同 fpid 其它角色 desired 一并清空（单会话收敛，
+     * v4.1.4 账号级登录语义不变；角色级并行上线请走 {@link #applyRoleLogin}）。
+     */
+    public boolean applyRoleLoginExclusive(String fpid, String sid, String uid) {
+        return applyRoleLoginInternal(fpid, sid, uid, true);
+    }
+
+    private boolean applyRoleLoginInternal(String fpid, String sid, String uid, boolean exclusive) {
+        if (sid == null || sid.isEmpty()) return false;
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return false;
+            String key = roleKey(sid, uid);
+            RoleEntry target = a.roles.get(key);
+            if (target == null) {
+                target = new RoleEntry(sid, uid);
+                a.roles.put(key, target);
+            }
+            long now = System.currentTimeMillis();
+            for (RoleEntry e : a.roles.values()) {
+                if (e == target) {
+                    e.desiredOnline = true;
+                    e.desiredAt = now;
+                    e.runState = RUN_RUNNING;
+                } else if (exclusive && e.desiredOnline) {
+                    e.desiredOnline = false;
+                    e.runState = RUN_STOPPED;
+                }
+            }
+            a.activeSid = sid;
+            a.activeUid = uid == null ? "" : uid;
+            a.keep = true;
+            a.auto = true;
+            saveLocked();
+            return true;
+        }
+    }
+
+    /**
+     * 显式停止意图：目标角色下线（runState=STOPPED）；preserveKeep=false（stop）且该账号
+     * 已无 desired 角色时关闭 keep/auto（不自动恢复），logout 保留 keep。
+     */
+    public boolean applyRoleStop(String fpid, String sid, String uid, boolean preserveKeep) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return false;
+            RoleEntry e = a.roles.get(roleKey(sid, uid));
+            if (e != null) {
+                e.desiredOnline = false;
+                e.runState = RUN_STOPPED;
+            }
+            if (!preserveKeep) {
+                boolean anyDesired = false;
+                for (RoleEntry r : a.roles.values()) {
+                    if (r.desiredOnline) {
+                        anyDesired = true;
+                        break;
+                    }
+                }
+                if (!anyDesired) {
+                    a.keep = false;
+                    a.auto = false;
+                }
+            }
+            saveLocked();
+            return true;
+        }
+    }
+
+    /** 会话级运行态持久化（PAUSED/RUNNING；重启恢复暂停态用）。 */
+    public void applyRoleRunState(String fpid, String sid, String uid, String runState) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return;
+            RoleEntry e = a.roles.get(roleKey(sid, uid));
+            if (e == null) return;
+            e.runState = RUN_PAUSED.equals(runState) ? RUN_PAUSED
+                    : (RUN_STOPPED.equals(runState) ? RUN_STOPPED : RUN_RUNNING);
+            saveLocked();
+        }
+    }
+
+    public boolean updateToken(String fpid, String token) {        synchronized (lock) {
             for (Account a : accounts) {
                 if (a.fpid.equals(fpid)) {
                     a.token = token == null ? "" : token;
@@ -325,11 +638,15 @@ public final class VaultStore {
 
     public Account find(String fpid) {
         synchronized (lock) {
-            for (Account a : accounts) {
-                if (a.fpid.equals(fpid)) return a;
-            }
-            return null;
+            return findLocked(fpid);
         }
+    }
+
+    private Account findLocked(String fpid) {
+        for (Account a : accounts) {
+            if (a.fpid.equals(fpid)) return a;
+        }
+        return null;
     }
 
     /** 账号快照（深拷贝调用方可随意改）。 */
@@ -355,6 +672,9 @@ public final class VaultStore {
                 }
                 for (Map.Entry<String, Map<String, String>> e : a.roleParams.entrySet()) {
                     c.roleParams.put(e.getKey(), new LinkedHashMap<>(e.getValue()));
+                }
+                for (Map.Entry<String, RoleEntry> e : a.roles.entrySet()) {
+                    c.roles.put(e.getKey(), e.getValue().copy());
                 }
                 out.add(c);
             }
