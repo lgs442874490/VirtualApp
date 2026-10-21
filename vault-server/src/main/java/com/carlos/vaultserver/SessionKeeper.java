@@ -573,17 +573,30 @@ public final class SessionKeeper implements SessionControl,
     /**
      * 账号的期望角色集合（快照上推导，不改库）：
      * desiredOnline=true 的全部角色（同 fpid 可多个，M1d 多角色并行恢复）；
-     * 无任何 desired 条目且 keep=true、activeUid 缺省（旧数据/旧客户端，无 uid 概念）
-     * 回落 active 角色单会话 —— uid 明确的账号一律以 desiredOnline 为准
-     * （显式动作优先于 keep，logout/stop 不被 keep 复活）。
+     * 无任何 desired 条目且 keep=true 时回落 active 角色单会话（显式动作优先于
+     * keep，有 desired 条目时本回落一律不生效）——activeUid 缺省（旧数据/旧客户端，
+     * 无 uid 概念）按 activeSid 兜底建无 uid 槽；activeUid 明确则按
+     * (activeSid, activeUid) 建 uid 绑定槽。
+     *
+     * <p>冷启动旧格式兼容（M1e，2026-10-21）：生产旧 vault.json 角色条目无
+     * desiredOnline 字段但带 activeUid，此前回落限定 activeUid==0 导致冷启动
+     * 不建会话、自动化停摆到 App 下次 sync；现 keep=true + activeSid/activeUid
+     * 齐备即回落 active 角色。sync 侧 mergeRolesLocked 在 keep=true 时本就会把
+     * active 角色重算为 desired，回落与此收敛语义一致。
      */
     private static List<VaultStore.RoleEntry> desiredRolesOf(VaultStore.Account a) {
         List<VaultStore.RoleEntry> out = new ArrayList<>();
         for (VaultStore.RoleEntry r : a.roles.values()) {
             if (r.desiredOnline) out.add(r);
         }
-        if (out.isEmpty() && a.keep && parseUid(a.activeUid) == 0) {
-            out.add(new VaultStore.RoleEntry(a.activeSid == null ? "" : a.activeSid, null));
+        if (out.isEmpty() && a.keep) {
+            if (parseUid(a.activeUid) > 0) {
+                if (a.activeSid != null && !a.activeSid.isEmpty()) {
+                    out.add(new VaultStore.RoleEntry(a.activeSid, a.activeUid));
+                }
+            } else {
+                out.add(new VaultStore.RoleEntry(a.activeSid == null ? "" : a.activeSid, null));
+            }
         }
         return out;
     }
