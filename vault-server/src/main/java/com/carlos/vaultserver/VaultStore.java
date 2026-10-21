@@ -51,6 +51,10 @@ public final class VaultStore {
         /** desiredOnline 最近一次置位时刻（诊断用；恢复不看它，desired 的全部恢复）。 */
         public long desiredAt;
         public String runState = RUN_STOPPED;
+        /** 防封保护（P1 2026-10-21）：登录时上报设备环境 + 进入游戏后易盾风控检测。 */
+        public boolean antibanEnabled;
+        /** 暂停自动恢复时刻（epoch millis；0=无）。PAUSED 态下到期即按恢复策略重新登录。 */
+        public long pauseResumeAt;
 
         public RoleEntry(String sid, String uid) {
             this.sid = sid == null ? "" : sid;
@@ -66,6 +70,8 @@ public final class VaultStore {
             c.desiredOnline = desiredOnline;
             c.desiredAt = desiredAt;
             c.runState = runState;
+            c.antibanEnabled = antibanEnabled;
+            c.pauseResumeAt = pauseResumeAt;
             return c;
         }
     }
@@ -103,6 +109,17 @@ public final class VaultStore {
         public final Map<String, Map<String, String>> roleParams = new LinkedHashMap<>();
         /** 账号池角色条目：roleKey(sid:uid) → 条目（M1 2026-10-21，服务器侧意图态）。 */
         public final Map<String, RoleEntry> roles = new LinkedHashMap<>();
+        // ---------- 顶号恢复策略（P1 2026-10-21，账号级，作用于该账号全部角色） ----------
+        /** 允许意外下线后自动上线（默认 true）。 */
+        public boolean takeoverRecoveryEnabled = true;
+        /** 顶号后等待秒数（默认 1800，范围 1..86400；API 以分钟收发）。 */
+        public int takeoverInitialDelaySeconds = 1800;
+        /** 重试间隔秒数（默认 5，范围 1..300）。 */
+        public int takeoverRetryIntervalSeconds = 5;
+        /** 连续尝试次数（默认 3，范围 0..10；0=不自动顶号，账号保持离线）。 */
+        public int takeoverMaxAttempts = 3;
+        /** 让号冷却分钟（默认 15，仅允许 15/30/60/120/1440）。 */
+        public int takeoverCooldownMinutes = 15;
 
         public Account(String fpid) {
             this.fpid = fpid;
@@ -202,9 +219,22 @@ public final class VaultStore {
                                 String rs = ro.optString("runState", RUN_STOPPED);
                                 e.runState = RUN_PAUSED.equals(rs) || RUN_RUNNING.equals(rs)
                                         ? rs : RUN_STOPPED;
+                                // P1 扩展（旧数据缺字段 → 缺省 false/0，加载容错）
+                                e.antibanEnabled = ro.optBoolean("antibanEnabled", false);
+                                e.pauseResumeAt = ro.optLong("pauseResumeAt", 0);
                                 a.roles.put(roleKey(e.sid, e.uid), e);
                             }
                         }
+                        // P1 恢复策略（旧数据缺字段 → 默认值；非法负数/零值兜底回默认）
+                        a.takeoverRecoveryEnabled = o.optBoolean("takeoverRecoveryEnabled", true);
+                        a.takeoverInitialDelaySeconds = clampInt(
+                                o.optInt("takeoverInitialDelaySeconds", 1800), 1, 86400, 1800);
+                        a.takeoverRetryIntervalSeconds = clampInt(
+                                o.optInt("takeoverRetryIntervalSeconds", 5), 1, 300, 5);
+                        a.takeoverMaxAttempts = clampInt(
+                                o.optInt("takeoverMaxAttempts", 3), 0, 10, 3);
+                        a.takeoverCooldownMinutes = parseCooldown(
+                                o.optInt("takeoverCooldownMinutes", 15));
                         accounts.add(a);
                     }
                     String policy = root.optString("takeoverPolicy", "");
@@ -275,9 +305,16 @@ public final class VaultStore {
                     ro.put("desiredOnline", r.desiredOnline);
                     ro.put("desiredAt", r.desiredAt);
                     ro.put("runState", r.runState);
+                    ro.put("antibanEnabled", r.antibanEnabled);
+                    ro.put("pauseResumeAt", r.pauseResumeAt);
                     rls.put(e.getKey(), ro);
                 }
                 o.put("roles", rls);
+                o.put("takeoverRecoveryEnabled", a.takeoverRecoveryEnabled);
+                o.put("takeoverInitialDelaySeconds", a.takeoverInitialDelaySeconds);
+                o.put("takeoverRetryIntervalSeconds", a.takeoverRetryIntervalSeconds);
+                o.put("takeoverMaxAttempts", a.takeoverMaxAttempts);
+                o.put("takeoverCooldownMinutes", a.takeoverCooldownMinutes);
                 arr.put(o);
             }
             JSONObject root = new JSONObject();
@@ -329,6 +366,12 @@ public final class VaultStore {
                         merged.roleIdentity.putIfAbsent(e.getKey(), e.getValue());
                     }
                     if (merged.identity == null) merged.identity = prev.identity;
+                    // P1 恢复策略是服务器侧设置（App sync 不携带）：跨 sync 保留
+                    merged.takeoverRecoveryEnabled = prev.takeoverRecoveryEnabled;
+                    merged.takeoverInitialDelaySeconds = prev.takeoverInitialDelaySeconds;
+                    merged.takeoverRetryIntervalSeconds = prev.takeoverRetryIntervalSeconds;
+                    merged.takeoverMaxAttempts = prev.takeoverMaxAttempts;
+                    merged.takeoverCooldownMinutes = prev.takeoverCooldownMinutes;
                 }
                 merged.roleIdentity.putAll(in.roleIdentity);
                 merged.roleConfig.putAll(in.roleConfig);
@@ -511,9 +554,11 @@ public final class VaultStore {
                     e.desiredOnline = true;
                     e.desiredAt = now;
                     e.runState = RUN_RUNNING;
+                    e.pauseResumeAt = 0;   // 显式 login 立即清除暂停恢复计划（契约 §二.7）
                 } else if (exclusive && e.desiredOnline) {
                     e.desiredOnline = false;
                     e.runState = RUN_STOPPED;
+                    e.pauseResumeAt = 0;
                 }
             }
             a.activeSid = sid;
@@ -533,11 +578,12 @@ public final class VaultStore {
         synchronized (lock) {
             Account a = findLocked(fpid);
             if (a == null) return false;
-            RoleEntry e = a.roles.get(roleKey(sid, uid));
-            if (e != null) {
-                e.desiredOnline = false;
-                e.runState = RUN_STOPPED;
-            }
+        RoleEntry e = a.roles.get(roleKey(sid, uid));
+        if (e != null) {
+            e.desiredOnline = false;
+            e.runState = RUN_STOPPED;
+            e.pauseResumeAt = 0;   // stop/logout 清空暂停恢复计划（契约 §二.7）
+        }
             if (!preserveKeep) {
                 boolean anyDesired = false;
                 for (RoleEntry r : a.roles.values()) {
@@ -565,6 +611,149 @@ public final class VaultStore {
             if (e == null) return;
             e.runState = RUN_PAUSED.equals(runState) ? RUN_PAUSED
                     : (RUN_STOPPED.equals(runState) ? RUN_STOPPED : RUN_RUNNING);
+            if (!RUN_PAUSED.equals(e.runState)) e.pauseResumeAt = 0;
+            saveLocked();
+        }
+    }
+
+    // ---------- P1（2026-10-21）：暂停自动恢复 / 防封保护 / 角色管理增强 ----------
+
+    /** 冷却时长合法值（线上 GameAccountRecoveryPolicy.ALLOWED_COOLDOWN_MINUTES 同款）。 */
+    public static final int[] ALLOWED_COOLDOWN_MINUTES = {15, 30, 60, 120, 1440};
+
+    private static int clampInt(int v, int min, int max, int def) {
+        return v >= min && v <= max ? v : def;
+    }
+
+    private static int parseCooldown(int v) {
+        for (int allowed : ALLOWED_COOLDOWN_MINUTES) {
+            if (allowed == v) return v;
+        }
+        return 15;
+    }
+
+    /**
+     * 恢复设置校验（分钟域，对齐线上文案；通过返回 null，否则中文原因）。
+     * API 收 initialDelayMinutes（1..1440），内部换算为秒持久化。
+     */
+    public static String validateRecovery(int initialDelayMinutes, int retryIntervalSeconds,
+                                          int maxAttempts, int cooldownMinutes) {
+        if (initialDelayMinutes < 1 || initialDelayMinutes > 1440) {
+            return "顶号后等待必须在 1 到 1440 分钟之间";
+        }
+        if (retryIntervalSeconds < 1 || retryIntervalSeconds > 300) {
+            return "重试间隔秒数必须在 1 到 300 之间";
+        }
+        if (maxAttempts < 0 || maxAttempts > 10) {
+            return "连续尝试次数必须在 0 到 10 之间";
+        }
+        for (int allowed : ALLOWED_COOLDOWN_MINUTES) {
+            if (allowed == cooldownMinutes) return null;
+        }
+        return "冷却时长只支持 15 分钟、30 分钟、1 小时、2 小时或 24 小时";
+    }
+
+    /** 保存账号级恢复设置（调用方先过 {@link #validateRecovery}）；账号不存在返回 false。 */
+    public boolean updateRecoverySettings(String fpid, boolean enabled, int initialDelaySeconds,
+                                          int retryIntervalSeconds, int maxAttempts,
+                                          int cooldownMinutes) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return false;
+            a.takeoverRecoveryEnabled = enabled;
+            a.takeoverInitialDelaySeconds = clampInt(initialDelaySeconds, 1, 86400, 1800);
+            a.takeoverRetryIntervalSeconds = clampInt(retryIntervalSeconds, 1, 300, 5);
+            a.takeoverMaxAttempts = clampInt(maxAttempts, 0, 10, 3);
+            a.takeoverCooldownMinutes = parseCooldown(cooldownMinutes);
+            saveLocked();
+            return true;
+        }
+    }
+
+    /** 角色防封开关持久化（服务器侧自有字段，sync 不覆盖）。 */
+    public boolean setRoleAntiban(String fpid, String sid, String uid, boolean enabled) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return false;
+            RoleEntry e = a.roles.get(roleKey(sid, uid));
+            if (e == null) return false;
+            e.antibanEnabled = enabled;
+            saveLocked();
+            return true;
+        }
+    }
+
+    /** 改名回写（覆盖旧名；在线协议 result.nickName 为准）。 */
+    public boolean setRoleName(String fpid, String sid, String uid, String name) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return false;
+            RoleEntry e = a.roles.get(roleKey(sid, uid));
+            if (e == null) return false;
+            e.name = name == null ? "" : name;
+            saveLocked();
+            return true;
+        }
+    }
+
+    /**
+     * 从账号工作区移除角色（P1，仅工具内移除，不删游戏内角色）；
+     * 被移除的是 active 角色时 activeSid/activeUid 置空。角色不存在返回 false。
+     */
+    public boolean removeRole(String fpid, String sid, String uid) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return false;
+            RoleEntry removed = a.roles.remove(roleKey(sid, uid));
+            if (removed == null) return false;
+            if (a.activeSid != null && a.activeSid.equals(sid)
+                    && a.activeUid != null && a.activeUid.equals(uid == null ? "" : uid)) {
+                a.activeSid = null;
+                a.activeUid = null;
+            }
+            saveLocked();
+            return true;
+        }
+    }
+
+    /** 启用/收纳角色（P1 op enabled 持久化）。 */
+    public boolean setRoleEnabled(String fpid, String sid, String uid, boolean enabled) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return false;
+            RoleEntry e = a.roles.get(roleKey(sid, uid));
+            if (e == null) return false;
+            e.enabled = enabled;
+            saveLocked();
+            return true;
+        }
+    }
+
+    /**
+     * 暂停/重排暂停恢复计划：runState=PAUSED、pauseResumeAt=指定时刻；
+     * desiredOnline 不动（暂停保留期望在线，到期自动恢复）。
+     */
+    public void applyRolePauseSchedule(String fpid, String sid, String uid, long pauseResumeAt) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return;
+            RoleEntry e = a.roles.get(roleKey(sid, uid));
+            if (e == null) return;
+            e.runState = RUN_PAUSED;
+            e.pauseResumeAt = Math.max(0, pauseResumeAt);
+            saveLocked();
+        }
+    }
+
+    /** 恢复成功/显式恢复：清 PAUSED 与恢复计划（desiredOnline 不变）。 */
+    public void clearRolePause(String fpid, String sid, String uid) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return;
+            RoleEntry e = a.roles.get(roleKey(sid, uid));
+            if (e == null) return;
+            if (RUN_PAUSED.equals(e.runState)) e.runState = RUN_RUNNING;
+            e.pauseResumeAt = 0;
             saveLocked();
         }
     }
@@ -676,6 +865,11 @@ public final class VaultStore {
                 for (Map.Entry<String, RoleEntry> e : a.roles.entrySet()) {
                     c.roles.put(e.getKey(), e.getValue().copy());
                 }
+                c.takeoverRecoveryEnabled = a.takeoverRecoveryEnabled;
+                c.takeoverInitialDelaySeconds = a.takeoverInitialDelaySeconds;
+                c.takeoverRetryIntervalSeconds = a.takeoverRetryIntervalSeconds;
+                c.takeoverMaxAttempts = a.takeoverMaxAttempts;
+                c.takeoverCooldownMinutes = a.takeoverCooldownMinutes;
                 out.add(c);
             }
             return out;

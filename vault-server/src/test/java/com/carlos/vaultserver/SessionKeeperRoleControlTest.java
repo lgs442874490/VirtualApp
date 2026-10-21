@@ -178,12 +178,12 @@ public class SessionKeeperRoleControlTest {
         assertTrue(rt.online);
         assertEquals(VaultStore.RUN_RUNNING, rt.runState);
 
-        // pause：连接保留（online 仍真）、任务暂停
+        // pause（P1 升级）：停止会话连接（离线），保持 PAUSED 等待自动恢复
         r = keeper.roleAction(FPID, SID, UID_A, "pause");
         assertEquals(VaultStore.RUN_PAUSED, r.runState);
         rt = keeper.roleRuntime(FPID, SID, UID_A);
         assertEquals(VaultStore.RUN_PAUSED, rt.runState);
-        assertTrue(rt.online);
+        assertFalse("P1 暂停停会话：引擎连接关闭", rt.online);
         // 暂停幂等
         assertEquals(VaultStore.RUN_PAUSED, keeper.roleAction(FPID, SID, UID_A, "pause").runState);
 
@@ -324,12 +324,13 @@ public class SessionKeeperRoleControlTest {
         assertTrue(keeper.roleRuntime(FPID, SID, UID_A).online);
         assertTrue(keeper.roleRuntime(FPID, SID, UID_B).online);
 
-        // 兄弟独立：暂停 A 不影响 B；停 B 后 A 仍在线
+        // 兄弟独立：暂停 A 不影响 B（A 停连接保持 PAUSED）；停 B 后 A 仍待恢复
         assertEquals(VaultStore.RUN_PAUSED, keeper.roleAction(FPID, SID, UID_A, "pause").runState);
         assertEquals(VaultStore.RUN_RUNNING, keeper.roleRuntime(FPID, SID, UID_B).runState);
         assertEquals(0, keeper.roleAction(FPID, SID, UID_B, "stop").code);
         assertFalse(keeper.roleRuntime(FPID, SID, UID_B).online);
-        assertTrue(keeper.roleRuntime(FPID, SID, UID_A).online);
+        assertFalse("暂停角色连接已停（P1 升级）", keeper.roleRuntime(FPID, SID, UID_A).online);
+        assertEquals(VaultStore.RUN_PAUSED, keeper.roleRuntime(FPID, SID, UID_A).runState);
     }
 
     @Test
@@ -419,6 +420,7 @@ public class SessionKeeperRoleControlTest {
     public void pausedDesired_restoredAsPausedAfterRestart() {
         syncAccount(FPID, UID_A);
         keeper.roleAction(FPID, SID, UID_A, "login");
+        keeper.tickForTest();
         keeper.roleAction(FPID, SID, UID_A, "pause");
 
         VaultStore reloadedStore = new VaultStore(tmp.getRoot().toPath());
@@ -429,8 +431,10 @@ public class SessionKeeperRoleControlTest {
         restarted.tickForTest();
 
         SessionControl.RoleRuntime rt = restarted.roleRuntime(FPID, SID, UID_A);
-        assertTrue(rt.online);   // 连接恢复
-        assertEquals(VaultStore.RUN_PAUSED, rt.runState);   // 暂停态保留
+        // P1 暂停语义：恢复计划未到 → 保持 PAUSED 离线（连接关闭，到期自动上线）
+        assertFalse(rt.online);
+        assertEquals(VaultStore.RUN_PAUSED, rt.runState);
+        assertTrue("恢复计划重启后保留", rt.nextRecoveryAt > 0);
         assertFalse(restarted.submitRound(FPID, "supply", "test"));
     }
 

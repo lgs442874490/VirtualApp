@@ -421,6 +421,7 @@ public final class VaultHttpApi {
             o.put("activeSid", a.activeSid == null ? "" : a.activeSid);
             o.put("activeUid", a.activeUid == null ? "" : a.activeUid);
             o.put("keep", a.keep);
+            o.put("recovery", recoveryJson(a));   // P1：账号级顶号恢复策略
             JSONArray roles = rolesJson(a);
             o.put("roles", roles);
             int online = 0;
@@ -460,8 +461,26 @@ public final class VaultHttpApi {
         o.put("level", r.level);
         o.put("power", r.power);
         o.put("enabled", r.enabled);
+        o.put("antibanEnabled", r.antibanEnabled);   // P1：防封保护开关
+        o.put("pause_resume_at", isoOrNull(r.pauseResumeAt));   // P1：暂停自动恢复时刻（ISO-8601，可空）
         o.put("state", roleStateJson(keeper.roleRuntime(fpid, r.sid, r.uid)));
         return o;
+    }
+
+    /** epoch millis → ISO-8601（0/负 = 无计划，空串）。 */
+    private static String isoOrNull(long epochMillis) {
+        return epochMillis > 0 ? java.time.Instant.ofEpochMilli(epochMillis).toString() : "";
+    }
+
+    /** 账号级恢复策略视图（契约 §二：initialDelayMinutes 秒→分钟向上取整，对齐线上 toMap）。 */
+    private static JSONObject recoveryJson(VaultStore.Account a) {
+        JSONObject rec = new JSONObject();
+        rec.put("enabled", a.takeoverRecoveryEnabled);
+        rec.put("initialDelayMinutes", Math.max(1, (a.takeoverInitialDelaySeconds + 59) / 60));
+        rec.put("retryIntervalSeconds", a.takeoverRetryIntervalSeconds);
+        rec.put("maxAttempts", a.takeoverMaxAttempts);
+        rec.put("cooldownMinutes", a.takeoverCooldownMinutes);
+        return rec;
     }
 
     private static JSONObject roleStateJson(SessionControl.RoleRuntime rt) {
@@ -478,7 +497,7 @@ public final class VaultHttpApi {
         return s;
     }
 
-    /** POST /v1/vault/role-action：单角色 login/logout/pause/resume/stop（契约 §3.2）。 */
+    /** POST /v1/vault/role-action：单角色动作（M1 §3.2 + P1 antiban/pause/rename/remove/enabled）。 */
     private JSONObject handleRoleAction(Map<String, Object> fields) throws Exception {
         String fpid = str(fields, "fpid");
         String sid = str(fields, "sid");
@@ -486,7 +505,7 @@ public final class VaultHttpApi {
         String action = str(fields, "action");
         if (fpid == null || fpid.isEmpty()) throw new BizError(3002, "缺少 fpid");
         if (action == null || action.isEmpty()) throw new BizError(3002, "缺少 action");
-        SessionControl.RoleOpResult r = keeper.roleAction(fpid, sid, uid, action);
+        SessionControl.RoleOpResult r = keeper.roleAction(fpid, sid, uid, action, fields);
         if (r.code != 0) throw new BizError(r.code, r.message);
         JSONObject data = new JSONObject();
         data.put("accepted", r.accepted);
@@ -500,6 +519,14 @@ public final class VaultHttpApi {
             stopped.put(so);
         }
         data.put("stoppedRoles", stopped);
+        // P1 扩展（按 op 选填）：pause 恢复时刻 / rename 结果字段
+        if (r.pauseResumeAt > 0) data.put("pauseResumeAt", r.pauseResumeAt);
+        if (r.name != null) data.put("name", r.name);
+        if ("rename".equals(action)) {
+            data.put("usedDiamond", r.usedDiamond);
+            data.put("diamondCost", r.diamondCost);
+            data.put("itemId", r.itemId);
+        }
         return data;
     }
 
@@ -511,6 +538,9 @@ public final class VaultHttpApi {
         VaultStore.Account acc = store.find(fpid);
         if (acc == null) throw new BizError(CODE_ACCOUNT_NOT_FOUND, "账号不存在: " + fpid);
         JSONArray results = new JSONArray();
+        if ("recovery-settings".equals(action)) {
+            return handleRecoverySettings(fpid, fields);
+        }
         if ("login-all".equals(action)) {
             // M1d 多角色并行：全部工作区角色逐个尝试上线（已有在线角色 login 幂等成功），
             // 不再因一个在线就跳过；单角色失败只影响本角色
@@ -548,8 +578,51 @@ public final class VaultHttpApi {
         return data;
     }
 
-    /** login-all 尝试顺序：active 角色优先，其余工作区角色跟后（仅 enabled、uid 明确的）。 */
-    private static List<VaultStore.RoleEntry> loginOrder(VaultStore.Account a) {
+    /** P1 op recovery-settings：校验（分钟域，3002+中文）→ 持久化 → 通知 keeper 重算暂停恢复。 */
+    private JSONObject handleRecoverySettings(String fpid, Map<String, Object> fields) {
+        boolean enabled = optBool(fields, "enabled", true);
+        int initialDelayMinutes = optInt(fields, "initialDelayMinutes", 30);
+        int retryIntervalSeconds = optInt(fields, "retryIntervalSeconds", 5);
+        int maxAttempts = optInt(fields, "maxAttempts", 3);
+        int cooldownMinutes = optInt(fields, "cooldownMinutes", 15);
+        String invalid = VaultStore.validateRecovery(initialDelayMinutes, retryIntervalSeconds,
+                maxAttempts, cooldownMinutes);
+        if (invalid != null) throw new BizError(3002, invalid);
+        if (!store.updateRecoverySettings(fpid, enabled, initialDelayMinutes * 60,
+                retryIntervalSeconds, maxAttempts, cooldownMinutes)) {
+            throw new BizError(CODE_ACCOUNT_NOT_FOUND, "账号不存在: " + fpid);
+        }
+        keeper.onRecoverySettingsChanged(fpid);
+        FileLog.info("顶号恢复设置已保存 fpid={} enabled={} 等待={}min 重试={}s 尝试={} 冷却={}min",
+                fpid, enabled, initialDelayMinutes, retryIntervalSeconds, maxAttempts, cooldownMinutes);
+        JSONObject data = new JSONObject();
+        data.put("accepted", true);
+        data.put("message", "顶号恢复设置已保存并立即生效");
+        data.put("recovery", recoveryJson(store.find(fpid)));
+        return data;
+    }
+
+    private static boolean optBool(Map<String, Object> fields, String key, boolean def) {
+        Object v = fields.get(key);
+        if (v == null) return def;
+        if (v instanceof Boolean) return (Boolean) v;
+        return "true".equalsIgnoreCase(String.valueOf(v)) || "1".equals(String.valueOf(v));
+    }
+
+    private static int optInt(Map<String, Object> fields, String key, int def) {
+        Object v = fields.get(key);
+        if (v instanceof Number) return ((Number) v).intValue();
+        if (v != null) {
+            try {
+                String s = String.valueOf(v).trim();
+                if (!s.isEmpty()) return Integer.parseInt(s);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return def;
+    }
+
+    /** login-all 尝试顺序：active 角色优先，其余工作区角色跟后（仅 enabled、uid 明确的）。 */    private static List<VaultStore.RoleEntry> loginOrder(VaultStore.Account a) {
         List<VaultStore.RoleEntry> out = new ArrayList<>();
         for (VaultStore.RoleEntry r : a.roles.values()) {
             if (!r.enabled || r.uid == null || r.uid.isEmpty()) continue;

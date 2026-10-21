@@ -218,8 +218,14 @@ public final class SessionKeeper implements SessionControl,
         /** 本次登录实际落地的角色 uid（/status 回传 App；App 据此学习 sid→uid 映射）。 */
         volatile long roleUid;
         volatile boolean wantOnline;
-        /** 会话级运行态：RUNNING（默认）/ PAUSED（任务暂停、连接保留）。销毁即 STOPPED，不存于此。 */
+        /** 会话级运行态：RUNNING（默认）/ PAUSED（暂停、连接关闭、按恢复策略自动上线）。销毁即 STOPPED，不存于此。 */
         volatile String runState = VaultStore.RUN_RUNNING;
+        /** 暂停自动恢复时刻（epoch millis；0=无计划）。PAUSED 态到期触发重新登录（P1 契约 §二.7）。 */
+        volatile long pauseResumeAt;
+        /** 暂停恢复连续失败次数（冷却结束重置；仅内存，重启后从 0 重数）。 */
+        volatile int recoveryAttempts;
+        /** 面向 App 的暂停/恢复中文状态（roleRuntime.statusMessage）。 */
+        volatile String statusMessage = "";
         /** 让位/顶号探测到期时刻（takeover 倒计时回传 App；0=未知）。 */
         volatile long yieldProbeAt;
         final WjdrEngine engine;
@@ -239,11 +245,17 @@ public final class SessionKeeper implements SessionControl,
         volatile String roleAlliance = "";
 
         LiveSession(VaultStore.Account acc) {
-            this(acc, null, null, VaultStore.RUN_RUNNING);
+            this(acc, null, null, VaultStore.RUN_RUNNING, 0);
         }
 
         /** 显式角色绑定（账号池 M1）：sid/uid 非 null 时覆盖账号库 active 值。 */
         LiveSession(VaultStore.Account acc, String roleSid, String roleUid, String initialRunState) {
+            this(acc, roleSid, roleUid, initialRunState, 0);
+        }
+
+        /** 带暂停恢复计划（P1：reconcile 恢复 PAUSED 条目时带回 pauseResumeAt）。 */
+        LiveSession(VaultStore.Account acc, String roleSid, String roleUid, String initialRunState,
+                    long initialPauseResumeAt) {
             this.fpid = acc.fpid;
             this.token = acc.token;
             this.sid = norm(roleSid != null ? roleSid : acc.activeSid);
@@ -253,6 +265,7 @@ public final class SessionKeeper implements SessionControl,
             this.wantOnline = true;
             this.runState = VaultStore.RUN_PAUSED.equals(initialRunState)
                     ? VaultStore.RUN_PAUSED : VaultStore.RUN_RUNNING;
+            this.pauseResumeAt = Math.max(0, initialPauseResumeAt);
             this.engine = engineFactory != null ? engineFactory.create() : new WjdrEngine(assets);
             this.exec = Executors.newSingleThreadScheduledExecutor(r -> {
                 Thread t = new Thread(r, "session-" + fpid
@@ -284,16 +297,18 @@ public final class SessionKeeper implements SessionControl,
 
         void tick() {
             if (!wantOnline) return;
+            // 暂停（P1 升级）：连接已关闭，仅按恢复策略到点自动上线；不做心跳/任务
+            if (VaultStore.RUN_PAUSED.equals(runState)) {
+                pauseRecoveryTick();
+                return;
+            }
             String st = engine.sessionState();
-            boolean paused = VaultStore.RUN_PAUSED.equals(runState);
             switch (st) {
                 case WjdrEngine.STATE_OFFLINE:
                     startLogin();
                     break;
                 case WjdrEngine.STATE_ONLINE:
                     engine.heartbeatTick();
-                    // 暂停：保持连接/心跳（P0 简化），停采集/互助/开盾等任务执行
-                    if (paused) break;
                     // 同 fpid 多会话（M1d）：App 消费的 state 键（res:/todo:/mod:… 均为
                     // fpid:sid 键型，/state 契约不变）只由 active 角色会话写入——
                     // 兄弟角色会话保持「占位在线」（连接/心跳/重连），不执行任务，
@@ -451,6 +466,81 @@ public final class SessionKeeper implements SessionControl,
             }
         }
 
+        /**
+         * 暂停自动恢复节拍（P1 契约 §二.7）：PAUSED 且 pauseResumeAt 到期且 desiredOnline
+         * → 重新登录；成功转 RUNNING 并清计划；失败按恢复策略排下次尝试
+         * （重试间隔 → 连续尝试达上限进冷却，冷却结束重置计数再试）。
+         */
+        void pauseRecoveryTick() {
+            if (pauseResumeAt <= 0) return;                     // 无计划（如恢复关闭/0 次尝试）：保持离线
+            long now = System.currentTimeMillis();
+            if (now < pauseResumeAt) return;
+            VaultStore.Account acc = store.find(fpid);
+            if (acc == null || !desiredRoleInStore()) return;   // 期望被撤（sync/stop）：不自动恢复
+            if (!resumeInFlight.compareAndSet(false, true)) return;
+            try {
+                attemptResumeLogin(acc);
+            } finally {
+                resumeInFlight.set(false);
+            }
+        }
+
+        /** 库内该角色仍 desiredOnline（暂停期间 sync 收敛/显式停止会撤销期望）。 */
+        private boolean desiredRoleInStore() {
+            VaultStore.Account acc = store.find(fpid);
+            if (acc == null) return false;
+            VaultStore.RoleEntry e = acc.roles.get(VaultStore.roleKey(norm(sid), uidArg == null ? "" : uidArg));
+            return e != null && e.desiredOnline;
+        }
+
+        /** 到点重登一次并按恢复策略处理结果（会话节拍线程上同步执行，与 startLogin 同栈）。 */
+        private void attemptResumeLogin(VaultStore.Account acc) {
+            FileLog.info("暂停到期，尝试自动上线 {}", key);
+            startLogin();
+            String st = engine.sessionState();
+            if (WjdrEngine.STATE_ONLINE.equals(st)) {
+                runState = VaultStore.RUN_RUNNING;
+                pauseResumeAt = 0;
+                recoveryAttempts = 0;
+                statusMessage = "";
+                store.clearRolePause(fpid, norm(sid), uidArg == null ? "" : uidArg);
+                FileLog.info("暂停恢复成功 {}（RUNNING，清除恢复计划）", key);
+                return;
+            }
+            // 登录失败：凭证失效不再自动重试；其余按恢复策略排下次尝试
+            long next;
+            if (WjdrEngine.STATE_NEED_TOKEN.equals(st)) {
+                next = 0;
+                statusMessage = orEmpty(engine.lastFailure());
+                FileLog.info("暂停恢复中止 {}：token 失效，待人工补给", key);
+            } else {
+                int maxAttempts = acc.takeoverMaxAttempts;
+                recoveryAttempts++;
+                if (maxAttempts <= 0) {
+                    // 0=不自动顶号：账号保持离线，等手动上线
+                    next = 0;
+                    statusMessage = "顶号恢复连续尝试为 0，账号保持离线，可手动上线";
+                } else if (recoveryAttempts < maxAttempts) {
+                    next = System.currentTimeMillis()
+                            + acc.takeoverRetryIntervalSeconds * 1000L;
+                    statusMessage = "登录失败，等待重试（" + recoveryAttempts + "/" + maxAttempts + "）";
+                } else {
+                    next = System.currentTimeMillis()
+                            + acc.takeoverCooldownMinutes * 60_000L;
+                    statusMessage = "连续 " + maxAttempts + " 次登录失败，冷却 "
+                            + acc.takeoverCooldownMinutes + " 分钟后再试";
+                    recoveryAttempts = 0;   // 冷却结束后重置尝试计数（契约 §二.7）
+                }
+                FileLog.info("暂停恢复失败 {}：{}，下次尝试={}",
+                        key, statusMessage, next == 0 ? "无" : String.valueOf(next));
+            }
+            pauseResumeAt = next;
+            store.applyRolePauseSchedule(fpid, norm(sid), uidArg == null ? "" : uidArg, next);
+        }
+
+        private final java.util.concurrent.atomic.AtomicBoolean resumeInFlight =
+                new java.util.concurrent.atomic.AtomicBoolean();
+
         /** 首次登录：初始化 → 注入指纹 → 登录（按绑定角色）→ 固化"学到"的设备身份。 */
         void startLogin() {
             VaultStore.Account acc = store.find(fpid);
@@ -547,7 +637,7 @@ public final class SessionKeeper implements SessionControl,
                                 String.valueOf(config.maxConcurrentSessions), key);
                         continue;
                     }
-                    ls = new LiveSession(a, d.sid, d.uid, d.runState);
+                    ls = new LiveSession(a, d.sid, d.uid, d.runState, d.pauseResumeAt);
                     sessions.put(key, ls);
                     FileLog.info("建会话 {} runState={} 代理={}", key, d.runState,
                             String.valueOf(resolveProxy(a)));
@@ -562,7 +652,7 @@ public final class SessionKeeper implements SessionControl,
                                 String.valueOf(config.maxConcurrentSessions), key);
                         continue;
                     }
-                    LiveSession fresh = new LiveSession(a, d.sid, d.uid, d.runState);
+                    LiveSession fresh = new LiveSession(a, d.sid, d.uid, d.runState, d.pauseResumeAt);
                     sessions.put(key, fresh);
                     fresh.start();
                 }
@@ -611,6 +701,13 @@ public final class SessionKeeper implements SessionControl,
     /** 角色动作分发（login/logout/pause/resume/stop；幂等、串行化）。 */
     @Override
     public RoleOpResult roleAction(String fpid, String sid, String uid, String action) {
+        return roleAction(fpid, sid, uid, action, null);
+    }
+
+    /** 角色动作分发（P1 2026-10-21 带参）：新增 antiban/pause(升级)/rename/remove/enabled。 */
+    @Override
+    public RoleOpResult roleAction(String fpid, String sid, String uid, String action,
+                                   Map<String, Object> payload) {
         synchronized (actionLock) {
             if (action == null || action.isEmpty()) {
                 return RoleOpResult.fail(3002, "缺少 action");
@@ -627,10 +724,34 @@ public final class SessionKeeper implements SessionControl,
                     return stopRoleLocked(fpid, sid, uid, true);
                 case "stop":
                     return stopRoleLocked(fpid, sid, uid, false);
+                case "antiban":
+                    return antibanRoleLocked(fpid, sid, uid, payload);
+                case "rename":
+                    return renameRoleLocked(fpid, sid, uid, payload);
+                case "remove":
+                    return removeRoleLocked(fpid, sid, uid);
+                case "enabled":
+                    return enabledRoleLocked(fpid, sid, uid, payload);
                 default:
                     return RoleOpResult.fail(3002, "未知 action: " + action);
             }
         }
+    }
+
+    private static boolean payloadEnabled(Map<String, Object> payload, boolean def) {
+        if (payload == null) return def;
+        Object v = payload.get("enabled");
+        if (v == null) return def;
+        if (v instanceof Boolean) return (Boolean) v;
+        return "true".equalsIgnoreCase(String.valueOf(v)) || "1".equals(String.valueOf(v));
+    }
+
+    private static String payloadString(Map<String, Object> payload, String key) {
+        if (payload == null) return null;
+        Object v = payload.get(key);
+        if (v == null) return null;
+        String s = String.valueOf(v);
+        return "null".equals(s) ? null : s;
     }
 
     /** 角色解析（快照上找，动作落库走 store.apply*）。 */
@@ -680,7 +801,10 @@ public final class SessionKeeper implements SessionControl,
             // 幂等：已是该角色会话 —— 暂停中则视为恢复，RUNNING 直接成功（ALREADY_ONLINE 非错误）
             if (VaultStore.RUN_PAUSED.equals(cur.runState)) {
                 cur.runState = VaultStore.RUN_RUNNING;
-                store.applyRoleRunState(fpid, role.sid, role.uid, VaultStore.RUN_RUNNING);
+                cur.pauseResumeAt = 0;
+                cur.recoveryAttempts = 0;
+                cur.statusMessage = "";
+                store.clearRolePause(fpid, role.sid, role.uid);
             }
             return RoleOpResult.ok(VaultStore.RUN_RUNNING, stopped);
         }
@@ -711,21 +835,50 @@ public final class SessionKeeper implements SessionControl,
         return RoleOpResult.ok(VaultStore.RUN_RUNNING, stopped);
     }
 
+    /**
+     * 暂停（P1 2026-10-21 升级）：前置「恢复已开启 + 角色在线」；置 PAUSED 与
+     * pauseResumeAt=now+顶号后等待，关闭会话连接（desiredOnline 保留，到期自动上线）。
+     */
     private RoleOpResult pauseRoleLocked(String fpid, String sid, String uid) {
         if (fpid == null || fpid.isEmpty()) return RoleOpResult.fail(3002, "缺少 fpid");
         VaultStore.Account acc = store.find(fpid);
         if (acc == null) return RoleOpResult.fail(1004, "账号不存在: " + fpid);
-        LiveSession ls = sessions.get(sessionKey(fpid, sid, uid));
-        if (ls == null || !ls.wantOnline || !bindsRole(ls, sid, uid)) {
-            return RoleOpResult.fail(RoleOpResult.CODE_ROLE_NOT_ONLINE, "角色未在线，无法暂停");
+        VaultStore.RoleEntry role = resolveOnSnapshot(acc, sid, uid);
+        if (role == null) {
+            return RoleOpResult.fail(RoleOpResult.CODE_ROLE_NOT_FOUND,
+                    "角色不存在: sid=" + sid + " uid=" + uid);
         }
-        if (VaultStore.RUN_PAUSED.equals(ls.runState)) {
-            return RoleOpResult.ok(VaultStore.RUN_PAUSED);   // 幂等
+        LiveSession ls = sessions.get(sessionKey(fpid, role.sid, role.uid));
+        if (ls != null && VaultStore.RUN_PAUSED.equals(ls.runState)) {
+            RoleOpResult paused = RoleOpResult.ok(VaultStore.RUN_PAUSED);   // 幂等
+            paused.pauseResumeAt = ls.pauseResumeAt;
+            return paused;
         }
+        if (!acc.takeoverRecoveryEnabled) {
+            return RoleOpResult.fail(3002, "顶号恢复未开启，无法暂停");
+        }
+        if (ls == null || !ls.wantOnline || !bindsRole(ls, role.sid, role.uid)
+                || !WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+            return RoleOpResult.fail(RoleOpResult.CODE_ROLE_NOT_ONLINE, "账号当前离线，无法暂停");
+        }
+        long resumeAt = System.currentTimeMillis()
+                + acc.takeoverInitialDelaySeconds * 1000L;
         ls.runState = VaultStore.RUN_PAUSED;
-        store.applyRoleRunState(fpid, sid, uid, VaultStore.RUN_PAUSED);
-        FileLog.info("角色暂停 {}（连接保留，任务停止）", ls.key);
-        return RoleOpResult.ok(VaultStore.RUN_PAUSED);
+        ls.pauseResumeAt = resumeAt;
+        ls.recoveryAttempts = 0;
+        long minutes = Math.max(1, (acc.takeoverInitialDelaySeconds + 59) / 60);
+        ls.statusMessage = "已暂停，将在 " + minutes + " 分钟后自动上线";
+        try {
+            ls.engine.close();   // 停止会话连接；会话槽保留（驱动到期自动恢复）
+        } catch (Throwable ignored) {
+        }
+        store.applyRolePauseSchedule(fpid, role.sid, role.uid, resumeAt);
+        FileLog.info("角色暂停 {}（{} 分钟后自动上线，恢复计划已落库）",
+                ls.key, minutes);
+        RoleOpResult ok = RoleOpResult.ok(VaultStore.RUN_PAUSED);
+        ok.message = "账号已暂停，将在 " + minutes + " 分钟后自动上线";
+        ok.pauseResumeAt = resumeAt;
+        return ok;
     }
 
     private RoleOpResult resumeRoleLocked(String fpid, String sid, String uid) {
@@ -745,7 +898,10 @@ public final class SessionKeeper implements SessionControl,
             return RoleOpResult.ok(VaultStore.RUN_RUNNING);   // 幂等
         }
         ls.runState = VaultStore.RUN_RUNNING;
-        store.applyRoleRunState(fpid, sid, uid, VaultStore.RUN_RUNNING);
+        ls.pauseResumeAt = 0;   // resume 立即清除暂停恢复计划（契约 §二.7）
+        ls.recoveryAttempts = 0;
+        ls.statusMessage = "";
+        store.clearRolePause(fpid, sid, uid);
         FileLog.info("角色恢复 {}", ls.key);
         return RoleOpResult.ok(VaultStore.RUN_RUNNING);
     }
@@ -773,6 +929,207 @@ public final class SessionKeeper implements SessionControl,
         return RoleOpResult.ok(VaultStore.RUN_STOPPED);
     }
 
+    // ---------- P1 角色管理增强（2026-10-21 契约 §二.1-§二.6） ----------
+
+    /** op antiban：持久化防封开关；在线角色开启时若本次在线未做风控检测则立即补做。 */
+    private RoleOpResult antibanRoleLocked(String fpid, String sid, String uid,
+                                           Map<String, Object> payload) {
+        boolean enabled = payloadEnabled(payload, false);
+        VaultStore.Account acc = store.find(fpid);
+        if (acc == null) return RoleOpResult.fail(1004, "账号不存在: " + fpid);
+        VaultStore.RoleEntry role = resolveOnSnapshot(acc, sid, uid);
+        if (role == null) {
+            return RoleOpResult.fail(RoleOpResult.CODE_ROLE_NOT_FOUND,
+                    "角色不存在: sid=" + sid + " uid=" + uid);
+        }
+        store.setRoleAntiban(fpid, role.sid, role.uid, enabled);
+        LiveSession ls = sessions.get(sessionKey(fpid, role.sid, role.uid));
+        if (ls != null) {
+            ls.engine.setAntibanEnabled(enabled);
+            // 在线切换开启：本次在线尚未做风控检测 → 立即补做（引擎内一次性闸门防重）
+            if (enabled && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+                ls.engine.performAntibanRiskCheckIfPending();
+            }
+        }
+        FileLog.info("防封保护{} fpid={} 角色={}", enabled ? "开启" : "关闭",
+                fpid, sessionKey(fpid, role.sid, role.uid));
+        RoleOpResult r = RoleOpResult.ok(currentRunStateOf(ls));
+        r.message = enabled ? "已开启防封风控安全保护" : "已关闭防封风控安全保护";
+        return r;
+    }
+
+    private static String currentRunStateOf(LiveSession ls) {
+        if (ls == null || !ls.wantOnline) return VaultStore.RUN_STOPPED;
+        return ls.runState;
+    }
+
+    /** op rename：在线协议改名；道具不足（code=51/err_item_not_enough）自动 use_diamond 重试。 */
+    private RoleOpResult renameRoleLocked(String fpid, String sid, String uid,
+                                          Map<String, Object> payload) {
+        String name = payloadString(payload, "name");
+        String invalid = validateRenameName(name);
+        if (invalid != null) return RoleOpResult.fail(3002, invalid);
+        VaultStore.Account acc = store.find(fpid);
+        if (acc == null) return RoleOpResult.fail(1004, "账号不存在: " + fpid);
+        VaultStore.RoleEntry role = resolveOnSnapshot(acc, sid, uid);
+        if (role == null) {
+            return RoleOpResult.fail(RoleOpResult.CODE_ROLE_NOT_FOUND,
+                    "角色不存在: sid=" + sid + " uid=" + uid);
+        }
+        LiveSession ls = sessions.get(sessionKey(fpid, role.sid, role.uid));
+        if (ls == null || !ls.wantOnline || !bindsRole(ls, role.sid, role.uid)
+                || !WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+            return RoleOpResult.fail(RoleOpResult.CODE_ROLE_NOT_ONLINE, "角色不在线，无法修改角色名");
+        }
+        boolean usedDiamond = false;
+        String applied;
+        try {
+            java.util.Map<String, Object> args = new java.util.LinkedHashMap<>();
+            args.put("name", name);
+            args.put("use_diamond", false);
+            com.carlos.vault.wjdr.protocol.GameMessage rsp =
+                    ls.engine.request("req_player_modify_name", args);
+            if (isItemShortage(rsp)) {
+                // 改名道具不足：按线上语义改用钻石（400）重试
+                usedDiamond = true;
+                args.put("use_diamond", true);
+                rsp = ls.engine.request("req_player_modify_name", args);
+            }
+            long code = rsp == null || rsp.getContent() == null
+                    ? -1 : toLongValue(rsp.getContent().get("code"));
+            if (code != 0) {
+                return RoleOpResult.fail(3002, "改名失败（code=" + code + "），请稍后重试");
+            }
+            applied = appliedName(rsp, name);
+        } catch (Exception e) {
+            return RoleOpResult.fail(3002, "改名失败："
+                    + (e.getMessage() == null ? String.valueOf(e) : e.getMessage()));
+        }
+        store.setRoleName(fpid, role.sid, role.uid, applied);
+        ls.roleName = applied;
+        FileLog.info("角色改名 {} {}→{} usedDiamond={}",
+                ls.key, role.name, applied, usedDiamond);
+        RoleOpResult r = RoleOpResult.ok(currentRunStateOf(ls));
+        r.message = "角色名已更新";
+        r.name = applied;
+        r.usedDiamond = usedDiamond;
+        r.diamondCost = usedDiamond ? 400L : 0L;
+        r.itemId = 610001L;
+        return r;
+    }
+
+    /** 名称规则（对齐线上 RoleRenameSupport）：3~12 字、首尾无空格、无控制字符。 */
+    static String validateRenameName(String raw) {
+        String name = raw == null ? "" : raw;
+        if (name.isEmpty()) return "角色名不能为空";
+        if (!name.equals(name.trim())) return "角色名前后不能有空格";
+        for (int i = 0; i < name.length(); i++) {
+            if (Character.isISOControl(name.charAt(i))) return "角色名不能包含换行或控制字符";
+        }
+        int len = name.codePointCount(0, name.length());
+        if (len < 3 || len > 12) return "角色名长度需为 3~12 个字";
+        return null;
+    }
+
+    /** 道具不足判定：错误码 51 或错误描述 err_item_not_enough（对齐线上 isItemShortage）。 */
+    private static boolean isItemShortage(com.carlos.vault.wjdr.protocol.GameMessage rsp) {
+        if (rsp == null || rsp.getContent() == null) return false;
+        Map<String, Object> content = rsp.getContent();
+        if (toLongValue(content.get("code")) == 51L) return true;
+        return String.valueOf(content).contains("err_item_not_enough");
+    }
+
+    /** 应用响应 result.nickName（缺省用入参）。 */
+    private static String appliedName(com.carlos.vault.wjdr.protocol.GameMessage rsp, String fallback) {
+        if (rsp == null || rsp.getContent() == null) return fallback;
+        Object result = rsp.getContent().get("result");
+        if (result instanceof Map) {
+            Object nick = ((Map<?, ?>) result).get("nickName");
+            if (nick != null && !String.valueOf(nick).isEmpty()) return String.valueOf(nick).trim();
+        }
+        return fallback;
+    }
+
+    private static long toLongValue(Object v) {
+        if (v instanceof Number) return ((Number) v).longValue();
+        try {
+            return v == null ? 0L : Long.parseLong(String.valueOf(v));
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
+    }
+
+    /** op remove：从账号工作区移除角色（不删游戏内角色）；先停会话；active 指针随之清空。 */
+    private RoleOpResult removeRoleLocked(String fpid, String sid, String uid) {
+        VaultStore.Account acc = store.find(fpid);
+        if (acc == null) return RoleOpResult.fail(1004, "账号不存在: " + fpid);
+        VaultStore.RoleEntry role = resolveOnSnapshot(acc, sid, uid);
+        if (role == null) {
+            return RoleOpResult.fail(RoleOpResult.CODE_ROLE_NOT_FOUND,
+                    "角色不存在: sid=" + sid + " uid=" + uid);
+        }
+        LiveSession cur = sessions.get(sessionKey(fpid, role.sid, role.uid));
+        if (cur != null) {
+            cur.shutdown();
+            sessions.remove(cur.key);
+        }
+        store.removeRole(fpid, role.sid, role.uid);
+        FileLog.info("角色移除 {}（仅工具内移除，游戏内角色未删除）",
+                sessionKey(fpid, role.sid, role.uid));
+        RoleOpResult r = RoleOpResult.ok(VaultStore.RUN_STOPPED);
+        r.message = "角色已移除（游戏内角色未删除）";
+        return r;
+    }
+
+    /** op enabled：启用/收纳角色；收纳时停止会话并清期望（keep 保留）。 */
+    private RoleOpResult enabledRoleLocked(String fpid, String sid, String uid,
+                                           Map<String, Object> payload) {
+        boolean enabled = payloadEnabled(payload, true);
+        VaultStore.Account acc = store.find(fpid);
+        if (acc == null) return RoleOpResult.fail(1004, "账号不存在: " + fpid);
+        VaultStore.RoleEntry role = resolveOnSnapshot(acc, sid, uid);
+        if (role == null) {
+            return RoleOpResult.fail(RoleOpResult.CODE_ROLE_NOT_FOUND,
+                    "角色不存在: sid=" + sid + " uid=" + uid);
+        }
+        store.setRoleEnabled(fpid, role.sid, role.uid, enabled);
+        if (!enabled) {
+            LiveSession cur = sessions.get(sessionKey(fpid, role.sid, role.uid));
+            if (cur != null) {
+                cur.shutdown();
+                sessions.remove(cur.key);
+            }
+            // 收纳 = 停会话 + 撤期望；preserveKeep=true 不动账号自动化配置
+            store.applyRoleStop(fpid, role.sid, role.uid, true);
+        }
+        FileLog.info("角色{} {}", enabled ? "启用" : "收纳",
+                sessionKey(fpid, role.sid, role.uid));
+        RoleOpResult r = RoleOpResult.ok(VaultStore.RUN_STOPPED);
+        r.message = enabled ? "已启用" : "已收纳";
+        return r;
+    }
+
+    /** 恢复设置变更（P1 op recovery-settings 持久化后回调）：关闭时取消暂停角色的待恢复计划。 */
+    @Override
+    public void onRecoverySettingsChanged(String fpid) {
+        synchronized (actionLock) {
+            VaultStore.Account acc = store.find(fpid);
+            if (acc == null) return;
+            for (LiveSession ls : sessions.values()) {
+                if (!ls.fpid.equals(fpid)) continue;
+                if (!VaultStore.RUN_PAUSED.equals(ls.runState)) continue;
+                if (!acc.takeoverRecoveryEnabled) {
+                    ls.pauseResumeAt = 0;
+                    ls.recoveryAttempts = 0;
+                    ls.statusMessage = "顶号恢复已关闭，账号保持离线，可手动上线";
+                    store.applyRolePauseSchedule(fpid, norm(ls.sid),
+                            ls.uidArg == null ? "" : ls.uidArg, 0);
+                    FileLog.info("恢复设置关闭：取消待恢复计划 {}", ls.key);
+                }
+            }
+        }
+    }
+
     // ---------- 账号池状态视图（/accounts 与 /status 扩展共用） ----------
 
     @Override
@@ -784,6 +1141,9 @@ public final class SessionKeeper implements SessionControl,
         RoleRuntime rt = new RoleRuntime();
         boolean paused = VaultStore.RUN_PAUSED.equals(ls.runState);
         rt.runState = paused ? VaultStore.RUN_PAUSED : VaultStore.RUN_RUNNING;
+        // 暂停态：恢复计划与中文说明透出给 App（倒计时用 nextRecoveryAt/pause_resume_at）
+        rt.nextRecoveryAt = paused ? ls.pauseResumeAt : rt.nextRecoveryAt;
+        rt.statusMessage = orEmpty(ls.statusMessage);
         String st = ls.engine.sessionState();
         switch (st == null ? "" : st) {
             case WjdrEngine.STATE_ONLINE:
@@ -894,6 +1254,9 @@ public final class SessionKeeper implements SessionControl,
             ls.wantOnline = true;
             if (VaultStore.RUN_PAUSED.equals(ls.runState)) {
                 ls.runState = VaultStore.RUN_RUNNING;   // 手动触发自动化 = 显式恢复
+                ls.pauseResumeAt = 0;
+                ls.recoveryAttempts = 0;
+                ls.statusMessage = "";
                 if (uidBound) store.applyRoleRunState(fpid, acc.activeSid, acc.activeUid,
                         VaultStore.RUN_RUNNING);
             }

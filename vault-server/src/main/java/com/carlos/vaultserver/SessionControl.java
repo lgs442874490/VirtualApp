@@ -2,6 +2,7 @@ package com.carlos.vaultserver;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 /** HTTP API 与会话管理器的解耦接口（单测可注入假实现，不连游戏服）。 */
 public interface SessionControl {
@@ -105,6 +106,17 @@ public interface SessionControl {
          * 仅为 API 兼容保留（旧 App v4.1.4 响应解析不受影响）。
          */
         public List<RoleRef> stoppedRoles = new ArrayList<>();
+        // ---------- P1 扩展（2026-10-21；按 op 选填） ----------
+        /** pause：自动恢复时刻（epoch millis；0=无）。 */
+        public long pauseResumeAt;
+        /** rename：应用后的角色名。 */
+        public String name;
+        /** rename：是否消耗钻石（改名道具不足时 use_diamond 重试）。 */
+        public boolean usedDiamond;
+        /** rename：钻石消耗（usedDiamond ? 400 : 0）。 */
+        public long diamondCost;
+        /** rename：改名道具 id（610001）。 */
+        public long itemId;
 
         static RoleOpResult ok(String runState, List<RoleRef> stoppedRoles) {
             RoleOpResult r = new RoleOpResult();
@@ -137,6 +149,23 @@ public interface SessionControl {
      */
     default RoleOpResult roleAction(String fpid, String sid, String uid, String action) {
         return RoleOpResult.fail(3002, "角色动作未启用");
+    }
+
+    /**
+     * 角色显式动作（P1 2026-10-21 带参重载）：在 M1 五动作之上新增
+     * antiban（payload.enabled）/ pause（升级为按恢复策略自动恢复）/ rename（payload.name）/
+     * remove / enabled（payload.enabled）；旧假实现走 4 参默认降级。
+     */
+    default RoleOpResult roleAction(String fpid, String sid, String uid, String action,
+                                    Map<String, Object> payload) {
+        return roleAction(fpid, sid, uid, action);
+    }
+
+    /**
+     * 账号级恢复设置变更后的回调（P1 op recovery-settings 持久化后调用）：
+     * 实现方按新策略重算暂停角色的自动恢复计划（如关闭后取消待恢复）。
+     */
+    default void onRecoverySettingsChanged(String fpid) {
     }
 
     /** 全局在线角色数（所有账号 engine online 的会话）。 */
