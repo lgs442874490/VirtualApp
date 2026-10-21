@@ -192,6 +192,280 @@ public class VaultEngine {
         }
     }
 
+    // ---------- M3：分身游戏版本检测与升级 ----------
+
+    /** 容器内游戏的 versionCode；未安装/读不到返回 -1（版本比较唯一依据，角标串不作数） */
+    public long installedGameVersionCode() {
+        try {
+            InstalledAppInfo info = VirtualCore.get().getInstalledAppInfo(GAME_PKG, 0);
+            if (info == null) return -1;
+            android.content.pm.PackageInfo pi = info.getPackageInfo(0);
+            return pi == null ? -1 : pi.versionCode;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** 容器内游戏的 versionName（仅展示）；读不到返回 null */
+    public String installedGameVersionName() {
+        try {
+            InstalledAppInfo info = VirtualCore.get().getInstalledAppInfo(GAME_PKG, 0);
+            if (info == null) return null;
+            android.content.pm.PackageInfo pi = info.getPackageInfo(0);
+            return pi == null ? null : pi.versionName;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 容器内已装游戏的签名（供 {@link com.carlos.vault.gameupdate.GameApkVerifier}
+     * 比对更新包）。优先读容器注册表，读不到再退系统原版（同为官方签名）；
+     * 两处都读不到返回 null → 校验器降级为「跳过签名校验」警告，不阻断更新。
+     */
+    public byte[] installedGameSignature() {
+        try {
+            InstalledAppInfo info = VirtualCore.get().getInstalledAppInfo(GAME_PKG, 0);
+            if (info != null) {
+                android.content.pm.PackageInfo pi =
+                        info.getPackageInfo(android.content.pm.PackageManager.GET_SIGNATURES);
+                byte[] s = signaturesOf(pi);
+                if (s != null) return s;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            android.content.pm.PackageInfo pi = ctx.getPackageManager()
+                    .getPackageInfo(GAME_PKG, android.content.pm.PackageManager.GET_SIGNATURES);
+            byte[] s = signaturesOf(pi);
+            if (s != null) return s;
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static byte[] signaturesOf(android.content.pm.PackageInfo pi) {
+        try {
+            if (pi == null || pi.signatures == null || pi.signatures.length == 0) return null;
+            java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+            for (android.content.pm.Signature s : pi.signatures) {
+                byte[] b = s.toByteArray();
+                bos.write((b.length >> 24) & 0xFF);
+                bos.write((b.length >> 16) & 0xFF);
+                bos.write((b.length >> 8) & 0xFF);
+                bos.write(b.length & 0xFF);
+                bos.write(b);
+            }
+            return bos.toByteArray();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    // ---- 原生（系统已装）游戏版本（M3c：重新克隆的源头，与容器版本对比用） ----
+
+    /** 手机上是否安装了原生游戏（系统 PackageManager 能否解析到 GAME_PKG）。 */
+    public boolean isNativeGameInstalled() {
+        try {
+            ctx.getPackageManager().getPackageInfo(GAME_PKG, 0);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 原生游戏 versionCode；未安装/读不到返回 -1（与容器版本比较的唯一依据）。 */
+    public long nativeGameVersionCode() {
+        try {
+            android.content.pm.PackageInfo pi =
+                    ctx.getPackageManager().getPackageInfo(GAME_PKG, 0);
+            return pi == null ? -1 : pi.versionCode;
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** 原生游戏 versionName（仅展示）；读不到返回 null。 */
+    public String nativeGameVersionName() {
+        try {
+            android.content.pm.PackageInfo pi =
+                    ctx.getPackageManager().getPackageInfo(GAME_PKG, 0);
+            return pi == null ? null : pi.versionName;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 启动前置版本检查：容器内 versionCode vs 配置最新版（判定口径见 GameVersionCheck）。 */
+    public com.carlos.vault.gameupdate.GameVersionCheck.Status gameVersionStatus(
+            com.carlos.vault.gameupdate.GameClientUpdateConfig cfg) {
+        long installed = installedGameVersionCode();
+        return com.carlos.vault.gameupdate.GameVersionCheck.check(installed,
+                cfg == null ? 0 : cfg.latestVersionCode,
+                cfg == null ? 0 : cfg.minSupportedVersionCode);
+    }
+
+    /**
+     * 用下载好的 APK 覆盖安装容器内游戏，<b>保留游戏数据</b>
+     * （MODE_INHERIT_EXISTING + 跳过校验/odex，与微信保数据换装同式，2026-10 实证可用）。
+     *
+     * <p>调用方约定：安装前先过 {@link com.carlos.vault.gameupdate.GameApkVerifier}；
+     * 安装后由调用方回读版本确认已提升、并检查 {@link #hasLiveContent()} 判断数据仍在。
+     *
+     * @return null = 成功；否则为可直接展示的失败原因（安装语义，归 INSTALL 类）
+     */
+    public String installGameUpdate(java.io.File apk) {
+        try {
+            if (apk == null || !apk.exists() || apk.length() <= 0) {
+                return "安装失败: 更新包不存在或为空";
+            }
+            String err = ensureEngineReady();
+            if (err != null) return err;
+            VAppInstallerParams params = new VAppInstallerParams();
+            params.setMode(VAppInstallerParams.MODE_INHERIT_EXISTING);
+            params.addInstallFlags(VAppInstallerParams.FLAG_INSTALL_OVERRIDE_NO_CHECK
+                    | VAppInstallerParams.FLAG_INSTALL_OVERRIDE_SKIP_ODEX);
+            VAppInstallerResult r = VirtualCore.get().installPackage(Uri.fromFile(apk), params);
+            if (r == null || r.status != VAppInstallerResult.STATUS_SUCCESS) {
+                return "安装失败: status=" + (r == null ? "null" : r.status);
+            }
+            android.util.Log.i("GAMEUPD", "容器游戏覆盖安装完成: " + apk.getName()
+                    + "，数据保留模式");
+            return null;
+        } catch (Throwable t) {
+            return "安装异常:" + t.getMessage();
+        }
+    }
+
+    /**
+     * M3c「重新克隆分身」：从手机上<b>已更新</b>的原生游戏重新克隆/覆盖进容器
+     * （<b>保留容器数据</b>），完成后回读容器 versionCode 与原生对比。
+     *
+     * <p>与 {@link #installGameFromSystem()}（向导首次克隆）的区别：容器里已有游戏时
+     * 按保数据覆盖模式安装（MODE_INHERIT_EXISTING + 跳过校验/odex，与
+     * {@link #installGameUpdate} 同式，2026-10 实证保数据可用），源仍是 package: URI
+     * （系统包管理器解析完整分包，理由见 {@link #cloneFromSystem}）。
+     *
+     * <p>回读校验由 {@code GameRecloneFlow.verifyAfterReclone} 判定：容器没跟上原生
+     * —— 典型是用户还没在商店更新原生就点了重新克隆 —— 返回契约文案
+     * 「原生游戏尚未更新，请先更新原生游戏」（诊断归 VERSION 类，UI 引导去商店）。
+     *
+     * @return null = 成功（容器版本已同步原生）；否则为可直接展示的失败原因
+     */
+    public String recloneGameFromSystem() {
+        try {
+            com.carlos.vault.gameupdate.GameRecloneFlow.RecloneBlock block =
+                    com.carlos.vault.gameupdate.GameRecloneFlow.recloneBlock(
+                            isNativeGameInstalled(), nativeGameVersionCode());
+            if (block != com.carlos.vault.gameupdate.GameRecloneFlow.RecloneBlock.NONE) {
+                return com.carlos.vault.gameupdate.GameRecloneFlow.blockText(block);
+            }
+            String engErr = ensureEngineReady();
+            if (engErr != null) return engErr;
+            long nativeVc = nativeGameVersionCode();
+            long containerVcBefore = installedGameVersionCode();
+            VAppInstallerParams params = new VAppInstallerParams();
+            if (containerVcBefore > 0) {
+                // 容器已有游戏：保数据覆盖（不 wipe，/virtual/data 下用户数据原样保留）
+                params.setMode(VAppInstallerParams.MODE_INHERIT_EXISTING);
+                params.addInstallFlags(VAppInstallerParams.FLAG_INSTALL_OVERRIDE_NO_CHECK
+                        | VAppInstallerParams.FLAG_INSTALL_OVERRIDE_SKIP_ODEX);
+            }
+            VAppInstallerResult r = VirtualCore.get().installPackage(
+                    Uri.parse("package:" + GAME_PKG), params);
+            if (r == null || r.status != VAppInstallerResult.STATUS_SUCCESS) {
+                return "安装失败: status=" + (r == null ? "null" : r.status);
+            }
+            com.carlos.vault.gameupdate.GameRecloneFlow.PostReclone pr =
+                    com.carlos.vault.gameupdate.GameRecloneFlow.verifyAfterReclone(
+                            nativeVc, containerVcBefore, installedGameVersionCode());
+            if (pr != com.carlos.vault.gameupdate.GameRecloneFlow.PostReclone.OK) {
+                return com.carlos.vault.gameupdate.GameRecloneFlow.failureText(pr,
+                        nativeGameVersionName(), nativeVc,
+                        installedGameVersionName(), installedGameVersionCode());
+            }
+            android.util.Log.i("GAMEUPD", "重新克隆完成: 容器 " + installedGameVersionName()
+                    + "(" + installedGameVersionCode() + ") 已同步原生 "
+                    + nativeGameVersionName() + "(" + nativeVc + ")，数据保留模式");
+            return null;
+        } catch (Throwable t) {
+            return "重新克隆异常:" + t.getMessage();
+        }
+    }
+
+    // ---------- M3：启动失败诊断分类 ----------
+
+    /** 启动/更新失败大类（弹窗按类给修复动作；原文始终保留在 Diagnostic.raw） */
+    public enum FailureCategory {
+        LICENSE,    /** 授权未激活/过期 → 去激活 */
+        ENGINE,     /** 容器引擎未就绪 → 重新初始化 */
+        CLONE,      /** 游戏未克隆 → 去克隆 */
+        VERSION,    /** 分身游戏版本过旧/原生游戏尚未更新 → 更新原生游戏/重新克隆/本地 APK */
+        DOWNLOAD,   /** 更新包下载失败 → 重试/换源 */
+        INSTALL,    /** 覆盖安装失败 → 重试/本地 APK */
+        SYSTEM,     /** 存储等系统层问题 → 清理空间 */
+        OTHER       /** 其余（含忙）→ 稍后重试 */
+    }
+
+    /**
+     * 按失败原文归类（纯函数，JVM 单测锁定口径）。关键词按「更具体优先」排列：
+     * 版本/下载/安装等更新链路词先于存储等系统词，避免「存储空间不足（下载）」错分。
+     */
+    public static FailureCategory categorizeFailure(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return FailureCategory.OTHER;
+        if (raw.contains("授权") || raw.contains("激活") || raw.contains("兑换")) {
+            return FailureCategory.LICENSE;
+        }
+        if (raw.contains("引擎")) return FailureCategory.ENGINE;
+        if (raw.contains("克隆") || raw.contains("没有该游戏")) return FailureCategory.CLONE;
+        if (raw.contains("版本") || raw.contains("尚未更新")) return FailureCategory.VERSION;
+        if (raw.contains("下载") || raw.contains("网络") || raw.contains("连接")
+                || raw.contains("更新包")) return FailureCategory.DOWNLOAD;
+        if (raw.contains("安装") || raw.contains("status=")) return FailureCategory.INSTALL;
+        if (raw.contains("存储") || raw.contains("空间")) return FailureCategory.SYSTEM;
+        return FailureCategory.OTHER;
+    }
+
+    /** 分类中文名（弹窗标题/诊断首行）。 */
+    public static String categoryLabel(FailureCategory c) {
+        if (c == null) return "未知";
+        switch (c) {
+            case LICENSE:  return "授权";
+            case ENGINE:   return "容器引擎";
+            case CLONE:    return "游戏未克隆";
+            case VERSION:  return "版本过旧";
+            case DOWNLOAD: return "下载";
+            case INSTALL:  return "安装";
+            case SYSTEM:   return "系统环境";
+            case OTHER:
+            default:       return "其他";
+        }
+    }
+
+    /** 一条失败诊断：分类 + 原文（契约要求「必须展示 lastLaunchError 具体值」）。 */
+    public static class Diagnostic {
+        public final FailureCategory category;
+        public final String raw;
+
+        public Diagnostic(FailureCategory category, String raw) {
+            this.category = category;
+            this.raw = raw == null ? "" : raw;
+        }
+
+        /** 「[分类] 原文」形态，弹窗正文用。 */
+        public String display() {
+            return "[" + categoryLabel(category) + "] " + raw;
+        }
+    }
+
+    /** 把 lastLaunchError 包成诊断（分类 + 原文）；无记录时给 OTHER 占位。 */
+    public Diagnostic diagnoseLaunchFailure() {
+        String raw = getLastLaunchError();
+        return new Diagnostic(categorizeFailure(raw),
+                raw == null || raw.isEmpty() ? "启动失败（引擎未返回具体原因）" : raw);
+    }
+
+
     public void killGame() {
         GameKeepAliveService.stop(ctx);   // 明确清理前先停保活，避免阻碍切号/保存
         try {

@@ -1,5 +1,6 @@
 package com.carlos.vault;
 
+import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
@@ -7,11 +8,16 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.DialogInterface;
 import android.content.Context;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
 import android.os.AsyncTask;
+import android.os.Build;
 import android.os.Bundle;
+import android.provider.Settings;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.widget.LinearLayout;
@@ -19,9 +25,21 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+
 import com.carlos.vault.daily.RoleDisplay;
 import com.carlos.vault.daily.RoleStore;
+import com.carlos.vault.gameupdate.GameApkDownloader;
+import com.carlos.vault.gameupdate.GameApkVerifier;
+import com.carlos.vault.gameupdate.GameClientUpdateConfig;
+import com.carlos.vault.gameupdate.GameRecloneFlow;
+import com.carlos.vault.gameupdate.GameVersionCheck;
+import com.carlos.vault.gameupdate.LocalApkScanner;
+import com.carlos.vault.license.LicenseManager;
+import com.carlos.vault.license.LicenseUi;
 
+import java.io.File;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
@@ -42,6 +60,16 @@ public class EntryDetailActivity extends Activity {
     private TextView profileBadge;
     private TextView roleTitle;
     private LinearLayout roleBox;
+    /** 「启动分身」按钮下方的分身游戏版本状态行（M3） */
+    private TextView launchStatusView;
+    /** 最新版本配置（assets game_client.json → 内置缺省；apkUrl 可被 Intent extra 覆盖） */
+    private GameClientUpdateConfig updateCfg;
+    /** 本地 APK 更新的 READ_EXTERNAL_STORAGE 运行时请求码（M3b） */
+    private static final int REQ_READ_STORAGE_LOCAL_APK = 4101;
+    /** 「去设置」授权返回后自动继续本地更新流程 */
+    private boolean resumeLocalApkUpdateAfterSettings;
+    /** onResume 重新克隆提示的「去重」标记：同一原生版本只提示一次（原生再升级才重新提示） */
+    private long reclonePromptShownForNativeVc;
     private final SimpleDateFormat FMT = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
 
     @Override
@@ -54,13 +82,26 @@ public class EntryDetailActivity extends Activity {
             if (a.id.equals(id)) { acc = a; break; }
         }
         if (acc == null) { finish(); return; }
+        // 测试可传 game_update_apk_url 覆盖下载源（指向本地/自建源，不必真下 888MB）
+        updateCfg = GameClientUpdateConfig.load(this,
+                getIntent().getStringExtra(GameClientUpdateConfig.EXTRA_OVERRIDE_APK_URL));
         buildUi();
     }
 
     @Override
     protected void onResume() {
         super.onResume();
+        // 「去设置」授权后返回：权限已给 → 自动接着扫本地包；仍未给 → 下次点击再走引导
+        if (resumeLocalApkUpdateAfterSettings) {
+            resumeLocalApkUpdateAfterSettings = false;
+            boolean granted = ContextCompat.checkSelfPermission(this,
+                    Manifest.permission.READ_EXTERNAL_STORAGE)
+                    == PackageManager.PERMISSION_GRANTED;
+            if (granted) continueLocalApkUpdate();
+        }
         refreshInfo();
+        // M3c：从商店/桌面回到本页时，若原生游戏已比分身新 → 提示重新克隆
+        maybePromptReclone();
     }
 
     private void buildUi() {
@@ -168,6 +209,14 @@ public class EntryDetailActivity extends Activity {
         UiStyle.press(launchBtn);
         launchBtn.setOnClickListener(v -> doLaunch());
         root.addView(launchBtn);
+
+        // 启动分身状态行：分身游戏当前版本 / 是否需要更新（M3 契约：按钮下方状态文案）
+        launchStatusView = new TextView(this);
+        launchStatusView.setTextSize(11.5f);
+        launchStatusView.setTextColor(UiStyle.INK2);
+        launchStatusView.setPadding(dp(20), dp(7), dp(18), 0);
+        root.addView(launchStatusView, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         // 登录并运行自动化（服务器执行）
         LinearLayout autoBtn = new LinearLayout(this);
@@ -509,7 +558,38 @@ public class EntryDetailActivity extends Activity {
                 profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.IDLE_BG, 999));
             }
         }
+        refreshLaunchStatus();
         rebuildRoles();
+    }
+
+    /**
+     * 启动按钮下方状态行：容器内游戏版本 + 更新可用性（读不到容器时降级提示）。
+     * M3c：判定为可更新（OUTDATED/UNSUPPORTED）时状态行可点，
+     * 打开版本过旧弹窗（更新原生游戏/重新克隆分身/本地 APK/稍后）。
+     */
+    private void refreshLaunchStatus() {
+        if (launchStatusView == null) return;
+        if (!engine.isGameInstalled()) {
+            launchStatusView.setText("分身游戏未克隆 · 启动时会引导克隆");
+            launchStatusView.setTextColor(UiStyle.INK3);
+            launchStatusView.setOnClickListener(null);
+            launchStatusView.setClickable(false);
+            return;
+        }
+        GameVersionCheck.Status st = engine.gameVersionStatus(updateCfg);
+        launchStatusView.setText(GameVersionCheck.statusLine(st,
+                engine.installedGameVersionName(), engine.installedGameVersionCode(),
+                updateCfg.latestVersionName, updateCfg.latestVersionCode));
+        launchStatusView.setTextColor(st == GameVersionCheck.Status.UP_TO_DATE
+                ? UiStyle.OK_INK : UiStyle.WAIT_INK);
+        if (st == GameVersionCheck.Status.OUTDATED
+                || st == GameVersionCheck.Status.UNSUPPORTED) {
+            UiStyle.press(launchStatusView);
+            launchStatusView.setOnClickListener(v -> showUpdateDialog());
+        } else {
+            launchStatusView.setOnClickListener(null);
+            launchStatusView.setClickable(false);
+        }
     }
 
     /** 当前分组的展示名（"" 显示为"未分组"）。 */
@@ -576,9 +656,108 @@ public class EntryDetailActivity extends Activity {
         });
     }
 
-    // ---------- 启动 ----------
+    // ---------- 启动（M3：前置检查闸门 → 启动；失败弹窗给分类+原文+修复动作） ----------
 
+    /**
+     * 「启动分身」入口：先做完整前置检查（授权 → 引擎 → 克隆 → 版本），
+     * 全过才真正拉起；任何失败都以弹窗展示「分类 + 原文 + 修复动作」，
+     * 不再是「请从任务栏划掉游戏后重试」的泛化 toast。
+     */
     private void doLaunch() {
+        if (VaultEngine.launchBusy()) {
+            toast("正在切换/启动账号，请稍候再试");
+            return;
+        }
+        final ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("前置检查中…");
+        pd.setCancelable(false);
+        pd.show();
+        new AsyncTask<Void, Void, VaultEngine.Diagnostic>() {
+            @Override protected VaultEngine.Diagnostic doInBackground(Void... p) {
+                return precheck();
+            }
+            @Override protected void onPostExecute(VaultEngine.Diagnostic d) {
+                pd.dismiss();
+                if (isFinishing() || isDestroyed()) return;
+                if (d == null) startLaunch();
+                else handlePrecheckFailure(d);
+            }
+        }.execute();
+    }
+
+    /**
+     * 逐闸门检查（后台线程）：授权 → 引擎就绪 → 游戏已克隆 → 版本不过旧。
+     * 返回 null = 全部通过；否则为首个失败的诊断（分类 + 原文）。
+     */
+    private VaultEngine.Diagnostic precheck() {
+        try {
+            String lic = LicenseManager.gateForLaunch(this);
+            if (lic != null) {
+                return new VaultEngine.Diagnostic(VaultEngine.FailureCategory.LICENSE, lic);
+            }
+            String eng = engine.ensureEngineReady();
+            if (eng != null) {
+                return new VaultEngine.Diagnostic(VaultEngine.FailureCategory.ENGINE, eng);
+            }
+            if (!engine.isGameInstalled()) {
+                return new VaultEngine.Diagnostic(VaultEngine.FailureCategory.CLONE,
+                        "容器里没有该游戏，请先克隆（需手机上已安装官方原版）");
+            }
+            GameVersionCheck.Status st = engine.gameVersionStatus(updateCfg);
+            if (st == GameVersionCheck.Status.OUTDATED
+                    || st == GameVersionCheck.Status.UNSUPPORTED) {
+                return new VaultEngine.Diagnostic(VaultEngine.FailureCategory.VERSION,
+                        GameVersionCheck.outdatedText(engine.installedGameVersionName(),
+                                updateCfg.latestVersionName)
+                                + "，versionCode " + engine.installedGameVersionCode()
+                                + " → " + updateCfg.latestVersionCode);
+            }
+            return null;
+        } catch (Throwable t) {
+            return new VaultEngine.Diagnostic(VaultEngine.FailureCategory.OTHER,
+                    "前置检查异常:" + t.getMessage());
+        }
+    }
+
+    /** 按失败分类给修复动作弹窗（契约 §4.1：必须展示分类+原文）。 */
+    private void handlePrecheckFailure(VaultEngine.Diagnostic d) {
+        AlertDialog.Builder b = new AlertDialog.Builder(this,
+                AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("无法启动（" + VaultEngine.categoryLabel(d.category) + "）")
+                .setMessage(d.display());
+        switch (d.category) {
+            case LICENSE:
+                b.setPositiveButton("去激活", (d2, w) -> LicenseUi.showActivateDialog(
+                        EntryDetailActivity.this, LicenseManager.get(EntryDetailActivity.this),
+                        null));
+                break;
+            case ENGINE:
+                b.setPositiveButton("重新初始化", (d2, w) -> doLaunch());
+                break;
+            case CLONE:
+                b.setPositiveButton("去克隆", (d2, w) -> cloneThenLaunch());
+                break;
+            case VERSION:
+                // UNSUPPORTED（低于可升级基线）不保证覆盖安装可用，主推重新克隆
+                if (engine.installedGameVersionCode() > 0 && updateCfg.minSupportedVersionCode > 0
+                        && engine.installedGameVersionCode() < updateCfg.minSupportedVersionCode) {
+                    b.setPositiveButton("重新克隆分身", (d2, w) -> recloneThenRelaunch());
+                } else {
+                    // M3c：主路径改为「商店更新原生游戏 → 回来重新克隆」，无在线下载项
+                    b.setPositiveButton("更新原生游戏", (d2, w) -> openNativeGameStore());
+                    b.setNeutralButton("从本地 APK 更新", (d2, w) -> startLocalApkUpdate());
+                }
+                break;
+            default:
+                b.setPositiveButton("重试", (d2, w) -> doLaunch());
+                break;
+        }
+        b.setNegativeButton("复制诊断", (d2, w) -> copyDiagnostics(null));
+        b.show();
+    }
+
+    /** 前置检查全过 → 真正拉起（原 launchEntry 链路不变）。 */
+    private void startLaunch() {
         ProgressDialog pd = new ProgressDialog(this);
         pd.setMessage("正在启动 «" + acc.label + "» …");
         pd.setCancelable(false);
@@ -594,10 +773,424 @@ public class EntryDetailActivity extends Activity {
                     toast("已启动，从任务栏切到游戏");
                     refreshInfo();
                 } else {
-                    toast("启动失败：请从任务栏划掉游戏后重试");
+                    // 契约 §4.1：展示 lastLaunchError 具体值（分类+原文），按类给修复动作
+                    showLaunchFailure(engine.diagnoseLaunchFailure());
                 }
             }
         }.execute();
+    }
+
+    /** 引擎内启动失败（launchEntry 返回 false）的诊断弹窗。 */
+    private void showLaunchFailure(VaultEngine.Diagnostic d) {
+        AlertDialog.Builder b = new AlertDialog.Builder(this,
+                AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("启动失败（" + VaultEngine.categoryLabel(d.category) + "）")
+                .setMessage(d.display());
+        switch (d.category) {
+            case LICENSE:
+                b.setPositiveButton("去激活", (d2, w) -> LicenseUi.showActivateDialog(
+                        EntryDetailActivity.this, LicenseManager.get(EntryDetailActivity.this),
+                        null));
+                break;
+            case ENGINE:
+                b.setPositiveButton("重新初始化", (d2, w) -> doLaunch());
+                break;
+            case CLONE:
+                b.setPositiveButton("去克隆", (d2, w) -> cloneThenLaunch());
+                break;
+            case VERSION:
+                b.setPositiveButton("更新原生游戏", (d2, w) -> openNativeGameStore());
+                b.setNeutralButton("从本地 APK 更新", (d2, w) -> startLocalApkUpdate());
+                break;
+            case DOWNLOAD:
+            case INSTALL:
+                b.setPositiveButton("重新克隆分身", (d2, w) -> recloneThenRelaunch());
+                b.setNeutralButton("从本地 APK 更新", (d2, w) -> startLocalApkUpdate());
+                break;
+            default:
+                b.setPositiveButton("重试", (d2, w) -> doLaunch());
+                break;
+        }
+        b.setNegativeButton("复制诊断", (d2, w) -> copyDiagnostics(null));
+        b.show();
+    }
+
+    /** 从系统原版克隆进容器，成功后自动重走前置检查并启动。 */
+    private void cloneThenLaunch() {
+        final ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("正在克隆游戏…");
+        pd.setCancelable(false);
+        pd.show();
+        new AsyncTask<Void, Void, String>() {
+            @Override protected String doInBackground(Void... p) {
+                return engine.installGameFromSystem();
+            }
+            @Override protected void onPostExecute(String err) {
+                pd.dismiss();
+                refreshInfo();
+                if (err == null) {
+                    toast("克隆完成，继续启动…");
+                    doLaunch();
+                } else {
+                    // 本方法就是克隆流程，失败一律归 CLONE（原文保留）
+                    showLaunchFailure(new VaultEngine.Diagnostic(
+                            VaultEngine.FailureCategory.CLONE, err));
+                }
+            }
+        }.execute();
+    }
+
+    // ---------- 分身游戏更新（M3c：更新原生游戏 + 重新克隆分身，保数据；在线下载入口已移除） ----------
+
+    /**
+     * 版本过旧弹窗（M3c）：更新原生游戏（主）/ 重新克隆分身 /
+     * 从本地 APK 更新（高级兜底）/ 稍后。按钮集合与文案由
+     * {@link GameRecloneFlow#updateDialogOptions} 锁定，不再出现「立即更新(888MB)」下载项。
+     */
+    private void showUpdateDialog() {
+        String cur = engine.installedGameVersionName();
+        final String[] options = GameRecloneFlow.updateDialogOptions();
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle(GameVersionCheck.outdatedText(cur, updateCfg.latestVersionName))
+                .setMessage(GameRecloneFlow.updateDialogMessage(
+                        updateCfg.latestVersionName, updateCfg.latestVersionCode))
+                .setItems(options, (d, which) -> {
+                    switch (GameRecloneFlow.actionForOption(which)) {
+                        case OPEN_STORE: openNativeGameStore(); break;
+                        case RECLONE:    recloneThenRelaunch(); break;
+                        case LOCAL_APK:  startLocalApkUpdate(); break;
+                        case NONE: default: break;   // 稍后：仅关闭弹窗
+                    }
+                }).show();
+    }
+
+    /**
+     * 「更新原生游戏」：打开应用商店的原生游戏详情页；无 market:// 处理器时
+     * 退到官方下载/更新页（配置 shortLink，T1b 取证的官方短链）；再不行弹指引，
+     * 提示用户到应用商店/官方渠道更新『无尽冬日』后回来点「重新克隆分身」。
+     */
+    private void openNativeGameStore() {
+        if (tryStartView(GameRecloneFlow.GAME_MARKET_URI)) return;
+        if (updateCfg.shortLink != null && tryStartView(updateCfg.shortLink)) return;
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("请手动更新原生游戏")
+                .setMessage("本机没有可用的应用商店。请到应用商店/官方渠道更新『无尽冬日』原生游戏，"
+                        + "更新完成后回到本页点「重新克隆分身」。")
+                .setPositiveButton("好的", null)
+                .show();
+    }
+
+    /** ACTION_VIEW 打开 URI；无处理器/异常返回 false（供商店→网页→指引逐级兜底）。 */
+    private boolean tryStartView(String uri) {
+        try {
+            startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(uri)));
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 「重新克隆分身」：从手机上已更新的原生游戏覆盖进容器（保数据，见
+     * {@link VaultEngine#recloneGameFromSystem}），成功后回读版本并自动重新拉起；
+     * 失败按原文分类走诊断弹窗（尚未更新→VERSION 引导去商店 / 未装原生→CLONE /
+     * 安装→INSTALL）。
+     */
+    private void recloneThenRelaunch() {
+        if (VaultEngine.launchBusy()) {
+            toast("正在切换/启动账号，请稍候再试");
+            return;
+        }
+        final ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("正在从原生游戏重新克隆分身…");
+        pd.setCancelable(false);
+        pd.show();
+        new AsyncTask<Void, Void, String>() {
+            @Override protected String doInBackground(Void... p) {
+                return engine.recloneGameFromSystem();
+            }
+            @Override protected void onPostExecute(String err) {
+                pd.dismiss();
+                if (isFinishing() || isDestroyed()) return;
+                refreshInfo();
+                if (err == null) {
+                    long vc = engine.installedGameVersionCode();
+                    boolean dataKept = engine.hasLiveContent();
+                    toast("重新克隆完成：分身已同步原生 " + engine.installedGameVersionName()
+                            + "(" + vc + ")" + (dataKept ? "，游戏数据已保留" : ""));
+                    doLaunch();   // 重新拉起游戏（版本闸门此时应放行）
+                } else {
+                    showLaunchFailure(new VaultEngine.Diagnostic(
+                            VaultEngine.categorizeFailure(err), err));
+                }
+            }
+        }.execute();
+    }
+
+    /**
+     * onResume 检测（M3c）：原生 versionCode &gt; 容器 versionCode（用户刚从商店更新
+     * 原生游戏回来）→ 提示「检测到原生游戏已更新，是否重新克隆分身？」。
+     * 同一原生版本只提示一次（点了「稍后」不反复骚扰，原生再升一级会重新提示）。
+     */
+    private void maybePromptReclone() {
+        if (isFinishing() || isDestroyed() || VaultEngine.launchBusy()) return;
+        long nativeVc = engine.nativeGameVersionCode();
+        long containerVc = engine.installedGameVersionCode();
+        if (!GameRecloneFlow.shouldPromptReclone(nativeVc, containerVc)) return;
+        if (nativeVc == reclonePromptShownForNativeVc) return;
+        reclonePromptShownForNativeVc = nativeVc;
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("检测到原生游戏已更新")
+                .setMessage(GameRecloneFlow.reclonePromptText(engine.nativeGameVersionName(),
+                        nativeVc, engine.installedGameVersionName(), containerVc))
+                .setPositiveButton("重新克隆分身", (d, w) -> recloneThenRelaunch())
+                .setNegativeButton("稍后", null)
+                .show();
+    }
+
+    /** 更新包落点：应用私有目录（免存储权限，installPackage 直接可读）。 */
+    private File updateApkFile() {
+        File dir = new File(getFilesDir(), "game_update");
+        return new File(dir, VaultEngine.GAME_PKG + "_update.apk");
+    }
+
+    /** 更新流程结果（AsyncTask 只能在 onPostExecute 交给 UI，故打包成对象）。 */
+    private static final class UpdateOutcome {
+        final boolean ok;
+        final boolean cancelled;
+        final String phase;      // download / verify / install
+        final String error;      // 失败原文（分类前的原始信息）
+        final VaultEngine.FailureCategory category;
+        final File apk;
+
+        UpdateOutcome(boolean ok, boolean cancelled, String phase, String error,
+                      VaultEngine.FailureCategory category, File apk) {
+            this.ok = ok;
+            this.cancelled = cancelled;
+            this.phase = phase;
+            this.error = error;
+            this.category = category;
+            this.apk = apk;
+        }
+    }
+
+    /** 更新链路失败弹窗：分类 + 原文 + 重新克隆 / 本地导入 / 复制诊断。 */
+    private void showUpdateFailure(UpdateOutcome r) {
+        String title = "download".equals(r.phase) ? "下载失败（"
+                + VaultEngine.categoryLabel(r.category) + "）"
+                : "verify".equals(r.phase) ? "更新包校验未通过"
+                : "安装失败（" + VaultEngine.categoryLabel(r.category) + "）";
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle(title)
+                .setMessage(r.error)
+                .setPositiveButton("重新克隆分身", (d, w) -> recloneThenRelaunch())
+                .setNeutralButton("从本地 APK 更新", (d, w) -> startLocalApkUpdate())
+                .setNegativeButton("复制诊断", (d, w) -> copyDiagnostics(
+                        "phase=" + r.phase + " " + r.error))
+                .show();
+    }
+
+    /**
+     * 覆盖安装完成后的收尾：回读版本确认已提升、确认游戏数据仍在（保数据验证），
+     * 然后<b>自动重新拉起</b>（重走前置检查，版本闸门此时应放行）。
+     */
+    private void afterUpdateInstalled(File apk) {
+        long vc = engine.installedGameVersionCode();
+        String vn = engine.installedGameVersionName();
+        boolean dataKept = engine.hasLiveContent();
+        refreshInfo();
+        if (vc > 0 && vc < updateCfg.latestVersionCode) {
+            // 引擎返回成功但版本没变：按安装失败处理，避免用户误以为已升级
+            // （文案避开「版本」关键词，防止诊断分类器误归 VERSION 类）
+            showUpdateFailure(new UpdateOutcome(false, false, "install",
+                    "安装未生效：覆盖安装后容器内游戏仍是 " + vn + "(" + vc + ")，预期 "
+                            + updateCfg.latestVersionName + "(" + updateCfg.latestVersionCode + ")",
+                    VaultEngine.FailureCategory.INSTALL, apk));
+            return;
+        }
+        StringBuilder msg = new StringBuilder("已更新到 ").append(vn == null ? "?" : vn)
+                .append("（").append(vc).append("）");
+        if (!dataKept) {
+            msg.append("\n注意：未检测到已有游戏数据（新克隆/数据为空时属正常）");
+        } else {
+            msg.append("，游戏数据已保留");
+        }
+        toast(msg.toString());
+        // 校验通过的包已落位，删除本地安装包（.part 断点文件一并清掉）
+        try {
+            if (apk != null && apk.exists()) //noinspection ResultOfMethodCallIgnored
+                apk.delete();
+            File part = new File(updateApkFile().getPath() + ".part");
+            if (part.exists()) //noinspection ResultOfMethodCallIgnored
+                part.delete();
+        } catch (Throwable ignored) {
+        }
+        doLaunch();   // 重新拉起游戏（版本闸门此时放行）
+    }
+
+    // ---------- 从本地 APK 更新（P0 兜底：用户把官方包放进手机「下载」目录） ----------
+    // M3b（M4 真机验证 §3.2）：扫描「下载」目录需 READ_EXTERNAL_STORAGE，未授权时
+    // listFiles() 恒空、永远提示「未找到」—— 入口处先做运行时权限闸门：
+    // 未授予 → 请求；拒绝 → 弹窗引导「去设置 / 打开应用商店」；授予 → 自动续跑扫描。
+
+    /**
+     * 本地 APK 入口：先过存储权限闸门（Android 6+ 未授予则请求，授权/拒绝结果在
+     * {@link #onRequestPermissionsResult} 续跑），再后台扫描「下载」目录并进入确认流程。
+     */
+    private void startLocalApkUpdate() {
+        boolean granted = ContextCompat.checkSelfPermission(this,
+                Manifest.permission.READ_EXTERNAL_STORAGE)
+                == PackageManager.PERMISSION_GRANTED;
+        if (LocalApkScanner.needsReadPermission(Build.VERSION.SDK_INT, granted)) {
+            ActivityCompat.requestPermissions(this, new String[]{
+                    Manifest.permission.READ_EXTERNAL_STORAGE}, REQ_READ_STORAGE_LOCAL_APK);
+            return;
+        }
+        continueLocalApkUpdate();
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                           int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQ_READ_STORAGE_LOCAL_APK) return;
+        if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+            toast("已授权，正在扫描「下载」目录…");
+            continueLocalApkUpdate();
+        } else {
+            showLocalApkPermissionDenied();
+        }
+    }
+
+    /** 拒绝授权：说清权限用途，给「去设置 / 打开应用商店」两条出路，不落到「未找到」。 */
+    private void showLocalApkPermissionDenied() {
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("需要存储权限")
+                .setMessage("需要读取「下载」目录权限才能使用本地 APK 更新。\n\n"
+                        + "可到系统设置里授予本应用存储权限后返回重试；"
+                        + "也可以到应用商店更新原生游戏后使用「重新克隆分身」。")
+                .setPositiveButton("去设置", (d, w) -> {
+                    resumeLocalApkUpdateAfterSettings = true;
+                    try {
+                        startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", getPackageName(), null)));
+                    } catch (Throwable t) {
+                        resumeLocalApkUpdateAfterSettings = false;
+                        toast("无法打开系统设置：" + t.getMessage());
+                    }
+                })
+                .setNeutralButton("打开应用商店", (d, w) -> openNativeGameStore())
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /**
+     * 已有权限（或系统无需权限，API&lt;23）：后台扫描「下载」目录里最新的
+     * wjdr*.apk；直接读为空且 Android 10+ 时再走 MediaStore.Downloads 兜底
+     * （命中复制进 cache）。找到 → 确认弹窗进原有 校验 → 安装 → 重拉起 链路。
+     */
+    private void continueLocalApkUpdate() {
+        final ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("正在扫描「下载」目录…");
+        pd.setCancelable(false);
+        pd.show();
+        new AsyncTask<Void, Void, File>() {
+            @Override protected File doInBackground(Void... p) {
+                File apk = LocalApkScanner.scanDownloads();
+                if (apk == null) {
+                    apk = LocalApkScanner.queryMediaStoreDownloads(
+                            getApplicationContext().getContentResolver(), getCacheDir());
+                }
+                return apk;
+            }
+            @Override protected void onPostExecute(File apk) {
+                pd.dismiss();
+                if (isFinishing() || isDestroyed()) return;
+                if (apk == null) {
+                    // 权限已就绪才可能走到这里：确实没有候选包，给出放置指引
+                    new AlertDialog.Builder(EntryDetailActivity.this,
+                            AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                            .setTitle("未找到本地更新包")
+                            .setMessage("请先把官方安装包（如 wjdr_1-16-12_"
+                                    + updateCfg.latestVersionCode + "_1.apk）放进手机「下载」目录，再试一次。")
+                            .setPositiveButton("好的", null)
+                            .show();
+                    return;
+                }
+                UiStyle.showConfirmDialog(EntryDetailActivity.this, "使用本地更新包",
+                        "将校验并覆盖安装：\n" + apk.getName() + "（"
+                                + GameApkDownloader.formatBytes(apk.length()) + "）\n\n游戏数据会保留。",
+                        "开始更新", UiStyle.BRAND, () -> verifyAndInstallLocal(apk));
+            }
+        }.execute();
+    }
+
+    /** 本地包链路：跳过下载；size/sha 与 CDN 包不一定一致（渠道差异），只校验
+     *  包名/versionCode 提升/签名，再覆盖安装并重拉起。 */
+    private void verifyAndInstallLocal(final File apk) {
+        final ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("正在校验本地更新包…");
+        pd.setCancelable(false);
+        pd.show();
+        final long installedVcBefore = engine.installedGameVersionCode();
+        new AsyncTask<Void, Void, UpdateOutcome>() {
+            @Override protected UpdateOutcome doInBackground(Void... p) {
+                try {
+                    GameClientUpdateConfig local = GameClientUpdateConfig.defaults();
+                    local.sizeBytes = 0;      // 本地包大小/摘要不与 CDN 配置比对
+                    local.sha256 = "";
+                    GameApkVerifier.Result vr = GameApkVerifier.verify(EntryDetailActivity.this,
+                            apk, local, installedVcBefore, engine.installedGameSignature());
+                    if (!vr.ok()) {
+                        return new UpdateOutcome(false, false, "verify", vr.summary(),
+                                VaultEngine.FailureCategory.INSTALL, apk);
+                    }
+                    String instErr = engine.installGameUpdate(apk);
+                    if (instErr != null) {
+                        return new UpdateOutcome(false, false, "install", instErr,
+                                VaultEngine.categorizeFailure(instErr), apk);
+                    }
+                    return new UpdateOutcome(true, false, "install", null, null, apk);
+                } catch (Throwable t) {
+                    return new UpdateOutcome(false, false, "verify",
+                            String.valueOf(t.getMessage()),
+                            VaultEngine.FailureCategory.OTHER, apk);
+                }
+            }
+            @Override protected void onPostExecute(UpdateOutcome r) {
+                pd.dismiss();
+                if (isFinishing() || isDestroyed()) return;
+                if (r.ok) afterUpdateInstalled(r.apk);
+                else showUpdateFailure(r);
+            }
+        }.execute();
+    }
+
+    // ---------- 复制诊断 ----------
+
+    /** 把当前版本/配置/最近失败原文拼成诊断文本并复制（失败弹窗「复制诊断」按钮）。 */
+    private void copyDiagnostics(String extra) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("game: ").append(VaultEngine.GAME_PKG).append("\n");
+        long vc = engine.installedGameVersionCode();
+        sb.append("installed: ").append(engine.installedGameVersionName())
+                .append("(").append(vc).append(")\n");
+        sb.append("native: ").append(engine.nativeGameVersionName())
+                .append("(").append(engine.nativeGameVersionCode()).append(")\n");
+        sb.append("config: ").append(updateCfg.describe()).append("\n");
+        if (engine.getLastLaunchError() != null) {
+            sb.append("launchError: ").append(engine.getLastLaunchError()).append("\n");
+        }
+        if (extra != null && !extra.isEmpty()) {
+            sb.append("updateError: ").append(extra).append("\n");
+        }
+        try {
+            ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+            cm.setPrimaryClip(ClipData.newPlainText("game-update-diag", sb.toString()));
+            toast("诊断信息已复制");
+        } catch (Throwable t) {
+            toast("复制失败：" + t.getMessage());
+        }
     }
 
     /**
