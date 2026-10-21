@@ -1,5 +1,6 @@
 package com.carlos.vaultserver;
 
+import java.util.ArrayList;
 import java.util.List;
 
 /** HTTP API 与会话管理器的解耦接口（单测可注入假实现，不连游戏服）。 */
@@ -48,5 +49,98 @@ public interface SessionControl {
         public String roleAlliance = "";
         /** 状态进入时刻（epoch ms）。 */
         public long sinceTs;
+    }
+
+    // ---------- 账号池控制面（M1 2026-10-21；default 方法保持旧假实现兼容） ----------
+
+    /** 每角色运行态视图（字段对齐 M1 契约 §2.1 state）。 */
+    final class RoleRuntime {
+        public boolean online;
+        /** RUNNING | PAUSED | STOPPED。 */
+        public String runState = "STOPPED";
+        /** AVAILABLE | DISABLED | ACTION_REQUIRED | WAITING_RETRY。 */
+        public String recoveryState = "AVAILABLE";
+        public String statusMessage = "";
+        public boolean takeoverRecoveryActive;
+        /** epoch ms；WAITING_RETRY 倒计时用（0 = 未知，App 显示「即将恢复」）。 */
+        public long nextRecoveryAt;
+        public boolean startupInProgress;
+        public boolean loginInProgress;
+        /** ACTIVE | PAUSED（计划休眠 P0 未实现，恒 ACTIVE）。 */
+        public String runScheduleState = "ACTIVE";
+
+        public static RoleRuntime offline() {
+            return new RoleRuntime();
+        }
+    }
+
+    /** 角色引用（stoppedRoles 回传 / 角色定位）。 */
+    final class RoleRef {
+        public final String sid;
+        public final String uid;
+
+        public RoleRef(String sid, String uid) {
+            this.sid = sid == null ? "" : sid;
+            this.uid = uid == null ? "" : uid;
+        }
+    }
+
+    /** 角色动作结果（code!=0 时 message 面向 App 提示）。 */
+    final class RoleOpResult {
+        public static final int CODE_ROLE_NOT_FOUND = 1401;
+        public static final int CODE_ROLE_NOT_ONLINE = 1402;
+        public static final int CODE_ROLE_DISABLED = 1403;
+        public static final int CODE_TOKEN_MISSING = 1404;
+        public static final int CODE_CONCURRENCY_LIMIT = 1429;
+
+        public boolean accepted;
+        public int code;
+        public String message = "";
+        /** 动作后的运行态（RUNNING/PAUSED/STOPPED）。 */
+        public String runState = "";
+        /**
+         * login 顶掉的同 fpid 在线角色（供 App 提示互斥）。
+         *
+         * <p>2026-10-21 M1d 多角色并行：login 不再停止同账号其它角色，该字段恒为空，
+         * 仅为 API 兼容保留（旧 App v4.1.4 响应解析不受影响）。
+         */
+        public List<RoleRef> stoppedRoles = new ArrayList<>();
+
+        static RoleOpResult ok(String runState, List<RoleRef> stoppedRoles) {
+            RoleOpResult r = new RoleOpResult();
+            r.accepted = true;
+            r.runState = runState == null ? "" : runState;
+            if (stoppedRoles != null) r.stoppedRoles = stoppedRoles;
+            return r;
+        }
+
+        static RoleOpResult ok(String runState) {
+            return ok(runState, null);
+        }
+
+        static RoleOpResult fail(int code, String message) {
+            RoleOpResult r = new RoleOpResult();
+            r.code = code;
+            r.message = message;
+            return r;
+        }
+    }
+
+    /** 每角色运行态（无会话 = 离线）。默认实现供旧假实现/旧客户端降级。 */
+    default RoleRuntime roleRuntime(String fpid, String sid, String uid) {
+        return RoleRuntime.offline();
+    }
+
+    /**
+     * 角色显式动作（M1 契约 §3.2）：login/logout/pause/resume/stop。
+     * 动作串行化（实现方加锁）、幂等；不可执行状态返回 code!=0 + message。
+     */
+    default RoleOpResult roleAction(String fpid, String sid, String uid, String action) {
+        return RoleOpResult.fail(3002, "角色动作未启用");
+    }
+
+    /** 全局在线角色数（所有账号 engine online 的会话）。 */
+    default int onlineRoleCount() {
+        return 0;
     }
 }

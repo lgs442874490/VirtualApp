@@ -22,6 +22,10 @@ import java.util.concurrent.Executors;
  * POST /v1/vault/token   单账号 token 更新（NEED_TOKEN 补给通道）
  * POST /v1/vault/status  会话状态查询
  * POST /v1/vault/policy  顶号策略设置 / 让位指令
+ * POST /v1/vault/accounts        账号池列表+聚合计数+每角色运行态（M1）
+ * POST /v1/vault/role-action     单角色 login/logout/pause/resume/stop（M1）
+ * POST /v1/vault/account-action  账号级 login-all/stop-all（M1）
+ * POST /v1/vault/global-action   全局 login-all/stop-all（M1）
  * GET  /healthz          探活
  * </pre>
  *
@@ -69,6 +73,11 @@ public final class VaultHttpApi {
         server.createContext("/v1/vault/state", ex -> guard(ex, "POST", "vaultState", this::handleState));
         server.createContext("/v1/vault/policy", ex -> guard(ex, "POST", "vaultPolicy", this::handlePolicy));
         server.createContext("/v1/vault/automation", ex -> guard(ex, "POST", "vaultAutomation", this::handleAutomation));
+        // 账号池控制面（M1 2026-10-21，契约 §3）：列表/角色动作/账号批量/全局批量
+        server.createContext("/v1/vault/accounts", ex -> guard(ex, "POST", "vaultAccounts", this::handleAccounts));
+        server.createContext("/v1/vault/role-action", ex -> guard(ex, "POST", "vaultRoleAction", this::handleRoleAction));
+        server.createContext("/v1/vault/account-action", ex -> guard(ex, "POST", "vaultAccountAction", this::handleAccountAction));
+        server.createContext("/v1/vault/global-action", ex -> guard(ex, "POST", "vaultGlobalAction", this::handleGlobalAction));
         server.createContext("/healthz", ex -> {
             writeJson(ex, 200, envelope(0, "ok", new JSONObject()));
         });
@@ -174,6 +183,16 @@ public final class VaultHttpApi {
                     String rsid = r.optString("sid", "");
                     String rid = r.optString("identity", "");
                     if (!rsid.isEmpty() && !rid.isEmpty()) a.roleIdentity.put(rsid, rid);
+                    // 账号池角色种子（M1）：带 uid 的角色进池（name/level/power/enabled 可选，旧客户端不带 = 缺省）
+                    String ruid = r.optString("uid", "");
+                    if (!rsid.isEmpty() && !ruid.isEmpty()) {
+                        VaultStore.RoleEntry e = new VaultStore.RoleEntry(rsid, ruid);
+                        e.name = r.optString("name", "");
+                        e.level = r.optLong("level", 0);
+                        e.power = r.optLong("power", 0);
+                        e.enabled = r.optBoolean("enabled", true);
+                        a.roles.put(VaultStore.roleKey(rsid, ruid), e);
+                    }
                     JSONObject cfg = r.optJSONObject("config");
                     if (rsid.isEmpty() || cfg == null) continue;
                     java.util.Map<String, Boolean> cfgMap = new java.util.LinkedHashMap<>();
@@ -243,6 +262,8 @@ public final class VaultHttpApi {
 
     private JSONArray statusAccountsJson(String wantFpid) {
         List<SessionControl.SessionStatus> list = keeper.status();
+        Map<String, VaultStore.Account> accs = new java.util.LinkedHashMap<>();
+        for (VaultStore.Account a : store.snapshot()) accs.put(a.fpid, a);
         JSONArray arr = new JSONArray();
         for (SessionControl.SessionStatus s : list) {
             if (wantFpid != null && !wantFpid.isEmpty() && !wantFpid.equals(s.fpid)) continue;
@@ -260,6 +281,11 @@ public final class VaultHttpApi {
             o.put("rolePower", s.rolePower);
             o.put("roleAlliance", s.roleAlliance == null ? "" : s.roleAlliance);
             o.put("sinceTs", s.sinceTs);
+            // M1 扩展（契约 §3.5）：每账号角色运行态 + 角色池 roles（旧字段保留，App v4.1.4 不受影响）。
+            // 注意：旧 state 是字符串（引擎态），不能被同名对象覆盖 —— 新对象用 roleState 键。
+            o.put("roleState", roleStateJson(keeper.roleRuntime(s.fpid, s.sid, s.activeUid)));
+            VaultStore.Account acc = accs.get(s.fpid);
+            o.put("roles", acc == null ? new JSONArray() : rolesJson(acc));
             arr.put(o);
         }
         return arr;
@@ -377,6 +403,236 @@ public final class VaultHttpApi {
         } catch (Throwable t) {
             FileLog.warn("自动化快照组装失败 fpid={}：{}", acc.fpid, String.valueOf(t));
         }
+        return data;
+    }
+
+    // ---------- 账号池控制面（M1 2026-10-21，契约 §3） ----------
+
+    /** POST /v1/vault/accounts：账号池列表 + 聚合计数 + 每角色运行态（轻量，不含 config/params）。 */
+    private JSONObject handleAccounts(Map<String, Object> fields) {
+        JSONObject data = new JSONObject();
+        data.put("serverTime", System.currentTimeMillis());
+        JSONArray arr = new JSONArray();
+        int totalOnline = 0;
+        for (VaultStore.Account a : store.snapshot()) {
+            JSONObject o = new JSONObject();
+            o.put("fpid", a.fpid);
+            o.put("accountName", a.label == null ? "" : a.label);
+            o.put("activeSid", a.activeSid == null ? "" : a.activeSid);
+            o.put("activeUid", a.activeUid == null ? "" : a.activeUid);
+            o.put("keep", a.keep);
+            JSONArray roles = rolesJson(a);
+            o.put("roles", roles);
+            int online = 0;
+            for (int i = 0; i < roles.length(); i++) {
+                if (roles.getJSONObject(i).getJSONObject("state").optBoolean("online")) online++;
+            }
+            o.put("workspaceCount", roles.length());
+            o.put("onlineCount", online);
+            totalOnline += online;
+            arr.put(o);
+        }
+        data.put("accounts", arr);
+        data.put("onlineCount", totalOnline);   // 全局 onlineCount = 所有账号 online 角色数（契约 §2.1）
+        return data;
+    }
+
+    /** 账号的角色池视图：库内角色条目；空池回落 active 角色（旧数据可见性）。 */
+    private JSONArray rolesJson(VaultStore.Account a) {
+        JSONArray arr = new JSONArray();
+        java.util.LinkedHashSet<String> emitted = new java.util.LinkedHashSet<>();
+        for (VaultStore.RoleEntry r : a.roles.values()) {
+            arr.put(roleJson(a.fpid, r));
+            emitted.add(VaultStore.roleKey(r.sid, r.uid));
+        }
+        if (arr.length() == 0 && a.activeSid != null && !a.activeSid.isEmpty()) {
+            arr.put(roleJson(a.fpid,
+                    new VaultStore.RoleEntry(a.activeSid, a.activeUid == null ? "" : a.activeUid)));
+        }
+        return arr;
+    }
+
+    private JSONObject roleJson(String fpid, VaultStore.RoleEntry r) {
+        JSONObject o = new JSONObject();
+        o.put("sid", r.sid);
+        o.put("uid", r.uid);
+        o.put("name", r.name == null ? "" : r.name);
+        o.put("level", r.level);
+        o.put("power", r.power);
+        o.put("enabled", r.enabled);
+        o.put("state", roleStateJson(keeper.roleRuntime(fpid, r.sid, r.uid)));
+        return o;
+    }
+
+    private static JSONObject roleStateJson(SessionControl.RoleRuntime rt) {
+        JSONObject s = new JSONObject();
+        s.put("online", rt.online);
+        s.put("runState", rt.runState);
+        s.put("recoveryState", rt.recoveryState);
+        s.put("statusMessage", rt.statusMessage == null ? "" : rt.statusMessage);
+        s.put("takeoverRecoveryActive", rt.takeoverRecoveryActive);
+        s.put("nextRecoveryAt", rt.nextRecoveryAt);
+        s.put("startupInProgress", rt.startupInProgress);
+        s.put("loginInProgress", rt.loginInProgress);
+        s.put("runScheduleState", rt.runScheduleState);
+        return s;
+    }
+
+    /** POST /v1/vault/role-action：单角色 login/logout/pause/resume/stop（契约 §3.2）。 */
+    private JSONObject handleRoleAction(Map<String, Object> fields) throws Exception {
+        String fpid = str(fields, "fpid");
+        String sid = str(fields, "sid");
+        String uid = str(fields, "uid");
+        String action = str(fields, "action");
+        if (fpid == null || fpid.isEmpty()) throw new BizError(3002, "缺少 fpid");
+        if (action == null || action.isEmpty()) throw new BizError(3002, "缺少 action");
+        SessionControl.RoleOpResult r = keeper.roleAction(fpid, sid, uid, action);
+        if (r.code != 0) throw new BizError(r.code, r.message);
+        JSONObject data = new JSONObject();
+        data.put("accepted", r.accepted);
+        data.put("state", r.runState);
+        data.put("message", r.message == null ? "" : r.message);
+        JSONArray stopped = new JSONArray();
+        for (SessionControl.RoleRef ref : r.stoppedRoles) {
+            JSONObject so = new JSONObject();
+            so.put("sid", ref.sid);
+            so.put("uid", ref.uid);
+            stopped.put(so);
+        }
+        data.put("stoppedRoles", stopped);
+        return data;
+    }
+
+    /** POST /v1/vault/account-action：账号级 login-all/stop-all（契约 §3.3，允许部分失败）。 */
+    private JSONObject handleAccountAction(Map<String, Object> fields) throws Exception {
+        String fpid = str(fields, "fpid");
+        String action = str(fields, "action");
+        if (fpid == null || fpid.isEmpty()) throw new BizError(3002, "缺少 fpid");
+        VaultStore.Account acc = store.find(fpid);
+        if (acc == null) throw new BizError(CODE_ACCOUNT_NOT_FOUND, "账号不存在: " + fpid);
+        JSONArray results = new JSONArray();
+        if ("login-all".equals(action)) {
+            // M1d 多角色并行：全部工作区角色逐个尝试上线（已有在线角色 login 幂等成功），
+            // 不再因一个在线就跳过；单角色失败只影响本角色
+            for (VaultStore.RoleEntry r : loginOrder(acc)) {
+                JSONObject ro = new JSONObject();
+                ro.put("sid", r.sid);
+                ro.put("uid", r.uid);
+                SessionControl.RoleOpResult res = keeper.roleAction(fpid, r.sid, r.uid, "login");
+                ro.put("ok", res.code == 0);
+                ro.put("message", res.code == 0 ? "" : res.message);
+                results.put(ro);
+            }
+        } else if ("stop-all".equals(action)) {
+            for (VaultStore.RoleEntry r : store.roles(fpid)) {
+                JSONObject ro = new JSONObject();
+                ro.put("sid", r.sid);
+                ro.put("uid", r.uid);
+                if (!r.enabled) {
+                    ro.put("ok", true);
+                    ro.put("message", "已收纳，跳过");
+                } else {
+                    SessionControl.RoleOpResult res = keeper.roleAction(fpid, r.sid, r.uid, "stop");
+                    ro.put("ok", res.code == 0);
+                    ro.put("message", res.code == 0 ? "" : res.message);
+                }
+                results.put(ro);
+            }
+        } else {
+            throw new BizError(3002, "未知 action: " + action);
+        }
+        JSONObject data = new JSONObject();
+        data.put("accepted", true);
+        data.put("results", results);
+        data.put("onlineCount", accountOnlineCount(fpid));
+        return data;
+    }
+
+    /** login-all 尝试顺序：active 角色优先，其余工作区角色跟后（仅 enabled、uid 明确的）。 */
+    private static List<VaultStore.RoleEntry> loginOrder(VaultStore.Account a) {
+        List<VaultStore.RoleEntry> out = new ArrayList<>();
+        for (VaultStore.RoleEntry r : a.roles.values()) {
+            if (!r.enabled || r.uid == null || r.uid.isEmpty()) continue;
+            boolean active = r.sid.equals(a.activeSid == null ? "" : a.activeSid)
+                    && r.uid.equals(a.activeUid == null ? "" : a.activeUid);
+            if (active) out.add(0, r);
+            else out.add(r);
+        }
+        return out;
+    }
+
+    /** 该账号当前 online 角色数（按角色池逐个推导）。 */
+    private int accountOnlineCount(String fpid) {
+        int n = 0;
+        for (VaultStore.RoleEntry r : store.roles(fpid)) {
+            if (keeper.roleRuntime(fpid, r.sid, r.uid).online) n++;
+        }
+        return n;
+    }
+
+    /** POST /v1/vault/global-action：全局 login-all/stop-all（契约 §3.4，P0 不做进度推送）。 */
+    private JSONObject handleGlobalAction(Map<String, Object> fields) throws Exception {
+        String action = str(fields, "action");
+        if (!"login-all".equals(action) && !"stop-all".equals(action)) {
+            throw new BizError(3002, "未知 action: " + action);
+        }
+        JSONArray accounts = new JSONArray();
+        for (VaultStore.Account a : store.snapshot()) {
+            JSONObject ao = new JSONObject();
+            ao.put("fpid", a.fpid);
+            String message = "";
+            boolean ok;
+            String onlineUid = "";
+            if (a.token == null || a.token.isEmpty()) {
+                ok = false;
+                message = "账号缺少 token，跳过";
+            } else if ("login-all".equals(action)) {
+                // M1d 多角色并行：每账号所有 enabled 角色逐个尝试上线（不再只上 active 一个）
+                List<VaultStore.RoleEntry> order = loginOrder(a);
+                if (order.isEmpty()) {
+                    ok = false;
+                    message = "无可上线角色";
+                } else {
+                    ok = true;
+                    JSONArray rs = new JSONArray();
+                    for (VaultStore.RoleEntry r : order) {
+                        SessionControl.RoleOpResult res =
+                                keeper.roleAction(a.fpid, r.sid, r.uid, "login");
+                        JSONObject ro = new JSONObject();
+                        ro.put("sid", r.sid);
+                        ro.put("uid", r.uid);
+                        ro.put("ok", res.code == 0);
+                        ro.put("message", res.code == 0 ? "" : res.message);
+                        rs.put(ro);
+                        if (res.code == 0) {
+                            if (onlineUid.isEmpty()) onlineUid = r.uid;
+                        } else {
+                            if (message.isEmpty()) message = res.message == null ? "" : res.message;
+                        }
+                    }
+                    ao.put("results", rs);
+                    ok = !onlineUid.isEmpty();   // 至少一个角色上线成功即账号级成功
+                }
+            } else {
+                ok = true;
+                for (VaultStore.RoleEntry r : store.roles(a.fpid)) {
+                    if (!r.enabled) continue;
+                    SessionControl.RoleOpResult res = keeper.roleAction(a.fpid, r.sid, r.uid, "stop");
+                    if (res.code != 0) {
+                        ok = false;
+                        message = res.message == null ? "" : res.message;
+                    }
+                }
+            }
+            ao.put("ok", ok);
+            ao.put("onlineUid", onlineUid);
+            ao.put("message", message);
+            accounts.put(ao);
+        }
+        JSONObject data = new JSONObject();
+        data.put("accepted", true);
+        data.put("accounts", accounts);
+        data.put("onlineCount", keeper.onlineRoleCount());
         return data;
     }
 
