@@ -48,6 +48,8 @@ public class WjdrEngine {
             } catch (Throwable ignored) {
             }
         }
+        sessionEpoch.incrementAndGet();      // 防封：新连接周期，作废旧的风控检测调度
+        dun163RiskCheckPerformed.set(false); // 新的在线周期允许重做风控检测
         GameProtocolClient.Config config = new GameProtocolClient.Config();
         config.gameHost = GAME_HOST;
         config.gamePort = GAME_PORT;
@@ -200,6 +202,130 @@ public class WjdrEngine {
     private volatile String lastFailure;
     private volatile java.util.function.Consumer<String> stateListener;
 
+    // ================= 防封保护（P1 2026-10-21；对齐线上 GameAccountSessionService.Antiban） =================
+
+    /** 防封开关（角色级，由 SessionKeeper/宿主注入；登录/在线期间生效）。 */
+    private volatile boolean antibanEnabled;
+    /** 会话代次（每次 initialize 递增）：作废旧调度里过期在线周期的风控检测任务。 */
+    private final java.util.concurrent.atomic.AtomicLong sessionEpoch =
+            new java.util.concurrent.atomic.AtomicLong();
+    /** 本次在线周期是否已发过易盾风控检测（一次性闸门）。 */
+    private final java.util.concurrent.atomic.AtomicBoolean dun163RiskCheckPerformed =
+            new java.util.concurrent.atomic.AtomicBoolean();
+    /** 风控检测延迟（online 后 10 秒，对齐线上 scheduleAntibanRiskCheck）。 */
+    static final long ANTIBAN_RISK_CHECK_DELAY_SECONDS = 10L;
+    /** 共享守护调度器（异步风控检测不阻塞登录；任务内校验在线/代次，进程退出随守护线程消亡）。 */
+    private static volatile java.util.concurrent.ScheduledExecutorService antibanScheduler;
+
+    private static java.util.concurrent.ScheduledExecutorService scheduler() {
+        java.util.concurrent.ScheduledExecutorService s = antibanScheduler;
+        if (s == null) {
+            synchronized (WjdrEngine.class) {
+                if (antibanScheduler == null) {
+                    antibanScheduler = java.util.concurrent.Executors
+                            .newSingleThreadScheduledExecutor(r -> {
+                                Thread t = new Thread(r, "wjdr-antiban");
+                                t.setDaemon(true);
+                                return t;
+                            });
+                }
+                s = antibanScheduler;
+            }
+        }
+        return s;
+    }
+
+    /** 防封保护开关（登录时上报设备环境 + online 后易盾风控检测）。 */
+    public void setAntibanEnabled(boolean enabled) {
+        this.antibanEnabled = enabled;
+    }
+
+    public boolean antibanEnabled() {
+        return antibanEnabled;
+    }
+
+    /**
+     * req_settings_set_device 载荷（对齐线上 sendSettingsSetDevice）：
+     * params=[platform, deviceModel, "13", qualityLevel]；platform："android"/"2"→"2" 否则 "1"。
+     * 供登录流程与单测共用。
+     */
+    static java.util.List<String> buildDeviceParams(String deviceOs, String deviceModel,
+                                                    Object deviceLv) {
+        String os = deviceOs == null ? "" : deviceOs.trim();
+        String platform = "android".equalsIgnoreCase(os) || "2".equals(os) ? "2" : "1";
+        String model = deviceModel == null ? "" : deviceModel.trim();
+        if (model.isEmpty()) model = "meizu MEIZU 18 Pro";
+        String quality = deviceLv == null ? "" : String.valueOf(deviceLv).trim();
+        if (quality.isEmpty()) quality = "3";
+        // Java 8 兼容（List.of 为 Java 9+，App 源级不可用）
+        return java.util.Arrays.asList(platform, model, "13", quality);
+    }
+
+    /** 登录流程内调用（req_loaddata 成功后、online 前）：上报设备环境；失败只记日志不阻断。 */
+    private void sendSettingsSetDevice(long uid) {
+        try {
+            java.util.List<String> params = buildDeviceParams("android", lastDeviceModel, "3");
+            GameMessage resp = lockedRequest("req_settings_set_device",
+                    mapOf("params", (Object) params), seconds(15));
+            long code = resp == null || resp.getContent() == null
+                    ? -1L : toLong(resp.getContent().get("code"));
+            WjdrLog.i("[防封保护] 设备环境上报完成 uid={} code={} params={}",
+                    String.valueOf(uid), String.valueOf(code), params);
+        } catch (Exception e) {
+            WjdrLog.w("[防封保护] 设备环境上报异常（已忽略，不阻断登录） uid={} message={}",
+                    String.valueOf(uid), e.getMessage() == null ? String.valueOf(e) : e.getMessage());
+        }
+    }
+
+    /** online 后 10 秒异步易盾风控检测（本次在线仅一次；失败只记日志不影响运行）。 */
+    private void scheduleAntibanRiskCheck(long delaySeconds) {
+        if (!antibanEnabled) return;
+        if (!dun163RiskCheckPerformed.compareAndSet(false, true)) return;
+        long epoch = sessionEpoch.get();
+        long uid = lastUid;
+        try {
+            scheduler().schedule(() -> {
+                try {
+                    if (!STATE_ONLINE.equals(sessionState)
+                            || sessionEpoch.get() != epoch || client == null) {
+                        return;   // 会话已离线/已重建：本次在线周期作废
+                    }
+                    String token = HtProtectTokenSupport.rewrapToken();
+                    GameMessage resp;
+                    requestLock.lock();
+                    try {
+                        resp = lockedRequest("req_dun163_risk_check",
+                                mapOf("token", token), java.time.Duration.ofSeconds(15));
+                    } finally {
+                        requestLock.unlock();
+                    }
+                    long code = resp == null || resp.getContent() == null
+                            ? -1L : toLong(resp.getContent().get("code"));
+                    Object sdkResp = resp == null || resp.getContent() == null
+                            ? null : resp.getContent().get("sdk_resp_data");
+                    int sdkRespLen = sdkResp instanceof String ? ((String) sdkResp).length() : 0;
+                    WjdrLog.i("[防封保护] 易盾安全风控检测完成 uid={} code={} sdkRespLen={}",
+                            String.valueOf(uid), String.valueOf(code), String.valueOf(sdkRespLen));
+                } catch (Exception e) {
+                    WjdrLog.w("[防封保护] 易盾安全风控检测异常（已忽略，不影响运行） uid={} message={}",
+                            String.valueOf(uid),
+                            e.getMessage() == null ? String.valueOf(e) : e.getMessage());
+                }
+            }, Math.max(0, delaySeconds), TimeUnit.SECONDS);
+        } catch (Throwable t) {
+            dun163RiskCheckPerformed.set(false);   // 调度失败允许下次补做
+            WjdrLog.w("[防封保护] 风控检测调度失败（已忽略） uid={} message={}",
+                    String.valueOf(uid), String.valueOf(t));
+        }
+    }
+
+    /** 在线状态下开启防封时的立即补做入口（本次在线未做过才真正发出）。 */
+    public void performAntibanRiskCheckIfPending() {
+        if (!antibanEnabled) return;
+        if (!STATE_ONLINE.equals(sessionState)) return;
+        scheduleAntibanRiskCheck(0L);
+    }
+
     /**
      * 用 号库账号（fpid + sdkToken）直连游戏登录。
      * 登录载荷与 wjdr-tool loginauth 一致：profile 缺省值 + ts + sign。
@@ -309,6 +435,8 @@ public class WjdrEngine {
                 if (result.level <= 0) result.level = deepFindNum(load.getContent(), 0, "level", "stove_lv", "furnace_lv", "lv");
                 result.power = deepFindNum(load.getContent(), 0, "power", "fight_num", "fight_capacity");
                 result.alliance = extractAllianceName(load.getContent());
+                // 防封保护（P1）：loaddata 成功后、online 前上报设备环境（失败不阻断登录）
+                if (antibanEnabled) sendSettingsSetDevice(result.uid);
 
                 GameMessage info = lockedRequest("req_players_base_info",
                         mapOf("uids", (Object) java.util.Collections.singletonList(result.uid)), seconds(15));
@@ -317,6 +445,8 @@ public class WjdrEngine {
                 // 角色元数据源2：players 列表内本角色的条目（与 gameName 同一匹配规则）
                 extractPlayerMeta(info.getContent(), result.uid, result);
                 markOnline();
+                // 防封保护（P1）：online 后 10 秒异步易盾风控检测（本次在线仅一次，不阻塞登录）
+                if (antibanEnabled) scheduleAntibanRiskCheck(ANTIBAN_RISK_CHECK_DELAY_SECONDS);
                 return result;
             } finally {
                 requestLock.unlock();
