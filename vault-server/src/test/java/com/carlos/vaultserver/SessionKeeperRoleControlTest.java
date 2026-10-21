@@ -451,6 +451,94 @@ public class SessionKeeperRoleControlTest {
         assertEquals(WjdrEngine.STATE_ONLINE, keeper.status().get(0).state);
     }
 
+    // ---------- M1e 冷启动旧格式兼容（2026-10-21） ----------
+
+    /** 把旧格式 vault.json 落盘并重新 load（模拟冷启动读到生产旧库副本）。 */
+    private VaultStore reloadFromLegacyVaultJson(String vaultJson) throws Exception {
+        java.nio.file.Files.write(tmp.getRoot().toPath().resolve("vault.json"),
+                vaultJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        VaultStore reloaded = new VaultStore(tmp.getRoot().toPath());
+        reloaded.load();
+        return reloaded;
+    }
+
+    @Test
+    public void legacyVaultJson_coldStartRestoresActiveRoleSession() throws Exception {
+        // 生产旧库复现（M1e 缺陷）：keep=true + activeSid/activeUid，角色条目无 desiredOnline
+        // 字段 → 冷启动 reconcile 必须恢复 active 角色会话，不再限定 activeUid==0
+        VaultStore reloaded = reloadFromLegacyVaultJson("""
+                {
+                  "accounts": [
+                    {
+                      "fpid": "48460403",
+                      "token": "tk-legacy",
+                      "label": "生产旧库",
+                      "keep": true,
+                      "activeSid": "888",
+                      "activeUid": "35371154",
+                      "auto": true,
+                      "roles": {
+                        "888|35371154": {"sid": "888", "uid": "35371154", "name": "隆科多",
+                                          "level": 70, "enabled": true}
+                      }
+                    }
+                  ]
+                }
+                """);
+        assertFalse(reloaded.find(FPID).roles.get(VaultStore.roleKey(SID, UID_A)).desiredOnline);
+        SessionKeeper restarted = new SessionKeeper(reloaded, config(8), null, stateStore,
+                PoolTestEngine::new, true);
+        restarted.reconcile();
+        restarted.tickForTest();
+        assertTrue("冷启动恢复 active 角色会话", restarted.roleRuntime(FPID, SID, UID_A).online);
+        assertEquals(1, restarted.onlineRoleCount());
+        // 期望集推导不改库：角色条目仍无 desired（等 App sync 收敛到新格式）
+        assertFalse(reloaded.find(FPID).roles.get(VaultStore.roleKey(SID, UID_A)).desiredOnline);
+    }
+
+    @Test
+    public void legacyVaultJson_multiRoleNoDesired_onlyActiveRestored() throws Exception {
+        // 旧格式多角色（A=active、B 兄弟）且全部无 desired → 只恢复 active 一个
+        VaultStore reloaded = reloadFromLegacyVaultJson("""
+                {
+                  "accounts": [
+                    {
+                      "fpid": "48460403",
+                      "token": "tk-legacy",
+                      "keep": true,
+                      "activeSid": "888",
+                      "activeUid": "35371154",
+                      "auto": true,
+                      "roles": {
+                        "888|35371154": {"sid": "888", "uid": "35371154", "name": "隆科多", "enabled": true},
+                        "888|88280792": {"sid": "888", "uid": "88280792", "name": "小鹿矿工5号", "enabled": true}
+                      }
+                    }
+                  ]
+                }
+                """);
+        SessionKeeper restarted = new SessionKeeper(reloaded, config(8), null, stateStore,
+                PoolTestEngine::new, true);
+        restarted.reconcile();
+        restarted.tickForTest();
+        assertTrue(restarted.roleRuntime(FPID, SID, UID_A).online);
+        assertFalse("非 active 兄弟角色不恢复", restarted.roleRuntime(FPID, SID, UID_B).online);
+        assertEquals(1, restarted.onlineRoleCount());
+    }
+
+    @Test
+    public void desiredEntriesTakePrecedence_fallbackNotApplied() {
+        // 有 desiredOnline 条目时回落一律不生效：active（A）非 desired 也不被 keep 复活
+        syncAccount(FPID, UID_A, UID_B);   // sync 合并把 active（A）desired 置位
+        store.find(FPID).roles.get(VaultStore.roleKey(SID, UID_A)).desiredOnline = false;
+        store.find(FPID).roles.get(VaultStore.roleKey(SID, UID_B)).desiredOnline = true;
+        keeper.reconcile();
+        keeper.tickForTest();
+        assertTrue(keeper.roleRuntime(FPID, SID, UID_B).online);
+        assertFalse("active 非 desired 不被 keep 回落复活", keeper.roleRuntime(FPID, SID, UID_A).online);
+        assertEquals(1, keeper.onlineRoleCount());
+    }
+
     @Test
     public void reconcile_restoresAllDesiredRoles_withoutExplicitLogin() {
         // 落库 desired（如重启前的运行态）→ reconcile 直接按期望集合恢复同 fpid 多角色
