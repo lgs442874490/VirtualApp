@@ -80,6 +80,32 @@ public class HomeActivity extends AccountVaultActivity {
     private boolean batchMode;                    // 批量管理态：行首显示勾选框
     private final java.util.Set<String> expandedAccs = new java.util.HashSet<>();
 
+    // 账号页 · 账号池（M2：UI + 状态机 + 轮询，契约《账号池M2M3-App实现契约》§3）
+    private int currentTab = 0;                   // 当前可见 tab（轮询只在账号页跑）
+    private TextView poolBarLoginAll, poolBarStopAll, poolBarRefresh;
+    private TextView poolBarProgress;             // 批量条进度「上线中/停止中 x/y」
+    private TextView poolBanner;                  // stale 横幅「状态获取失败，点击重试」
+    private boolean poolPolling;                  // 轮询排程开关（tab 可见 + resumed）
+    private boolean poolBarBusy;                  // 全局批量执行中（批量条按钮禁点）
+    private final java.util.Set<String> poolBusy  // 角色动作进行中 "fpid:sid:uid"（loading/禁点）
+            = new java.util.HashSet<>();
+    private final java.util.Set<String> poolAccBusy = new java.util.HashSet<>();  // 账号级动作进行中 fpid
+    private final android.os.Handler poolHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private final java.util.concurrent.atomic.AtomicBoolean poolInFlight =
+            new java.util.concurrent.atomic.AtomicBoolean(false);   // 请求串行防重入
+    private String lastPoolRender;                // 上次渲染的池数据快照（未变则跳过重绘）
+    private static final long POOL_POLL_INTERVAL_MS = 5000L;
+    /** 轮询节拍：仅在账号 tab 可见时请求；串行防重入（上一发未回不发下一发）。 */
+    private final Runnable poolTick = new Runnable() {
+        @Override public void run() {
+            if (!poolPolling) return;
+            if (currentTab != 1 || isFinishing()) return;   // 切走/离开后不再排程
+            pollPoolOnce();
+            poolHandler.postDelayed(poolTick, POOL_POLL_INTERVAL_MS);
+        }
+    };
+
     // 任务页
     private LinearLayout taskRows;
     private ScrollView taskScroll;
@@ -264,6 +290,14 @@ public class HomeActivity extends AccountVaultActivity {
         currentRoleKey = getSharedPreferences("home", MODE_PRIVATE)
                 .getString("current_role", null);
         refreshAllPages();
+        // 账号池轮询（M2）：仅 resumed 且账号 tab 可见时跑（切 tab/onPause 停）
+        if (currentTab == 1) startPoolPolling();
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        stopPoolPolling();
     }
 
     private boolean fullSyncing;
@@ -347,6 +381,7 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     private void switchTab(int which) {
+        currentTab = which;
         for (int i = 0; i < 4; i++) {
             pages[i].setVisibility(i == which ? View.VISIBLE : View.GONE);
             boolean sel = i == which;
@@ -357,6 +392,9 @@ public class HomeActivity extends AccountVaultActivity {
             navItems[i].setTextColor(sel ? UiStyle.WHITE : UiStyle.INK2);
             if (navIcons[i] != null) navIcons[i].setColor(sel ? UiStyle.WHITE : UiStyle.INK2);
         }
+        // 账号池轮询只挂账号 tab（M2 契约 §3.2）：切入即启动（首拍立即请求），切走即停
+        if (which == 1) startPoolPolling();
+        else stopPoolPolling();
         if (which == 0) refreshToday();
         if (which == 1) refreshAccounts(true);
         if (which == 2) {
@@ -365,6 +403,40 @@ public class HomeActivity extends AccountVaultActivity {
             if (taskAccount != null) autoSyncAccount(taskAccount, true);
         }
         if (which == 3) refreshMine();
+    }
+
+    // ================= 账号池轮询（M2 契约 §3.2） =================
+
+    /**
+     * 启动 5s 轮询：仅服务器模式；首拍立即请求（进入账号页/操作后状态 ≤2s 可见）。
+     * 重复调用幂等（onResume 与 switchTab 都会触发）。
+     */
+    private void startPoolPolling() {
+        if (!VaultSync.isServerMode(this)) return;
+        if (poolPolling) return;
+        poolPolling = true;
+        poolHandler.removeCallbacks(poolTick);
+        poolHandler.post(poolTick);
+    }
+
+    private void stopPoolPolling() {
+        poolPolling = false;
+        poolHandler.removeCallbacks(poolTick);
+    }
+
+    /** 单次账号池请求：串行防重入（上一发未回不发下一发）；数据有变化才重渲染。 */
+    private void pollPoolOnce() {
+        if (!poolInFlight.compareAndSet(false, true)) return;
+        VaultSync.fetchAccountPool(this, (code, message, data) -> {
+            poolInFlight.set(false);
+            runOnUiThread(() -> {
+                // 失败（stale 标记已在 VaultSync 落地）必须重渲染出横幅；成功则数据变了才重绘
+                String snap = data == null ? null : data.toString();
+                boolean changed = code != 0 || snap == null || !snap.equals(lastPoolRender);
+                if (code == 0) lastPoolRender = snap;
+                if (changed && accountList != null) refreshAccounts();
+            });
+        });
     }
 
     // ================= Tab1 · 今日 =================
@@ -2015,6 +2087,56 @@ public class HomeActivity extends AccountVaultActivity {
         tlp.bottomMargin = dp(12);
         top.setLayoutParams(tlp);
 
+        // 批量条（M2 契约 §3.1）：[全部上线/全部停止] + 进度文案 + [刷新]
+        LinearLayout poolBar = new LinearLayout(this);
+        poolBar.setOrientation(LinearLayout.HORIZONTAL);
+        poolBar.setGravity(Gravity.CENTER_VERTICAL);
+        poolBar.setPadding(0, 0, 0, dp(8));
+        poolBarLoginAll = poolMiniBtn("全部上线",
+                UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+        poolBarLoginAll.setOnClickListener(v -> runGlobalBatch(VaultSync.ACTION_LOGIN_ALL));
+        poolBar.addView(poolBarLoginAll);
+        LinearLayout.LayoutParams spl = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        spl.leftMargin = dp(8);
+        poolBarStopAll = poolMiniBtn("全部停止",
+                UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
+        poolBarStopAll.setOnClickListener(v -> runGlobalBatch(VaultSync.ACTION_STOP_ALL));
+        poolBar.addView(poolBarStopAll, spl);
+        poolBarProgress = new TextView(this);
+        poolBarProgress.setTextSize(11);
+        poolBarProgress.setTextColor(UiStyle.INK2);
+        poolBarProgress.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        poolBarProgress.setMaxLines(1);
+        poolBar.addView(poolBarProgress, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        poolBarRefresh = poolMiniBtn("刷新", UiStyle.WHITE, UiStyle.INK2, UiStyle.LINE_STRONG);
+        LinearLayout.LayoutParams rlp2 = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp2.leftMargin = dp(8);
+        poolBarRefresh.setOnClickListener(v -> {
+            pollPoolOnce();
+            refreshAccounts();
+        });
+        poolBar.addView(poolBarRefresh, rlp2);
+        box.addView(poolBar);
+
+        // stale 横幅：上次状态获取失败 → 保留上次状态展示 +「点击重试」（不误判离线）
+        poolBanner = new TextView(this);
+        poolBanner.setText("状态获取失败，点击重试");
+        poolBanner.setTextSize(11.5f);
+        poolBanner.setTypeface(Typeface.DEFAULT_BOLD);
+        poolBanner.setTextColor(UiStyle.WARN_INK);
+        poolBanner.setPadding(dp(10), dp(7), dp(10), dp(7));
+        poolBanner.setBackground(UiStyle.roundRectDp(this, UiStyle.WARN_BG, 8));
+        poolBanner.setVisibility(View.GONE);
+        poolBanner.setOnClickListener(v -> pollPoolOnce());   // 重试；成功后 stale 清除自动隐藏
+        box.addView(poolBanner);
+        LinearLayout.LayoutParams blp2 = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        blp2.bottomMargin = dp(8);
+        poolBanner.setLayoutParams(blp2);
+
         LinearLayout searchBox = new LinearLayout(this);
         searchBox.setOrientation(LinearLayout.HORIZONTAL);
         searchBox.setGravity(Gravity.CENTER_VERTICAL);
@@ -2023,7 +2145,7 @@ public class HomeActivity extends AccountVaultActivity {
         searchBox.addView(new UiStyle.Icon(this, UiStyle.Icon.SEARCH, UiStyle.INK3, 19),
                 new LinearLayout.LayoutParams(dp(19), dp(19)));
         searchInput = new EditText(this);
-        searchInput.setHint("搜索备注名 / 号 ID");
+        searchInput.setHint("搜索备注名 / 号 ID / 角色名 / 区服");
         searchInput.setTextSize(13.5f);
         searchInput.setTextColor(UiStyle.INK);
         searchInput.setHintTextColor(UiStyle.INK3);
@@ -2460,6 +2582,15 @@ public class HomeActivity extends AccountVaultActivity {
             java.util.Map<String, int[]> roleStats = new java.util.HashMap<>();   // fpid:sid -> [done,failed,run,total]
             java.util.Map<String, Long> roleLast = new java.util.HashMap<>();
             java.util.Map<String, Boolean> onlineMap = new java.util.HashMap<>();
+            // 账号池（M2）：服务器唯一事实源；无缓存/请求失败保留旧值（stale 由 VaultSync 标记）。
+            // 旧服务端没有池接口（unsupported，生产 v4.1.4 常态）→ 直接 legacy 渲染，
+            // 不吃旧缓存（M4 §3.3：横幅也不显示）
+            final boolean poolUnsupported = VaultSync.isPoolUnsupported(HomeActivity.this);
+            org.json.JSONObject pool = poolUnsupported
+                    ? null : VaultSync.cachedAccountPool(HomeActivity.this);
+            java.util.Map<String, org.json.JSONObject> poolAcc =
+                    com.carlos.vault.AccountPoolCache.accountsByFpid(pool);
+            final int serverOnline = pool == null ? -1 : pool.optInt("onlineCount", -1);
             android.content.SharedPreferences sched =
                     getSharedPreferences("daily_sched", MODE_PRIVATE);
             com.carlos.vault.daily.LogStore rl = new com.carlos.vault.daily.LogStore(HomeActivity.this);
@@ -2485,8 +2616,23 @@ public class HomeActivity extends AccountVaultActivity {
                 if (accountFilter == 1 && !ws.contains(a)) continue;
                 if (accountFilter == 2 && !"err".equals(s2[0])) continue;
                 if (accountFilter == 3 && !"idle".equals(s2[0])) continue;
-                if (!q.isEmpty() && (a.label == null || !a.label.contains(q))
-                        && (a.fpid == null || !a.fpid.contains(q))) continue;
+                // 搜索（M2 扩展网页版口径）：备注名 / 号ID(fpid) / 角色名 / 区服(sid)
+                if (!q.isEmpty()) {
+                    boolean accHit = (a.label != null && a.label.contains(q))
+                            || (a.fpid != null && a.fpid.contains(q));
+                    boolean roleHit = false;
+                    List<RoleStore.Role> qrs = accRoles.get(a.id);
+                    if (qrs != null) {
+                        for (RoleStore.Role qr : qrs) {
+                            if ((qr.name != null && qr.name.contains(q))
+                                    || String.valueOf(qr.serverid).contains(q)) {
+                                roleHit = true;
+                                break;
+                            }
+                        }
+                    }
+                    if (!accHit && !roleHit) continue;
+                }
                 shown.add(a);
             }
             // live 挂机角色反查：容器正挂着的号，其 playerprefs USER_SETTING_<uid> 可精确到"正在玩的那个角色"
@@ -2500,6 +2646,8 @@ public class HomeActivity extends AccountVaultActivity {
             final java.util.Map<String, Long> fRoleLast = roleLast;
             final java.util.Map<String, Boolean> fOnline = onlineMap;
             final int fErr = errCnt, fIdle = idleCnt;
+            final java.util.Map<String, org.json.JSONObject> fPoolAcc = poolAcc;
+            final int fServerOnline = serverOnline;
             runOnUiThread(() -> {
                 if (gen != accGen) {
                     // 已有更新的刷新请求接管渲染。但遮罩是自己 show 的，若不撤会永久
@@ -2510,17 +2658,25 @@ public class HomeActivity extends AccountVaultActivity {
                     return;
                 }
                 accountList.removeAllViews();
+                // stale 横幅（M2 契约 §1 降级：保留上次状态 +「状态获取失败」提示；
+                // 横幅本体在 buildAccountPage 的静态布局里，这里只切可见性。
+                // unsupported=服务端没有池接口（v4.1.4）→ 不算故障，不显示横幅）
+                if (poolBanner != null) {
+                    poolBanner.setVisibility(!poolUnsupported
+                            && VaultSync.isPoolStale(HomeActivity.this)
+                            ? View.VISIBLE : View.GONE);
+                }
                 updateAccSeg();
                 if (accView == 1) {
                     renderRoleMatrix(fShown, fRoles, fRoleStats, fRoleLast);
                 } else {
                     // 列表视图 = 账号分组框（账号头 + 工作区角色表格，每行可单独登录）。
-                    // 第二轮 UI：弃用只有账号级登录按钮的简单卡片——同服多角色账号的
+                    // 第二轮 UI：弃用只有账号级登录按钮的简单卡片——同服多角色的
                     // 每个工作区角色都必须可达（简单卡片只剩长按菜单一条路）。
                     for (AccountStore.Account a : fShown) {
                         accountList.addView(accountGroupCard(a, fStats.get(a.id),
                                 fRoles.get(a.id), fRoleStats, fRoleLast, fOnline,
-                                fLiveUid, fLiveEntry));
+                                fLiveUid, fLiveEntry, fPoolAcc.get(a.fpid)));
                     }
                 }
                 if (fShown.isEmpty()) accountList.addView(emptyTip("没有匹配的账号"));
@@ -2544,10 +2700,20 @@ public class HomeActivity extends AccountVaultActivity {
             filterChips.get(i).setTextColor(sel ? UiStyle.WHITE : UiStyle.INK2);
             filterChips.get(i).setTypeface(Typeface.DEFAULT_BOLD);
         }
+        // 顶栏计数「N 个账号 · 工作区 M · K 个在线」（M4 §3.3 口径统一）：
+        // M = 全部账号的启用角色总数（与组头「工作区 N」同源，本地 RoleStore 数据，
+        // 不额外请求；原账号数口径与组头不一致）；K 优先服务器聚合 onlineCount
+        // （服务端唯一事实源，M2 契约 §5.1），无池数据回退本地快照判定计数
+        int wsRoleCnt = 0;
+        for (java.util.List<RoleStore.Role> rs : fRoles.values()) {
+            if (rs == null) continue;
+            for (RoleStore.Role r0 : rs) if (r0 != null && r0.enabled) wsRoleCnt++;
+        }
         int onCnt = 0;
         for (Boolean b : fOnline.values()) if (Boolean.TRUE.equals(b)) onCnt++;
+        if (fServerOnline >= 0) onCnt = fServerOnline;
         if (accountCap != null)
-            accountCap.setText(accounts.size() + " 个账号 · 工作区 " + ws.size()
+            accountCap.setText(accounts.size() + " 个账号 · 工作区 " + wsRoleCnt
                     + " · " + onCnt + " 个在线");
         hideAccMask();   // 最新一轮已渲染，无论它是否 show 过遮罩都撤（防残留挡屏）
             });
@@ -2568,8 +2734,8 @@ public class HomeActivity extends AccountVaultActivity {
 
     // ==================== 账号页（v2 原型）：在线判定 / 游戏头像 / 表格化角色行 ====================
 
-    /** 角色表各列宽度（dp）。昵称列吃剩余宽度，其余定宽以保证逐行对齐（状态列容纳"● 日常在线"）。 */
-    private static final int COL_ONLINE = 58, COL_ZONE = 34, COL_DONE = 52, COL_LAST = 52, COL_GO = 44;
+    /** 角色表各列宽度（dp）。昵称列吃剩余宽度，其余定宽以保证逐行对齐（状态列容纳「● 已暂停·待恢复」）。 */
+    private static final int COL_ONLINE = 74, COL_ZONE = 24, COL_DONE = 38, COL_LAST = 38, COL_GO = 74;
 
     /**
      * 「在线」判定：该账号当前是否持有<b>有效登录态</b>。
@@ -2843,7 +3009,8 @@ public class HomeActivity extends AccountVaultActivity {
                                                final java.util.Map<String, int[]> roleStats,
                                                final java.util.Map<String, Long> roleLast,
                                                final java.util.Map<String, Boolean> online,
-                                               final long liveUid, final String liveEntryId) {
+                                               final long liveUid, final String liveEntryId,
+                                               final org.json.JSONObject poolAcc) {
         LinearLayout box = UiStyle.outlineCard(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(12), dp(10), dp(12), dp(10));
@@ -2950,59 +3117,91 @@ public class HomeActivity extends AccountVaultActivity {
         head.addView(gear);
         box.addView(head);
 
-        // 框内：已启用角色 → 表格（状态/角色/区号/今日完成/上次登录/登录），全部可见可滚动
+        // 框内：已启用角色 → 表格（状态/角色/区号/今日完成/上次登录/动作），全部可见可滚动
         // （第二轮 UI：移除"最多 4 行 + 还有 N 个"折叠——同服多角色账号必须全部可达）
         int enN = 0;
         if (roles != null) for (RoleStore.Role r0 : roles) if (r0.enabled) enN++;
         if (enN > 0) {
             LinearLayout secH = new LinearLayout(this);
             secH.setOrientation(LinearLayout.HORIZONTAL);
+            secH.setGravity(Gravity.CENTER_VERTICAL);
             secH.setPadding(0, dp(6), 0, 0);
+            // 组头「工作区 N · 在线 N」（M2 网页版口径）：在线数优先服务器聚合，回退本地判定
             TextView l = new TextView(this);
-            l.setText("工作区角色 · " + enN);
+            int poolOn = poolAcc == null ? -1 : poolAcc.optInt("onlineCount", -1);
+            boolean headOn = poolOn > 0 || accOn;
+            if (poolOn < 0 && !headOn) {
+                try {
+                    for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
+                            : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
+                        if (a.fpid != null && a.fpid.equals(ls.fpid)
+                                && com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+                            headOn = true;
+                            break;
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            l.setText("工作区 " + enN + " · 在线 " + (poolOn >= 0 ? poolOn : (headOn ? 1 : 0)));
             l.setTextSize(10);
-            l.setTextColor(UiStyle.INK3);
+            l.setTypeface(Typeface.DEFAULT_BOLD);
+            l.setTextColor(headOn ? UiStyle.OK_INK : UiStyle.INK3);
             secH.addView(l, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            TextView rgt = new TextView(this);
-            // 头行口径：快照登录态 或 该账号任一角色协议常驻在线
-            boolean anyKeep = false;
-            try {
-                for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
-                        : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
-                    if (a.fpid != null && a.fpid.equals(ls.fpid)
-                            && com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
-                        anyKeep = true;
-                        break;
-                    }
-                }
-            } catch (Throwable ignored) {
+            // 账号级批量（M2 契约 §3.1 组头「全部上线/全部停止」= 工作区角色批量）
+            boolean accBusy = poolAccBusy.contains(a.fpid);
+            TextView accLoginAll = poolMiniBtn(accBusy ? "执行中" : "全部上线",
+                    UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+            accLoginAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_LOGIN_ALL));
+            secH.addView(accLoginAll);
+            TextView accStopAll = poolMiniBtn(accBusy ? "执行中" : "全部停止",
+                    UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
+            LinearLayout.LayoutParams aslp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            aslp.leftMargin = dp(6);
+            secH.addView(accStopAll, aslp);
+            accStopAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_STOP_ALL));
+            if (accBusy) {
+                accLoginAll.setEnabled(false);
+                accStopAll.setEnabled(false);
+                accLoginAll.setAlpha(.5f);
+                accStopAll.setAlpha(.5f);
             }
-            boolean headOn = accOn || anyKeep;
-            rgt.setText(headOn ? "在线" : "离线");
-            rgt.setTextSize(10);
-            rgt.setTypeface(Typeface.DEFAULT_BOLD);
-            rgt.setTextColor(headOn ? UiStyle.OK_INK : UiStyle.INK3);
-            secH.addView(rgt);
             box.addView(secH);
             box.addView(roleTableHead());
+            long nowMs = System.currentTimeMillis();
             for (final RoleStore.Role r : roles) {
                 if (!r.enabled) continue;
                 box.addView(roleEntryCard(a, r,
                         roleStats.get(a.fpid + ":" + r.serverid),
                         roleLast.containsKey(a.fpid + ":" + r.serverid)
                                 ? roleLast.get(a.fpid + ":" + r.serverid) : 0L,
-                        roleOnlineLabel(a, r, accOn, actSid, actUid, isLiveAcc, liveUid), accOn, roles));
+                        roleOnlineLabel(a, r, accOn, actSid, actUid, isLiveAcc, liveUid), accOn, roles,
+                        com.carlos.vault.AccountPoolCache.stateOfRole(matchPoolRole(poolAcc, r)),
+                        poolBusy.contains(a.fpid + ":" + r.serverid + ":" + r.uid), nowMs));
             }
         } else {
+            // 空态（M2 契约 §3.1）：无角色=引导登录发现；有角色未入工作区=「尚未选择工作区角色」+选择角色
+            LinearLayout tipBox = new LinearLayout(this);
+            tipBox.setOrientation(LinearLayout.HORIZONTAL);
+            tipBox.setGravity(Gravity.CENTER_VERTICAL);
+            tipBox.setPadding(dp(4), dp(10), dp(4), dp(4));
             TextView tip = new TextView(this);
             tip.setText(roles == null || roles.isEmpty()
                     ? "暂无角色数据（登录一次自动发现）"
-                    : "点右上「⚙ 角色管理」把角色加入工作区");
+                    : "尚未选择工作区角色");
             tip.setTextSize(11.5f);
             tip.setTextColor(UiStyle.INK2);
-            tip.setPadding(dp(4), dp(10), dp(4), dp(4));
-            box.addView(tip);
+            tipBox.addView(tip, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            if (roles != null && !roles.isEmpty()) {
+                TextView pick = poolMiniBtn("选择角色",
+                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+                pick.setOnClickListener(v -> showRoleManager(a, roles, accOn));
+                tipBox.addView(pick);
+            }
+            box.addView(tipBox);
         }
         // 长按账号框 = 账号菜单（批量/登录并运行/启动游戏/角色管理/排序，与简单卡片一致）
         UiStyle.press(box);
@@ -3014,35 +3213,61 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     /**
-     * 角色行（账号框内嵌 · 表格化，与原型一致）：
-     * {@code 状态（● 日常在线/游戏在线/在线/离线） | 昵称 | 区号 | 今日完成 | 上次登录 | 登录}。
+     * 角色行（账号框内嵌 · 表格化，M2 账号池版）：
+     * {@code 状态（● + 11 态文案） | 昵称 | 区号 | 今日完成 | 上次登录 | [上线/暂停/停止/登录]}。
      *
-     * <p>点<b>行</b> = 打开角色管理；点<b>「登录」</b> = 以该角色<b>模拟登录在线</b>
-     * （切到该角色 → 上行 activeUid → 服务器建会话在线，不是启动游戏客户端）。
-     * 卡片其它区域不响应 —— 避免"想看一个角色却总弹出整张表"。
-     *
-     * <p>同服多角色的可区分性：昵称列显示 {@link RoleDisplay#roleName}，行内元数据
-     * （角色管理弹层）用 UID 段区分——本表不再用「同服第N角色」（序号随行序漂移）。
+     * <p>状态与动作渲染（M2 契约 §2/§3.1 + M4 §3.2 修复）：
+     * <ul>
+     *   <li>池状态可用（{@code poolState != null}）：文案/配色走 {@link RoleRuntimeState}
+     *       纯函数（与网页版 §2.3 逐字一致）；动作按矩阵——在线→[暂停][停止]，
+     *       暂停→[上线][停止]（服务端 login 等价 resume），其它非在线（含已停止/
+     *       需登录/待恢复/计划休眠）→[上线] role-action；行内不再出现
+     *       「登录（服务器自动化）」（保留在账号详情页与降级/无池路径）；</li>
+     *   <li>池状态不可用（旧服务端/请求失败）：沿用 {@link #roleOnlineLabel} 旧文案
+     *       与「登录」按钮（保留现有行为，stale 横幅提示）；</li>
+     *   <li>被顶号/待恢复 → 行下 banner「账号被顶号 · 待恢复 mm:ss」（倒计时随轮询刷新）。</li>
+     * </ul>
+     * 点<b>行</b> = 打开角色管理；动作按钮走 role-action（进行中禁点，失败 toast 服务端
+     * message，成功后立即刷新）。点「上线」直接 role-action login（M2d：同账号
+     * 多角色并行在线，服务端不再互斥，无前置确认弹窗）。
      */
     private android.view.View roleEntryCard(final AccountStore.Account a, final RoleStore.Role r,
                                             int[] dayStats, long lastTs, String[] onlineKind, boolean accOn,
-                                            final List<RoleStore.Role> allRoles) {
+                                            final List<RoleStore.Role> allRoles,
+                                            final com.carlos.vault.daily.RoleRuntimeState poolState,
+                                            final boolean roleBusy, final long nowMs) {
+        LinearLayout wrap = new LinearLayout(this);
+        wrap.setOrientation(LinearLayout.VERTICAL);
         LinearLayout row = new LinearLayout(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, dp(7), 0, dp(7));
+        wrap.addView(row, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         int done = dayStats == null ? 0 : dayStats[0];
         int total = dayStats == null ? 0 : dayStats[3];
 
-        // ① 状态：文字 + 颜色双重编码（不靠颜色单独分辨）；文案由 roleOnlineLabel 给出
+        // ① 状态：文字 + 颜色双重编码（不靠颜色单独分辨）。池状态=11 态文案，否则旧口径
         TextView stv = new TextView(this);
-        boolean online = onlineKind != null && "on".equals(onlineKind[1]);
-        stv.setText(onlineKind == null ? "● 离线" : onlineKind[0]);
-        stv.setTextSize(10);
+        int stColor = UiStyle.INK3;
+        if (poolState != null) {
+            String tone = poolState.tone();
+            stColor = "ok".equals(tone) ? UiStyle.OK_INK
+                    : "warn".equals(tone) ? UiStyle.WARN_INK
+                    : "err".equals(tone) ? UiStyle.ERR_INK
+                    : "busy".equals(tone) ? UiStyle.RUN_INK : UiStyle.INK3;
+            stv.setText("● " + poolState.label(nowMs));
+        } else {
+            boolean online = onlineKind != null && "on".equals(onlineKind[1]);
+            stv.setText(onlineKind == null ? "● 离线" : onlineKind[0]);
+            stColor = online ? UiStyle.OK_INK : UiStyle.INK3;
+        }
+        stv.setTextSize(9.5f);
         stv.setTypeface(Typeface.DEFAULT_BOLD);
-        stv.setTextColor(online ? UiStyle.OK_INK : UiStyle.INK3);
+        stv.setTextColor(stColor);
         stv.setMaxLines(1);
+        stv.setEllipsize(android.text.TextUtils.TruncateAt.END);
         stv.setWidth(dp(COL_ONLINE));
         row.addView(stv);
 
@@ -3064,35 +3289,288 @@ public class HomeActivity extends AccountVaultActivity {
         row.addView(cellText(done + "/" + total, COL_DONE, 11.5f, dcol, Gravity.END, true));
         row.addView(cellText(shortTime(lastTs), COL_LAST, 10.5f, UiStyle.INK2, Gravity.END, false));
 
-        // ⑥ 登录（以该角色模拟登录在线：钉扎 (sid,uid) → 服务器建会话并触发整轮）
-        TextView go = new TextView(this);
-        go.setText("登录");
-        go.setTextSize(11);
-        go.setTypeface(Typeface.DEFAULT_BOLD);
-        go.setTextColor(UiStyle.BRAND_TEXT);
-        go.setGravity(Gravity.CENTER);
-        GradientDrawable gbg = new GradientDrawable();
-        gbg.setColor(UiStyle.BRAND_50);
-        gbg.setCornerRadius(dp(8));
-        gbg.setStroke(dp(1), UiStyle.BRAND_200);
-        go.setBackground(gbg);
-        go.setPadding(0, dp(5), 0, dp(5));
-        go.setWidth(dp(COL_GO));
-        UiStyle.press(go);
-        go.setOnClickListener(v -> {
-            go.setEnabled(false);
-            go.setText("登录中");
-            loginRole(a, r.serverid, r.uid, () -> {
-                go.setEnabled(true);
-                go.setText("登录");
-            });
-        });
-        row.addView(go);
+        // ⑥ 动作列（M2）：按状态矩阵渲染；进行中整列「执行中」禁点
+        LinearLayout goBox = new LinearLayout(this);
+        goBox.setOrientation(LinearLayout.HORIZONTAL);
+        goBox.setGravity(Gravity.END);
+        LinearLayout.LayoutParams goblp = new LinearLayout.LayoutParams(dp(COL_GO),
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+        row.addView(goBox, goblp);
+        if (poolState != null && !poolState.degraded && poolState.enabled && !roleBusy) {
+            if (poolState.online) {
+                // 在线 → [暂停][停止]
+                TextView pauseBtn = poolMiniBtn("暂停",
+                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+                pauseBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_PAUSE));
+                goBox.addView(pauseBtn);
+                TextView stopBtn = poolMiniBtn("停止",
+                        UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
+                LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                slp.leftMargin = dp(4);
+                goBox.addView(stopBtn, slp);
+                stopBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_STOP));
+            } else if (poolState.canResume()) {
+                // 暂停 → [上线][停止]（服务端 login 对暂停会话等价 resume）
+                TextView upBtn = poolMiniBtn("上线",
+                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+                upBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_LOGIN));
+                goBox.addView(upBtn);
+                TextView stopBtn = poolMiniBtn("停止",
+                        UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
+                LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                slp.leftMargin = dp(4);
+                goBox.addView(stopBtn, slp);
+                stopBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_STOP));
+            } else {
+                // 非在线一律 role-action「上线」（M4 §3.2 修复：含已停止/需登录/待恢复/
+                // 计划休眠——池状态可用时「登录（服务器自动化）」不再出现在行内，
+                // 仅保留在降级/无池路径与账号详情页；M2d：上线直连 login，无互斥确认）
+                TextView upBtn = poolMiniBtn("上线",
+                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+                upBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_LOGIN));
+                goBox.addView(upBtn);
+            }
+        } else if (poolState != null && !poolState.degraded && !poolState.enabled) {
+            // 已收纳：动作矩阵全部禁用（契约 §2），去「角色管理」启用后再操作
+            TextView dis = poolMiniBtn("已收纳", UiStyle.SURFACE_3, UiStyle.INK3, UiStyle.LINE);
+            dis.setEnabled(false);
+            dis.setAlpha(.5f);
+            goBox.addView(dis);
+        } else if (roleBusy) {
+            TextView busy = poolMiniBtn("执行中", UiStyle.SURFACE_3, UiStyle.INK3, UiStyle.LINE);
+            busy.setEnabled(false);
+            busy.setAlpha(.6f);
+            goBox.addView(busy);
+        } else {
+            // 降级（旧服务端/已收纳/无池数据）：保留现有「登录」行为
+            goBox.addView(legacyLoginBtn(a, r));
+        }
+
+        // ⑦ 被顶号/待恢复 banner（行下，M2 契约 §3.1）
+        if (poolState != null) {
+            String banner = poolState.bannerText(nowMs);
+            if (banner != null) {
+                TextView bv = new TextView(this);
+                bv.setText(banner);
+                bv.setTextSize(10);
+                bv.setTypeface(Typeface.DEFAULT_BOLD);
+                bv.setTextColor(UiStyle.WARN_INK);
+                bv.setPadding(dp(8), dp(5), dp(8), dp(5));
+                bv.setBackground(UiStyle.roundRectDp(this, UiStyle.WARN_BG, 8));
+                LinearLayout.LayoutParams bvlp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                bvlp.topMargin = dp(2);
+                wrap.addView(bv, bvlp);
+            }
+        }
 
         // 点角色行 = 角色管理（与齿轮同一入口）
         UiStyle.press(row);
         row.setOnClickListener(v -> showRoleManager(a, allRoles, accOn));
-        return row;
+        return wrap;
+    }
+
+    /** 保留的行内「登录」按钮（= 登录并触发服务器自动化，非启动游戏客户端）。 */
+    private TextView legacyLoginBtn(final AccountStore.Account a, final RoleStore.Role r) {
+        TextView go = poolMiniBtn("登录", UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+        go.setOnClickListener(v -> {
+            go.setEnabled(false);
+            go.setText("登录中");
+            loginRole(a, r.serverid, r.uid, () -> refreshAccounts());
+        });
+        return go;
+    }
+
+    // ==================== 账号池动作与批量（M2 契约 §3.1） ====================
+
+    /** 小动作按钮（角色行动作列/批量条/组头共用）：11sp 粗体圆角药丸。 */
+    private TextView poolMiniBtn(String text, int bg, int ink, int stroke) {
+        TextView b = new TextView(this);
+        b.setText(text);
+        b.setTextSize(11);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setTextColor(ink);
+        b.setGravity(Gravity.CENTER);
+        GradientDrawable bg2 = new GradientDrawable();
+        bg2.setColor(bg);
+        bg2.setCornerRadius(dp(8));
+        bg2.setStroke(dp(1), stroke);
+        b.setBackground(bg2);
+        b.setPadding(dp(9), dp(5), dp(9), dp(5));
+        UiStyle.press(b);
+        return b;
+    }
+
+    /**
+     * 池角色匹配（后台/渲染线程均可）：按 (sid, uid) 找服务端角色对象。
+     * uid 任一侧未知时按 sid 兜底（同服同 sid 多角色 uid 未同步的行可能串状态——
+     * 已知限制，随角色元数据同步自愈）。
+     */
+    private static org.json.JSONObject matchPoolRole(org.json.JSONObject poolAcc,
+                                                     RoleStore.Role r) {
+        if (poolAcc == null || r == null) return null;
+        try {
+            org.json.JSONArray roles = poolAcc.optJSONArray("roles");
+            if (roles == null) return null;
+            org.json.JSONObject hit = null;
+            for (int i = 0; i < roles.length(); i++) {
+                org.json.JSONObject ro = roles.optJSONObject(i);
+                if (ro == null) continue;
+                if (com.carlos.vault.AccountPoolCache.parseNum(ro.optString("sid", "")) != r.serverid)
+                    continue;
+                long ruid = com.carlos.vault.AccountPoolCache.parseNum(ro.optString("uid", "0"));
+                if (r.uid > 0 && ruid > 0 && ruid != r.uid) continue;
+                hit = ro;
+                if (r.uid > 0 && ruid == r.uid) break;   // 精确命中优先
+            }
+            return hit;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 动作的中文名（toast 用）。 */
+    private static String actionLabel(String action) {
+        if (VaultSync.ACTION_LOGIN.equals(action)) return "上线";
+        if (VaultSync.ACTION_PAUSE.equals(action)) return "暂停";
+        if (VaultSync.ACTION_RESUME.equals(action)) return "恢复";
+        if (VaultSync.ACTION_STOP.equals(action)) return "停止";
+        if (VaultSync.ACTION_LOGOUT.equals(action)) return "下线";
+        if (VaultSync.ACTION_LOGIN_ALL.equals(action)) return "全部上线";
+        if (VaultSync.ACTION_STOP_ALL.equals(action)) return "全部停止";
+        return action;
+    }
+
+    /**
+     * 单角色 role-action：进行中标记（渲染为「执行中」禁点）→ 请求 → 成功 toast +
+     * 立即刷新（pollPoolOnce ≤2s 语义），失败 toast 服务端 message。
+     * M2d 语义变更：同账号多角色并行在线，login 不再互斥停他人；旧服务端若仍在
+     * data.stoppedRoles 返回被停角色，仅记日志不提示（「已下线 XX」toast 已移除）。
+     */
+    private void poolRoleAction(final AccountStore.Account a, final RoleStore.Role r,
+                                final String action) {
+        final String key = a.fpid + ":" + r.serverid + ":" + r.uid;
+        if (!poolBusy.add(key)) return;
+        refreshAccounts();   // 立即渲染「执行中」禁点
+        VaultSync.roleAction(this, a.fpid, String.valueOf(r.serverid),
+                String.valueOf(r.uid), action, (code, message, data) -> runOnUiThread(() -> {
+                    poolBusy.remove(key);
+                    boolean ok = code == 0 && data != null
+                            && data.optBoolean("accepted", false);
+                    String label = actionLabel(action);
+                    if (ok) {
+                        if (VaultSync.ACTION_LOGIN.equals(action) && data != null) {
+                            org.json.JSONArray stopped = data.optJSONArray("stoppedRoles");
+                            if (stopped != null && stopped.length() > 0) {
+                                // 旧服务端互斥残留：M2d 已移除「已下线」提示，仅日志忽略
+                                android.util.Log.d("HomeActivity",
+                                        "login returned stoppedRoles (legacy mutual-exclusion, ignored): "
+                                                + stopped);
+                            }
+                        }
+                        String msg = data == null ? "" : data.optString("message", "");
+                        toast(label + "成功" + (msg.isEmpty() ? "" : " · " + msg));
+                    } else {
+                        toast(label + "失败："
+                                + (message == null || message.isEmpty() ? "服务器未受理" : message));
+                    }
+                    pollPoolOnce();   // 操作后立即刷新（契约 §3.2：≤2s）
+                    refreshAccounts();
+                }));
+    }
+
+    /** 账号级批量（组头「全部上线/全部停止」）：语义同 {@link #poolRoleAction}。 */
+    private void poolAccountAction(final AccountStore.Account a, final String action) {
+        if (a == null || a.fpid == null || a.fpid.isEmpty()) return;
+        if (!poolAccBusy.add(a.fpid)) return;
+        refreshAccounts();
+        VaultSync.accountAction(this, a.fpid, action, (code, message, data) ->
+                runOnUiThread(() -> {
+                    poolAccBusy.remove(a.fpid);
+                    boolean ok = code == 0 && data != null
+                            && data.optBoolean("accepted", false);
+                    String label = actionLabel(action);
+                    if (ok) {
+                        toast(label + "完成（" + a.label + "）");
+                    } else {
+                        toast(label + "失败："
+                                + (message == null || message.isEmpty() ? "服务器未受理" : message));
+                    }
+                    pollPoolOnce();
+                    refreshAccounts();
+                }));
+    }
+
+    /**
+     * 全局批量（批量条「全部上线/全部停止」）：契约 §3.1 P0 方案——本地逐账号串行调
+     * account-action，进度 x/y 为真实逐账号结果（全局接口是原子批量无进度；globalAction
+     * 保留在 VaultSync 供后续直接对接）。执行期间批量条按钮禁点、进度文案「上线中/停止中 x/y」。
+     */
+    private void runGlobalBatch(final String action) {
+        if (poolBarBusy) return;
+        if (accounts == null || accounts.isEmpty()) {
+            toast("没有账号");
+            return;
+        }
+        final List<AccountStore.Account> list = new ArrayList<>();
+        for (AccountStore.Account a : accounts) {
+            if (a != null && a.fpid != null && !a.fpid.isEmpty()) list.add(a);
+        }
+        if (list.isEmpty()) {
+            toast("没有账号");
+            return;
+        }
+        poolBarBusy = true;
+        setPoolBarEnabled(false);
+        final String doing = VaultSync.ACTION_LOGIN_ALL.equals(action) ? "上线中 " : "停止中 ";
+        new Thread(() -> {
+            int done = 0, okCnt = 0;
+            for (AccountStore.Account a : list) {
+                final int d = done;
+                runOnUiThread(() -> {
+                    if (poolBarProgress != null)
+                        poolBarProgress.setText(doing + d + "/" + list.size());
+                });
+                final java.util.concurrent.CountDownLatch latch =
+                        new java.util.concurrent.CountDownLatch(1);
+                final boolean[] okBox = {false};
+                VaultSync.accountAction(HomeActivity.this, a.fpid, action,
+                        (code, message, data) -> {
+                            okBox[0] = code == 0 && data != null
+                                    && data.optBoolean("accepted", false);
+                            latch.countDown();
+                        });
+                try {
+                    latch.await(20, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    break;
+                }
+                if (okBox[0]) okCnt++;
+                done++;
+            }
+            final int fOk = okCnt, fDone = done;
+            runOnUiThread(() -> {
+                poolBarBusy = false;
+                setPoolBarEnabled(true);
+                if (poolBarProgress != null)
+                    poolBarProgress.setText("完成 " + fOk + "/" + fDone);
+                toast(actionLabel(action) + "完成 " + fOk + "/" + fDone);
+                pollPoolOnce();
+                refreshAccounts();
+            });
+        }, "pool-global-batch").start();
+    }
+
+    /** 批量条执行期间禁用 [全部上线][全部停止][刷新]。 */
+    private void setPoolBarEnabled(boolean enabled) {
+        TextView[] btns = {poolBarLoginAll, poolBarStopAll, poolBarRefresh};
+        for (TextView b : btns) {
+            if (b == null) continue;
+            b.setEnabled(enabled);
+            b.setAlpha(enabled ? 1f : .5f);
+        }
     }
 
     /** 定宽单元格。 */
