@@ -631,6 +631,109 @@ public final class VaultSync {
                 "vault-global-action").start();
     }
 
+    // ---------- P1 角色动作扩展（契约《账号池P1-功能契约》§二） ----------
+
+    /**
+     * 防封保护开关（P1 §二.1，role-action op {@code antiban}，payload {@code enabled}）。
+     * 在线/离线均可切；响应 {@code message}「已开启/已关闭防封风控安全保护」。
+     * 回调在 OkHttp 线程。
+     */
+    public static void roleActionAntiban(Context ctx, String fpid, String sid, String uid,
+                                         boolean enabled, Callback done) {
+        roleActionWithPayload(ctx, fpid, sid, uid, "antiban", p -> p.put("enabled", enabled),
+                done, "vault-role-antiban");
+    }
+
+    /**
+     * 暂停（自动恢复）（P1 §二.2）：沿用现有 role-action pause 通道，服务端置
+     * PAUSED + pauseResumeAt=now+initialDelay；失败（3002）message 为中文原因
+     * （如「顶号恢复未开启，无法暂停」/「账号当前离线，无法暂停」），UI 直接 toast。
+     * 回调在 OkHttp 线程。
+     */
+    public static void roleActionPause(Context ctx, String fpid, String sid, String uid,
+                                       Callback done) {
+        roleAction(ctx, fpid, sid, uid, ACTION_PAUSE, done);
+    }
+
+    /**
+     * 角色重命名（P1 §二.3，op {@code rename}，payload {@code name}）：
+     * 服务端调协议改游戏内昵称（道具不足自动 400 钻石），响应
+     * {@code {name, usedDiamond, diamondCost, itemId}}。回调在 OkHttp 线程。
+     */
+    public static void roleActionRename(Context ctx, String fpid, String sid, String uid,
+                                        String name, Callback done) {
+        roleActionWithPayload(ctx, fpid, sid, uid, "rename", p -> p.put("name", name),
+                done, "vault-role-rename");
+    }
+
+    /**
+     * 移除角色（P1 §二.4，op {@code remove}）：仅从服务端工作区移除（不删除游戏内
+     * 角色），先停会话；响应 {@code message}「角色已移除（游戏内角色未删除）」。
+     * 回调在 OkHttp 线程。
+     */
+    public static void roleActionRemove(Context ctx, String fpid, String sid, String uid,
+                                        Callback done) {
+        roleActionWithPayload(ctx, fpid, sid, uid, "remove", null, done, "vault-role-remove");
+    }
+
+    /**
+     * 启用/收纳角色（P1 §二.5，op {@code enabled}，payload {@code enabled}）：
+     * 停用（收纳）时服务端停止会话；响应 {@code message}「已启用」/「已收纳」。
+     * 回调在 OkHttp 线程。
+     */
+    public static void roleActionEnabled(Context ctx, String fpid, String sid, String uid,
+                                         boolean enabled, Callback done) {
+        roleActionWithPayload(ctx, fpid, sid, uid, "enabled", p -> p.put("enabled", enabled),
+                done, "vault-role-enabled");
+    }
+
+    /**
+     * 顶号恢复设置（P1 §二.6，account-action op {@code recovery-settings}）：
+     * 账号级字段（作用于全部角色）；UI 端已按 {@link RecoverySettings#validate}
+     * 预校验，服务端 3002 文案兜底。响应 {@code {message, recovery}}。回调在 OkHttp 线程。
+     */
+    public static void updateRecoverySettings(Context ctx, String fpid, RecoverySettings s,
+                                              Callback done) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app) || fpid == null || fpid.isEmpty()) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        Map<String, Object> f = commonFields(app);
+        f.put("fpid", fpid);
+        f.put("action", "recovery-settings");
+        f.put("enabled", s.enabled);
+        f.put("initialDelayMinutes", s.initialDelayMinutes);
+        f.put("retryIntervalSeconds", s.retryIntervalSeconds);
+        f.put("maxAttempts", s.maxAttempts);
+        f.put("cooldownMinutes", s.cooldownMinutes);
+        new Thread(() -> post(app, PATH_ACCOUNT_ACTION, OP_ACCOUNT_ACTION, f, done),
+                "vault-recovery-settings").start();
+    }
+
+    /** role-action 带扩展 payload 的公共通道（action 与 payload 键平铺进签名表）。 */
+    private interface PayloadFiller {
+        void fill(Map<String, Object> f);
+    }
+
+    private static void roleActionWithPayload(Context ctx, String fpid, String sid, String uid,
+                                              String action, PayloadFiller payload,
+                                              Callback done, String threadName) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app) || fpid == null || fpid.isEmpty()) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        Map<String, Object> f = commonFields(app);
+        f.put("fpid", fpid);
+        f.put("sid", sid == null ? "" : sid);
+        f.put("uid", uid == null ? "" : uid);
+        f.put("action", action);
+        if (payload != null) payload.fill(f);
+        new Thread(() -> post(app, PATH_ROLE_ACTION, OP_ROLE_ACTION, f, done),
+                threadName).start();
+    }
+
     /** 上次成功的账号池响应（UI 渲染读；无缓存/失败保留旧值，配合 {@link AccountPoolCache#isStale}）。 */
     public static JSONObject cachedAccountPool(Context ctx) {
         return AccountPoolCache.load(ctx);

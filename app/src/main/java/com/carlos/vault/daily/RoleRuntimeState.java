@@ -66,6 +66,12 @@ public final class RoleRuntimeState {
     public final boolean loginInProgress;
     public final String runScheduleState;     // ACTIVE|PAUSED
     public final boolean enabled;
+    /**
+     * 暂停自动恢复时刻（P1，{@code roles[].pause_resume_at} epoch ms，0=无）：
+     * PAUSED 且 &gt;0 → 「已暂停·待恢复」+ 倒计时（契约 P1 §三.2）。
+     * 旧服务端无此字段（=0）时维持原判定（PAUSED+yt，无后缀），不破坏 M2 口径。
+     */
+    public final long pauseResumeAt;
     /** 旧服务端降级态（无 state 对象）：文案走 legacyState 映射，动作矩阵全 false。 */
     public final boolean degraded;
     /** 降级态的旧状态键（online/recovering/takeover/need_token/其他）。 */
@@ -77,14 +83,25 @@ public final class RoleRuntimeState {
                             boolean loginInProgress, String runScheduleState, boolean enabled) {
         this(online, runState, recoveryState, statusMessage, takeoverRecoveryActive,
                 nextRecoveryAt, startupInProgress, loginInProgress, runScheduleState,
-                enabled, false, null);
+                enabled, 0L, false, null);
+    }
+
+    /** P1 全参构造：含 {@code pause_resume_at}（epoch ms，0=无）。 */
+    public RoleRuntimeState(boolean online, String runState, String recoveryState,
+                            String statusMessage, boolean takeoverRecoveryActive,
+                            long nextRecoveryAt, boolean startupInProgress,
+                            boolean loginInProgress, String runScheduleState, boolean enabled,
+                            long pauseResumeAt) {
+        this(online, runState, recoveryState, statusMessage, takeoverRecoveryActive,
+                nextRecoveryAt, startupInProgress, loginInProgress, runScheduleState,
+                enabled, pauseResumeAt, false, null);
     }
 
     private RoleRuntimeState(boolean online, String runState, String recoveryState,
                              String statusMessage, boolean takeoverRecoveryActive,
                              long nextRecoveryAt, boolean startupInProgress,
                              boolean loginInProgress, String runScheduleState, boolean enabled,
-                             boolean degraded, String legacyState) {
+                             long pauseResumeAt, boolean degraded, String legacyState) {
         this.online = online;
         this.runState = runState == null ? RUN_STOPPED : runState;
         this.recoveryState = recoveryState == null ? REC_AVAILABLE : recoveryState;
@@ -95,6 +112,7 @@ public final class RoleRuntimeState {
         this.loginInProgress = loginInProgress;
         this.runScheduleState = runScheduleState == null ? SCHED_ACTIVE : runScheduleState;
         this.enabled = enabled;
+        this.pauseResumeAt = pauseResumeAt;
         this.degraded = degraded;
         this.legacyState = legacyState;
     }
@@ -111,7 +129,7 @@ public final class RoleRuntimeState {
      */
     public static RoleRuntimeState degradedLegacy(String legacyState) {
         return new RoleRuntimeState("online".equals(legacyState), RUN_STOPPED, REC_AVAILABLE,
-                "", false, 0L, false, false, SCHED_ACTIVE, true, true,
+                "", false, 0L, false, false, SCHED_ACTIVE, true, 0L, true,
                 legacyState == null ? "" : legacyState);
     }
 
@@ -135,7 +153,13 @@ public final class RoleRuntimeState {
         if (degraded) return RoleDisplay.serverStateLabel(legacyState);
         if (online) return L_ONLINE;                                   // 1
         boolean yt = takeoverRecovering();
-        if (RUN_PAUSED.equals(runState) && yt) return L_PAUSED_RECOVERY; // 2
+        if (RUN_PAUSED.equals(runState) && (yt || pauseResumeAt > 0)) {
+            // 2 已暂停·待恢复（P1 §三.2）：倒计时用 pause_resume_at；旧服务端
+            // 无该字段（=0）时维持 M2 原口径（纯文案、无后缀，回归不破）
+            return pauseResumeAt > 0
+                    ? L_PAUSED_RECOVERY + " " + countdownText(pauseResumeAt, nowMs)
+                    : L_PAUSED_RECOVERY;
+        }
         if (RUN_PAUSED.equals(runState)) return L_PAUSED;               // 3
         if (RUN_STOPPED.equals(runState)) return L_STOPPED;             // 4
         if (takeoverKicked()) return L_TAKEOVER;                        // 5
@@ -199,8 +223,7 @@ public final class RoleRuntimeState {
         if (L_ONLINE.equals(l)) return "ok";
         if (L_LOGIN_IN_PROGRESS.equals(l)) return "busy";
         if (L_TAKEOVER.equals(l) || L_NEED_LOGIN.equals(l)) return "err";
-        if (L_PAUSED.equals(l) || L_PAUSED_RECOVERY.equals(l)
-                || l.startsWith(L_RECOVERING)) return "warn";
+        if (l.startsWith(L_PAUSED) || l.startsWith(L_RECOVERING)) return "warn";
         return "idle";
     }
 

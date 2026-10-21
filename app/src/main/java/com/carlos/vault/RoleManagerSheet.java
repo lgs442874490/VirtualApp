@@ -376,6 +376,28 @@ public final class RoleManagerSheet {
         });
         row.addView(swRef[0]);
 
+        // P1 角色管理增强（长按 = 动作菜单）：重命名 / 移除角色（不删游戏内角色）/
+        // 启用·收纳（op enabled）。仅服务器模式且服务端有池接口时挂接；
+        // 收纳/启用状态以服务端池数据为准（缺池数据回落本地开关）。
+        if (VaultSync.isServerMode(act) && !VaultSync.isPoolUnsupported(act)) {
+            JSONObject poolAccByFpid = a.fpid == null
+                    ? null : com.carlos.vault.AccountPoolCache.accountsByFpid(
+                            VaultSync.cachedAccountPool(act)).get(a.fpid);
+            JSONObject poolRole = com.carlos.vault.AccountPoolCache.findRole(
+                    poolAccByFpid, r.serverid, r.uid);
+            final boolean poolEnabled = poolRole == null
+                    ? r.enabled : poolRole.optBoolean("enabled", r.enabled);
+            row.setOnLongClickListener(v -> {
+                PoolRoleActions.showMenu(act, a, r, poolEnabled, () -> {
+                    act.runOnUiThread(() -> {
+                        for (Runnable rr : syncSubs) rr.run();
+                        if (onChanged != null) onChanged.run();
+                    });
+                });
+                return true;
+            });
+        }
+
         View div = new View(act);
         div.setBackgroundColor(UiStyle.LINE);
         LinearLayout wrap = new LinearLayout(act);

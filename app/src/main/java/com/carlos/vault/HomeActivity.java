@@ -2469,7 +2469,7 @@ public class HomeActivity extends AccountVaultActivity {
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle(a.label)
                 .setItems(new String[]{"⏻ 登录并运行自动化", "🎁 每日任务（进度/领取）",
-                        "▶ 启动游戏", "👥 角色管理", "⇅ 排序（旧视图）"}, (d, w) -> {
+                        "▶ 启动游戏", "👥 角色管理", "⏱ 恢复设置", "⇅ 排序（旧视图）"}, (d, w) -> {
                     switch (w) {
                         case 0: loginAndRun(a, null); break;
                         case 1: openDaily(a, null); break;
@@ -2477,7 +2477,8 @@ public class HomeActivity extends AccountVaultActivity {
                         case 3:
                             showRoleManager(a, RoleStore.roles(this, a.fpid), accountOnline(a));
                             break;
-                        case 4: openOld(); break;
+                        case 4: showRecoverySettingsDialog(a); break;
+                        case 5: openOld(); break;
                     }
                 })
                 .setNegativeButton("取消", null)
@@ -2734,8 +2735,10 @@ public class HomeActivity extends AccountVaultActivity {
 
     // ==================== 账号页（v2 原型）：在线判定 / 游戏头像 / 表格化角色行 ====================
 
-    /** 角色表各列宽度（dp）。昵称列吃剩余宽度，其余定宽以保证逐行对齐（状态列容纳「● 已暂停·待恢复」）。 */
-    private static final int COL_ONLINE = 74, COL_ZONE = 24, COL_DONE = 38, COL_LAST = 38, COL_GO = 74;
+    /** 角色表各列宽度（dp）。昵称列吃剩余宽度，其余定宽以保证逐行对齐（状态列容纳「● 已暂停·待恢复」）。
+     *  P1：COL_AB=防封保护开关列（UiStyle.Switch 原生 46dp 宽）。 */
+    private static final int COL_ONLINE = 74, COL_ZONE = 24, COL_DONE = 38, COL_LAST = 38,
+            COL_GO = 74, COL_AB = 46;
 
     /**
      * 「在线」判定：该账号当前是否持有<b>有效登录态</b>。
@@ -2944,6 +2947,7 @@ public class HomeActivity extends AccountVaultActivity {
         r.addView(colHead("区号", COL_ZONE, Gravity.END));
         r.addView(colHead("今日完成", COL_DONE, Gravity.END));
         r.addView(colHead("上次登录", COL_LAST, Gravity.END));
+        r.addView(colHead("防封", COL_AB, Gravity.CENTER));
         r.addView(colHead("", COL_GO, Gravity.END));
         return r;
     }
@@ -3091,28 +3095,19 @@ public class HomeActivity extends AccountVaultActivity {
         head.addView(titleBox, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
+        // ⏱ 恢复设置（P1 契约 §三.3）：顶号自动恢复策略（账号级，作用于全部角色）
+        LinearLayout recPill = headerPill("恢复设置", UiStyle.Icon.CLOCK,
+                UiStyle.INK2, UiStyle.SURFACE_3, UiStyle.LINE_STRONG);
+        recPill.setOnClickListener(v -> showRecoverySettingsDialog(a));
+        LinearLayout.LayoutParams rplp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rplp.rightMargin = dp(6);
+        head.addView(recPill, rplp);
+
         // ⚙ 角色管理：唯一的管理入口之一（另一个 = 点角色行）。卡片其它区域不响应，避免误触弹层。
         // 图标为程序化矢量 Icon（文本字符会随机型字体异形）。
-        LinearLayout gear = new LinearLayout(this);
-        gear.setOrientation(LinearLayout.HORIZONTAL);
-        gear.setGravity(Gravity.CENTER);
-        GradientDrawable gbg = new GradientDrawable();
-        gbg.setColor(UiStyle.BRAND_50);
-        gbg.setCornerRadius(dp(10));
-        gbg.setStroke(dp(1), UiStyle.BRAND_200);
-        gear.setBackground(gbg);
-        gear.setPadding(dp(9), dp(7), dp(9), dp(7));
-        gear.addView(new UiStyle.Icon(this, UiStyle.Icon.GEAR, UiStyle.BRAND_TEXT));
-        TextView gearTx = new TextView(this);
-        gearTx.setText("角色管理");
-        gearTx.setTextSize(11.5f);
-        gearTx.setTypeface(Typeface.DEFAULT_BOLD);
-        gearTx.setTextColor(UiStyle.BRAND_TEXT);
-        LinearLayout.LayoutParams glp2 = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        glp2.leftMargin = dp(5);
-        gear.addView(gearTx, glp2);
-        UiStyle.press(gear);
+        LinearLayout gear = headerPill("角色管理", UiStyle.Icon.GEAR,
+                UiStyle.BRAND_TEXT, UiStyle.BRAND_50, UiStyle.BRAND_200);
         gear.setOnClickListener(v -> showRoleManager(a, roles, accOn));
         head.addView(gear);
         box.addView(head);
@@ -3173,12 +3168,13 @@ public class HomeActivity extends AccountVaultActivity {
             long nowMs = System.currentTimeMillis();
             for (final RoleStore.Role r : roles) {
                 if (!r.enabled) continue;
+                org.json.JSONObject poolRole = matchPoolRole(poolAcc, r);
                 box.addView(roleEntryCard(a, r,
                         roleStats.get(a.fpid + ":" + r.serverid),
                         roleLast.containsKey(a.fpid + ":" + r.serverid)
                                 ? roleLast.get(a.fpid + ":" + r.serverid) : 0L,
                         roleOnlineLabel(a, r, accOn, actSid, actUid, isLiveAcc, liveUid), accOn, roles,
-                        com.carlos.vault.AccountPoolCache.stateOfRole(matchPoolRole(poolAcc, r)),
+                        com.carlos.vault.AccountPoolCache.stateOfRole(poolRole), poolRole,
                         poolBusy.contains(a.fpid + ":" + r.serverid + ":" + r.uid), nowMs));
             }
         } else {
@@ -3227,6 +3223,9 @@ public class HomeActivity extends AccountVaultActivity {
      *       与「登录」按钮（保留现有行为，stale 横幅提示）；</li>
      *   <li>被顶号/待恢复 → 行下 banner「账号被顶号 · 待恢复 mm:ss」（倒计时随轮询刷新）。</li>
      * </ul>
+     * P1 扩展（契约 §三）：「防封」列 = UiStyle.Switch（状态来自 pool 数据
+     * {@code roles[].antibanEnabled}，开启前确认弹窗）；「已暂停·待恢复」态附
+     * pause_resume_at 倒计时；长按行 = 角色动作菜单（重命名/移除/启用收纳）。
      * 点<b>行</b> = 打开角色管理；动作按钮走 role-action（进行中禁点，失败 toast 服务端
      * message，成功后立即刷新）。点「上线」直接 role-action login（M2d：同账号
      * 多角色并行在线，服务端不再互斥，无前置确认弹窗）。
@@ -3235,6 +3234,7 @@ public class HomeActivity extends AccountVaultActivity {
                                             int[] dayStats, long lastTs, String[] onlineKind, boolean accOn,
                                             final List<RoleStore.Role> allRoles,
                                             final com.carlos.vault.daily.RoleRuntimeState poolState,
+                                            final org.json.JSONObject poolRole,
                                             final boolean roleBusy, final long nowMs) {
         LinearLayout wrap = new LinearLayout(this);
         wrap.setOrientation(LinearLayout.VERTICAL);
@@ -3288,6 +3288,38 @@ public class HomeActivity extends AccountVaultActivity {
                 : (done == 0 ? UiStyle.INK3 : UiStyle.WARN_INK);
         row.addView(cellText(done + "/" + total, COL_DONE, 11.5f, dcol, Gravity.END, true));
         row.addView(cellText(shortTime(lastTs), COL_LAST, 10.5f, UiStyle.INK2, Gravity.END, false));
+
+        // ⑤.5 防封保护开关（P1 契约 §三.1）：在线/离线均可切换；状态来自池数据
+        // （roles[].antibanEnabled），刷新后同步；无池数据（旧服务端）占位对齐不渲染。
+        LinearLayout abBox = new LinearLayout(this);
+        abBox.setGravity(Gravity.CENTER);
+        abBox.setLayoutParams(new LinearLayout.LayoutParams(dp(COL_AB),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        row.addView(abBox);
+        if (poolRole != null && poolState != null && !poolState.degraded) {
+            final boolean abOn = com.carlos.vault.AccountPoolCache.antibanOf(poolRole);
+            if (!poolState.enabled) {
+                // 已收纳：开关随行置灰禁点（契约 §三.4）
+                UiStyle.Switch sw = new UiStyle.Switch(this, abOn, null);
+                sw.setEnabled(false);
+                sw.setAlpha(.4f);
+                abBox.addView(sw);
+            } else {
+                final UiStyle.Switch[] abRef = new UiStyle.Switch[1];
+                abRef[0] = new UiStyle.Switch(this, abOn, () -> {
+                    // Switch 点击即翻转：先回弹到池数据状态（成功后轮询刷新驱动真实值），
+                    // 开启走确认弹窗（逐字契约），关闭直接调用
+                    final boolean want = abRef[0].isOn();
+                    abRef[0].setOn(abOn);
+                    PoolRoleActions.toggleAntiban(HomeActivity.this, a, r, want,
+                            () -> runOnUiThread(() -> {
+                                pollPoolOnce();
+                                refreshAccounts();
+                            }));
+                });
+                abBox.addView(abRef[0]);
+            }
+        }
 
         // ⑥ 动作列（M2）：按状态矩阵渲染；进行中整列「执行中」禁点
         LinearLayout goBox = new LinearLayout(this);
@@ -3366,9 +3398,20 @@ public class HomeActivity extends AccountVaultActivity {
             }
         }
 
-        // 点角色行 = 角色管理（与齿轮同一入口）
+        // 点角色行 = 角色管理（与齿轮同一入口）；长按 = P1 角色动作菜单
+        // （重命名/移除/启用收纳——池数据可用才挂，旧服务端走角色管理本地开关）
         UiStyle.press(row);
         row.setOnClickListener(v -> showRoleManager(a, allRoles, accOn));
+        if (poolRole != null && poolState != null && !poolState.degraded) {
+            row.setOnLongClickListener(v -> {
+                PoolRoleActions.showMenu(HomeActivity.this, a, r,
+                        poolRole.optBoolean("enabled", true), () -> runOnUiThread(() -> {
+                            pollPoolOnce();
+                            refreshAccounts();
+                        }));
+                return true;
+            });
+        }
         return wrap;
     }
 
@@ -3403,32 +3446,222 @@ public class HomeActivity extends AccountVaultActivity {
         return b;
     }
 
+    /** 账号组头右侧胶囊按钮（恢复设置/角色管理共用）：圆角浅底 + 矢量图标 + 粗体字。 */
+    private LinearLayout headerPill(String text, int icon, int ink, int bg, int stroke) {
+        LinearLayout pill = new LinearLayout(this);
+        pill.setOrientation(LinearLayout.HORIZONTAL);
+        pill.setGravity(Gravity.CENTER);
+        GradientDrawable pbg = new GradientDrawable();
+        pbg.setColor(bg);
+        pbg.setCornerRadius(dp(10));
+        pbg.setStroke(dp(1), stroke);
+        pill.setBackground(pbg);
+        pill.setPadding(dp(9), dp(7), dp(9), dp(7));
+        pill.addView(new UiStyle.Icon(this, icon, ink));
+        TextView tx = new TextView(this);
+        tx.setText(text);
+        tx.setTextSize(11.5f);
+        tx.setTypeface(Typeface.DEFAULT_BOLD);
+        tx.setTextColor(ink);
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(5);
+        pill.addView(tx, lp);
+        UiStyle.press(pill);
+        return pill;
+    }
+
+    // ==================== 恢复设置（P1 契约 §三.3） ====================
+
     /**
-     * 池角色匹配（后台/渲染线程均可）：按 (sid, uid) 找服务端角色对象。
-     * uid 任一侧未知时按 sid 兜底（同服同 sid 多角色 uid 未同步的行可能串状态——
-     * 已知限制，随角色元数据同步自愈）。
+     * 顶号恢复设置对话框（账号级，作用于全部角色）：switch + 分钟/次/秒输入 + 冷却下拉
+     * （15 分钟/30 分钟/1 小时/2 小时/24 小时）。预填服务端 {@code account.recovery}
+     * （旧服务端缺字段回落契约默认值，{@link RecoverySettings#fromAccount}）；
+     * 保存前 {@link RecoverySettings#validate} 预校验（文案逐字对齐服务端 3002），
+     * 不过不关弹窗；成功 toast「顶号恢复设置已保存并立即生效」。
      */
-    private static org.json.JSONObject matchPoolRole(org.json.JSONObject poolAcc,
-                                                     RoleStore.Role r) {
-        if (poolAcc == null || r == null) return null;
+    private void showRecoverySettingsDialog(final AccountStore.Account a) {
+        if (a == null || a.fpid == null || a.fpid.isEmpty()) return;
+        org.json.JSONObject poolAcc = com.carlos.vault.AccountPoolCache.accountsByFpid(
+                VaultSync.cachedAccountPool(this)).get(a.fpid);
+        final RecoverySettings cur = RecoverySettings.fromAccount(poolAcc);
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(22), dp(10), dp(22), dp(2));
+
+        TextView intro = new TextView(this);
+        intro.setText("意外被顶下线后按以下策略自动顶回，作用于该账号全部角色，保存立即生效");
+        intro.setTextSize(11);
+        intro.setTextColor(UiStyle.INK2);
+        box.addView(intro);
+
+        // 允许意外下线后自动上线（switch）
+        LinearLayout swRow = new LinearLayout(this);
+        swRow.setOrientation(LinearLayout.HORIZONTAL);
+        swRow.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams swlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        swlp.topMargin = dp(12);
+        TextView swLabel = new TextView(this);
+        swLabel.setText("允许意外下线后自动上线");
+        swLabel.setTextSize(13);
+        swLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        swLabel.setTextColor(UiStyle.INK);
+        swRow.addView(swLabel, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        final UiStyle.Switch enSw = new UiStyle.Switch(this, cur.enabled, null);
+        swRow.addView(enSw);
+        box.addView(swRow, swlp);
+
+        // 顶号后等待（分钟，1~1440，默认 30）
+        final EditText delayEt = recoveryNumField(box, "顶号后等待（分钟，1~1440）",
+                "默认 30", String.valueOf(cur.initialDelayMinutes));
+        // 连续尝试（次，0~10，默认 3；0=不自动顶号，账号保持离线）
+        final EditText attemptsEt = recoveryNumField(box, "连续尝试（次，0~10）",
+                "默认 3；0=不自动顶号，账号保持离线", String.valueOf(cur.maxAttempts));
+        // 每次间隔（秒，1~300，默认 5）
+        final EditText retryEt = recoveryNumField(box, "每次间隔（秒，1~300）",
+                "默认 5", String.valueOf(cur.retryIntervalSeconds));
+
+        // 让号冷却（下拉：15 分钟/30 分钟/1 小时/2 小时/24 小时，默认 15 分钟）
+        TextView cdLabel = new TextView(this);
+        cdLabel.setText("让号冷却");
+        cdLabel.setTextSize(12.5f);
+        cdLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        cdLabel.setTextColor(UiStyle.INK);
+        LinearLayout.LayoutParams cllp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        cllp.topMargin = dp(12);
+        box.addView(cdLabel, cllp);
+        final int[] cd = {cur.cooldownMinutes};
+        final TextView cdRow = new TextView(this);
+        cdRow.setTextSize(12);
+        cdRow.setGravity(Gravity.CENTER_VERTICAL);
+        cdRow.setMinHeight(dp(44));
+        cdRow.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 12, UiStyle.LINE_STRONG));
+        cdRow.setPadding(dp(12), dp(10), dp(12), dp(10));
+        final Runnable[] renderCd = new Runnable[1];
+        renderCd[0] = () -> renderDropdownText(cdRow, "让号冷却",
+                RecoverySettings.cooldownLabel(cd[0]));
+        renderCd[0].run();
+        final String[] cdLabels = new String[RecoverySettings.COOLDOWNS.length];
+        for (int i = 0; i < cdLabels.length; i++) {
+            cdLabels[i] = RecoverySettings.cooldownLabel(RecoverySettings.COOLDOWNS[i]);
+        }
+        cdRow.setOnClickListener(v -> new AlertDialog.Builder(this,
+                AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("让号冷却")
+                .setItems(cdLabels, (d2, w2) -> {
+                    cd[0] = RecoverySettings.COOLDOWNS[w2];
+                    renderCd[0].run();
+                })
+                .setNegativeButton("取消", null)
+                .show());
+        LinearLayout.LayoutParams crlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        crlp.topMargin = dp(8);
+        box.addView(cdRow, crlp);
+
+        ScrollView sc = new ScrollView(this);
+        sc.addView(box);
+
+        final AlertDialog dialog = new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("恢复设置 · " + a.label)
+                .setView(sc)
+                .setPositiveButton("保存", null)
+                .setNegativeButton("取消", null)
+                .create();
+        dialog.setOnShowListener(d -> {
+            final TextView pos = dialog.getButton(AlertDialog.BUTTON_POSITIVE);
+            pos.setOnClickListener(v -> {
+                Integer delay = parseEtInt(delayEt);
+                Integer attempts = parseEtInt(attemptsEt);
+                Integer retry = parseEtInt(retryEt);
+                if (delay == null || attempts == null || retry == null) {
+                    toast("请输入有效的数字");
+                    return;
+                }
+                String err = RecoverySettings.validate(delay, retry, attempts, cd[0]);
+                if (err != null) {
+                    toast(err);   // 文案逐字对齐服务端 3002（RecoverySettings 常量）
+                    return;
+                }
+                pos.setEnabled(false);
+                pos.setText("保存中…");
+                VaultSync.updateRecoverySettings(this, a.fpid, new RecoverySettings(
+                                enSw.isOn(), delay, retry, attempts, cd[0]),
+                        (code, message, data) -> runOnUiThread(() -> {
+                            pos.setEnabled(true);
+                            pos.setText("保存");
+                            boolean ok = code == 0 && (data == null
+                                    || data.optBoolean("accepted", true));
+                            if (ok) {
+                                dialog.dismiss();
+                                toast(RecoverySettings.MSG_SAVED);
+                                pollPoolOnce();
+                                refreshAccounts();
+                            } else {
+                                toast("保存失败：" + (message == null || message.isEmpty()
+                                        ? "服务器未受理" : message));
+                            }
+                        }));
+            });
+        });
+        dialog.show();
+    }
+
+    /** 恢复设置对话框的数字输入行（label + 44dp 标准输入框；返回 EditText 供读取）。 */
+    private EditText recoveryNumField(LinearLayout parent, String label, String hint,
+                                      String value) {
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextSize(12.5f);
+        l.setTypeface(Typeface.DEFAULT_BOLD);
+        l.setTextColor(UiStyle.INK);
+        LinearLayout.LayoutParams llp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        llp.topMargin = dp(12);
+        parent.addView(l, llp);
+        EditText et = UiStyle.searchInput(this, hint);
+        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        et.setText(value);
+        LinearLayout.LayoutParams elp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        elp.topMargin = dp(8);
+        parent.addView(et, elp);
+        return et;
+    }
+
+    /** 下拉行文案（label 灰 + 值 brand 粗，同 {@link UiStyle#dropdownRow} 的样式口径）。 */
+    private void renderDropdownText(TextView v, String label, String value) {
+        android.text.SpannableString ss = new android.text.SpannableString(label + "  " + value + " ▾");
+        ss.setSpan(new android.text.style.ForegroundColorSpan(UiStyle.INK2), 0, label.length(), 0);
+        ss.setSpan(new android.text.style.StyleSpan(Typeface.BOLD), label.length() + 2, ss.length(), 0);
+        ss.setSpan(new android.text.style.ForegroundColorSpan(UiStyle.BRAND_TEXT),
+                label.length() + 2, ss.length(), 0);
+        v.setText(ss);
+    }
+
+    /** 输入框整数安全读取（空/非数字 → null）。 */
+    private static Integer parseEtInt(EditText et) {
         try {
-            org.json.JSONArray roles = poolAcc.optJSONArray("roles");
-            if (roles == null) return null;
-            org.json.JSONObject hit = null;
-            for (int i = 0; i < roles.length(); i++) {
-                org.json.JSONObject ro = roles.optJSONObject(i);
-                if (ro == null) continue;
-                if (com.carlos.vault.AccountPoolCache.parseNum(ro.optString("sid", "")) != r.serverid)
-                    continue;
-                long ruid = com.carlos.vault.AccountPoolCache.parseNum(ro.optString("uid", "0"));
-                if (r.uid > 0 && ruid > 0 && ruid != r.uid) continue;
-                hit = ro;
-                if (r.uid > 0 && ruid == r.uid) break;   // 精确命中优先
-            }
-            return hit;
+            String s = et.getText() == null ? "" : et.getText().toString().trim();
+            if (s.isEmpty()) return null;
+            return Integer.parseInt(s);
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    /**
+     * 池角色匹配（后台/渲染线程均可）：按 (sid, uid) 找服务端角色对象。
+     * 实现已下沉 {@link AccountPoolCache#findRole}（P1：角色管理弹层长按菜单共用）。
+     */
+    private static org.json.JSONObject matchPoolRole(org.json.JSONObject poolAcc,
+                                                     RoleStore.Role r) {
+        return r == null ? null
+                : com.carlos.vault.AccountPoolCache.findRole(poolAcc, r.serverid, r.uid);
     }
 
     /** 动作的中文名（toast 用）。 */
@@ -3471,7 +3704,13 @@ public class HomeActivity extends AccountVaultActivity {
                             }
                         }
                         String msg = data == null ? "" : data.optString("message", "");
-                        toast(label + "成功" + (msg.isEmpty() ? "" : " · " + msg));
+                        // P1 §三.2：暂停成功 toast 固定文案（服务端 message「将在 N 分钟后自动上线」
+                        // 含具体分钟数，刷新后由「已暂停·待恢复」倒计时承接，不再双报）
+                        if (VaultSync.ACTION_PAUSE.equals(action)) {
+                            toast(RoleActionRules.PAUSE_OK_TOAST);
+                        } else {
+                            toast(label + "成功" + (msg.isEmpty() ? "" : " · " + msg));
+                        }
                     } else {
                         toast(label + "失败："
                                 + (message == null || message.isEmpty() ? "服务器未受理" : message));
