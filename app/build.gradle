@@ -180,6 +180,9 @@ dependencies {
     // ---------- 单元测试（JVM 纯逻辑层，见 qa/测试用例-全量-v3.8.0.md） ----------
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.mockito:mockito-inline:4.11.0'
+    // 真实 org.json（覆盖 android.jar 桩）：AccountPoolCache 的 /accounts shape
+    // 解析辅助（isRoleOnline 等）需要真实 JSON 解析（M4 §3.1 单测要求真实 fixture）
+    testImplementation 'org.json:json:20240303'
 
 }
 

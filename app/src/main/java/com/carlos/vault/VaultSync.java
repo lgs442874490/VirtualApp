@@ -57,12 +57,21 @@ public final class VaultSync {
     private static final String PATH_STATE = "/v1/vault/state";
     private static final String PATH_POLICY = "/v1/vault/policy";
     private static final String PATH_AUTOMATION = "/v1/vault/automation";
+    private static final String PATH_ACCOUNTS = "/v1/vault/accounts";
+    private static final String PATH_ROLE_ACTION = "/v1/vault/role-action";
+    private static final String PATH_ACCOUNT_ACTION = "/v1/vault/account-action";
+    private static final String PATH_GLOBAL_ACTION = "/v1/vault/global-action";
     private static final String OP_SYNC = "vaultSync";
     private static final String OP_TOKEN = "vaultToken";
     private static final String OP_STATUS = "vaultStatus";
     private static final String OP_STATE = "vaultState";
     private static final String OP_POLICY = "vaultPolicy";
     private static final String OP_AUTOMATION = "vaultAutomation";
+    // M2 账号池四 OP（与 vault-server 白名单一一绑定，M1 契约 §6）
+    private static final String OP_ACCOUNTS = "vaultAccounts";
+    private static final String OP_ROLE_ACTION = "vaultRoleAction";
+    private static final String OP_ACCOUNT_ACTION = "vaultAccountAction";
+    private static final String OP_GLOBAL_ACTION = "vaultGlobalAction";
 
     /** 与服务端 VAULT_SECRET 同值（base64 + 循环 XOR 混淆，防反编译明文）。 */
     private static final String SECRET_OBF = "ABIMAhdBQkQbRFFHWllZWxcQVAUGSw==";
@@ -532,6 +541,111 @@ public final class VaultSync {
         });
     }
 
+    // ---------- M2 账号池（/v1/vault/accounts + 动作控制面） ----------
+
+    /** role-action 的动作值（M1 契约 §3.2）。 */
+    public static final String ACTION_LOGIN = "login";
+    public static final String ACTION_LOGOUT = "logout";
+    public static final String ACTION_PAUSE = "pause";
+    public static final String ACTION_RESUME = "resume";
+    public static final String ACTION_STOP = "stop";
+    /** account-action / global-action 的批量动作值（M1 契约 §3.3/§3.4）。 */
+    public static final String ACTION_LOGIN_ALL = "login-all";
+    public static final String ACTION_STOP_ALL = "stop-all";
+
+    /**
+     * 拉取账号池列表 + 每角色运行态 + 聚合计数（M2 账号页轮询源，5s）。
+     *
+     * <p>成功（code==0）→ {@link AccountPoolCache#save}；失败分两类（M4 真机验证）：
+     * 服务端没有该接口（code=3002/not found/404，如生产 v4.1.4）→
+     * {@link AccountPoolCache#markUnsupported}（UI 不显示失败横幅、直接 legacy 渲染）；
+     * 其它失败（网络断/超时）→ {@link AccountPoolCache#markStale} 但<b>保留上次缓存</b>
+     * （UI 显示「状态获取失败，点击重试」，不误判离线）。回调在 OkHttp 线程。
+     * 只做列表/状态，不替代 {@link #fetchState} 的今日页数据回写。
+     */
+    public static void fetchAccountPool(Context ctx, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app)) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        Map<String, Object> f = commonFields(app);
+        new Thread(() -> post(app, PATH_ACCOUNTS, OP_ACCOUNTS, f, (code, message, data) -> {
+            if (code == 0 && data != null) {
+                AccountPoolCache.save(app, data);
+            } else if (AccountPoolCache.isUnsupportedReply(code, message)) {
+                AccountPoolCache.markUnsupported(app);
+            } else {
+                AccountPoolCache.markStale(app);
+            }
+            if (done != null) done.onResult(code, message, data);
+        }), "vault-accounts").start();
+    }
+
+    /**
+     * 单角色动作（M1 §3.2）：action ∈ login/logout/pause/resume/stop。
+     * M2d 语义变更（多角色并行）：login 只启动目标角色，不停止同账号其它角色，
+     * 失败只影响本角色；旧服务端仍可能在 data.stoppedRoles 返回被停角色，
+     * App 忽略（仅日志）。回调在 OkHttp 线程。
+     */
+    public static void roleAction(Context ctx, String fpid, String sid, String uid,
+                                  String action, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app) || fpid == null || fpid.isEmpty()) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        Map<String, Object> f = commonFields(app);
+        f.put("fpid", fpid);
+        f.put("sid", sid == null ? "" : sid);
+        f.put("uid", uid == null ? "" : uid);
+        f.put("action", action);
+        new Thread(() -> post(app, PATH_ROLE_ACTION, OP_ROLE_ACTION, f, done),
+                "vault-role-action").start();
+    }
+
+    /** 账号级批量（M1 §3.3）：action ∈ login-all/stop-all，出参 results[] 每角色结果。 */
+    public static void accountAction(Context ctx, String fpid, String action, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app) || fpid == null || fpid.isEmpty()) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        Map<String, Object> f = commonFields(app);
+        f.put("fpid", fpid);
+        f.put("action", action);
+        new Thread(() -> post(app, PATH_ACCOUNT_ACTION, OP_ACCOUNT_ACTION, f, done),
+                "vault-account-action").start();
+    }
+
+    /** 全局批量（M1 §3.4）：action ∈ login-all/stop-all，原子批量，出参 accounts[] 每账号结果。 */
+    public static void globalAction(Context ctx, String action, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app)) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        Map<String, Object> f = commonFields(app);
+        f.put("action", action);
+        new Thread(() -> post(app, PATH_GLOBAL_ACTION, OP_GLOBAL_ACTION, f, done),
+                "vault-global-action").start();
+    }
+
+    /** 上次成功的账号池响应（UI 渲染读；无缓存/失败保留旧值，配合 {@link AccountPoolCache#isStale}）。 */
+    public static JSONObject cachedAccountPool(Context ctx) {
+        return AccountPoolCache.load(ctx);
+    }
+
+    /** 上次账号池请求是否失败（stale 横幅开关；unsupported 时不显示横幅）。 */
+    public static boolean isPoolStale(Context ctx) {
+        return AccountPoolCache.isStale(ctx);
+    }
+
+    /** 服务端是否没有池接口（生产 v4.1.4 降级：UI 直接 legacy 渲染，不显示失败横幅）。 */
+    public static boolean isPoolUnsupported(Context ctx) {
+        return AccountPoolCache.isUnsupported(ctx);
+    }
+
     // ---------- 状态缓存（UI 读） ----------
 
     /** 服务器回传的账号状态（无缓存/该号缺项返回 null）。 */
@@ -589,21 +703,12 @@ public final class VaultSync {
                 JSONArray roles = new JSONArray();
                 for (RoleStore.Role r : RoleStore.roles(ctx, a.fpid)) {
                     if (r.serverid <= 0) continue;
-                    JSONObject ro = new JSONObject();
-                    ro.put("sid", String.valueOf(r.serverid));
-                    // 角色 uid（同服多角色区分依据；旧服务器忽略多余字段，前向兼容）
-                    ro.put("uid", r.uid > 0 ? String.valueOf(r.uid) : "");
                     String rid = store.getRoleSettings(a.fpid, r.serverid);
-                    ro.put("identity", rid == null ? "" : rid);
                     // 任务开关（服务器按角色执行整轮的依据）
                     Map<String, Boolean> cfg = cfgStore.roleConfig(a.fpid, r.serverid);
-                    if (cfg != null) {
-                        JSONObject cm = new JSONObject();
-                        for (Map.Entry<String, Boolean> ce : cfg.entrySet()) {
-                            cm.put(ce.getKey(), ce.getValue());
-                        }
-                        ro.put("config", cm);
-                    }
+                    // 角色行 JSON 由纯函数组装（M2b 新增 name/level/power/enabled 账号池
+                    // 元数据；旧服务器忽略未知字段，前向兼容；旧字段键序/格式不变）
+                    JSONObject ro = new JSONObject(roleFields(r, rid, cfg));
                     // 任务参数（策略/子项开关等）
                     JSONObject prm = new JSONObject();
                     for (com.carlos.vault.daily.FnRegistry.Fn fn
@@ -624,6 +729,31 @@ public final class VaultSync {
         f.put("accountsJson", accounts.toString());
         f.put("count", accounts.length());
         return f;
+    }
+
+    /**
+     * 单角色行 JSON 字段组装（M2b 自 {@link #syncFields} 抽出的纯函数，纯 JVM 可测）：
+     * 返回 LinkedHashMap 保持键序，调用方经 JSONObject(Map) 包装后入 accountsJson
+     * （config 子 Map 由 JSONObject(Map).wrap 包成 JSONObject，线上格式不变）。
+     *
+     * <p>键序：sid/uid 在前、identity/config 收尾（旧字段相对顺序不变），新增账号池
+     * 元数据 name/level/power/enabled 插在 uid 之后（M1 服务端 /v1/vault/accounts 的
+     * 显示名/等级/战力/是否启用与 enabled 批量动作依赖；旧服务端忽略未知字段，前向
+     * 兼容）。空值兜底：name/identity null → ""，uid≤0 → ""（与服务端字符串口径
+     * 一致），config 为 null 不输出键；params 需 FnParams 按 fn 读盘，仍由调用方另行 put。
+     */
+    static Map<String, Object> roleFields(RoleStore.Role r, String identity,
+                                          Map<String, Boolean> config) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("sid", String.valueOf(r.serverid));
+        m.put("uid", r.uid > 0 ? String.valueOf(r.uid) : "");
+        m.put("name", r.name == null ? "" : r.name);
+        m.put("level", r.level);
+        m.put("power", r.power);
+        m.put("enabled", r.enabled);
+        m.put("identity", identity == null ? "" : identity);
+        if (config != null) m.put("config", config);
+        return m;
     }
 
     private static Map<String, Object> commonFields(Context ctx) {
@@ -651,7 +781,17 @@ public final class VaultSync {
                     .build();
             try (Response response = client.newCall(request).execute()) {
                 String text = response.body() == null ? "" : response.body().string();
-                JSONObject envelope = new JSONObject(text);
+                JSONObject envelope;
+                try {
+                    envelope = new JSONObject(text);
+                } catch (Throwable t2) {
+                    // 非 JSON 响应（旧服务端 404 HTML 等）：把 HTTP 码带进 message，
+                    // 供上层把「接口不存在」（unsupported）与网络故障（stale）区分开
+                    Log.w(TAG, path + " 非 JSON 响应 http=" + response.code());
+                    if (cb != null) cb.onResult(-1,
+                            "HTTP " + response.code() + " " + t2.getMessage(), null);
+                    return;
+                }
                 int code = envelope.optInt("code", -1);
                 String message = envelope.optString("message", "");
                 JSONObject data = envelope.optJSONObject("data");
