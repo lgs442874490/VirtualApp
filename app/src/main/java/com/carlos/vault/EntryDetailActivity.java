@@ -11,6 +11,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Color;
+import android.graphics.Rect;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
@@ -20,6 +21,7 @@ import android.os.Bundle;
 import android.provider.Settings;
 import android.view.Gravity;
 import android.view.ViewGroup;
+import android.view.Window;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -843,25 +845,134 @@ public class EntryDetailActivity extends Activity {
     // ---------- 分身游戏更新（M3c：更新原生游戏 + 重新克隆分身，保数据；在线下载入口已移除） ----------
 
     /**
-     * 版本过旧弹窗（M3c）：更新原生游戏（主）/ 重新克隆分身 /
-     * 从本地 APK 更新（高级兜底）/ 稍后。按钮集合与文案由
+     * 版本过旧弹窗（M3c/M3d）：更新原生游戏（主）/ 重新克隆分身 /
+     * 从本地 APK 更新（高级兜底）/ 稍后。选项集合与文案由
      * {@link GameRecloneFlow#updateDialogOptions} 锁定，不再出现「立即更新(888MB)」下载项。
+     *
+     * <p>M3d（vivo/Android 14 真机 P1）：Builder.setMessage+setItems 组合在该 ROM 上
+     * 选项列表不渲染（无障碍树止于 textSpacerNoButtons，用户无选项可点）。
+     * 改为自定义视图渲染（同 {@link UiStyle} 输入/确认弹窗的「透明窗 + 白卡」模式）：
+     * 标题/正文 TextView + 4 个 56dp 可点选项行（分隔线 + 右箭头，行挂
+     * contentDescription），动作经 {@link GameRecloneFlow#actionForOption}
+     * 与原 setItems 分支一一对应。
      */
     private void showUpdateDialog() {
         String cur = engine.installedGameVersionName();
         final String[] options = GameRecloneFlow.updateDialogOptions();
-        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle(GameVersionCheck.outdatedText(cur, updateCfg.latestVersionName))
-                .setMessage(GameRecloneFlow.updateDialogMessage(
-                        updateCfg.latestVersionName, updateCfg.latestVersionCode))
-                .setItems(options, (d, which) -> {
-                    switch (GameRecloneFlow.actionForOption(which)) {
-                        case OPEN_STORE: openNativeGameStore(); break;
-                        case RECLONE:    recloneThenRelaunch(); break;
-                        case LOCAL_APK:  startLocalApkUpdate(); break;
-                        case NONE: default: break;   // 稍后：仅关闭弹窗
-                    }
-                }).show();
+
+        // 先建「透明窗 + 空 ScrollView 根」的弹窗再填内容：选项行点击要先关本弹窗
+        // 再执行动作，需捕获 dlg（先建后填，避免 lambda 前向引用局部变量）
+        ScrollView scroll = new ScrollView(this);
+        scroll.setVerticalScrollBarEnabled(false);
+        AlertDialog dlg = new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setView(scroll)
+                .create();
+        if (dlg.getWindow() != null) {
+            dlg.getWindow().setBackgroundDrawableResource(android.R.color.transparent);
+        }
+
+        LinearLayout box = new LinearLayout(this);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setBackground(UiStyle.roundRectDp(this, UiStyle.CARD, 20));
+        box.setPadding(UiStyle.dp(this, 24), UiStyle.dp(this, 20),
+                UiStyle.dp(this, 24), UiStyle.dp(this, 12));
+
+        TextView title = new TextView(this);
+        title.setText(GameVersionCheck.outdatedText(cur, updateCfg.latestVersionName));
+        title.setTextSize(16);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.INK);
+        box.addView(title);
+
+        TextView body = new TextView(this);
+        body.setText(GameRecloneFlow.updateDialogMessage(
+                updateCfg.latestVersionName, updateCfg.latestVersionCode));
+        body.setTextSize(14);
+        body.setTextColor(UiStyle.INK2);
+        body.setLineSpacing(UiStyle.dp(this, 3), 1f);
+        LinearLayout.LayoutParams bodyLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        bodyLp.topMargin = UiStyle.dp(this, 10);
+        box.addView(body, bodyLp);
+
+        LinearLayout list = new LinearLayout(this);
+        list.setOrientation(LinearLayout.VERTICAL);
+        for (int i = 0; i < options.length; i++) {
+            if (i > 0) list.addView(UiStyle.divider(this));
+            final int idx = i;
+            final GameRecloneFlow.UpdateAction action = GameRecloneFlow.actionForOption(idx);
+            list.addView(updateOptionRow(options[idx], action, () -> {
+                dlg.dismiss();
+                dispatchUpdateAction(action);
+            }));
+        }
+        LinearLayout.LayoutParams listLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        listLp.topMargin = UiStyle.dp(this, 8);
+        box.addView(list, listLp);
+
+        scroll.addView(box, new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        dlg.show();
+        clampUpdateDialogHeight(dlg);
+    }
+
+    /**
+     * 弹窗选项行：56dp 高、左侧选项文字 + 右侧箭头，按压整行浅蓝
+     * （StateListDrawable 原生按压态，复用 UiStyle token）。
+     * 主推项（OPEN_STORE）蓝字加粗，「稍后」（NONE）弱化为次级灰；
+     * contentDescription 挂选项全文，保证无障碍树里四行均可读、可点（M3d 起因）。
+     */
+    private LinearLayout updateOptionRow(String label, GameRecloneFlow.UpdateAction action,
+                                         Runnable onClick) {
+        boolean primary = action == GameRecloneFlow.UpdateAction.OPEN_STORE;
+        boolean muted = action == GameRecloneFlow.UpdateAction.NONE;
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setClickable(true);
+        row.setFocusable(true);
+        row.setContentDescription(label);
+        row.setBackground(UiStyle.pressRound(this, Color.TRANSPARENT, UiStyle.BRAND_50, 10));
+
+        TextView tv = new TextView(this);
+        tv.setText(label);
+        tv.setTextSize(15);
+        tv.setTypeface(primary ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
+        tv.setTextColor(primary ? UiStyle.BRAND_TEXT : (muted ? UiStyle.INK2 : UiStyle.INK));
+        row.addView(tv, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+
+        row.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
+                        primary ? UiStyle.BRAND_TEXT : UiStyle.INK3, 16),
+                new LinearLayout.LayoutParams(UiStyle.dp(this, 16), UiStyle.dp(this, 16)));
+
+        row.setLayoutParams(new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, UiStyle.dp(this, 56)));
+        row.setOnClickListener(v -> onClick.run());
+        return row;
+    }
+
+    /** 选项动作分发（与原 setItems 分支一一对应；NONE=稍后，仅关闭弹窗）。 */
+    private void dispatchUpdateAction(GameRecloneFlow.UpdateAction action) {
+        switch (action) {
+            case OPEN_STORE: openNativeGameStore(); break;
+            case RECLONE:    recloneThenRelaunch(); break;
+            case LOCAL_APK:  startLocalApkUpdate(); break;
+            case NONE: default: break;
+        }
+    }
+
+    /** 小屏兜底：decor 高度超过可视区 85% 时把窗口压到该高度，滚动交给根 ScrollView。 */
+    private void clampUpdateDialogHeight(AlertDialog dlg) {
+        if (dlg.getWindow() == null) return;
+        Window w = dlg.getWindow();
+        Rect frame = new Rect();
+        w.getDecorView().getWindowVisibleDisplayFrame(frame);
+        int maxH = (int) (frame.height() * 0.85f);
+        if (maxH > 0 && w.getDecorView().getHeight() > maxH) {
+            w.setLayout(ViewGroup.LayoutParams.WRAP_CONTENT, maxH);
+        }
     }
 
     /**
