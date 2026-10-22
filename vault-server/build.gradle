@@ -32,10 +32,12 @@ compileJava.options.encoding = 'UTF-8'
 compileTestJava.options.encoding = 'UTF-8'
 
 // 单一事实源：直接编译 App 工程里的 wjdr 协议包（已零 Android 依赖），不做复制；
-// RewardText（领取明细解析/物品命名，纯 java.util）同源共用，两侧目录/命名不漂移
+// RewardText（领取明细解析/物品命名，纯 java.util）同源共用，两侧目录/命名不漂移；
+// P7：WarState/ThreatBoard 战争判定机同源共用（vault-server 对等=仅 WarState 判定+战时任务闸）
 sourceSets.main.java {
     srcDir '../app/src/main/java'
-    include 'com/carlos/vaultserver/**', 'com/carlos/vault/wjdr/**', 'com/carlos/vault/daily/RewardText.java'
+    include 'com/carlos/vaultserver/**', 'com/carlos/vault/wjdr/**', 'com/carlos/vault/daily/RewardText.java',
+            'com/carlos/vault/daily/guardian/WarState.java', 'com/carlos/vault/daily/guardian/ThreatBoard.java'
 }
 
 // sproto schema（.spb）与任务目录（towndev/*.json）打进 classpath，服务器侧从 classpath 读

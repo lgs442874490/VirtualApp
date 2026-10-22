@@ -880,9 +880,18 @@ public class DailyRunner {
                             boolean closeEngine) {
         HotConfig.init(context);
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
-            // 战时任务闸（E1）：威胁在途或驻防执行中 → 本任务让位（全 6 队留给驻防）
+            // 战时任务闸（E1-lite）：威胁在途或驻防执行中 → 本任务让位（全 6 队留给驻防）
             if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(fpid, serverid)) {
                 DailyResult r = new DailyResult(d.id, d.name, DailyResult.Category.SKIPPED, "守护盟友驻防执行中，本轮让位");
+                sum.results.add(r);
+                if (listener != null) listener.onTaskDone(r);
+                continue;
+            }
+            // 战时任务闸（E1 完整态，P7 §6.11.3）：WarState WARTIME 时 war.allowlist 外一律
+            // SKIP("战时暂停")，当日轮次不烧（45min 补跑机制退出后自动补齐）；ALERT 停可选出征
+            String warNote = com.carlos.vault.daily.guardian.GuardianEngine.warGateNote(context, fpid, serverid, d.id);
+            if (warNote != null) {
+                DailyResult r = new DailyResult(d.id, d.name, DailyResult.Category.SKIPPED, warNote);
                 sum.results.add(r);
                 if (listener != null) listener.onTaskDone(r);
                 continue;

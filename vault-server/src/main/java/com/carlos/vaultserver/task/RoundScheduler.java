@@ -59,6 +59,11 @@ public final class RoundScheduler {
 
         /** 确保账号有会话并开始登录（账号页“登录”按钮/手动触发用）。 */
         boolean ensureSession(String fpid);
+
+        /** P7 战时让位：该账号任一角色处于战争态 → 自动整轮延后（退出后窗口补跑；手动触发不受限）。 */
+        default boolean wartimeYield(String fpid) {
+            return false;
+        }
     }
 
     public RoundScheduler(VaultStore store, StateStore stateStore, KeeperFacade keeper) {
@@ -123,8 +128,9 @@ public final class RoundScheduler {
         }
         for (VaultStore.Account acc : store.snapshot()) {
             if (acc.token == null || acc.token.isEmpty()) continue;
-            // 2) 每日整轮（auto + 时间窗）
-            if (acc.auto) {
+            // 2) 每日整轮（auto + 时间窗；P7 战时让位：战争态不排不发，退出后错过窗口立即补跑）
+            boolean warYield = keeper.wartimeYield(acc.fpid);
+            if (acc.auto && !warYield) {
                 long lastRun = longOf("srv:lastrun:" + acc.fpid);
                 boolean ranToday = lastRun > 0 && com.carlos.vaultserver.Beijing.fmt("yyyy-MM-dd")
                         .format(new Date(lastRun)).equals(today);

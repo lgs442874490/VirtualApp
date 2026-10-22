@@ -26,6 +26,8 @@ import java.util.concurrent.Executors;
  * POST /v1/vault/role-action     单角色 login/logout/pause/resume/stop（M1）
  * POST /v1/vault/account-action  账号级 login-all/stop-all（M1）
  * POST /v1/vault/global-action   全局 login-all/stop-all（M1）
+ * POST /v1/vault/watch   战争通知：监视名单增删改查/通知配置/测试通知（2026-10-22）
+ * POST /v1/vault/events  战争通知事件游标同步（cursor 之后的新事件 + ackCursor）
  * GET  /healthz          探活
  * </pre>
  *
@@ -43,6 +45,8 @@ public final class VaultHttpApi {
     private final SessionControl keeper;
     private final StateStore stateStore;
     private final com.carlos.vaultserver.task.RoundScheduler roundScheduler;
+    /** 战争通知中枢（可 null：测试旧构造；watch/events 端点返回 3002）。 */
+    private final WarNotify war;
     private final ApiSign.NonceCache nonceCache = new ApiSign.NonceCache();
     private HttpServer server;
 
@@ -52,11 +56,19 @@ public final class VaultHttpApi {
 
     public VaultHttpApi(VaultConfig config, VaultStore store, SessionControl keeper,
                         StateStore stateStore, com.carlos.vaultserver.task.RoundScheduler roundScheduler) {
+        this(config, store, keeper, stateStore, roundScheduler, null);
+    }
+
+    /** 战争通知接线构造（Main 用）：watch/events 端点可用。 */
+    public VaultHttpApi(VaultConfig config, VaultStore store, SessionControl keeper,
+                        StateStore stateStore, com.carlos.vaultserver.task.RoundScheduler roundScheduler,
+                        WarNotify war) {
         this.config = config;
         this.store = store;
         this.keeper = keeper;
         this.stateStore = stateStore;
         this.roundScheduler = roundScheduler;
+        this.war = war;
     }
 
     public void start() throws IOException {
@@ -78,6 +90,9 @@ public final class VaultHttpApi {
         server.createContext("/v1/vault/role-action", ex -> guard(ex, "POST", "vaultRoleAction", this::handleRoleAction));
         server.createContext("/v1/vault/account-action", ex -> guard(ex, "POST", "vaultAccountAction", this::handleAccountAction));
         server.createContext("/v1/vault/global-action", ex -> guard(ex, "POST", "vaultGlobalAction", this::handleGlobalAction));
+        // 战争通知（2026-10-22）：监视名单/通知配置/测试通知 + 事件游标同步
+        server.createContext("/v1/vault/watch", ex -> guard(ex, "POST", "vaultWatch", this::handleWatch));
+        server.createContext("/v1/vault/events", ex -> guard(ex, "POST", "vaultEvents", this::handleEvents));
         server.createContext("/healthz", ex -> {
             writeJson(ex, 200, envelope(0, "ok", new JSONObject()));
         });
@@ -284,6 +299,13 @@ public final class VaultHttpApi {
             // M1 扩展（契约 §3.5）：每账号角色运行态 + 角色池 roles（旧字段保留，App v4.1.4 不受影响）。
             // 注意：旧 state 是字符串（引擎态），不能被同名对象覆盖 —— 新对象用 roleState 键。
             o.put("roleState", roleStateJson(keeper.roleRuntime(s.fpid, s.sid, s.activeUid)));
+            // P7：战争状态摘要（无实例/未挂载 = null，App 端按未知处理）
+            try {
+                JSONObject war = ServerWarState.summaryJson(s.fpid, parseSid(s.sid));
+                o.put("warState", war == null ? JSONObject.NULL : war);
+            } catch (Throwable t) {
+                o.put("warState", JSONObject.NULL);
+            }
             VaultStore.Account acc = accs.get(s.fpid);
             o.put("roles", acc == null ? new JSONArray() : rolesJson(acc));
             arr.put(o);
@@ -709,6 +731,156 @@ public final class VaultHttpApi {
         return data;
     }
 
+    // ---------- 战争通知（2026-10-22）----------
+
+    /**
+     * POST /v1/vault/watch：action ∈ list/add/update/remove/config/test。
+     * 名单是账号级（fpid 寻址）；config 为全局（watch 开关/企微/冷却/静默）。
+     */
+    private JSONObject handleWatch(Map<String, Object> fields) throws Exception {
+        if (war == null) throw new BizError(3002, "战争通知未启用");
+        String action = str(fields, "action");
+        if (action == null || action.isEmpty()) throw new BizError(3002, "缺少 action");
+        if ("config".equals(action)) return handleWatchConfig(fields);
+        if ("test".equals(action)) {
+            boolean ok = war.sendTest();
+            FileLog.info("测试通知：{}", ok ? "已送达" : "发送失败");
+            JSONObject data = new JSONObject();
+            data.put("ok", ok);
+            data.put("message", ok ? "测试消息已发送，请在企业微信群确认"
+                    : "发送失败：请检查 webhook 地址与网络");
+            return data;
+        }
+        String fpid = str(fields, "fpid");
+        if (fpid == null || fpid.isEmpty()) throw new BizError(3002, "缺少 fpid");
+        if ("list".equals(action)) return watchListData(fpid);
+        if ("add".equals(action)) {
+            String uid = str(fields, "uid");
+            int r = store.addWatchTarget(fpid, uid, str(fields, "name"),
+                    str(fields, "kid"), str(fields, "note"));
+            switch (r) {
+                case 0: break;
+                case 1: throw new BizError(CODE_ACCOUNT_NOT_FOUND, "账号不存在: " + fpid);
+                case 2: throw new BizError(3002, "uid 必须为大于 0 的数字");
+                default: throw new BizError(3002, "该 uid 已在监视名单中");
+            }
+            FileLog.info("监视名单新增 fpid={} uid={}", fpid, uid);
+            JSONObject data = watchListData(fpid);
+            data.put("message", "已添加监视");
+            return data;
+        }
+        if ("update".equals(action)) {
+            Boolean enabled = fields.containsKey("enabled") ? optBool(fields, "enabled", true) : null;
+            boolean ok = store.updateWatchTarget(fpid, str(fields, "uid"), str(fields, "name"),
+                    str(fields, "kid"), str(fields, "note"), enabled);
+            if (!ok) throw new BizError(3002, "监视目标不存在: uid=" + str(fields, "uid"));
+            FileLog.info("监视名单更新 fpid={} uid={}", fpid, str(fields, "uid"));
+            return watchListData(fpid);
+        }
+        if ("remove".equals(action)) {
+            boolean ok = store.removeWatchTarget(fpid, str(fields, "uid"));
+            if (!ok) throw new BizError(3002, "监视目标不存在: uid=" + str(fields, "uid"));
+            FileLog.info("监视名单删除 fpid={} uid={}", fpid, str(fields, "uid"));
+            JSONObject data = watchListData(fpid);
+            data.put("message", "已移除监视");
+            return data;
+        }
+        throw new BizError(3002, "未知 action: " + action);
+    }
+
+    /** 名单 + 全局配置视图（add/update/remove 后整体回传，App 一次刷新）。 */
+    private JSONObject watchListData(String fpid) throws Exception {
+        VaultStore.Account acc = store.find(fpid);
+        if (acc == null) throw new BizError(CODE_ACCOUNT_NOT_FOUND, "账号不存在: " + fpid);
+        JSONArray arr = new JSONArray();
+        for (VaultStore.WatchTarget t : store.watchTargets(fpid)) {
+            arr.put(watchTargetJson(t));
+        }
+        JSONObject data = new JSONObject();
+        data.put("fpid", fpid);
+        data.put("targets", arr);
+        data.put("config", watchConfigJson());
+        return data;
+    }
+
+    private static JSONObject watchTargetJson(VaultStore.WatchTarget t) {
+        JSONObject o = new JSONObject();
+        o.put("uid", t.uid);
+        o.put("name", t.name == null ? "" : t.name);
+        o.put("kid", t.kid == null ? "" : t.kid);
+        o.put("note", t.note == null ? "" : t.note);
+        o.put("enabled", t.enabled);
+        return o;
+    }
+
+    /** 全局 watch/企微配置视图。 */
+    private JSONObject watchConfigJson() {
+        VaultStore.WatchConfig c = store.watchConfig();
+        JSONObject o = new JSONObject();
+        o.put("enabled", c.enabled);
+        o.put("wecomEnabled", c.wecomEnabled);
+        o.put("webhookUrl", c.webhookUrl == null ? "" : c.webhookUrl);
+        o.put("cooldownSeconds", c.cooldownSeconds);
+        o.put("quietStart", c.quietStart);
+        o.put("quietEnd", c.quietEnd);
+        return o;
+    }
+
+    /** op config：全局 watch/企微配置（先校验后保存；响应回显）。 */
+    private JSONObject handleWatchConfig(Map<String, Object> fields) {
+        VaultStore.WatchConfig cur = store.watchConfig();
+        boolean enabled = optBool(fields, "enabled", cur.enabled);
+        boolean wecomEnabled = optBool(fields, "wecomEnabled", cur.wecomEnabled);
+        String webhookUrl = str(fields, "webhookUrl");
+        if (webhookUrl == null) webhookUrl = cur.webhookUrl;
+        int cooldownSeconds = optInt(fields, "cooldownSeconds", cur.cooldownSeconds);
+        int quietStart = fields.containsKey("quietStart")
+                ? optInt(fields, "quietStart", -1) : cur.quietStart;
+        int quietEnd = fields.containsKey("quietEnd") ? optInt(fields, "quietEnd", cur.quietEnd) : cur.quietEnd;
+        String invalid = VaultStore.validateWatchConfig(webhookUrl, cooldownSeconds,
+                quietStart, quietEnd);
+        if (invalid != null) throw new BizError(3002, invalid);
+        store.updateWatchConfig(enabled, wecomEnabled, webhookUrl,
+                cooldownSeconds, quietStart, quietEnd);
+        FileLog.info("战争通知配置已保存 enabled={} wecom={} 冷却={}s 静默={}~{}",
+                enabled, wecomEnabled, cooldownSeconds,
+                quietStart < 0 ? "关" : String.valueOf(quietStart), String.valueOf(quietEnd));
+        JSONObject data = new JSONObject();
+        data.put("accepted", true);
+        data.put("message", "通知配置已保存并立即生效");
+        data.put("config", watchConfigJson());
+        return data;
+    }
+
+    /**
+     * POST /v1/vault/events：游标同步。请求 {cursor}（上次拿到的最大 seq，缺省 0）；
+     * 响应 {events:[…最旧在前], cursor, ackCursor, serverTime}——cursor/ackCursor 同为
+     * 服务器当前最大 seq（App 任选其一回传即可）。
+     */
+    private JSONObject handleEvents(Map<String, Object> fields) {
+        if (war == null) throw new BizError(3002, "战争通知未启用");
+        long cursor = 0;
+        Object c = fields.get("cursor");
+        if (c instanceof Number) cursor = ((Number) c).longValue();
+        else if (c != null) {
+            try {
+                cursor = Long.parseLong(String.valueOf(c).trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if (cursor < 0) cursor = 0;
+        List<JSONObject> fresh = war.eventsAfter(cursor);
+        JSONArray arr = new JSONArray();
+        for (JSONObject e : fresh) arr.put(e);
+        long latest = war.latestSeq();
+        JSONObject data = new JSONObject();
+        data.put("events", arr);
+        data.put("cursor", latest);
+        data.put("ackCursor", latest);
+        data.put("serverTime", System.currentTimeMillis());
+        return data;
+    }
+
     private String sessionStateOf(String fpid) {
         try {
             for (SessionControl.SessionStatus s : keeper.status()) {
@@ -726,6 +898,15 @@ public final class VaultHttpApi {
         if (v == null) return null;
         String s = String.valueOf(v);
         return "null".equals(s) ? null : s;
+    }
+
+    /** P7：会话 sid 字符串 → long（空/非法 = 0，warState 摘要查不到时按 fpid 兜底）。 */
+    private static long parseSid(String sid) {
+        try {
+            return sid == null || sid.isEmpty() ? 0L : Long.parseLong(sid);
+        } catch (NumberFormatException e) {
+            return 0L;
+        }
     }
 
     private static String messageFor(int code) {

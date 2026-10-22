@@ -18,10 +18,15 @@ import android.net.Uri;
 import android.os.AsyncTask;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.SystemClock;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.Gravity;
 import android.view.ViewGroup;
 import android.view.Window;
+import android.view.inputmethod.InputMethodManager;
+import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -30,6 +35,7 @@ import android.widget.Toast;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import com.carlos.vault.daily.ImeWarmup;
 import com.carlos.vault.daily.RoleDisplay;
 import com.carlos.vault.daily.RoleStore;
 import com.carlos.vault.gameupdate.GameApkDownloader;
@@ -53,6 +59,8 @@ public class EntryDetailActivity extends Activity {
 
     public static final String EXTRA_ID = "entry_id";
 
+    private static final String TAG = "EntryDetail";
+
     private VaultEngine engine;
     private AccountStore store;
     private AccountStore.Account acc;
@@ -73,6 +81,20 @@ public class EntryDetailActivity extends Activity {
     /** onResume 重新克隆提示的「去重」标记：同一原生版本只提示一次（原生再升级才重新提示） */
     private long reclonePromptShownForNativeVc;
     private final SimpleDateFormat FMT = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA);
+
+    // ---------- IME 预热（IME-Fix） ----------
+    // vivo/Android 14 真机复现：输入法冷启动后，容器内首次触发 IME 与 VirtualApp
+    // 窗口焦点竞争 → FocusEvent 5s ANR → 容器任务被移除（表现为闪退）。启动分身前
+    // 在宿主内拉起键盘预热输入法即避开；预热失败绝不阻断启动。
+    /** 预热状态机（纯逻辑，见 {@link ImeWarmup}） */
+    private final ImeWarmup imeWarmup = new ImeWarmup();
+    /** 预热探针：1px×1px 透明 EditText，预热完即摘除 */
+    private EditText imeProbe;
+    /** 预热检查回调句柄（postDelayed 用，可 removeCallbacks 取消） */
+    private final Runnable imeCheck = this::imeCheckTick;
+    /** 本次预热的起点（uptimeMillis）与收尾后要继续的原启动动作 */
+    private long imeStartedAt;
+    private Runnable imeLaunchAction;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -104,6 +126,16 @@ public class EntryDetailActivity extends Activity {
         refreshInfo();
         // M3c：从商店/桌面回到本页时，若原生游戏已比分身新 → 提示重新克隆
         maybePromptReclone();
+    }
+
+    @Override
+    protected void onDestroy() {
+        // IME 预热清理：摘 1px 探针、取消未决检查回调（启动动作不执行，页面已销毁）
+        try {
+            cancelImeWarmup();
+        } catch (Throwable ignored) {
+        }
+        super.onDestroy();
     }
 
     private void buildUi() {
@@ -661,15 +693,144 @@ public class EntryDetailActivity extends Activity {
     // ---------- 启动（M3：前置检查闸门 → 启动；失败弹窗给分类+原文+修复动作） ----------
 
     /**
-     * 「启动分身」入口：先做完整前置检查（授权 → 引擎 → 克隆 → 版本），
-     * 全过才真正拉起；任何失败都以弹窗展示「分类 + 原文 + 修复动作」，
-     * 不再是「请从任务栏划掉游戏后重试」的泛化 toast。
+     * 「启动分身」入口：先在宿主内<b>预热输入法</b>（IME-Fix，见
+     * {@link #warmUpInputMethodThen}），完成/超时后走原前置检查 → 启动链路。
      */
     private void doLaunch() {
         if (VaultEngine.launchBusy()) {
             toast("正在切换/启动账号，请稍候再试");
             return;
         }
+        warmUpInputMethodThen(this::doLaunchAfterImeWarmup);
+    }
+
+    // ---------- IME 预热（IME-Fix：启动分身前在宿主内拉起输入法，避开容器首触 IME 的 ANR） ----------
+
+    /**
+     * 预热输入法后执行 action（<b>任何情况下都保证 action 最终执行、绝不阻断启动</b>）：
+     * 往 content 根挂一个 1px×1px 透明、无背景、可聚焦的 {@link EditText}
+     * （FrameLayout.LayoutParams(1,1)，靠底放置，不影响布局也几乎点不到）→
+     * requestFocus + SHOW_IMPLICIT 拉起键盘 → 键盘出现（输入法进程即预热完成）或
+     * 800ms 超时后：hideSoftInput + 摘探针 + 执行 action。
+     * 预热中重复点击不重入（直接忽略）；全程吞异常；页面销毁时取消并清理。
+     */
+    private void warmUpInputMethodThen(final Runnable action) {
+        if (!imeWarmup.begin()) {
+            Log.i(TAG, "[IME预热] 进行中，忽略本次启动点击（防重入）");
+            return;
+        }
+        try {
+            ViewGroup content = findViewById(android.R.id.content);
+            if (content == null) {
+                finishImeWarmup("无内容根，跳过预热", action);
+                return;
+            }
+            EditText probe = new EditText(this);
+            probe.setAlpha(0f);                    // 透明
+            probe.setBackground(null);             // 无背景
+            probe.setCursorVisible(false);
+            probe.setLongClickable(false);
+            probe.setIncludeFontPadding(false);
+            probe.setInputType(android.text.InputType.TYPE_CLASS_TEXT);
+            probe.setFocusable(true);
+            probe.setFocusableInTouchMode(true);
+            probe.setContentDescription("ime_warmup_probe");   // 无障碍：探针可识别
+            imeProbe = probe;
+            imeStartedAt = SystemClock.uptimeMillis();
+            imeLaunchAction = action;
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(1, 1);
+            lp.gravity = Gravity.BOTTOM | Gravity.START;
+            content.addView(probe, lp);
+            probe.requestFocus();
+            InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+            if (imm != null) imm.showSoftInput(probe, InputMethodManager.SHOW_IMPLICIT);
+            Log.i(TAG, "[IME预热] 开始（1px 探针已聚焦并请求键盘，首查 "
+                    + ImeWarmup.FIRST_CHECK_MS + "ms / 超时 " + ImeWarmup.TIMEOUT_MS + "ms）");
+            getWindow().getDecorView().postDelayed(imeCheck, ImeWarmup.FIRST_CHECK_MS);
+        } catch (Throwable t) {
+            Log.w(TAG, "[IME预热] 建探针异常，跳过预热直接继续: " + t);
+            finishImeWarmup("异常跳过", action);
+        }
+    }
+
+    /** 预热检查（主线程 postDelayed 触发）：状态机判定 → 继续等，或收尾并继续启动。 */
+    private void imeCheckTick() {
+        if (!imeWarmup.warming()) return;   // 已收尾/已取消：stray 回调直接短路
+        if (isFinishing() || isDestroyed()) {
+            cancelImeWarmup();
+            return;
+        }
+        try {
+            long now = SystemClock.uptimeMillis() - imeStartedAt;
+            ImeWarmup.Tick r = imeWarmup.tick(now, isKeyboardVisible());
+            if (r == ImeWarmup.Tick.KEEP_WAITING) {
+                getWindow().getDecorView().postDelayed(imeCheck, ImeWarmup.remainingToTimeout(now));
+                return;
+            }
+            finishImeWarmup(r == ImeWarmup.Tick.DONE ? "完成" : "超时", imeLaunchAction);
+        } catch (Throwable t) {
+            Log.w(TAG, "[IME预热] 判定异常，按超时兜底继续: " + t);
+            finishImeWarmup("异常兜底", imeLaunchAction);
+        }
+    }
+
+    /** 预热收尾：摘探针（含收键盘/清回调）→ 执行原启动动作。 */
+    private void finishImeWarmup(String reason, Runnable action) {
+        imeWarmup.abort();
+        cleanupImeProbe();
+        Log.i(TAG, "[IME预热] " + reason + "，继续启动分身");
+        if (action != null) action.run();
+    }
+
+    /** 取消预热（页面销毁/finishing）：摘探针、清回调，<b>不</b>执行启动动作。 */
+    private void cancelImeWarmup() {
+        if (!imeWarmup.abort() && imeProbe == null) return;
+        cleanupImeProbe();
+        Log.i(TAG, "[IME预热] 已取消（页面销毁）");
+    }
+
+    /** 摘探针：取消未决检查回调 → 收键盘 → 移除 1px 视图（全部吞异常）。 */
+    private void cleanupImeProbe() {
+        try {
+            getWindow().getDecorView().removeCallbacks(imeCheck);
+        } catch (Throwable ignored) {
+        }
+        EditText probe = imeProbe;
+        imeProbe = null;
+        imeLaunchAction = null;
+        try {
+            if (probe != null && probe.getWindowToken() != null) {
+                InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+                if (imm != null) imm.hideSoftInputFromWindow(probe.getWindowToken(), 0);
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (probe != null && probe.getParent() instanceof ViewGroup) {
+                ((ViewGroup) probe.getParent()).removeView(probe);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 键盘是否已弹出：可视底边被顶起超过 decor 高度 1/4（轮询显示帧判定，
+     * 比挂 OnGlobalLayoutListener 在 vivo 等 ROM 上更稳、也免监听清理）。
+     */
+    private boolean isKeyboardVisible() {
+        try {
+            android.view.View decor = getWindow().getDecorView();
+            Rect frame = new Rect();
+            decor.getWindowVisibleDisplayFrame(frame);
+            int h = Math.max(1, decor.getHeight());
+            return (h - frame.bottom) > h / 4;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 原 doLaunch 主体：完整前置检查（授权 → 引擎 → 克隆 → 版本）全过才真正拉起。 */
+    private void doLaunchAfterImeWarmup() {
         final ProgressDialog pd = new ProgressDialog(this);
         pd.setMessage("前置检查中…");
         pd.setCancelable(false);

@@ -28,14 +28,19 @@ public final class Main {
         StateStore stateStore = new StateStore(config.dataDir);
         stateStore.load();
 
-        SessionKeeper keeper = new SessionKeeper(store, config, new ClasspathAssets(), stateStore);
+        // 战争通知（敌人监视 + 企微机器人）：事件环形缓冲 + 推送中枢，接线会话与 API
+        WatchEventStore watchEvents = new WatchEventStore(config.dataDir);
+        watchEvents.load();
+        WarNotify war = new WarNotify(store, watchEvents, new WeComNotifier());
+
+        SessionKeeper keeper = new SessionKeeper(store, config, new ClasspathAssets(), stateStore, war);
         keeper.reconcile();
 
         com.carlos.vaultserver.task.RoundScheduler scheduler =
                 new com.carlos.vaultserver.task.RoundScheduler(store, stateStore, keeper);
         scheduler.start();
 
-        VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler);
+        VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war);
         api.start();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {

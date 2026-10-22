@@ -16,11 +16,27 @@ final class FieldTasks {
     private FieldTasks() {
     }
 
+    /** P7 战时让位：WarState 战争态/预警级时，占行军队列的可选出征类任务让位（E1/§6.11.2）。 */
+    private static boolean warBusy(WjdrEngine engine) {
+        try {
+            return com.carlos.vault.daily.guardian.GuardianEngine.warBusyForRole(
+                    engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     // ---------- 野外采集：搜资源 → 派队（填空闲队列，默认肉） ----------
 
     static DailyResult gather(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
+            // P7 战时（E3 池改组）：6 队全部为驻防/支援预留，采集暂停（在途已由 E2 召回）
+            if (warBusy(engine)) {
+                m.skip("战争态：队列全部留驻防，采集暂停");
+                m.subSkip("send", "战时暂停");
+                return done(m);
+            }
             // 子开关门控：send=自动采集（本功能唯一动作；策略只管"任意存量/只采满矿"）
             boolean onSend = FnParams.subOn(engine.appContext(),
                     engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
@@ -192,6 +208,14 @@ final class FieldTasks {
                 yd.subResults.putAll(m.subResults);
                 return yd;
             }
+            // P7 战时让位（E1/预警级）：WarState 战争态/预警时可选出征类任务让位
+            if (warBusy(engine)) {
+                m.skip("战争态：队列全部留驻防，情报出征让位");
+                DailyResult yd = new DailyResult("intel", "情报任务", m.cat(), m.note() + " " + m.sb);
+                yd.rewards = m.rewardsText();
+                yd.subResults.putAll(m.subResults);
+                return yd;
+            }
             // 子开关门控：events=处理情报（本功能唯一动作）
             if (!FnParams.subOn(engine.appContext(),
                     engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
@@ -308,6 +332,14 @@ final class FieldTasks {
                 yd.subResults.putAll(m.subResults);
                 return yd;
             }
+            // P7 战时让位（E1/预警级）：巨熊同步占请求队列，战时让给卡秒驻防
+            if (warBusy(engine)) {
+                m.skip("战争态：让位驻防，巨熊同步暂停");
+                DailyResult yd = new DailyResult("bear", "巨熊行动", m.cat(), m.note() + " " + m.sb);
+                yd.rewards = m.rewardsText();
+                yd.subResults.putAll(m.subResults);
+                return yd;
+            }
             // 子开关门控：trap=巨熊陷阱同步（本功能唯一动作）
             if (!FnParams.subOn(engine.appContext(),
                     engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId(),
@@ -412,6 +444,14 @@ final class FieldTasks {
             if (com.carlos.vault.daily.guardian.GuardianEngine.threatBusyForRole(
                     engine.lastFpid() == null ? "" : engine.lastFpid(), engine.lastServerId())) {
                 m.skip("守护盟友威胁执行中，本轮让位");
+                DailyResult yd = new DailyResult("hunt", "自动狩猎", m.cat(), m.note() + " " + m.sb);
+                yd.rewards = m.rewardsText();
+                yd.subResults.putAll(m.subResults);
+                return yd;
+            }
+            // P7 战时让位（E1/预警级）：狩猎是战时明令禁止的非战斗行为（§6.11.4）
+            if (warBusy(engine)) {
+                m.skip("战争态：队列全部留驻防，狩猎暂停");
                 DailyResult yd = new DailyResult("hunt", "自动狩猎", m.cat(), m.note() + " " + m.sb);
                 yd.rewards = m.rewardsText();
                 yd.subResults.putAll(m.subResults);

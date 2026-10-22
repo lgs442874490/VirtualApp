@@ -55,6 +55,8 @@ public final class SessionKeeper implements SessionControl,
     private final VaultConfig config;
     private final AssetSource assets;
     private final StateStore stateStore;
+    /** 战争通知中枢（可 null：测试/未启用；每个在线角色会话挂引擎钩子）。 */
+    private final WarNotify war;
     /** 角色会话表：key = {@link #sessionKey}(fpid,sid,uid)（M1d 多角色并行容器）。 */
     private final Map<String, LiveSession> sessions = new ConcurrentHashMap<>();
     private final EngineFactory engineFactory;
@@ -75,17 +77,29 @@ public final class SessionKeeper implements SessionControl,
     }
 
     public SessionKeeper(VaultStore store, VaultConfig config, AssetSource assets, StateStore stateStore) {
-        this(store, config, assets, stateStore, null, false);
+        this(store, config, assets, stateStore, null, false, null);
+    }
+
+    /** 战争通知接线构造（Main 用）：war 非 null 时每个在线会话挂敌人监视钩子。 */
+    public SessionKeeper(VaultStore store, VaultConfig config, AssetSource assets, StateStore stateStore,
+                         WarNotify war) {
+        this(store, config, assets, stateStore, null, false, war);
     }
 
     SessionKeeper(VaultStore store, VaultConfig config, AssetSource assets, StateStore stateStore,
                   EngineFactory engineFactory, boolean manualTick) {
+        this(store, config, assets, stateStore, engineFactory, manualTick, null);
+    }
+
+    SessionKeeper(VaultStore store, VaultConfig config, AssetSource assets, StateStore stateStore,
+                  EngineFactory engineFactory, boolean manualTick, WarNotify war) {
         this.store = store;
         this.config = config;
         this.assets = assets;
         this.stateStore = stateStore;
         this.engineFactory = engineFactory;
         this.manualTick = manualTick;
+        this.war = war;
         // 引擎静态读策略 → 账号库当前值（policy API 可在线改）
         WjdrEngine.setTakeoverPolicySource(store::policy);
     }
@@ -234,6 +248,10 @@ public final class SessionKeeper implements SessionControl,
         volatile ServerHelpResponder help;
         /** 反应式开盾（WAR/RECON 推送驱动；登录成功后按真实 sid 惰性挂载）。 */
         volatile ServerShieldResponder shield;
+        /** P7 战争状态对等（世界/联盟行军推送 → WarState 判定；惰性挂载同上）。 */
+        volatile ServerWarState war;
+        /** 下次热载 p:war.* 参数时刻（60s 一次；配置来自 App 同步的 roleParams）。 */
+        volatile long nextWarCfgAt;
         /** 下次全量采集时刻（登录后 3s 首采，之后每 10 分钟）。 */
         volatile long nextCaptureAt;
         volatile long stateSince = System.currentTimeMillis();
@@ -309,6 +327,9 @@ public final class SessionKeeper implements SessionControl,
                     break;
                 case WjdrEngine.STATE_ONLINE:
                     engine.heartbeatTick();
+                    // 战争监视钩子（所有角色会话，不受 active 写入方限制——每个会话
+                    // 都能观察到自己视野内的行军推送；war=null 时跳过）
+                    if (war != null) attachWarHook();
                     // 同 fpid 多会话（M1d）：App 消费的 state 键（res:/todo:/mod:… 均为
                     // fpid:sid 键型，/state 契约不变）只由 active 角色会话写入——
                     // 兄弟角色会话保持「占位在线」（连接/心跳/重连），不执行任务，
@@ -323,6 +344,18 @@ public final class SessionKeeper implements SessionControl,
                         shield = new ServerShieldResponder(fpid, resolveSid(), stateStore, store);
                         shield.attach(engine);
                     }
+                    // P7 战争状态对等：推送钩子 + 退出判定 + p:war.* 参数热载（60s 一次）
+                    if (war == null) {
+                        war = ServerWarState.forRole(fpid, resolveSid());
+                        war.attach(engine);
+                    }
+                    long nowMs = System.currentTimeMillis();
+                    if (nowMs >= nextWarCfgAt) {
+                        VaultStore.Account warAcc = store.find(fpid);
+                        if (warAcc != null) ServerWarState.configure(warAcc, resolveSid());
+                        nextWarCfgAt = nowMs + 60_000L;
+                    }
+                    war.tick(nowMs);
                     // 反应式开盾优先于采集/互助：攻击行军按分钟计，开盾早一秒是一秒
                     ServerShieldResponder s = shield;
                     if (s != null) s.tick(engine);
@@ -348,6 +381,19 @@ public final class SessionKeeper implements SessionControl,
                 default:
                     // logging：登录进行中；need_token：等 token 补给（token API 触发重启）
             }
+        }
+
+        /** 战争监视钩子（幂等，每会话至多一个）；推送线程异常由 WarNotify.onPush 自兜。 */
+        private final java.util.concurrent.atomic.AtomicBoolean warHookAttached =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        private void attachWarHook() {
+            if (!warHookAttached.compareAndSet(false, true)) return;
+            WarNotify w = SessionKeeper.this.war;   // 外部 WarNotify（LiveSession.war 是 gwar 的 ServerWarState，不可混用）
+            String fp = fpid;
+            long sd = resolveSid();
+            engine.addMessageHook((proto, content) -> w.onPush(fp, sd, proto, content));
+            FileLog.info("战争监视钩子已挂载 {}", key);
         }
 
         /**
@@ -1324,6 +1370,12 @@ public final class SessionKeeper implements SessionControl,
     public long sessionSid(String fpid) {
         LiveSession ls = sessionForAccount(fpid);
         return ls == null ? 0 : ls.resolveSid();
+    }
+
+    /** P7 战时让位（RoundScheduler.KeeperFacade）：该账号任一角色处于战争态 → 自动整轮延后。 */
+    @Override
+    public boolean wartimeYield(String fpid) {
+        return ServerWarState.wartimeYield(fpid);
     }
 
     /** 账号 active 角色会话是否在线。 */

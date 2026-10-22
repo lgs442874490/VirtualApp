@@ -61,6 +61,8 @@ public final class VaultSync {
     private static final String PATH_ROLE_ACTION = "/v1/vault/role-action";
     private static final String PATH_ACCOUNT_ACTION = "/v1/vault/account-action";
     private static final String PATH_GLOBAL_ACTION = "/v1/vault/global-action";
+    private static final String PATH_WATCH = "/v1/vault/watch";
+    private static final String PATH_EVENTS = "/v1/vault/events";
     private static final String OP_SYNC = "vaultSync";
     private static final String OP_TOKEN = "vaultToken";
     private static final String OP_STATUS = "vaultStatus";
@@ -72,6 +74,8 @@ public final class VaultSync {
     private static final String OP_ROLE_ACTION = "vaultRoleAction";
     private static final String OP_ACCOUNT_ACTION = "vaultAccountAction";
     private static final String OP_GLOBAL_ACTION = "vaultGlobalAction";
+    private static final String OP_WATCH = "vaultWatch";
+    private static final String OP_EVENTS = "vaultEvents";
 
     /** 与服务端 VAULT_SECRET 同值（base64 + 循环 XOR 混淆，防反编译明文）。 */
     private static final String SECRET_OBF = "ABIMAhdBQkQbRFFHWllZWxcQVAUGSw==";
@@ -732,6 +736,95 @@ public final class VaultSync {
         if (payload != null) payload.fill(f);
         new Thread(() -> post(app, PATH_ROLE_ACTION, OP_ROLE_ACTION, f, done),
                 threadName).start();
+    }
+
+    // ---------- 战争通知（2026-10-22：监视名单 / 通知配置 / 事件游标） ----------
+
+    /** 战争通知 op 通道（action 与字段平铺进签名表；非服务器模式回调 server_mode_off）。 */
+    private static void watchPost(Context ctx, Map<String, Object> fields, Callback done,
+                                  String threadName) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app)) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        new Thread(() -> post(app, PATH_WATCH, OP_WATCH, fields, done), threadName).start();
+    }
+
+    private static Map<String, Object> watchFields(String action, String fpid) {
+        Map<String, Object> f = new TreeMap<>();
+        f.put("action", action);
+        f.put("fpid", fpid == null ? "" : fpid);
+        return f;
+    }
+
+    /** 监视名单 + 全局通知配置（list）。回调在 OkHttp 线程。 */
+    public static void watchList(Context ctx, String fpid, Callback done) {
+        watchPost(ctx, watchFields("list", fpid), done, "vault-watch-list");
+    }
+
+    /** 新增监视目标（uid 必填；name/kid/note 可选）。回调在 OkHttp 线程。 */
+    public static void watchAdd(Context ctx, String fpid, String uid, String name,
+                                String kid, String note, Callback done) {
+        Map<String, Object> f = watchFields("add", fpid);
+        f.put("uid", uid == null ? "" : uid);
+        f.put("name", name == null ? "" : name);
+        f.put("kid", kid == null ? "" : kid);
+        f.put("note", note == null ? "" : note);
+        watchPost(ctx, f, done, "vault-watch-add");
+    }
+
+    /** 更新监视目标（null 字段不变；enabled null=不变）。回调在 OkHttp 线程。 */
+    public static void watchUpdate(Context ctx, String fpid, String uid, String name,
+                                   String kid, String note, Boolean enabled, Callback done) {
+        Map<String, Object> f = watchFields("update", fpid);
+        f.put("uid", uid == null ? "" : uid);
+        if (name != null) f.put("name", name);
+        if (kid != null) f.put("kid", kid);
+        if (note != null) f.put("note", note);
+        if (enabled != null) f.put("enabled", enabled);
+        watchPost(ctx, f, done, "vault-watch-update");
+    }
+
+    /** 删除监视目标。回调在 OkHttp 线程。 */
+    public static void watchRemove(Context ctx, String fpid, String uid, Callback done) {
+        Map<String, Object> f = watchFields("remove", fpid);
+        f.put("uid", uid == null ? "" : uid);
+        watchPost(ctx, f, done, "vault-watch-remove");
+    }
+
+    /**
+     * 全局通知配置（enabled/wecomEnabled/webhookUrl/cooldownSeconds/quietStart/quietEnd；
+     * 传 null 的字段服务端保持旧值）。回调在 OkHttp 线程。
+     */
+    public static void watchConfig(Context ctx, Boolean enabled, Boolean wecomEnabled,
+                                   String webhookUrl, Integer cooldownSeconds,
+                                   Integer quietStart, Integer quietEnd, Callback done) {
+        Map<String, Object> f = watchFields("config", "");
+        if (enabled != null) f.put("enabled", enabled);
+        if (wecomEnabled != null) f.put("wecomEnabled", wecomEnabled);
+        if (webhookUrl != null) f.put("webhookUrl", webhookUrl);
+        if (cooldownSeconds != null) f.put("cooldownSeconds", cooldownSeconds);
+        if (quietStart != null) f.put("quietStart", quietStart);
+        if (quietEnd != null) f.put("quietEnd", quietEnd);
+        watchPost(ctx, f, done, "vault-watch-config");
+    }
+
+    /** 测试通知（服务端向企业微信群发一条测试消息，data.ok=是否送达）。回调在 OkHttp 线程。 */
+    public static void watchTestNotify(Context ctx, Callback done) {
+        watchPost(ctx, watchFields("test", ""), done, "vault-watch-test");
+    }
+
+    /** 事件游标同步：cursor 之后的新事件 + ackCursor。回调在 OkHttp 线程。 */
+    public static void fetchEvents(Context ctx, long cursor, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app)) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        Map<String, Object> f = new TreeMap<>();
+        f.put("cursor", cursor);
+        new Thread(() -> post(app, PATH_EVENTS, OP_EVENTS, f, done), "vault-events").start();
     }
 
     /** 上次成功的账号池响应（UI 渲染读；无缓存/失败保留旧值，配合 {@link AccountPoolCache#isStale}）。 */

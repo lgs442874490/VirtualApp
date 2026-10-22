@@ -60,6 +60,7 @@ public class DailySchedulerService extends Service {
         handler = new Handler(Looper.getMainLooper());
         startForeground(NOTIF_ID, buildNotification("日常自动执行已开启"));
         RoleSessionKeeper.get(this).start();   // 常驻在线会话扫描（心跳/重连/互助响应）
+        WarNotifyPoller.start(this);           // 战争通知事件轮询（幂等；短信开关关闭时空转）
         try {
             int pruned = new LogStore(this).pruneStaleDayKeys();   // 顺带清理过期 st:<date>: 键
             if (pruned > 0) android.util.Log.i("DailySched", "pruned " + pruned + " stale day keys");

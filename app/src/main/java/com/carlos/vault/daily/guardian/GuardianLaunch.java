@@ -46,8 +46,6 @@ public final class GuardianLaunch {
     /** targetUid → [marchId, 敌方行军 marchId, 我方到达秒, 行军状态(2在途/3驻扎/0已结束), 已加速标记]。
      *  20:51/21:08 教训：行军回家后记录不清会拿死 marchId 发加速（服务器静默超时），状态必须随推送维护。 */
     private static final Map<Long, long[]> INFLIGHT = new ConcurrentHashMap<>();
-    /** kid → 已标定行军时长（秒）。 */
-    private static final Map<Long, Long> CALIB = new ConcurrentHashMap<>();
 
     private GuardianLaunch() {
     }
@@ -77,6 +75,63 @@ public final class GuardianLaunch {
     private static final ConcurrentHashMap<Long, Boolean> ACTIVE = new ConcurrentHashMap<>();
     private static final java.util.Set<String> ACTIVE_ROLES = java.util.Collections.newSetFromMap(new ConcurrentHashMap<>());
 
+    /** P4 预驻防入口（GuardianPreGarrison 门控通过后调用）：与反应式共用 execute()
+     *  的同目标去重/角色标记/LAUNCH_SLOTS 并发；预驻防失败不推送人工告警（alert 内分流）。 */
+    public static void preGarrison(Context app, String fpid, long kid, GuardianEngine.Track t, String trigger) {
+        if (APP == null && app != null) APP = app.getApplicationContext();
+        if (!LAUNCH_SLOTS.tryAcquire()) {
+            glog(app, "🚀预驻防让位：发射并发已满（反应式优先），放弃本次预驻防");
+            return;
+        }
+        final Context c = app.getApplicationContext();
+        Thread th = new Thread(() -> {
+            try {
+                execute(c, fpid, kid, t);
+            } catch (Throwable ex) {
+                glog(app, "预驻防执行异常: " + stack(ex));
+            } finally {
+                LAUNCH_SLOTS.release();
+            }
+        }, "guardian-pre-garrison");
+        th.setDaemon(true);
+        th.start();
+    }
+
+    // ------------------------------------------------------------------ QueueGuard-lite 访问器（GuardianPreGarrison 门控用）
+
+    static int maxConcurrent() {
+        return MAX_CONCURRENT;
+    }
+
+    static int inflightCount() {
+        return INFLIGHT.size();
+    }
+
+    /** 该目标是否已有我方驻防（在途/驻扎均算；state=0 的过期记录不算）。 */
+    static boolean hasGarrisonOn(long targetUid) {
+        long[] g = targetUid > 0 ? INFLIGHT.get(targetUid) : null;
+        return g != null && g.length > 3 && g[3] != 0L;
+    }
+
+    /** 该目标是否有发射任务执行中（反应式或预驻防）。 */
+    static boolean isActiveForTarget(long targetUid) {
+        return targetUid > 0 && ACTIVE.containsKey(targetUid);
+    }
+
+    /** 本城坐标（"就近优先"排序用；未知返回 null）。 */
+    static int[] ownCityPoint(Context app, String fpid, long kid) {
+        try {
+            RoleSessionKeeper.LiveSession f = sessionFor(app, fpid, kid);
+            if (f == null) return null;
+            Map<String, Object> wpi = f.engine.notifyContent("notify_world_player_init");
+            Map<String, Object> cp = ExecUtil.mapOf(wpi == null ? null : wpi.get("city_point"));
+            int x = (int) ExecUtil.longOf(cp.get("x")), y = (int) ExecUtil.longOf(cp.get("y"));
+            return x > 0 ? new int[]{x, y} : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     private static void execute(Context app, String fpid, long kid, GuardianEngine.Track t) {
         Long activeKey = t.targetUid > 0 ? t.targetUid : (long) t.marchId;
         String roleKey = fpid + ":" + kid;
@@ -98,25 +153,8 @@ public final class GuardianLaunch {
         return ACTIVE_ROLES.contains(fpid + ":" + sid);
     }
 
-    /** 启动时恢复已标定行军时长（saveCalib 写 guardian_calib.txt，此前只有写没有读）。 */
-    private static void loadCalib(Context app) {
-        if (!CALIB.isEmpty()) return;
-        try {
-            java.io.File f = new java.io.File(app.getFilesDir(), "guardian_calib.txt");
-            if (!f.exists()) return;
-            for (String line : new String(java.nio.file.Files.readAllBytes(f.toPath()),
-                    java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
-                String[] p2 = line.trim().split(",");
-                if (p2.length == 2) CALIB.put(Long.parseLong(p2[0]), Long.parseLong(p2[1]));
-            }
-            if (!CALIB.isEmpty()) glog(app, "已恢复行军标定表 " + CALIB.size() + " 条");
-        } catch (Throwable ignored) {
-        }
-    }
-
     private static void runLaunch(Context app, String fpid, long kid, GuardianEngine.Track t) {
         try {
-            loadCalib(app);
             RoleSessionKeeper.LiveSession f = sessionFor(app, fpid, kid);
             if (f == null) {
                 // 04:32 教训：上一次 R3 超时断连的退避窗口（8~16s）会把引擎晾在 RECOVERING——
@@ -140,7 +178,10 @@ public final class GuardianLaunch {
 
             long[] existing = t.targetUid > 0 ? INFLIGHT.get(t.targetUid) : null;
             if (existing != null && existing[3] != 0) {   // 3=驻扎也拦（2814 已实证同目标重复援助被拒）
-                glog(app, "该盟友城已有我方驻防（uid" + t.targetUid + " 状态" + existing[3] + "），不重复驻防");
+                boolean holding = GuardianHold.shouldHold(fpid, kid, t.targetUid,
+                        System.currentTimeMillis());
+                glog(app, "该盟友城已有我方驻防（uid" + t.targetUid + " 状态" + existing[3]
+                        + (holding ? "，🛡常驻戒备在位，威胁由其承接" : "") + "），不重复驻防");
                 return;
             }
             if (existing != null) INFLIGHT.remove(t.targetUid);   // 已结束的过期记录，清掉再上
@@ -184,19 +225,37 @@ public final class GuardianLaunch {
 
             long enemyEnd = t.endServerSec;
             long nowS = System.currentTimeMillis() / 1000L;
-            Long calibD = CALIB.get(kid);
+            // 距离分档 D（遗留 #5）：发射点→目标格距 → near/mid/far 档 EWMA 均值
+            // （缺档回退 single 单值，再缺回退默认 38s）。全无标定时保持 P3 语义：立即发射，
+            // 用本次响应 endtime 完成首跑标定（宁早暴露不可晚到）。
+            int[] mine = ownCityPoint(engine);
+            double dist = mine != null && gx > 0
+                    ? GuardianCalib.distance(mine[0], mine[1], gx, gy) : -1d;
+            GuardianCalib.Table calibTable = GuardianCalib.load(app, fpid, kid);
+            long planD = GuardianCalib.estimateD(app, fpid, kid, calibTable, dist);
+            boolean calibrated = calibTable.anySample();
+            glog(app, "📐档位D：" + GuardianCalib.describe(calibTable, dist,
+                    GuardianCalib.nearGrids(app, fpid, kid), GuardianCalib.midGrids(app, fpid, kid))
+                    + "，本次距离 " + (dist >= 0
+                    ? String.format(java.util.Locale.CHINA, "%.1f", dist) + " 格" : "未知")
+                    + " → planD=" + planD + "s");
 
             // 精卡轮：可中断重估等待——每 300ms 重读敌 ETA，敌加速时即时调整。
             // 21:49 一一矿工败因（差 2s）：连环加速下等"剩<D+Δ"每拖 1s 输 1s → 敌第一次压缩
             // （forceQualified）立即发射（设计 v1.1 PRE_LANDED：宁提前暴露，不可晚到）。
+            // 预驻防（P4）：立即发射，不走精卡等待（合成威胁 ETA=滞留窗，等待无意义）；
             // EXTREME 锁存者（全压缩惯犯，用户裁决"3min 压到 2s 必须防住"）：检测即发射，
             // 一秒都不等——发射后立即烧加速（见 launch 后 forced boost）。
-            boolean extreme = GuardianEngine.extremeLocked(t.owner);
-            if (extreme) glog(app, "EXTREME 锁存者 uid" + t.owner + "：检测即发射+立刻加速，跳过精卡等待");
-            if (!extreme && calibD != null && enemyEnd - nowS > calibD + 3) {
+            boolean extreme = t.preGarrison || GuardianEngine.extremeLocked(t.owner);
+            if (t.preGarrison) {
+                glog(app, "🚀预驻防：立即发射（不走精卡等待）");
+            } else if (extreme) {
+                glog(app, "EXTREME 锁存者 uid" + t.owner + "：检测即发射+立刻加速，跳过精卡等待");
+            }
+            if (!extreme && calibrated && enemyEnd - nowS > planD + 3) {
                 long deltaMs = deltaMs(app, fpid, kid);
                 long deadlineMs = System.currentTimeMillis() + 120_000L;
-                glog(app, "精卡等待：敌 ETA " + (enemyEnd - nowS) + "s − D " + calibD + "s − Δ "
+                glog(app, "精卡等待：敌 ETA " + (enemyEnd - nowS) + "s − D " + planD + "s − Δ "
                         + deltaMs / 1000L + "s（每 300ms 重估；敌一压缩立即发射）");
                 while (System.currentTimeMillis() < deadlineMs) {
                     GuardianEngine.Track live = GuardianEngine.trackOf(kid, t.marchId);
@@ -206,9 +265,9 @@ public final class GuardianLaunch {
                         break;
                     }
                     long eta = live.endServerSec - nowS();
-                    long fireAt = live.endServerSec - calibD - deltaMs / 1000L;
+                    long fireAt = live.endServerSec - planD - deltaMs / 1000L;
                     long waitMs = fireAt * 1000L - engine.serverClock().nowServerMs();
-                    if (eta <= calibD + deltaMs / 1000L) {
+                    if (eta <= planD + deltaMs / 1000L) {
                         glog(app, "敌加速过快（剩 " + eta + "s < D+Δ），立即发射兜底（迟到的驻防仍有价值）");
                         break;
                     }
@@ -228,11 +287,12 @@ public final class GuardianLaunch {
             List<Map<String, Object>> variants = formationVariants(engine);
             if (variants.isEmpty()) {
                 glog(app, "编队构建失败（无可用英雄/士兵），推送手动增援告警并放弃");
-                alert(app, gx, gy, t, -1);
+                alert(app, fpid, kid, gx, gy, t, -1);
                 return;
             }
             GameMessage ok = null;
             long ourEnd = -1;
+            long sendMs = 0L;   // 中标那次请求的发出时刻（服务器域毫秒，与 endtime 同域）
             int lastCode = -999;
             boolean queueFreed = false;
             int queueRetry = 0;
@@ -243,6 +303,7 @@ public final class GuardianLaunch {
                 boolean allAway = !vhs.isEmpty();
                 for (long h : vhs) if (!HEROES_AWAY.contains(h)) { allAway = false; break; }
                 if (allAway) { glog(app, "变体" + (vi + 1) + "英雄全被拉黑，跳过"); continue; }
+                sendMs = serverMs(engine);
                 GameMessage rsp = safeLaunch(engine, gx, gy, variants.get(vi), t.targetUid);
                 lastCode = codeOf(rsp);
                 glog(app, "编队变体" + (vi + 1) + " 发射 code=" + lastCode);
@@ -341,7 +402,12 @@ public final class GuardianLaunch {
                     sleep(2000);
                     GuardianEngine.Track liveT = GuardianEngine.trackOf(kid, t.marchId);
                     if (liveT == null) { glog(app, "威胁已解除，停止队列等待"); return; }
-                    if (++queueRetry >= 30) { glog(app, "队列等待超 60s 未腾出，推送手动增援告警"); alert(app, gx, gy, t, lastCode); return; }
+                    if (++queueRetry >= 30) {
+                        glog(app, t.preGarrison ? "🚀预驻防队列等待超 60s 未腾出，放弃（预防性任务不告警）"
+                                : "队列等待超 60s 未腾出，推送手动增援告警");
+                        alert(app, fpid, kid, gx, gy, t, lastCode);
+                        return;
+                    }
                     vi--;   // 重试同变体
                     continue;
                 }
@@ -371,15 +437,50 @@ public final class GuardianLaunch {
                     return;
                 }
                 glog(app, "全部编队变体被拒（末码 " + lastCode + "），推送手动增援告警");
-                alert(app, gx, gy, t, lastCode);
+                alert(app, fpid, kid, gx, gy, t, lastCode);
                 return;
             }
 
-            long d = ourEnd - nowS;
-            if (calibD == null) {
-                CALIB.put(kid, d);
-                saveCalib(app, kid, d);
-                glog(app, "标定完成 D=" + d + "s");
+            // 校准入口（遗留 #5）：每次驻防发射成功记一个实测 D 样本（发出→落地，双端均服务器域
+            // 免时钟偏差），EWMA 更新本次距离对应档的均值并落 FnParams（旧逻辑只在首跑标定一次）
+            long d = ourEnd - sendMs / 1000L;
+            GuardianCalib.recordSample(app, fpid, kid, dist, d);
+            if (t.targetUid > 0) {
+                INFLIGHT.put(t.targetUid, new long[]{marchIdOf(ok), t.marchId, ourEnd, 2L, 0L});
+                // P6 常驻戒备：对 EXTREME 锁存者的发射即武装（敌撤/战报出后不撤防，等下一击）；
+                // 威胁结束（handleDel）会按剩余窗口续期
+                long armedUntil = GuardianHold.armIfNeeded(app, fpid, kid, t.targetUid, t.owner, t.compressCount);
+                if (armedUntil > 0) {
+                    String holdLine = "🛡常驻戒备中（剩余" + GuardianHold.holdGarrisonMin(app, fpid, kid) + "m）";
+                    glog(app, "🛡常驻戒备武装（EXTREME 惯犯 uid" + t.owner
+                            + " 压缩 " + t.compressCount + " 次）：本次驻防保留，不随战报/敌撤撤防");
+                    try {
+                        FnParams.saveModText(app, fpid, kid, GuardianEngine.FN_ID,
+                                "hold_garrison_min", holdLine);
+                    } catch (Throwable ignored) {
+                    }
+                }
+                // EXTREME 锁存者：发射即烧加速（等敌动手再加速对全压缩者结构性太晚——
+                // 05:16 复盘：检测即发射+立刻 50% → 到达反超敌 4s）。预驻防无真实敌情，不烧道具
+                if (extreme && !t.preGarrison) {
+                    glog(app, "EXTREME：发射即烧加速（不等敌压缩）");
+                    raceAccelerate(app, fpid, kid, t.targetUid, t.marchId,
+                            GuardianEngine.trackOf(kid, t.marchId) != null
+                                    ? GuardianEngine.trackOf(kid, t.marchId).endServerSec : enemyEnd,
+                            GuardianEngine.trackOf(kid, t.marchId), true);
+                }
+            }
+            if (t.preGarrison) {
+                String line = "🚀预驻防 → 盟友(" + gx + "," + gy
+                        + (t.targetUid > 0 ? " uid" + t.targetUid : "") + "）已发出，到达 "
+                        + hhmmss(ourEnd) + "，无威胁滞留 "
+                        + GuardianPreGarrison.DWELL_SEC / 60 + " 分钟后由清扫器撤回";
+                glog(app, line);
+                try {
+                    FnParams.saveModText(app, fpid, kid, GuardianEngine.FN_ID, "pre_garrison", line);
+                } catch (Throwable ignored) {
+                }
+                return;   // 预驻防无"先于敌"验收语义
             }
             // 裕量按"当前真实敌到达"计算（发射过程中敌可能加速，用威胁表最新值）
             GuardianEngine.Track live = GuardianEngine.trackOf(kid, t.marchId);
@@ -389,18 +490,6 @@ public final class GuardianLaunch {
             glog(app, "驻防完成：我方到达 " + hhmmss(ourEnd) + "，敌到达 " + hhmmss(realEnemyEnd)
                     + "，先于敌 " + marginMs / 1000L + "s 落地——仅代表先至，**成败以战报邮件为准**（"
                     + (marginMs > 0 ? "已先至，等待🚩/❌邮件" : "晚于敌，预计❌") + "）");
-            if (t.targetUid > 0) {
-                INFLIGHT.put(t.targetUid, new long[]{marchIdOf(ok), t.marchId, ourEnd, 2L, 0L});
-                // EXTREME 锁存者：发射即烧加速（等敌动手再加速对全压缩者结构性太晚——
-                // 05:16 复盘：检测即发射+立刻 50% → 到达反超敌 4s）
-                if (extreme) {
-                    glog(app, "EXTREME：发射即烧加速（不等敌压缩）");
-                    raceAccelerate(app, fpid, kid, t.targetUid, t.marchId,
-                            GuardianEngine.trackOf(kid, t.marchId) != null
-                                    ? GuardianEngine.trackOf(kid, t.marchId).endServerSec : enemyEnd,
-                            GuardianEngine.trackOf(kid, t.marchId), true);
-                }
-            }
         } catch (Throwable ex) {
             glog(app, "驻防执行异常: " + stack(ex));
         }
@@ -605,7 +694,18 @@ public final class GuardianLaunch {
         }
     }
 
-    private static void alert(Context app, int gx, int gy, GuardianEngine.Track t, int code) {
+    private static void alert(Context app, String fpid, long kid, int gx, int gy,
+                              GuardianEngine.Track t, int code) {
+        // 预驻防失败（含 2878 队列满仲裁仍不成）：只记日志与状态行，不推送人工告警（预防性任务）
+        if (t.preGarrison) {
+            String line = "🚀预驻防未成（末码 " + code + "）：预防性任务不推送告警，冷却后高威胁信号可再触发";
+            glog(app, line);
+            try {
+                FnParams.saveModText(app, fpid, kid, GuardianEngine.FN_ID, "pre_garrison", line);
+            } catch (Throwable ignored) {
+            }
+            return;
+        }
         try {
             com.carlos.vault.daily.EnemyWatch.alert(app,
                     "🚨盟友城被攻，请手动增援！\n目标：uid" + (t.targetUid > 0 ? t.targetUid : "")
@@ -645,6 +745,12 @@ public final class GuardianLaunch {
      *  数据源双路：INFLIGHT 在册（本会话发射）+ 登录快照扫描（跨重启仍有效）。 */
     public static void repatriate(Context app, String fpid, long kid, long targetUid) {
         try {
+            // P6 常驻戒备：保留窗口内的驻防不自动撤防（覆盖默认"战报出即撤防"路径）
+            if (GuardianHold.shouldHold(fpid, kid, targetUid, System.currentTimeMillis())) {
+                glog(app, "🛡常驻戒备：uid" + targetUid + " 城驻防保留中"
+                        + GuardianHold.holdStatusText(fpid, kid, System.currentTimeMillis()) + "，跳过撤防");
+                return;
+            }
             RoleSessionKeeper.LiveSession f = sessionFor(app, fpid, kid);
             if (f == null) return;
             WjdrEngine engine = f.engine;
@@ -698,6 +804,11 @@ public final class GuardianLaunch {
         Thread th = new Thread(() -> {
             sleep(delayMs);
             try {
+                // P6 常驻戒备：延迟到期时若已武装（新威胁/发射完成武装）→ 继续保留，且不算"无战报失败"
+                if (GuardianHold.shouldHold(fpid, kid, targetUid, System.currentTimeMillis())) {
+                    glog(app, "🛡常驻戒备：uid" + targetUid + " 城驻防保留中，跳过延迟撤防（战报判定一并跳过）");
+                    return;
+                }
                 repatriate(app, fpid, kid, targetUid);
             } catch (Throwable t) {
                 glog(app, "延迟撤防异常: " + stack(t));
@@ -743,6 +854,12 @@ public final class GuardianLaunch {
             int freed = 0;
             for (long[] v : victims) {
                 if (GuardianEngine.hasThreatOn(kid, v[1])) continue;   // 目标仍有威胁：继续驻
+                // P6 常驻戒备：保留窗口内的驻防不撤（清扫器让位，到期后由此处正常撤回）
+                if (GuardianHold.shouldHold(fpid, kid, v[1], System.currentTimeMillis())) {
+                    glog(app, "🛡常驻戒备：保留 uid" + v[1] + " 城驻防（清扫器让位，"
+                            + GuardianHold.holdStatusText(fpid, kid, System.currentTimeMillis()) + "）");
+                    continue;
+                }
                 if (SWEEP_DEAD.contains(v[0])) continue;   // 2806 已证实行军不存在（过期快照残影）
                 Map<String, Object> a = new LinkedHashMap<>();
                 a.put("id", v[0]);
@@ -826,7 +943,17 @@ public final class GuardianLaunch {
                     && System.currentTimeMillis() - track.lastCompressAt < 1500L
                     && aheadBy < 60;                      // 领先过大不响应（防骗道具；敌再压会再触发）
             boolean mirrorFirst = track != null && track.compressCount >= 1 && g[4] == 0;
-            boolean behind = aheadBy < 15;
+            // 加速介入线按距离档缩放（遗留 #5）：近距(16s)行军先至不足 8s 才介入，远距放宽到 20s
+            // （D/2，clamp 4~20s）；缺档回退 single 单值，再缺回退默认 38s → 介入线 19s≈旧固定 15s
+            double distMe = distToTarget(engine, fpid, kid, targetUid, 0, 0);
+            long dEst = GuardianCalib.estimateD(app, fpid, kid, distMe);
+            long behindTh = Math.max(4L, Math.min(20L, dEst / 2));
+            boolean behind = aheadBy < behindTh;
+            if (behind) {
+                glog(app, "R3 介入判定：先至 " + aheadBy + "s < 介入线 " + behindTh
+                        + "s（档D " + dEst + "s，距离 " + (distMe >= 0
+                        ? String.format(java.util.Locale.CHINA, "%.1f", distMe) + " 格" : "未知") + "）");
+            }
             if (!force && !burst && !behind && !(mirrorFirst && aheadBy < 60)) {
                 return;   // 领先充足且无敌压缩迹象：不烧道具（公理②）
             }
@@ -947,6 +1074,7 @@ public final class GuardianLaunch {
 
     /** 引擎推送喂：我方行军消失（march_del）——清理过期驻防记录与出征英雄（20:51 死 marchId 发加速的根因）。 */
     public static void onOwnMarchEnded(long kid, long marchId) {
+        if (marchId < 0) GuardianEngine.dropTrack(kid, marchId);   // P4 预驻防合成威胁同步摘除
         java.util.List<Long> hs = MARCH_HEROES.remove(marchId);
         if (hs != null) HEROES_AWAY.removeAll(hs);
         for (Map.Entry<Long, long[]> e : INFLIGHT.entrySet()) {
@@ -1332,24 +1460,43 @@ public final class GuardianLaunch {
         }
     }
 
-    private static void saveCalib(Context app, long kid, long dSec) {
+    /** 服务器域当前毫秒（与 endtime 同域，实测 D 免时钟偏差；时钟未就绪退本机钟）。 */
+    private static long serverMs(WjdrEngine engine) {
         try {
-            Context c = app.getApplicationContext();
-            java.io.File f = new java.io.File(c.getFilesDir(), "guardian_calib.txt");
-            java.util.LinkedHashMap<Long, Long> m = new java.util.LinkedHashMap<>();
-            if (f.exists()) {
-                for (String line : new String(java.nio.file.Files.readAllBytes(f.toPath()),
-                        java.nio.charset.StandardCharsets.UTF_8).split("\n")) {
-                    String[] p2 = line.trim().split(",");
-                    if (p2.length == 2) m.put(Long.parseLong(p2[0]), Long.parseLong(p2[1]));
-                }
-            }
-            m.put(kid, dSec);
-            try (java.io.FileWriter w = new java.io.FileWriter(f, false)) {
-                for (Map.Entry<Long, Long> e : m.entrySet()) w.write(e.getKey() + "," + e.getValue() + "\n");
-            }
+            return engine.serverClock().nowServerMs();
+        } catch (Throwable t) {
+            return System.currentTimeMillis();
+        }
+    }
+
+    /** 我方城坐标（notify_world_player_init.city_point，迁城释队同源字段）。 */
+    private static int[] ownCityPoint(WjdrEngine engine) {
+        try {
+            Map<String, Object> wpi = engine.notifyContent("notify_world_player_init");
+            Map<String, Object> cp = ExecUtil.mapOf(wpi == null ? null : wpi.get("city_point"));
+            long x = ExecUtil.longOf(cp.get("x"));
+            long y = ExecUtil.longOf(cp.get("y"));
+            if (x > 0 && y > 0) return new int[]{(int) x, (int) y};
         } catch (Throwable ignored) {
         }
+        return null;
+    }
+
+    /** 发射点→目标格距（缺任一坐标返回 -1=距离未知，标定走 single/默认档）。
+     *  目标坐标优先调用方直给（威胁 Track.x/y）；缺则查盟友坐标表（R3 场景只有 targetUid）。 */
+    private static double distToTarget(WjdrEngine engine, String fpid, long kid,
+                                       long targetUid, int tx, int ty) {
+        int[] mine = ownCityPoint(engine);
+        int gx = tx, gy = ty;
+        if ((gx <= 0 || gy <= 0) && targetUid > 0) {
+            long[] c = AllyMap.coords(fpid, kid, targetUid);
+            if (c != null) {
+                gx = (int) c[0];
+                gy = (int) c[1];
+            }
+        }
+        if (mine == null || gx <= 0 || gy <= 0) return -1d;
+        return GuardianCalib.distance(mine[0], mine[1], gx, gy);
     }
 
     static void glog(Context c, String line) {

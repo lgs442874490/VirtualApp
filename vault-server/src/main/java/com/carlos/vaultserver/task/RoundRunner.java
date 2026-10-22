@@ -40,8 +40,12 @@ public final class RoundRunner {
             Boolean enabled = config == null ? null : config.get(def.id);
             boolean on = enabled == null ? def.enabledByDefault : enabled;
             TaskOutcome r;
+            // P7 战时任务闸（E1 对等）：allowlist 外任务一律 SKIPPED（不消耗游戏内次数）
+            String warNote = on ? com.carlos.vaultserver.ServerWarState.gateNote(fpid, sid, def.id) : null;
             if (!on) {
                 r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED, "配置未启用");
+            } else if (warNote != null) {
+                r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED, warNote);
             } else {
                 long t0 = System.currentTimeMillis();
                 try {

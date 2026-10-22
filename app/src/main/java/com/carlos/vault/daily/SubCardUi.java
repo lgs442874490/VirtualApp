@@ -178,7 +178,7 @@ public final class SubCardUi {
             LinearLayout wrap = new LinearLayout(ctx);
             wrap.setOrientation(LinearLayout.VERTICAL);
             wrap.setPadding(0, dp(ctx, 6), 0, 0);
-            String cur = FnParams.strategy(ctx, fpid, sid, fnId, sub.id, sub.strategies[0][0]);
+            String cur = FnParams.strategy(ctx, fpid, sid, fnId, sub.id, defaultStrategy(sub));
             final TextView[] chips = new TextView[sub.strategies.length];
             LinearLayout row = new LinearLayout(ctx);
             row.setOrientation(LinearLayout.HORIZONTAL);
@@ -216,6 +216,18 @@ public final class SubCardUi {
         v.setTextColor(selected ? UiStyle.WHITE : UiStyle.INK2);
         v.setTypeface(selected ? Typeface.DEFAULT_BOLD : Typeface.DEFAULT);
         v.setBackground(UiStyle.roundRect(selected ? UiStyle.BRAND : UiStyle.SURFACE_3, dp(v.getContext(), 10)));
+    }
+
+    /**
+     * chips 无已存值时的默认档：优先选 label 标「（默认）」的档（与 FnDetail 执行侧默认一致，
+     * 兼容半角括号写法），无标注则维持首档。只影响 UI 高亮，不改变执行侧取值。
+     */
+    private static String defaultStrategy(FnDetail.Sub sub) {
+        for (String[] s : sub.strategies) {
+            if (s.length > 1 && s[1] != null
+                    && (s[1].contains("（默认）") || s[1].contains("(默认)"))) return s[0];
+        }
+        return sub.strategies[0][0];
     }
 
     // ================= 清单选择（商店勾选 / 燃霜时段 / 烈焰獠牙档位） =================
