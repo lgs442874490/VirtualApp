@@ -102,8 +102,6 @@ public final class WarNotifyPoller {
             JSONObject e = events.optJSONObject(i);
             if (e == null) continue;
             String eventId = e.optString("eventId", "");
-            JSONObject ep = e.optJSONObject("endpoint");
-            boolean hasXY = ep != null;
             String why = WarNotifyGate.gate(WarNotifyStore.smsEnabled(app), phone, permission,
                     WarNotifyStore.lastSmsAt(app), System.currentTimeMillis(), eventId,
                     WarNotifyStore.sentIds(app));
@@ -111,11 +109,7 @@ public final class WarNotifyPoller {
                 Log.i(TAG, "短信跳过 " + eventId + "：" + why);
                 continue;
             }
-            String text = WarNotifyGate.formatSms(e.optString("targetName", ""),
-                    e.optString("action", ""), hasXY,
-                    hasXY ? ep.optInt("x") : 0, hasXY ? ep.optInt("y") : 0,
-                    e.optLong("endtime", 0), System.currentTimeMillis() / 1000L,
-                    e.optLong("sid", 0));
+            String text = WarNotifyGate.formatSms(e, System.currentTimeMillis() / 1000L);
             if (sendSms(phone, text)) {
                 WarNotifyStore.markSent(app, eventId, System.currentTimeMillis());
                 Log.i(TAG, "短信已发 " + eventId + " → " + maskPhone(phone));

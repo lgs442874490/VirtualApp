@@ -50,6 +50,8 @@ public class NotifySettingsActivity extends Activity {
     private EditText webhookEt, cooldownEt, quietStartEt, quietEndEt, phoneEt;
     private UiStyle.Switch watchSw, wecomSw, smsSw;
     private TextView smsPermText;
+    /** 企业微信卡片状态行：保存/测试结果落页面（不只 toast）。 */
+    private TextView wecomStatus;
     /** 当前编辑的名单条目 uid（enabled 开关回传用）。 */
     private final List<String> targetUidOrder = new ArrayList<>();
     private String fpid = "";
@@ -172,6 +174,11 @@ public class NotifySettingsActivity extends Activity {
         b2.topMargin = dp(10);
         wcBtns.addView(UiStyle.primaryBtn(this, "发送测试", this::testWecom), b2);
         wc.addView(wcBtns);
+        wecomStatus = new TextView(this);
+        wecomStatus.setTextSize(11.5f);
+        wecomStatus.setPadding(dp(2), dp(8), 0, 0);
+        wc.addView(wecomStatus);
+        wc.addView(hint("⚠️ 保存后需在上方「监视名单」添加敌人 uid 才会触发推送——webhook 只决定推送通道，名单决定监视谁。"));
         wc.addView(hint("推送频率受「冷却」约束；夜间静默时段只停企微推送，事件照常记录。"));
         box.addView(wc);
 
@@ -237,7 +244,7 @@ public class NotifySettingsActivity extends Activity {
         eventsBox = new LinearLayout(this);
         eventsBox.setOrientation(LinearLayout.VERTICAL);
         box.addView(eventsBox);
-        box.addView(hint("展示服务器最近记录（环形 200 条）；下拉刷新重新拉取。"));
+        box.addView(hint("展示服务器最近记录（环形 200 条，含行为/发起人/兵力/结算）；点条目查看详情。下拉刷新重新拉取。"));
 
         return root;
     }
@@ -467,7 +474,7 @@ public class NotifySettingsActivity extends Activity {
                     JSONObject ep = e.optJSONObject("endpoint");
                     boolean hasXY = ep != null;
                     LinearLayout row = UiStyle.outlineCard(this);
-                    row.setOrientation(LinearLayout.HORIZONTAL);
+                    row.setOrientation(LinearLayout.VERTICAL);
                     row.setPadding(dp(12), dp(8), dp(12), dp(8));
                     LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                             ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -481,6 +488,23 @@ public class NotifySettingsActivity extends Activity {
                     line.setTextSize(12.5f);
                     line.setTextColor(UiStyle.INK);
                     row.addView(line);
+                    // v4.1.8：第二行展示新字段（行为/兵力/ETA 或 结算/破城）
+                    String sub = WarNotifyGate.formatEventSub(e);
+                    if (!sub.isEmpty()) {
+                        TextView subV = new TextView(this);
+                        subV.setText(sub);
+                        subV.setTextSize(11f);
+                        subV.setPadding(0, dp(2), 0, 0);
+                        subV.setTextColor(UiStyle.INK2);
+                        row.addView(subV);
+                    }
+                    // 条目可点开详情（纯文本弹窗）
+                    UiStyle.press(row);
+                    row.setOnClickListener(v -> new AlertDialog.Builder(this,
+                                    AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                            .setTitle("事件详情")
+                            .setMessage(WarNotifyGate.formatEventDetail(e))
+                            .setPositiveButton("关闭", null).show());
                     eventsBox.addView(row);
                 }
             });
@@ -557,19 +581,38 @@ public class NotifySettingsActivity extends Activity {
 
     private void saveWecom() {
         VaultSync.watchConfig(this, null, wecomSw.isOn(), text(webhookEt),
-                null, null, null, cb("企业微信配置已保存", false));
+                null, null, null, (code, message, data) -> runOnUiThread(() -> {
+                    if (code == 0) {
+                        setWecomStatus("✅ 已保存（企微推送已" + (wecomSw.isOn() ? "开启" : "关闭") + "）",
+                                UiStyle.OK_INK);
+                        toast("企业微信配置已保存");
+                    } else {
+                        setWecomStatus("❌ 保存失败：" + (message == null ? String.valueOf(code) : message),
+                                UiStyle.ERR_INK);
+                        toast("失败：" + (message == null ? String.valueOf(code) : message));
+                    }
+                }));
     }
 
     private void testWecom() {
-        toast("发送中…");
+        setWecomStatus("… 测试发送中", UiStyle.INK2);
         VaultSync.watchTestNotify(this, (code, message, data) -> runOnUiThread(() -> {
             if (code != 0) {
-                toast("失败：" + message);
+                setWecomStatus("❌ 发送失败：" + message, UiStyle.ERR_INK);
                 return;
             }
             boolean ok = data != null && data.optBoolean("ok", false);
-            toast(ok ? "测试消息已发送，请在企业微信群确认" : "发送失败：请检查 webhook 地址与网络");
+            setWecomStatus(ok ? "✅ 测试消息已发送，请在企业微信群确认"
+                            : "❌ 发送失败：请检查 webhook 地址与网络",
+                    ok ? UiStyle.OK_INK : UiStyle.ERR_INK);
         }));
+    }
+
+    /** 企微卡片状态行（保存/测试结果；页面内可见，不只 toast）。 */
+    private void setWecomStatus(String text, int color) {
+        if (wecomStatus == null) return;
+        wecomStatus.setText(text);
+        wecomStatus.setTextColor(color);
     }
 
     private void saveSms() {

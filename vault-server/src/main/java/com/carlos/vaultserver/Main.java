@@ -35,6 +35,8 @@ public final class Main {
 
         SessionKeeper keeper = new SessionKeeper(store, config, new ClasspathAssets(), stateStore, war);
         keeper.reconcile();
+        // v4.1.8：昵称解析接线（WarNotify 只在自己的 name/wecom 线程回调，绝不占推送线程）
+        war.setNameResolver(keeper::resolvePlayerName);
 
         com.carlos.vaultserver.task.RoundScheduler scheduler =
                 new com.carlos.vaultserver.task.RoundScheduler(store, stateStore, keeper);

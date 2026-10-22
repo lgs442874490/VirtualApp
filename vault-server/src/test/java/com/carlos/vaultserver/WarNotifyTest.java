@@ -493,4 +493,386 @@ public class WarNotifyTest {
                 playerMarchAdd(162, ENEMY_UID, 2, 3, 4, 1, 1));
         assertTrue(Files.isRegularFile(tmp.getRoot().toPath().resolve("events.json.bak")));
     }
+
+    // ================= v4.1.8：行为/兵力/发起人坐标/昵称/ETA =================
+
+    /** 计数型昵称解析 mock（不真实请求引擎）。 */
+    static final class NameRes implements WarNotify.NameResolver {
+        final Map<Long, String> names = new LinkedHashMap<>();
+        final List<Long> calls = new ArrayList<>();
+
+        @Override
+        public String resolve(String fpid, long sid, long uid) {
+            calls.add(uid);
+            return names.getOrDefault(uid, "");
+        }
+    }
+
+    /** 组装带 startpoint/squad_list 的 march map（不经 content 包装）。 */
+    private Map<String, Object> fullMarch(long marchId, long owner, long type, long start, long end,
+                                          int ex, int ey, int sx, int sy, Map<Long, Long> squad) {
+        Map<String, Object> march = new LinkedHashMap<>();
+        march.put("id", marchId);
+        march.put("owner", owner);
+        march.put("type", type);
+        march.put("starttime", start);
+        march.put("endtime", end);
+        Map<String, Object> ep = new LinkedHashMap<>();
+        ep.put("x", ex);
+        ep.put("y", ey);
+        march.put("endpoint", ep);
+        Map<String, Object> sp = new LinkedHashMap<>();
+        sp.put("x", sx);
+        sp.put("y", sy);
+        march.put("startpoint", sp);
+        if (squad != null) {
+            Map<String, Object> soldier = new LinkedHashMap<>();
+            for (Map.Entry<Long, Long> en : squad.entrySet()) {
+                soldier.put(String.valueOf(en.getKey()), en.getValue());
+            }
+            Map<String, Object> squadList = new LinkedHashMap<>();
+            squadList.put("soldier", soldier);
+            march.put("squad_list", squadList);
+        }
+        return march;
+    }
+
+    private Map<String, Object> content(Map<String, Object> march) {
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("march", march);
+        return c;
+    }
+
+    @Test
+    public void behaviorOf_mapping() {
+        assertEquals(WarNotify.BEH_RECON, WarNotify.behaviorOf("notify_player_march_add", 1));
+        assertEquals(WarNotify.BEH_ATTACK, WarNotify.behaviorOf("notify_player_march_add", 2));
+        assertEquals(WarNotify.BEH_RALLY, WarNotify.behaviorOf("notify_mass_march_add", 501));
+        assertEquals(WarNotify.BEH_GARRISON, WarNotify.behaviorOf("notify_player_march_add", 5));
+        assertEquals(WarNotify.BEH_MARCH, WarNotify.behaviorOf("notify_player_march_add", 3));
+    }
+
+    @Test
+    public void troopsOf_mapListAndMissingShapes() {
+        // map：键=id 值=数量
+        Map<String, Object> m = new LinkedHashMap<>();
+        Map<String, Object> soldier = new LinkedHashMap<>();
+        soldier.put("11000", 1200);
+        // 值={count:n} 形状
+        Map<String, Object> cnt = new LinkedHashMap<>();
+        cnt.put("count", 800);
+        soldier.put("20900", cnt);
+        Map<String, Object> squad = new LinkedHashMap<>();
+        squad.put("soldier", soldier);
+        m.put("squad_list", squad);
+        assertEquals("盾T10×1200 矛T9×800（合计2000）", WarNotify.troopsOf(m));
+
+        // list：元素={id,count}
+        Map<String, Object> m2 = new LinkedHashMap<>();
+        Map<String, Object> e1 = new LinkedHashMap<>();
+        e1.put("id", 30800);
+        e1.put("count", 500);
+        Map<String, Object> squad2 = new LinkedHashMap<>();
+        squad2.put("soldier", new ArrayList<>(java.util.Collections.singletonList(e1)));
+        m2.put("squad_list", squad2);
+        assertEquals("弓T8×500（合计500）", WarNotify.troopsOf(m2));
+
+        // 无 squad 数据 = 未知
+        assertEquals(WarNotify.TROOPS_UNKNOWN, WarNotify.troopsOf(new LinkedHashMap<>()));
+    }
+
+    @Test
+    public void soldierLabel_kindsAndTiers() {
+        assertEquals("盾T10", WarNotify.soldierLabel(11000));
+        assertEquals("盾T11", WarNotify.soldierLabel(11100));
+        assertEquals("矛T9", WarNotify.soldierLabel(20900));
+        assertEquals("弓T8", WarNotify.soldierLabel(30800));
+        assertEquals("兵9", WarNotify.soldierLabel(90000));
+    }
+
+    @Test
+    public void startPointOf_parsesStartpoint() {
+        Map<String, Object> m = new LinkedHashMap<>();
+        Map<String, Object> sp = new LinkedHashMap<>();
+        sp.put("x", 5);
+        sp.put("y", 6);
+        m.put("startpoint", sp);
+        assertEquals(5, WarNotify.startPointOf(m)[0]);
+        assertEquals(6, WarNotify.startPointOf(m)[1]);
+        assertNull(WarNotify.startPointOf(new LinkedHashMap<>()));
+    }
+
+    @Test
+    public void onPush_initialEventCarriesEnrichedFields() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        Map<Long, Long> squad = new LinkedHashMap<>();
+        squad.put(11000L, 1200L);
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(201, ENEMY_UID, 2, nowS - 60, nowS + 300, 3, 4, 5, 6, squad)));
+        assertEquals(1, events.size());
+        JSONObject e = events.after(0).get(0);
+        assertEquals("宿敌", e.optString("attackerName"));   // 解析前回退监视备注
+        assertEquals("进攻城堡", e.optString("behavior"));
+        assertEquals("盾T10×1200（合计1200）", e.optString("troops"));
+        assertEquals(5, e.optJSONObject("startPoint").optInt("x"));
+        assertEquals(6, e.optJSONObject("startPoint").optInt("y"));
+        long eta = e.optLong("etaSeconds");
+        assertTrue("eta 应在 296~300： " + eta, eta >= 296 && eta <= 300);
+        assertEquals((nowS + 300) * 1000L, e.optLong("dueAt"));
+        assertEquals(WarNotify.PHASE_ACTION, e.optString("phase"));
+        assertEquals(201L, e.optLong("marchId"));
+        assertEquals("宿敌", e.optString("targetName"));   // v4.1.7 兼容字段保留
+    }
+
+    @Test
+    public void nameResolver_cachedAcrossEvents() throws Exception {
+        NameRes res = new NameRes();
+        res.names.put(ENEMY_UID, "张三");
+        war.setNameResolver(res);
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(211, ENEMY_UID, 2, nowS, nowS + 300, 1, 1));
+        // 异步解析回填（nameExec 线程）
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline
+                && !"张三".equals(war.trackedNameForTest(211))) {
+            Thread.sleep(20);
+        }
+        assertEquals("张三", war.trackedNameForTest(211));
+        assertEquals(1, res.calls.size());
+        // 第二支行军（同 uid）：缓存命中直接带昵称，不再发解析请求
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(212, ENEMY_UID, 1, nowS, nowS + 100, 1, 1));
+        assertEquals("张三", events.after(0).get(1).optString("attackerName"));
+        assertEquals(1, res.calls.size());
+    }
+
+    @Test
+    public void nameResolver_failureFallsBackAndDoesNotRepeat() throws Exception {
+        NameRes res = new NameRes();   // 空 names → 解析失败返回空串
+        war.setNameResolver(res);
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(221, ENEMY_UID, 2, nowS, nowS + 300, 1, 1));
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline && !war.nameCachedForTest(FPID, ENEMY_UID)) {
+            Thread.sleep(20);
+        }
+        assertEquals("宿敌", war.trackedNameForTest(221));   // 回退监视备注
+        assertEquals(1, res.calls.size());
+        // 失败也缓存（10min）：后续事件不再反复请求
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(222, ENEMY_UID, 1, nowS, nowS + 100, 1, 1));
+        Thread.sleep(200);
+        assertEquals(1, res.calls.size());
+        assertEquals("宿敌", events.after(0).get(1).optString("attackerName"));
+    }
+
+    @Test
+    public void nameResolver_asyncBackfillReachesSettle() throws Exception {
+        NameRes res = new NameRes();
+        res.names.put(ENEMY_UID, "李四");
+        war.setNameResolver(res);
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(231, ENEMY_UID, 2, nowS - 300, nowS - 10, 7, 8));
+        long deadline = System.currentTimeMillis() + 5000;
+        while (System.currentTimeMillis() < deadline && !"李四".equals(war.trackedNameForTest(231))) {
+            Thread.sleep(20);
+        }
+        // 到达结算（单测同步模式 grace=0）：结算事件昵称=已解析昵称
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(231));
+        JSONObject settle = events.after(0).get(1);
+        assertEquals(WarNotify.PHASE_SETTLE, settle.optString("phase"));
+        assertEquals("李四", settle.optString("attackerName"));
+    }
+
+    // ================= v4.1.8：完成结算（duration/outcome/breach/battleCodes） =================
+
+    private Map<String, Object> delContent(long marchId) {
+        Map<String, Object> d = new LinkedHashMap<>();
+        d.put("id", marchId);
+        d.put("type", 2);
+        d.put("kid", 888);
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("march", d);
+        return c;
+    }
+
+    private Map<String, Object> mailContent(long first, long second) {
+        Map<String, Object> cover = new LinkedHashMap<>();
+        cover.put("first_type", first);
+        cover.put("second_type", second);
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("mail_cover_info", cover);
+        return c;
+    }
+
+    @Test
+    public void onPush_settleArrivalWithoutMailIsNotOwnDefense() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(241, ENEMY_UID, 2, nowS - 300, nowS - 10, 3, 4, 5, 6, null)));
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(241));
+        assertEquals(2, events.size());
+        JSONObject settle = events.after(0).get(1);
+        assertEquals(WarNotify.ACT_ARRIVE, settle.optString("action"));
+        assertEquals("已到达", settle.optString("outcome"));
+        assertEquals(WarNotify.PHASE_SETTLE, settle.optString("phase"));
+        long duration = settle.optLong("durationSeconds");
+        assertTrue("耗时约 300s： " + duration, duration >= 295 && duration <= 310);
+        assertEquals(WarNotify.BREACH_NOT_OWN, settle.optString("breach"));   // 本会话无战报
+        assertTrue(settle.optString("battleCodes").isEmpty());
+    }
+
+    @Test
+    public void onPush_settleRecallImmediateWithDuration() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(251, ENEMY_UID, 2, nowS - 100, nowS + 300, 3, 4, 5, 6, null)));
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(251));
+        JSONObject settle = events.after(0).get(1);
+        assertEquals(WarNotify.ACT_RECALL, settle.optString("action"));
+        assertEquals("撤回", settle.optString("outcome"));
+        long duration = settle.optLong("durationSeconds");
+        assertTrue("耗时约 100s： " + duration, duration >= 95 && duration <= 110);
+        assertFalse(settle.has("breach"));   // 撤回无破城概念
+        assertEquals(2, events.size());
+    }
+
+    @Test
+    public void onPush_settleBreachKnownCodes() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(261, ENEMY_UID, 2, nowS - 300, nowS - 10, 3, 4, 5, 6, null)));
+        // 防守败（second=6）→ 破城=是
+        war.onPush(FPID, 888L, "notify_new_mail_syn", mailContent(30, 6));
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(261));
+        JSONObject settle = events.after(0).get(1);
+        assertEquals(WarNotify.BREACH_YES, settle.optString("breach"));
+        assertEquals("30/6", settle.optString("battleCodes"));
+
+        // 防守胜（second=5）→ 未破城（新 march，冷却 key 区分：先清冷却）
+        war.resetCooldownForTest();
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(262, ENEMY_UID, 2, nowS - 300, nowS - 10, 3, 4, 5, 6, null)));
+        war.onPush(FPID, 888L, "notify_new_mail_syn", mailContent(30, 5));
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(262));
+        JSONObject settle2 = events.after(0).get(3);
+        assertEquals(WarNotify.BREACH_NO, settle2.optString("breach"));
+        assertEquals("30/5", settle2.optString("battleCodes"));
+    }
+
+    @Test
+    public void onPush_settleBreachUnknownCodesAndNonDefenseFirst() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(271, ENEMY_UID, 2, nowS - 300, nowS - 10, 3, 4, 5, 6, null)));
+        // 未收录码（second=1，实测防守样本）→ 未知 + battleCodes 原样附
+        war.onPush(FPID, 888L, "notify_new_mail_syn", mailContent(30, 1));
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(271));
+        JSONObject settle = events.after(0).get(1);
+        assertEquals(WarNotify.BREACH_UNKNOWN, settle.optString("breach"));
+        assertEquals("30/1", settle.optString("battleCodes"));
+
+        // 非 30 的 first 语义未校准 → 未知（battleCodes 照附）
+        war.resetCooldownForTest();
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(272, ENEMY_UID, 2, nowS - 300, nowS - 10, 3, 4, 5, 6, null)));
+        war.onPush(FPID, 888L, "notify_new_mail_syn", mailContent(31, 6));
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(272));
+        JSONObject settle2 = events.after(0).get(3);
+        assertEquals(WarNotify.BREACH_UNKNOWN, settle2.optString("breach"));
+        assertEquals("31/6", settle2.optString("battleCodes"));
+    }
+
+    @Test
+    public void breachOf_mapping() {
+        assertEquals(WarNotify.BREACH_NO, WarNotify.breachOf(30, 4));
+        assertEquals(WarNotify.BREACH_NO, WarNotify.breachOf(30, 5));
+        assertEquals(WarNotify.BREACH_YES, WarNotify.breachOf(30, 6));
+        assertEquals(WarNotify.BREACH_YES, WarNotify.breachOf(30, 8));
+        assertEquals(WarNotify.BREACH_UNKNOWN, WarNotify.breachOf(30, 1));
+        assertEquals(WarNotify.BREACH_UNKNOWN, WarNotify.breachOf(31, 6));
+    }
+
+    @Test
+    public void onPush_settleAndInitCooldownIndependent() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        // 第一轮：初始 + 结算各一条（冷却 key 带 |done 区分）
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(281, ENEMY_UID, 2, nowS - 300, nowS - 10, 3, 4, 5, 6, null)));
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(281));
+        assertEquals(2, events.size());
+        // 第二轮（冷却窗口内）：初始动作与完成结算分别被各自 key 节流
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(282, ENEMY_UID, 2, nowS - 300, nowS - 10, 3, 4, 5, 6, null)));
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(282));
+        assertEquals(2, events.size());
+    }
+
+    @Test
+    public void onPush_mailPushProducesNoMarchEvents() {
+        war.onPush(FPID, 888L, "notify_new_mail_syn", mailContent(30, 6));
+        // 邮件 content 即便混入 {id,owner} 形状也不产生行军事件
+        Map<String, Object> weird = new LinkedHashMap<>();
+        weird.put("id", 9);
+        weird.put("owner", ENEMY_UID);
+        Map<String, Object> c = mailContent(30, 6);
+        c.put("junk", weird);
+        war.onPush(FPID, 888L, "notify_new_mail_syn", c);
+        assertEquals(0, events.size());
+    }
+
+    @Test
+    public void fmtDuration_andDisplayOutcome() {
+        assertEquals("45 秒", WarNotify.fmtDuration(45));
+        assertEquals("5 分 30 秒", WarNotify.fmtDuration(330));
+        assertEquals("0 秒", WarNotify.fmtDuration(-3));
+        assertEquals("已撤回", WarNotify.displayOutcome("撤回"));
+        assertEquals("已到达", WarNotify.displayOutcome("已到达"));
+    }
+
+    // ================= v4.1.8：企微文案（用户 6 项 + 结算追加） =================
+
+    @Test
+    public void wecomText_containsSixItems() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        store.updateWatchConfig(true, true,
+                "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x", 300, -1, 8);
+        Map<Long, Long> squad = new LinkedHashMap<>();
+        squad.put(11000L, 1200L);
+        squad.put(20900L, 800L);
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(301, ENEMY_UID, 2, nowS - 60, nowS + 300, 3, 4, 5, 6, squad)));
+        assertEquals(1, notifier.sent.size());
+        String text = notifier.sent.get(0);
+        assertTrue(text.contains("⚔️ 战争警报·进攻城堡"));
+        assertTrue(text.contains("发起人：宿敌（uid " + ENEMY_UID + "）"));
+        assertTrue(text.contains("发起人坐标：(5,6)"));
+        assertTrue(text.contains("目标：(3,4)"));
+        assertTrue(text.contains("兵力：盾T10×1200 矛T9×800（合计2000）"));
+        assertTrue(text.contains("到达："));                     // HH:mm:ss（约 N 分 M 秒后）
+        assertTrue(text.contains("分 ") && text.contains(" 秒后）"));
+        assertTrue(text.contains("来源：notify_player_march_add"));
+    }
+
+    @Test
+    public void wecomText_settleAppendsOutcomeLine() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        store.updateWatchConfig(true, true,
+                "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x", 300, -1, 8);
+        war.onPush(FPID, 888L, "notify_player_march_add", content(
+                fullMarch(311, ENEMY_UID, 2, nowS - 300, nowS - 10, 3, 4, 5, 6, null)));
+        war.onPush(FPID, 888L, "notify_new_mail_syn", mailContent(30, 6));
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(311));
+        assertEquals(2, notifier.sent.size());
+        String init = notifier.sent.get(0);
+        String settle = notifier.sent.get(1);
+        assertFalse(init.contains("🏁"));                       // 初始文案无结算行
+        assertTrue(settle.contains("🏁 进攻结算：已到达"));
+        assertTrue(settle.contains("从发起到完成耗时"));
+        assertTrue(settle.contains("破城：" + WarNotify.BREACH_YES + "（战报 30/6）"));
+        assertFalse(settle.contains("到达："));                  // 结算文案无到达倒计时
+    }
 }

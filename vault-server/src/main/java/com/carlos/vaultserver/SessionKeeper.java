@@ -1064,6 +1064,45 @@ public final class SessionKeeper implements SessionControl,
         return r;
     }
 
+    /**
+     * 玩家昵称解析（v4.1.8 战争通知：WarNotify 异步线程回调）。
+     *
+     * <p><b>线程纪律</b>：实现走 {@code engine.request}（阻塞等响应，响应经推送线程投递）——
+     * 只准从 WarNotify 的 name/wecom 线程调用；推送线程调用=自等自=死锁。
+     * 找到该账号（优先匹配 sid）的在线会话借引擎发 {@code req_players_base_info}，
+     * 返回 result.*.nickName；任何失败返回空串（调用方回退监视备注/uid）。
+     */
+    public String resolvePlayerName(String fpid, long sid, long uid) {
+        if (fpid == null || fpid.isEmpty() || uid <= 0) return "";
+        for (LiveSession ls : sessions.values()) {
+            if (!fpid.equals(ls.fpid)) continue;
+            if (sid > 0 && ls.resolveSid() != sid) continue;
+            if (!WjdrEngine.STATE_ONLINE.equals(ls.state)) continue;
+            try {
+                com.carlos.vault.wjdr.protocol.GameMessage pbi = ls.engine.request(
+                        "req_players_base_info",
+                        com.carlos.vaultserver.task.Exec.args("uids",
+                                java.util.Collections.singletonList(uid)));
+                Object result = pbi == null || pbi.getContent() == null
+                        ? null : pbi.getContent().get("result");
+                if (result instanceof Map) {
+                    for (Object v : ((Map<?, ?>) result).values()) {
+                        Map<String, Object> p =
+                                com.carlos.vaultserver.task.Exec.mapOf(v);
+                        if (p == null) continue;
+                        Object nick = p.get("nickName");
+                        String name = nick == null ? "" : String.valueOf(nick).trim();
+                        if (!name.isEmpty() && !"null".equals(name)) return name;
+                    }
+                }
+            } catch (Throwable t) {
+                FileLog.info("战争通知昵称解析失败 fpid={} uid={}：{}", fpid, uid, String.valueOf(t));
+            }
+            return "";
+        }
+        return "";
+    }
+
     /** 名称规则（对齐线上 RoleRenameSupport）：3~12 字、首尾无空格、无控制字符。 */
     static String validateRenameName(String raw) {
         String name = raw == null ? "" : raw;
