@@ -12,14 +12,15 @@ import static org.junit.Assert.*;
 /**
  * TC-C01 / TC-D05：功能注册表与默认开关矩阵（35 默认开 / 21 默认关）。
  * 开关缺省回落语义（runTasks: null→enabledByDefault）依赖此矩阵，UI 三态显示同样依赖。
- * 计数变更史：50 → 53（+成就奖励/雪原贸易站/守护盟友）→ 56，新增功能必须同步本类断言。
+ * 计数变更史：50 → 53（+成就奖励/雪原贸易站/守护盟友）→ 56 → 57（+战争状态，P7），
+ * 新增功能必须同步本类断言。
  */
 public class RegistryAndDefaultsTest {
 
     @Test
     public void fnRegistry_allItems_uniqueAndImplemented() {
         List<FnRegistry.Fn> all = FnRegistry.all();
-        assertEquals(56, all.size());
+        assertEquals(57, all.size());
         Set<String> ids = new HashSet<>();
         Set<String> names = new HashSet<>();
         for (FnRegistry.Fn f : all) {
@@ -29,13 +30,13 @@ public class RegistryAndDefaultsTest {
             ids.add(f.id);
             names.add(f.name);
         }
-        assertEquals("fn id 不得重复", 56, ids.size());
-        assertEquals("fn 名称不得重复", 56, names.size());
+        assertEquals("fn id 不得重复", 57, ids.size());
+        assertEquals("fn 名称不得重复", 57, names.size());
     }
 
     @Test
     public void fnRegistry_categoryCounts() {
-        int[] expected = {10, 11, 15, 7, 7, 2, 4}; // 奖励/城镇/活动/野外/联盟/商店/其他
+        int[] expected = {10, 11, 15, 7, 8, 2, 4}; // 奖励/城镇/活动/野外/联盟/商店/其他
         assertEquals(7, FnRegistry.CAT_NAMES.length);
         for (int cat = 0; cat < 7; cat++) {
             assertEquals("分类 " + FnRegistry.CAT_NAMES[cat] + " 数量",
@@ -53,7 +54,7 @@ public class RegistryAndDefaultsTest {
     @Test
     public void dailyTasks_registryMatchesFnRegistry() {
         List<DailyTasks.TaskDef> defs = DailyTasks.all();
-        assertEquals(56, defs.size());
+        assertEquals(57, defs.size());
         Set<String> fnIds = new HashSet<>();
         for (FnRegistry.Fn f : FnRegistry.all()) fnIds.add(f.id);
         Set<String> defIds = new HashSet<>();

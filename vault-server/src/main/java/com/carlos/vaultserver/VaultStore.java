@@ -120,16 +120,142 @@ public final class VaultStore {
         public int takeoverMaxAttempts = 3;
         /** 让号冷却分钟（默认 15，仅允许 15/30/60/120/1440）。 */
         public int takeoverCooldownMinutes = 15;
+        /**
+         * 战争通知监视名单（2026-10-22）：账号级 watch targets，服务器侧自有数据——
+         * App sync 不携带，replaceAll 时跨 sync 保留（同 takeoverRecovery* 策略）。
+         */
+        public final List<WatchTarget> watchTargets = new ArrayList<>();
 
         public Account(String fpid) {
             this.fpid = fpid;
         }
     }
 
+    /**
+     * 单个被监视敌人（战争通知模块）：uid 必填（游戏内玩家 uid），name/kid/note 可选。
+     * enabled=false 保留条目但暂停监视。
+     */
+    public static final class WatchTarget {
+        public String uid;
+        public String name = "";
+        public String kid = "";
+        public String note = "";
+        public boolean enabled = true;
+
+        public WatchTarget(String uid) {
+            this.uid = uid == null ? "" : uid;
+        }
+
+        WatchTarget copy() {
+            WatchTarget c = new WatchTarget(uid);
+            c.name = name;
+            c.kid = kid;
+            c.note = note;
+            c.enabled = enabled;
+            return c;
+        }
+    }
+
+    /**
+     * 战争通知全局配置（vault.json 根 "watch" 对象；服务器侧自有，与账号无关）。
+     * wecom 静默时段为小时 [quietStart, quietEnd)，跨夜（start&gt;end）按环绕判定；
+     * -1 = 未启用静默。静默只抑制企业微信推送，事件照常入库。
+     */
+    public static final class WatchConfig {
+        /** 监视总开关：关闭时推送不解析、不产生事件。 */
+        public boolean enabled;
+        /** 企业微信机器人推送开关（还需配置 webhookUrl）。 */
+        public boolean wecomEnabled = true;
+        /** 企业微信群机器人 webhook 地址。 */
+        public String webhookUrl = "";
+        /** 同一 target+action 的通知冷却秒数（60..3600，默认 300）。 */
+        public int cooldownSeconds = 300;
+        /** 静默开始小时（-1 = 关闭静默）。 */
+        public int quietStart = -1;
+        /** 静默结束小时（0..23，与 quietStart 配对）。 */
+        public int quietEnd = 8;
+
+        WatchConfig copy() {
+            WatchConfig c = new WatchConfig();
+            c.enabled = enabled;
+            c.wecomEnabled = wecomEnabled;
+            c.webhookUrl = webhookUrl;
+            c.cooldownSeconds = cooldownSeconds;
+            c.quietStart = quietStart;
+            c.quietEnd = quietEnd;
+            return c;
+        }
+    }
+
+    /** watch 配置快照（深拷贝）。 */
+    public WatchConfig watchConfig() {
+        synchronized (lock) {
+            return watchConfigLocked.copy();
+        }
+    }
+
+    /**
+     * 保存 watch 全局配置（先过 {@link #validateWatchConfig}；越界值就近收敛到合法域）。
+     * webhookUrl 允许置空（清空配置）。
+     */
+    public void updateWatchConfig(boolean enabled, boolean wecomEnabled, String webhookUrl,
+                                  int cooldownSeconds, int quietStart, int quietEnd) {
+        synchronized (lock) {
+            watchConfigLocked.enabled = enabled;
+            watchConfigLocked.wecomEnabled = wecomEnabled;
+            String url = webhookUrl == null ? "" : webhookUrl.trim();
+            watchConfigLocked.webhookUrl = url;
+            watchConfigLocked.cooldownSeconds =
+                    Math.max(60, Math.min(3600, cooldownSeconds));
+            watchConfigLocked.quietStart = quietStart < 0 ? -1 : Math.max(0, Math.min(23, quietStart));
+            watchConfigLocked.quietEnd = Math.max(0, Math.min(23, quietEnd));
+            saveLocked();
+        }
+    }
+
+    /**
+     * webhook 额外放行前缀：环境变量 VAULT_WATCH_WEBHOOK_ALLOW（逗号分隔，容忍空格；
+     * 仅用于测试/内网联调，如 http://127.0.0.1,http://192.168.）。默认空 = 仅放行企业微信官方域名。
+     * 单测经同名系统属性注入（JVM 内无法改环境变量）。
+     */
+    static String watchWebhookAllowEnv() {
+        String v = System.getProperty("VAULT_WATCH_WEBHOOK_ALLOW");
+        if (v == null || v.trim().isEmpty()) v = System.getenv("VAULT_WATCH_WEBHOOK_ALLOW");
+        return v == null ? "" : v.trim();
+    }
+
+    /** 官方域名或白名单（VAULT_WATCH_WEBHOOK_ALLOW 前缀命中）任一满足即放行。 */
+    private static boolean webhookUrlAllowed(String url) {
+        if (url.startsWith("https://qyapi.weixin.qq.com/")) return true;
+        for (String p : watchWebhookAllowEnv().split(",")) {
+            String pref = p.trim();
+            if (!pref.isEmpty() && url.startsWith(pref)) return true;
+        }
+        return false;
+    }
+
+    /** watch 配置校验（API 配置保存与测试推送共用；返回 null=通过，否则中文原因）。 */
+    public static String validateWatchConfig(String webhookUrl, int cooldownSeconds,
+                                             int quietStart, int quietEnd) {
+        String url = webhookUrl == null ? "" : webhookUrl.trim();
+        if (!url.isEmpty() && !webhookUrlAllowed(url)) {
+            return "webhook 地址须为 https://qyapi.weixin.qq.com/ 开头的企业微信机器人地址";
+        }
+        if (cooldownSeconds < 60 || cooldownSeconds > 3600) {
+            return "通知冷却须在 60 到 3600 秒之间";
+        }
+        if (quietStart >= 0 && (quietStart > 23 || quietEnd < 0 || quietEnd > 23)) {
+            return "静默时段须为 0 到 23 的小时";
+        }
+        return null;
+    }
+
     private final Path file;
     private final Path backup;
     private final List<Account> accounts = new ArrayList<>();
     private String takeoverPolicy = "human_first";
+    /** 战争通知全局配置（watch 配置节）。 */
+    private WatchConfig watchConfigLocked = new WatchConfig();
     private final Object lock = new Object();
 
     public VaultStore(Path dataDir) {
@@ -235,10 +361,37 @@ public final class VaultStore {
                                 o.optInt("takeoverMaxAttempts", 3), 0, 10, 3);
                         a.takeoverCooldownMinutes = parseCooldown(
                                 o.optInt("takeoverCooldownMinutes", 15));
+                        // 战争通知监视名单（服务器侧自有；旧数据无此节 → 空表）
+                        JSONArray wts = o.optJSONArray("watchTargets");
+                        if (wts != null) {
+                            for (int wi = 0; wi < wts.length(); wi++) {
+                                JSONObject wt = wts.optJSONObject(wi);
+                                if (wt == null) continue;
+                                String wuid = wt.optString("uid", "");
+                                if (wuid.isEmpty()) continue;
+                                WatchTarget t = new WatchTarget(wuid);
+                                t.name = wt.optString("name", "");
+                                t.kid = wt.optString("kid", "");
+                                t.note = wt.optString("note", "");
+                                t.enabled = wt.optBoolean("enabled", true);
+                                a.watchTargets.add(t);
+                            }
+                        }
                         accounts.add(a);
                     }
                     String policy = root.optString("takeoverPolicy", "");
                     if (!policy.isEmpty()) takeoverPolicy = policy;
+                    JSONObject wc = root.optJSONObject("watch");
+                    if (wc != null) {
+                        watchConfigLocked.enabled = wc.optBoolean("enabled", false);
+                        watchConfigLocked.wecomEnabled = wc.optBoolean("wecomEnabled", true);
+                        watchConfigLocked.webhookUrl = wc.optString("webhookUrl", "");
+                        watchConfigLocked.cooldownSeconds =
+                                clampInt(wc.optInt("cooldownSeconds", 300), 60, 3600, 300);
+                        int qs = wc.optInt("quietStart", -1);
+                        watchConfigLocked.quietStart = qs < 0 ? -1 : clampInt(qs, 0, 23, -1);
+                        watchConfigLocked.quietEnd = clampInt(wc.optInt("quietEnd", 8), 0, 23, 8);
+                    }
                     return; // 主文件解析成功即不再看备份
                 } catch (Exception e) {
                     FileLog.warn("库文件解析失败 {}：{}，尝试下一份", p.getFileName(), e.getMessage());
@@ -315,11 +468,30 @@ public final class VaultStore {
                 o.put("takeoverRetryIntervalSeconds", a.takeoverRetryIntervalSeconds);
                 o.put("takeoverMaxAttempts", a.takeoverMaxAttempts);
                 o.put("takeoverCooldownMinutes", a.takeoverCooldownMinutes);
+                JSONArray wts = new JSONArray();
+                for (WatchTarget t : a.watchTargets) {
+                    JSONObject wt = new JSONObject();
+                    wt.put("uid", t.uid);
+                    wt.put("name", t.name);
+                    wt.put("kid", t.kid);
+                    wt.put("note", t.note);
+                    wt.put("enabled", t.enabled);
+                    wts.put(wt);
+                }
+                o.put("watchTargets", wts);
                 arr.put(o);
             }
             JSONObject root = new JSONObject();
             root.put("accounts", arr);
             root.put("takeoverPolicy", takeoverPolicy);
+            JSONObject wc = new JSONObject();
+            wc.put("enabled", watchConfigLocked.enabled);
+            wc.put("wecomEnabled", watchConfigLocked.wecomEnabled);
+            wc.put("webhookUrl", watchConfigLocked.webhookUrl);
+            wc.put("cooldownSeconds", watchConfigLocked.cooldownSeconds);
+            wc.put("quietStart", watchConfigLocked.quietStart);
+            wc.put("quietEnd", watchConfigLocked.quietEnd);
+            root.put("watch", wc);
             root.put("savedAt", System.currentTimeMillis());
 
             Files.createDirectories(file.getParent());
@@ -372,6 +544,8 @@ public final class VaultStore {
                     merged.takeoverRetryIntervalSeconds = prev.takeoverRetryIntervalSeconds;
                     merged.takeoverMaxAttempts = prev.takeoverMaxAttempts;
                     merged.takeoverCooldownMinutes = prev.takeoverCooldownMinutes;
+                    // 战争通知监视名单（服务器侧设置）：跨 sync 保留
+                    merged.watchTargets.addAll(prev.watchTargets);
                 }
                 merged.roleIdentity.putAll(in.roleIdentity);
                 merged.roleConfig.putAll(in.roleConfig);
@@ -758,6 +932,108 @@ public final class VaultStore {
         }
     }
 
+    // ---------- 战争通知：监视名单 CRUD（2026-10-22） ----------
+
+    /** 账号监视名单快照（深拷贝；无账号返回 null 以区分"不存在"与"空名单"）。 */
+    public List<WatchTarget> watchTargets(String fpid) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return null;
+            List<WatchTarget> out = new ArrayList<>();
+            for (WatchTarget t : a.watchTargets) out.add(t.copy());
+            return out;
+        }
+    }
+
+    /**
+     * 新增监视目标（uid 必填且未重复）。返回值：0=成功 1=账号不存在 2=uid 非法 3=已存在。
+     */
+    public int addWatchTarget(String fpid, String uid, String name, String kid, String note) {
+        String u = normUid(uid);
+        if (u == null) return 2;
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return 1;
+            for (WatchTarget t : a.watchTargets) {
+                if (t.uid.equals(u)) return 3;
+            }
+            WatchTarget t = new WatchTarget(u);
+            t.name = name == null ? "" : name.trim();
+            t.kid = kid == null ? "" : kid.trim();
+            t.note = note == null ? "" : note.trim();
+            a.watchTargets.add(t);
+            saveLocked();
+            return 0;
+        }
+    }
+
+    /**
+     * 更新监视目标（uid 定位；name/kid/note/enabled 传 null = 不变）。
+     * 返回 false = 账号或目标不存在。
+     */
+    public boolean updateWatchTarget(String fpid, String uid, String name, String kid,
+                                     String note, Boolean enabled) {
+        String u = normUid(uid);
+        if (u == null) return false;
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return false;
+            WatchTarget t = findTargetLocked(a, u);
+            if (t == null) return false;
+            if (name != null) t.name = name.trim();
+            if (kid != null) t.kid = kid.trim();
+            if (note != null) t.note = note.trim();
+            if (enabled != null) t.enabled = enabled;
+            saveLocked();
+            return true;
+        }
+    }
+
+    /** 删除监视目标。返回 false = 账号或目标不存在。 */
+    public boolean removeWatchTarget(String fpid, String uid) {
+        String u = normUid(uid);
+        if (u == null) return false;
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return false;
+            boolean removed = a.watchTargets.removeIf(t -> t.uid.equals(u));
+            if (removed) saveLocked();
+            return removed;
+        }
+    }
+
+    /** uid 规范化（纯数字 &gt;0）；非法返回 null。 */
+    private static String normUid(String uid) {
+        if (uid == null) return null;
+        String u = uid.trim();
+        if (u.isEmpty()) return null;
+        try {
+            long v = Long.parseLong(u);
+            return v > 0 ? String.valueOf(v) : null;
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static WatchTarget findTargetLocked(Account a, String uid) {
+        for (WatchTarget t : a.watchTargets) {
+            if (t.uid.equals(uid)) return t;
+        }
+        return null;
+    }
+
+    /** 监视命中（推送匹配用）：enabled 且 uid 相等。返回命中条目快照，未命中 null。 */
+    public WatchTarget matchWatched(String fpid, long ownerUid) {
+        if (ownerUid <= 0) return null;
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return null;
+            String u = String.valueOf(ownerUid);
+            WatchTarget t = findTargetLocked(a, u);
+            return t != null && t.enabled ? t.copy() : null;
+        }
+    }
+
     public boolean updateToken(String fpid, String token) {        synchronized (lock) {
             for (Account a : accounts) {
                 if (a.fpid.equals(fpid)) {
@@ -870,6 +1146,7 @@ public final class VaultStore {
                 c.takeoverRetryIntervalSeconds = a.takeoverRetryIntervalSeconds;
                 c.takeoverMaxAttempts = a.takeoverMaxAttempts;
                 c.takeoverCooldownMinutes = a.takeoverCooldownMinutes;
+                for (WatchTarget t : a.watchTargets) c.watchTargets.add(t.copy());
                 out.add(c);
             }
             return out;

@@ -4922,6 +4922,9 @@ public class HomeActivity extends AccountVaultActivity {
         lic.addView(manage);
 
         box.addView(UiStyle.sectionTitle(this, "运行"));
+        box.addView(mineRowIcon(UiStyle.Icon.BELL, "战争通知",
+                "敌情监视 · 企微机器人 · 短信", () ->
+                        startActivity(new android.content.Intent(this, NotifySettingsActivity.class))));
         box.addView(mineRowIcon(UiStyle.Icon.PLAY, "执行进度",
                 "当前/最近一轮的账号与逐号结果", this::showRunPanel));
         box.addView(mineRowIcon(UiStyle.Icon.DOC, "执行日志", "保留最近 200 条",

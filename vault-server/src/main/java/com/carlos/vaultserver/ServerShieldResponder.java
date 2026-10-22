@@ -219,8 +219,9 @@ public final class ServerShieldResponder {
      * 收集推送中的行军对象，兼容三种实证形状：
      * 观察哨 {"marches":{"9.0":{"march":{...},"power":0}}} / 列表直挂；
      * 目标系列 {"to_marchs":[{...}]} / {"marchs":[{...}]}；以及 {data:{...}} 包装。
+     * 包可见：P7 ServerWarState 复用同一解析（单一事实源）。
      */
-    private static List<Map<String, Object>> marchesOf(Map<String, Object> content) {
+    static List<Map<String, Object>> marchesOf(Map<String, Object> content) {
         List<Map<String, Object>> out = new ArrayList<>();
         collectMarches(content, out);
         for (String wrap : new String[]{"data", "info"}) {
@@ -248,8 +249,9 @@ public final class ServerShieldResponder {
         }
     }
 
-    /** 守方 uid：atk_city.targetid 优先，退化 target.map_city.uid；取不到返回 0（不触发）。 */
-    private static long targetUidOf(Map<String, Object> m) {
+    /** 守方 uid：atk_city.targetid 优先，退化 target.map_city.uid；取不到返回 0（不触发）。
+     *  包可见：P7 ServerWarState 复用同一解析。 */
+    static long targetUidOf(Map<String, Object> m) {
         Map<String, Object> atk = Exec.mapOf(m.get("atk_city"));
         if (atk != null) {
             long t = Exec.longOf(atk.get("targetid"));

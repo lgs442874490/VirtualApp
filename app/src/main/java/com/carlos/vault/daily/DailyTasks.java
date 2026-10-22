@@ -58,6 +58,12 @@ public final class DailyTasks {
                     engine.appContext(), engine.lastFpid(), engine.lastServerId());
             return new DailyResult("guardian", "守护盟友", DailyResult.Category.SKIPPED, note);
         }));
+        list.add(new TaskDef("war", "战争状态", true, engine -> {
+            // P7：状态刷新任务（无游戏动作）——顺带驱动 war 参数热载/退出判定（与挂载清扫器双保险）
+            String note = com.carlos.vault.daily.guardian.GuardianEngine.warSummaryText(
+                    engine.appContext(), engine.lastFpid(), engine.lastServerId());
+            return new DailyResult("war", "战争状态", DailyResult.Category.SKIPPED, note);
+        }));
         list.add(new TaskDef("shop", "商店购买", false, ShopTasks::shopBuy));
         list.add(new TaskDef("commander_gift", "统帅礼包", true, DailyTasks::commanderGift));
         list.add(new TaskDef("achievement_claim", "成就奖励", true, DailyTasks::achievementClaim));

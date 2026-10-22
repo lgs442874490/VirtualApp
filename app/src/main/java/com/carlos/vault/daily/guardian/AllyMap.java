@@ -43,6 +43,12 @@ public final class AllyMap {
         return m != null && m.containsKey(uid);
     }
 
+    /** 盟友坐标（无则 null）——R3 加速介入线的距离档 D 估计用。 */
+    public static long[] coords(String fpid, long kid, long uid) {
+        Map<Long, long[]> m = MAP.get(key(fpid, kid));
+        return m == null ? null : m.get(uid);
+    }
+
     /** 移除盟友条目（使馆 1510 / 驻防 2815：真退盟或错账号兜底，防反复无效驻防）。 */
     public static void evict(String fpid, long kid, long uid) {
         Map<Long, long[]> m = MAP.get(key(fpid, kid));
