@@ -8,18 +8,25 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.TimeUnit;
 
 /**
- * 战争通知中枢（2026-10-22）：敌人监视 + 行军动作检测 + 企微/事件双出口。
+ * 战争通知中枢（2026-10-22 v4.1.8 增强）：敌人监视 + 行军动作检测 + 完成结算 + 企微/事件双出口。
  *
  * <p>数据源（design/守护盟友-自动驻防系统设计-20261015.md §2.1 实证字段 + App EnemyWatch 同口径）：
  * <ul>
  *   <li>{@code notify_player_march_add/_update/_del}：march{id, owner, startpoint/endpoint{x,y},
- *       starttime, endtime(秒), state, type, target_type, aid, kid}；del 只带 {id, type, kid}；</li>
+ *       starttime, endtime(秒), squad_list{soldier}, state, type, target_type, aid, kid}；
+ *       del 只带 {id, type, kid}；</li>
  *   <li>{@code notify_mass_march_add/_update/_del}：集结行军（type=501 实证）；</li>
+ *   <li>{@code notify_new_mail_syn}：战斗邮件推送（v4.1.8 起接收，解析 mail_cover_info
+ *       关联到达结算做破城判定）；</li>
  *   <li>世界态势系列 {@code notify_world_situation_info_add/_up}、
  *       {@code notify_world_alliance_situation_add/_update/_del}（观察哨/目标系列，App 端
  *       EnemyWatch 同源）。</li>
@@ -28,10 +35,28 @@ import java.util.concurrent.Executors;
  * <p>解析为<b>健壮递归查找</b>：不锁定单一形状，凡含 owner+id 的嵌套 map 都按行军候选处理
  * （协议字段改名/包装层变化时只降级不崩溃）；del 推送按 id 反查跟踪表。
  *
- * <p>流程：推送线程解析 → owner 命中账号监视名单 → 冷却节流（同 target+action 默认 300s，
- * 可配 60..3600）→ 事件入 {@link WatchEventStore}（环形 200 条持久化）→ 企微 webhook
- * 异步推送（单线程排队，静默时段只抑制企微；重试/超时由 {@link WeComNotifier} 负责，
- * 失败仅日志）。
+ * <p>流程：推送线程解析 → owner 命中账号监视名单 → 冷却节流（初始动作与完成结算分别冷却，
+ * 结算 key 带 {@code |done} 后缀）→ 事件入 {@link WatchEventStore}（环形 200 条持久化）→
+ * 企微 webhook 异步推送（单线程排队，静默时段只抑制企微）。
+ *
+ * <p>v4.1.8 事件增强（用户实测反馈 6 项）：
+ * <ul>
+ *   <li>初始事件：{@code attackerName}（昵称，异步解析 + 10min 缓存，失败回退监视备注/uid）、
+ *       {@code startPoint}（发起人坐标）、{@code behavior}（侦查/进攻城堡/集结城堡/驻防/出征）、
+ *       {@code troops}（squad_list 兵力汇总）、{@code etaSeconds}/{@code dueAt}（到达倒计时）；</li>
+ *   <li>完成结算事件（{@code phase=settle}）：del 时输出 {@code durationSeconds}（从发起到完成
+ *       耗时）、{@code outcome}（撤回/已到达）、{@code breach}（破城：是/否/未知/非本账号防守）、
+ *       {@code battleCodes}（战报 first/second 原码）；</li>
+ *   <li>破城判定：本会话到达前后 {@value #MAIL_ASSOC_WINDOW_MS}（毫秒，±120s）内的战斗邮件
+ *       （first_type=30 防守类）按 second_type 4/5=防守胜（未破城）、6/7/8=防守败（破城）映射；
+ *       到达结算默认等待 {@value #BATTLE_GRACE_DEFAULT_MS}（毫秒）让战报先落地，无战报则判
+ *       「非本账号防守，结果未知」（防守语义未知风险见 GuardReportCodes）。</li>
+ * </ul>
+ *
+ * <p><b>线程纪律</b>：昵称解析走 engine.request（阻塞等响应、响应经推送线程投递）——
+ * 严禁在推送线程调用，否则自等自死锁。本类只在 {@code name-wecom} 线程（企微文案构建前）
+ * 与 {@code war-name} 线程（缓存回填）调用 {@link NameResolver}；asyncWecom=false 的单测
+ * 同步路径下 resolver 为测试 mock，不触网、无死锁。
  */
 public final class WarNotify {
 
@@ -42,8 +67,18 @@ public final class WarNotify {
     /** 递归解析的最大深度与候选上限（防异常 payload 打爆推送线程）。 */
     private static final int MAX_DEPTH = 6;
     private static final int MAX_CANDIDATES = 24;
+    /** 战斗邮件关联窗口：与到达时刻相差不超过 120s 才参与破城判定（best-effort）。 */
+    static final long MAIL_ASSOC_WINDOW_MS = 120_000L;
+    /** 邮件记录 TTL（超出窗口 1 倍即可清理）。 */
+    private static final long MAIL_TTL_MS = 2 * MAIL_ASSOC_WINDOW_MS;
+    /** 每会话邮件记录上限（防刷爆）。 */
+    private static final int MAIL_CAP = 20;
+    /** 到达结算默认宽限：等战斗邮件落地后再结算破城；撤回结算不等待。 */
+    static final long BATTLE_GRACE_DEFAULT_MS = 30_000L;
+    /** 昵称缓存 TTL。 */
+    static final long NAME_CACHE_TTL_MS = 10 * 60_000L;
 
-    /** 动作枚举（事件 action 字段口径）。 */
+    /** 动作枚举（事件 action 字段口径，v4.1.7 兼容不变）。 */
     static final String ACT_RECON = "侦查";
     static final String ACT_ATTACK = "进攻";
     static final String ACT_RALLY = "集结";
@@ -51,16 +86,56 @@ public final class WarNotify {
     static final String ACT_RECALL = "撤回";
     static final String ACT_ARRIVE = "到达";
 
+    /** 行为枚举（事件 behavior 字段口径，v4.1.8）：比 action 更贴近用户语汇。 */
+    static final String BEH_RECON = "侦查";
+    static final String BEH_ATTACK = "进攻城堡";
+    static final String BEH_RALLY = "集结城堡";
+    static final String BEH_GARRISON = "驻防";
+    static final String BEH_MARCH = "出征";
+
+    /** 破城判定口径（事件 breach 字段）。 */
+    static final String BREACH_YES = "是";
+    static final String BREACH_NO = "否";
+    static final String BREACH_UNKNOWN = "未知";
+    static final String BREACH_NOT_OWN = "非本账号防守，结果未知";
+    /** 防守类战斗邮件 first_type（P1 实证守城级联=30，同 App GuardReportCodes）。 */
+    static final long DEF_FIRST_BATTLE = 30L;
+    /** 兵力未知文案。 */
+    static final String TROOPS_UNKNOWN = "未知";
+
+    /** 结算事件 phase 值（初始动作事件 phase=action）。 */
+    static final String PHASE_SETTLE = "settle";
+    static final String PHASE_ACTION = "action";
+
+    /** 昵称解析器（SessionKeeper 提供；实现里 engine.request 只准非推送线程调用）。 */
+    public interface NameResolver {
+        String resolve(String fpid, long sid, long uid);
+    }
+
     private final VaultStore store;
     private final WatchEventStore events;
     private final WeComNotifier notifier;
     /** false = 企微在调用线程同步发送（单测确定性）；生产 true。 */
     private final boolean asyncWecom;
     private final ExecutorService wecomExec;
-    /** 冷却表：fpid|targetUid|action → 最近通知 millis。 */
+    /** 昵称异步解析（缓存回填；严禁推送线程做这件事）。 */
+    private final ExecutorService nameExec;
+    /** 到达结算宽限计时（等战斗邮件落地）。 */
+    private final ScheduledExecutorService settleExec;
+    /** 冷却表：fpid|targetUid|action[|done] → 最近通知 millis。 */
     private final ConcurrentHashMap<String, Long> cooldown = new ConcurrentHashMap<>();
     /** 行军跟踪表：marchId → track（del 判撤回/到达；跨推送保持）。 */
     private final ConcurrentHashMap<Long, Track> tracked = new ConcurrentHashMap<>();
+    /** 昵称缓存：fpid|uid → {name, at}（10min，失败也缓存回退名防反复请求）。 */
+    private final ConcurrentHashMap<String, NameEntry> nameCache = new ConcurrentHashMap<>();
+    /** 最近战斗邮件：fpid|sid → 队列（cap {@value #MAIL_CAP}，TTL {@value #MAIL_TTL_MS}）。 */
+    private final ConcurrentHashMap<String, ConcurrentLinkedDeque<MailRec>> recentMails =
+            new ConcurrentHashMap<>();
+    /** 待结算：marchId → settle（del 建立，宽限期后 finalize；幂等 CAS 移除）。 */
+    private final ConcurrentHashMap<Long, Settle> pending = new ConcurrentHashMap<>();
+    private volatile NameResolver nameResolver;
+    /** 到达结算宽限（单测可注入 0=同步即时结算）。 */
+    private volatile long battleGraceMs = BATTLE_GRACE_DEFAULT_MS;
 
     public WarNotify(VaultStore store, WatchEventStore events, WeComNotifier notifier) {
         this(store, events, notifier, true);
@@ -76,6 +151,27 @@ public final class WarNotify {
             t.setDaemon(true);
             return t;
         });
+        this.nameExec = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "war-name");
+            t.setDaemon(true);
+            return t;
+        });
+        this.settleExec = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "war-settle");
+            t.setDaemon(true);
+            return t;
+        });
+        if (!asyncWecom) this.battleGraceMs = 0;   // 单测同步模式：结算即时（不依赖 executor 时序）
+    }
+
+    /** 注入昵称解析器（Main 接线：SessionKeeper::resolvePlayerName）。 */
+    public void setNameResolver(NameResolver resolver) {
+        this.nameResolver = resolver;
+    }
+
+    /** 单测注入结算宽限（毫秒；0=del 推送线程同步结算）。 */
+    void setBattleGraceMs(long ms) {
+        this.battleGraceMs = Math.max(0, ms);
     }
 
     // ---------------------------------------------------------------- 引擎钩子入口
@@ -97,12 +193,16 @@ public final class WarNotify {
         if (proto == null || content == null || content.isEmpty()) return;
         VaultStore.WatchConfig cfg = store.watchConfig();
         if (!cfg.enabled) return;
-        sweepTracked(System.currentTimeMillis());
+        sweep(System.currentTimeMillis());
+        if (proto.contains("new_mail")) {
+            recordMail(fpid, sid, content);
+            return;   // 邮件内容不参与行军候选解析
+        }
         boolean del = proto.endsWith("_del");
         if (del) {
             for (Map<String, Object> m : idCandidates(content)) {
                 long id = Exec.longOf(m.get("id"));
-                if (id > 0) onMarchDel(fpid, cfg, id);
+                if (id > 0) onMarchDel(fpid, id);
             }
             return;
         }
@@ -124,71 +224,253 @@ public final class WarNotify {
         long startSec = Exec.longOf(m.get("starttime"));
         long endSec = Exec.longOf(m.get("endtime"));
         int[] xy = endpointOf(m);
+        int[] sp = startPointOf(m);
         String action = actionOf(proto, type, false, 0);
+        String behavior = behaviorOf(proto, type);
+        String troops = troopsOf(m);
 
         Track t = tracked.get(marchId);
         if (t == null) {
             if (endSec <= 0) return;
             t = new Track(marchId, fpid, sid, owner, displayOf(watched), action, endSec, xy, proto);
+            t.startServerSec = startSec;
+            t.behavior = behavior;
+            t.troops = troops;
+            if (sp != null) {
+                t.sx = sp[0];
+                t.sy = sp[1];
+                t.hasStart = true;
+            }
             tracked.put(marchId, t);
+            applyCachedName(t);   // 推送线程只读内存缓存，绝不在这里触网解析
         } else {
             // 已跟踪：endtime 变化（加速/重估）只更新跟踪，不产生新事件（冷却亦会抑制）
             if (endSec > 0) t.endServerSec = endSec;
             return;
         }
-        emit(fpid, cfg, t, startSec, endSec);
+        emitAction(fpid, cfg, t, endSec);
     }
 
-    /** del 命中：按跟踪表判撤回/到达。 */
-    private void onMarchDel(String fpid, VaultStore.WatchConfig cfg, long marchId) {
+    /** del 命中：按跟踪表判撤回/到达；撤回即时结算，到达等宽限期（让战斗邮件先落地）。 */
+    private void onMarchDel(String fpid, long marchId) {
         Track t = tracked.remove(marchId);
         if (t == null) return;   // 未跟踪（非监视目标/启动前已在途）：静默
-        long nowS = System.currentTimeMillis() / 1000L;
-        long remain = t.endServerSec - nowS;
-        t.action = remain > RECALL_MIN_S ? ACT_RECALL : ACT_ARRIVE;
-        emit(fpid, cfg, t, 0, t.endServerSec);
+        long nowMillis = System.currentTimeMillis();
+        long nowS = nowMillis / 1000L;
+        boolean recall = t.endServerSec - nowS > RECALL_MIN_S;
+        t.action = recall ? ACT_RECALL : ACT_ARRIVE;
+        Settle s = new Settle(t, nowS, nowMillis);
+        if (pending.putIfAbsent(marchId, s) != null) return;   // 已有在途结算
+        long delay = recall ? 0 : battleGraceMs;
+        if (delay <= 0) {
+            finalizeSettle(t.fpid, store.watchConfig(), marchId, s);
+        } else {
+            settleExec.schedule(() -> {
+                try {
+                    finalizeSettle(t.fpid, store.watchConfig(), marchId, s);
+                } catch (Throwable tt) {
+                    FileLog.warn("战争结算异常 march{}：{}", marchId, String.valueOf(tt));
+                }
+            }, delay, TimeUnit.MILLISECONDS);
+        }
     }
 
-    /** 冷却节流 → 事件入库 → 企微推送。 */
-    private void emit(String fpid, VaultStore.WatchConfig cfg, Track t,
-                      long startSec, long endSec) {
+    /**
+     * 结算落定（settleExec/推送线程）：破城判定 → 冷却（|done key）→ 结算事件 → 企微。
+     * 幂等：pending CAS 移除，重复调用只生效一次。
+     */
+    private void finalizeSettle(String fpid, VaultStore.WatchConfig cfg, long marchId, Settle s) {
+        if (!pending.remove(marchId, s)) return;
+        Track t = s.t;
+        long now = System.currentTimeMillis();
+        if (s.recall) {
+            s.breach = "";   // 撤回无破城概念
+        } else {
+            MailRec mail = nearestMail(t.fpid, t.sid, s.delAtMillis);
+            if (mail == null) {
+                s.breach = BREACH_NOT_OWN;   // 本会话无战报：大概率打的是视野内别人
+            } else {
+                s.breach = breachOf(mail.first, mail.second);
+                s.battleCodes = mail.first + "/" + mail.second;
+            }
+        }
+        long duration = 0;
+        if (t.startServerSec > 0) {
+            duration = s.delAtS - t.startServerSec;
+            if (duration <= 0) duration = Math.max(0, t.endServerSec - t.startServerSec);
+        } else {
+            duration = Math.max(0, t.endServerSec - t.startServerSec);
+        }
+        String key = fpid + "|" + t.targetUid + "|" + t.action + "|done";
+        if (throttled(key, cfg.cooldownSeconds * 1000L, now)) {
+            FileLog.info("战争结算节流 {} uid={} {}（冷却中，丢弃）", fpid, t.targetUid, t.action);
+            return;
+        }
+        JSONObject e = baseEvent(t, now);
+        e.put("phase", PHASE_SETTLE);
+        e.put("durationSeconds", duration);
+        e.put("outcome", s.recall ? "撤回" : "已到达");
+        if (!s.breach.isEmpty()) e.put("breach", s.breach);
+        if (!s.battleCodes.isEmpty()) e.put("battleCodes", s.battleCodes);
+        JSONObject stored = events.append(e);
+        FileLog.info("战争结算 {} uid={} {} 行军{} 耗时{}s 破城{}（事件 {}）",
+                fpid, t.targetUid, t.action, t.marchId, duration, s.breach,
+                stored.optString("eventId"));
+        if (cfg.wecomEnabled && !cfg.webhookUrl.isEmpty() && !inQuietHours(cfg, now)) {
+            if (asyncWecom) wecomExec.execute(() -> sendWecom(cfg, t, stored));
+            else sendWecom(cfg, t, stored);
+        }
+    }
+
+    // ---------------------------------------------------------------- 事件发射
+
+    /** 初始动作事件：冷却 → 事件入库（含增强字段）→ 企微 → 昵称异步回填。 */
+    private void emitAction(String fpid, VaultStore.WatchConfig cfg, Track t, long endSec) {
         long now = System.currentTimeMillis();
         String key = fpid + "|" + t.targetUid + "|" + t.action;
-        long cooldownMs = cfg.cooldownSeconds * 1000L;
-        long[] prev = new long[1];
-        cooldown.compute(key, (k, v) -> {
-            if (v != null && now - v < cooldownMs) {
-                prev[0] = v;
-                return v;
-            }
-            return now;
-        });
-        if (prev[0] > 0) {
+        if (throttled(key, cfg.cooldownSeconds * 1000L, now)) {
             FileLog.info("战争通知节流 {} uid={} {}（冷却中，丢弃）",
                     fpid, t.targetUid, t.action);
             return;
         }
-        JSONObject e = new JSONObject();
-        e.put("fpid", fpid);
-        e.put("sid", t.sid);
-        e.put("targetUid", t.targetUid);
-        e.put("targetName", t.targetName);
-        e.put("action", t.action);
-        if (t.hasXY) {
-            e.put("endpoint", new JSONObject().put("x", t.ex).put("y", t.ey));
-        }
-        if (startSec > 0) e.put("starttime", startSec);
-        if (endSec > 0) e.put("endtime", endSec);
-        e.put("detectedAt", now);
-        e.put("rawProto", t.rawProto);
+        JSONObject e = baseEvent(t, now);
+        e.put("phase", PHASE_ACTION);
+        e.put("etaSeconds", Math.max(0, endSec - now / 1000L));
         JSONObject stored = events.append(e);
         FileLog.info("战争通知命中 {} uid={} {} 行军{}（事件 {}）",
                 fpid, t.targetUid, t.action, t.marchId, stored.optString("eventId"));
         if (cfg.wecomEnabled && !cfg.webhookUrl.isEmpty() && !inQuietHours(cfg, now)) {
-            String text = wecomText(fpid, stored, endSec);
-            if (asyncWecom) wecomExec.execute(() -> notifier.send(cfg.webhookUrl, text));
-            else notifier.send(cfg.webhookUrl, text);
+            if (asyncWecom) wecomExec.execute(() -> sendWecom(cfg, t, stored));
+            else sendWecom(cfg, t, stored);
         }
+        resolveNameAsync(t);
+    }
+
+    /** 事件公共字段（初始与结算共用；targetName 保留供 v4.1.7 旧 App 兼容）。 */
+    private JSONObject baseEvent(Track t, long nowMillis) {
+        JSONObject e = new JSONObject();
+        e.put("fpid", t.fpid);
+        e.put("sid", t.sid);
+        e.put("targetUid", t.targetUid);
+        e.put("attackerName", t.attackerName);
+        e.put("targetName", t.targetName);
+        e.put("action", t.action);
+        e.put("behavior", t.behavior);
+        e.put("troops", t.troops);
+        if (t.hasXY) {
+            e.put("endpoint", new JSONObject().put("x", t.ex).put("y", t.ey));
+        }
+        if (t.hasStart) {
+            e.put("startPoint", new JSONObject().put("x", t.sx).put("y", t.sy));
+        }
+        if (t.startServerSec > 0) e.put("starttime", t.startServerSec);
+        if (t.endServerSec > 0) {
+            e.put("endtime", t.endServerSec);
+            e.put("dueAt", t.endServerSec * 1000L);
+        }
+        e.put("marchId", t.marchId);
+        e.put("detectedAt", nowMillis);
+        e.put("rawProto", t.rawProto);
+        return e;
+    }
+
+    // ---------------------------------------------------------------- 昵称解析（异步）
+
+    /** 异步回填昵称（nameExec；结果进缓存并更新 track，供后续事件与结算使用）。 */
+    private void resolveNameAsync(Track t) {
+        if (nameResolver == null) return;
+        nameExec.execute(() -> {
+            try {
+                ensureNameResolved(t);
+            } catch (Throwable tt) {
+                FileLog.info("昵称异步解析失败 uid={}：{}", t.targetUid, String.valueOf(tt));
+            }
+        });
+    }
+
+    /**
+     * 缓存优先 → 未命中调 resolver（只准在 nameExec/wecomExec 线程调用！）。
+     * 失败也缓存回退名（10min 内不反复请求），后续展示回退到监视备注/uid。
+     */
+    private void ensureNameResolved(Track t) {
+        String key = t.fpid + "|" + t.targetUid;
+        long now = System.currentTimeMillis();
+        NameEntry en = nameCache.get(key);
+        if (en != null && now - en.at <= NAME_CACHE_TTL_MS) {
+            t.attackerName = en.name;
+            return;
+        }
+        NameResolver r = nameResolver;
+        if (r == null) return;
+        String nick = "";
+        try {
+            nick = r.resolve(t.fpid, t.sid, t.targetUid);
+        } catch (Throwable tt) {
+            FileLog.info("昵称解析异常 uid={}：{}", t.targetUid, String.valueOf(tt));
+        }
+        if (nick == null || nick.isEmpty()) {
+            nameCache.put(key, new NameEntry(t.attackerName, now));
+            return;
+        }
+        nameCache.put(key, new NameEntry(nick, now));
+        t.attackerName = nick;
+    }
+
+    /** 缓存命中（未过期）则立即回填 track 昵称；推送线程安全（纯内存）。 */
+    private void applyCachedName(Track t) {
+        NameEntry en = nameCache.get(t.fpid + "|" + t.targetUid);
+        if (en != null && System.currentTimeMillis() - en.at <= NAME_CACHE_TTL_MS) {
+            t.attackerName = en.name;
+        }
+    }
+
+    // ---------------------------------------------------------------- 战斗邮件关联
+
+    /** 记录本会话战斗邮件（mail_cover_info 的 first/second_type；cap+TTL）。 */
+    private void recordMail(String fpid, long sid, Map<String, Object> content) {
+        try {
+            Map<String, Object> cover = Exec.mapOf(content.get("mail_cover_info"));
+            if (cover == null) return;
+            long first = Exec.longOf(cover.get("first_type"));
+            long second = Exec.longOf(cover.get("second_type"));
+            if (first <= 0 && second <= 0) return;
+            ConcurrentLinkedDeque<MailRec> dq =
+                    recentMails.computeIfAbsent(fpid + "|" + sid,
+                            k -> new ConcurrentLinkedDeque<>());
+            dq.addLast(new MailRec(System.currentTimeMillis(), first, second));
+            while (dq.size() > MAIL_CAP) dq.pollFirst();
+        } catch (Throwable t) {
+            FileLog.warn("战报邮件解析异常 {}：{}", fpid, String.valueOf(t));
+        }
+    }
+
+    /** 距 anchor 前后 {@value #MAIL_ASSOC_WINDOW_MS} 内最近的邮件；无则 null。 */
+    private MailRec nearestMail(String fpid, long sid, long anchorMillis) {
+        ConcurrentLinkedDeque<MailRec> dq = recentMails.get(fpid + "|" + sid);
+        if (dq == null) return null;
+        MailRec best = null;
+        long bestDiff = Long.MAX_VALUE;
+        for (MailRec m : dq) {
+            if (Math.abs(m.at - anchorMillis) > MAIL_ASSOC_WINDOW_MS) continue;
+            long diff = Math.abs(m.at - anchorMillis);
+            if (diff < bestDiff) {
+                bestDiff = diff;
+                best = m;
+            }
+        }
+        return best;
+    }
+
+    /**
+     * 破城映射（口径与 App GuardReportCodes 一致，按防守方语义换算）：
+     * first_type=30 防守类 → second 4/5=防守胜（未破城）、6/7/8=防守败（破城）、其它=未知；
+     * 非 30 的邮件语义未校准 → 未知（battleCodes 照附供人工判读）。
+     */
+    static String breachOf(long first, long second) {
+        if (first != DEF_FIRST_BATTLE) return BREACH_UNKNOWN;
+        if (second == 4L || second == 5L) return BREACH_NO;
+        if (second >= 6L && second <= 8L) return BREACH_YES;
+        return BREACH_UNKNOWN;
     }
 
     // ---------------------------------------------------------------- 事件存储委托（API 用）
@@ -275,6 +557,15 @@ public final class WarNotify {
         return ACT_MARCH;
     }
 
+    /** 行为映射（v4.1.8）：集结协议=集结城堡；type 1=侦查 2=进攻城堡 5=驻防；余=出征。 */
+    static String behaviorOf(String proto, long type) {
+        if (proto != null && proto.contains("mass_march")) return BEH_RALLY;
+        if (type == 1L) return BEH_RECON;
+        if (type == 2L) return BEH_ATTACK;
+        if (type == 5L) return BEH_GARRISON;
+        return BEH_MARCH;
+    }
+
     /** endpoint 坐标：march.endpoint{x,y} 优先，退化 march.target{x,y}；取不到 null。 */
     static int[] endpointOf(Map<String, Object> m) {
         for (String key : new String[]{"endpoint", "target"}) {
@@ -287,30 +578,149 @@ public final class WarNotify {
         return null;
     }
 
+    /** 发起人坐标：march.startpoint{x,y}；取不到 null。 */
+    static int[] startPointOf(Map<String, Object> m) {
+        Map<String, Object> p = Exec.mapOf(m.get("startpoint"));
+        if (p == null) return null;
+        int x = (int) Exec.longOf(p.get("x"));
+        int y = (int) Exec.longOf(p.get("y"));
+        if (x == 0 && y == 0) return null;
+        return new int[]{x, y};
+    }
+
+    /**
+     * 兵力汇总（squad_list.soldier，形状宽容）：map 键=id 值=数量（或 {count:n}）、
+     * list 元素={id,count}；输出「盾T10×1200 矛T9×800（合计2000）」，无数据=未知。
+     * 士兵 id=兵种*10000+等级*100（1盾2矛3弓）。
+     */
+    static String troopsOf(Map<String, Object> m) {
+        Map<String, Object> squad = Exec.mapOf(m.get("squad_list"));
+        Object soldier = squad == null ? null : squad.get("soldier");
+        TreeMap<Long, Long> counts = new TreeMap<>();
+        if (soldier instanceof Map) {
+            for (Map.Entry<?, ?> en : ((Map<?, ?>) soldier).entrySet()) {
+                long id = Exec.longOf(en.getKey());
+                Object v = en.getValue();
+                long cnt = 0;
+                if (v instanceof Number) {
+                    cnt = ((Number) v).longValue();
+                } else {
+                    Map<String, Object> vm = Exec.mapOf(v);
+                    if (vm != null) {
+                        cnt = Exec.longOf(vm.get("count"));
+                        if (id <= 0) id = Exec.longOf(vm.get("id"));
+                    }
+                }
+                if (id > 0 && cnt > 0) counts.merge(id, cnt, Long::sum);
+            }
+        } else if (soldier instanceof List) {
+            for (Object o : (List<?>) soldier) {
+                Map<String, Object> vm = Exec.mapOf(o);
+                if (vm == null) continue;
+                long id = Exec.longOf(vm.get("id"));
+                long cnt = Exec.longOf(vm.get("count"));
+                if (id > 0 && cnt > 0) counts.merge(id, cnt, Long::sum);
+            }
+        }
+        if (counts.isEmpty()) return TROOPS_UNKNOWN;
+        StringBuilder sb = new StringBuilder();
+        long total = 0;
+        for (Map.Entry<Long, Long> en : counts.entrySet()) {
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(soldierLabel(en.getKey())).append('×').append(en.getValue());
+            total += en.getValue();
+        }
+        sb.append("（合计").append(total).append('）');
+        return sb.toString();
+    }
+
+    /** 士兵 id → 显示名：1盾2矛3弓 + T等级（id%10000/100）；未知兵种=兵{id/10000}。 */
+    static String soldierLabel(long id) {
+        long kind = id / 10000L;
+        long tier = (id % 10000L) / 100L;
+        String k;
+        switch ((int) kind) {
+            case 1: k = "盾"; break;
+            case 2: k = "矛"; break;
+            case 3: k = "弓"; break;
+            default: k = "兵" + kind;
+        }
+        return tier > 0 ? k + "T" + tier : k;
+    }
+
     // ---------------------------------------------------------------- 企微文案与静默
 
-    /** 企微文本（含角色/敌人/动作/坐标/时间）。 */
-    String wecomText(String fpid, JSONObject event, long endSec) {
-        StringBuilder sb = new StringBuilder("⚔️ 战争警报·").append(event.optString("action", ""))
-                .append('\n').append("敌人：").append(event.optString("targetName", ""));
+    /**
+     * 企微文本（v4.1.8 按用户 6 项重写）：行为/发起人/发起人坐标/目标/兵力/到达 + 来源 + 会话；
+     * 结算事件（phase=settle）以「🏁 进攻结算」行替代到达倒计时。
+     */
+    String wecomText(String fpid, JSONObject event) {
+        String behavior = event.optString("behavior", "");
+        if (behavior.isEmpty()) behavior = event.optString("action", "");
+        StringBuilder sb = new StringBuilder("⚔️ 战争警报·").append(behavior.isEmpty() ? "动静" : behavior);
+        sb.append("\n发起人：").append(event.optString("attackerName", ""))
+                .append("（uid ").append(event.optLong("targetUid")).append('）');
+        sb.append("\n发起人坐标：");
+        Object sp = event.optJSONObject("startPoint");
+        if (sp instanceof JSONObject) {
+            sb.append('(').append(((JSONObject) sp).optInt("x"))
+                    .append(',').append(((JSONObject) sp).optInt("y")).append(')');
+        } else {
+            sb.append("未知");
+        }
+        sb.append("\n目标：");
         Object ep = event.optJSONObject("endpoint");
         if (ep instanceof JSONObject) {
-            sb.append(" (").append(((JSONObject) ep).optInt("x"))
+            sb.append('(').append(((JSONObject) ep).optInt("x"))
                     .append(',').append(((JSONObject) ep).optInt("y")).append(')');
+        } else {
+            sb.append("未知");
         }
-        if (endSec > 0) {
+        String troops = event.optString("troops", "");
+        sb.append("\n兵力：").append(troops.isEmpty() ? TROOPS_UNKNOWN : troops);
+        boolean settle = PHASE_SETTLE.equals(event.optString("phase", ""));
+        long endSec = event.optLong("endtime", 0);
+        if (!settle && endSec > 0) {
             long nowS = System.currentTimeMillis() / 1000L;
-            sb.append("\n预计 ").append(Beijing.fmt("HH:mm:ss").format(new java.util.Date(endSec * 1000L)));
-            if (endSec > nowS) sb.append("（约 ").append(endSec - nowS).append("s 后）");
+            sb.append("\n到达：").append(Beijing.fmt("HH:mm:ss").format(new java.util.Date(endSec * 1000L)));
+            if (endSec > nowS) {
+                long eta = endSec - nowS;
+                sb.append("（约 ");
+                if (eta >= 60) sb.append(eta / 60).append(" 分 ");
+                sb.append(eta % 60).append(" 秒后）");
+            }
         }
+        String proto = event.optString("rawProto", "");
+        sb.append("\n来源：").append(proto.isEmpty() ? "?" : proto);
         String label = "";
         VaultStore.Account acc = store.find(fpid);
         if (acc != null && acc.label != null && !acc.label.isEmpty()) label = acc.label;
         sb.append("\n监视会话：").append(label.isEmpty() ? fpid : label)
                 .append("@k").append(event.optLong("sid"));
-        String proto = event.optString("rawProto", "");
-        if (!proto.isEmpty()) sb.append("\n来源：").append(proto);
+        if (settle) {
+            sb.append("\n🏁 进攻结算：").append(displayOutcome(event.optString("outcome", "")))
+                    .append("，从发起到完成耗时").append(fmtDuration(event.optLong("durationSeconds", 0)));
+            String breach = event.optString("breach", "");
+            if (!breach.isEmpty()) {
+                sb.append("；破城：").append(breach);
+                String codes = event.optString("battleCodes", "");
+                if (!codes.isEmpty()) sb.append("（战报 ").append(codes).append('）');
+            }
+        }
         return sb.toString();
+    }
+
+    /** outcome 事件值 → 文案：撤回→已撤回、已到达→已到达（余原样）。 */
+    static String displayOutcome(String outcome) {
+        if (ACT_RECALL.equals(outcome)) return "已撤回";
+        return outcome == null || outcome.isEmpty() ? "已到达" : outcome;
+    }
+
+    /** 秒 → 「X 分 Y 秒」（&lt;60s 只显示秒；负数按 0）。 */
+    static String fmtDuration(long sec) {
+        long s = Math.max(0, sec);
+        if (s < 60) return s + " 秒";
+        return (s / 60) + " 分 " + (s % 60) + " 秒";
     }
 
     /** 静默时段判定（只抑制企微推送）；start==end 视为未配置。 */
@@ -323,17 +733,41 @@ public final class WarNotify {
         return h >= cfg.quietStart || h < cfg.quietEnd;   // 跨夜（如 23→8）
     }
 
-    // ---------------------------------------------------------------- 跟踪表维护
+    // ---------------------------------------------------------------- 内部
 
-    private void sweepTracked(long now) {
+    /** 企微发送（wecomExec/调用线程）：先补齐昵称再渲染文案。 */
+    private void sendWecom(VaultStore.WatchConfig cfg, Track t, JSONObject stored) {
+        try {
+            ensureNameResolved(t);
+        } catch (Throwable tt) {
+            FileLog.info("企微昵称补齐失败 uid={}：{}", t.targetUid, String.valueOf(tt));
+        }
+        if (!t.attackerName.equals(stored.optString("attackerName", ""))) {
+            stored.put("attackerName", t.attackerName);   // 只影响本次文案；库内快照不变
+        }
+        notifier.send(cfg.webhookUrl, wecomText(t.fpid, stored));
+    }
+
+    /** 冷却节流（compute 原子；命中返回 true）。 */
+    private boolean throttled(String key, long cooldownMs, long now) {
+        long[] prev = new long[1];
+        cooldown.compute(key, (k, v) -> {
+            if (v != null && now - v < cooldownMs) {
+                prev[0] = v;
+                return v;
+            }
+            return now;
+        });
+        return prev[0] > 0;
+    }
+
+    private void sweep(long now) {
         for (Map.Entry<Long, Track> e : tracked.entrySet()) {
             if (e.getValue().endServerSec * 1000L + TRACK_TTL_MS < now) tracked.remove(e.getKey());
         }
-    }
-
-    /** 已跟踪行军数（测试/诊断）。 */
-    int trackedCount() {
-        return tracked.size();
+        for (ConcurrentLinkedDeque<MailRec> dq : recentMails.values()) {
+            dq.removeIf(m -> now - m.at > MAIL_TTL_MS);
+        }
     }
 
     /** 监视目标显示名：备注 &gt; 名称 &gt; uid。 */
@@ -341,6 +775,48 @@ public final class WarNotify {
         if (t.note != null && !t.note.isEmpty()) return t.note;
         if (t.name != null && !t.name.isEmpty()) return t.name;
         return "uid " + t.uid;
+    }
+
+    /** 昵称缓存条目。 */
+    private static final class NameEntry {
+        final String name;
+        final long at;
+
+        NameEntry(String name, long at) {
+            this.name = name;
+            this.at = at;
+        }
+    }
+
+    /** 一条战斗邮件推送的最小记录。 */
+    static final class MailRec {
+        final long at;
+        final long first;
+        final long second;
+
+        MailRec(long at, long first, long second) {
+            this.at = at;
+            this.first = first;
+            this.second = second;
+        }
+    }
+
+    /** 待结算记录（del 建立 → 宽限后 finalize；breach 在 finalize 期判定）。 */
+    private static final class Settle {
+        final Track t;
+        final long delAtS;
+        /** del 毫秒时刻（战报最近邻锚点；不能用 秒*1000——截断会让 ±1s 内的战报排序反转）。 */
+        final long delAtMillis;
+        final boolean recall;
+        String breach = "";
+        String battleCodes = "";
+
+        Settle(Track t, long delAtS, long delAtMillis) {
+            this.t = t;
+            this.delAtS = delAtS;
+            this.delAtMillis = delAtMillis;
+            this.recall = ACT_RECALL.equals(t.action);
+        }
     }
 
     /** 一条被监视行军的跟踪记录。 */
@@ -356,6 +832,18 @@ public final class WarNotify {
         final int ey;
         final boolean hasXY;
         final String rawProto;
+        /** 发起时间（starttime 秒；0=未知）。 */
+        volatile long startServerSec;
+        /** 发起人坐标。 */
+        int sx;
+        int sy;
+        boolean hasStart;
+        /** 行为（侦查/进攻城堡/集结城堡/驻防/出征）。 */
+        String behavior = BEH_MARCH;
+        /** 兵力汇总文案（未知=无 squad 数据）。 */
+        String troops = TROOPS_UNKNOWN;
+        /** 发起人显示名（昵称解析成功后异步升级；初值=监视备注/名称/uid）。 */
+        volatile String attackerName;
 
         Track(long marchId, String fpid, long sid, long targetUid, String targetName,
               String action, long endServerSec, int[] xy, String rawProto) {
@@ -364,6 +852,7 @@ public final class WarNotify {
             this.sid = sid;
             this.targetUid = targetUid;
             this.targetName = targetName;
+            this.attackerName = targetName;   // 初值与监视显示名一致，解析成功后升级
             this.action = action;
             this.endServerSec = endServerSec;
             this.ex = xy == null ? 0 : xy[0];
@@ -371,6 +860,29 @@ public final class WarNotify {
             this.hasXY = xy != null;
             this.rawProto = rawProto == null ? "" : rawProto;
         }
+    }
+
+    // ---------------------------------------------------------------- 测试钩子
+
+    /** 已跟踪行军数（测试/诊断）。 */
+    int trackedCount() {
+        return tracked.size();
+    }
+
+    /** 待结算数（测试）。 */
+    int pendingCount() {
+        return pending.size();
+    }
+
+    /** 指定行军当前的发起人显示名（测试异步回填用）。 */
+    String trackedNameForTest(long marchId) {
+        Track t = tracked.get(marchId);
+        return t == null ? "" : t.attackerName;
+    }
+
+    /** 指定 uid 昵称缓存是否已有条目（测试异步回填同步点用）。 */
+    boolean nameCachedForTest(String fpid, long uid) {
+        return nameCache.containsKey(fpid + "|" + uid);
     }
 
     /** 冷却表剩余条数（测试）。 */

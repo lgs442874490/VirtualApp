@@ -5,6 +5,8 @@ import java.util.Date;
 import java.util.Locale;
 import java.util.Set;
 
+import org.json.JSONObject;
+
 /**
  * 战争通知（App 侧短信通道）纯逻辑：手机号校验、发送门控（开关/权限/事件去重/5 分钟节流）、
  * 事件文本格式化。纯 JVM 可测，不 import android——SmsManager 调用在
@@ -12,6 +14,9 @@ import java.util.Set;
  *
  * <p>节流口径（任务书）：同一 eventId 只发一次；短信通道最多每 5 分钟一条（防轰炸）。
  * 权限被拒时调用方降级为只留日志（UI 引导授权后自动恢复）。
+ *
+ * <p>v4.1.8：新增事件级 {@link #formatSms(JSONObject, long)}（昵称/坐标/行为/兵力/ETA/结算，
+ * 超 2 条短信预算时裁剪兵力明细保留合计）与最近事件列表的子行/详情格式化。
  */
 public final class WarNotifyGate {
 
@@ -19,6 +24,11 @@ public final class WarNotifyGate {
     public static final long SMS_INTERVAL_MS = 5 * 60_000L;
     /** 已发 eventId 记录上限（超限裁最旧）。 */
     public static final int SENT_CAP = 200;
+    /**
+     * 短信字数预算：中文短信 70 字/条（UCS-2），多段拆分后每段 67 字——
+     * 控制在 2 条内即 ≤134 字，超出先裁兵力明细（保留合计），仍超再整体硬裁。
+     */
+    public static final int SMS_BUDGET_CHARS = 134;
 
     private WarNotifyGate() {
     }
@@ -77,5 +87,173 @@ public final class WarNotifyGate {
         if (hasXY) sb.append('(').append(x).append(',').append(y).append(')');
         if (sid > 0) sb.append(" @k").append(sid);
         return sb.toString();
+    }
+
+    // ---------------- v4.1.8：事件级短信 / 列表子行 / 详情 ----------------
+
+    /**
+     * 事件 JSON → 短信文本（完整版）：初始事件输出 行为/发起人/坐标/兵力/ETA，
+     * 结算事件（phase=settle）输出 结果/耗时/破城。字段缺失优雅降级。
+     * 长度控制：完整兵力超预算 → 裁剪为合计；仍超 → 硬裁到预算。
+     */
+    public static String formatSms(JSONObject e, long nowSec) {
+        if (e == null) return "[号库]敌情";
+        String full = smsCore(e, nowSec, true);
+        if (full.length() <= SMS_BUDGET_CHARS) return full;
+        String brief = smsCore(e, nowSec, false);
+        if (brief.length() <= SMS_BUDGET_CHARS) return brief;
+        return brief.substring(0, SMS_BUDGET_CHARS);
+    }
+
+    /**
+     * 短信主体组装。withTroops=true 带完整兵力明细；false 只在超预算候选里带「合计N」。
+     * （预算判定由 {@link #formatSms(JSONObject, long)} 做：先试全量、再试只留合计、最后硬裁。）
+     */
+    private static String smsCore(JSONObject e, long nowSec, boolean withTroops) {
+        boolean settle = "settle".equals(e.optString("phase", ""));
+        String attacker = firstNonEmpty(e.optString("attackerName", ""),
+                e.optString("targetName", ""), "?");
+        StringBuilder sb;
+        if (settle) {
+            sb = new StringBuilder("[号库]结算·")
+                    .append(firstNonEmpty(e.optString("outcome", ""), e.optString("action", ""), "?"));
+            sb.append(' ').append(attacker);
+            long duration = e.optLong("durationSeconds", 0);
+            if (duration > 0) {
+                sb.append(" 耗时").append(duration / 60).append('分').append(duration % 60).append('秒');
+            }
+            String breach = e.optString("breach", "");
+            if (!breach.isEmpty()) {
+                sb.append(" 破城:").append(breach);
+                String codes = e.optString("battleCodes", "");
+                if (!codes.isEmpty()) sb.append('(').append(codes).append(')');
+            }
+        } else {
+            String behavior = firstNonEmpty(e.optString("behavior", ""),
+                    e.optString("action", ""), "动静");
+            sb = new StringBuilder("[号库]敌情·").append(behavior).append(' ').append(attacker);
+            JSONObject sp = e.optJSONObject("startPoint");
+            if (sp != null) {
+                sb.append('(').append(sp.optInt("x")).append(',').append(sp.optInt("y")).append(')');
+            }
+            JSONObject ep = e.optJSONObject("endpoint");
+            if (ep != null) {
+                sb.append("→(").append(ep.optInt("x")).append(',').append(ep.optInt("y")).append(')');
+            }
+        }
+        if (withTroops) {
+            String troops = e.optString("troops", "");
+            if (!troops.isEmpty()) sb.append(' ').append(troops);
+        } else if (!settle) {
+            String brief = briefTroops(e.optString("troops", ""));
+            if (!brief.isEmpty()) sb.append(' ').append(brief);
+        }
+        if (!settle) {
+            long endSec = e.optLong("endtime", 0);
+            if (endSec > 0 && endSec > nowSec) sb.append(' ').append(endSec - nowSec).append("s后到");
+        }
+        long sid = e.optLong("sid", 0);
+        if (sid > 0) sb.append(" k").append(sid);
+        return sb.toString();
+    }
+
+    /** 兵力明细 → 「合计N」（无合计信息返回空串）。 */
+    static String briefTroops(String troops) {
+        if (troops == null) return "";
+        int i = troops.indexOf("（合计");
+        if (i < 0) return "";
+        int j = troops.indexOf('）', i);
+        if (j < 0) return "";
+        return troops.substring(i + 1, j);
+    }
+
+    private static String firstNonEmpty(String... values) {
+        for (String v : values) {
+            if (v != null && !v.isEmpty()) return v;
+        }
+        return "";
+    }
+
+    /** 最近事件列表子行（UI 第二行）：初始=行为+兵力+ETA；结算=结果+耗时+破城。 */
+    public static String formatEventSub(JSONObject e) {
+        if (e == null) return "";
+        boolean settle = "settle".equals(e.optString("phase", ""));
+        StringBuilder sb = new StringBuilder();
+        if (settle) {
+            sb.append("结算 ").append(firstNonEmpty(e.optString("outcome", ""), "?"));
+            long duration = e.optLong("durationSeconds", 0);
+            if (duration > 0) {
+                sb.append(" · 耗时").append(duration / 60).append('分').append(duration % 60).append('秒');
+            }
+            String breach = e.optString("breach", "");
+            if (!breach.isEmpty()) {
+                sb.append(" · 破城:").append(breach);
+                String codes = e.optString("battleCodes", "");
+                if (!codes.isEmpty()) sb.append('(').append(codes).append(')');
+            }
+        } else {
+            sb.append(firstNonEmpty(e.optString("behavior", ""), e.optString("action", ""), "动静"));
+            String troops = e.optString("troops", "");
+            if (!troops.isEmpty()) sb.append(" · ").append(troops);
+            long eta = e.optLong("etaSeconds", 0);
+            if (eta > 0) sb.append(" · ").append(eta).append("s后到");
+        }
+        return sb.toString();
+    }
+
+    /** 事件详情纯文本（点开弹窗）：6 项字段 + 结算 + 来源/事件号，缺失行自动省略。 */
+    public static String formatEventDetail(JSONObject e) {
+        if (e == null) return "";
+        boolean settle = "settle".equals(e.optString("phase", ""));
+        StringBuilder sb = new StringBuilder();
+        long at = e.optLong("detectedAt", 0);
+        if (at > 0) {
+            sb.append("时间：").append(new SimpleDateFormat("MM-dd HH:mm:ss", Locale.CHINA).format(new Date(at)));
+        }
+        appendLine(sb, "行为：", firstNonEmpty(e.optString("behavior", ""), e.optString("action", "")));
+        appendLine(sb, "发起人：", firstNonEmpty(e.optString("attackerName", ""), e.optString("targetName", "")));
+        long uid = e.optLong("targetUid", 0);
+        if (uid > 0) sb.append("（uid ").append(uid).append('）');
+        JSONObject sp = e.optJSONObject("startPoint");
+        if (sp != null) {
+            sb.append("\n发起人坐标：(").append(sp.optInt("x")).append(',').append(sp.optInt("y")).append(')');
+        }
+        JSONObject ep = e.optJSONObject("endpoint");
+        if (ep != null) {
+            sb.append("\n目标坐标：(").append(ep.optInt("x")).append(',').append(ep.optInt("y")).append(')');
+        }
+        appendLine(sb, "兵力：", e.optString("troops", ""));
+        if (!settle) {
+            long endSec = e.optLong("endtime", 0);
+            if (endSec > 0) {
+                sb.append("\n到达：").append(new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date(endSec * 1000L)));
+                long eta = e.optLong("etaSeconds", 0);
+                if (eta > 0) sb.append("（").append(eta).append("s 后）");
+            }
+        } else {
+            sb.append("\n结算：").append(firstNonEmpty(e.optString("outcome", ""), "?"));
+            long duration = e.optLong("durationSeconds", 0);
+            if (duration > 0) {
+                sb.append(" · 耗时").append(duration / 60).append('分').append(duration % 60).append('秒');
+            }
+            String breach = e.optString("breach", "");
+            if (!breach.isEmpty()) {
+                sb.append(" · 破城:").append(breach);
+                String codes = e.optString("battleCodes", "");
+                if (!codes.isEmpty()) sb.append("（战报 ").append(codes).append('）');
+            }
+        }
+        appendLine(sb, "来源：", e.optString("rawProto", ""));
+        long sid = e.optLong("sid", 0);
+        if (sid > 0) sb.append("\n会话：k").append(sid);
+        String eventId = e.optString("eventId", "");
+        if (!eventId.isEmpty()) sb.append("\n事件：").append(eventId);
+        return sb.toString();
+    }
+
+    private static void appendLine(StringBuilder sb, String label, String value) {
+        if (value == null || value.isEmpty()) return;
+        if (sb.length() > 0) sb.append('\n');
+        sb.append(label).append(value);
     }
 }
