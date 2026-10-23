@@ -142,6 +142,11 @@ public class AccountVaultActivity extends Activity {
         for (AccountStore.Account a : accounts) validIds.add(a.id);
         engine.pruneOrphanSnapshots(validIds);
         gameIcon = loadGameIcon();
+        // 批次7（task-25）：首次使用五步引导（①兑换码→②克隆/初始化→③加号→④启动分身→⑤自动化 T2+）。
+        // 放在授权门禁之后（激活是第①步的前置：未激活先走门禁页），
+        // 进程内只拉起一次（OnboardingState 内有防重入标记，避免 recreate/多次 onCreate 反复弹）。
+        // HomeActivity 走本类 super.onCreate，同样命中；完成/跳过后不再打扰。
+        maybeStartOnboarding();
         if (this instanceof HomeActivity) {
             ((HomeActivity) this).buildHomeUi();
             requestNotifPermission();
@@ -216,6 +221,12 @@ public class AccountVaultActivity extends Activity {
     private void autoWizardIfIdle(int retry) {
         if (isFinishing() || isDestroyed()) return;
         if (engine.isGameInstalled() && engine.hasBaseline()) return;  // 已配置完成，不再打扰
+        // 批次7（task-25）：首次引导未完成时由 OnboardingActivity 接管初始化串联（其中第②步
+        // 亦引导到本向导），避免两套弹层同时出现；用户跳过引导后仍可从 ☰ 菜单手动进入向导。
+        try {
+            if (!new OnboardingState(this).isDone()) return;
+        } catch (Throwable ignored) {
+        }
         if (!hasWindowFocus()) {                                       // 弹窗/输入法在前：顺延
             if (retry < AUTO_WIZARD_MAX_RETRY) {
                 status.postDelayed(() -> autoWizardIfIdle(retry + 1), 1500);
@@ -241,6 +252,29 @@ public class AccountVaultActivity extends Activity {
 
     /** 子类可向主菜单追加条目（HomeActivity 用于「一键帮助全盟」）。 */
     protected void addMainMenuExtras(LinearLayout box, LinearLayout.LayoutParams rowLp) {
+    }
+
+    /**
+     * 批次7（task-25）：首次使用引导跳转（仅 onCreate 调一次）。
+     * 条件见 {@link OnboardingState#shouldRedirect(android.content.Context)}：未完成引导 + 授权可用 + 本进程未拉过。
+     */
+    private void maybeStartOnboarding() {
+        try {
+            if (!OnboardingState.shouldRedirect(this)) return;
+            startActivity(new Intent(this, OnboardingActivity.class));
+        } catch (Throwable t) {
+            android.util.Log.w("AccountVault", "拉起新手引导失败：" + t);
+        }
+    }
+
+    /** 批次7（task-25）：从 ☰ 功能菜单再次进入新手引导（「我的」页可达；HomeActivity 复用同一菜单）。 */
+    protected void openOnboarding() {
+        try {
+            startActivity(new Intent(this, OnboardingActivity.class)
+                    .putExtra(OnboardingActivity.EXTRA_REVISIT, true));
+        } catch (Throwable t) {
+            UiStyle.toast(this, "打开新手引导失败：" + t);
+        }
     }
 
     /** 功能菜单：初始化向导 / 克隆软件 / 微信支付 / 授权管理（替换原头部三按钮）。 */
@@ -277,6 +311,11 @@ public class AccountVaultActivity extends Activity {
         LinearLayout r4 = UiStyle.makeRowBtn(this, "🔑", "授权管理（兑换码/到期详情）",
                 UiStyle.RUN_INK, this::showLicenseMenu);
         box.addView(r4, new LinearLayout.LayoutParams(rowLp));
+
+        // 批次7（task-25）：新手引导再入口（五步：兑换码→克隆/初始化→加号→启动分身→自动化 T2+）。
+        LinearLayout r45 = UiStyle.makeRowBtn(this, "🧭", "新手引导（初始化五步）",
+                UiStyle.BRAND, this::openOnboarding);
+        box.addView(r45, new LinearLayout.LayoutParams(rowLp));
 
         addMainMenuExtras(box, rowLp);
 

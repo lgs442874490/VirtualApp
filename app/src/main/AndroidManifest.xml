@@ -86,6 +86,12 @@
             android:theme="@style/AppTheme">
             
         </activity>
+        <!-- 批次7（task-25）：新用户初始化引导页（①兑换码 ②克隆/初始化 ③添加分身账户 ④打开游戏分身
+             ⑤打开自动化（T2+））。仅 App 内部跳转（首启/☰ 功能菜单），不导出。 -->
+        <activity
+            android:name="com.carlos.vault.OnboardingActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
         <service
             android:name="com.carlos.vault.daily.DailySchedulerService"
             android:exported="false"

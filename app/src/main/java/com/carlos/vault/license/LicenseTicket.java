@@ -23,6 +23,13 @@ public class LicenseTicket {
     public String ticketId = "";
     /** 码类型：month / permanent。 */
     public String type = LicenseConfig.TYPE_MONTH;
+    /**
+     * 授权等级（批次7 三级权限）：1=普通 / 2=会员 / 3=高级会员。
+     *
+     * <p>服务端为权威。旧票据（无该字段）反序列化时默认 {@link LicenseConfig#TIER_DEFAULT}=3，
+     * 避免存量用户降权；HMAC 兼容策略见 {@link #signableFields()}。
+     */
+    public int tier = LicenseConfig.TIER_DEFAULT;
     /** 首激活时间（服务端权威，epoch ms）。 */
     public long activatedAt = 0L;
     /** 到期时间；permanent 为 0。 */
@@ -53,6 +60,17 @@ public class LicenseTicket {
     /**
      * 参与签名的字段集合。刻意排除 {@link #sig} 自身。
      * 返回 TreeMap 以保证键有序，配合 {@link LicenseCrypto#writeCanonical} 得到稳定串。
+     *
+     * <p><b>tier 与旧票据 HMAC 兼容（批次7）</b>：只有当 {@code tier != TIER_DEFAULT(3)} 时才把
+     * {@code tier} 放进签名串。原因：
+     * <ul>
+     *   <li>旧票据（2026-10 批次7 之前签发）没有 tier 字段、签名串里也没有 tier —— 旧票据
+     *       反序列化后 tier 默认为 3，规范化串与旧版逐字节一致，**旧签名继续通过、不失效**；
+     *   <li>新票据里 tier=3（高级会员，默认档）同样走旧串，签名口径稳定；
+     *   <li>tier=1/2（真实降档）才纳入签名，任何把 1/2 改成 3 的手工篡改都会改变签名串 →
+     *       校验失败 → TAMPERED；反过来把默认 3 改成 1/2 同样 TAMPERED。
+     *       把任意票据“改成 3”在签名上等价于缺省（已是最高档），不产生权限提升。
+     * </ul>
      */
     public Map<String, Object> signableFields() {
         Map<String, Object> m = new TreeMap<>();
@@ -65,6 +83,10 @@ public class LicenseTicket {
         m.put("salt", salt == null ? "" : salt);
         m.put("serverStatus", serverStatus == null ? "" : serverStatus);
         m.put("ticketId", ticketId == null ? "" : ticketId);
+        // 仅非默认档参与签名：保证旧票据（无 tier）签名串字节不变（详见方法注释）。
+        if (LicenseConfig.normalizeTier(tier) != LicenseConfig.TIER_DEFAULT) {
+            m.put("tier", LicenseConfig.normalizeTier(tier));
+        }
         m.put("type", type == null ? "" : type);
         return m;
     }
@@ -81,6 +103,7 @@ public class LicenseTicket {
             o.put("code", code == null ? "" : code);
             o.put("ticketId", ticketId == null ? "" : ticketId);
             o.put("type", type == null ? "" : type);
+            o.put("tier", LicenseConfig.normalizeTier(tier));
             o.put("activatedAt", activatedAt);
             o.put("expireAt", expireAt);
             o.put("serverStatus", serverStatus == null ? "" : serverStatus);
@@ -95,7 +118,7 @@ public class LicenseTicket {
         }
     }
 
-    /** 从落盘 JSON 反序列化；解析失败返回 null。 */
+    /** 从落盘 JSON 反序列化；解析失败返回 null。缺 tier 的旧票据按 {@link LicenseConfig#TIER_DEFAULT}=3。 */
     public static LicenseTicket fromJson(String json) {
         if (json == null || json.trim().isEmpty()) return null;
         try {
@@ -104,6 +127,8 @@ public class LicenseTicket {
             t.code = o.optString("code", "");
             t.ticketId = o.optString("ticketId", "");
             t.type = o.optString("type", LicenseConfig.TYPE_MONTH);
+            // 旧票据无 tier 字段 → optInt 取默认 3（存量用户保持高级会员，不降权）
+            t.tier = LicenseConfig.normalizeTier(o.optInt("tier", LicenseConfig.TIER_DEFAULT));
             t.activatedAt = o.optLong("activatedAt", 0L);
             t.expireAt = o.optLong("expireAt", 0L);
             t.serverStatus = o.optString("serverStatus", LicenseConfig.STATUS_ACTIVE);
@@ -124,6 +149,7 @@ public class LicenseTicket {
         t.code = code;
         t.ticketId = ticketId;
         t.type = type;
+        t.tier = tier;
         t.activatedAt = activatedAt;
         t.expireAt = expireAt;
         t.serverStatus = serverStatus;
@@ -138,12 +164,17 @@ public class LicenseTicket {
     /**
      * 用服务端响应 data 中的 ticket 对象填充本票据。
      * 只覆盖服务端权威字段，本地字段（lastVerifiedAt/clockOffsetMs/deviceHash/salt）由调用方另行设置。
+     *
+     * <p>tier：服务端下发才覆盖（旧版服务端无该字段时保持原值，旧票据默认 3）。
      */
     public void applyServerTicket(JSONObject ticket) {
         if (ticket == null) return;
         code = ticket.optString("code", code);
         ticketId = ticket.optString("ticketId", ticketId);
         type = ticket.optString("type", type);
+        if (ticket.has("tier")) {
+            tier = LicenseConfig.normalizeTier(ticket.optInt("tier", LicenseConfig.TIER_DEFAULT));
+        }
         activatedAt = ticket.optLong("activatedAt", activatedAt);
         expireAt = ticket.optLong("expireAt", expireAt);
         serverStatus = ticket.optString("serverStatus", serverStatus);
@@ -151,7 +182,7 @@ public class LicenseTicket {
 
     @Override
     public String toString() {
-        return "LicenseTicket{type=" + type + ", expireAt=" + expireAt
+        return "LicenseTicket{type=" + type + ", tier=" + tier + ", expireAt=" + expireAt
                 + ", serverStatus=" + serverStatus + ", lastVerifiedAt=" + lastVerifiedAt + "}";
     }
 }

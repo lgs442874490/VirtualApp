@@ -80,6 +80,7 @@ func cmdIssue(args []string) error {
 	fs := flag.NewFlagSet("issue", flag.ExitOnError)
 	registerDBFlag(fs, cfg)
 	typ := fs.String("type", "month", "码类型：month | permanent")
+	tierFlag := fs.String("tier", "3", "码等级：1=普通 2=会员 3=高级会员（默认 3；存量兼容）")
 	count := fs.Int("count", 1, "生成数量")
 	remark := fs.String("remark", "", "备注（运营用）")
 	out := fs.String("out", "", "可选：导出 CSV 文件路径")
@@ -88,6 +89,10 @@ func cmdIssue(args []string) error {
 	}
 	if *typ != TypeMonth && *typ != TypePermanent {
 		return fmt.Errorf("--type 只能是 month 或 permanent，收到 %q", *typ)
+	}
+	tier, err := parseTier(*tierFlag)
+	if err != nil {
+		return err
 	}
 	if *count <= 0 {
 		return fmt.Errorf("--count 必须为正整数")
@@ -112,19 +117,19 @@ func cmdIssue(args []string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := insertCode(db, code, *typ, durationDays, *remark, createdBy, now); err != nil {
+		if _, err := insertCodeWithTier(db, code, *typ, tier, durationDays, *remark, createdBy, now); err != nil {
 			return fmt.Errorf("写入兑换码失败: %w", err)
 		}
 		codes = append(codes, code)
 	}
 
-	fmt.Printf("已生成 %d 个兑换码（type=%s）：\n", len(codes), *typ)
+	fmt.Printf("已生成 %d 个兑换码（type=%s, tier=%d %s）：\n", len(codes), *typ, tier, tierName(tier))
 	for _, c := range codes {
 		fmt.Println("  " + c)
 	}
 
 	if *out != "" {
-		if err := writeCodesCSV(*out, codes, *typ, durationDays, *remark, now); err != nil {
+		if err := writeCodesCSV(*out, codes, *typ, tier, durationDays, *remark, now); err != nil {
 			return err
 		}
 		fmt.Printf("已导出 CSV -> %s\n", *out)
@@ -150,8 +155,9 @@ func genUniqueCode(db *sql.DB) (string, error) {
 	return "", fmt.Errorf("生成唯一兑换码失败：连续 10 次碰撞，请检查随机源")
 }
 
-// writeCodesCSV 将本批码导出为 CSV。
-func writeCodesCSV(path string, codes []string, typ string, durationDays int64, remark string, createdAt int64) error {
+// writeCodesCSV 将本批码导出为 CSV（含 tier 列：1/2/3）。
+func writeCodesCSV(path string, codes []string, typ string, tier int, durationDays int64,
+	remark string, createdAt int64) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("创建 CSV 失败: %w", err)
@@ -159,12 +165,14 @@ func writeCodesCSV(path string, codes []string, typ string, durationDays int64, 
 	defer f.Close()
 	wr := csv.NewWriter(f)
 	defer wr.Flush()
-	if err := wr.Write([]string{"code", "type", "durationDays", "remark", "createdAt"}); err != nil {
+	if err := wr.Write([]string{"code", "type", "tier", "tierName", "durationDays", "remark", "createdAt"}); err != nil {
 		return err
 	}
 	createdStr := fmtTimeLocal(createdAt)
+	tierStr := strconvI64(int64(tier))
 	for _, c := range codes {
-		if err := wr.Write([]string{c, typ, strconvI64(durationDays), remark, createdStr}); err != nil {
+		if err := wr.Write([]string{c, typ, tierStr, tierName(tier),
+			strconvI64(durationDays), remark, createdStr}); err != nil {
 			return err
 		}
 	}
@@ -234,7 +242,7 @@ func cmdList(args []string) error {
 	}
 	defer db.Close()
 
-	query := `SELECT c.code, c.type, c.status, c.created_at, c.activated_at, c.expire_at,
+	query := `SELECT c.code, c.type, c.tier, c.status, c.created_at, c.activated_at, c.expire_at,
 		COALESCE(b.device_label, ''), b.bound_at
 		FROM license_code c
 		LEFT JOIN device_binding b ON b.code_id = c.id AND b.status = 'active'`
@@ -254,16 +262,17 @@ func cmdList(args []string) error {
 
 	now := nowMs()
 	tw := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "CODE\tTYPE\tSTATUS\tDEVICE\tACTIVATED\tEXPIRE\tREMAIN")
+	fmt.Fprintln(tw, "CODE\tTYPE\tTIER\tSTATUS\tDEVICE\tACTIVATED\tEXPIRE\tREMAIN")
 	total := 0
 	for rows.Next() {
 		var (
 			code, typ, st, label  string
+			tier                  int
 			createdAt             int64
 			activatedAt, expireAt sql.NullInt64
 			boundAt               sql.NullInt64
 		)
-		if err := rows.Scan(&code, &typ, &st, &createdAt, &activatedAt, &expireAt, &label, &boundAt); err != nil {
+		if err := rows.Scan(&code, &typ, &tier, &st, &createdAt, &activatedAt, &expireAt, &label, &boundAt); err != nil {
 			return fmt.Errorf("扫描行失败: %w", err)
 		}
 		activatedStr := "-"
@@ -286,8 +295,8 @@ func cmdList(args []string) error {
 		if label == "" {
 			label = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			code, typ, st, label, activatedStr, expireStr, remainStr)
+		fmt.Fprintf(tw, "%s\t%s\t%s(%d)\t%s\t%s\t%s\t%s\t%s\n",
+			code, typ, tierName(tier), tier, st, label, activatedStr, expireStr, remainStr)
 		total++
 	}
 	if err := rows.Err(); err != nil {

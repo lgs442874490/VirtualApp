@@ -145,6 +145,44 @@ public final class LicenseConfig {
     public static final String TYPE_MONTH = "month";
     public static final String TYPE_PERMANENT = "permanent";
 
+    // ---------- 授权等级（tier，批次7 三级权限 2026-10-23） ----------
+    //
+    // 与服务端 license-server 的 license_code.tier 一一对应（schema 默认 3）：
+    //   TIER_BASIC   = 1 普通（只有分身）
+    //   TIER_MEMBER  = 2 会员（日常脚本）
+    //   TIER_PREMIUM = 3 高级会员（高阶功能）
+    //
+    // 兼容策略（务必与服务端一致）：
+    //  - 存量兑换码：服务端 DB 迁移时 `tier INTEGER NOT NULL DEFAULT 3` → 一律高级会员；
+    //  - 旧票据（无 tier 字段）：客户端按 TIER_DEFAULT=3 处理，且不改变票据 HMAC 规范化串
+    //    （见 LicenseTicket#signableFields），旧签名继续通过、不失效；
+    //  - 服务端响应缺 tier 字段（旧版服务端）：同样按 3 处理。
+    public static final int TIER_BASIC = 1;
+    public static final int TIER_MEMBER = 2;
+    public static final int TIER_PREMIUM = 3;
+    /** 默认等级 = 高级会员（存量兼容：旧码/旧票据/缺字段一律按此）。 */
+    public static final int TIER_DEFAULT = TIER_PREMIUM;
+
+    /**
+     * 归一化 tier：任意 int → 1/2/3 合法集合。
+     * 0/负数/超界/未知值一律按 {@link #TIER_DEFAULT}（=3，存量兼容，绝不降权老用户）。
+     */
+    public static int normalizeTier(int tier) {
+        return (tier >= TIER_BASIC && tier <= TIER_PREMIUM) ? tier : TIER_DEFAULT;
+    }
+
+    /** 等级展示名（UI/日志用；未知值按高级会员兼容）。 */
+    public static String tierName(int tier) {
+        switch (normalizeTier(tier)) {
+            case TIER_BASIC:
+                return "普通";
+            case TIER_MEMBER:
+                return "会员";
+            default:
+                return "高级会员";
+        }
+    }
+
     /**
      * 把业务错误码映射为给用户看的提示文案。
      * 安全类错误（验签/重放/参数）统一收敛为「网络异常」，不向用户暴露协议细节。

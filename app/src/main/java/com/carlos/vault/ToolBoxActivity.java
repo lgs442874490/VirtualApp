@@ -20,11 +20,14 @@ import java.util.List;
 /**
  * 工具箱（设计稿 S9）：诊断/监控能力的独立页。
  *
- * <p>从旧版「文字对话框」升级为状态透明的独立页：
+ * <p>批次7（2026-10-23）按 {@link FeatureGate} 分级门控重排：
  * <ul>
- *   <li>已开放 · 2：协议监听（日志体积 + 开关）、敌情监控（推送渠道 + 开关 + 配置）</li>
- *   <li>开发调试：P1 协议探针（原 HomeActivity.showProbe 原样迁入，功能不变）</li>
- *   <li>规划中 · 14：置灰网格，开放后自动进入「常用」</li>
+ *   <li><b>敌情监控</b>（T3 高级会员）：推送渠道 + 开关 + 配置；无权限不渲染；</li>
+ *   <li><b>协议监听</b>（调试包专属）：正式包不渲染；</li>
+ *   <li><b>P1 协议探针</b>（调试包专属）：长按「开放策略」卡片进入，正式包无入口；</li>
+ *   <li><b>历史「规划中 · 14」整段下架</b>：三消/爆兵/宠物洗练/移民抢位/侦察战报/迁城/
+ *       坐标查询/充值记录/巨兽批量等均无实现，未开发/未立项功能一律不显示；
+ *       同一条目在 {@code design/全流程行为与分级门控-20261023.md} 中登记。</li>
  * </ul>
  * 敌情监控配置（原 HomeActivity.showWatchConfig）与协议探针（showProbe）整体迁入本页，
  * HomeActivity 不再保留副本，避免两处逻辑漂移。
@@ -59,6 +62,14 @@ public class ToolBoxActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // 批次7 防旁路：本页只有 T3（敌情监控）与调试工具；无任何可用工具时（含直接 Intent
+        // 启动绕过 Home 入口门控）直接返回，不放空壳页也不泄露功能清单。
+        if (!FeatureGate.visible(this, FeatureGate.Feature.ENEMY_WATCH)
+                && !FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER)) {
+            toast(FeatureGate.reasonText(FeatureGate.Feature.TOOLBOX));
+            finish();
+            return;
+        }
         try {
             getWindow().setStatusBarColor(UiStyle.BG_V2);
             getWindow().getDecorView().setSystemUiVisibility(
@@ -104,121 +115,101 @@ public class ToolBoxActivity extends Activity {
         root.addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
-        // —— 已开放 · 2 ——
-        box.addView(sectionRow("已开放 · 2", "诊断与监控"));
-
-        // 协议监听
-        LinearLayout protoCard = toolCard(UiStyle.Icon.TARGET, "协议监听",
-                protoSub(), UiStyle.BRAND_50);
-        final UiStyle.Switch[] protoSw = new UiStyle.Switch[1];
-        protoSw[0] = new UiStyle.Switch(this,
-                com.carlos.vault.daily.ProtoLogger.on(this), () -> {
-                    boolean turnOn = protoSw[0].isOn();
-                    com.carlos.vault.daily.ProtoLogger.setOn(this, turnOn);
-                    if (turnOn) com.carlos.vault.daily.ProtoLogger.reattachAll(this);
-                    toast(turnOn ? "协议监听已开启\n（原生游戏里玩一轮后退出，稍后我来拉日志分析）"
-                            : "协议监听已停止");
-                    refreshProtoCard(protoCard, protoSw[0]);
-                });
-        protoCard.addView(protoSw[0]);
-        attachToggle(protoCard, protoSw[0]);
-        refreshProtoCard(protoCard, protoSw[0]);
-        box.addView(protoCard);
-
-        // 敌情监控
-        LinearLayout watchCard = toolCard(UiStyle.Icon.EYE, "敌情监控",
-                watchSub(), UiStyle.BRAND_50);
-        final UiStyle.Switch[] watchSw = new UiStyle.Switch[1];
-        watchSw[0] = new UiStyle.Switch(this,
-                com.carlos.vault.daily.EnemyWatchStore.enabled(this), () -> {
-                    boolean on = watchSw[0].isOn();
-                    saveWatchEnabled(on);
-                    if (on) com.carlos.vault.daily.EnemyWatch.attachAll(this);
-                    toast("敌情监控已" + (on ? "开启" : "关闭"));
-                    setCardSub(watchCard, watchSub());
-                });
-        watchCard.addView(watchSw[0]);
-        // 点卡片主体 = 打开配置（开关只承担开关，避免误触）
-        watchCard.setOnClickListener(v -> showWatchConfig());
-        box.addView(watchCard);
-
-        // 开发调试（P1 协议探针）保留为隐藏入口：长按「开放策略」卡片进入。
-
-        // —— 规划中 · 14 ——
-        box.addView(sectionRow("规划中 · 14", "后续版本陆续开放"));
-        String[] planned = {"排行榜", "进攻 / 撞矿", "起号", "活动榜单",
-                "迁城", "三消", "爆兵", "宠物洗练",
-                "巨兽批量", "坐标查询", "侦察战报", "移民抢位",
-                "充值记录", "编队管理"};
-        int[] plannedIcons = {UiStyle.Icon.TARGET, UiStyle.Icon.SHIELD, UiStyle.Icon.PLUS,
-                UiStyle.Icon.GIFT, UiStyle.Icon.COMPASS, UiStyle.Icon.GRID,
-                UiStyle.Icon.USERS, UiStyle.Icon.COMPASS, UiStyle.Icon.SHIELD,
-                UiStyle.Icon.SEARCH, UiStyle.Icon.DOC, UiStyle.Icon.TARGET,
-                UiStyle.Icon.DOC, UiStyle.Icon.CHECKLIST};
-        for (int r = 0; r < planned.length; r += 3) {
-            LinearLayout grow = new LinearLayout(this);
-            grow.setOrientation(LinearLayout.HORIZONTAL);
-            grow.setPadding(0, dp(6), 0, 0);
-            for (int c = r; c < Math.min(r + 3, planned.length); c++) {
-                LinearLayout cell = new LinearLayout(this);
-                cell.setOrientation(LinearLayout.VERTICAL);
-                cell.setGravity(Gravity.CENTER);
-                cell.setPadding(dp(4), dp(10), dp(4), dp(10));
-                cell.addView(new UiStyle.Icon(this, plannedIcons[c], UiStyle.INK2, 26),
-                        new LinearLayout.LayoutParams(dp(26), dp(26)));
-                TextView label = new TextView(this);
-                label.setText(planned[c]);
-                label.setTextSize(12);
-                label.setTextColor(UiStyle.INK3);
-                label.setGravity(Gravity.CENTER);
-                label.setPadding(0, dp(8), 0, 0);
-                label.setMaxLines(1);
-                cell.addView(label);
-                grow.addView(cell, new LinearLayout.LayoutParams(0, dp(84), 1));
+        // ===== 批次7 功能门控（单一事实源 FeatureGate，2026-10-23） =====
+        // 原则：① 无权限功能不显示；② 未开发/未立项功能一律隐藏（历史“规划中 · 14”整段下架，
+        // 三消/爆兵/宠物洗练/移民抢位/侦察战报/迁城/坐标查询/充值记录/巨兽批量等均无实现）；
+        // ③ 工具箱内调试/实测项仅调试包可见。
+        final boolean debugBuild = FeatureGate.isDebugBuild(this);
+        final boolean canWatch = FeatureGate.visible(this, FeatureGate.Feature.ENEMY_WATCH);      // T3 高阶
+        final boolean canProto = FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER); // 仅调试包
+        final int toolCount = (canWatch ? 1 : 0) + (canProto ? 1 : 0);
+        if (toolCount > 0) {
+            box.addView(sectionRow("可用工具 · " + toolCount, "诊断与监控"));
+            // 协议监听（调试包专属：正式包不渲染）
+            if (canProto) {
+                LinearLayout protoCard = toolCard(UiStyle.Icon.TARGET, "协议监听",
+                        protoSub(), UiStyle.BRAND_50);
+                final UiStyle.Switch[] protoSw = new UiStyle.Switch[1];
+                protoSw[0] = new UiStyle.Switch(this,
+                        com.carlos.vault.daily.ProtoLogger.on(this), () -> {
+                            boolean turnOn = protoSw[0].isOn();
+                            com.carlos.vault.daily.ProtoLogger.setOn(this, turnOn);
+                            if (turnOn) com.carlos.vault.daily.ProtoLogger.reattachAll(this);
+                            toast(turnOn ? "协议监听已开启\n（原生游戏里玩一轮后退出，稍后我来拉日志分析）"
+                                    : "协议监听已停止");
+                            refreshProtoCard(protoCard, protoSw[0]);
+                        });
+                protoCard.addView(protoSw[0]);
+                attachToggle(protoCard, protoSw[0]);
+                refreshProtoCard(protoCard, protoSw[0]);
+                box.addView(protoCard);
             }
-            // 末行不足 3 个时补空位，保持列宽一致
-            for (int c = Math.min(r + 3, planned.length); c < r + 3; c++) {
-                grow.addView(new View(this), new LinearLayout.LayoutParams(0, dp(84), 1));
+            // 敌情监控（T3 高级会员）
+            if (canWatch) {
+                LinearLayout watchCard = toolCard(UiStyle.Icon.EYE, "敌情监控",
+                        watchSub(), UiStyle.BRAND_50);
+                final UiStyle.Switch[] watchSw = new UiStyle.Switch[1];
+                watchSw[0] = new UiStyle.Switch(this,
+                        com.carlos.vault.daily.EnemyWatchStore.enabled(this), () -> {
+                            boolean on = watchSw[0].isOn();
+                            saveWatchEnabled(on);
+                            if (on) com.carlos.vault.daily.EnemyWatch.attachAll(this);
+                            toast("敌情监控已" + (on ? "开启" : "关闭"));
+                            setCardSub(watchCard, watchSub());
+                        });
+                watchCard.addView(watchSw[0]);
+                // 点卡片主体 = 打开配置（开关只承担开关，避免误触）
+                watchCard.setOnClickListener(v -> showWatchConfig());
+                box.addView(watchCard);
             }
-            box.addView(grow, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        } else {
+            // 无「已开发且有权」功能：只给空态，不渲染任何规划中占位（未开发功能不下放）
+            TextView empty = new TextView(this);
+            empty.setText("暂无可用的工具箱功能");
+            empty.setTextSize(13);
+            empty.setTextColor(UiStyle.INK2);
+            empty.setGravity(Gravity.CENTER);
+            empty.setPadding(0, dp(40), 0, dp(40));
+            box.addView(empty);
         }
 
-        // 开放策略说明（长按进入开发调试 · P1 协议探针）
-        LinearLayout note = new LinearLayout(this);
-        note.setOrientation(LinearLayout.HORIZONTAL);
-        note.setGravity(Gravity.CENTER_VERTICAL);
-        note.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND_50, 16));
-        note.setPadding(dp(14), dp(14), dp(14), dp(14));
-        LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        nlp.topMargin = dp(18);
-        note.setLayoutParams(nlp);
-        note.addView(UiStyle.iconTile(this, UiStyle.Icon.CLOCK, UiStyle.BRAND_TEXT,
-                UiStyle.WHITE, 40, 20, 12),
-                new LinearLayout.LayoutParams(dp(40), dp(40)));
-        LinearLayout nCol = new LinearLayout(this);
-        nCol.setOrientation(LinearLayout.VERTICAL);
-        nCol.setPadding(dp(12), 0, 0, 0);
-        TextView n1 = new TextView(this);
-        n1.setText("开放策略");
-        n1.setTextSize(15);
-        n1.setTypeface(Typeface.DEFAULT_BOLD);
-        n1.setTextColor(UiStyle.INK);
-        nCol.addView(n1);
-        TextView n2 = new TextView(this);
-        n2.setText("随日常模块稳定性逐个解锁，开放后自动进入「常用」");
-        n2.setTextSize(11.5f);
-        n2.setTextColor(UiStyle.INK2);
-        n2.setPadding(0, dp(3), 0, 0);
-        nCol.addView(n2);
-        note.addView(nCol, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        note.setOnLongClickListener(v -> {
-            showProbe();
-            return true;
-        });
-        box.addView(note);
+        // 开发调试（P1 协议探针）保留为隐藏入口：长按「开放策略」卡片进入；仅调试包渲染。
+        if (debugBuild) {
+            LinearLayout note = new LinearLayout(this);
+            note.setOrientation(LinearLayout.HORIZONTAL);
+            note.setGravity(Gravity.CENTER_VERTICAL);
+            note.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND_50, 16));
+            note.setPadding(dp(14), dp(14), dp(14), dp(14));
+            LinearLayout.LayoutParams nlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            nlp.topMargin = dp(18);
+            note.setLayoutParams(nlp);
+            note.addView(UiStyle.iconTile(this, UiStyle.Icon.CLOCK, UiStyle.BRAND_TEXT,
+                    UiStyle.WHITE, 40, 20, 12),
+                    new LinearLayout.LayoutParams(dp(40), dp(40)));
+            LinearLayout nCol = new LinearLayout(this);
+            nCol.setOrientation(LinearLayout.VERTICAL);
+            nCol.setPadding(dp(12), 0, 0, 0);
+            TextView n1 = new TextView(this);
+            n1.setText("开放策略");
+            n1.setTextSize(15);
+            n1.setTypeface(Typeface.DEFAULT_BOLD);
+            n1.setTextColor(UiStyle.INK);
+            nCol.addView(n1);
+            TextView n2 = new TextView(this);
+            n2.setText("调试包专属：长按本卡片进入协议探针");
+            n2.setTextSize(11.5f);
+            n2.setTextColor(UiStyle.INK2);
+            n2.setPadding(0, dp(3), 0, 0);
+            nCol.addView(n2);
+            note.addView(nCol, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            note.setOnLongClickListener(v -> {
+                showProbe();
+                return true;
+            });
+            box.addView(note);
+        }
 
         return root;
     }

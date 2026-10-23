@@ -34,9 +34,9 @@ func usage() {
 子命令:
   initdb    初始化数据库（幂等）
   serve     启动 HTTP 服务（需 LICENSE_SECRET）
-  issue     批量发码
+  issue     批量发码（--tier 1|2|3 指定授权等级，默认 3=高级会员）
   revoke    吊销兑换码
-  list      列出兑换码
+  list      列出兑换码（含 tier 等级列）
   rebind    换绑设备（需 admin-token）
 
 环境变量:
@@ -47,10 +47,16 @@ func usage() {
   LICENSE_REBIND_MAX    换绑次数上限，0=不限（默认 1，每码限 1 次）
   LICENSE_NONCE_TTL     nonce 存活秒数（默认 900）
 
+授权等级（tier，批次7）:
+  1 = 普通（只有分身）
+  2 = 会员（日常脚本）
+  3 = 高级会员（高阶功能）—— 存量码/未指定等级一律按 3（兼容旧用户）
+
 示例:
   license-cli initdb
   LICENSE_SECRET=devsecret license-cli serve
-  license-cli issue --type month --count 5 --remark "首批" --out codes.csv
+  license-cli issue --type month --count 5 --tier 3 --remark "首批高级会员" --out codes.csv
+  license-cli issue --type permanent --tier 2 --count 1 --remark "会员码"
   license-cli list --status active
   license-cli revoke --code XXXX-XXXX-XXXX-XXXX --reason "refund"
   LICENSE_ADMIN_TOKEN=devtoken license-cli rebind --code XXXX-... --new-device-hash <hash>

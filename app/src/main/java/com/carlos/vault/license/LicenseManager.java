@@ -227,6 +227,38 @@ public class LicenseManager {
         }
     }
 
+    // ---------- 授权等级（批次7 三级权限；供功能门控使用） ----------
+
+    /**
+     * 当前生效的授权等级：{@link LicenseConfig#TIER_BASIC}=1 普通 /
+     * {@link LicenseConfig#TIER_MEMBER}=2 会员 / {@link LicenseConfig#TIER_PREMIUM}=3 高级会员。
+     *
+     * <p>数据来源 = 本地票据（服务端权威：激活/联网校验时落盘）。兼容规则：
+     * <ul>
+     *   <li><b>旧票据无 tier 字段</b> → {@link LicenseConfig#TIER_DEFAULT}=3（存量用户不降权，兼容旧 HMAC）；</li>
+     *   <li><b>无票据/空票据</b> → {@link LicenseConfig#TIER_BASIC}=1（最小权限 fail-safe；
+     *       是否已激活请另用 {@link #localUsable()} / {@link #gateForLaunch} 判定，tier 不承担授权判定）；</li>
+     *   <li>非法值（0/负/超界）→ 归一化为 3（与服务端缺省一致）。</li>
+     * </ul>
+     * 只读内存（首次会读一次 SharedPreferences），可在 UI 线程调用。
+     */
+    public int tier() {
+        ensureLoaded();
+        LicenseTicket t;
+        synchronized (lock) {
+            t = ticket;
+        }
+        if (t == null || t.isEmpty()) {
+            return LicenseConfig.TIER_BASIC;
+        }
+        return LicenseConfig.normalizeTier(t.tier);
+    }
+
+    /** 是否达到指定等级（一行门控用；{@code requiredTier} 非法时按 3 处理 → 只有高级会员满足）。 */
+    public boolean tierAtLeast(int requiredTier) {
+        return tier() >= LicenseConfig.normalizeTier(requiredTier);
+    }
+
     // ---------- 硬闸门（被 VaultEngine.launchGame 调用） ----------
 
     /**
@@ -485,7 +517,10 @@ public class LicenseManager {
         if (!status.isEmpty()) {
             long expireAt = data.optLong("expireAt", 0L);
             String type = data.optString("type", "");
-            LicenseState s = applyVerifySuccess(status, type, expireAt, r.serverTime);
+            // 批次7：verify 响应新增 tier（1/2/3）。旧服务端无该字段 → 不改本地等级（旧票据默认 3）。
+            boolean tierPresent = data.has("tier");
+            int tier = data.optInt("tier", LicenseConfig.TIER_DEFAULT);
+            LicenseState s = applyVerifySuccess(status, type, expireAt, r.serverTime, tier, tierPresent);
             callback(cb, s, s.usable() ? "校验成功" : reasonFor(s));
             return;
         }
@@ -503,11 +538,16 @@ public class LicenseManager {
      * 早先把非 revoked 一律写成 active，导致 DEVICE_MISMATCH / EXPIRED 只在本次内存态
      * 生效、落盘即丢，重启后「意外复活」。现由 {@link #computeState()} 按 D4 优先级映射。
      */
-    private LicenseState applyVerifySuccess(String status, String type, long expireAt, long serverTime) {
+    private LicenseState applyVerifySuccess(String status, String type, long expireAt, long serverTime,
+                                            int tier, boolean tierPresent) {
         synchronized (lock) {
             if (ticket == null) return LicenseState.UNACTIVATED;
             if (type != null && !type.isEmpty()) {
                 ticket.type = type;
+            }
+            // 批次7：服务端下发 tier 才覆盖（旧服务端/旧票据保持原值；非法值归一化为 3）。
+            if (tierPresent) {
+                ticket.tier = LicenseConfig.normalizeTier(tier);
             }
             if (!LicenseConfig.TYPE_PERMANENT.equals(ticket.type)) {
                 ticket.expireAt = expireAt;

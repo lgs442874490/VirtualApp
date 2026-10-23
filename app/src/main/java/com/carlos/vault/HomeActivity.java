@@ -249,11 +249,55 @@ public class HomeActivity extends AccountVaultActivity {
         buildTaskPage();
         buildMinePage();
         setContentView(root);
-        switchTab(0);
+        // 批次7 分级门控：T1（普通版）没有今日/日常 Tab，默认落在账号页（分身/启动）
+        switchTab(firstGrantedTab());
+    }
+
+    // ================= 批次7 · 功能分级门控（单一事实源 FeatureGate） =================
+    //
+    // 原则（用户要求）：没有对应权限的功能不要显示；没开发/没立项的功能不要放出去。
+    // 等级：T1 普通=分身（账号/启动/基础设置）；T2 会员=日常脚本（今日/日常/七模块/通知）；
+    //      T3 高级会员=高阶（守护盟友/敌情监控/工具箱）。UI 只调 FeatureGate，不硬编码等级。
+
+    /** 某功能当前是否可见（等级 + 构建类型由 FeatureGate 统一裁决）。 */
+    private boolean gate(FeatureGate.Feature feature) {
+        return FeatureGate.visible(this, feature);
+    }
+
+    /** Tab 是否对该等级开放：今日/日常 = T2；账号/我的 = T1。 */
+    private boolean tabGranted(int which) {
+        switch (which) {
+            case 0:
+                return gate(FeatureGate.Feature.TODAY_TAB);
+            case 2:
+                return gate(FeatureGate.Feature.TASK_TAB);
+            default:
+                return true;   // 账号(T1) / 我的(T1)
+        }
+    }
+
+    /** 当前等级下第一个可见 Tab（T1 默认账号页）。 */
+    private int firstGrantedTab() {
+        for (int i = 0; i < 4; i++) {
+            if (tabGranted(i)) return i;
+        }
+        return 1;
+    }
+
+    /** 日常功能列表过滤：高阶功能（守护盟友=T3）在低等级不渲染；未开发功能本就不在 FnRegistry。 */
+    private List<FnRegistry.Fn> gateFns(List<FnRegistry.Fn> in) {
+        if (in == null || in.isEmpty()) return in;
+        List<FnRegistry.Fn> out = new ArrayList<>();
+        for (FnRegistry.Fn fn : in) {
+            if (FeatureGate.dailyFnVisible(this, fn.id)) out.add(fn);
+        }
+        return out;
     }
 
     @Override
     protected void addMainMenuExtras(LinearLayout box, LinearLayout.LayoutParams rowLp) {
+        // 批次7：一键帮助全盟属日常自动化（T2），普通版不渲染
+        if (!gate(FeatureGate.Feature.AID_ALLIANCE)) return;
         box.addView(UiStyle.makeRowBtn(this, "🤝", "一键帮助全盟", UiStyle.BRAND,
                 this::oneKeyHelpAll), rowLp);
     }
@@ -344,7 +388,12 @@ public class HomeActivity extends AccountVaultActivity {
         String[] names = {"今日", "账号", "日常", "我的"};
         int[] icons = {UiStyle.Icon.HOME, UiStyle.Icon.USERS,
                 UiStyle.Icon.CHECKLIST, UiStyle.Icon.USER};
+        // 批次7：无权限的 Tab 不渲染（T1 只保留 账号/我的；今日/日常为 T2 会员功能）
+        FeatureGate.Feature[] tabFeatures = {FeatureGate.Feature.TODAY_TAB,
+                FeatureGate.Feature.ACCOUNT_POOL, FeatureGate.Feature.TASK_TAB,
+                FeatureGate.Feature.BASIC_SETTINGS};
         for (int i = 0; i < 4; i++) {
+            if (!gate(tabFeatures[i])) continue;
             final int idx = i;
             LinearLayout item = new LinearLayout(this);
             item.setOrientation(LinearLayout.VERTICAL);
@@ -381,9 +430,13 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     private void switchTab(int which) {
+        // 批次7：无权限 Tab 不可进入（防御：Tab 已不渲染，仍可能有旧状态/深链调用）
+        if (!tabGranted(which)) which = firstGrantedTab();
         currentTab = which;
         for (int i = 0; i < 4; i++) {
             pages[i].setVisibility(i == which ? View.VISIBLE : View.GONE);
+            // 批次7：无权限 Tab 未渲染（nav 三元组为 null），只切页面可见性
+            if (navPills[i] == null || navItems[i] == null) continue;
             boolean sel = i == which;
             GradientDrawable pill = new GradientDrawable();
             pill.setCornerRadius(dp(26));
@@ -413,6 +466,8 @@ public class HomeActivity extends AccountVaultActivity {
      */
     private void startPoolPolling() {
         if (!VaultSync.isServerMode(this)) return;
+        // 批次7：账号池在线状态/批量登录属 T2 会员能力，普通版不做轮询（也不显示状态说明）
+        if (!gate(FeatureGate.Feature.AUTOMATION_STATUS)) return;
         if (poolPolling) return;
         poolPolling = true;
         poolHandler.removeCallbacks(poolTick);
@@ -726,6 +781,8 @@ public class HomeActivity extends AccountVaultActivity {
         String[] qActs = {"daily", "switch", "log", "tools"};
         for (int qi = 0; qi < qLabels.length; qi++) {
             final String act = qActs[qi];
+            // 批次7：工具箱含 T3 高阶（敌情监控）与调试工具 → 无权限/无可用工具时不渲染
+            if ("tools".equals(act) && !gate(FeatureGate.Feature.TOOLBOX)) continue;
             LinearLayout cell = UiStyle.outlineCard(this);
             cell.setOrientation(LinearLayout.VERTICAL);
             cell.setGravity(Gravity.CENTER);
@@ -838,7 +895,13 @@ public class HomeActivity extends AccountVaultActivity {
         switch (which) {
             case "daily": openDaily(firstWorkspace(), null); break;
             case "log": showRunLog(); break;
-            case "tools": openToolBox(); break;
+            case "tools":
+                if (!gate(FeatureGate.Feature.TOOLBOX)) {
+                    toast(FeatureGate.reasonText(FeatureGate.Feature.TOOLBOX));
+                    return;
+                }
+                openToolBox();
+                break;
             case "wizard": showWizard(); break;
         }
     }
@@ -2088,6 +2151,9 @@ public class HomeActivity extends AccountVaultActivity {
         top.setLayoutParams(tlp);
 
         // 批量条（M2 契约 §3.1）：[全部上线/全部停止] + 进度文案 + [刷新]
+        // 批次7：服务器会话批量属 T2 会员功能；T1（普通版）不渲染（仅保留分身链路）
+        final boolean canAutomation = gate(FeatureGate.Feature.AUTOMATION_STATUS);
+        if (canAutomation) {
         LinearLayout poolBar = new LinearLayout(this);
         poolBar.setOrientation(LinearLayout.HORIZONTAL);
         poolBar.setGravity(Gravity.CENTER_VERTICAL);
@@ -2120,8 +2186,11 @@ public class HomeActivity extends AccountVaultActivity {
         });
         poolBar.addView(poolBarRefresh, rlp2);
         box.addView(poolBar);
+        }   // end T2 batch bar
 
         // stale 横幅：上次状态获取失败 → 保留上次状态展示 +「点击重试」（不误判离线）
+        // 批次7：账号池状态属 T2；T1 不做池轮询也不渲染横幅
+        if (canAutomation) {
         poolBanner = new TextView(this);
         poolBanner.setText("状态获取失败，点击重试");
         poolBanner.setTextSize(11.5f);
@@ -2136,6 +2205,7 @@ public class HomeActivity extends AccountVaultActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         blp2.bottomMargin = dp(8);
         poolBanner.setLayoutParams(blp2);
+        }   // end T2 pool banner
 
         LinearLayout searchBox = new LinearLayout(this);
         searchBox.setOrientation(LinearLayout.HORIZONTAL);
@@ -2444,21 +2514,34 @@ public class HomeActivity extends AccountVaultActivity {
         // 标题统一标准展示（昵称 + UID/城堡/战力，缺失段「未同步」）——不再用「同服第N角色」
         String title = RoleDisplay.roleName(r.name)
                 + " · " + RoleDisplay.roleMetaLine(r.serverid, r.uid, r.level, r.power);
+        // 批次7：跑日常/日常详情 = T2 会员；T1（普通版）只保留「启动游戏 + 工作区」分身链路
+        final boolean canScript = gate(FeatureGate.Feature.AUTOMATION_STATUS);
+        final java.util.List<String> items = new ArrayList<>();
+        if (canScript) {
+            items.add("▶ 跑日常（该角色）");
+            items.add("📋 日常详情");
+        }
+        items.add("🖥 启动游戏（该角色）");
+        items.add("🖥 启动游戏（整个账号）");
+        items.add(r.enabled ? "移出工作区" : "纳入工作区");
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle(title)
-                .setItems(new String[]{"▶ 跑日常（该角色）", "📋 日常详情",
-                        "🖥 启动游戏（该角色）", "🖥 启动游戏（整个账号）",
-                        r.enabled ? "移出工作区" : "纳入工作区"}, (d, w) -> {
-                    switch (w) {
-                        case 0: runRole(a, r.serverid, r.uid); break;
-                        case 1: openFnDetail(a, "daily_mission", r.serverid); break;
-                        case 2: launchRole(a, r); break;
-                        case 3: doSwitch(a); break;
-                        case 4:
+                .setItems(items.toArray(new String[0]), (d, w) -> {
+                    int idx = w;
+                    if (canScript) {
+                        if (idx == 0) { runRole(a, r.serverid, r.uid); return; }
+                        if (idx == 1) { openFnDetail(a, "daily_mission", r.serverid); return; }
+                        idx -= 2;
+                    }
+                    switch (idx) {
+                        case 0: launchRole(a, r); break;
+                        case 1: doSwitch(a); break;
+                        case 2:
                             RoleStore.setEnabled(this, a.fpid, r.serverid, r.uid, !r.enabled);
                             VaultSync.onAccountsChanged(this);
                             refreshAccounts();
                             break;
+                        default: break;
                     }
                 })
                 .setNegativeButton("取消", null)
@@ -2466,20 +2549,34 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     private void accountMenu(final AccountStore.Account a) {
+        // 批次7：登录并运行自动化/每日任务/恢复设置 = T2 会员；T1 只保留启动与账号管理
+        final boolean canScript = gate(FeatureGate.Feature.AUTOMATION_STATUS);
+        final java.util.List<String> items = new ArrayList<>();
+        if (canScript) {
+            items.add("⏻ 登录并运行自动化");
+            items.add("🎁 每日任务（进度/领取）");
+        }
+        items.add("▶ 启动游戏");
+        items.add("👥 角色管理");
+        if (canScript) items.add("⏱ 恢复设置");
+        items.add("⇅ 排序（旧视图）");
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle(a.label)
-                .setItems(new String[]{"⏻ 登录并运行自动化", "🎁 每日任务（进度/领取）",
-                        "▶ 启动游戏", "👥 角色管理", "⏱ 恢复设置", "⇅ 排序（旧视图）"}, (d, w) -> {
-                    switch (w) {
-                        case 0: loginAndRun(a, null); break;
-                        case 1: openDaily(a, null); break;
-                        case 2: doSwitch(a); break;
-                        case 3:
-                            showRoleManager(a, RoleStore.roles(this, a.fpid), accountOnline(a));
-                            break;
-                        case 4: showRecoverySettingsDialog(a); break;
-                        case 5: openOld(); break;
+                .setItems(items.toArray(new String[0]), (d, w) -> {
+                    int idx = w;
+                    if (canScript) {
+                        if (idx == 0) { loginAndRun(a, null); return; }
+                        if (idx == 1) { openDaily(a, null); return; }
+                        idx -= 2;
                     }
+                    int base = 0;   // 非会员：启动游戏 / 角色管理 / 排序
+                    if (idx == base) { doSwitch(a); return; }
+                    if (idx == base + 1) {
+                        showRoleManager(a, RoleStore.roles(this, a.fpid), accountOnline(a));
+                        return;
+                    }
+                    if (canScript && idx == base + 2) { showRecoverySettingsDialog(a); return; }
+                    openOld();
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -2713,9 +2810,10 @@ public class HomeActivity extends AccountVaultActivity {
         int onCnt = 0;
         for (Boolean b : fOnline.values()) if (Boolean.TRUE.equals(b)) onCnt++;
         if (fServerOnline >= 0) onCnt = fServerOnline;
-        if (accountCap != null)
-            accountCap.setText(accounts.size() + " 个账号 · 工作区 " + wsRoleCnt
-                    + " · " + onCnt + " 个在线");
+        // 批次7：在线统计来自服务器账号池（T2 会员能力）；T1 只显示账号数/工作区（分身链路）
+        String capText = accounts.size() + " 个账号 · 工作区 " + wsRoleCnt;
+        if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) capText += " · " + onCnt + " 个在线";
+        if (accountCap != null) accountCap.setText(capText);
         hideAccMask();   // 最新一轮已渲染，无论它是否 show 过遮罩都撤（防残留挡屏）
             });
           } catch (final Throwable t) {
@@ -3096,13 +3194,16 @@ public class HomeActivity extends AccountVaultActivity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
         // ⏱ 恢复设置（P1 契约 §三.3）：顶号自动恢复策略（账号级，作用于全部角色）
-        LinearLayout recPill = headerPill("恢复设置", UiStyle.Icon.CLOCK,
-                UiStyle.INK2, UiStyle.SURFACE_3, UiStyle.LINE_STRONG);
-        recPill.setOnClickListener(v -> showRecoverySettingsDialog(a));
-        LinearLayout.LayoutParams rplp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rplp.rightMargin = dp(6);
-        head.addView(recPill, rplp);
+        // 批次7：属服务器自动化（T2），普通版不渲染
+        if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
+            LinearLayout recPill = headerPill("恢复设置", UiStyle.Icon.CLOCK,
+                    UiStyle.INK2, UiStyle.SURFACE_3, UiStyle.LINE_STRONG);
+            recPill.setOnClickListener(v -> showRecoverySettingsDialog(a));
+            LinearLayout.LayoutParams rplp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rplp.rightMargin = dp(6);
+            head.addView(recPill, rplp);
+        }
 
         // ⚙ 角色管理：唯一的管理入口之一（另一个 = 点角色行）。卡片其它区域不响应，避免误触弹层。
         // 图标为程序化矢量 Icon（文本字符会随机型字体异形）。
@@ -3145,23 +3246,26 @@ public class HomeActivity extends AccountVaultActivity {
             secH.addView(l, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
             // 账号级批量（M2 契约 §3.1 组头「全部上线/全部停止」= 工作区角色批量）
+            // 批次7：服务器会话批量属日常自动化（T2），普通版只保留「启动分身」入口
             boolean accBusy = poolAccBusy.contains(a.fpid);
-            TextView accLoginAll = poolMiniBtn(accBusy ? "执行中" : "全部上线",
-                    UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
-            accLoginAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_LOGIN_ALL));
-            secH.addView(accLoginAll);
-            TextView accStopAll = poolMiniBtn(accBusy ? "执行中" : "全部停止",
-                    UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
-            LinearLayout.LayoutParams aslp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            aslp.leftMargin = dp(6);
-            secH.addView(accStopAll, aslp);
-            accStopAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_STOP_ALL));
-            if (accBusy) {
-                accLoginAll.setEnabled(false);
-                accStopAll.setEnabled(false);
-                accLoginAll.setAlpha(.5f);
-                accStopAll.setAlpha(.5f);
+            if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
+                TextView accLoginAll = poolMiniBtn(accBusy ? "执行中" : "全部上线",
+                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+                accLoginAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_LOGIN_ALL));
+                secH.addView(accLoginAll);
+                TextView accStopAll = poolMiniBtn(accBusy ? "执行中" : "全部停止",
+                        UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
+                LinearLayout.LayoutParams aslp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                aslp.leftMargin = dp(6);
+                secH.addView(accStopAll, aslp);
+                accStopAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_STOP_ALL));
+                if (accBusy) {
+                    accLoginAll.setEnabled(false);
+                    accStopAll.setEnabled(false);
+                    accLoginAll.setAlpha(.5f);
+                    accStopAll.setAlpha(.5f);
+                }
             }
             box.addView(secH);
             box.addView(roleTableHead());
@@ -3296,7 +3400,8 @@ public class HomeActivity extends AccountVaultActivity {
         abBox.setLayoutParams(new LinearLayout.LayoutParams(dp(COL_AB),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
         row.addView(abBox);
-        if (poolRole != null && poolState != null && !poolState.degraded) {
+        if (gate(FeatureGate.Feature.AUTOMATION_STATUS)
+                && poolRole != null && poolState != null && !poolState.degraded) {
             final boolean abOn = com.carlos.vault.AccountPoolCache.antibanOf(poolRole);
             if (!poolState.enabled) {
                 // 已收纳：开关随行置灰禁点（契约 §三.4）
@@ -3328,7 +3433,14 @@ public class HomeActivity extends AccountVaultActivity {
         LinearLayout.LayoutParams goblp = new LinearLayout.LayoutParams(dp(COL_GO),
                 ViewGroup.LayoutParams.WRAP_CONTENT);
         row.addView(goBox, goblp);
-        if (poolState != null && !poolState.degraded && poolState.enabled && !roleBusy) {
+        // 批次7：T1（普通版）账户页只提供「启动分身」入口 —— 复用既有 launchRole
+        // （内部走 VaultEngine/EntryDetail 启动链路，不新造协议）；上线/暂停/停止属 T2 服务器自动化。
+        if (!gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
+            TextView launch = poolMiniBtn("启动",
+                    UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+            launch.setOnClickListener(v -> launchRole(a, r));
+            goBox.addView(launch);
+        } else if (poolState != null && !poolState.degraded && poolState.enabled && !roleBusy) {
             if (poolState.online) {
                 // 在线 → [暂停][停止]
                 TextView pauseBtn = poolMiniBtn("暂停",
@@ -4363,8 +4475,10 @@ public class HomeActivity extends AccountVaultActivity {
         Map<String, Boolean> cfg = cfgStore.roleConfig(taskAccount.fpid, sid);
 
         // 顶栏 caption：N 项功能 · 已启用 M；横幅：工作区角色数 + 自动日常开关态
-        int total = FnRegistry.all().size(), enabled = 0;
-        for (FnRegistry.Fn fn : FnRegistry.all()) {
+        // 批次7：先按等级过滤（守护盟友=T3），无权限的功能不计入总数/不渲染
+        List<FnRegistry.Fn> allVisibleFns = gateFns(FnRegistry.all());
+        int total = allVisibleFns.size(), enabled = 0;
+        for (FnRegistry.Fn fn : allVisibleFns) {
             Boolean on = cfg == null ? null : cfg.get(fn.id);
             if (on == null ? (fn.implemented && defOn(fn.id)) : on) enabled++;
         }
@@ -4426,25 +4540,27 @@ public class HomeActivity extends AccountVaultActivity {
         // 列表来源：搜索态=跨分类过滤结果；否则=当前分类；常用区仅在浏览态置顶渲染
         List<FnRegistry.Fn> list;
         if (taskQuery.isEmpty()) {
-            list = FnRegistry.byCategory(taskCat);
+            list = gateFns(FnRegistry.byCategory(taskCat));
             if (searchCap != null) searchCap.setVisibility(View.GONE);
             if (searchClear != null) searchClear.setVisibility(View.GONE);
             if (!favFns.isEmpty()) {
                 taskRows.addView(favSectionHeader());
                 int fi = 0;
+                boolean toolsRow = gate(FeatureGate.Feature.TOOLBOX);
                 for (String fid : new ArrayList<>(favFns)) {
                     FnRegistry.Fn f = FnRegistry.byId(fid);
                     if (f == null) continue;   // 已下线功能：静默跳过
+                    if (!FeatureGate.dailyFnVisible(this, f.id)) continue;   // 批次7：无权限功能不渲染
                     taskRows.addView(favRow(f, ls, sid));
                     fi++;
-                    if (fi == 4) taskRows.addView(toolsFavRow());
+                    if (fi == 4 && toolsRow) taskRows.addView(toolsFavRow());
                 }
-                if (fi < 4) taskRows.addView(toolsFavRow());
+                if (fi < 4 && toolsRow) taskRows.addView(toolsFavRow());
             }
         } else {
             String q = taskQuery.toLowerCase();
             list = new ArrayList<>();
-            for (FnRegistry.Fn f : FnRegistry.all()) {
+            for (FnRegistry.Fn f : allVisibleFns) {
                 if (f.name.toLowerCase().contains(q) || f.id.toLowerCase().contains(q)) list.add(f);
             }
             if (searchCap != null) {
@@ -4661,7 +4777,8 @@ public class HomeActivity extends AccountVaultActivity {
         name.setTextColor(UiStyle.INK);
         mid.addView(name);
         TextView sub = new TextView(this);
-        sub.setText("排行榜 · 迁城 · 三消等 14 项");
+        // 批次7：历史上写的“排行榜·迁城·三消等 14 项”全部未立项/未开发，已下架，不再宣传
+        sub.setText("敌情监控 · 协议诊断");
         sub.setTextSize(11.5f);
         sub.setTextColor(UiStyle.INK2);
         sub.setPadding(0, dp(3), 0, 0);
@@ -4771,6 +4888,11 @@ public class HomeActivity extends AccountVaultActivity {
      * 替代旧版「文字列表对话框」。实现已整体迁入 {@link ToolBoxActivity}，此处只做跳转。
      */
     private void openToolBox() {
+        // 批次7：工具箱含 T3 高阶（敌情监控）与调试工具，无权限时不放行（防御深链/旧入口）
+        if (!gate(FeatureGate.Feature.TOOLBOX)) {
+            toast(FeatureGate.reasonText(FeatureGate.Feature.TOOLBOX));
+            return;
+        }
         try {
             startActivity(new android.content.Intent(this, ToolBoxActivity.class));
         } catch (Throwable t) {
@@ -4830,7 +4952,8 @@ public class HomeActivity extends AccountVaultActivity {
         licTop.setOrientation(LinearLayout.HORIZONTAL);
         licTop.setGravity(Gravity.CENTER_VERTICAL);
         TextView plan = new TextView(this);
-        plan.setText("专业版授权");
+        // 批次7：授权卡显示当前兑换码等级（T1 普通 / T2 会员 / T3 高级会员）
+        plan.setText(FeatureGate.tierName(FeatureGate.currentTier(this)) + "授权");
         plan.setTextSize(16);
         plan.setTypeface(Typeface.DEFAULT_BOLD);
         plan.setTextColor(UiStyle.WHITE);
@@ -4921,14 +5044,25 @@ public class HomeActivity extends AccountVaultActivity {
         manage.setOnClickListener(v -> showLicenseMenu());
         lic.addView(manage);
 
-        box.addView(UiStyle.sectionTitle(this, "运行"));
-        box.addView(mineRowIcon(UiStyle.Icon.BELL, "战争通知",
-                "敌情监视 · 企微机器人 · 短信", () ->
-                        startActivity(new android.content.Intent(this, NotifySettingsActivity.class))));
-        box.addView(mineRowIcon(UiStyle.Icon.PLAY, "执行进度",
-                "当前/最近一轮的账号与逐号结果", this::showRunPanel));
-        box.addView(mineRowIcon(UiStyle.Icon.DOC, "执行日志", "保留最近 200 条",
-                this::showRunLog));
+        // ===== 批次7 分级门控：运行/高级功能按 tier 分组显示（无权限的入口不渲染） =====
+        boolean member = gate(FeatureGate.Feature.AUTOMATION_STATUS);   // T2：自动化观测
+        boolean premium = gate(FeatureGate.Feature.ENEMY_WATCH);        // T3：敌情监控
+        if (member || premium) {
+            box.addView(UiStyle.sectionTitle(this, premium ? "运行与高级功能" : "运行"));
+        }
+        if (premium) {
+            box.addView(mineRowIcon(UiStyle.Icon.BELL, "敌情监控",
+                    "监视名单 · 企微机器人 · 短信", () ->
+                            startActivity(new android.content.Intent(this, NotifySettingsActivity.class))));
+            box.addView(mineRowIcon(UiStyle.Icon.GRID, "工具箱",
+                    "敌情监控 · 诊断工具", this::openToolBox));
+        }
+        if (member) {
+            box.addView(mineRowIcon(UiStyle.Icon.PLAY, "执行进度",
+                    "当前/最近一轮的账号与逐号结果", this::showRunPanel));
+            box.addView(mineRowIcon(UiStyle.Icon.DOC, "执行日志", "保留最近 200 条",
+                    this::showRunLog));
+        }
         box.addView(mineRowIcon(UiStyle.Icon.DOC, "崩溃日志",
                 "最近崩溃现场 · 可复制", this::showCrashLog));
 
@@ -4937,8 +5071,6 @@ public class HomeActivity extends AccountVaultActivity {
                 this::openOld));
         box.addView(mineRowIcon(UiStyle.Icon.UPLOAD, "批量导入导出", "token · 分组",
                 this::showBatchImport));
-        box.addView(mineRowIcon(UiStyle.Icon.TRASH, "清理缓存", "可释放调试缓存",
-                () -> toast("缓存清理将在下一版提供")));
 
         box.addView(UiStyle.sectionTitle(this, "容器与初始化"));
         box.addView(mineRowIcon(UiStyle.Icon.COMPASS, "初始化向导",
@@ -4947,18 +5079,23 @@ public class HomeActivity extends AccountVaultActivity {
                 () -> onWizardStep(0)));
         box.addView(mineRowIcon(UiStyle.Icon.CLOUD, "微信支付", "容器微信登录 / 充值",
                 this::doWechatPay));
-        box.addView(mineRowIcon(UiStyle.Icon.SHIELD, "顶号策略",
-                "协议会话被游戏客户端顶下线时怎么办", this::showTakeoverPolicyPicker));
-        box.addView(mineRowIcon(UiStyle.Icon.CLOUD, "服务器模式",
-                (VaultSync.isServerMode(this) ? "已开启 · " : "未开启 · ")
-                        + "自动化跑在服务器", this::showServerModePicker));
+        // 批次7：顶号策略/服务器模式依赖服务端会话保活 = T2 会员能力，普通版不渲染
+        if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
+            box.addView(mineRowIcon(UiStyle.Icon.SHIELD, "顶号策略",
+                    "协议会话被游戏客户端顶下线时怎么办", this::showTakeoverPolicyPicker));
+            box.addView(mineRowIcon(UiStyle.Icon.CLOUD, "服务器模式",
+                    (VaultSync.isServerMode(this) ? "已开启 · " : "未开启 · ")
+                            + "自动化跑在服务器", this::showServerModePicker));
+        }
         box.addView(buildHotUpdateRow());
-        box.addView(mineRowIcon(UiStyle.Icon.CLOCK, "定时与保活",
-                "前台服务 · 精确闹钟 · 通知唤醒", () -> {
-                    AccountStore.Account cur = firstWorkspace();
-                    if (cur != null) openDaily(cur, null);
-                    toast("在弹出页顶部设置自动日常");
-                }));
+        if (gate(FeatureGate.Feature.KEEP_ALIVE)) {
+            box.addView(mineRowIcon(UiStyle.Icon.CLOCK, "定时与保活",
+                    "前台服务 · 精确闹钟 · 通知唤醒", () -> {
+                        AccountStore.Account cur = firstWorkspace();
+                        if (cur != null) openDaily(cur, null);
+                        toast("在弹出页顶部设置自动日常");
+                    }));
+        }
 
         box.addView(UiStyle.sectionTitle(this, "账号管理"));
         box.addView(mineRowIcon(UiStyle.Icon.PLUS, "新增账号", "手动添加一个账号",
@@ -5345,6 +5482,11 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 全部"日常"入口统一去功能详情页；moduleId 空 = 每日任务页（旧日常页已废弃）。 */
     private void openDaily(AccountStore.Account a, String moduleId) {
+        // 批次7：任务/日常配置属会员（T2）功能，普通版不进入（防御旧入口/深链）
+        if (!gate(FeatureGate.Feature.DAILY_CONFIG)) {
+            toast(FeatureGate.reasonText(FeatureGate.Feature.DAILY_CONFIG));
+            return;
+        }
         if (a == null) {
             toast("没有可用账号");
             return;
@@ -5361,6 +5503,16 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 指定角色的功能详情页（角色级入口）。 */
     private void openFnDetail(AccountStore.Account a, String fnId, long sid) {
+        // 批次7：日常配置入口二次校验（T2 页面级 + 单功能矩阵；防旧入口/深链旁路）
+        if (!gate(FeatureGate.Feature.DAILY_CONFIG)) {
+            toast(FeatureGate.reasonText(FeatureGate.Feature.DAILY_CONFIG));
+            return;
+        }
+        FeatureGate.Feature fnGate = FeatureGate.dailyFnFeature(fnId);
+        if (fnGate != null && !gate(fnGate)) {
+            toast(FeatureGate.reasonText(fnGate));
+            return;
+        }
         if (a == null) {
             toast("没有可用账号");
             return;
@@ -5409,18 +5561,20 @@ public class HomeActivity extends AccountVaultActivity {
         t.setTextColor(UiStyle.WHITE);
         batchBar.addView(t, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        // 跑日常
-        TextView run = batchBtn("跑日常", UiStyle.WHITE_14, UiStyle.WHITE);
-        UiStyle.press(run);
-        run.setOnClickListener(v -> {
-            List<AccountStore.Account> sel = new ArrayList<>();
-            for (AccountStore.Account a : accounts) {
-                if (selectedAccounts.contains(a.id)) sel.add(a);
-            }
-            selectedAccounts.clear();
-            runList(sel);
-        });
-        batchBar.addView(run);
+        // 跑日常（批次7：日常脚本属 T2，普通版不渲染该按钮）
+        if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
+            TextView run = batchBtn("跑日常", UiStyle.WHITE_14, UiStyle.WHITE);
+            UiStyle.press(run);
+            run.setOnClickListener(v -> {
+                List<AccountStore.Account> sel = new ArrayList<>();
+                for (AccountStore.Account a : accounts) {
+                    if (selectedAccounts.contains(a.id)) sel.add(a);
+                }
+                selectedAccounts.clear();
+                runList(sel);
+            });
+            batchBar.addView(run);
+        }
         // 导出：账号名 + fpid 文本复制到剪贴板
         TextView exp = batchBtn("导出", UiStyle.WHITE_14, UiStyle.WHITE);
         UiStyle.press(exp);

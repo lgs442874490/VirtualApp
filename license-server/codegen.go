@@ -107,3 +107,35 @@ func codeHash(code string) string {
 	sum := sha256.Sum256([]byte(code))
 	return hex.EncodeToString(sum[:])
 }
+
+// ---------------------------------------------------------------------------
+// 授权等级（tier，批次7 三级权限）
+// ---------------------------------------------------------------------------
+
+// parseTier 解析发码等级参数（--tier）：1|2|3；同时接受 basic/member/premium 别名，
+// 空串按 TierDefault（=3，存量兼容）。返回非法时给出可读错误。
+//
+// 说明：等级只影响功能授权范围，与码类型（month/permanent）正交，不涉及金额/花钻逻辑。
+func parseTier(s string) (int, error) {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "", "3", "premium", "t3":
+		return TierPremium, nil
+	case "1", "basic", "t1":
+		return TierBasic, nil
+	case "2", "member", "t2":
+		return TierMember, nil
+	}
+	return 0, fmt.Errorf("--tier 只能是 1|2|3（1=普通/2=会员/3=高级会员），收到 %q", s)
+}
+
+// tierName 等级中文名（CLI 表格/日志用）。
+func tierName(t int) string {
+	switch normalizeTier(t) {
+	case TierBasic:
+		return "普通"
+	case TierMember:
+		return "会员"
+	default:
+		return "高级会员"
+	}
+}

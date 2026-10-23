@@ -62,14 +62,54 @@ func splitSQL(script string) []string {
 	return stmts
 }
 
-// initSchema 幂等执行建表脚本（全部使用 IF NOT EXISTS，可重复执行）。
+// initSchema 幂等执行建表脚本（全部使用 IF NOT EXISTS，可重复执行），
+// 并对**已存在**的旧库做增量迁移（CREATE TABLE IF NOT EXISTS 不会给旧表补列）。
 func initSchema(db *sql.DB) error {
 	for _, stmt := range splitSQL(schemaSQL) {
 		if _, err := db.Exec(stmt); err != nil {
 			return fmt.Errorf("执行建表语句失败 [%s]: %w", firstLine(stmt), err)
 		}
 	}
+	// 批次7 三级权限：旧库补 license_code.tier（存量码 DEFAULT 3 = 高级会员，不伤害现有用户）。
+	// ensureColumn 幂等：列已存在（新库/已迁移库）直接跳过。
+	if err := ensureColumn(db, "license_code", "tier", "tier INTEGER NOT NULL DEFAULT 3"); err != nil {
+		return fmt.Errorf("迁移 license_code.tier 失败: %w", err)
+	}
 	return nil
+}
+
+// ensureColumn 幂等补列（SQLite 旧库迁移）：通过 PRAGMA table_info 判断列是否存在，
+// 不存在才执行 `ALTER TABLE <table> ADD COLUMN <addColumnDDL>`。
+//
+// 说明：SQLite 的 ADD COLUMN 不能添加带非常量默认值/NOT NULL 无默认值的列；这里的
+// tier 是常量 DEFAULT 3，语法合法且对存量行回填 3（= 三级权限里的高级会员，兼容旧用户）。
+func ensureColumn(db *sql.DB, table, column, addColumnDDL string) error {
+	rows, err := db.Query(`PRAGMA table_info(` + table + `)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			cid       int
+			name      string
+			ctype     string
+			notNull   int
+			dfltValue sql.NullString
+			pk        int
+		)
+		if err := rows.Scan(&cid, &name, &ctype, &notNull, &dfltValue, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil // 列已存在：幂等跳过
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + addColumnDDL)
+	return err
 }
 
 // firstLine 返回语句首行，用于错误提示。
@@ -84,13 +124,13 @@ func firstLine(s string) string {
 // license_code 相关查询
 // ---------------------------------------------------------------------------
 
-const codeColumns = `id, code, code_hash, type, duration_days, status, remark, created_at,
+const codeColumns = `id, code, code_hash, type, tier, duration_days, status, remark, created_at,
 	activated_at, expire_at, revoked_at, revoke_reason, created_by`
 
 // scanCode 从一行扫描出 LicenseCode。
 func scanCode(sc interface{ Scan(...interface{}) error }) (*LicenseCode, error) {
 	var c LicenseCode
-	err := sc.Scan(&c.ID, &c.Code, &c.CodeHash, &c.Type, &c.DurationDays, &c.Status, &c.Remark,
+	err := sc.Scan(&c.ID, &c.Code, &c.CodeHash, &c.Type, &c.Tier, &c.DurationDays, &c.Status, &c.Remark,
 		&c.CreatedAt, &c.ActivatedAt, &c.ExpireAt, &c.RevokedAt, &c.RevokeReason, &c.CreatedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -113,12 +153,20 @@ func getCodeByID(db *sql.DB, id int64) (*LicenseCode, error) {
 	return scanCode(row)
 }
 
-// insertCode 插入一条新兑换码，返回自增主键。
+// insertCode 插入一条新兑换码（等级取默认 TierPremium=3，存量兼容）。
+// 返回自增主键。需要显式等级的新码请用 insertCodeWithTier。
 func insertCode(db *sql.DB, code, typ string, durationDays int64, remark, createdBy string, now int64) (int64, error) {
+	return insertCodeWithTier(db, code, typ, TierDefault, durationDays, remark, createdBy, now)
+}
+
+// insertCodeWithTier 插入一条指定等级（1/2/3）的新兑换码，返回自增主键。
+// tier 非法（0/负/超界）由 DB CHECK 拒绝——CLI 层已用 parseTier 校验并给出可读错误。
+func insertCodeWithTier(db *sql.DB, code, typ string, tier int, durationDays int64,
+	remark, createdBy string, now int64) (int64, error) {
 	res, err := db.Exec(`INSERT INTO license_code
-		(code, code_hash, type, duration_days, status, remark, created_at, created_by)
-		VALUES (?, ?, ?, ?, 'active', ?, ?, ?)`,
-		code, codeHash(code), typ, durationDays, remark, now, createdBy)
+		(code, code_hash, type, tier, duration_days, status, remark, created_at, created_by)
+		VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+		code, codeHash(code), typ, normalizeTier(tier), durationDays, remark, now, createdBy)
 	if err != nil {
 		return 0, err
 	}
@@ -201,9 +249,9 @@ func markBindingUnbound(db *sql.DB, bindingID int64) error {
 type bindState int
 
 const (
-	bindFirst    bindState = iota // 本次完成首次绑定（拿到首绑权）
-	bindSame                      // 已存在同机 active 绑定（幂等成功）
-	bindOther                     // 已绑定其他设备（拒绝）
+	bindFirst bindState = iota // 本次完成首次绑定（拿到首绑权）
+	bindSame                   // 已存在同机 active 绑定（幂等成功）
+	bindOther                  // 已绑定其他设备（拒绝）
 )
 
 // bindDeviceAtomic 原子完成"一码一机"判定与首绑写入。

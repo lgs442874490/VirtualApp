@@ -314,6 +314,7 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request, body []byte)
 		TicketID:     ticketIDFor(c.ID, req.DeviceHash),
 		Code:         c.Code,
 		Type:         c.Type,
+		Tier:         codeTier(c),
 		ActivatedAt:  activatedAt,
 		ExpireAt:     ticketExpireAt,
 		ServerStatus: c.Status,
@@ -432,6 +433,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 	s.writeEnvelope(w, resCode, codeMessage(resCode), VerifyData{
 		Status:        status,
 		Type:          c.Type,
+		Tier:          codeTier(c), // 批次7：客户端按此刷新本地票据等级（1/2/3）
 		ExpireAt:      expireAt,
 		RemainSeconds: remainSeconds,
 		DeviceLabel:   label,

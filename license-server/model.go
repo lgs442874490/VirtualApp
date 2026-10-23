@@ -85,6 +85,39 @@ const (
 	StatusExhausted = "exhausted"
 )
 
+// 授权等级（tier，批次7 三级权限 2026-10-23）：
+//
+//	1 = 普通（只有分身）
+//	2 = 会员（日常脚本）
+//	3 = 高级会员（高阶功能）
+//
+// **存量兼容**：schema `tier INTEGER NOT NULL DEFAULT 3`，旧库迁移补列后存量码一律 3；
+// 未指定等级的旧 CLI/客户端路径也按 TierPremium 处理，绝不降权老用户。
+const (
+	TierBasic   = 1
+	TierMember  = 2
+	TierPremium = 3
+	// TierDefault 缺省等级 = 高级会员（存量码/未指定 tier 的新码）。
+	TierDefault = TierPremium
+)
+
+// normalizeTier 归一化等级：任意 int → 1/2/3 合法集合；0/负/超界/未知值一律按
+// TierPremium（存量兼容，宁可给高不误降权）。DB 侧另有 CHECK (tier IN (1,2,3)) 兜底。
+func normalizeTier(t int) int {
+	if t < TierBasic || t > TierPremium {
+		return TierDefault
+	}
+	return t
+}
+
+// codeTier 取一条码的生效等级（nil 防御；旧数据/零值按 TierDefault）。
+func codeTier(c *LicenseCode) int {
+	if c == nil {
+		return TierDefault
+	}
+	return normalizeTier(int(c.Tier))
+}
+
 // 设备绑定状态
 const (
 	BindingActive  = "active"
@@ -143,6 +176,7 @@ type LicenseCode struct {
 	Code         string
 	CodeHash     string
 	Type         string
+	Tier         int64 // 授权等级 1/2/3（批次7；存量码迁移后默认 3）
 	DurationDays int64
 	Status       string
 	Remark       string
@@ -238,6 +272,7 @@ type Ticket struct {
 	TicketID     string `json:"ticketId"`
 	Code         string `json:"code"`
 	Type         string `json:"type"`
+	Tier         int    `json:"tier"` // 授权等级 1/2/3（批次7；缺省/旧服务端按 3 兼容）
 	ActivatedAt  int64  `json:"activatedAt"`
 	ExpireAt     int64  `json:"expireAt"`
 	ServerStatus string `json:"serverStatus"`
@@ -257,6 +292,7 @@ type HelloData struct {
 type VerifyData struct {
 	Status        string `json:"status,omitempty"`
 	Type          string `json:"type"`
+	Tier          int    `json:"tier"` // 授权等级 1/2/3（批次7；客户端按此刷新本地票据）
 	ExpireAt      int64  `json:"expireAt"`
 	RemainSeconds int64  `json:"remainSeconds"`
 	DeviceLabel   string `json:"deviceLabel"`

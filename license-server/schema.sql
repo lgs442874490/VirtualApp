@@ -10,6 +10,11 @@ CREATE TABLE IF NOT EXISTS license_code (
     code          TEXT    NOT NULL UNIQUE,                 -- 展示码，形如 XXXX-XXXX-XXXX-XXXX
     code_hash     TEXT    NOT NULL UNIQUE,                 -- SHA-256(code) 用于索引/日志脱敏
     type          TEXT    NOT NULL CHECK (type IN ('month','permanent')),
+    -- 授权等级（批次7 三级权限 2026-10-23）：
+    --   1 = 普通（仅分身） / 2 = 会员（日常脚本） / 3 = 高级会员（高阶功能）
+    -- 存量码与未指定等级的新码一律 3（DEFAULT 3），避免伤害现有用户。
+    -- 旧库迁移：db.go ensureColumn("license_code","tier",...) 幂等补列（ALTER TABLE ADD COLUMN）。
+    tier          INTEGER NOT NULL DEFAULT 3 CHECK (tier IN (1,2,3)),
     duration_days INTEGER NOT NULL DEFAULT 30,             -- month=30；permanent 忽略
     status        TEXT    NOT NULL DEFAULT 'active'        -- active | revoked | exhausted
                           CHECK (status IN ('active','revoked','exhausted')),
