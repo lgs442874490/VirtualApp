@@ -81,9 +81,9 @@ public final class FeatureGate {
         ENEMY_WATCH("enemy_watch", TIER_PREMIUM, true, false, "敌情监控"),
         // 工具箱：release 包仅剩敌情监控（T3）与调试工具 → 跟随 T3；T2 无可渲染工具则不显示
         TOOLBOX("toolbox", TIER_PREMIUM, true, false, "工具箱"),
-        // 守护盟友：部分实现（威胁判定/闸门/预驻防可用，自动驻防发射未接服务器，FnRegistry 自述“建设中”）
-        // → 暂不显示（正式 UI 不放半成品）；产品化完成后改 implemented=true 即可上线
-        GUARDIAN("guardian", TIER_PREMIUM, false, false, "守护盟友"),
+        // 守护盟友：T3 高阶（批次11 用户确认放开 UI）。服务端 ServerGuardianEngine/Launcher 已上线：
+        // 默认 enabled=false + dry_run=true（演练模式只记录不派兵），App 配置页显式切换实发（二次确认）。
+        GUARDIAN("guardian", TIER_PREMIUM, true, false, "守护盟友"),
 
         // ===== T3 高级会员：尚未实现（即使 T3 也隐藏，立项完成后再打开） =====
         MOVE_CITY("move_city", TIER_PREMIUM, false, false, "迁城"),

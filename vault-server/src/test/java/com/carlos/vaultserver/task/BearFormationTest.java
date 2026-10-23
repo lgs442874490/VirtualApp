@@ -363,4 +363,262 @@ public class BearFormationTest {
         assertEquals("ROLE", FormationResolver.MODE_ROLE);
         assertEquals("AUTOMATIC", FormationResolver.MODE_AUTOMATIC);
     }
+
+    // ======================= 七、批次11：功能级 soldiers 覆盖（参数 > 库值） =======================
+
+    @Test
+    public void mergeSoldiers_paramOverridesLibrary_fieldWise() {
+        FormationLibrary lib = libWithSoldiers(1L, 100L, 200L, 300L);
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("formation_mode", "ROLE");
+        params.put("formation_id", 1L);
+        params.put("soldiers", soldiersMap(1000L, 0L, 3000L));
+        Map<String, Object> merged = ServerBearTasks.mergeSoldiersForResolve(params, lib);
+        Map<String, Object> got = Exec.mapOf(merged.get("soldiers"));
+        assertNotNull(got);
+        assertEquals("参数覆盖盾兵", 1000L, Exec.longOf(got.get("infantry")));
+        assertEquals("参数 0 → 回退库值（矛）", 200L, Exec.longOf(got.get("lancer")));
+        assertEquals("参数覆盖弓兵", 3000L, Exec.longOf(got.get("marksman")));
+    }
+
+    @Test
+    public void mergeSoldiers_noOverride_usesLibraryValue() {
+        FormationLibrary lib = libWithSoldiers(1L, 100L, 200L, 300L);
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("formation_mode", "ROLE");
+        params.put("formation_id", 1L);
+        Map<String, Object> got = Exec.mapOf(
+                ServerBearTasks.mergeSoldiersForResolve(params, lib).get("soldiers"));
+        assertNotNull("无功能级覆盖 → 注入库值", got);
+        assertEquals(100L, Exec.longOf(got.get("infantry")));
+        assertEquals(200L, Exec.longOf(got.get("lancer")));
+        assertEquals(300L, Exec.longOf(got.get("marksman")));
+    }
+
+    @Test
+    public void mergeSoldiers_autoModeOrNoLib_untouched() {
+        FormationLibrary lib = libWithSoldiers(1L, 100L, 200L, 300L);
+        Map<String, Object> auto = new LinkedHashMap<>();
+        auto.put("formation_mode", "AUTOMATIC");
+        auto.put("formation_id", 1L);
+        assertNull("AUTOMATIC 不注入库兵量（走 ratio/total 自动）",
+                ServerBearTasks.mergeSoldiersForResolve(auto, lib).get("soldiers"));
+        Map<String, Object> noLib = new LinkedHashMap<>();
+        noLib.put("formation_mode", "ROLE");
+        noLib.put("formation_id", 1L);
+        assertNull("无库 → 不注入", ServerBearTasks.mergeSoldiersForResolve(
+                noLib, FormationLibrary.empty()).get("soldiers"));
+        FormationLibrary ratioOnly = FormationLibrary.parse(
+                "{\"formations\":[{\"id\":1,\"hero_ids\":[50041],\"ratio\":{\"infantry\":40}}]}");
+        assertNull("库编队无显式兵量 → 不注入", ServerBearTasks.mergeSoldiersForResolve(
+                noLib, ratioOnly).get("soldiers"));
+        Map<String, Object> paramOnly = new LinkedHashMap<>();
+        paramOnly.put("formation_mode", "ROLE");
+        paramOnly.put("formation_id", 2L);
+        paramOnly.put("soldiers", soldiersMap(5L, 6L, 7L));
+        Map<String, Object> out = ServerBearTasks.mergeSoldiersForResolve(paramOnly, lib);
+        assertEquals("库里没有该编队 id：参数原样保留交给 resolver 校验", 5L,
+                Exec.longOf(Exec.mapOf(out.get("soldiers")).get("infantry")));
+    }
+
+    // ======================= 八、批次11：上车坏槽跳过继续 / disabled 槽 =======================
+
+    @Test
+    public void selectJoinSlots_badSlotSkippedGoodSlotsContinue() {
+        List<ServerBearTasks.JoinFormationConfig> slots = Arrays.asList(
+                joinSlot(1, true, "ROLE", 2L),
+                joinSlot(2, true, "ROLE", 9L),
+                joinSlot(3, false, "ROLE", 2L),
+                joinSlot(4, true, "AUTOMATIC", 0L));
+        ServerBearTasks.JoinSlotSelection sel = ServerBearTasks.selectJoinSlots(slots, slot -> {
+            if (slot.id == 2) {
+                return new ServerBearTasks.JoinSlotPlan(slot, null, "", "编队 #9 不存在或没有英雄");
+            }
+            return new ServerBearTasks.JoinSlotPlan(slot, formation(), "来源=" + slot.mode, "");
+        });
+        assertEquals("坏槽跳过继续：可用槽=#1/#4 保序", Arrays.asList(1, 4), usableSlotIds(sel));
+        assertEquals("disabled 槽 #3 直接跳过", Arrays.asList(3), sel.disabledIds);
+        assertEquals(1, sel.skippedNotes.size());
+        assertTrue("跳过原因可读", sel.skippedNotes.get(0)
+                .contains("上车编队#2 跳过：编队 #9 不存在或没有英雄"));
+        assertFalse(sel.allSkipped());
+    }
+
+    @Test
+    public void selectJoinSlots_allBad_endsWithReadableNotes() {
+        List<ServerBearTasks.JoinFormationConfig> slots = Arrays.asList(
+                joinSlot(1, true, "ROLE", 8L), joinSlot(2, true, "ROLE", 9L));
+        ServerBearTasks.JoinSlotSelection sel = ServerBearTasks.selectJoinSlots(slots,
+                slot -> new ServerBearTasks.JoinSlotPlan(slot, null, "", "兵量超出库存"));
+        assertTrue("全槽失败才结束本场上车", sel.allSkipped());
+        assertEquals(2, sel.skippedNotes.size());
+        String notes = sel.notesText();
+        assertTrue(notes.contains("上车编队#1 跳过：兵量超出库存"));
+        assertTrue(notes.contains("上车编队#2 跳过：兵量超出库存"));
+        assertTrue(sel.disabledIds.isEmpty());
+    }
+
+    @Test
+    public void selectJoinSlots_disabledOnly_noRequestNoFailure() {
+        List<ServerBearTasks.JoinFormationConfig> slots = Arrays.asList(
+                joinSlot(1, false, "ROLE", 2L), joinSlot(2, false, "AUTOMATIC", 0L));
+        ServerBearTasks.JoinSlotSelection sel = ServerBearTasks.selectJoinSlots(slots, slot -> {
+            throw new AssertionError("disabled 槽不应调用解析器（不发请求/不计失败）");
+        });
+        assertTrue(sel.usable.isEmpty());
+        assertEquals(Arrays.asList(1, 2), sel.disabledIds);
+        assertTrue("disabled 槽不产生跳过失败记录", sel.skippedNotes.isEmpty());
+    }
+
+    @Test
+    public void selectJoinSlots_resolverThrows_treatedAsSkipAndContinue() {
+        List<ServerBearTasks.JoinFormationConfig> slots = Arrays.asList(
+                joinSlot(1, true, "ROLE", 2L), joinSlot(2, true, "ROLE", 3L));
+        ServerBearTasks.JoinSlotSelection sel = ServerBearTasks.selectJoinSlots(slots, slot -> {
+            if (slot.id == 1) throw new IllegalStateException("boom");
+            return new ServerBearTasks.JoinSlotPlan(slot, formation(), "ok", "");
+        });
+        assertEquals("异常槽按跳过处理，继续下一槽", Arrays.asList(2), usableSlotIds(sel));
+        assertTrue(sel.skippedNotes.get(0).contains("上车编队#1 跳过"));
+    }
+
+    @Test
+    public void planJoinAttempts_pairsSlotsAndSkipsConflicts() {
+        ServerBearTasks.JoinSlotSelection sel = new ServerBearTasks.JoinSlotSelection();
+        sel.usable.add(joinPlan(1, Arrays.asList(11L, 12L)));
+        sel.usable.add(joinPlan(2, Arrays.asList(21L, 22L)));
+        sel.usable.add(joinPlan(3, Arrays.asList(31L, 32L)));
+        List<ServerBearTasks.RallyCandidate> candidates = Arrays.asList(
+                candidate(100L), candidate(200L), candidate(300L));
+        Set<Long> used = new LinkedHashSet<>(Arrays.asList(11L));   // 槽1英雄已被占用
+        List<String> conflictNotes = new ArrayList<>();
+        List<ServerBearTasks.JoinAttempt> attempts = ServerBearTasks.planJoinAttempts(
+                sel, candidates, used, 3, conflictNotes);
+        assertEquals("坏槽后继续：槽2/槽3 各 1 次", 2, attempts.size());
+        assertEquals("槽1冲突跳过", 1, conflictNotes.size());
+        assertTrue(conflictNotes.get(0).contains("上车编队#1 跳过：英雄已被发起队/前序上车占用"));
+        assertEquals("冲突不消耗车头：槽2 用第 1 个车头", 100L, attempts.get(0).candidate.masterMarchId);
+        assertEquals("槽3 用第 2 个车头", 200L, attempts.get(1).candidate.masterMarchId);
+    }
+
+    @Test
+    public void planJoinAttempts_respectsRemainingAndCandidateCount() {
+        ServerBearTasks.JoinSlotSelection sel = new ServerBearTasks.JoinSlotSelection();
+        sel.usable.add(joinPlan(1, Arrays.asList(11L)));
+        sel.usable.add(joinPlan(2, Arrays.asList(21L)));
+        sel.usable.add(joinPlan(3, Arrays.asList(31L)));
+        List<ServerBearTasks.RallyCandidate> candidates = Arrays.asList(
+                candidate(100L), candidate(200L));
+        assertEquals("候选车头数上限", 2, ServerBearTasks.planJoinAttempts(
+                sel, candidates, Collections.emptySet(), 5, new ArrayList<>()).size());
+        assertEquals("剩余配额上限", 1, ServerBearTasks.planJoinAttempts(
+                sel, candidates, Collections.emptySet(), 1, new ArrayList<>()).size());
+        assertTrue(ServerBearTasks.planJoinAttempts(sel, null,
+                Collections.emptySet(), 5, null).isEmpty());
+    }
+
+    @Test
+    public void recordJoinSkipLogOnce_perSlotPerWindow() {
+        ServerBearTasks.BearState state = new ServerBearTasks.BearState();
+        assertTrue("首次记录", ServerBearTasks.recordJoinSkipLogOnce(state, 1000L, 2));
+        assertFalse("同场次同槽只记一次", ServerBearTasks.recordJoinSkipLogOnce(state, 1000L, 2));
+        assertTrue("同场次其它槽可记", ServerBearTasks.recordJoinSkipLogOnce(state, 1000L, 3));
+        assertTrue("新场次重新记录", ServerBearTasks.recordJoinSkipLogOnce(state, 2000L, 2));
+        assertEquals("新场次只保留当前槽", "2", state.joinSkipSlots);
+        ServerBearTasks.BearState back = ServerBearTasks.parseState(ServerBearTasks.stateJson(state));
+        assertEquals("跳过节流状态可持久化", 2000L, back.joinSkipWindowStart);
+        assertEquals("2", back.joinSkipSlots);
+    }
+
+    @Test
+    public void joinSlot_disabledParsedButExcludedFromEnabledIds() {
+        JSONArray arr = new JSONArray();
+        arr.put(new JSONObject().put("id", 1).put("mode", "ROLE").put("formation_id", 2));
+        arr.put(new JSONObject().put("id", 2).put("mode", "ROLE").put("formation_id", 2)
+                .put("enabled", false));
+        JSONObject p = new JSONObject();
+        p.put("join_formations", arr);
+        ServerBearTasks.BearConfig cfg = ServerBearTasks.BearConfig.of(p);
+        assertEquals(2, cfg.joinFormations.size());
+        assertFalse(cfg.joinFormations.get(1).enabled);
+        assertEquals("disabled 槽不进启用列表", Arrays.asList(1),
+                ServerBearTasks.enabledJoinFormationIds(cfg));
+    }
+
+    // ======================= 九、批次11：launch_enabled / 编队 enabled 语义 =======================
+
+    @Test
+    public void launchEnabledSemantics_webAligned() {
+        JSONObject off = new JSONObject();
+        off.put("launch_enabled", false);
+        assertFalse("launch_enabled=false → 本场不发车（网页版 launchEnabled）",
+                ServerBearTasks.BearConfig.of(off).launchEnabled);
+        JSONObject formationDisabled = new JSONObject();
+        formationDisabled.put("enabled", false);   // 网页版编队级 enabled
+        assertTrue("编队级 enabled 不单独拦截发起（网页版校验/保护英雄用）",
+                ServerBearTasks.BearConfig.of(formationDisabled).launchEnabled);
+        assertTrue("默认发起开（部署后旧行为不变）",
+                ServerBearTasks.BearConfig.of(new JSONObject()).launchEnabled);
+    }
+
+    // ======================= 辅助构造（批次11） =======================
+
+    private static FormationLibrary libWithSoldiers(long id, long infantry, long lancer, long marksman) {
+        String json = "{\"formations\":[{\"id\":" + id + ",\"name\":\"t\","
+                + "\"hero_ids\":[50041,50039,50037],"
+                + "\"soldiers\":{\"infantry\":" + infantry + ",\"lancer\":" + lancer
+                + ",\"marksman\":" + marksman + "}}]}";
+        return FormationLibrary.parse(json);
+    }
+
+    private static Map<String, Object> soldiersMap(long infantry, long lancer, long marksman) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("infantry", infantry);
+        m.put("lancer", lancer);
+        m.put("marksman", marksman);
+        return m;
+    }
+
+    private static Map<String, Object> formation() {
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("hero_id", Arrays.asList(Exec.kv(11L, 1L)));
+        f.put("soldier", Arrays.asList(Exec.kv(11000L, 1000L)));
+        return f;
+    }
+
+    private static ServerBearTasks.JoinFormationConfig joinSlot(int id, boolean enabled,
+                                                                String mode, long formationId) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        params.put("id", (long) id);
+        params.put("enabled", enabled);
+        params.put("formation_mode", mode);
+        if (formationId > 0) params.put("formation_id", formationId);
+        return new ServerBearTasks.JoinFormationConfig(id, enabled, mode, formationId,
+                0L, 0L, 0L, params);
+    }
+
+    private static ServerBearTasks.JoinSlotPlan joinPlan(int slotId, List<Long> heroes) {
+        Map<String, Object> payload = new LinkedHashMap<>();
+        List<Map<String, Object>> heroPairs = new ArrayList<>();
+        for (Long h : heroes) heroPairs.add(Exec.kv(h, 1L));
+        payload.put("hero_id", heroPairs);
+        payload.put("soldier", Arrays.asList(Exec.kv(11000L, 1000L)));
+        ServerBearTasks.JoinFormationConfig slot = joinSlot(slotId, true, "ROLE", slotId);
+        return new ServerBearTasks.JoinSlotPlan(slot, payload, "来源=ROLE#" + slotId, "");
+    }
+
+    private static List<Integer> usableSlotIds(ServerBearTasks.JoinSlotSelection selection) {
+        List<Integer> ids = new ArrayList<>();
+        for (ServerBearTasks.JoinSlotPlan plan : selection.usable) ids.add(plan.slot.id);
+        return ids;
+    }
+
+    private static ServerBearTasks.RallyCandidate candidate(long masterMarchId) {
+        ServerBearTasks.RallyCandidate c = new ServerBearTasks.RallyCandidate();
+        c.masterMarchId = masterMarchId;
+        c.ownerUid = 5L;
+        c.startX = 10L;
+        c.startY = 20L;
+        return c;
+    }
 }

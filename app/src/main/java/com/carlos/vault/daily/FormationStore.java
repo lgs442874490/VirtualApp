@@ -595,6 +595,62 @@ public final class FormationStore {
         }
     }
 
+    // ==================== 功能级兵量覆盖（soldiers，批次11） ====================
+
+    /** 读该功能的兵量覆盖 {inf,lancer,marksman}（全 0=未覆盖，使用编队库兵量）。 */
+    public static long[] fnSoldiersOverride(Context ctx, String fpid, long sid, String fnId) {
+        try {
+            return parseSoldiers(FnParams.params(ctx, fpid, sid, fnId)
+                    .optJSONObject("soldiers"));
+        } catch (Throwable t) {
+            return new long[]{0, 0, 0};
+        }
+    }
+
+    /** 纯函数：soldiers JSON → {inf,lancer,marksman}（缺失/非法=0；负数归 0）。 */
+    public static long[] parseSoldiers(JSONObject soldiers) {
+        long[] out = new long[]{0, 0, 0};
+        if (soldiers == null) return out;
+        out[0] = Math.max(0, soldiers.optLong("infantry", 0));
+        out[1] = Math.max(0, soldiers.optLong("lancer", 0));
+        out[2] = Math.max(0, soldiers.optLong("marksman", 0));
+        return out;
+    }
+
+    /** 纯函数：构造 soldiers 覆盖 JSON（契约键 infantry/lancer/marksman）。 */
+    public static JSONObject soldiersJson(long infantry, long lancer, long marksman) {
+        JSONObject o = new JSONObject();
+        try {
+            o.put("infantry", Math.max(0, infantry));
+            o.put("lancer", Math.max(0, lancer));
+            o.put("marksman", Math.max(0, marksman));
+        } catch (Throwable ignored) {
+        }
+        return o;
+    }
+
+    /** 覆盖文案：全 0 → "未覆盖"；否则 "覆盖：盾x/矛y/弓z"。 */
+    public static String soldiersOverrideText(long[] s) {
+        if (s == null || (s[0] <= 0 && s[1] <= 0 && s[2] <= 0)) return "未覆盖";
+        return "覆盖：盾" + Math.max(0, s[0]) + "/矛" + Math.max(0, s[1])
+                + "/弓" + Math.max(0, s[2]);
+    }
+
+    /** 写该功能兵量覆盖；三项全 ≤0 → 移除 soldiers 键（恢复用编队库兵量）。 */
+    public static void saveFnSoldiersOverride(Context ctx, String fpid, long sid, String fnId,
+                                              long infantry, long lancer, long marksman) {
+        try {
+            JSONObject p = FnParams.params(ctx, fpid, sid, fnId);
+            if (infantry <= 0 && lancer <= 0 && marksman <= 0) {
+                p.remove("soldiers");
+            } else {
+                p.put("soldiers", soldiersJson(infantry, lancer, marksman));
+            }
+            FnParams.saveParams(ctx, fpid, sid, fnId, p);
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 读 AUTO 比例（默认 40:30:30；返回 {inf,lancer,marksman,total}，total=0 表示按容量自动）。 */
     public static long[] fnAutoRatio(Context ctx, String fpid, long sid, String fnId) {
         long inf = 40, lancer = 30, marksman = 30;
@@ -636,6 +692,15 @@ public final class FormationStore {
 
     // ==================== 巨熊上车编队（join_formations，id 1-6） ====================
 
+    /** 上车槽是否启用（缺省 true，兼容老数据无 enabled 键）。 */
+    public static boolean joinEnabled(JSONObject cfg) {
+        if (cfg == null || !cfg.has("enabled")) return true;
+        Object v = cfg.opt("enabled");
+        if (v instanceof Boolean) return (Boolean) v;
+        if (v instanceof Number) return ((Number) v).intValue() != 0;
+        return !"false".equalsIgnoreCase(String.valueOf(v).trim());
+    }
+
     /** 读巨熊上车编队配置（join_formations 数组元素；缺失返回空对象）。 */
     public static JSONObject joinFormation(Context ctx, String fpid, long sid, int joinId) {
         try {
@@ -652,9 +717,18 @@ public final class FormationStore {
         return new JSONObject();
     }
 
-    /** 写巨熊上车编队：自动/指定（指定时必须给 formation_id）；幂等合并 id 1-6 的元素。 */
+    /** 写巨熊上车编队（默认 enabled=true；向后兼容旧调用）。 */
     public static void saveJoinFormation(Context ctx, String fpid, long sid, int joinId,
                                          String mode, long formationId) {
+        saveJoinFormation(ctx, fpid, sid, joinId, mode, formationId, true);
+    }
+
+    /**
+     * 写巨熊上车编队：自动/指定（指定时给 formation_id）+ 启用开关；幂等合并 id 1-6 元素。
+     * disabled 的槽位仍保留配置（只写 enabled=false），重新启用不丢编队选择。
+     */
+    public static void saveJoinFormation(Context ctx, String fpid, long sid, int joinId,
+                                         String mode, long formationId, boolean enabled) {
         if (joinId < 0 || joinId > 6) return;
         try {
             JSONObject p = FnParams.params(ctx, fpid, sid, "bear");
@@ -666,27 +740,42 @@ public final class FormationStore {
                 JSONObject o = arr.optJSONObject(i);
                 if (o == null) continue;
                 if (o.optInt("id", 0) == joinId) {
-                    next.put(joinElement(joinId, mode, formationId));
+                    next.put(joinElement(joinId, mode, formationId, enabled));
                     found = true;
                 } else {
                     next.put(o);
                 }
             }
-            if (!found) next.put(joinElement(joinId, mode, formationId));
+            if (!found) next.put(joinElement(joinId, mode, formationId, enabled));
             p.put("join_formations", next);
             FnParams.saveParams(ctx, fpid, sid, "bear", p);
         } catch (Throwable ignored) {
         }
     }
 
-    /** 上车编队元素（契约：id 1-6 / mode / formation_id；AUTOMATIC 不带 formation_id）。 */
+    /** 只切换上车槽启用状态（保留现有 mode/formation_id）。 */
+    public static void saveJoinEnabled(Context ctx, String fpid, long sid, int joinId,
+                                       boolean enabled) {
+        JSONObject cur = joinFormation(ctx, fpid, sid, joinId);
+        String mode = cur.optString("mode",
+                cur.has("formation_id") ? MODE_ROLE : MODE_AUTOMATIC);
+        long fid = cur.optLong("formation_id", 0);
+        saveJoinFormation(ctx, fpid, sid, joinId, mode, fid, enabled);
+    }
+
+    /** 上车编队元素（契约：id 1-6 / mode / formation_id / enabled；AUTOMATIC 不带 formation_id）。 */
     static JSONObject joinElement(int joinId, String mode, long formationId) {
+        return joinElement(joinId, mode, formationId, true);
+    }
+
+    static JSONObject joinElement(int joinId, String mode, long formationId, boolean enabled) {
         JSONObject o = new JSONObject();
         try {
             String m = normalizeMode(mode);
             o.put("id", joinId);
             o.put("mode", m);
             if (MODE_ROLE.equals(m) && formationId > 0) o.put("formation_id", formationId);
+            o.put("enabled", enabled);
         } catch (Throwable ignored) {
         }
         return o;

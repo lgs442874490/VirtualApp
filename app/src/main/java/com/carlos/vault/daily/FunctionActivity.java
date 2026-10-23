@@ -15,6 +15,7 @@ import android.view.ViewGroup;
 import android.content.Context;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.NumberPicker;
 import android.widget.RadioButton;
@@ -404,6 +405,11 @@ public class FunctionActivity extends Activity {
                 scrollBox.addView(FormationPicker.buildBearJoinCard(
                         this, account.fpid, serverid, null));
             }
+        }
+        // 批次11：守护盟友配置页（用户确认放开 UI）——只读状态卡 + 配置卡
+        if ("guardian".equals(fn.id)) {
+            scrollBox.addView(buildGuardianStatusCard());
+            scrollBox.addView(buildGuardianConfigCard());
         }
 
         // ⓪ 登录好礼专属：十四天签到网格（游戏同款元素）
@@ -1404,6 +1410,221 @@ public class FunctionActivity extends Activity {
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    // ================= 守护盟友（批次11：UI 放开 + 配置页） =================
+    //
+    // 与服务器对齐（ServerGuardianEngine.parseConfig）：roleParams `guardian` 键
+    //   enabled(默认false) dry_run(默认true=演练) ally_uid target_uid target_point{x,y}
+    //   d_sec(默认38) recall(默认true)；编队字段复用页顶「统一编队」卡
+    //   （formation_mode/formation_id/soldiers/ratio/total）。
+    // 状态只读自 state：mod:{fpid}:{sid}:guardian 与 srv:guardian:{fpid}:{sid}:ledger。
+
+    /** 只读状态卡：生效配置 + mod 最近状态 + 服务端账本统计。 */
+    private LinearLayout buildGuardianStatusCard() {
+        LinearLayout card = UiStyle.card(this);
+        TextView title = new TextView(this);
+        title.setText("守护盟友 · 状态");
+        title.setTextSize(14);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.INK);
+        card.addView(title);
+
+        FnParams.GuardianCfg cfg = FnParams.loadGuardianCfg(this, account.fpid, serverid);
+        org.json.JSONObject mod = FnParams.modState(this, account.fpid, serverid,
+                FnParams.FN_GUARDIAN);
+        FnParams.GuardianLedger stat = FnParams.guardianLedger(
+                FnParams.loadGuardianLedger(this, account.fpid, serverid));
+
+        addKV(card, "配置", (cfg.enabled ? "已启用" : "未启用")
+                + " · " + (cfg.dryRun ? "演练模式（只记录不派兵）" : "实发模式"));
+        if (!cfg.enabled) addKV(card, "提示", "未启用：服务器不处理敌情（等待配置）");
+        String last = mod.optString("last", "");
+        long lastTs = mod.optLong("last_ts", 0);
+        if (!last.isEmpty()) {
+            addKV(card, "最近状态", last + (lastTs > 0 ? " · " + new java.text.SimpleDateFormat(
+                    "MM-dd HH:mm", java.util.Locale.CHINA)
+                    .format(new java.util.Date(lastTs)) : ""));
+        }
+        addKV(card, "服务端账本", stat.total > 0 ? stat.text()
+                : "暂无记录（未启用或尚未命中敌情）");
+        TextView cap = new TextView(this);
+        cap.setText("账本由服务器守护引擎写入 · 最近 50 条 · 诊断用");
+        cap.setTextSize(10.5f);
+        cap.setTextColor(UiStyle.INK3);
+        cap.setPadding(0, dp(6), 0, 0);
+        card.addView(cap);
+        return card;
+    }
+
+    /** 配置卡：总开关/演练-实发/盟友与目标/提前量/撤退；保存写 params 并同步。 */
+    private LinearLayout buildGuardianConfigCard() {
+        final FnParams.GuardianCfg cfg = FnParams.loadGuardianCfg(this, account.fpid, serverid);
+        LinearLayout card = UiStyle.card(this);
+        TextView title = new TextView(this);
+        title.setText("守护盟友 · 配置");
+        title.setTextSize(14);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.INK);
+        card.addView(title);
+
+        // ① 总开关（enabled，默认 false；即时写 params+同步）
+        final UiStyle.Switch[] enRef = new UiStyle.Switch[1];
+        enRef[0] = new UiStyle.Switch(this, cfg.enabled, () -> {
+            FnParams.GuardianCfg c = FnParams.loadGuardianCfg(this, account.fpid, serverid);
+            c.enabled = enRef[0].isOn();
+            FnParams.saveGuardianCfg(this, account.fpid, serverid, c);
+            com.carlos.vault.VaultSync.onAccountsChanged(this);
+            toast(c.enabled ? "守护盟友已启用（服务器守护引擎接管）" : "守护盟友已关闭");
+        });
+        card.addView(switchRow("总开关", "关闭时服务器不处理敌情（默认关）", enRef[0]));
+
+        // ② 演练/实发（dry_run 默认 true；切实发需二次确认）
+        TextView modeLabel = new TextView(this);
+        modeLabel.setText("模式");
+        modeLabel.setTextSize(12.5f);
+        modeLabel.setTypeface(Typeface.DEFAULT_BOLD);
+        modeLabel.setTextColor(UiStyle.INK);
+        modeLabel.setPadding(0, dp(10), 0, dp(4));
+        card.addView(modeLabel);
+        card.addView(UiStyle.segmented(this, new String[]{"演练模式", "实发模式"},
+                cfg.dryRun ? 0 : 1, idx -> {
+                    if (idx == 0) {
+                        setGuardianDryRun(true);
+                        setContentView(buildUi());
+                        toast("已切换演练模式（只记录不派兵）");
+                    } else {
+                        UiStyle.showConfirmDialog(this, "切换实发模式？",
+                                "实发模式命中敌情后会真实派兵驻防：会占用行军队列/兵力，"
+                                        + "可能触发战斗且撤回有延迟。\n\n确认切换为实发模式？",
+                                "确认实发", UiStyle.ERR_INK, () -> {
+                                    setGuardianDryRun(false);
+                                    setContentView(buildUi());
+                                    toast("已切换实发模式，请确认总开关与盟友/目标已配置");
+                                });
+                    }
+                }));
+        TextView modeTip = new TextView(this);
+        modeTip.setText(cfg.dryRun
+                ? "演练模式：只记录不发兵（默认；建议先看账本再切实发）"
+                : "实发模式：命中后自动派兵驻防（谨慎）");
+        modeTip.setTextSize(10.5f);
+        modeTip.setTextColor(cfg.dryRun ? UiStyle.INK2 : UiStyle.WARN_INK);
+        modeTip.setPadding(0, dp(4), 0, 0);
+        card.addView(modeTip);
+
+        // ③ 盟友 / 目标 uid / 目标坐标
+        final EditText allyEt = numField("盟友 uid（必填才能命中）", cfg.allyUid);
+        card.addView(fieldRow("盟友 uid", allyEt));
+        final EditText targetEt = numField("目标 uid（可选，精确过滤）", cfg.targetUid);
+        card.addView(fieldRow("目标 uid（可选）", targetEt));
+        LinearLayout xy = new LinearLayout(this);
+        xy.setOrientation(LinearLayout.HORIZONTAL);
+        xy.setGravity(Gravity.CENTER_VERTICAL);
+        final EditText xEt = numField("x", cfg.targetX);
+        final EditText yEt = numField("y", cfg.targetY);
+        xy.addView(fieldRow("目标坐标 x（可选）", xEt), new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        xy.addView(fieldRow("y", yEt), new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        card.addView(xy);
+
+        // ④ 提前量 / 撤退
+        final EditText dEt = numField("提前量秒数（默认 38）", cfg.dSec);
+        card.addView(fieldRow("提前量 d_sec", dEt));
+        final UiStyle.Switch[] recallRef = new UiStyle.Switch[1];
+        recallRef[0] = new UiStyle.Switch(this, cfg.recall, () -> { });
+        card.addView(switchRow("敌人召回时撤防",
+                "recall=true：敌撤回后撤走我方驻防（默认开）", recallRef[0]));
+
+        // ⑤ 保存（写 params.guardian；保留统一编队字段）
+        TextView save = UiStyle.primaryBtn(this, "保存守护配置", () -> {
+            FnParams.GuardianCfg next = FnParams.loadGuardianCfg(this, account.fpid, serverid);
+            next.enabled = enRef[0].isOn();
+            next.recall = recallRef[0].isOn();
+            next.allyUid = numOf(allyEt);
+            next.targetUid = numOf(targetEt);
+            next.targetX = (int) Math.min(Integer.MAX_VALUE, numOf(xEt));
+            next.targetY = (int) Math.min(Integer.MAX_VALUE, numOf(yEt));
+            long d = numOf(dEt);
+            next.dSec = (d >= 10 && d <= 600) ? (int) d : FnParams.GUARDIAN_DEFAULT_D_SEC;
+            FnParams.saveGuardianCfg(this, account.fpid, serverid, next);
+            com.carlos.vault.VaultSync.onAccountsChanged(this);
+            toast("守护配置已保存并同步服务器");
+            setContentView(buildUi());
+        });
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+        slp.topMargin = dp(12);
+        card.addView(save, slp);
+        return card;
+    }
+
+    /** 立即持久化演练/实发（dry_run）。 */
+    private void setGuardianDryRun(boolean dryRun) {
+        FnParams.GuardianCfg c = FnParams.loadGuardianCfg(this, account.fpid, serverid);
+        c.dryRun = dryRun;
+        FnParams.saveGuardianCfg(this, account.fpid, serverid, c);
+        com.carlos.vault.VaultSync.onAccountsChanged(this);
+    }
+
+    /** 行：标题/副题 + 右侧控件。 */
+    private LinearLayout switchRow(String title, String sub, View right) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(8), 0, dp(8));
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(13);
+        t.setTypeface(Typeface.DEFAULT_BOLD);
+        t.setTextColor(UiStyle.INK);
+        col.addView(t);
+        TextView s = new TextView(this);
+        s.setText(sub);
+        s.setTextSize(10.5f);
+        s.setTextColor(UiStyle.INK2);
+        s.setPadding(0, dp(2), 0, 0);
+        col.addView(s);
+        row.addView(col, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(right);
+        return row;
+    }
+
+    /** 行：标题 + 数字输入框。 */
+    private LinearLayout fieldRow(String title, EditText et) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(0, dp(6), dp(6), 0);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(11.5f);
+        t.setTextColor(UiStyle.INK2);
+        row.addView(t);
+        row.addView(et);
+        return row;
+    }
+
+    /** 数字输入框（空=0）。 */
+    private EditText numField(String hint, long value) {
+        EditText et = UiStyle.searchInput(this, hint);
+        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        et.setText(value > 0 ? String.valueOf(value) : "");
+        return et;
+    }
+
+    /** 数字输入框读数（空/非法=0）。 */
+    private long numOf(EditText et) {
+        try {
+            String s = et.getText().toString().trim();
+            if (s.isEmpty()) return 0;
+            return Math.max(0, Long.parseLong(s));
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     /** 需要新参数模型的功能：统一用 JSON 高级参数，避免为每个功能单做一套面板。 */

@@ -195,6 +195,269 @@ public final class FnParams {
         return "p:" + fpid + ":" + sid + ":" + fnId;
     }
 
+    // ================= 守护盟友配置（批次11；1:1 服务器 ServerGuardianEngine.parseConfig） =================
+
+    /** 守护盟友功能 id（与服务器 ServerGuardianEngine.FN_ID 一致）。 */
+    public static final String FN_GUARDIAN = "guardian";
+
+    /** 提前量默认 38 秒（1:1 服务器 DEFAULT_D_SEC）。 */
+    public static final int GUARDIAN_DEFAULT_D_SEC = 38;
+
+    /** 守护盟友配置（默认=关闭 + 演练；实发必须 App 侧二次确认后才写入 dry_run=false）。 */
+    public static final class GuardianCfg {
+        public boolean enabled = false;
+        /** 演练模式：只记录不派兵（默认 true，服务器同口径）。 */
+        public boolean dryRun = true;
+        public boolean recall = true;
+        public long allyUid = 0L;
+        public long targetUid = 0L;
+        public int targetX = 0;
+        public int targetY = 0;
+        public int dSec = GUARDIAN_DEFAULT_D_SEC;
+
+        public boolean hasTargetPoint() {
+            return targetX > 0 && targetY > 0;
+        }
+
+        public String modeText() {
+            return dryRun ? "演练模式（只记录不派兵）" : "实发模式（命中后自动派兵驻防）";
+        }
+    }
+
+    /**
+     * 解析守护盟友 params JSON（纯函数）。
+     * 落点兼容 top-level（App 配置页新写法）/ sub / strategy（旧 FnDetail 开关），
+     * 与服务器 {@code first(sub,st,top)} 同口径；缺省：enabled=false、dry_run=true、
+     * recall=true、d_sec=38、target_point 空。
+     */
+    public static GuardianCfg guardianCfg(JSONObject p) {
+        GuardianCfg c = new GuardianCfg();
+        if (p == null) return c;
+        try {
+            JSONObject sub = p.optJSONObject("sub");
+            JSONObject st = p.optJSONObject("strategy");
+            c.enabled = gBool(sub, st, p, "enabled", false)
+                    || gBool(sub, st, p, "intercept", false);   // 兼容旧 intercept 开关
+            c.dryRun = gBool(sub, st, p, "dry_run", true);
+            c.recall = gBool(sub, st, p, "recall", true);
+            c.allyUid = Math.max(0L, gNum(sub, st, p, "ally_uid", 0L));
+            c.targetUid = Math.max(0L, gNum(sub, st, p, "target_uid", 0L));
+            Object tp = gFirst(sub, st, p, "target_point");
+            long tx = 0, ty = 0;
+            if (tp instanceof JSONObject) {
+                tx = ((JSONObject) tp).optLong("x", 0);
+                ty = ((JSONObject) tp).optLong("y", 0);
+            } else if (tp instanceof org.json.JSONArray) {
+                org.json.JSONArray arr = (org.json.JSONArray) tp;
+                if (arr.length() >= 2) {
+                    tx = arr.optLong(0, 0);
+                    ty = arr.optLong(1, 0);
+                }
+            }
+            c.targetX = (int) Math.max(0, Math.min(Integer.MAX_VALUE, tx));
+            c.targetY = (int) Math.max(0, Math.min(Integer.MAX_VALUE, ty));
+            long d = gNum(sub, st, p, "d_sec", GUARDIAN_DEFAULT_D_SEC);
+            c.dSec = (d >= 10L && d <= 600L) ? (int) d : GUARDIAN_DEFAULT_D_SEC;
+        } catch (Throwable ignored) {
+        }
+        return c;
+    }
+
+    /**
+     * 写回守护盟友配置（纯函数）：只覆盖守护 key，保留 prev 里其它键（尤其是统一编队
+     * formation_mode/formation_id/soldiers/ratio/total，不能被配置页保存清掉）。
+     * target_point 坐标为 0 时移除该键（可空=未指定）。
+     */
+    public static JSONObject applyGuardianCfg(JSONObject prev, GuardianCfg cfg) {
+        JSONObject out;
+        try {
+            out = prev == null ? new JSONObject() : new JSONObject(prev.toString());
+        } catch (Throwable t) {
+            out = new JSONObject();
+        }
+        if (cfg == null) return out;
+        try {
+            out.put("enabled", cfg.enabled);
+            out.put("dry_run", cfg.dryRun);
+            out.put("recall", cfg.recall);
+            out.put("ally_uid", Math.max(0, cfg.allyUid));
+            out.put("target_uid", Math.max(0, cfg.targetUid));
+            out.put("d_sec", Math.max(10, Math.min(600, cfg.dSec)));
+            if (cfg.hasTargetPoint()) {
+                JSONObject pt = new JSONObject();
+                pt.put("x", cfg.targetX);
+                pt.put("y", cfg.targetY);
+                out.put("target_point", pt);
+            } else {
+                out.remove("target_point");
+            }
+            // 旧 intercept 开关由 enabled/dry_run 接管（服务器 enabled||intercept，故顶层移除）。
+            // 同时镜像到 App 本地模式读取的 sub 开关（GuardianEngine：watch=监测、intercept=自动驻防）：
+            //   演练模式 → 只监测不驻防（watch=true, intercept=false）；
+            //   实发模式 → 监测+自动驻防（watch=true, intercept=true）。
+            out.remove("intercept");
+            JSONObject sub = out.optJSONObject("sub");
+            if (sub == null) sub = new JSONObject();
+            sub.put("watch", cfg.enabled);
+            sub.put("intercept", cfg.enabled && !cfg.dryRun);
+            out.put("sub", sub);
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /** 守护盟友账本统计（服务端 srv:guardian:{fpid}:{sid}:ledger：JSON 数组、最新在前）。 */
+    public static final class GuardianLedger {
+        public int total;
+        /** 演练命中次数（dry_run）。 */
+        public int dryRun;
+        /** 实发（launched）。 */
+        public int launched;
+        /** 发射/撤防失败（launch_failed/recall_failed/recall_error）。 */
+        public int failed;
+        /** 撤防（recalled）。 */
+        public int recalled;
+        /** 跳过（skip_*：离线/队列/编队缺失等）。 */
+        public int skipped;
+        /** 威胁事件（threat_*）。 */
+        public int threats;
+        public long lastTs;
+        public String lastEv = "";
+        public String lastNote = "";
+
+        public String text() {
+            if (total == 0) return "";
+            StringBuilder sb = new StringBuilder();
+            sb.append("演练").append(dryRun).append(" · 实发").append(launched)
+                    .append(" · 失败").append(failed).append(" · 撤防").append(recalled)
+                    .append(" · 跳过").append(skipped);
+            if (lastEv != null && !lastEv.isEmpty()) {
+                sb.append("\n最近：").append(lastEv);
+                if (lastTs > 0) {
+                    sb.append(' ').append(new java.text.SimpleDateFormat("MM-dd HH:mm:ss",
+                            java.util.Locale.CHINA).format(new java.util.Date(lastTs)));
+                }
+                if (lastNote != null && !lastNote.isEmpty()) sb.append(" · ").append(lastNote);
+            }
+            return sb.toString();
+        }
+    }
+
+    /** 解析守护账本 JSON 数组（纯函数；坏条目跳过）。 */
+    public static GuardianLedger guardianLedger(org.json.JSONArray arr) {
+        GuardianLedger l = new GuardianLedger();
+        if (arr == null) return l;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject e = arr.optJSONObject(i);
+            if (e == null) continue;
+            l.total++;
+            String ev = e.optString("ev", "");
+            if ("dry_run".equals(ev)) l.dryRun++;
+            else if ("launched".equals(ev)) l.launched++;
+            else if ("launch_failed".equals(ev) || "recall_failed".equals(ev)
+                    || "recall_error".equals(ev)) l.failed++;
+            else if ("recalled".equals(ev)) l.recalled++;
+            else if (ev.startsWith("skip_")) l.skipped++;
+            else if (ev.startsWith("threat_")) l.threats++;
+            long ts = e.optLong("ts", 0);
+            if (i == 0) {   // 服务端数组最新在前
+                l.lastEv = ev;
+                l.lastTs = ts;
+                l.lastNote = e.optString("note", "");
+            }
+        }
+        return l;
+    }
+
+    /** 守护盟友 state 键：账本（服务器写 → VaultSync 回写 daily_state 同名键）。 */
+    public static String guardianLedgerKey(String fpid, long sid) {
+        return "srv:guardian:" + (fpid == null ? "" : fpid.trim()) + ":" + sid + ":ledger";
+    }
+
+    /** 守护盟友 state 键：状态行 mod:{fpid}:{sid}:guardian。 */
+    public static String guardianModKey(String fpid, long sid) {
+        return "mod:" + (fpid == null ? "" : fpid.trim()) + ":" + sid + ":guardian";
+    }
+
+    /**
+     * 纯函数：账本文本 → JSON 数组（服务器 state 值是「数组 JSON 字符串」；
+     * 兼容被包成 {"ledger":[...]} 的形状；非法/空 → 空数组，绝不抛异常）。
+     */
+    public static org.json.JSONArray parseGuardianLedgerText(String raw) {
+        org.json.JSONArray out = new org.json.JSONArray();
+        if (raw == null || raw.trim().isEmpty()) return out;
+        String t = raw.trim();
+        try {
+            if (t.startsWith("[")) {
+                org.json.JSONArray arr = new org.json.JSONArray(t);
+                return arr == null ? out : arr;
+            }
+            org.json.JSONObject root = new org.json.JSONObject(t);
+            org.json.JSONArray arr = root.optJSONArray("ledger");
+            return arr == null ? out : arr;
+        } catch (Throwable ignored) {
+            return out;
+        }
+    }
+
+    /** 读守护账本（daily_state；缺失返回空数组，不抛异常）。 */
+    public static org.json.JSONArray loadGuardianLedger(Context ctx, String fpid, long sid) {
+        if (ctx == null) return new org.json.JSONArray();
+        try {
+            String raw = ctx.getSharedPreferences("daily_state", Context.MODE_PRIVATE)
+                    .getString(guardianLedgerKey(fpid, sid), null);
+            return parseGuardianLedgerText(raw);
+        } catch (Throwable ignored) {
+            return new org.json.JSONArray();
+        }
+    }
+
+    /** 读守护配置（FnParams guardian params）。 */
+    public static GuardianCfg loadGuardianCfg(Context ctx, String fpid, long sid) {
+        return guardianCfg(params(ctx, fpid, sid, FN_GUARDIAN));
+    }
+
+    /** 保存守护配置（保留同 params 里的统一编队字段）。 */
+    public static void saveGuardianCfg(Context ctx, String fpid, long sid, GuardianCfg cfg) {
+        try {
+            JSONObject prev = params(ctx, fpid, sid, FN_GUARDIAN);
+            saveParams(ctx, fpid, sid, FN_GUARDIAN, applyGuardianCfg(prev, cfg));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static Object gFirst(JSONObject sub, JSONObject st, JSONObject top, String key) {
+        if (sub != null && sub.has(key)) return sub.opt(key);
+        if (st != null && st.has(key)) return st.opt(key);
+        return top == null ? null : top.opt(key);
+    }
+
+    private static long gNum(JSONObject sub, JSONObject st, JSONObject top, String key, long def) {
+        Object v = gFirst(sub, st, top, key);
+        if (v instanceof Number) return ((Number) v).longValue();
+        if (v instanceof String) {
+            try {
+                return Long.parseLong(((String) v).trim());
+            } catch (Throwable ignored) {
+                return def;
+            }
+        }
+        return def;
+    }
+
+    private static boolean gBool(JSONObject sub, JSONObject st, JSONObject top, String key,
+                                 boolean def) {
+        Object v = gFirst(sub, st, top, key);
+        if (v instanceof Boolean) return (Boolean) v;
+        if (v instanceof Number) return ((Number) v).intValue() != 0;
+        if (v instanceof String) {
+            String s = ((String) v).trim();
+            if ("true".equalsIgnoreCase(s) || "1".equals(s) || "on".equalsIgnoreCase(s)) return true;
+            if ("false".equalsIgnoreCase(s) || "0".equals(s) || "off".equalsIgnoreCase(s)) return false;
+        }
+        return def;
+    }
+
     // ================= 模板 =================
 
     /** 当前模板（无则返回 null）。结构：{enabled:{fnId:bool}, params:{fnId:{...}}} */

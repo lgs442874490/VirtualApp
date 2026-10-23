@@ -915,13 +915,19 @@ public final class VaultSync {
                                 .params(ctx, a.fpid, r.serverid, fn.id);
                         if (p.length() > 0) prm.put(fn.id, p);
                     }
-                    // 批次10：统一编队库作为角色保留参数随 params 上传（字符串 JSON，
-                    // 服务器 FormationLibrary.parse 读取；仅新增保留键，不改现有结构。
-                    // 无编队时不上传 → 服务器保持旧行为）。
+                    // 批次10/11：统一编队库作为角色保留参数随 params 上传（字符串 JSON）。
+                    // 服务器 FormationResolver.libraryFor 的读取顺序是「任务自身 params →
+                    // tc.params("formation") → tc.params("daily")」，角色顶层保留键不直接命中；
+                    // 故同时写伪功能参数 "formation"（服务端全局库回落点，guardian/bear/behemoth
+                    // 与采集/情报/狩猎共用）。仅新增键，不改现有 params 结构；无编队不上传。
                     String formLib = com.carlos.vault.daily.FormationStore
                             .libraryJsonForSync(ctx, a.fpid, r.serverid);
                     if (formLib != null && !formLib.isEmpty()) {
                         prm.put(com.carlos.vault.daily.FormationStore.KEY_LIBRARY, formLib);
+                        JSONObject globalFormation = new JSONObject();
+                        globalFormation.put(com.carlos.vault.daily.FormationStore.KEY_LIBRARY,
+                                formLib);
+                        prm.put("formation", globalFormation);
                     }
                     if (prm.length() > 0) ro.put("params", prm);
                     roles.put(ro);

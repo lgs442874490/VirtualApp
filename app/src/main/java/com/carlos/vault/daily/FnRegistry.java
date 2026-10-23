@@ -104,7 +104,7 @@ public final class FnRegistry {
         l.add(new Fn("alliance_donate", "联盟捐献", CAT_ALLIANCE, true, "科技捐献+发展/排名奖励"));
         l.add(new Fn("alliance_mobilization", "联盟动员", CAT_ALLIANCE, true, "任务奖励+免费次数+里程碑"));
         l.add(new Fn("alliance_showdown", "争霸赛", CAT_ALLIANCE, true, "未报名时自动报名赛道1"));
-        l.add(new Fn("guardian", "守护盟友", CAT_ALLIANCE, true, "盟友被攻实时监测+卡秒驻防（建设中：监测已上线）", true));
+        l.add(new Fn("guardian", "守护盟友", CAT_ALLIANCE, true, "盟友被攻实时监测+自动驻防（默认演练模式，配置页可切实发）", true));
         l.add(new Fn("war", "战争状态", CAT_ALLIANCE, true, "H0-H4 硬触发+全敌静默/开盾退出的战时总闸（E1 任务闸/敌情板/人工强制）"));
         l.add(new Fn("alliance_help", "联盟互助", CAT_ALLIANCE, true, "一键帮助全盟（常驻互助接管时自动跳过）"));
         l.add(new Fn("homeland_visit", "晨曦岛拜访", CAT_ALLIANCE, true, "拜访活跃盟友晨曦岛并协助（每日3次）"));

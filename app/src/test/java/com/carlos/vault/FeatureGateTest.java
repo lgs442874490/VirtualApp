@@ -75,11 +75,11 @@ public class FeatureGateTest {
 
     @Test
     public void tier3_showsOnlyFullyImplementedPremiumFeatures() {
-        // 审计结论（design/全流程行为与分级门控-20261023.md §3.4）：T3 六项中仅敌情监控已实现
+        // 批次11：T3 六项中敌情监控 + 守护盟友（服务端守护引擎/Launcher 已上线，默认演练）已实现
         assertTrue(FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, 3, RELEASE));
         assertTrue(FeatureGate.visible(FeatureGate.Feature.TOOLBOX, 3, RELEASE));
-        // 守护盟友=部分实现（自动驻防未接服务器）→ 正式 UI 暂不显示
-        assertFalse("部分实现不放出", FeatureGate.visible(FeatureGate.Feature.GUARDIAN, 3, RELEASE));
+        assertTrue("守护盟友=已实现（默认 dry_run 演练）→ T3 可见",
+                FeatureGate.visible(FeatureGate.Feature.GUARDIAN, 3, RELEASE));
         // T2 功能对 T3 仍可见（等级向下兼容）
         assertTrue(FeatureGate.visible(FeatureGate.Feature.TODAY_TAB, 3, RELEASE));
         assertTrue(FeatureGate.visible(FeatureGate.Feature.ACCOUNT_POOL, 3, RELEASE));
@@ -214,7 +214,8 @@ public class FeatureGateTest {
     public void reasonText_explainsTier() {
         assertTrue(FeatureGate.reasonText(FeatureGate.Feature.TODAY_TAB).contains("会员"));
         assertTrue(FeatureGate.reasonText(FeatureGate.Feature.ENEMY_WATCH).contains("高级会员"));
-        assertTrue("守护盟友=部分实现→尚未开放", FeatureGate.reasonText(FeatureGate.Feature.GUARDIAN).contains("尚未开放"));
+        assertTrue("守护盟友已实现→需高级会员", FeatureGate.reasonText(
+                FeatureGate.Feature.GUARDIAN).contains("高级会员"));
         assertTrue(FeatureGate.reasonText(FeatureGate.Feature.MOVE_CITY).contains("尚未开放"));
         assertEquals("T1 功能无等级门槛，不应有提示文案",
                 "", FeatureGate.reasonText(FeatureGate.Feature.ACCOUNT_START));
@@ -230,13 +231,12 @@ public class FeatureGateTest {
     // ================= 日常功能（FnRegistry）门控：守护盟友 = T3 =================
 
     @Test
-    public void dailyFnGuardian_hiddenEverywhereUntilProductized() {
+    public void dailyFnGuardian_tier3Only() {
         assertEquals(FeatureGate.Feature.GUARDIAN, FeatureGate.dailyFnFeature("guardian"));
-        // 守护盟友=部分实现（监测/闸门可用，自动驻防未接服务器）→ 任何等级都不显示
+        // 批次11 放开：T3 可见（服务端守护引擎已上线，默认演练）；T1/T2 仍隐藏
         assertFalse(FeatureGate.dailyFnVisible("guardian", 1, RELEASE));
         assertFalse(FeatureGate.dailyFnVisible("guardian", 2, RELEASE));
-        assertFalse(FeatureGate.dailyFnVisible("guardian", 3, RELEASE));
-        assertFalse("调试包也不放半成品业务功能", FeatureGate.dailyFnVisible("guardian", 3, DEBUG));
+        assertTrue(FeatureGate.dailyFnVisible("guardian", 3, RELEASE));
     }
 
     @Test

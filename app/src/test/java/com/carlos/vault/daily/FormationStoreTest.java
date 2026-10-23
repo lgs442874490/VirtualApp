@@ -333,6 +333,234 @@ public class FormationStoreTest {
         assertFalse(bad.has("formation_id"));
     }
 
+    // ==================== 批次11：功能级 soldiers 覆盖 ====================
+
+    @Test
+    public void soldiersOverride_parseSerializeDefaults() throws Exception {
+        long[] none = FormationStore.parseSoldiers(null);
+        assertEquals(0, none[0]);
+        assertEquals(0, none[1]);
+        assertEquals(0, none[2]);
+        JSONObject o = FormationStore.soldiersJson(20000, -5, 30000);
+        assertEquals(20000L, o.getLong("infantry"));
+        assertEquals("负数归 0", 0L, o.getLong("lancer"));
+        assertEquals(30000L, o.getLong("marksman"));
+        long[] parsed = FormationStore.parseSoldiers(o);
+        assertEquals(20000L, parsed[0]);
+        assertEquals(0L, parsed[1]);
+        assertEquals(30000L, parsed[2]);
+        // 缺字段=0（兼容旧数据）
+        long[] partial = FormationStore.parseSoldiers(new JSONObject().put("infantry", 500));
+        assertEquals(500L, partial[0]);
+        assertEquals(0L, partial[1]);
+        assertEquals(0L, partial[2]);
+    }
+
+    @Test
+    public void soldiersOverride_text() {
+        assertEquals("未覆盖", FormationStore.soldiersOverrideText(null));
+        assertEquals("未覆盖", FormationStore.soldiersOverrideText(new long[]{0, 0, 0}));
+        assertEquals("覆盖：盾100/矛0/弓200",
+                FormationStore.soldiersOverrideText(new long[]{100, 0, 200}));
+    }
+
+    // ==================== 批次11：巨熊上车槽 enabled ====================
+
+    @Test
+    public void joinElement_enabledField() throws Exception {
+        assertTrue("默认启用", FormationStore.joinEnabled(FormationStore.joinElement(1, "AUTO", 0)));
+        assertTrue(FormationStore.joinElement(1, "AUTOMATIC", 0).getBoolean("enabled"));
+        assertFalse("显式停用", FormationStore.joinElement(2, "ROLE", 3, false)
+                .getBoolean("enabled"));
+        // 老数据无 enabled 键 → 默认启用（向后兼容）
+        assertTrue("老数据默认启用", FormationStore.joinEnabled(
+                new JSONObject().put("id", 3).put("mode", "AUTOMATIC")));
+        assertFalse(FormationStore.joinEnabled(new JSONObject().put("enabled", false)));
+        assertFalse("字符串 false 兼容", FormationStore.joinEnabled(
+                new JSONObject().put("enabled", "false")));
+        assertTrue(FormationStore.joinEnabled(new JSONObject().put("enabled", 1)));
+    }
+
+    // ==================== 批次11：守护盟友 params（FnParams 纯函数） ====================
+
+    @Test
+    public void guardianCfg_defaultsSafe() {
+        FnParams.GuardianCfg c = FnParams.guardianCfg(new JSONObject());
+        assertFalse("默认关闭", c.enabled);
+        assertTrue("默认演练模式（只记录不派兵）", c.dryRun);
+        assertTrue("默认 enemy 召回撤防", c.recall);
+        assertEquals(0L, c.allyUid);
+        assertEquals(0L, c.targetUid);
+        assertEquals(0, c.targetX);
+        assertEquals(0, c.targetY);
+        assertEquals("默认提前量 38 秒", 38, c.dSec);
+        assertFalse(c.hasTargetPoint());
+        assertTrue(c.modeText().contains("演练"));
+        // null 安全
+        FnParams.GuardianCfg n = FnParams.guardianCfg(null);
+        assertTrue(n.dryRun);
+        assertEquals(38, n.dSec);
+    }
+
+    @Test
+    public void guardianCfg_parseTopLevel() throws Exception {
+        JSONObject p = new JSONObject()
+                .put("enabled", true)
+                .put("dry_run", false)
+                .put("recall", false)
+                .put("ally_uid", 123861751L)
+                .put("target_uid", 98765432L)
+                .put("target_point", new JSONObject().put("x", 687).put("y", 698))
+                .put("d_sec", 45);
+        FnParams.GuardianCfg c = FnParams.guardianCfg(p);
+        assertTrue(c.enabled);
+        assertFalse("显式实发", c.dryRun);
+        assertFalse(c.recall);
+        assertEquals(123861751L, c.allyUid);
+        assertEquals(98765432L, c.targetUid);
+        assertEquals(687, c.targetX);
+        assertEquals(698, c.targetY);
+        assertEquals(45, c.dSec);
+        assertTrue(c.modeText().contains("实发"));
+    }
+
+    @Test
+    public void guardianCfg_legacySubStrategyCompat() throws Exception {
+        // 旧 FnDetail 开关写在 sub/strategy；服务器 first(sub,st,top) 口径 → App 同口径
+        JSONObject p = new JSONObject()
+                .put("sub", new JSONObject().put("intercept", true))
+                .put("strategy", new JSONObject().put("d_sec", "60"));
+        FnParams.GuardianCfg c = FnParams.guardianCfg(p);
+        assertTrue("旧 intercept 兼容为 enabled", c.enabled);
+        assertEquals("strategy 里的 d_sec 生效", 60, c.dSec);
+        assertTrue("dry_run 缺省演练", c.dryRun);
+    }
+
+    @Test
+    public void guardianCfg_dSecClamp() throws Exception {
+        assertEquals("越界回落 38", 38,
+                FnParams.guardianCfg(new JSONObject().put("d_sec", 5)).dSec);
+        assertEquals(38, FnParams.guardianCfg(new JSONObject().put("d_sec", 9999)).dSec);
+        assertEquals(10, FnParams.guardianCfg(new JSONObject().put("d_sec", 10)).dSec);
+        assertEquals(600, FnParams.guardianCfg(new JSONObject().put("d_sec", 600)).dSec);
+    }
+
+    @Test
+    public void applyGuardianCfg_preservesFormationKeys() throws Exception {
+        JSONObject prev = new JSONObject()
+                .put("formation_mode", "ROLE")
+                .put("formation_id", 1)
+                .put("ratio", new JSONObject().put("infantry", 40).put("lancer", 30)
+                        .put("marksman", 30))
+                .put("intercept", true)
+                .put("target_point", new JSONObject().put("x", 1).put("y", 2));
+        FnParams.GuardianCfg c = new FnParams.GuardianCfg();
+        c.enabled = true;
+        c.dryRun = true;
+        c.allyUid = 100;
+        c.dSec = 38;
+        JSONObject out = FnParams.applyGuardianCfg(prev, c);
+        assertEquals("编队字段保留", "ROLE", out.getString("formation_mode"));
+        assertEquals(1, out.getInt("formation_id"));
+        assertEquals(40, out.getJSONObject("ratio").getInt("infantry"));
+        assertTrue(out.getBoolean("enabled"));
+        assertTrue(out.getBoolean("dry_run"));
+        assertEquals(100L, out.getLong("ally_uid"));
+        assertEquals(38, out.getInt("d_sec"));
+        assertFalse("顶层旧 intercept 清掉（避免 OR 残留）", out.has("intercept"));
+        assertFalse("坐标 0=不指定 → 移除 target_point", out.has("target_point"));
+        // 批次11：本地模式镜像开关（演练=dry_run → 只监测不驻防）
+        JSONObject sub = out.getJSONObject("sub");
+        assertTrue("监测开", sub.getBoolean("watch"));
+        assertFalse("演练模式不自动驻防", sub.getBoolean("intercept"));
+    }
+
+    @Test
+    public void applyGuardianCfg_realModeEnablesLocalIntercept() throws Exception {
+        FnParams.GuardianCfg c = new FnParams.GuardianCfg();
+        c.enabled = true;
+        c.dryRun = false;   // 实发
+        JSONObject out = FnParams.applyGuardianCfg(new JSONObject(), c);
+        assertTrue(out.getBoolean("enabled"));
+        assertFalse(out.getBoolean("dry_run"));
+        JSONObject sub = out.getJSONObject("sub");
+        assertTrue("实发：本地自动驻防开", sub.getBoolean("intercept"));
+        assertTrue(sub.getBoolean("watch"));
+    }
+
+    @Test
+    public void applyGuardianCfg_writesTargetPoint() throws Exception {
+        FnParams.GuardianCfg c = new FnParams.GuardianCfg();
+        c.targetX = 687;
+        c.targetY = 698;
+        JSONObject out = FnParams.applyGuardianCfg(new JSONObject(), c);
+        assertEquals(687, out.getJSONObject("target_point").getInt("x"));
+        assertEquals(698, out.getJSONObject("target_point").getInt("y"));
+    }
+
+    @Test
+    public void guardianLedger_stats() throws Exception {
+        JSONArray arr = new JSONArray();
+        arr.put(new JSONObject().put("ts", 1792700000000L).put("ev", "threat_landed")
+                .put("note", "敌方已落地"));
+        arr.put(new JSONObject().put("ts", 1792699000000L).put("ev", "launched").put("note", "已发射"));
+        arr.put(new JSONObject().put("ts", 1792698000000L).put("ev", "dry_run").put("note", "[DRY] 命中"));
+        arr.put(new JSONObject().put("ts", 1792697000000L).put("ev", "launch_failed").put("note", "401"));
+        arr.put(new JSONObject().put("ts", 1792696000000L).put("ev", "recall_error").put("note", "撤防异常"));
+        arr.put(new JSONObject().put("ts", 1792695000000L).put("ev", "recalled").put("note", "已撤防"));
+        arr.put(new JSONObject().put("ts", 1792694000000L).put("ev", "skip_offline").put("note", "离线"));
+        FnParams.GuardianLedger l = FnParams.guardianLedger(arr);
+        assertEquals(7, l.total);
+        assertEquals(1, l.dryRun);
+        assertEquals(1, l.launched);
+        assertEquals("launch_failed + recall_error", 2, l.failed);
+        assertEquals(1, l.recalled);
+        assertEquals(1, l.skipped);
+        assertEquals(1, l.threats);
+        assertEquals("最新在前", "threat_landed", l.lastEv);
+        assertEquals(1792700000000L, l.lastTs);
+        assertEquals("敌方已落地", l.lastNote);
+        String text = l.text();
+        assertTrue(text.contains("演练1"));
+        assertTrue(text.contains("实发1"));
+        assertTrue(text.contains("失败2"));
+        // 空账本
+        assertTrue(FnParams.guardianLedger(null).text().isEmpty());
+        assertTrue(FnParams.guardianLedger(new JSONArray()).text().isEmpty());
+    }
+
+    @Test
+    public void guardianLedgerText_parseArrayAndWrapped() throws Exception {
+        // 服务器 state 值是「数组 JSON 字符串」（最新在前）
+        String arrText = "[{\"ts\":1,\"ev\":\"launched\",\"note\":\"ok\"}]";
+        JSONArray arr = FnParams.parseGuardianLedgerText(arrText);
+        assertEquals(1, arr.length());
+        assertEquals("launched", arr.getJSONObject(0).getString("ev"));
+        // 兼容 {"ledger":[...]} 包装
+        JSONArray wrapped = FnParams.parseGuardianLedgerText(
+                "{\"ledger\":[" + arrText.substring(1, arrText.length() - 1) + "]}");
+        assertEquals(1, wrapped.length());
+        // 空/非法 → 空数组（UI 不崩）
+        assertEquals(0, FnParams.parseGuardianLedgerText(null).length());
+        assertEquals(0, FnParams.parseGuardianLedgerText("  ").length());
+        assertEquals(0, FnParams.parseGuardianLedgerText("{bad").length());
+        assertEquals(0, FnParams.parseGuardianLedgerText("{\"x\":1}").length());
+        // 解析后可进统计
+        FnParams.GuardianLedger l = FnParams.guardianLedger(arr);
+        assertEquals(1, l.launched);
+        assertEquals("ok", l.lastNote);
+    }
+
+    @Test
+    public void guardianStateKeys_matchServer() {
+        assertEquals("mod:48460403:888:guardian",
+                FnParams.guardianModKey("48460403", 888));
+        assertEquals("srv:guardian:48460403:888:ledger",
+                FnParams.guardianLedgerKey("48460403", 888));
+        assertEquals(FnParams.FN_GUARDIAN, "guardian");
+        assertEquals(38, FnParams.GUARDIAN_DEFAULT_D_SEC);
+    }
+
     // ==================== 库 JSON 空值行为（同步兼容） ====================
 
     @Test

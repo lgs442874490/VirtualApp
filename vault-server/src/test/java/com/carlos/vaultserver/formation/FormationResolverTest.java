@@ -400,4 +400,119 @@ public class FormationResolverTest {
         List<Long> one = FormationResolver.strongestHeroes(engine, 1);
         assertEquals(1, one.size());
     }
+
+    // ---------------- 批次11：ROLE 必须使用编队库兵量（task-37） ----------------
+
+    private static FormationLibrary libOne(long id, String name, String heroIdsJson,
+                                           String soldiersJson, String ratioJson, long total) {
+        StringBuilder sb = new StringBuilder("{\"formations\":[{\"id\":").append(id)
+                .append(",\"name\":\"").append(name).append("\",\"hero_ids\":").append(heroIdsJson);
+        if (soldiersJson != null) sb.append(",\"soldiers\":").append(soldiersJson);
+        if (ratioJson != null) sb.append(",\"ratio\":").append(ratioJson);
+        sb.append(",\"total\":").append(total).append("}]}");
+        return FormationLibrary.parse(sb.toString());
+    }
+
+    @Test
+    public void role_usesLibrarySoldiers_whenNoFunctionOverride() {
+        presetAll();
+        // 库兵量 1000/500/700（≠库存/自动分配结果）；修复前会落回 ratio+库存自动分配（20000/1549/28451）
+        FormationLibrary lib = libOne(7, "库兵队", "[50041]",
+                "{\"infantry\":1000,\"lancer\":500,\"marksman\":700}", null, 50000);
+        FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(engine, lib,
+                params("formation_mode", "ROLE", "formation_id", "7"));
+        assertTrue(ro.reason, ro.ready());
+        assertEquals("库兵量必须生效（不被自动分配覆盖）", 1000L, ro.formation.infantry);
+        assertEquals(500L, ro.formation.lancer);
+        assertEquals(700L, ro.formation.marksman);
+        assertEquals(2200L, ro.formation.totalSoldiers());
+        assertTrue("reason 标注来源", ro.reason.contains("编队库兵量"));
+
+        // payload 必须反映最终兵量（k=最高档兵种 id，v=库兵量）
+        Map<String, Object> payload = ro.formation.toFormationPayload();
+        @SuppressWarnings("unchecked")
+        List<Map<String, Object>> soldiers = (List<Map<String, Object>>) payload.get("soldier");
+        assertEquals(3, soldiers.size());
+        assertEquals(11000L, ((Number) soldiers.get(0).get("k")).longValue());
+        assertEquals(1000L, ((Number) soldiers.get(0).get("v")).longValue());
+        assertEquals(21000L, ((Number) soldiers.get(1).get("k")).longValue());
+        assertEquals(500L, ((Number) soldiers.get(1).get("v")).longValue());
+        assertEquals(700L, ((Number) soldiers.get(2).get("v")).longValue());
+    }
+
+    @Test
+    public void role_functionSoldiersOverridePerLine() {
+        presetAll();
+        FormationLibrary lib = libOne(8, "库兵队", "[50041]",
+                "{\"infantry\":1000,\"lancer\":500,\"marksman\":700}", null, 0);
+        // 功能级只覆盖 infantry/marksman（>0 生效），lancer 沿用库兵量
+        FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(engine, lib,
+                params("formation_mode", "ROLE", "formation_id", "8",
+                        "soldiers", Map.of("infantry", 3000, "marksman", 900)));
+        assertTrue(ro.reason, ro.ready());
+        assertEquals(3000L, ro.formation.infantry);
+        assertEquals("未覆盖的兵种沿用编队库", 500L, ro.formation.lancer);
+        assertEquals(900L, ro.formation.marksman);
+        assertTrue(ro.reason.contains("功能级 soldiers 覆盖"));
+
+        // 全量覆盖
+        FormationResolver.ResolveOutcome full = FormationResolver.resolveOutcome(engine, lib,
+                params("formation_mode", "ROLE", "formation_id", "8",
+                        "soldiers", Map.of("infantry", 2000, "lancer", 1500, "marksman", 1000)));
+        assertTrue(full.ready());
+        assertEquals(2000L, full.formation.infantry);
+        assertEquals(1500L, full.formation.lancer);
+        assertEquals(1000L, full.formation.marksman);
+    }
+
+    @Test
+    public void role_librarySoldiersOverStock_skipsWithReason() {
+        presetAll();
+        FormationLibrary lib = libOne(9, "超量队", "[50041]",
+                "{\"infantry\":50000,\"lancer\":50000,\"marksman\":50000}", null, 0);
+        FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(engine, lib,
+                params("formation_mode", "ROLE", "formation_id", "9"));
+        assertFalse("库兵量超库存 → SKIP（不静默削减）", ro.ready());
+        assertTrue(ro.reason.contains("超出库存"));
+        assertTrue("原因含具体缺口：" + ro.reason, ro.reason.contains("50000"));
+    }
+
+    @Test
+    public void role_noSoldiers_totalAllocatesByRatio() {
+        presetAll();
+        FormationLibrary lib = libOne(10, "比例队", "[50041]", null,
+                "{\"infantry\":1,\"lancer\":1,\"marksman\":1}", 900);
+        FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(engine, lib,
+                params("formation_mode", "ROLE", "formation_id", "10"));
+        assertTrue(ro.reason, ro.ready());
+        assertEquals("spec.total>0 → 按 total/ratio 分配（保留 AUTOMATIC 语义）", 900L,
+                ro.formation.totalSoldiers());
+        assertEquals(300L, ro.formation.infantry);
+        assertEquals(300L, ro.formation.lancer);
+        assertEquals(300L, ro.formation.marksman);
+        assertTrue(ro.reason.contains("按比例分配"));
+    }
+
+    @Test
+    public void role_noSoldiersNoTotal_skipsWithReadableReason() {
+        presetAll();
+        FormationLibrary lib = libOne(11, "空兵队", "[50041]", null, null, 0);
+        FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(engine, lib,
+                params("formation_mode", "ROLE", "formation_id", "11"));
+        assertFalse("库未配兵量且无 total/ratio → SKIP（不静默自动分配）", ro.ready());
+        assertTrue(ro.reason.contains("未配置兵量"));
+        assertTrue(ro.reason.contains("total"));
+    }
+
+    @Test
+    public void role_explicitParamsRatio_allocatesWithoutTotal() {
+        presetAll();
+        FormationLibrary lib = libOne(12, "比例队", "[50041]", null, null, 0);
+        FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(engine, lib,
+                params("formation_mode", "ROLE", "formation_id", "12",
+                        "ratio", Map.of("infantry", 100, "lancer", 0, "marksman", 0)));
+        assertTrue("显式 ratio 也算明确要求按比例分配：" + ro.reason, ro.ready());
+        assertTrue(ro.formation.totalSoldiers() > 0);
+        assertEquals("容量上限内盾优先", 20000L, ro.formation.infantry);
+    }
 }

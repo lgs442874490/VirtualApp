@@ -206,30 +206,69 @@ public final class FormationResolver {
         if (stockSum <= 0) {
             return ResolveOutcome.skip("兵种库存未同步（notify_soldier_init 缺失）");
         }
+        // ---------------------------------------------------------------
+        // ROLE 兵量优先级（批次11 修复：必须用编队库 spec 的兵量，不能落回自动分配）
+        //   ① 功能级 soldiers 字段覆盖（>0 生效，按兵种逐项覆盖）
+        //   ② 编队库 FormationSpec 三兵种（infantry/lancer/marksman，任一 >0）
+        //   ③ spec.total>0 或显式 ratio → 按 total/ratio + 库存分配（保留 AUTOMATIC 分配语义）
+        //   ④ 库无兵量且无 total/ratio → SKIP + 可读原因（不静默缩小/不静默自动分配）
+        // 任何显式/库兵量超库存 → SKIP（不静默削减）。
+        // ---------------------------------------------------------------
         long[] override = soldiersOf(p);
+        long[] merged = new long[]{
+                spec.infantry > 0 ? spec.infantry : 0L,
+                spec.lancer > 0 ? spec.lancer : 0L,
+                spec.marksman > 0 ? spec.marksman : 0L};
+        boolean overrideAny = false;
+        if (override != null) {
+            for (int i = 0; i < 3; i++) {
+                if (override[i] > 0) {
+                    merged[i] = override[i];   // 功能级覆盖：只覆盖 >0 的兵种，其余沿用库兵量
+                    overrideAny = true;
+                }
+            }
+        }
+        boolean libraryAny = merged[0] > 0 || merged[1] > 0 || merged[2] > 0;
         long[] soldiers;
-        if (override != null && (override[0] > 0 || override[1] > 0 || override[2] > 0)) {
-            // 显式兵量（编队自身 soldiers 或 params 覆盖）：库存不足 → SKIP，不静默削减
-            soldiers = new long[]{override[0], override[1], override[2]};
+        String sourceNote;
+        if (libraryAny) {
+            soldiers = merged;
             String shortLine = shortage(soldiers, stock);
             if (shortLine != null) {
                 return ResolveOutcome.skip("编队 #" + formationId + " 兵量超出库存：" + shortLine
                         + "（库存 盾" + stock[0] + "/矛" + stock[1] + "/弓" + stock[2] + "）");
             }
+            sourceNote = overrideAny ? "功能级 soldiers 覆盖" : "编队库兵量";
         } else {
-            // total=0 语义：按比例 + 容量自动分配（网页版 total=0=按容量）
             long total = totalOf(p);
             if (total <= 0) total = spec.total;
+            boolean explicitRatio = hasExplicitRatio(p);
+            if (total <= 0 && !explicitRatio) {
+                return ResolveOutcome.skip("编队 #" + formationId
+                        + " 未配置兵量（soldiers 全 0）且未设置 total/ratio（请在功能页编队里配置兵量或比例）");
+            }
+            // ③ total>0 或显式 ratio：按 total/ratio + 库存分配（网页版 AUTOMATIC 分配语义）
             if (total <= 0) total = Math.min(stockSum, MAX_SOLDIERS_PER_MARCH);
             long[] weights = ratioArray(ratioOf(p, spec.ratio), DEFAULT_RATIO);
             soldiers = allocate(total, weights, stock);
             if (soldiers[0] + soldiers[1] + soldiers[2] <= 0) {
                 return ResolveOutcome.skip("编队 #" + formationId + " 兵量分配为 0（比例/库存不可用）");
             }
+            sourceNote = "total=" + total + " 按比例分配";
         }
-        return ResolveOutcome.ready(build(engine, ResolvedFormation.SRC_ROLE, spec.id,
-                spec.name, new ArrayList<>(spec.heroIds), soldiers),
-                "角色编队 #" + spec.id + (spec.name == null || spec.name.isEmpty() ? "" : "(" + spec.name + ")"));
+        ResolvedFormation rf = build(engine, ResolvedFormation.SRC_ROLE, spec.id,
+                spec.name, new ArrayList<>(spec.heroIds), soldiers);
+        return ResolveOutcome.ready(rf, "角色编队 #" + spec.id
+                + (spec.name == null || spec.name.isEmpty() ? "" : "(" + spec.name + ")")
+                + " · " + sourceNote);
+    }
+
+    /** 是否显式给出比例（params.ratio/soldier_ratio 非空 Map；spec 默认 40:30:30 不算显式）。 */
+    static boolean hasExplicitRatio(Map<String, Object> fnParams) {
+        Object v = first(fnParams, "ratio", "soldier_ratio");
+        if (v instanceof JSONObject) v = toMap((JSONObject) v);
+        if (!(v instanceof Map)) return false;
+        return !((Map<?, ?>) v).isEmpty();
     }
 
     private static String shortage(long[] want, long[] stock) {

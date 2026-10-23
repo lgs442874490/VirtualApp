@@ -122,13 +122,21 @@ public final class FormationPicker {
                         sync(act);
                         refresh.run();
                     })));
-            // 摘要行
-            TextView sum = text(act, f == null
+            // 摘要行（批次11：带功能级兵量覆盖）
+            long[] override = FormationStore.fnSoldiersOverride(act, fpid, sid, fnId);
+            String overrideText = FormationStore.soldiersOverrideText(override);
+            TextView sum = text(act, (f == null
                     ? "英雄 -- · 请选择/新建编队"
                     : "英雄 " + f.heroIds.size() + " 名 · " + soldiersOf(f)
-                    + " · 来源=指定#" + f.id, 11.5f, UiStyle.INK2, false);
+                    + " · 来源=指定#" + f.id)
+                    + " · " + overrideText, 11.5f, UiStyle.INK2, false);
             sum.setPadding(0, dp(act, 6), 0, 0);
             card.addView(sum);
+            // 兵量覆盖（可选）：0/空=用编队库兵量；写入 params soldiers（服务器 resolver 覆盖）
+            card.addView(UiStyle.dropdownRow(act, "兵量覆盖（可选）",
+                    "未覆盖（用编队库兵量）".equals(overrideText) ? overrideText
+                            : overrideText + "（0=用库值）",
+                    () -> showSoldiersOverrideDialog(act, fpid, sid, fnId, () -> refresh.run())));
         } else {
             long[] ratio = FormationStore.fnAutoRatio(act, fpid, sid, fnId);
             card.addView(UiStyle.dropdownRow(act, "自动比例",
@@ -202,12 +210,30 @@ public final class FormationPicker {
             } else {
                 value = "#" + f.id + " " + f.name;
             }
-            card.addView(UiStyle.dropdownRow(act, "上车编队 " + joinId, value,
-                    () -> showJoinChooser(act, fpid, sid, joinId, () -> {
-                        sync(act);
-                        refresh.run();
-                        if (onChanged != null) onChanged.onChanged();
-                    })));
+            final boolean enabled = FormationStore.joinEnabled(cfg);
+            LinearLayout row = new LinearLayout(act);
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            row.setGravity(Gravity.CENTER_VERTICAL);
+            TextView dd = UiStyle.dropdownRow(act, "上车编队 " + joinId,
+                    value + (enabled ? "" : "（已停用）"), () -> showJoinChooser(act, fpid, sid,
+                            joinId, () -> {
+                                sync(act);
+                                refresh.run();
+                                if (onChanged != null) onChanged.onChanged();
+                            }));
+            if (!enabled) dd.setAlpha(.45f);   // 停用行置灰，但仍可点开改配置
+            row.addView(dd, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            UiStyle.Switch sw = new UiStyle.Switch(act, enabled, () -> {
+                FormationStore.saveJoinEnabled(act, fpid, sid, joinId,
+                        !FormationStore.joinEnabled(FormationStore.joinFormation(
+                                act, fpid, sid, joinId)));
+                sync(act);
+                refresh.run();
+                if (onChanged != null) onChanged.onChanged();
+            });
+            row.addView(sw);
+            card.addView(row);
         }
     }
 
@@ -296,6 +322,9 @@ public final class FormationPicker {
 
     private static void showJoinChooser(final Activity act, final String fpid, final long sid,
                                         final int joinId, final Runnable onSaved) {
+        // 批次11：切换编队/自动时保留该槽位的 enabled 状态（停用的槽位不因改配置被重新启用）
+        final boolean enabled = FormationStore.joinEnabled(
+                FormationStore.joinFormation(act, fpid, sid, joinId));
         final List<FormationStore.Formation> list = FormationStore.list(act, fpid, sid);
         final List<String> names = new ArrayList<>();
         names.add("自动（默认）");
@@ -308,7 +337,7 @@ public final class FormationPicker {
                 .setItems(names.toArray(new String[0]), (d, which) -> {
                     if (which == 0) {
                         FormationStore.saveJoinFormation(act, fpid, sid, joinId,
-                                FormationStore.MODE_AUTOMATIC, 0);
+                                FormationStore.MODE_AUTOMATIC, 0, enabled);
                         if (onSaved != null) onSaved.run();
                         return;
                     }
@@ -320,8 +349,50 @@ public final class FormationPicker {
                     }
                     FormationStore.Formation f = list.get(which - 1);
                     FormationStore.saveJoinFormation(act, fpid, sid, joinId,
-                            FormationStore.MODE_ROLE, f.id);
+                            FormationStore.MODE_ROLE, f.id, enabled);
                     if (onSaved != null) onSaved.run();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 功能级兵量覆盖弹窗（盾/矛/弓，0/空=用编队库值；写 params soldiers）。 */
+    private static void showSoldiersOverrideDialog(final Activity act, final String fpid,
+                                                   final long sid, final String fnId,
+                                                   final Runnable onSaved) {
+        long[] cur = FormationStore.fnSoldiersOverride(act, fpid, sid, fnId);
+        LinearLayout box = new LinearLayout(act);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(dp(act, 20), dp(act, 10), dp(act, 20), dp(act, 6));
+        LinearLayout row = new LinearLayout(act);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        final EditText inf = numInput(act, "盾兵（0=库值）", String.valueOf(cur[0]));
+        final EditText lan = numInput(act, "矛兵（0=库值）", String.valueOf(cur[1]));
+        final EditText mar = numInput(act, "弓兵（0=库值）", String.valueOf(cur[2]));
+        row.addView(labeled(act, "盾", inf), new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(labeled(act, "矛", lan), new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(labeled(act, "弓", mar), new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        box.addView(row);
+        TextView tip = text(act, "留空或 0 = 使用编队库兵量；非 0 = 覆盖该功能出征兵量（写入 params.soldiers）",
+                11, UiStyle.INK2, false);
+        tip.setPadding(0, dp(act, 8), 0, 0);
+        box.addView(tip);
+        new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("兵量覆盖（可选）")
+                .setView(box)
+                .setPositiveButton("保存", (d, w) -> {
+                    long i0 = Math.max(0, parseLong(inf, 0));
+                    long i1 = Math.max(0, parseLong(lan, 0));
+                    long i2 = Math.max(0, parseLong(mar, 0));
+                    FormationStore.saveFnSoldiersOverride(act, fpid, sid, fnId, i0, i1, i2);
+                    sync(act);
+                    if (onSaved != null) onSaved.run();
+                    UiStyle.toast(act, i0 + i1 + i2 <= 0
+                            ? "已清除兵量覆盖（使用编队库兵量）" : "兵量覆盖已保存并同步");
                 })
                 .setNegativeButton("取消", null)
                 .show();

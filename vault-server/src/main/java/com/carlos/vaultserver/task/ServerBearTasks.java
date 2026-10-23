@@ -6,6 +6,7 @@ import com.carlos.vaultserver.Beijing;
 import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.formation.FormationLibrary;
 import com.carlos.vaultserver.formation.FormationResolver;
+import com.carlos.vaultserver.formation.FormationSpec;
 import com.carlos.vaultserver.formation.ResolvedFormation;
 
 import org.json.JSONObject;
@@ -482,7 +483,18 @@ public final class ServerBearTasks {
         return false;
     }
 
-    /** 窗口内上车（type=99，默认 1 队、上限 6），并对账最多 1 次（req_world_mass_master_detail）。 */
+    /**
+     * 窗口内上车（type=99，默认 1 队、上限 6），并对账最多 1 次（req_world_mass_master_detail）。
+     *
+     * <p>批次11（join_formations 配置化）：
+     * <ul>
+     *   <li>每个启用槽先解析（{@link #selectJoinSlots}）：坏槽（编队不存在/英雄无效/兵量超库存/SKIP）
+     *       记录「上车编队#id 跳过：原因」后<b>继续下一启用槽</b>；全部槽失败才结束本场上车；</li>
+     *   <li>{@code enabled=false} 槽直接跳过（不发请求、不计失败，也不产生跳过失败记录）；</li>
+     *   <li>每槽最多 1 次、每车头最多 1 次，解析全为本地计算（不连协议），不产生重试风暴。</li>
+     * </ul>
+     * 无 {@code join_formations} → 旧自动上车逻辑（客户端队）逐字节不变。
+     */
     private static void joinRallies(TaskContext tc, Exec.Multi m, BearConfig cfg, BearState state,
                                     long nowSec, Window window) throws Exception {
         if (!cfg.joinEnabled) {
@@ -512,58 +524,78 @@ public final class ServerBearTasks {
         usedHeroes.addAll(parseHeroIds(state.launchHeroes));
         usedHeroes.addAll(parseHeroIds(state.joinHeroes));
         Map<Long, List<Long>> squads = Exec.clientSquads(tc.engine);
-        // 批次10：上车编队 1-6（join_formations）——空=沿用旧自动上车逻辑（零行为变化）
-        FormationLibrary joinLib = cfg.joinFormations.isEmpty()
-                ? null : FormationResolver.libraryFor(tc, TASK_ID);
         boolean detailQueried = false;
         boolean joinTextWritten = false;
         int tried = 0;
-        for (RallyCandidate candidate : candidates) {
+
+        // ---------- 批次11：join_formations 槽预解析（坏槽跳过继续；disabled 直接跳过） ----------
+        List<JoinAttempt> configuredAttempts = null;
+        if (!cfg.joinFormations.isEmpty()) {
+            FormationLibrary joinLib = FormationResolver.libraryFor(tc, TASK_ID);
+            final FormationLibrary lib = joinLib;
+            JoinSlotSelection selection = selectJoinSlots(cfg.joinFormations,
+                    slot -> resolveJoinSlot(tc, lib, slot));
+            if (!selection.disabledIds.isEmpty()) {
+                FileLog.info("巨熊上车 disabled 槽跳过 fpid={} sid={} ids={}（不发请求/不计失败）",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(selection.disabledIds));
+            }
+            for (int i = 0; i < selection.skippedSlots.size(); i++) {
+                JoinFormationConfig slot = selection.skippedSlots.get(i);
+                String note = selection.skippedNotes.get(i);
+                m.skip(note);
+                if (recordJoinSkipLogOnce(state, window.startSec, slot.id)) {
+                    FileLog.info("巨熊上车槽跳过 fpid={} sid={} {}", tc.fpid,
+                            String.valueOf(tc.sid), note);
+                }
+            }
+            List<String> conflictNotes = new ArrayList<>();
+            configuredAttempts = planJoinAttempts(selection, candidates, usedHeroes, remaining, conflictNotes);
+            for (String note : conflictNotes) {
+                m.skip(note);
+                FileLog.info("巨熊上车槽冲突跳过 fpid={} sid={} {}", tc.fpid,
+                        String.valueOf(tc.sid), note);
+            }
+            if (configuredAttempts.isEmpty()) {
+                StringBuilder summary = new StringBuilder("本场上车结束：可用上车编队为 0");
+                if (!selection.skippedNotes.isEmpty()) summary.append("（").append(selection.notesText()).append("）");
+                m.skip(summary.toString());
+                writeJoinMod(tc, "未上车 · " + summary);
+                saveState(tc, state);
+                return;
+            }
+        }
+
+        int attemptCount = configuredAttempts == null ? candidates.size() : configuredAttempts.size();
+        for (int attemptIndex = 0; attemptIndex < attemptCount; attemptIndex++) {
             if (tried >= remaining) break;
-            List<Long> heroes;
+            RallyCandidate candidate;
             Map<String, Object> formation;
+            List<Long> heroes;
             String joinSource;
-            JoinFormationConfig slot = cfg.joinFormations.isEmpty()
-                    ? null : joinFormationAt(cfg, joined.size() + tried);
-            if (!cfg.joinFormations.isEmpty()) {
-                if (slot == null) {
-                    m.skip("上车编队已用完（配置 " + enabledJoinFormationIds(cfg) + "），本场上车结束");
-                    writeJoinMod(tc, "未上车 · 上车编队配置已用完（" + enabledJoinFormationIds(cfg) + "）");
-                    joinTextWritten = true;
-                    break;
-                }
-                if (joinLib == null) joinLib = FormationResolver.libraryFor(tc, TASK_ID);
-                FormationResolver.ResolveOutcome slotOut = FormationResolver.resolveOutcome(
-                        tc.engine, joinLib, slot.params);
-                if (!slotOut.ready()) {
-                    m.skip(slot.label() + "不可用：" + slotOut.reason);
-                    writeJoinMod(tc, "未上车 · " + slot.label() + "不可用：" + slotOut.reason);
-                    joinTextWritten = true;
-                    break;
-                }
-                formation = slotOut.formation.toFormationPayload();
-                heroes = slotOut.formation.heroIds;
-                joinSource = slotOut.formation.describe();
-                if (!formationReady(formation)) {
-                    m.skip(slot.label() + "编队不可用（无英雄/兵种）");
-                    writeJoinMod(tc, "未上车 · " + slot.label() + "编队不可用（无英雄/兵种）");
-                    joinTextWritten = true;
-                    break;
-                }
-                boolean conflict = false;
+            if (configuredAttempts != null) {
+                // 批次11：槽+车头已预配对（坏槽已跳过），直接使用
+                JoinAttempt attempt = configuredAttempts.get(attemptIndex);
+                candidate = attempt.candidate;
+                formation = attempt.formation;
+                heroes = heroIdsOf(formation);
+                joinSource = attempt.label;
+                // 批次11：同一轮内前序槽已成功上车的英雄，后序槽动态再查一次（计划时只查了初始占用）
+                boolean conflictNow = false;
                 for (Long heroId : heroes) {
                     if (heroId != null && usedHeroes.contains(heroId)) {
-                        conflict = true;
+                        conflictNow = true;
                         break;
                     }
                 }
-                if (conflict) {
-                    m.skip(slot.label() + "英雄已被发起队/前序上车占用：" + heroes);
-                    writeJoinMod(tc, "未上车 · " + slot.label() + "英雄已被占用：" + heroes);
+                if (conflictNow) {
+                    String note = "上车编队跳过：英雄已被本轮前序上车占用 " + heroes;
+                    m.skip(note);
+                    writeJoinMod(tc, "未上车 · " + note);
                     joinTextWritten = true;
-                    break;
+                    continue;
                 }
             } else {
+                candidate = candidates.get(attemptIndex);
                 heroes = chooseSquadHeroes(squads, usedHeroes);
                 if (heroes.isEmpty()) {
                     m.skip("无空闲英雄编队可上车");
@@ -655,9 +687,27 @@ public final class ServerBearTasks {
             }
         }
         if (!joinTextWritten) {
-            writeJoinMod(tc, "未上车 · 本轮无动作（上限/候选）");
+            writeJoinMod(tc, "未上车 · 本轮无动作（上限/候选/槽）");
+        } else if (configuredAttempts != null && !configuredAttempts.isEmpty()) {
+            // 已写具体结果；补充“启用槽/跳过槽”摘要便于生产核对（不改成功文案主体）
+            try {
+                tc.saveModText(TASK_ID, "join_slots", "启用槽=" + enabledJoinFormationIds(cfg));
+            } catch (Throwable ignored) {
+            }
         }
         saveState(tc, state);
+    }
+
+    /** 生产上车槽解析器：功能级/槽级 soldiers 合并后调用 FormationResolver（坏槽由 selectJoinSlots 收集原因）。 */
+    static JoinSlotPlan resolveJoinSlot(TaskContext tc, FormationLibrary lib, JoinFormationConfig slot) {
+        Map<String, Object> params = mergeSoldiersForResolve(slot.params, lib);
+        FormationResolver.ResolveOutcome out = FormationResolver.resolveOutcome(tc.engine, lib, params);
+        if (!out.ready()) {
+            return new JoinSlotPlan(slot, null, "", out.reason);
+        }
+        Map<String, Object> payload = out.formation.toFormationPayload();
+        return new JoinSlotPlan(slot, payload, out.formation.describe(),
+                payload == null ? "编队英雄/兵种为空" : "");
     }
 
     /**
@@ -1270,8 +1320,10 @@ public final class ServerBearTasks {
     static BearFormationChoice chooseLaunchFormation(TaskContext tc, BearConfig cfg) {
         if (FormationResolver.isConfigured(cfg.paramsMap)) {
             FormationLibrary lib = FormationResolver.libraryFor(tc, TASK_ID);
+            // 批次11：功能级 soldiers 覆盖 > 库值（按字段合并；0/缺省=用库值）
+            Map<String, Object> resolveParams = mergeSoldiersForResolve(cfg.paramsMap, lib);
             FormationResolver.ResolveOutcome out = FormationResolver.resolveOutcome(
-                    tc.engine, lib, cfg.paramsMap);
+                    tc.engine, lib, resolveParams);
             if (!out.ready()) {
                 return new BearFormationChoice(null, "统一编队", out.reason);
             }
@@ -1445,6 +1497,191 @@ public final class ServerBearTasks {
             if (slot != null && slot.id == want) return slot;
         }
         return null;
+    }
+
+    // ---------- 5.1c 功能级覆盖 / 上车槽跳过（批次11，纯函数） ----------
+
+    /**
+     * 功能级 soldiers 覆盖合并（批次11；优先级=参数覆盖 &gt; 编队库值 &gt; 比例自动）：
+     * 按字段合并（参数某字段 &gt;0 覆盖该字段，否则用库值）；仅 ROLE 模式且库内编队有显式兵量时注入
+     * {@code soldiers}，保证 {@link FormationResolver#resolveRole} 的 {@code soldiersOf(p)} 读到合并结果。
+     * AUTOMATIC / 无库值 / 无 formation_id → 原样返回（交给 resolver 的 ratio/total 自动分配）。
+     */
+    static Map<String, Object> mergeSoldiersForResolve(Map<String, Object> params, FormationLibrary lib) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (params != null) out.putAll(params);
+        if (lib == null || lib.isEmpty()) return out;
+        if (!FormationResolver.MODE_ROLE.equals(FormationResolver.modeOf(out))) return out;
+        long formationId = FormationResolver.formationIdOf(out);
+        if (formationId <= 0L) return out;
+        FormationSpec spec = lib.byId(formationId);
+        if (spec == null || !spec.hasExplicitSoldiers()) return out;
+        long[] override = FormationResolver.soldiersOf(out);
+        long infantry = override != null && override.length > 0 && override[0] > 0L
+                ? override[0] : spec.infantry;
+        long lancer = override != null && override.length > 1 && override[1] > 0L
+                ? override[1] : spec.lancer;
+        long marksman = override != null && override.length > 2 && override[2] > 0L
+                ? override[2] : spec.marksman;
+        if (infantry + lancer + marksman <= 0L) return out;
+        Map<String, Object> soldiers = new LinkedHashMap<>();
+        soldiers.put("infantry", infantry);
+        soldiers.put("lancer", lancer);
+        soldiers.put("marksman", marksman);
+        out.put("soldiers", soldiers);
+        return out;
+    }
+
+    /** 上车槽解析结果（批次11：坏槽跳过继续）。 */
+    static final class JoinSlotPlan {
+        final JoinFormationConfig slot;
+        final Map<String, Object> payload;
+        final String label;
+        final String reason;
+
+        JoinSlotPlan(JoinFormationConfig slot, Map<String, Object> payload, String label, String reason) {
+            this.slot = slot;
+            this.payload = payload;
+            this.label = label == null ? "" : label;
+            this.reason = reason == null ? "" : reason;
+        }
+
+        boolean ready() {
+            return payload != null && !payload.isEmpty();
+        }
+    }
+
+    /** 上车槽解析器（生产实现=FormationResolver；单测注入假解析器，不连引擎）。 */
+    interface JoinSlotResolver {
+        JoinSlotPlan resolve(JoinFormationConfig slot);
+    }
+
+    /** 上车槽选择结果：usable=可用槽（保序）；skipped=坏槽记录；disabled=已关闭槽（直接跳过，不发请求/不计失败）。 */
+    static final class JoinSlotSelection {
+        final List<JoinSlotPlan> usable = new ArrayList<>();
+        final List<JoinFormationConfig> skippedSlots = new ArrayList<>();
+        final List<String> skippedNotes = new ArrayList<>();
+        final List<Integer> disabledIds = new ArrayList<>();
+
+        boolean allSkipped() {
+            return usable.isEmpty();
+        }
+
+        String notesText() {
+            StringBuilder sb = new StringBuilder();
+            for (String note : skippedNotes) {
+                if (sb.length() > 0) sb.append("；");
+                sb.append(note);
+            }
+            return sb.toString();
+        }
+    }
+
+    /**
+     * 批次11：遍历上车槽——坏槽（编队不存在/英雄无效/兵量超库存/SKIP）记录原因后<b>继续下一启用槽</b>；
+     * {@code enabled=false} 槽直接跳过（不发请求、不计失败）；全部槽失败由调用方结束本场上车（不重试风暴）。
+     */
+    static JoinSlotSelection selectJoinSlots(List<JoinFormationConfig> slots, JoinSlotResolver resolver) {
+        JoinSlotSelection out = new JoinSlotSelection();
+        if (slots == null) return out;
+        for (JoinFormationConfig slot : slots) {
+            if (slot == null) continue;
+            if (!slot.enabled) {
+                out.disabledIds.add(slot.id);
+                continue;
+            }
+            JoinSlotPlan plan = null;
+            try {
+                if (resolver != null) plan = resolver.resolve(slot);
+            } catch (Throwable ignored) {
+            }
+            if (plan == null || !plan.ready()) {
+                String reason = plan == null || plan.reason == null || plan.reason.isEmpty()
+                        ? "编队不可用" : plan.reason;
+                out.skippedSlots.add(slot);
+                out.skippedNotes.add("上车编队#" + slot.id + " 跳过：" + reason);
+                continue;
+            }
+            out.usable.add(plan);
+        }
+        return out;
+    }
+
+    /** 一次上车尝试（槽+车头配对；批次11 坏槽跳过后的计划）。 */
+    static final class JoinAttempt {
+        RallyCandidate candidate;
+        Map<String, Object> formation;
+        String label = "";
+    }
+
+    /**
+     * 纯函数：把可用上车槽与候选车头一一配对（每槽最多 1 次、每车头最多 1 次）；
+     * 英雄与发起队/前序上车占用的槽记入 skipNotesOut 后继续下一槽（不阻塞其余槽）。
+     */
+    static List<JoinAttempt> planJoinAttempts(JoinSlotSelection selection, List<RallyCandidate> candidates,
+                                              Set<Long> usedHeroes, int remaining,
+                                              List<String> skipNotesOut) {
+        List<JoinAttempt> out = new ArrayList<>();
+        if (selection == null || candidates == null || candidates.isEmpty()) return out;
+        int max = Math.min(selection.usable.size(),
+                Math.min(candidates.size(), Math.max(0, remaining)));
+        int candidateIndex = 0;
+        for (JoinSlotPlan plan : selection.usable) {
+            if (out.size() >= max || candidateIndex >= candidates.size()) break;
+            RallyCandidate candidate = candidates.get(candidateIndex);
+            List<Long> heroes = heroIdsOf(plan.payload);
+            boolean conflict = false;
+            if (usedHeroes != null) {
+                for (Long hero : heroes) {
+                    if (hero != null && usedHeroes.contains(hero)) {
+                        conflict = true;
+                        break;
+                    }
+                }
+            }
+            if (conflict) {
+                if (skipNotesOut != null) {
+                    skipNotesOut.add("上车编队#" + plan.slot.id
+                            + " 跳过：英雄已被发起队/前序上车占用 " + heroes);
+                }
+                continue;   // 该槽跳过，下一个槽复用同一车头（车头未消耗）
+            }
+            JoinAttempt attempt = new JoinAttempt();
+            attempt.candidate = candidate;
+            attempt.formation = plan.payload;
+            attempt.label = plan.label;
+            out.add(attempt);
+            candidateIndex++;
+        }
+        return out;
+    }
+
+    /** 同场次同槽只记一次 FileLog（返回 true=首次；mod 每轮仍写）。 */
+    static boolean recordJoinSkipLogOnce(BearState state, long windowStartSec, int slotId) {
+        if (state == null) return true;
+        if (state.joinSkipWindowStart != windowStartSec) {
+            state.joinSkipWindowStart = windowStartSec;
+            state.joinSkipSlots = "";
+        }
+        List<Integer> ids = new ArrayList<>();
+        if (state.joinSkipSlots != null && !state.joinSkipSlots.isEmpty()) {
+            for (String part : state.joinSkipSlots.split(",")) {
+                try {
+                    int v = Integer.parseInt(part.trim());
+                    if (v > 0) ids.add(v);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        if (ids.contains(slotId)) return false;
+        ids.add(slotId);
+        StringBuilder sb = new StringBuilder();
+        for (Integer id : ids) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(id);
+        }
+        state.joinSkipSlots = sb.toString();
+        return true;
     }
 
     // ---------- 巨熊 301（英雄不在城）降级重试（纯函数；批次10） ----------
@@ -2104,6 +2341,11 @@ public final class ServerBearTasks {
 
     /** 任务参数（App FnParams 同源；全部有默认值，缺省不阻塞）。 */
     static final class BearConfig {
+        /**
+         * 发起总开关（对齐网页版 {@code DailyBearActionConfig.launchEnabled}）：false=本场不发起集结。
+         * 说明：网页版编队级 {@code DailyBearFormationConfig.enabled} 在发起侧仅参与配置校验/保护英雄，
+         * 不单独拦截发起（发起闸门只看 launchEnabled）；上车槽 enabled 见 {@link JoinFormationConfig#enabled}。
+         */
         final boolean launchEnabled;
         final boolean joinEnabled;
         final boolean prepareRecallEnabled;
@@ -2301,6 +2543,9 @@ public final class ServerBearTasks {
         int launchPrepareIndexUsed;
         long preheatRefreshAt;
         String lastLaunchText = "";
+        /** 批次11：上车槽跳过 FileLog 节流（同场次同槽只记一次；mod 每轮仍写）。 */
+        long joinSkipWindowStart;
+        String joinSkipSlots = "";
 
         void mergeTimes(TrapTimes times) {
             if (times == null) return;
@@ -2362,6 +2607,10 @@ public final class ServerBearTasks {
             o.put("lastLaunchCode", state.lastLaunchCode);
             o.put("launchPrepareIndexUsed", state.launchPrepareIndexUsed);
             o.put("preheatRefreshAt", state.preheatRefreshAt);
+            o.put("joinSkipWindowStart", state.joinSkipWindowStart);
+            if (state.joinSkipSlots != null && !state.joinSkipSlots.isEmpty()) {
+                o.put("joinSkipSlots", state.joinSkipSlots);
+            }
             if (state.lastLaunchText != null && !state.lastLaunchText.isEmpty()) {
                 o.put("lastLaunchText", state.lastLaunchText);
             }
@@ -2393,6 +2642,8 @@ public final class ServerBearTasks {
             state.lastLaunchCode = o.optInt("lastLaunchCode", 0);
             state.launchPrepareIndexUsed = o.optInt("launchPrepareIndexUsed", 0);
             state.preheatRefreshAt = o.optLong("preheatRefreshAt", 0);
+            state.joinSkipWindowStart = o.optLong("joinSkipWindowStart", 0);
+            state.joinSkipSlots = o.optString("joinSkipSlots", "");
             state.lastLaunchText = o.optString("lastLaunchText", "");
         } catch (Throwable ignored) {
         }
