@@ -963,6 +963,15 @@ public final class ServerFieldTasks {
             return;
         }
 
+        // B2-T4 暂停协调（1:1 网页版 DailyGatherService.pauseBeforeDispatch:694-712）：
+        // 情报待办优先 / 巨熊活动窗口时让位，避免抢队列。
+        String pauseReason = gatherPauseReason(lib, System.currentTimeMillis() / 1000L);
+        if (pauseReason != null) {
+            m.skip(pauseReason);
+            tc.saveModText("gather", "send", pauseReason);
+            return;
+        }
+
         int maxLevel = gatherMaxResourceLevel(lib.clock());
         QueueMapping mapping = reconcileMapping(
                 parseQueueMapping(tc.store.getString(gatherQueueKey(tc))), queue.marches);
@@ -1400,6 +1409,36 @@ public final class ServerFieldTasks {
             }
         }
         return GATHER_DEFAULT_MAX_RESOURCE_LEVEL;
+    }
+
+    /** 采集暂停原因（资产库事实）：巨熊活动窗口 / 情报待办优先；null=可派。 */
+    static String gatherPauseReason(CoreAssetLibrary lib, long nowSec) {
+        if (lib == null || !lib.ready()) return null;
+        AssetSnapshot.Bear bear = lib.bear();
+        long reserve = bear == null ? 0L : bear.reserveTime;
+        long start = bear == null ? 0L : bear.massStartTime;
+        long end = bear == null ? 0L : bear.massEndTime;
+        int intel = 0;
+        try {
+            intel = lib.intel().dispatchable(nowSec).size();
+        } catch (Throwable ignored) {
+        }
+        return gatherPauseReason(reserve, start, end, intel, nowSec);
+    }
+
+    /** 纯函数：巨熊窗口 [reserve-600, reserve+1800] / [mass_start-600, mass_end]；情报可派优先。 */
+    static String gatherPauseReason(long bearReserve, long bearMassStart, long bearMassEnd,
+                                    int intelDispatchableCount, long nowSec) {
+        if (bearReserve > 0L && nowSec >= bearReserve - 600L && nowSec < bearReserve + 1800L) {
+            return "巨熊活动窗口，采集让位";
+        }
+        if (bearMassStart > 0L) {
+            long begin = bearMassStart - 600L;
+            long finish = bearMassEnd > 0L ? bearMassEnd : bearMassStart + 1800L;
+            if (nowSec >= begin && nowSec < finish) return "巨熊活动窗口，采集让位";
+        }
+        if (intelDispatchableCount > 0) return "情报待办优先，采集让位";
+        return null;
     }
 
     /** 特殊队列条数（仅展示；不参与普通队列空闲计算）。 */
