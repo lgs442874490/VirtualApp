@@ -650,9 +650,81 @@ public final class ServerTasks {
         return out;
     }
 
+    // ---- 批次5：邮件通知历史（notify_new_mail_syn / notify_mail_type_info_syn 多帧合并） ----
+
+    /**
+     * 从通知历史提取“有可操作邮件”的邮件类型/板块（批次5）：
+     * - notify_new_mail_syn{mail_cover_info{first_type,...}}：新到邮件 → 其 first_type；
+     * - notify_mail_type_info_syn{infolist[]{type,num,un_readnum,can_get_attach}}：仅取“有未读/可领附件”
+     *   的类型（un_readnum>0 或 can_get_attach==1），避免把 200 封已读历史板块全部并入扫描。
+     * 无历史返回空集合（调用方回退配置类型，行为等价批次4）。
+     */
+    static java.util.Set<Integer> mailHistoryTypes(String fpid) {
+        java.util.Set<Integer> out = new java.util.TreeSet<>();
+        if (fpid == null || fpid.trim().isEmpty()) return out;
+        for (ServerNotifyHistory.Entry e : ServerNotifyHistory.history(fpid,
+                "notify_new_mail_syn", "notify_mail_type_info_syn")) {
+            if (e == null || e.content == null) continue;
+            if ("notify_new_mail_syn".equals(e.proto)) {
+                Map<String, Object> cover = Exec.mapOf(e.content.get("mail_cover_info"));
+                if (cover == null) cover = e.content;
+                addMailHistoryType(out, Exec.longOf(cover.get("first_type")));
+            } else {
+                Object list = e.content.containsKey("infolist")
+                        ? e.content.get("infolist") : e.content.get("infos");
+                for (Map<String, Object> info : Exec.mapsOf(list)) {
+                    boolean actionable = Exec.longOf(info.get("un_readnum")) > 0L
+                            || Exec.longOf(info.get("can_get_attach")) > 0L;
+                    if (actionable) addMailHistoryType(out, Exec.longOf(info.get("type")));
+                }
+            }
+        }
+        return out;
+    }
+
+    private static void addMailHistoryType(java.util.Set<Integer> out, long type) {
+        // 只接受合法邮件类型（抓包实证 ≤220；上限 999 防脏数据把扫描类型打爆）
+        if (type > 0L && type <= 999L) out.add((int) type);
+    }
+
+    /** 邮件历史帧数（观测用：>1 才说明“历史补全”真正生效）。 */
+    static int mailHistoryFrameCount(String fpid) {
+        return ServerNotifyHistory.history(fpid,
+                "notify_new_mail_syn", "notify_mail_type_info_syn").size();
+    }
+
+    /**
+     * 配置类型 ∪ 历史类型（批次5，纯函数）：配置顺序优先、历史类型升序追加、去重；
+     * 上限 40 类防异常历史把每轮 cover_list 请求打爆。默认 all 配置下通常无新增（服务器类型是 21 类子集）。
+     */
+    static int[] mergeMailTypes(int[] configured, java.util.Set<Integer> historyTypes) {
+        java.util.List<Integer> merged = new ArrayList<>();
+        java.util.Set<Integer> seen = new java.util.HashSet<>();
+        if (configured != null) {
+            for (int t : configured) {
+                if (t > 0 && seen.add(t)) merged.add(t);
+            }
+        }
+        if (historyTypes != null) {
+            for (int t : historyTypes) {
+                if (seen.add(t)) merged.add(t);
+            }
+        }
+        final int max = 40;
+        int n = Math.min(merged.size(), max);
+        int[] out = new int[n];
+        for (int i = 0; i < n; i++) out[i] = merged.get(i);
+        return out;
+    }
+
     static TaskOutcome mailRewards(TaskContext tc) throws Exception {
         try {
-            int[] types = mailTypesFor(tc.strategy("mail", "read", "all"));
+            int[] configured = mailTypesFor(tc.strategy("mail", "read", "all"));
+            // 批次5：通知历史（每 proto ≤8 帧）合并“服务器实际有可领邮件”的类型/板块；
+            // 不新增任何协议请求，下方 cover_list 请求逻辑与批次4 完全一致。
+            java.util.Set<Integer> historyTypes = mailHistoryTypes(tc.fpid);
+            int[] types = mergeMailTypes(configured, historyTypes);
+            logHistoryMerge(tc, "mail", mailHistoryFrameCount(tc.fpid));
             boolean keepUnread = tc.subOn("mail", "keep_unread", true);
             try {
                 tc.engine.request("req_mail_type_info", null);
@@ -944,7 +1016,11 @@ public final class ServerTasks {
             // C3（批次4；TaskOutcome.nextWakeAtMillis 契约见 TaskOutcome.java:26-35，
             // 单任务模式由 RoundRunner.applyNextWake:190-208 落盘 srv:cad:{fpid}:{sid}:{fn}）：
             // 补给按 recovery next_calc_ts 精确唤醒，避免 60s 白跑；返回 0 时 Runner 不写、沿用节奏间隔。
-            long supplyWakeAt = supplyNextWakeAtMillis(tc.modState("supply"));
+            // 批次5 修复：online_ts 可能远于 24h（如跨活动/脏字段），直接交给 Runner 会被
+            // RoundRunner.applyNextWake 越界丢弃并每次 WARN（生产 6s/条噪声）→ 先过 24h 边窗，
+            // 越界/过去一律不设（回落 TaskCadence 固定间隔）。
+            long supplyWakeAt = safeNextWakeAtMillis(System.currentTimeMillis(),
+                    supplyNextWakeAtMillis(tc.modState("supply")));
             String msg = sb.length() == 0 ? "无结果" : sb.substring(0, sb.length() - 2);
             boolean claimed = msg.contains("已领取");
             TaskOutcome sr = new TaskOutcome("supply", "仓库补给",
@@ -1260,6 +1336,8 @@ public final class ServerTasks {
     static TaskOutcome adventureReward(TaskContext tc) throws Exception {
         try {
             long now = serverNowSec(tc);
+            // C3 唤醒边窗（批次5）：所有业务态唤醒统一经 safeNextWakeAtMillis 过滤（>now 且 ≤24h）。
+            long nowMillis = System.currentTimeMillis();
             Map<String, Object> pve = activityInfoOf(tc.engine,
                     "notify_adventure_pve_info", "adventure_pve_info");
             long passCheckpoint = pve == null ? -1L : Exec.longOf(pve.get("pass_checkpoint"));
@@ -1283,7 +1361,7 @@ public final class ServerTasks {
                 // C3：到量时刻精确唤醒（+2s 余量防边界 4004；TaskOutcome.nextWakeAtMillis）
                 return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.SKIPPED,
                         "挂机累积 " + accumulated + "s，还差 " + needSec + "s 到可领（10 分钟起领）")
-                        .wakeAt((now + needSec + 2L) * 1000L);
+                        .wakeAt(safeNextWakeAtMillis(nowMillis, (now + needSec + 2L) * 1000L));
             }
             GameMessage view = tc.engine.request("req_open_hang_up_reward_view", null);
             String previewText = "";
@@ -1299,7 +1377,7 @@ public final class ServerTasks {
                     // 对齐网页版 DailyAdventureRewardService.java:167-171 的 4004 处理）
                     return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.SKIPPED,
                             "挂机奖励尚未解锁或间隔未到（码" + vcode + "）")
-                            .wakeAt(nextAt * 1000L);
+                            .wakeAt(safeNextWakeAtMillis(nowMillis, nextAt * 1000L));
                 }
                 if (vcode != 0 && !isActivityUnavailableCode(vcode)) {
                     return classifyServerCode(vcode, "探险挂机");
@@ -1317,7 +1395,7 @@ public final class ServerTasks {
                     // C3：4004=领取间隔未到 → 15s 后重试（网页版 DailyAdventureRewardService.java:167-171）
                     return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.SKIPPED,
                             "领取间隔未到（约10分钟一领）")
-                            .wakeAt((now + 15L) * 1000L);
+                            .wakeAt(safeNextWakeAtMillis(nowMillis, (now + 15L) * 1000L));
                 }
                 if (code == 4003) {
                     return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.SKIPPED,
@@ -1342,8 +1420,8 @@ public final class ServerTasks {
                             + "（下次可领 " + Beijing.fmt("HH:mm")
                             .format(new java.util.Date(nextAt * 1000L)) + "）");
             r.rewards = d;
-            // C3：按 hang_start_time+600s 精确唤醒（状态：State:105-116 acceptClaim）
-            r.wakeAt(nextAt * 1000L);
+            // C3：按 hang_start_time+600s 精确唤醒（状态：State:105-116 acceptClaim；批次5 加 24h 边窗）
+            r.wakeAt(safeNextWakeAtMillis(nowMillis, nextAt * 1000L));
             return r;
         } catch (Exception e) {
             return classifyException(e, "探险挂机");
@@ -1358,6 +1436,20 @@ public final class ServerTasks {
         if (passCheckpoint <= 0L) return 0L;
         if (hangStartTime <= 0L) return 32400L;
         return Math.min(Math.max(0L, nowSec - hangStartTime), 32400L);
+    }
+
+    /**
+     * C3 唤醒边窗（批次5，修复生产 WARN 噪声）：仅当 {@code wakeAt} 严格晚于 now 且不超过 24h 时
+     * 才交给 Runner（{@code TaskOutcome.nextWakeAtMillis}），否则返回 0=不覆盖节奏间隔。
+     * 与 RoundRunner.acceptNextWakeAt:183-190 的边窗一致，但把“越界”在任务侧就静默消化，
+     * 避免每轮落一条 WARN（生产实测 supply.online_ts 可能 >24h）。纯函数便于单测。
+     */
+    static long safeNextWakeAtMillis(long nowMillis, long wakeAtMillis) {
+        if (wakeAtMillis <= 0L) return 0L;
+        long delta = wakeAtMillis - nowMillis;
+        if (delta <= 0L) return 0L;
+        if (delta > 24L * 60L * 60L * 1000L) return 0L;
+        return wakeAtMillis;
     }
 
     /**
@@ -2848,12 +2940,18 @@ public final class ServerTasks {
             Map<Long, Map<String, Object>> chests = new LinkedHashMap<>();
             long trophyReceived = -1L;   // -1 = 未知（不启用上限判断）
 
-            trophyReceived = mergeChestNotify(tc.engine, "notify_alliance_chest_init",
-                    chests, false, trophyReceived);
-            trophyReceived = mergeChestNotify(tc.engine, "notify_alliance_chest_add",
-                    chests, false, trophyReceived);
-            trophyReceived = mergeChestNotify(tc.engine, "notify_alliance_chest_update",
-                    chests, true, trophyReceived);
+            trophyReceived = mergeChestContent(chests,
+                    notifyContentOf(tc.engine, "notify_alliance_chest_init"), false, trophyReceived);
+            // 批次5：add 用 ServerNotifyHistory 最近多帧合并（引擎每 proto 只留最后一帧，连续新增会丢；
+            // 历史 ≤8 帧，旧→新合并、同 id 后帧覆盖；无历史时回退引擎单帧）。
+            long initRecordedAt = ServerNotifyHistory.latestRecordedAt(
+                    tc.fpid, "notify_alliance_chest_init");
+            java.util.List<Map<String, Object>> addFrames = chestHistoryContents(
+                    tc.fpid, tc.engine, "notify_alliance_chest_add", initRecordedAt);
+            trophyReceived = mergeChestFrames(chests, addFrames, false, trophyReceived);
+            logHistoryMerge(tc, "alliance_chest_add", addFrames.size());
+            trophyReceived = mergeChestContent(chests,
+                    notifyContentOf(tc.engine, "notify_alliance_chest_update"), true, trophyReceived);
             Map<String, Object> del = notifyContentOf(tc.engine, "notify_alliance_chest_delete");
             if (del != null) {
                 for (Object rawId : rawValues(del.get("ids"))) {
@@ -2933,15 +3031,14 @@ public final class ServerTasks {
     }
 
     /**
-     * 合并一条宝箱推送（init/add/update）到内存视图。
+     * 合并一帧宝箱推送（init/add/update）到内存视图（批次4 起抽成纯函数，批次5 多帧复用）。
      *
      * @param markReceived update 推送：出现的箱子一律标记 receive=true
      * @return 最新的 trophy_received_count（-1 = 未出现）
      */
-    private static long mergeChestNotify(WjdrEngine engine, String proto,
-                                         Map<Long, Map<String, Object>> chests,
-                                         boolean markReceived, long trophyReceived) {
-        Map<String, Object> content = notifyContentOf(engine, proto);
+    static long mergeChestContent(Map<Long, Map<String, Object>> chests,
+                                  Map<String, Object> content,
+                                  boolean markReceived, long trophyReceived) {
         if (content == null) return trophyReceived;
         if (content.containsKey("trophy_received_count")) {
             trophyReceived = Math.max(0L, Exec.longOf(content.get("trophy_received_count")));
@@ -2964,6 +3061,79 @@ public final class ServerTasks {
             chests.put(id, merged);
         }
         return trophyReceived;
+    }
+
+    /**
+     * 多帧宝箱合并（批次5）：按历史到达顺序（旧→新）逐帧调用 {@link #mergeChestContent}，
+     * 同 id 后帧覆盖先帧、不同 id 并集；空/缺失帧不改变视图（调用方回退单帧）。
+     */
+    static long mergeChestFrames(Map<Long, Map<String, Object>> chests,
+                                 java.util.List<Map<String, Object>> frames,
+                                 boolean markReceived, long trophyReceived) {
+        if (frames == null || frames.isEmpty()) return trophyReceived;
+        long last = trophyReceived;
+        for (Map<String, Object> frame : frames) {
+            last = mergeChestContent(chests, frame, markReceived, last);
+        }
+        return last;
+    }
+
+    /**
+     * 宝箱历史帧（批次5）：优先 {@link ServerNotifyHistory#history(String, String...)}
+     * 的最近多帧（同 proto ≤8，旧→新），为空时回退引擎单帧（等价批次4 行为）。
+     * 历史内容是 inbound 原始帧，按 {@link #notifyPayload} 解包 data/info/content 一层。
+     */
+    static java.util.List<Map<String, Object>> chestHistoryContents(String fpid, WjdrEngine engine,
+                                                                    String proto) {
+        return chestHistoryContents(fpid, engine, proto, 0L);
+    }
+
+    /**
+     * @param sinceMillis 只收 recordedAtMillis &gt;= since 的历史帧（0=不过滤）。联盟宝箱传“本次
+     *                    notify_alliance_chest_init 的记录时刻”，避免把上一会话残留的旧 add 箱
+     *                    带入当前视图（历史按账号保留、会话下线不清）。
+     */
+    static java.util.List<Map<String, Object>> chestHistoryContents(String fpid, WjdrEngine engine,
+                                                                    String proto, long sinceMillis) {
+        java.util.List<Map<String, Object>> out = new ArrayList<>();
+        for (ServerNotifyHistory.Entry e : ServerNotifyHistory.history(fpid, proto)) {
+            if (sinceMillis > 0L && e.recordedAtMillis < sinceMillis) continue;
+            Map<String, Object> payload = notifyPayload(e.content);
+            if (payload != null && !payload.isEmpty()) out.add(payload);
+        }
+        if (!out.isEmpty()) return out;
+        if (engine == null) return out;
+        Map<String, Object> payload = notifyPayload(engine.notifyContent(proto));
+        if (payload == null) payload = engine.notifyData(proto);
+        if (payload != null && !payload.isEmpty()) out.add(payload);
+        return out;
+    }
+
+    /** 推送内容解包（与 WjdrEngine.notifyData:704-712 同口径）：data/info/content 一层。 */
+    static Map<String, Object> notifyPayload(Map<String, Object> raw) {
+        if (raw == null) return null;
+        for (String k : new String[]{"data", "info", "content"}) {
+            Map<String, Object> inner = Exec.mapOf(raw.get(k));
+            if (inner != null) return inner;
+        }
+        return raw;
+    }
+
+    /**
+     * 历史合并观测（批次5）：合并帧数 >1 时写一条 info，同一 (fpid,key) 10 分钟限流，
+     * 便于生产确认“通知历史真正生效”，又不被 120s/180s 节奏刷屏。
+     */
+    private static final Map<String, Long> HISTORY_INFO_AT =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    static void logHistoryMerge(TaskContext tc, String key, int frameCount) {
+        if (frameCount <= 1 || tc == null) return;
+        long now = System.currentTimeMillis();
+        String k = tc.fpid + "|" + key;
+        Long last = HISTORY_INFO_AT.get(k);
+        if (last != null && now - last < 10 * 60_000L) return;
+        HISTORY_INFO_AT.put(k, now);
+        FileLog.info("通知历史合并 fpid={} proto={} frames={}", tc.fpid, key, frameCount);
     }
 
     /** 推送内容：优先解包 data/info/content 内层，取不到再回退原始 content。 */

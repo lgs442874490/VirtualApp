@@ -51,8 +51,23 @@ public final class Main {
         VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war);
         api.start();
 
+        // 每日自动化日报（批次5）：北京时间定点（默认 09:00，VAULT_DIGEST_TIME=HH:mm 覆盖）汇总近 24h
+        // 自动化结果推企微（复用 vault.json watch.webhookUrl；无 webhook 只落日志 + state srv:digest:{date}）。
+        // 只读 StateStore，不发游戏协议；回滚 VAULT_DIGEST=off。
+        com.carlos.vaultserver.task.DailyDigest digest =
+                new com.carlos.vaultserver.task.DailyDigest(store, stateStore, new WeComNotifier(),
+                        () -> {
+                            int online = 0;
+                            for (SessionControl.SessionStatus s : keeper.status()) {
+                                if (com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(s.state)) online++;
+                            }
+                            return online;
+                        });
+        digest.start();
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             FileLog.info("vault-server 停止");
+            digest.stop();
             api.stop();
             cadence.stop();
             scheduler.stop();

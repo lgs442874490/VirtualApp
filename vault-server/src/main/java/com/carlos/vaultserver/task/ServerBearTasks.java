@@ -56,6 +56,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *
  * <p>时间：一律北京时间（{@link Beijing#TZ} / {@link Beijing#ZONE_ID}）；服务器时钟优先（{@code GameServerClock}，
  * 未校准时回退本机时间）。纯函数（窗口/幂等键/参数构造/解析/触发判定）均为 static，便于单测不连真协议。
+ *
+ * <p><b>批次5（2026-10-23 今晚窗口增强）</b>：发车编队配置化（{@code hero_ids}/{@code squad_index}，缺省沿用队1）；
+ * 5204 降一档准备时间立即重试 1 次、401/2878 记录后 60s 延时重试 1 次（均受窗口剩余约束）；
+ * 发车尝试/成败/重试计划写日志与 {@code mod.bear.launch}，对账结果写 {@code mod.bear.join}（成员数/含自己）；
+ * 20:50-21:00 每 60s 预热刷新目标/编队并写 {@code mod.bear.prepare}。幂等/未预约 SKIP/零钻石语义不变。
  */
 public final class ServerBearTasks {
 
@@ -88,6 +93,25 @@ public final class ServerBearTasks {
     static final int CODE_HERO_OCCUPIED = 403;
     static final int CODE_ALREADY_JOINED = 2844;
     static final int CODE_WORLD_MARCH_LIMIT = 2878;
+    /** 发车可重试码（批次5）：401=兵/队列等参数不足（生产采集/狩猎同口径按“队列不足”处理）。 */
+    static final int CODE_LAUNCH_RETRY_401 = 401;
+    /** 5204 降档重试上限（1 次）；401/2878 延时重试上限（1 次）。 */
+    static final int MAX_DOWNGRADE_RETRIES = 1;
+    static final int MAX_DELAY_RETRIES = 1;
+    /** 401/2878 延时重试间隔（秒）。 */
+    static final long LAUNCH_RETRY_DELAY_SEC = 60L;
+    /** 重试安全余量：窗口剩余须 ≥ 准备档秒数 + 该余量才允许重试。 */
+    static final long LAUNCH_RETRY_MARGIN_SEC = 60L;
+    /** 窗口剩余不足重试时写入幂等记录的内部码（非服务端码，仅用于 mod 可读性）。 */
+    static final int CODE_RETRY_WINDOW_SHORT = -2;
+    /** 开赛前预热（20:50-21:00）刷新目标/编队检查的间隔（秒）。 */
+    static final long PREHEAT_REFRESH_SEC = 60L;
+    /** 距开赛 ≤ 该值进入 60s 预热节拍（20 分钟，确保覆盖 20:50 准备窗入口）。 */
+    static final long PREHEAT_LOOKAHEAD_SEC = 20L * 60L;
+    /** 距开赛 ≤ 该值开始分段步进唤醒（2 小时），避免全天每 15 分钟醒一次。 */
+    static final long PREHEAT_ARM_SEC = 2L * 3600L;
+    /** 编队英雄上限（网页版 HeroFormationRules.MAX_HERO_COUNT=3）。 */
+    static final int MAX_FORMATION_HEROES = 3;
     /** 状态键前缀（幂等/缓存）。 */
     static final String KEY_PREFIX = "srv:bear:";
     /** 预约同步节流：窗口附近 5 分钟、平时 6 小时。 */
@@ -161,6 +185,8 @@ public final class ServerBearTasks {
             Window window = windowOf(nowSec, state.reserve, state.start, cfg);
             trapText = trapSummary(state, window, cfg.launchWithoutReserve);
             windowText = phaseText(window);
+            // 批次5：新场次归一重试/预热台账（同场次保留预算，避免无限重试）
+            resetRetryIfNewWindow(state, window.startSec);
             saveState(tc, state);
 
             // 未读取到预约 + 走到配置周窗口：默认 SKIP（预约是游戏端行为，没有客户端预约协议，
@@ -181,25 +207,9 @@ public final class ServerBearTasks {
                 launchText = "未在窗口";
             } else if (window.phase == Window.PREPARING) {
                 launchText = "准备窗口中";
-                // 准备窗内预取熊坑目标（只读，零消耗），到点发车不再等目标发现
-                if (!targetUsable(state)) {
-                    TrapTarget target = resolveTarget(tc, state, new StringBuilder());
-                    if (target != null) {
-                        state.setTarget(target);
-                        saveState(tc, state);
-                    }
-                }
-                String prepMsg = "巨熊准备窗口（" + fmtTime(window.startSec) + " 开赛），等待开赛";
-                if (cfg.prepareRecallEnabled) {
-                    int recalled = recallOrdinaryMarches(tc);
-                    if (recalled > 0) {
-                        m.claimed("准备窗清场：撤回普通行军×" + recalled);
-                    } else {
-                        m.skip("准备窗清场：未取到可撤回的普通行军（不影响发车）");
-                    }
-                } else {
-                    m.skip(prepMsg + "（清场开关 prepare_recall 默认关）");
-                }
+                // 批次5：20:50-21:00 每 60s 预热一次（刷新目标 + 编队检查 + mod 状态），到点直接发车
+                preheat(tc, m, cfg, state, nowSec, window);
+                launchText = null;      // preheat 已写更细的 mod.bear.launch
             } else {
                 // ---------- 3) ACTIVE：发车 + 上车 + 对账 ----------
                 boolean launchedNow = launchRally(tc, m, cfg, state, nowSec, window);
@@ -207,20 +217,16 @@ public final class ServerBearTasks {
                 joinRallies(tc, m, cfg, state, nowSec(tc), refreshed);
                 launchedForWindowNow = launchedNow || launchedForWindow(
                         tc.store.getString(launchedKeyOf(tc)), dayKey(nowSec), window.startSec);
-                if (launchedNow) {
-                    launchText = "已发起";
-                } else if (launchedForWindowNow) {
-                    launchText = "本场已发起（不重复发车）";
-                } else {
-                    launchText = "未发起";
-                }
+                // 批次5：发车尝试/成败/重试计划由 launchRally 直接写 mod.bear.launch（含错误码原码），
+                // 上车核对由 joinRallies 写 mod.bear.join；此处不再用粗文案覆盖。
+                launchText = null;
             }
             writeMod(tc, trapText, windowText, launchText);
             // C3 业务态唤醒（网页版 TaskDecision.SleepUntil）：
             // 已预约→开赛前 60 秒；窗口内已发车→30 秒后做上车/对账；未预约/已结束→不覆盖节奏。
             // 落盘由 RoundRunner 在单任务模式下完成（整轮不写），并受 now..now+24h 边界约束。
-            nextWakeAt = bearNextWakeAtMillis(nowSec(tc) * 1000L, window,
-                    isValidEpoch(state.reserve), launchedForWindowNow);
+            nextWakeAt = bearWakeAtMillis(nowSec(tc) * 1000L, window,
+                    isValidEpoch(state.reserve), launchedForWindowNow, state.nextLaunchRetryAt);
         } catch (Exception e) {
             try {
                 writeMod(tc, trapText, windowText, "异常：" + ServerTasks.brief(String.valueOf(e.getMessage())));
@@ -238,28 +244,48 @@ public final class ServerBearTasks {
     // ==================================================================================
 
     /**
-     * 窗口内发起巨熊集结（type=411）。幂等：{@code srv:bear:{fpid}:{sid}:launched} 先落盘再请求，
-     * 同一“当日 + 场次”只发一辆车（异常/超时后也不重发，避免重复消耗；宁漏不花）。
+     * 窗口内发起巨熊集结（type=411）。批次5 增强：编队配置化（hero_ids/squad_index）、
+     * 5204 降档立即重试 1 次、401/2878 60s 后延时重试 1 次（受窗口剩余约束）、发车尝试/结果全量写日志与
+     * {@code mod.bear.launch}（失败原因一眼可读）。
+     *
+     * <p>幂等：同“当日+场次”成功或封板后绝不发第二辆车；只重试“服务端明确拒绝”的码，
+     * 结果未知（超时/空响应/无 marchId）保留“已尝试”标记——宁可漏发也不重复消耗（宁漏不花）。
      *
      * @return true=本次新发起成功
      */
     private static boolean launchRally(TaskContext tc, Exec.Multi m, BearConfig cfg,
                                        BearState state, long nowSec, Window window) throws Exception {
         String key = launchedKeyOf(tc);
-        String record = tc.store.getString(key);
         String day = dayKey(nowSec);
+        String record = tc.store.getString(key);
         if (launchedForWindow(record, day, window.startSec)) {
-            m.skip("本场已发起（" + describeLaunched(record) + "），不重复发车");
+            String prefix = record.contains("#code:") ? "本场已封板" : "本场已发起";
+            String text = prefix + "（" + describeLaunched(record) + "），不重复发车";
+            m.skip(text);
+            writeLaunchMod(tc, state, text);
             return false;
         }
         if (!cfg.launchEnabled) {
-            m.skip("发起开关 launch_enabled=false，本轮不发车");
+            String text = "发起开关 launch_enabled=false，本场不发车";
+            m.skip(text);
+            writeLaunchMod(tc, state, text);
             return false;
         }
-        long secondsToEnd = window.endSec - nowSec;
-        if (!enoughTimeToLaunch(secondsToEnd, cfg.prepareTimeIndex)) {
-            m.skip("剩余 " + secondsToEnd + "s 不足以按准备档 " + cfg.prepareTimeIndex
-                    + "（" + prepareSeconds(cfg.prepareTimeIndex) + "s）发起，本场不发车");
+        // 延时重试等待闸（401/2878 计划 60s 后重试一次；其余时间不重复请求）
+        if (state.nextLaunchRetryAt > nowSec) {
+            long wait = state.nextLaunchRetryAt - nowSec;
+            String text = "发车等待重试：还有 " + wait + "s（上次码" + state.lastLaunchCode + "）";
+            m.skip(text);
+            writeLaunchMod(tc, state, text);
+            return false;
+        }
+        int prepareIndex = effectivePrepareIndex(cfg, state);
+        long secondsToEnd0 = window.endSec - nowSec;
+        if (!enoughTimeToLaunch(secondsToEnd0, prepareIndex)) {
+            String text = "剩余 " + secondsToEnd0 + "s 不足以按准备档 " + prepareIndex
+                    + "（" + prepareSeconds(prepareIndex) + "s）发起，本场不发车";
+            m.skip(text);
+            writeLaunchMod(tc, state, text);
             return false;
         }
         // 目标：先用缓存坐标复核（req_world_mapobj），失败再走完整发现链
@@ -268,46 +294,129 @@ public final class ServerBearTasks {
             StringBuilder why = new StringBuilder();
             target = discoverTarget(tc, why);
             if (target == null) {
-                m.skip("未找到联盟熊坑目标：" + (why.length() == 0 ? "联盟建筑/世界地图确认为空" : why));
+                String text = "未找到联盟熊坑目标：" + (why.length() == 0 ? "联盟建筑/世界地图确认为空" : why);
+                m.skip(text);
+                writeLaunchMod(tc, state, text);
                 return false;
             }
         }
         state.setTarget(target);
-        Map<String, Object> formation = Exec.formation(tc.engine, 1);
+        String formationSource = effectiveFormationSource(tc.engine, cfg);
+        Map<String, Object> formation = launchFormation(tc.engine, cfg);
         if (!formationReady(formation)) {
+            String text = "无可用英雄/兵力编队（来源=" + formationSource + "），未发起集结";
+            m.skip(text);
             saveState(tc, state);
-            m.skip("无可用英雄/兵力编队（Exec.formation(engine,1) 为空），未发起集结");
-            return false;
-        }
-        Map<String, Object> payload = launchPayload(target, formation, cfg.prepareTimeIndex);
-        if (payload == null) {
-            saveState(tc, state);
-            m.skip("发起参数不完整（熊坑坐标/monsterid/编队缺失），未发起");
+            writeLaunchMod(tc, state, text);
             return false;
         }
         state.launchHeroes = appendHeroIds("", heroIdsOf(formation));
+        state.launchPrepareIndexUsed = prepareIndex;
         saveState(tc, state);
-        // 先落幂等标记（marchId=0=已尝试），再发请求：异常/超时同样不会发第二辆车
-        tc.store.putString(key, launchedRecord(day, window.startSec, 0L));
-        GameMessage rsp = tc.engine.request("req_world_march", payload);
-        int code = rsp == null ? -1 : Exec.codeOf(rsp);
-        long marchId = Exec.marchId(rsp);
-        if (marchId > 0) {
-            tc.store.putString(key, launchedRecord(day, window.startSec, marchId));
-            m.claimed("发起巨熊集结(marchId=" + marchId + ")");
-            tc.saveModText(TASK_ID, "launch", "已发起 · marshId=" + marchId
-                    + " · 目标(" + target.x + "," + target.y + ")monster=" + target.monsterId);
-            FileLog.info("巨熊发车成功 fpid={} sid={} marchId={} target=({},{}) monsterid={} 场次={}",
-                    tc.fpid, String.valueOf(tc.sid), String.valueOf(marchId),
-                    String.valueOf(target.x), String.valueOf(target.y),
-                    String.valueOf(target.monsterId), day + "#" + window.startSec);
-            return true;
+
+        for (int attempt = 1; attempt <= 2; attempt++) {
+            long now = nowSec(tc);
+            long secondsToEnd = window.endSec - now;
+            if (!enoughTimeToLaunch(secondsToEnd, prepareIndex)) {
+                tc.store.putString(key, launchedFailedRecord(day, window.startSec, CODE_RETRY_WINDOW_SHORT));
+                String text = launchFailureText(CODE_RETRY_WINDOW_SHORT, null);
+                state.lastLaunchCode = CODE_RETRY_WINDOW_SHORT;
+                saveState(tc, state);
+                m.skip(text);
+                writeLaunchMod(tc, state, text);
+                return false;
+            }
+            Map<String, Object> payload = launchPayload(target, formation, prepareIndex);
+            if (payload == null) {
+                String text = "发起参数不完整（熊坑坐标/monsterid/编队缺失），未发起";
+                m.skip(text);
+                writeLaunchMod(tc, state, text);
+                return false;
+            }
+            // 先落幂等标记（marchId=0=已尝试）再发请求：结果未知/异常时保留标记，绝不发第二辆车
+            tc.store.putString(key, launchedRecord(day, window.startSec, 0L));
+            state.launchPrepareIndexUsed = prepareIndex;
+            state.lastLaunchCode = 0;
+            String attemptText = "发车尝试" + attempt + "：" + launchAttemptText(
+                    window.startSec, prepareIndex, formationSource, secondsToEnd);
+            state.lastLaunchText = attemptText;
+            saveState(tc, state);
+            FileLog.info("巨熊发车尝试 fpid={} sid={} attempt={} {} 场次={}", tc.fpid,
+                    String.valueOf(tc.sid), String.valueOf(attempt),
+                    launchAttemptText(window.startSec, prepareIndex, formationSource, secondsToEnd),
+                    day + "#" + window.startSec);
+            GameMessage rsp = tc.engine.request("req_world_march", payload);
+            int code = rsp == null ? -1 : Exec.codeOf(rsp);
+            long marchId = Exec.marchId(rsp);
+            if (marchId > 0) {
+                tc.store.putString(key, launchedRecord(day, window.startSec, marchId));
+                String text = "已发起 · marchId=" + marchId + " · prepare=" + prepareIndex
+                        + "(" + prepareSeconds(prepareIndex) + "s) · 编队=" + formationSource
+                        + " · 目标(" + target.x + "," + target.y + ")monster=" + target.monsterId;
+                state.lastLaunchCode = 0;
+                state.nextLaunchRetryAt = 0L;
+                state.lastLaunchText = text;
+                saveState(tc, state);
+                m.claimed("发起巨熊集结(marchId=" + marchId + ")");
+                writeLaunchMod(tc, state, text);
+                FileLog.info("巨熊发车成功 fpid={} sid={} marchId={} target=({},{}) monsterid={} prepare={} 场次={}",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(marchId),
+                        String.valueOf(target.x), String.valueOf(target.y),
+                        String.valueOf(target.monsterId), String.valueOf(prepareIndex),
+                        day + "#" + window.startSec);
+                return true;
+            }
+            // 响应 code=0 但无 marchId / 空响应：结果未知 → 保留“已尝试”标记，不重试不重复消耗
+            if (code == 0 || code == -1) {
+                state.lastLaunchCode = code;
+                state.lastLaunchText = "发车结果未知(码" + code + ")，保留已尝试标记不重发，等待权威状态";
+                saveState(tc, state);
+                m.skip(state.lastLaunchText);
+                writeLaunchMod(tc, state, state.lastLaunchText);
+                FileLog.warn("巨熊发车结果未知 fpid={} sid={} code={} 场次={}", tc.fpid,
+                        String.valueOf(tc.sid), String.valueOf(code), day + "#" + window.startSec);
+                return false;
+            }
+            state.lastLaunchCode = code;
+            LaunchRetry retry = launchRetryDecision(code, now, window, cfg, state);
+            if (retry.retry && retry.immediate && attempt == 1) {
+                // 5204 降一档：服务端明确拒绝（未发车/未消耗），本轮立即重试 1 次
+                state.downgradeRetries++;
+                prepareIndex = retry.nextPrepareIndex;
+                state.launchPrepareIndexUsed = prepareIndex;
+                state.lastLaunchText = launchFailureText(code, retry);
+                saveState(tc, state);
+                m.skip("首次发车失败(码" + code + ") → 降档 prepare=" + prepareIndex
+                        + "(" + prepareSeconds(prepareIndex) + "s) 立即重试一次");
+                writeLaunchMod(tc, state, state.lastLaunchText);
+                continue;
+            }
+            // 明确被拒：清掉“已尝试”标记，按策略延时重试或直接封板（幂等记录保留到本场结束）
+            tc.store.putString(key, "");
+            if (retry.retry && retry.retryAtSec > now) {
+                state.delayRetries++;
+                state.nextLaunchRetryAt = retry.retryAtSec;
+                state.lastLaunchText = launchFailureText(code, retry)
+                        + " · 计划 " + Beijing.fmt("HH:mm:ss").format(new Date(retry.retryAtSec * 1000L)) + " 重试";
+                saveState(tc, state);
+                m.skip(state.lastLaunchText);
+                writeLaunchMod(tc, state, state.lastLaunchText);
+                FileLog.warn("巨熊发车被拒 fpid={} sid={} code={} 计划重试={} 场次={}", tc.fpid,
+                        String.valueOf(tc.sid), String.valueOf(code), String.valueOf(retry.retryAtSec),
+                        day + "#" + window.startSec);
+                return false;
+            }
+            // 不重试：写失败记录封板（本场不再尝试，避免空耗）
+            tc.store.putString(key, launchedFailedRecord(day, window.startSec, code));
+            String text = launchFailureText(code, retry);
+            state.lastLaunchText = text;
+            saveState(tc, state);
+            m.skip(text);
+            writeLaunchMod(tc, state, text);
+            FileLog.warn("巨熊发车失败 fpid={} sid={} code={} 场次={}", tc.fpid,
+                    String.valueOf(tc.sid), String.valueOf(code), day + "#" + window.startSec);
+            return false;
         }
-        tc.store.putString(key, launchedFailedRecord(day, window.startSec, code));
-        String text = bearCodeText(code);
-        m.skip("发起集结未成功（码" + code + "）" + (text.isEmpty() ? "" : "：" + text));
-        FileLog.warn("巨熊发车失败 fpid={} sid={} code={} 场次={}", tc.fpid,
-                String.valueOf(tc.sid), String.valueOf(code), day + "#" + window.startSec);
         return false;
     }
 
@@ -316,6 +425,7 @@ public final class ServerBearTasks {
                                     long nowSec, Window window) throws Exception {
         if (!cfg.joinEnabled) {
             m.skip("上车开关 join_enabled=false");
+            writeJoinMod(tc, "未上车 · 开关关闭");
             return;
         }
         String key = joinsKeyOf(tc);
@@ -324,6 +434,7 @@ public final class ServerBearTasks {
         int remaining = cfg.joinCount - joined.size();
         if (remaining <= 0) {
             m.skip("本场上车已达配置上限 " + cfg.joinCount + " 队");
+            writeJoinMod(tc, "本场已上车 " + joined.size() + "/" + cfg.joinCount + " 队（上限）");
             return;
         }
         long ownUid = tc.engine.lastUid();
@@ -332,6 +443,7 @@ public final class ServerBearTasks {
                 ownUid, allianceId, joined, nowSec);
         if (candidates.isEmpty()) {
             m.skip("未发现可加入的巨熊集结（等待联盟车头发车）");
+            writeJoinMod(tc, "未上车 · 未发现可加入的巨熊集结（等待车头）");
             return;
         }
         Set<Long> usedHeroes = new LinkedHashSet<>();
@@ -339,23 +451,30 @@ public final class ServerBearTasks {
         usedHeroes.addAll(parseHeroIds(state.joinHeroes));
         Map<Long, List<Long>> squads = Exec.clientSquads(tc.engine);
         boolean detailQueried = false;
+        boolean joinTextWritten = false;
         int tried = 0;
         for (RallyCandidate candidate : candidates) {
             if (tried >= remaining) break;
             List<Long> heroes = chooseSquadHeroes(squads, usedHeroes);
             if (heroes.isEmpty()) {
                 m.skip("无空闲英雄编队可上车");
+                writeJoinMod(tc, "未上车 · 无空闲英雄编队（发起队/已上车队占用）");
+                joinTextWritten = true;
                 break;
             }
             Map<String, Object> formation = Exec.formationWithHeroes(tc.engine, heroes);
             if (!formationReady(formation)) {
                 m.skip("上车编队无可用兵力，停止上车");
+                writeJoinMod(tc, "未上车 · 上车编队无可用兵力");
+                joinTextWritten = true;
                 break;
             }
             Map<String, Object> payload = joinPayload(candidate.masterMarchId,
                     candidate.startX, candidate.startY, formation);
             if (payload == null) {
                 m.skip("上车参数不完整（车头坐标/编队缺失）");
+                writeJoinMod(tc, "未上车 · 参数不完整（车头坐标/编队缺失）");
+                joinTextWritten = true;
                 break;
             }
             // 先落台账（避免同一车头重复请求），再发请求
@@ -366,38 +485,109 @@ public final class ServerBearTasks {
             int code = rsp == null ? -1 : Exec.codeOf(rsp);
             if (code == 0) {
                 boolean confirmed = responseConfirmsJoin(rsp.getContent(), candidate.masterMarchId);
+                String detailText = "";
                 if (!confirmed && !detailQueried) {
                     detailQueried = true;
-                    confirmed = detailConfirmsJoin(tc, candidate, ownUid);
+                    GameMessage detailRsp = requestRallyDetail(tc, candidate);
+                    if (detailRsp != null) {
+                        detailText = joinDetailSummary(detailRsp.getContent(), ownUid);
+                        confirmed = memberPresent(detailRsp.getContent(), ownUid);
+                    } else {
+                        detailText = "对账请求未返回";
+                    }
+                    FileLog.info("巨熊对账 fpid={} sid={} masterMarchId={} {}", tc.fpid,
+                            String.valueOf(tc.sid), String.valueOf(candidate.masterMarchId), detailText);
                 }
                 state.joinHeroes = appendHeroIds(state.joinHeroes, heroes);
                 usedHeroes.addAll(heroes);
                 if (confirmed) {
                     m.claimed("上车×1(车头" + candidate.masterMarchId + ")");
+                    writeJoinMod(tc, "已上车 车头=" + candidate.masterMarchId
+                            + (detailText.isEmpty() ? "" : " · " + detailText));
+                    joinTextWritten = true;
                     FileLog.info("巨熊上车成功 fpid={} sid={} masterMarchId={} 车头=({},{})",
                             tc.fpid, String.valueOf(tc.sid), String.valueOf(candidate.masterMarchId),
                             String.valueOf(candidate.startX), String.valueOf(candidate.startY));
                 } else {
                     m.skip("上车请求已发(车头" + candidate.masterMarchId + ")，成员详情未确认");
+                    writeJoinMod(tc, "上车已请求(车头=" + candidate.masterMarchId + ")，对账未确认"
+                            + (detailText.isEmpty() ? "" : " · " + detailText));
+                    joinTextWritten = true;
                 }
                 continue;
             }
             if (code == CODE_ALREADY_JOINED) {
                 m.skip("当前账号已在目标集结或通知滞后（码2844）");
+                writeJoinMod(tc, "上车跳过(码2844) · 已在该集结或通知滞后");
+                joinTextWritten = true;
             } else if (code == CODE_WORLD_MARCH_LIMIT) {
                 m.skip("行军队列已满（码2878），停止上车");
+                writeJoinMod(tc, "上车失败(码2878) · 行军队列已满");
+                joinTextWritten = true;
                 break;
             } else if (code == CODE_HERO_OCCUPIED) {
                 m.skip("上车英雄被占用（码403），停止上车");
+                writeJoinMod(tc, "上车失败(码403) · 英雄被占用");
+                joinTextWritten = true;
                 break;
             } else if (code == CODE_TRAP_MASS_TIME_EXPIRED) {
                 m.skip("巨熊集结已关闭（码5204）");
+                writeJoinMod(tc, "上车失败(码5204) · 集结已关闭");
+                joinTextWritten = true;
                 break;
             } else {
                 m.skip("上车失败（码" + code + "）");
+                writeJoinMod(tc, "上车失败(码" + code + ")");
+                joinTextWritten = true;
             }
         }
+        if (!joinTextWritten) {
+            writeJoinMod(tc, "未上车 · 本轮无动作（上限/候选）");
+        }
         saveState(tc, state);
+    }
+
+    /**
+     * 开赛前预热（批次5：20:50-21:00 的 PREPARING 分支）：
+     * 每 {@value #PREHEAT_REFRESH_SEC}s 刷新一次熊坑目标并检查发车编队，写 mod.bear.prepare / mod.bear.launch，
+     * 避免 21:00 开赛瞬间因目标/编队数据未就绪而错过发车（失败原因写清“目标未就绪/编队不可用”）。
+     */
+    private static void preheat(TaskContext tc, Exec.Multi m, BearConfig cfg, BearState state,
+                                long nowSec, Window window) {
+        boolean due = preheatRefreshDue(nowSec, state.preheatRefreshAt);
+        if (due) {
+            state.preheatRefreshAt = nowSec;
+            StringBuilder why = new StringBuilder();
+            TrapTarget target = resolveTarget(tc, state, why);
+            if (target != null) state.setTarget(target);
+            saveState(tc, state);
+        }
+        boolean targetReady = targetUsable(state);
+        String formationSource = effectiveFormationSource(tc.engine, cfg);
+        boolean formationOk = formationReady(launchFormation(tc.engine, cfg));
+        long secondsToStart = Math.max(0L, window.startSec - nowSec);
+        String summary = preheatSummary(targetReady, state.targetX, state.targetY,
+                state.targetMonsterId, formationOk, formationSource, secondsToStart);
+        try {
+            tc.saveModText(TASK_ID, "prepare", summary);
+        } catch (Throwable ignored) {
+        }
+        if (due) {
+            FileLog.info("巨熊预热 fpid={} sid={} {}", tc.fpid, String.valueOf(tc.sid), summary);
+        }
+        writeLaunchMod(tc, state, (targetReady && formationOk ? "预热就绪" : "预热未就绪") + " · " + summary);
+        saveState(tc, state);
+        if (!formationOk) {
+            m.skip("巨熊预热：无可用英雄/兵力编队（来源=" + formationSource + "），到点将无法发车");
+        } else if (!targetReady) {
+            m.skip(summary + " · 目标未就绪（每 60s 重试）");
+        } else {
+            m.skip(summary);
+        }
+        if (cfg.prepareRecallEnabled) {
+            int recalled = recallOrdinaryMarches(tc);
+            if (recalled > 0) m.claimed("准备窗清场：撤回普通行军×" + recalled);
+        }
     }
 
     /**
@@ -860,6 +1050,289 @@ public final class ServerBearTasks {
         return secondsToEnd >= prepareSeconds(prepareTimeIndex);
     }
 
+    // ---------- 5.1 发车编队配置（批次5，纯函数） ----------
+
+    /**
+     * hero_ids 参数解析（纯函数）：支持 JSONArray / List / {@code "1,2,3"} 字符串；
+     * 只取正数、去重、最多 {@value #MAX_FORMATION_HEROES} 名（网页版 HeroFormationRules.MAX_HERO_COUNT=3）。
+     */
+    static List<Long> parseConfiguredHeroIds(JSONObject params) {
+        List<Long> out = new ArrayList<>();
+        if (params == null || !params.has("hero_ids")) return out;
+        Object raw = params.opt("hero_ids");
+        if (raw instanceof org.json.JSONArray) {
+            org.json.JSONArray arr = (org.json.JSONArray) raw;
+            for (int i = 0; i < arr.length() && out.size() < MAX_FORMATION_HEROES; i++) {
+                long id = Exec.longOf(arr.opt(i));
+                if (id > 0) out.add(id);
+            }
+        } else if (raw instanceof List) {
+            for (Object value : (List<?>) raw) {
+                long id = Exec.longOf(value);
+                if (id > 0 && out.size() < MAX_FORMATION_HEROES) out.add(id);
+            }
+        } else {
+            for (String part : String.valueOf(raw).split("[,;\\s]+")) {
+                long id = Exec.longOf(part);
+                if (id > 0 && out.size() < MAX_FORMATION_HEROES) out.add(id);
+            }
+        }
+        return new ArrayList<>(new LinkedHashSet<>(out));
+    }
+
+    /** 发车编队来源文案（纯函数，写日志/mod 用）：hero_ids / squad_index(N) / 默认队1。 */
+    static String formationSourceLabel(BearConfig cfg) {
+        if (cfg == null) return "默认队1";
+        return formationSourceLabel(cfg, !cfg.heroIds.isEmpty());
+    }
+
+    /** 发车编队来源文案（实际生效口径）：hero_ids 不可用时如实标注回退到 squad_index。 */
+    static String formationSourceLabel(BearConfig cfg, boolean heroIdsUsable) {
+        if (cfg == null) return "默认队1";
+        if (!cfg.heroIds.isEmpty() && heroIdsUsable) {
+            StringBuilder sb = new StringBuilder("hero_ids(");
+            for (int i = 0; i < cfg.heroIds.size(); i++) {
+                if (i > 0) sb.append(',');
+                sb.append(cfg.heroIds.get(i));
+            }
+            return sb.append(')').toString();
+        }
+        if (!cfg.heroIds.isEmpty()) {
+            return "squad_index(" + cfg.squadIndex + ")/hero_ids不可用回退";
+        }
+        return "squad_index(" + cfg.squadIndex + ")";
+    }
+
+    /** 实际生效的编队来源（写日志/mod 用；hero_ids 配置了但当前不可用会标注回退）。 */
+    static String effectiveFormationSource(WjdrEngine engine, BearConfig cfg) {
+        boolean heroIdsUsable = false;
+        if (cfg != null && !cfg.heroIds.isEmpty()) {
+            try {
+                heroIdsUsable = formationReady(Exec.formationWithHeroes(engine, cfg.heroIds));
+            } catch (Throwable ignored) {
+            }
+        }
+        return formationSourceLabel(cfg, heroIdsUsable);
+    }
+
+    /**
+     * 解析发车编队（hero_ids 优先 → squad_index 客户端布阵 → 默认队1；逐级回退保证线上行为不变）。
+     * 结果可能为空编队，由调用方 SKIP（不猜英雄、不换兵）。
+     */
+    static Map<String, Object> launchFormation(WjdrEngine engine, BearConfig cfg) {
+        if (cfg != null && !cfg.heroIds.isEmpty()) {
+            Map<String, Object> byHeroIds = Exec.formationWithHeroes(engine, cfg.heroIds);
+            if (formationReady(byHeroIds)) return byHeroIds;
+        }
+        int squad = cfg == null ? 1 : cfg.squadIndex;
+        Map<String, Object> bySquad = Exec.formation(engine, squad);
+        if (formationReady(bySquad)) return bySquad;
+        // 最终兜底现有行为：默认第 1 队（可能仍为空，由调用方 SKIP 并写清原因）
+        return squad == 1 ? bySquad : Exec.formation(engine, 1);
+    }
+
+    // ---------- 5.2 发车重试决策（批次5，纯函数） ----------
+
+    /** 发车重试决策：immediate=同轮立即降档重试；retryAtSec>0=延时重试时刻；都不满足=不重试。 */
+    static final class LaunchRetry {
+        final boolean retry;
+        final boolean immediate;
+        final long retryAtSec;
+        final int nextPrepareIndex;
+        final String reason;
+
+        private LaunchRetry(boolean retry, boolean immediate, long retryAtSec,
+                            int nextPrepareIndex, String reason) {
+            this.retry = retry;
+            this.immediate = immediate;
+            this.retryAtSec = retryAtSec;
+            this.nextPrepareIndex = nextPrepareIndex;
+            this.reason = reason;
+        }
+
+        static LaunchRetry none(String reason) {
+            return new LaunchRetry(false, false, 0L, 0, reason);
+        }
+
+        static LaunchRetry immediateDowngrade(int nextPrepareIndex, String reason) {
+            return new LaunchRetry(true, true, 0L, nextPrepareIndex, reason);
+        }
+
+        static LaunchRetry delayed(long retryAtSec, int prepareIndex, String reason) {
+            return new LaunchRetry(true, false, retryAtSec, prepareIndex, reason);
+        }
+
+        @Override
+        public String toString() {
+            return retry ? (immediate ? "立即重试→" + nextPrepareIndex : "延时重试@" + retryAtSec) : "不重试（" + reason + "）";
+        }
+    }
+
+    /**
+     * 发车失败重试决策（纯函数）：
+     * <ul>
+     *   <li>5204（场次未开/准备档过长）→ 降一档 prepare_time_index 立即重试 1 次（620→320、1820→620…）；</li>
+     *   <li>401/2878（兵/队列不足）→ 记录并 {@value #LAUNCH_RETRY_DELAY_SEC}s 后延时重试 1 次；</li>
+     *   <li>其它码不重试（写明确 SKIP 并由幂等键封板）；</li>
+     *   <li>两类重试都受窗口剩余约束：剩余 ≥ 准备档秒数 + {@value #LAUNCH_RETRY_MARGIN_SEC}s。</li>
+     * </ul>
+     */
+    static LaunchRetry launchRetryDecision(int code, long nowSec, Window window, BearConfig cfg, BearState state) {
+        int usedIndex = effectivePrepareIndex(cfg, state);
+        long secondsToEnd = window == null ? 0L : window.endSec - nowSec;
+        if (code == CODE_TRAP_MASS_TIME_EXPIRED) {
+            if (state != null && state.downgradeRetries >= MAX_DOWNGRADE_RETRIES) {
+                return LaunchRetry.none("码5204 已降档重试过 1 次");
+            }
+            int next = clampPrepareIndex(usedIndex - 1);
+            if (next >= usedIndex) {
+                return LaunchRetry.none("已是最低准备档 " + prepareSeconds(usedIndex) + "s");
+            }
+            long need = prepareSeconds(next) + LAUNCH_RETRY_MARGIN_SEC;
+            if (secondsToEnd < need) {
+                return LaunchRetry.none("窗口剩余 " + secondsToEnd + "s 不足降档重试（需≥" + need + "s）");
+            }
+            return LaunchRetry.immediateDowngrade(next, "码5204 → 准备档 " + usedIndex
+                    + "(" + prepareSeconds(usedIndex) + "s) 降为 " + next + "(" + prepareSeconds(next) + "s) 立即重试");
+        }
+        if (code == CODE_LAUNCH_RETRY_401 || code == CODE_WORLD_MARCH_LIMIT) {
+            if (state != null && state.delayRetries >= MAX_DELAY_RETRIES) {
+                return LaunchRetry.none("码" + code + " 的 60s 延时重试已用过 1 次");
+            }
+            long need = prepareSeconds(usedIndex) + LAUNCH_RETRY_MARGIN_SEC;
+            if (secondsToEnd < need) {
+                return LaunchRetry.none("窗口剩余 " + secondsToEnd + "s 不足以 60s 后重试（需≥" + need + "s）");
+            }
+            return LaunchRetry.delayed(nowSec + LAUNCH_RETRY_DELAY_SEC, usedIndex,
+                    "码" + code + " → " + LAUNCH_RETRY_DELAY_SEC + "s 后重试 1 次");
+        }
+        String known = bearCodeText(code);
+        return LaunchRetry.none(known.isEmpty() ? ("码" + code + " 不重试") : known);
+    }
+
+    /** 本次应使用的准备档：已降档则沿用降档值，否则用配置值。 */
+    static int effectivePrepareIndex(BearConfig cfg, BearState state) {
+        if (state != null && state.launchPrepareIndexUsed >= 1) {
+            return clampPrepareIndex(state.launchPrepareIndexUsed);
+        }
+        return cfg == null ? DEFAULT_PREPARE_TIME_INDEX : clampPrepareIndex(cfg.prepareTimeIndex);
+    }
+
+    /** 新场次归一重试/预热状态（跨场次不串台账；同场次保留预算避免无限重试）。 */
+    static void resetRetryIfNewWindow(BearState state, long windowStartSec) {
+        if (state == null) return;
+        if (state.retryWindowStart == windowStartSec) return;
+        state.retryWindowStart = windowStartSec;
+        state.downgradeRetries = 0;
+        state.delayRetries = 0;
+        state.nextLaunchRetryAt = 0L;
+        state.lastLaunchCode = 0;
+        state.launchPrepareIndexUsed = 0;
+        state.preheatRefreshAt = 0L;
+        state.lastLaunchText = "";
+    }
+
+    // ---------- 5.3 唤醒/预热（批次5，纯函数） ----------
+
+    /**
+     * 任务下一次唤醒时刻（epoch millis；0=不覆盖节奏），在 C3 语义上叠加批次5：
+     * 预热窗（PREPARING 且未发车）每 {@value #PREHEAT_REFRESH_SEC}s 醒一次做目标/编队检查；
+     * 有发车重试计划时醒在 {@code retryAtSec}（与 C3 取更早者）。
+     */
+    static long bearWakeAtMillis(long nowMillis, Window window, boolean reserved, boolean launched,
+                                 long retryAtSec) {
+        long base = bearNextWakeAtMillis(nowMillis, window, reserved, launched);
+        long nowSec = nowMillis / 1000L;
+        if (retryAtSec > nowSec) {
+            long retryMs = retryAtSec * 1000L;
+            base = base <= 0L ? retryMs : Math.min(base, retryMs);
+        }
+        if (reserved && window != null && !launched && window.startSec > nowSec) {
+            long toStart = window.startSec - nowSec;
+            long candidate = 0L;
+            if (window.phase == Window.PREPARING) {
+                // 准备窗：每 60s 醒一次做目标/编队预热，不晚于开赛时刻
+                candidate = Math.min((nowSec + PREHEAT_REFRESH_SEC) * 1000L, window.startSec * 1000L);
+            } else if (window.phase == Window.WAITING) {
+                if (toStart <= PREHEAT_LOOKAHEAD_SEC) {
+                    // 已进入 20 分钟预热提前量：60s 节拍（跨进 20:50 准备窗后继续）
+                    candidate = Math.min((nowSec + PREHEAT_REFRESH_SEC) * 1000L, window.startSec * 1000L);
+                } else if (toStart <= PREHEAT_ARM_SEC) {
+                    // 2 小时内：≤20 分钟一步，保证落进 20:50-21:00 预热窗
+                    candidate = Math.min((window.startSec - BEAR_WAKE_LEAD_SECONDS) * 1000L,
+                            (nowSec + PREHEAT_LOOKAHEAD_SEC) * 1000L);
+                } else {
+                    // 更远：≤2 小时一步（C3 原本一觉睡到开赛前 60s，会跳过预热窗；分段步进代价极低）
+                    candidate = Math.min((window.startSec - BEAR_WAKE_LEAD_SECONDS) * 1000L,
+                            (nowSec + PREHEAT_ARM_SEC) * 1000L);
+                }
+            }
+            if (candidate > nowMillis) {
+                base = base <= 0L ? candidate : Math.min(base, candidate);
+            }
+        }
+        return base;
+    }
+
+    /** 预热刷新是否到期（纯函数）：首次/满 60s/时钟回拨都刷新。 */
+    static boolean preheatRefreshDue(long nowSec, long lastRefreshSec) {
+        if (lastRefreshSec <= 0L) return true;
+        if (nowSec < lastRefreshSec) return true;
+        return nowSec - lastRefreshSec >= PREHEAT_REFRESH_SEC;
+    }
+
+    /** 预热状态文案（写 mod.bear.prepare，失败原因一眼可读）。 */
+    static String preheatSummary(boolean targetReady, long targetX, long targetY, long monsterId,
+                                 boolean formationReady, String formationSource, long secondsToStart) {
+        StringBuilder sb = new StringBuilder("预热：");
+        if (targetReady) {
+            sb.append("目标(").append(targetX).append(',').append(targetY).append(")monster=")
+                    .append(monsterId).append(" 就绪");
+        } else {
+            sb.append("目标未就绪");
+        }
+        sb.append(" · 编队=").append(formationSource == null ? "未知" : formationSource)
+                .append(formationReady ? " 就绪" : " 不可用");
+        sb.append(" · 距开赛 ").append(Math.max(0L, secondsToStart)).append("s");
+        return sb.toString();
+    }
+
+    // ---------- 5.4 发车可观测文案（批次5，纯函数） ----------
+
+    /** 发车尝试日志文案：窗口/准备档/编队来源/剩余秒（失败原因一眼可读）。 */
+    static String launchAttemptText(long windowStartSec, int prepareIndex, String formationSource,
+                                    long secondsToEnd) {
+        return "窗口=" + fmtTime(windowStartSec)
+                + " prepare=" + prepareIndex + "(" + prepareSeconds(prepareIndex) + "s)"
+                + " 编队=" + (formationSource == null ? "未知" : formationSource)
+                + " 剩余=" + secondsToEnd + "s";
+    }
+
+    /** 发车失败文案（写 mod.bear.launch / SKIP 原因）：错误码原码 + 已知语义 + 重试计划。 */
+    static String launchFailureText(int code, LaunchRetry retry) {
+        StringBuilder sb = new StringBuilder("发车失败(码").append(code).append(')');
+        if (code == CODE_RETRY_WINDOW_SHORT) {
+            sb.append("：窗口剩余不足，已放弃重试");
+            return sb.toString();
+        }
+        String known = bearCodeText(code);
+        if (!known.isEmpty()) sb.append("：").append(known);
+        if (code == CODE_HERO_OCCUPIED) {
+            sb.append(" · 可在 bear.hero_ids 配置空闲英雄后重试");
+        }
+        if (retry != null && retry.retry) {
+            if (retry.immediate) {
+                sb.append(" · 立即降档至 prepare=").append(retry.nextPrepareIndex)
+                        .append("(").append(prepareSeconds(retry.nextPrepareIndex)).append("s) 重试");
+            } else {
+                sb.append(" · 计划 ").append(LAUNCH_RETRY_DELAY_SEC).append("s 后重试 1 次");
+            }
+        } else if (retry != null && retry.reason != null && !retry.reason.isEmpty()) {
+            sb.append(" · 不再重试（").append(retry.reason).append('）');
+        }
+        return sb.toString();
+    }
+
     // ==================================================================================
     // 六、纯函数：通知/响应解析（单测用真机形状覆盖）
     // ==================================================================================
@@ -1162,14 +1635,31 @@ public final class ServerBearTasks {
         return false;
     }
 
-    /** 对账一次（每轮最多 1 次，网页版 RALLY_MEMBER_DETAIL_TIMEOUT 同语义）。 */
-    private static boolean detailConfirmsJoin(TaskContext tc, RallyCandidate candidate, long ownUid) {
+    /**
+     * {@code req_world_mass_master_detail} 对账文案（批次5 可观测性）：成员数 / 是否含自己。
+     * 纯函数便于单测（不在单测里连协议）。
+     */
+    static String joinDetailSummary(Map<String, Object> content, long ownUid) {
+        if (content == null) return "对账未返回";
+        int count = 0;
+        boolean self = false;
+        for (Map<String, Object> detail : Exec.mapsOf(content.get("detail_list"))) {
+            count++;
+            long owner = Exec.longOf(detail.get("owner"));
+            if (owner <= 0) owner = Exec.longOf(detail.get("uid"));
+            if (ownUid > 0 && owner == ownUid) self = true;
+        }
+        if (count == 0) return "对账详情为空";
+        return "成员" + count + " · 含自己=" + (self ? "是" : "否");
+    }
+
+    /** 对账请求（每轮最多 1 次，网页版 RALLY_MEMBER_DETAIL_TIMEOUT 同语义）；异常返回 null。 */
+    private static GameMessage requestRallyDetail(TaskContext tc, RallyCandidate candidate) {
         try {
-            GameMessage rsp = tc.engine.request("req_world_mass_master_detail", Exec.args(
+            return tc.engine.request("req_world_mass_master_detail", Exec.args(
                     "id", candidate.masterMarchId, "owner", candidate.ownerUid, "kid", candidate.ownerKid));
-            return rsp != null && memberPresent(rsp.getContent(), ownUid);
         } catch (Exception e) {
-            return false;
+            return null;
         }
     }
 
@@ -1214,6 +1704,8 @@ public final class ServerBearTasks {
                 return "已加入目标集结或通知滞后（码2844）";
             case CODE_WORLD_MARCH_LIMIT:
                 return "行军队列已满（码2878）";
+            case CODE_LAUNCH_RETRY_401:
+                return "兵/队列参数不足（码401）";
             default:
                 return "";
         }
@@ -1235,10 +1727,14 @@ public final class ServerBearTasks {
         final int windowWeekday;       // ISO：1=周一 … 7=周日（默认 5=周五）
         final int windowStartMinute;   // 0..1439（北京时间）
         final int windowDurationMinutes;
+        /** 编队配置（批次5）：hero_ids 优先（≤3 名）；为空时用 squad_index 客户端布阵；都缺省沿用队1。 */
+        final List<Long> heroIds;
+        final int squadIndex;
 
         BearConfig(boolean launchEnabled, boolean joinEnabled, boolean prepareRecallEnabled,
                    boolean launchWithoutReserve, int joinCount, int prepareTimeIndex,
-                   int windowWeekday, int windowStartMinute, int windowDurationMinutes) {
+                   int windowWeekday, int windowStartMinute, int windowDurationMinutes,
+                   List<Long> heroIds, int squadIndex) {
             this.launchEnabled = launchEnabled;
             this.joinEnabled = joinEnabled;
             this.prepareRecallEnabled = prepareRecallEnabled;
@@ -1248,6 +1744,10 @@ public final class ServerBearTasks {
             this.windowWeekday = Math.max(1, Math.min(7, windowWeekday));
             this.windowStartMinute = Math.max(0, Math.min(1439, windowStartMinute));
             this.windowDurationMinutes = Math.max(1, Math.min(180, windowDurationMinutes));
+            this.heroIds = heroIds == null
+                    ? Collections.emptyList()
+                    : Collections.unmodifiableList(new ArrayList<>(heroIds));
+            this.squadIndex = Math.max(1, Math.min(6, squadIndex));
         }
 
         int windowStartMinuteOfDay() {
@@ -1260,7 +1760,7 @@ public final class ServerBearTasks {
 
         static BearConfig defaults() {
             return new BearConfig(true, true, false, false, 1, DEFAULT_PREPARE_TIME_INDEX,
-                    5, 21 * 60, ACTIVITY_MINUTES);
+                    5, 21 * 60, ACTIVITY_MINUTES, Collections.emptyList(), 1);
         }
 
         /** 参数解析：launch_enabled/join_enabled/prepare_recall/join_count/prepare_time_index/
@@ -1283,7 +1783,9 @@ public final class ServerBearTasks {
                     p.optInt("join_count", 1),
                     p.optInt("prepare_time_index", DEFAULT_PREPARE_TIME_INDEX),
                     p.optInt("window_weekday", 5),
-                    startMinute, duration);
+                    startMinute, duration,
+                    parseConfiguredHeroIds(p),
+                    p.optInt("squad_index", 1));
         }
     }
 
@@ -1388,6 +1890,15 @@ public final class ServerBearTasks {
         long targetAllianceId;
         String launchHeroes = "";
         String joinHeroes = "";
+        /** 批次5：发车重试/预热状态（按场次 windowStartSec 归一）。 */
+        long retryWindowStart;
+        long nextLaunchRetryAt;
+        int downgradeRetries;
+        int delayRetries;
+        int lastLaunchCode;
+        int launchPrepareIndexUsed;
+        long preheatRefreshAt;
+        String lastLaunchText = "";
 
         void mergeTimes(TrapTimes times) {
             if (times == null) return;
@@ -1442,6 +1953,16 @@ public final class ServerBearTasks {
             o.put("allianceId", state.targetAllianceId);
             if (state.launchHeroes != null && !state.launchHeroes.isEmpty()) o.put("launchHeroes", state.launchHeroes);
             if (state.joinHeroes != null && !state.joinHeroes.isEmpty()) o.put("joinHeroes", state.joinHeroes);
+            o.put("retryWindowStart", state.retryWindowStart);
+            o.put("nextLaunchRetryAt", state.nextLaunchRetryAt);
+            o.put("downgradeRetries", state.downgradeRetries);
+            o.put("delayRetries", state.delayRetries);
+            o.put("lastLaunchCode", state.lastLaunchCode);
+            o.put("launchPrepareIndexUsed", state.launchPrepareIndexUsed);
+            o.put("preheatRefreshAt", state.preheatRefreshAt);
+            if (state.lastLaunchText != null && !state.lastLaunchText.isEmpty()) {
+                o.put("lastLaunchText", state.lastLaunchText);
+            }
         } catch (Throwable ignored) {
         }
         return o.toString();
@@ -1463,6 +1984,14 @@ public final class ServerBearTasks {
             state.targetAllianceId = o.optLong("allianceId", 0);
             state.launchHeroes = o.optString("launchHeroes", "");
             state.joinHeroes = o.optString("joinHeroes", "");
+            state.retryWindowStart = o.optLong("retryWindowStart", 0);
+            state.nextLaunchRetryAt = o.optLong("nextLaunchRetryAt", 0);
+            state.downgradeRetries = o.optInt("downgradeRetries", 0);
+            state.delayRetries = o.optInt("delayRetries", 0);
+            state.lastLaunchCode = o.optInt("lastLaunchCode", 0);
+            state.launchPrepareIndexUsed = o.optInt("launchPrepareIndexUsed", 0);
+            state.preheatRefreshAt = o.optLong("preheatRefreshAt", 0);
+            state.lastLaunchText = o.optString("lastLaunchText", "");
         } catch (Throwable ignored) {
         }
         return state;
@@ -1483,11 +2012,32 @@ public final class ServerBearTasks {
         }
     }
 
+    /** mod 文案收口：launchText 传 null 表示“执行体已写过更细的 mod.bear.launch”，不覆盖。 */
     private static void writeMod(TaskContext tc, String trapText, String windowText, String launchText) {
         try {
             tc.saveModText(TASK_ID, "trap", trapText == null ? "" : trapText);
             tc.saveModText(TASK_ID, "window", windowText == null ? "" : windowText);
-            tc.saveModText(TASK_ID, "launch", launchText == null ? "" : launchText);
+            if (launchText != null) {
+                tc.saveModText(TASK_ID, "launch", launchText);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 单写 mod.bear.launch（批次5：发车尝试/成败/重试计划一眼可读）。 */
+    private static void writeLaunchMod(TaskContext tc, BearState state, String text) {
+        String value = text == null ? "" : text;
+        if (state != null) state.lastLaunchText = value;
+        try {
+            tc.saveModText(TASK_ID, "launch", value);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 单写 mod.bear.join（批次5：对账成员数/是否含自己）。 */
+    private static void writeJoinMod(TaskContext tc, String text) {
+        try {
+            tc.saveModText(TASK_ID, "join", text == null ? "" : text);
         } catch (Throwable ignored) {
         }
     }
