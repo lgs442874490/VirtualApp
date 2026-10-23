@@ -221,6 +221,60 @@ public class TaskCadenceSchedulerTest {
         assertFalse("保护期结束后应恢复派单", keeper.submitted.isEmpty());
     }
 
+    // ---------- 结果退避（st: 2=已领/4=无可领/3=异常） ----------
+
+    /** 今日 st 键（与 RoundRunner.applyResult 同格式）。 */
+    private String stKey(String fn) {
+        String day = com.carlos.vaultserver.Beijing.fmt("yyyy-MM-dd")
+                .format(new java.util.Date());
+        return "st:" + day + ":" + FPID + ":" + SID + ":" + fn;
+    }
+
+    @Test
+    public void skippedResultBacksOffInterval() {
+        seed(true, null);
+        long now = bj(2026, 10, 23, 6, 0);
+        stateStore.putLong(stKey("login_rewards"), 4L);   // 上轮已检查无可领
+        scheduler.tick(now);
+        assertEquals(1, keeper.submitted.size());
+        String fn = keeper.submitted.get(0);
+        assertEquals("login_rewards", fn);
+        long base = Math.max(TaskCadence.intervalSeconds(fn) * 1000L
+                * TaskCadenceScheduler.SKIP_BACKOFF_MULTIPLIER,
+                TaskCadenceScheduler.SKIP_BACKOFF_MIN_MILLIS);
+        long nxt = nextAt(fn);
+        assertTrue("无可领应退避到 [0.9,1.1]×" + base + "，实际=" + (nxt - now),
+                nxt >= now + (long) (base * 0.9d) && nxt <= now + (long) (base * 1.1d));
+    }
+
+    @Test
+    public void errorResultBacksOffInterval() {
+        seed(true, null);
+        long now = bj(2026, 10, 23, 6, 0);
+        stateStore.putLong(stKey("login_rewards"), 3L);   // 上轮异常
+        scheduler.tick(now);
+        String fn = keeper.submitted.get(0);
+        long base = Math.max(TaskCadence.intervalSeconds(fn) * 1000L
+                * TaskCadenceScheduler.ERROR_BACKOFF_MULTIPLIER,
+                TaskCadenceScheduler.ERROR_BACKOFF_MIN_MILLIS);
+        long nxt = nextAt(fn);
+        assertTrue("异常应退避到 [0.9,1.1]×" + base + "，实际=" + (nxt - now),
+                nxt >= now + (long) (base * 0.9d) && nxt <= now + (long) (base * 1.1d));
+    }
+
+    @Test
+    public void claimedResultUsesNormalInterval() {
+        seed(true, null);
+        long now = bj(2026, 10, 23, 6, 0);
+        stateStore.putLong(stKey("login_rewards"), 2L);   // 上轮已领取
+        scheduler.tick(now);
+        String fn = keeper.submitted.get(0);
+        long base = TaskCadence.intervalSeconds(fn) * 1000L;
+        long nxt = nextAt(fn);
+        assertTrue("已领取应按正常间隔 [0.9,1.1]×" + base + "，实际=" + (nxt - now),
+                nxt >= now + (long) (base * 0.9d) && nxt <= now + (long) (base * 1.1d));
+    }
+
     // ---------- 假实现 ----------
 
     private static final class FakeKeeper implements RoundScheduler.KeeperFacade {

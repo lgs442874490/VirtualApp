@@ -280,6 +280,18 @@ public final class TaskWakeRouter {
         exact.put("notify_backpack_init", set("backpack"));
         exact.put("notify_backpack_update", set("backpack"));
 
+        // 巨熊行动（2026-10-23 C3 配套）：预约/场次/集结推送到达时立即重评，
+        // 不必等固定 60s 节奏；对应网页版 task/bearaction/BearActionTaskModule.java:24 的触发协议族。
+        prefixes.add(new PrefixRule("notify_alliance_trap_", "bear"));
+        prefixes.add(new PrefixRule("notify_world_alliance_situation_activity", "bear"));
+        prefixes.add(new PrefixRule("notify_mass_march_", "bear"));
+
+        // 专家（网页版 task/expertintelligence/ExpertIntelligenceTaskModule.java:21：
+        //       notify_expert_info / update_expert_*；expert.skill 依赖推送取数；
+        //       notify_expert_quests 同时是 intel.expert_extra 的数据源）
+        prefixes.add(new PrefixRule("notify_expert_", "expert"));
+        exact.put("notify_expert_quests", set("intel"));
+
         EXACT = Collections.unmodifiableMap(exact);
         PREFIX_RULES = Collections.unmodifiableList(prefixes);
     }

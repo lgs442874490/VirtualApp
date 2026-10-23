@@ -56,7 +56,7 @@ public final class RoundRunner {
                 r.durationMs = System.currentTimeMillis() - t0;
             }
             // 落键一律用目录 id（classify* 生成的 taskId 可能是协议名/任务名，仅展示用）
-            applyResult(store, fpid, sid, def.id, r, trigger);
+            applyResult(store, fpid, sid, def.id, r, trigger, fnOnly != null && !fnOnly.isEmpty());
             if (r.successLike()) done++;
             if (r.category == TaskOutcome.Category.CLAIMED) claimed++;
             else if (r.category == TaskOutcome.Category.SKIPPED) skipped++;
@@ -101,6 +101,17 @@ public final class RoundRunner {
     /** 落一条任务结果：日志（log: 前缀，最新在前，保留50）+ 当日状态机（st:date:…）。 */
     static void applyResult(StateStore store, String fpid, long sid, String fnId,
                             TaskOutcome r, String trigger) {
+        applyResult(store, fpid, sid, fnId, r, trigger, false);
+    }
+
+    /**
+     * 落一条任务结果（C3 扩展）：额外在<b>单任务模式</b>下落盘任务自报的业务态唤醒时刻。
+     *
+     * @param singleTaskMode true=只跑单个任务（fnOnly/节奏派单/手动单功能）；false=全量整轮。
+     *                       整轮模式不写 {@code srv:cad:*}，避免把单任务节奏覆盖成整轮结果。
+     */
+    static void applyResult(StateStore store, String fpid, long sid, String fnId,
+                            TaskOutcome r, String trigger, boolean singleTaskMode) {
         try {
             String logKey = "log:" + fpid + ":" + sid + ":" + fnId;
             JSONArray arr;
@@ -156,6 +167,43 @@ public final class RoundRunner {
                 } catch (Throwable ignored) {
                 }
             }
+        } catch (Throwable ignored) {
+        }
+        applyNextWake(store, fpid, sid, fnId, r, singleTaskMode);
+    }
+
+    /** 业务态唤醒最大提前量：24 小时。超出视为任务算错/缓存脏数据，丢弃以免把节奏"冻"住。 */
+    static final long NEXT_WAKE_MAX_AHEAD_MILLIS = 24L * 60L * 60L * 1000L;
+
+    /**
+     * C3 业务态唤醒边界判定（纯函数，网页版 {@code TaskDecision.SleepUntil} 语义的安全闸）：
+     * 只接受 {@code now <= x <= now+24h}；其余（0/过去/超 24h）一律丢弃。
+     *
+     * @param nowMillis        落账时刻
+     * @param nextWakeAtMillis 任务自报的下次唤醒时刻（epoch millis）
+     */
+    static boolean acceptNextWakeAt(long nowMillis, long nextWakeAtMillis) {
+        if (nextWakeAtMillis <= 0L) return false;
+        long delta = nextWakeAtMillis - nowMillis;
+        return delta >= 0L && delta <= NEXT_WAKE_MAX_AHEAD_MILLIS;
+    }
+
+    /**
+     * C3：单任务模式下落盘任务自报的下次唤醒时刻到
+     * {@code srv:cad:{fpid}:{sid}:{fn}}（{@link TaskCadenceScheduler} 唯一的到期扫描键）。
+     * 整轮模式不写；边界不合法不写；任何异常吞掉（不破坏落账主流程）。
+     */
+    static void applyNextWake(StateStore store, String fpid, long sid, String fnId,
+                              TaskOutcome r, boolean singleTaskMode) {
+        if (!singleTaskMode || r == null || r.nextWakeAtMillis <= 0L) return;
+        try {
+            long now = System.currentTimeMillis();
+            if (!acceptNextWakeAt(now, r.nextWakeAtMillis)) {
+                FileLog.warn("业务态唤醒越界丢弃 fpid={} fn={} at={} now={}",
+                        fpid, fnId, String.valueOf(r.nextWakeAtMillis), String.valueOf(now));
+                return;
+            }
+            store.putLong("srv:cad:" + fpid + ":" + sid + ":" + fnId, r.nextWakeAtMillis);
         } catch (Throwable ignored) {
         }
     }

@@ -1897,17 +1897,31 @@ public final class ServerShopLeagueTasks {
         return Exec.result(m, "homeland_visit", "晨曦岛拜访");
     }
 
+    /**
+     * 背包道具（R8 解析修复，批次4 2026-10-23）。
+     *
+     * <p>生产“背包数据未同步”根因（audit §5.3）：抓包 tools/bundle_re/proto_log.txt:36
+     * {@code notify_backpack_init{"data":[{"id":510000,"count":14},...]}} 是 {@code List<{id,count}>}，
+     * 旧实现用 {@code Exec.kvPairs}（只认 {k,v} 对，Exec.java:76-83）→ 恒空。
+     * 修复：{@link #parseBackpackItems} 用 {@code Exec.mapsOf} 形状兼容（List/Map/Collection），
+     * 字段兼容 id/item_id + count/num/amount/cnt/quantity，并叠加最近一条
+     * {@code notify_backpack_update}（type=add 累加，抓包 10-14 02:24 add 实证）。
+     *
+     * <p><b>不扩大自动使用范围</b>：网页版无背包自动开箱模块（service/DailyBackpackResourceService.java
+     * 是手动 UI：req_batch_use_item/req_use_item）→ 是否自动开箱产品待确认；本修复仅解析，
+     * 保持既有固定资源包 100111-100115（random_boxes 开关保留 100091-100093）行为不变，不新增消耗类型。
+     */
     public static TaskOutcome backpack(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
             tc.engine.collectNotifies(1500);
-            Map<String, Object> bi = tc.engine.notifyContent("notify_backpack_init");
-            Map<Long, Long> items = Exec.kvPairs(bi == null ? null : bi.get("data"));
-            if (items == null || items.isEmpty()) {
-                items = Exec.kvPairs(bi == null ? null : bi.get("items"));
-            }
+            Map<String, Object> init = tc.engine.notifyContent("notify_backpack_init");
+            Map<Long, Long> items = parseBackpackItems(init);
+            applyBackpackUpdate(items, tc.engine.notifyContent("notify_backpack_update"));
             if (items.isEmpty()) {
-                m.skip("背包数据未同步");
+                m.skip(init == null
+                        ? "背包数据未同步（未收到 notify_backpack_init）"
+                        : "背包数据为空");
             } else {
                 List<Map<String, Object>> params = new ArrayList<>();
                 int used = 0;
@@ -1929,7 +1943,8 @@ public final class ServerShopLeagueTasks {
                     }
                 }
                 if (used == 0) {
-                    m.skip("无资源包可开");
+                    // 解析成功但无可使用项：明确“无可使用道具”，不再误报“未同步”
+                    m.skip("无可使用道具（背包 " + items.size() + " 种，未配置自动使用类型）");
                 } else {
                     GameMessage rsp = tc.engine.request("req_batch_use_item", Exec.args("params", params));
                     if (Exec.ok(rsp)) {
@@ -1944,5 +1959,79 @@ public final class ServerShopLeagueTasks {
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "backpack", "背包道具");
+    }
+
+    // ---- R8 背包解析纯函数（package-private，便于 RewardStateFixTest 单测；形状见背包方法注释） ----
+
+    /** 背包快照解析：{@code {"data":[{id,count}...]}} / {@code {"items":[...]}}，兼容 Map 与旧 {k,v}。 */
+    static Map<Long, Long> parseBackpackItems(Map<String, Object> content) {
+        Map<Long, Long> out = new LinkedHashMap<>();
+        if (content == null) return out;
+        Object raw = content.containsKey("data") ? content.get("data") : content.get("items");
+        mergeBackpackEntries(out, raw);
+        if (out.isEmpty()) {
+            out.putAll(Exec.kvPairs(raw));   // 旧形状兜底（防御：网页版抓包无此形状）
+        }
+        return out;
+    }
+
+    /** 合并背包条目（List/Map；Exec.mapsOf 兼容形状）；id 兼容 id/item_id，数量兼容 count/num/amount。 */
+    static void mergeBackpackEntries(Map<Long, Long> out, Object raw) {
+        if (raw == null || out == null) return;
+        for (Map<String, Object> item : Exec.mapsOf(raw)) {
+            long id = Exec.longOf(item.get("id"));
+            // Exec.mapsOf 对 Map 形态回填的 id 可能是 "100111.0" 浮点键 → 再走 numericKey
+            if (id <= 0L) id = ServerTasks.numericKey(item.get("id"));
+            if (id <= 0L) id = ServerTasks.numericKey(item.get("item_id"));
+            if (id <= 0L) continue;
+            long count = backpackCount(item);
+            if (count <= 0L) continue;
+            out.merge(id, count, Long::sum);
+        }
+    }
+
+    /** 数量字段兼容：count/num/amount/cnt/quantity/value（网页版 integerLongMap 兼容 num/amount 口径）。 */
+    static long backpackCount(Map<String, Object> item) {
+        if (item == null) return 0L;
+        for (String k : new String[]{"count", "num", "amount", "cnt", "quantity", "value"}) {
+            Object v = item.get(k);
+            if (v != null) {
+                long c = Exec.longOf(v);
+                if (c > 0L) return c;
+            }
+        }
+        return 0L;
+    }
+
+    /**
+     * 叠加最近一条 notify_backpack_update{type,data:[{id,count}]}（抓包 10-14 02:24 type=add 实证）：
+     * add=累加；del/delete/remove/reduce/sub=扣减（下限 0）；其它/缺失 type 不猜测、保持快照，
+     * 避免把增量事件误当全量快照覆盖（宁漏不花）。
+     */
+    static void applyBackpackUpdate(Map<Long, Long> items, Map<String, Object> update) {
+        if (items == null || update == null) return;
+        Object raw = update.containsKey("data") ? update.get("data") : update.get("items");
+        if (raw == null) return;
+        String type = String.valueOf(update.get("type")).trim().toLowerCase(java.util.Locale.ROOT);
+        Map<Long, Long> delta = new LinkedHashMap<>();
+        mergeBackpackEntries(delta, raw);
+        for (Map.Entry<Long, Long> e : delta.entrySet()) {
+            long id = e.getKey();
+            long count = e.getValue();
+            switch (type) {
+                case "add":
+                    items.merge(id, count, Long::sum);
+                    break;
+                case "del":
+                case "delete":
+                case "remove":
+                case "reduce":
+                case "sub":
+                    items.put(id, Math.max(0L, items.getOrDefault(id, 0L) - count));
+                    break;
+                default:
+                    break;   // 未知增量类型：不猜，保持快照
+            }
+        }
     }
 }

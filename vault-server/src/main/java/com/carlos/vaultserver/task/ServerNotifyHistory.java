@@ -1,5 +1,7 @@
 package com.carlos.vaultserver.task;
 
+import com.carlos.vaultserver.FileLog;
+
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -187,6 +189,138 @@ public final class ServerNotifyHistory {
             trim();
         }
         return true;
+    }
+
+    // =======================================================================
+    // 主动同步（CaptureTasks 周期采集响应 → 历史；批次4 2026-10-23）
+    //
+    // 背景：批次3 的 C5 日历门控（ServerTasks.activityCalendarBlock）只消费
+    // notify_activity_calendar_data 推送；会话长在线时该推送可能 >24h 不更新，门控会自动停用。
+    // CaptureTasks.captureCalendar 已有每 10 分钟的 req_activity_calendar_get_data 响应，
+    // 这里把响应以同一协议名写入历史（复用本类 allowlist/上限/深拷贝），不新增任何网络请求。
+    // 网页版对照：service/DailyActivityCalendarState.java:17-18（REQUEST/NOTIFY 双协议同状态）、
+    // :37-140（data List/Map + schedule[{begin_ts,end_ts}] 解析口径）。
+    // =======================================================================
+
+    /** 活动日历协议名（与网页版 DailyActivityCalendarState.NOTIFY_PROTOCOL 一致）。 */
+    public static final String ACTIVITY_CALENDAR_PROTO = "notify_activity_calendar_data";
+
+    /** 已同步账号 → 上次活动数（仅用于日志去噪；不参与业务）。 */
+    private static final Map<String, Integer> CALENDAR_SYNCED = new LinkedHashMap<>();
+
+    /**
+     * 主动同步活动日历（CaptureTasks.captureCalendar 每 10 分钟调用一次）：
+     * 把 {@code req_activity_calendar_get_data} 的响应（或 notify 兜底内容）以
+     * {@link #ACTIVITY_CALENDAR_PROTO} 写入环形历史，让 C5 门控始终有新鲜数据。
+     *
+     * <p><b>不绕过内存红线</b>：内部走 {@link #record}，沿用 allowlist、每 proto 8 条、
+     * 总条数 2000 / 4MB 字符预算 / 不可变深拷贝；响应异常/超预算返回 0，调用方无感。
+     *
+     * <p><b>形状归一</b>：响应可能是 {@code {code:0,data:{...}}}，也可能已解包成一层
+     * {@code {活动id:{id,schedule}}}——后者包装回 {@code data} 形状再入历史，保证
+     * {@code ServerTasks.parseActivityCalendar}（data List/Map 两形状）可直接消费。
+     *
+     * <p><b>观测</b>：首次写入或内容变化成功时打一条 info（含 fpid、活动数量），不刷屏、失败不影响主流程。
+     *
+     * @return 本次同步的活动数量（0 = 内容无效/未写入）
+     */
+    public static int syncActivityCalendar(String fpid, Map<String, Object> content) {
+        if (fpid == null || fpid.trim().isEmpty() || content == null || content.isEmpty()) return 0;
+        Map<String, Object> payload;
+        int activities;
+        try {
+            payload = normalizeCalendarPayload(content);
+            activities = countCalendarActivities(payload);
+        } catch (Throwable t) {
+            return 0;
+        }
+        if (payload == null || payload.isEmpty() || activities <= 0) return 0;
+        String key = fpid.trim();
+        boolean changed;
+        synchronized (LOCK) {
+            Map<String, Object> prev = latestContent(key, ACTIVITY_CALENDAR_PROTO);
+            changed = prev == null || !prev.equals(payload);
+        }
+        boolean written;
+        try {
+            written = record(key, ACTIVITY_CALENDAR_PROTO, payload);
+        } catch (Throwable t) {
+            return 0;   // 同步失败不影响采集主流程
+        }
+        if (!written) return 0;
+        if (changed) {
+            synchronized (LOCK) {
+                CALENDAR_SYNCED.put(key, activities);
+            }
+            FileLog.info("活动日历同步 fpid={} 活动数={}（历史已更新，C5 门控可消费）", key, activities);
+        }
+        return activities;
+    }
+
+    /**
+     * 日历内容归一（形状兼容）：{@code data} 已是 List/Map 时原样返回；
+     * 响应被解包成一层活动 Map（含 schedule/id 字段）时包回 {@code {"data": content}}，
+     * 保证 C5 解析入口两种形状都能消费（网页版 DailyActivityCalendarState.java:37-140）。
+     */
+    static Map<String, Object> normalizeCalendarPayload(Map<String, Object> content) {
+        if (content == null) return null;
+        Object data = content.get("data");
+        if (data instanceof List || data instanceof Map) return content;
+        boolean calendarLike = false;
+        for (Map.Entry<String, Object> e : content.entrySet()) {
+            Object v = e.getValue();
+            if (!(v instanceof Map)) continue;
+            Map<?, ?> item = (Map<?, ?>) v;
+            if (item.containsKey("schedule") || item.containsKey("id")) {
+                calendarLike = true;
+                break;
+            }
+        }
+        if (!calendarLike) return content;
+        Map<String, Object> wrapped = new LinkedHashMap<>();
+        wrapped.put("data", content);
+        return wrapped;
+    }
+
+    /** 统计日历活动条目数（日志观测用；data 为 List/Map 两形状，id 缺失时按数值 key 兼容）。 */
+    static int countCalendarActivities(Map<String, Object> content) {
+        if (content == null) return 0;
+        Object data = content.get("data");
+        int n = 0;
+        if (data instanceof List) {
+            for (Object o : (List<?>) data) {
+                if (o instanceof Map && calendarEntryId((Map<?, ?>) o) > 0L) n++;
+            }
+        } else if (data instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) data).entrySet()) {
+                if (!(e.getValue() instanceof Map)) continue;
+                if (calendarEntryId((Map<?, ?>) e.getValue()) > 0L
+                        || numericValue(e.getKey()) > 0L) {
+                    n++;
+                }
+            }
+        }
+        return n;
+    }
+
+    private static long calendarEntryId(Map<?, ?> item) {
+        Object id = item.get("id");
+        if (id instanceof Number) return ((Number) id).longValue();
+        return numericValue(id);
+    }
+
+    /** 数值/浮点字符串（"132.0"/132）→ long；无法解析 → 0（避免依赖其他类的解析工具）。 */
+    private static long numericValue(Object v) {
+        if (v instanceof Number) return ((Number) v).longValue();
+        if (v == null) return 0L;
+        String s = String.valueOf(v).trim();
+        int dot = s.indexOf('.');
+        if (dot > 0) s = s.substring(0, dot);
+        try {
+            return Long.parseLong(s);
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 
     // =======================================================================

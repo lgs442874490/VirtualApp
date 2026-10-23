@@ -2,6 +2,7 @@ package com.carlos.vaultserver;
 
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
+import com.carlos.vaultserver.task.ServerNotifyHistory;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -132,6 +133,13 @@ public final class CaptureTasks {
                 content = engine.notifyContent("notify_activity_calendar_data");
             }
             if (content == null) return;
+            // 批次4（2026-10-23）：周期采集的日历响应喂给通知历史（复用批次3 allowlist/每 proto 8 条/
+            // 总量 2000 条/4MB 预算/不可变深拷贝），让 C5 活动日历门控在长在线无 notify 推送时仍有
+            // 新鲜数据；不新增网络请求（复用上面的 req_activity_calendar_get_data）。失败不影响主流程。
+            try {
+                ServerNotifyHistory.syncActivityCalendar(fpid, content);
+            } catch (Throwable ignored) {
+            }
             Object dataObj = content.get("data");
             if (dataObj == null) dataObj = content;
             if (!(dataObj instanceof Map)) return;

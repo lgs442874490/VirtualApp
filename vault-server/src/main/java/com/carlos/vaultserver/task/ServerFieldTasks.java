@@ -581,6 +581,23 @@ public final class ServerFieldTasks {
     /** 专家情报初始化宽限时长（I4）：10 分钟。 */
     static final long INTEL_EXPERT_FIRST_GRACE_MILLIS = 600_000L;
 
+    /** C3 业务态唤醒：情报派队后多久兜底再看一次（15 分钟；正常由结果推送提前唤醒）。 */
+    static final long INTEL_NEXT_WAKE_MILLIS = 15L * 60L * 1000L;
+
+    /**
+     * C3 业务态唤醒（纯函数）：本轮<b>派出情报行军</b>后，下一次兜底检查时刻。
+     *
+     * <p>1:1 网页版语义：派队后 TaskEngine 睡到"行军/战斗结果"（结果推送由
+     * {@code notify_intelligence_events/battle_result} 触发 {@link TaskWakeRouter} 立即唤醒）；
+     * 服务器侧给 15 分钟兜底，避免推送丢失时 15s 节奏反复空跑。
+     * 只领奖（status==2）/无事件轮不设，交给固定 15s 节奏（领奖即完成）。
+     *
+     * @return epoch millis；0=不覆盖节奏间隔
+     */
+    static long intelNextWakeAt(long nowMillis, int dispatched) {
+        return dispatched > 0 ? nowMillis + INTEL_NEXT_WAKE_MILLIS : 0L;
+    }
+
     /**
      * 情报任务（P0 修复 2026-10-23，1:1 对齐网页版 DailyIntelligenceState/Service）：
      * <ul>
@@ -596,6 +613,8 @@ public final class ServerFieldTasks {
      */
     public static TaskOutcome intel(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
+        // C3：方法级计数（try 外的 dispatched 作用域），用于落盘业务态唤醒时刻。
+        int dispatchedAny = 0;
         try {
             tc.engine.collectNotifies(2500);
             Map<Long, Map<String, Object>> events = new LinkedHashMap<>();
@@ -740,6 +759,7 @@ public final class ServerFieldTasks {
                         }
                     }
                 }
+                dispatchedAny = dispatched;
                 if (handled > 0) {
                     m.claimed("处理情报×" + handled
                             + (claimed > 0 ? "（领奖" + claimed + "）" : "")
@@ -820,7 +840,12 @@ public final class ServerFieldTasks {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "情报任务");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
-        return Exec.result(m, "intel", "情报任务");
+        TaskOutcome out = Exec.result(m, "intel", "情报任务");
+        // C3 业务态唤醒（网页版 TaskDecision.SleepUntil）：本轮派出情报行军 → 15 分钟兜底再看；
+        // 结果推送到达时 TaskWakeRouter 会把 cadence 提前置 0（不必等 15 分钟）。
+        long nextWake = intelNextWakeAt(System.currentTimeMillis(), dispatchedAny);
+        if (nextWake > 0L) out.wakeAt(nextWake);
+        return out;
     }
 
     /** 合并情报事件推送（info 全量 / events 增量）：以事件实例 id 归并。 */

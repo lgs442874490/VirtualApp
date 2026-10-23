@@ -145,87 +145,348 @@ public final class ServerTasks {
 
     // ---------------- 执行器 ----------------
 
+    // ================= 登录好礼状态化（R7，批次4 2026-10-23；1:1 网页版） =================
+    //
+    // 网页版权威：
+    // - service/DailyLoginRewardService.java:96-102,140-162（有可领档才发 req_fourteen_sign_get_all_reward，
+    //   `requestOn` 成功即 markClaimed；:118-135 单日兜底 req_fourteen_sign_get_reward{day}）；
+    // - service/DailyLoginRewardState.java:96-136（notify_fourteen_sign_info{server_index,sign_days,
+    //   free_award_record[],buy_award_record[],has_pay:"false"/bool,last_sign_ts} + notify_fourteen_purchase）；
+    // - model/DailyLoginRewardStateSnapshot.java:20-42（claimableDay = day<=signDays 且未领；completed）；
+    // - task/loginrewards/LoginRewardsTaskModule.java:22（TRIGGER=notify_fourteen_sign_info/purchase）。
+    // 七天 / 21 天（网页版 bootstrap 页；抓包实证）：
+    // - tools/bundle_re/proto_log.txt:146 notify_sevensign_info{sign_days,get_award_info[],lastsign_time}；
+    // - tools/bundle_re/audit_1014/proto_log_dev_old.txt notify_sign_21day_info{sign_days,
+    //   free_award_record[],buy_award_record[],has_pay,start_ts}。
+    // 旧实现盲发三协议、code=0/空奖励统一落“无可领”，无法区分「今日已领 / 无可领 / 周期剩余」，
+    // 且 TaskCadence.login_rewards=300s 每轮重复请求。本实现：先解析状态 → 可领才发请求 → ClaimLedger
+    // 按天去重；状态缺失（notify 未到）时保留旧盲发兜底与旧文案，不猜测新协议。
+
+    /** 签到轨状态（十四天双轨 / 七天 / 21 天共用；字段语义见各自 notify_*_sign_info）。 */
+    static final class SignTrackState {
+        final String track;
+        final boolean ready;
+        final int signDays;
+        final int totalDays;
+        final java.util.Set<Integer> freeReceived;
+        final java.util.Set<Integer> paidReceived;
+        final boolean paidActive;
+        final long lastSignTs;
+
+        SignTrackState(String track, boolean ready, int signDays, int totalDays,
+                       java.util.Set<Integer> freeReceived, java.util.Set<Integer> paidReceived,
+                       boolean paidActive, long lastSignTs) {
+            this.track = track;
+            this.ready = ready;
+            this.signDays = Math.max(0, Math.min(signDays, totalDays));
+            this.totalDays = totalDays;
+            this.freeReceived = freeReceived == null ? java.util.Collections.emptySet() : freeReceived;
+            this.paidReceived = paidReceived == null ? java.util.Collections.emptySet() : paidReceived;
+            this.paidActive = paidActive;
+            this.lastSignTs = lastSignTs;
+        }
+
+        /** 已签到的天数里尚未领取的免费档数量（网页版 claimableDays.day<=signDays 且 !freeReceived）。 */
+        int pendingFree() {
+            int n = 0;
+            for (int day = 1; day <= signDays; day++) {
+                if (!freeReceived.contains(day)) n++;
+            }
+            return n;
+        }
+
+        /** 已签到的天数里尚未领取的付费档数量（史诗通行证激活才有）。 */
+        int pendingPaid() {
+            if (!paidActive) return 0;
+            int n = 0;
+            for (int day = 1; day <= signDays; day++) {
+                if (!paidReceived.contains(day)) n++;
+            }
+            return n;
+        }
+
+        boolean claimable() {
+            return ready && (pendingFree() > 0 || pendingPaid() > 0);
+        }
+
+        /** 网页版 DailyLoginRewardStateSnapshot.completed()：免费 7 天全领且（未激活付费或付费也全领）。 */
+        boolean completed() {
+            return ready && freeReceived.size() >= totalDays
+                    && (!paidActive || paidReceived.size() >= totalDays);
+        }
+
+        /** 周期剩余天数（7/21 天签到用；14 天双轨按网页版 7 天周期）。 */
+        int remainingDays() {
+            return Math.max(0, totalDays - signDays);
+        }
+
+        /**
+         * mod 子状态文案（网页版 status().currentDay/freeClaimableCount/nextUnlockAt 的服务器侧等价）：
+         * “已连签 N/总天 · 免费档待领 X 天 · 周期剩 Y 天 · 今日已领/无可领”。
+         */
+        String modText(boolean claimedToday) {
+            if (!ready) return track + "状态未同步";
+            StringBuilder sb = new StringBuilder();
+            sb.append(track).append("已连签 ").append(Math.min(signDays, totalDays))
+                    .append('/').append(totalDays).append(" 天");
+            if (pendingFree() > 0) sb.append(" · 免费档待领 ").append(pendingFree()).append(" 天");
+            if (paidActive && pendingPaid() > 0) sb.append(" · 付费档待领 ").append(pendingPaid()).append(" 天");
+            if (claimedToday) {
+                sb.append(" · 今日已领");
+            } else if (!claimable()) {
+                sb.append(" · 无可领");
+            }
+            sb.append(" · 周期剩 ").append(remainingDays()).append(" 天");
+            return sb.toString();
+        }
+    }
+
+    /** 已领天数集合：兼容数组（[1,2,3]）、数组内对象（[{id:1}]）、Map（{"1.0":true}/{"1.0":{id:1}}）。 */
+    static java.util.Set<Integer> receivedSignDays(Object rawDays) {
+        java.util.Set<Integer> out = new java.util.TreeSet<>();
+        if (rawDays == null) return out;
+        if (rawDays instanceof List) {
+            for (Object o : (List<?>) rawDays) {
+                long day = signDayOf(o);
+                if (day > 0 && day <= 100) out.add((int) day);
+            }
+        } else if (rawDays instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) rawDays).entrySet()) {
+                long day = numericKey(e.getKey());
+                if (day <= 0) day = signDayOf(e.getValue());
+                if (day > 0 && day <= 100) out.add((int) day);
+            }
+        }
+        return out;
+    }
+
+    private static long signDayOf(Object raw) {
+        if (raw instanceof Map) {
+            Map<String, Object> m = Exec.mapOf(raw);
+            long day = Exec.longOf(m.get("id"));
+            if (day <= 0) day = Exec.longOf(m.get("day"));
+            if (day <= 0) day = Exec.longOf(m.get("value"));
+            return day;
+        }
+        return numericKey(raw);
+    }
+
+    /** 十四天双轨：网页版 TOTAL_DAYS=7（7 天免费 + 7 天史诗双轨），sign_days 钳 0..7（State:120-136）。 */
+    static SignTrackState parseFourteenSign(Map<String, Object> content) {
+        if (content == null) return new SignTrackState("十四天双轨", false, 0, 7, null, null, false, 0L);
+        int signDays = (int) Math.max(0L, Math.min(7L, Exec.longOf(content.get("sign_days"))));
+        boolean paidActive = truthy(content.get("has_pay"));
+        return new SignTrackState("十四天双轨", true, signDays, 7,
+                receivedSignDays(content.get("free_award_record")),
+                receivedSignDays(content.get("buy_award_record")),
+                paidActive, Exec.longOf(content.get("last_sign_ts")));
+    }
+
+    /** 七天签到：notify_sevensign_info{sign_days,get_award_info[],lastsign_time}（proto_log.txt:146）。 */
+    static SignTrackState parseSevenSign(Map<String, Object> content) {
+        if (content == null) return new SignTrackState("七天签到", false, 0, 7, null, null, false, 0L);
+        int signDays = (int) Math.max(0L, Math.min(7L, Exec.longOf(content.get("sign_days"))));
+        return new SignTrackState("七天签到", true, signDays, 7,
+                receivedSignDays(content.get("get_award_info")),
+                java.util.Collections.emptySet(), false,
+                Exec.longOf(content.get("lastsign_time")));
+    }
+
+    /** 21 天签到：notify_sign_21day_info{sign_days,free_award_record[],buy_award_record[],has_pay,start_ts}。 */
+    static SignTrackState parse21DaySign(Map<String, Object> content) {
+        if (content == null) return new SignTrackState("21天签到", false, 0, 21, null, null, false, 0L);
+        int signDays = (int) Math.max(0L, Math.min(21L, Exec.longOf(content.get("sign_days"))));
+        boolean paidActive = truthy(content.get("has_pay"));
+        return new SignTrackState("21天签到", true, signDays, 21,
+                receivedSignDays(content.get("free_award_record")),
+                receivedSignDays(content.get("buy_award_record")),
+                paidActive, Exec.longOf(content.get("last_sign_ts")));
+    }
+
+    /**
+     * 单轨领取（三轨共用）：台账按天去重 → 状态可领才发请求 → 错误码分类（已领/未开放/不可用 → SKIP）。
+     * 状态缺失（notify 未到，state.ready=false）时保留旧盲发兜底：仍以响应奖励字段为到账证据。
+     *
+     * @param stateCountsAsEvidence 十四天双轨按网页版语义「请求成功即已领」，七天/21 天要求响应带奖励明细
+     * @return {claimed, skipped, degraded, failed}
+     */
+    static int[] claimSignTrack(TaskContext tc, String ledgerKey, String name, String proto,
+                                SignTrackState state, String evidenceKind,
+                                boolean stateCountsAsEvidence,
+                                StringBuilder msg, StringBuilder rewards) {
+        if (ClaimLedger.isClaimed(tc, "login_rewards", ledgerKey)) {
+            msg.append("; ").append(name).append("今日已领（台账）");
+            return new int[]{0, 1, 0, 0};
+        }
+        if (state != null && state.ready && !state.claimable()) {
+            msg.append("; ").append(name)
+                    .append(state.completed() ? "已全领" : "暂无可领")
+                    .append("（").append(state.modText(true)).append("）");
+            return new int[]{0, 1, 0, 0};
+        }
+        try {
+            GameMessage rsp = tc.engine.request(proto, null);
+            if (isDegraded(rsp)) {
+                msg.append("; ").append(name).append("响应异常");
+                return new int[]{0, 0, 1, 0};
+            }
+            int code = Exec.codeOf(rsp);
+            if (code != 0) {
+                if (isActivityUnavailableCode(code)) {
+                    if (isActivityAlreadyClaimedCode(code)) {
+                        ClaimLedger.mark(tc, "login_rewards", ledgerKey);
+                    }
+                    msg.append("; ").append(name).append(activityUnavailableText(code));
+                    return new int[]{0, 1, 0, 0};
+                }
+                TaskOutcome fail = classifyServerCode(code, name);
+                if (fail.category == TaskOutcome.Category.SESSION_CLOSED) {
+                    throw new RuntimeException(fail.message);
+                }
+                msg.append("; ").append(name).append("错误码").append(code);
+                return new int[]{0, 0, 0, 1};
+            }
+            // 到账证据口径：十四天轨沿用旧 classifySimple「响应含奖励字段即 CLAIMED」（兼容
+            // CaptureTasksTest.FakeEngine 的字符串形态 rewards:"diamond:10"）；七天/21 天沿用
+            // 旧实现的 award_success_list/rewards 非空口径。detail 仅用于展示，可与证据口径解耦。
+            boolean evidence = hasSignRewardEvidence(rsp, evidenceKind);
+            String detail = signRewardDetail(rsp, evidenceKind);
+            boolean stateClaimed = stateCountsAsEvidence && state != null && state.ready;
+            if (!evidence && !stateClaimed) {
+                // 旧兜底语义：响应无到账证据 → 已全领或不可用（SKIP，不伪造 CLAIMED）
+                msg.append("; ").append(name).append("已全领或不可用");
+                return new int[]{0, 1, 0, 0};
+            }
+            ClaimLedger.mark(tc, "login_rewards", ledgerKey);
+            msg.append("; ").append(name).append("已领");
+            if (!detail.isEmpty()) {
+                msg.append("（").append(detail).append("）");
+                if (rewards != null && rewards.length() < 600) {
+                    rewards.append(name).append("：").append(detail).append("；");
+                }
+            } else {
+                msg.append("（到账明细未回执）");
+            }
+            return new int[]{1, 0, 0, 0};
+        } catch (Exception e) {
+            TaskOutcome r = classifyException(e, name);
+            if (r.category == TaskOutcome.Category.SESSION_CLOSED) throw new RuntimeException(e);
+            msg.append("; ").append(name).append(r.message);
+            return new int[]{0, 0, 0, 1};
+        }
+    }
+
+    /**
+     * 到账证据判定（1:1 旧实现口径，防回归）：
+     * 十四天轨沿用旧 classifySimple —— 响应含 awards/rewards/items/award_success_list/gain 任一 key 即算
+     * （抓包/FakeEngine 都可能给字符串形态 {@code rewards:"diamond:10"}，不能用 RewardText.describe 判空）；
+     * 七天=award_success_list 非空；21 天=rewards 非空（列表）或非列表形态。
+     */
+    static boolean hasSignRewardEvidence(GameMessage rsp, String evidenceKind) {
+        if (rsp == null || rsp.getContent() == null) return false;
+        if ("seven".equals(evidenceKind)) {
+            List<Object> okList = listOfRaw(rsp.getContent().get("award_success_list"));
+            return okList != null && !okList.isEmpty();
+        }
+        if ("day21".equals(evidenceKind)) {
+            Object raw = rsp.getContent().get("rewards");
+            if (raw instanceof List) return !((List<?>) raw).isEmpty();
+            return raw != null;
+        }
+        for (String k : new String[]{"awards", "rewards", "items", "award_success_list", "gain"}) {
+            if (rsp.getContent().containsKey(k)) return true;
+        }
+        return false;
+    }
+
+    /** 响应到账明细（14 天多候选字段；七天看 award_success_list 条数；21 天看 rewards）。 */
+    static String signRewardDetail(GameMessage rsp, String evidenceKind) {
+        if (rsp == null || rsp.getContent() == null) return "";
+        if ("seven".equals(evidenceKind)) {
+            List<Object> okList = listOfRaw(rsp.getContent().get("award_success_list"));
+            return okList == null || okList.isEmpty() ? "" : "×" + okList.size();
+        }
+        if ("day21".equals(evidenceKind)) {
+            return descRewards(rsp.getContent().get("rewards"));
+        }
+        for (String k : new String[]{"awards", "rewards", "items", "award_success_list", "gain"}) {
+            Object raw = rsp.getContent().get(k);
+            if (raw == null) continue;
+            String d = descRewards(raw);
+            if (!d.isEmpty()) return d;
+        }
+        return "";
+    }
+
+    /** 今日是否已领（台账优先；状态说“已签名天数全部领完”也视为今日已领，用于 mod 文案）。 */
+    static boolean signClaimedToday(TaskContext tc, String ledgerKey, SignTrackState state) {
+        if (ClaimLedger.isClaimed(tc, "login_rewards", ledgerKey)) return true;
+        return state != null && state.ready && state.signDays > 0 && !state.claimable();
+    }
+
     static TaskOutcome loginRewards(TaskContext tc) throws Exception {
         try {
-            // 三轨（与 App DailyTasks.loginRewards 2026-10-12 版一致）：14天双轨 / 七天 / 21天，
-            // 各子开关独立门控；聚合口径 claimed>0→CLAIMED，否则有降级→DEGRADED，否则 SKIPPED
+            // 三轨（十四天双轨 / 七天 / 21 天）：各子开关独立门控；
+            // 聚合口径 claimed>0→CLAIMED，否则 degraded/failed>0→DEGRADED，否则 SKIPPED。
             if (!tc.subOn("login_rewards", "sign", true)) {
                 return new TaskOutcome("login_rewards", "登录好礼", TaskOutcome.Category.SKIPPED,
-                        "子开关「7天签到」已关闭");
+                        "子开关「签到」已关闭");
             }
             StringBuilder msg = new StringBuilder();
             StringBuilder rewards = new StringBuilder();
-            int claimed = 0, degraded = 0;
+            int claimed = 0, skipped = 0, degraded = 0, failed = 0;
 
-            // ① 登录好礼（十四天双轨）
-            GameMessage rsp = tc.engine.request("req_fourteen_sign_get_all_reward", null);
-            // code=0 不是到账证据；必须有奖励字段才算 CLAIMED（防“显示已完成但没领到”）。
-            TaskOutcome r = classifySimple(rsp, "login_rewards", "登录好礼",
-                    new String[]{"awards", "rewards", "items", "award_success_list", "gain"},
-                    "已一键领取全部可领签到奖励");
-            if (r.category == TaskOutcome.Category.CLAIMED) {
-                claimed++;
-                msg.append("登录好礼已领");
-                if (r.rewards != null && !r.rewards.isEmpty()) {
-                    msg.append("（").append(r.rewards).append("）");
-                    rewards.append(r.rewards).append("；");
-                }
-            } else if (r.category == TaskOutcome.Category.DEGRADED) {
-                degraded++;
-                msg.append("登录好礼响应异常");
-            } else {
-                msg.append("登录好礼无可领");
-            }
+            // 状态解析（引擎按 proto 保留最后一帧；缺失 → state.ready=false，走旧盲发兜底）
+            SignTrackState s14 = parseFourteenSign(firstNotify(tc.engine, "notify_fourteen_sign_info"));
+            SignTrackState s7 = parseSevenSign(firstNotify(tc.engine, "notify_sevensign_info"));
+            SignTrackState s21 = parse21DaySign(firstNotify(tc.engine, "notify_sign_21day_info"));
 
-            // ② 七天签到：award_success_list 非空才算真领到（防假成功）
+            // ① 十四天双轨：notify_fourteen_sign_info 判可领，有可领才发一键全领
+            int[] c14 = claimSignTrack(tc, "14", "登录好礼(14天双轨)",
+                    "req_fourteen_sign_get_all_reward", s14, "fourteen", true, msg, rewards);
+            claimed += c14[0];
+            skipped += c14[1];
+            degraded += c14[2];
+            failed += c14[3];
+
+            // ② 七天签到：award_success_list 非空才算真领到
             if (tc.subOn("login_rewards", "seven", true)) {
-                GameMessage seven = tc.engine.request("req_seven_sign_one_click_award", null);
-                if (isDegraded(seven)) {
-                    degraded++;
-                    msg.append("; 七天签到响应异常");
-                } else if (Exec.ok(seven)) {
-                    List<Object> okList = listOfRaw(seven.getContent().get("award_success_list"));
-                    if (okList != null && !okList.isEmpty()) {
-                        claimed++;
-                        msg.append("; 七天签到×").append(okList.size());
-                        rewards.append("七天签到奖励；");
-                    } else {
-                        msg.append("; 七天签到无可领");
-                    }
-                } else {
-                    msg.append("; 七天签到已全领或不可用");
-                }
+                int[] c7 = claimSignTrack(tc, "7", "七天签到",
+                        "req_seven_sign_one_click_award", s7, "seven", false, msg, rewards);
+                claimed += c7[0];
+                skipped += c7[1];
+                degraded += c7[2];
+                failed += c7[3];
             } else {
                 msg.append("; 七天签到已关");
             }
 
-            // ③ 21天签到免费档（付费档 has_pay 才有，免费档空参全领）
+            // ③ 21 天签到免费档（付费档 has_pay 才有，本任务只领免费全领协议）
             if (tc.subOn("login_rewards", "day21", true)) {
-                GameMessage d21 = tc.engine.request("req_sign_21day_get_all_reward", null);
-                if (isDegraded(d21)) {
-                    degraded++;
-                    msg.append("; 21天签到响应异常");
-                } else if (Exec.ok(d21)) {
-                    List<Object> rw = listOfRaw(d21.getContent().get("rewards"));
-                    if (rw != null && !rw.isEmpty()) {
-                        claimed++;
-                        msg.append("; 21天签到已领");
-                        rewards.append("21天签到奖励；");
-                    } else {
-                        msg.append("; 21天签到无可领");
-                    }
-                } else {
-                    msg.append("; 21天签到已全领或不可用");
-                }
+                int[] c21 = claimSignTrack(tc, "21", "21天签到",
+                        "req_sign_21day_get_all_reward", s21, "day21", false, msg, rewards);
+                claimed += c21[0];
+                skipped += c21[1];
+                degraded += c21[2];
+                failed += c21[3];
             } else {
                 msg.append("; 21天签到已关");
             }
 
-            TaskOutcome out = new TaskOutcome("login_rewards", "登录好礼",
-                    claimed > 0 ? TaskOutcome.Category.CLAIMED
-                            : degraded > 0 ? TaskOutcome.Category.DEGRADED
-                            : TaskOutcome.Category.SKIPPED,
-                    msg.toString());
+            // mod 子状态（已连签 N 天 / 今日已领 / 无可领 / 周期剩余）——三轨分别落盘，
+            // App 功能页直接展示（旧实现不写任何登录好礼子状态）。
+            tc.saveModText("login_rewards", "sign14",
+                    s14.modText(signClaimedToday(tc, "14", s14)));
+            tc.saveModText("login_rewards", "seven",
+                    s7.modText(signClaimedToday(tc, "7", s7)));
+            tc.saveModText("login_rewards", "day21",
+                    s21.modText(signClaimedToday(tc, "21", s21)));
+
+            TaskOutcome.Category cat = claimed > 0 ? TaskOutcome.Category.CLAIMED
+                    : (degraded > 0 || failed > 0) ? TaskOutcome.Category.DEGRADED
+                    : TaskOutcome.Category.SKIPPED;
+            String text = msg.length() > 0 ? msg.substring(2) : "无结果";
+            TaskOutcome out = new TaskOutcome("login_rewards", "登录好礼", cat, text);
             out.rewards = rewards.toString();
             return out;
         } catch (Exception e) {
@@ -680,6 +941,10 @@ public final class ServerTasks {
             }
             // 补领后立即刷新补给状态（顺延下一次唤醒的依据）
             CaptureTasks.captureSupplyState(tc.engine, tc.store, tc.fpid, tc.sid);
+            // C3（批次4；TaskOutcome.nextWakeAtMillis 契约见 TaskOutcome.java:26-35，
+            // 单任务模式由 RoundRunner.applyNextWake:190-208 落盘 srv:cad:{fpid}:{sid}:{fn}）：
+            // 补给按 recovery next_calc_ts 精确唤醒，避免 60s 白跑；返回 0 时 Runner 不写、沿用节奏间隔。
+            long supplyWakeAt = supplyNextWakeAtMillis(tc.modState("supply"));
             String msg = sb.length() == 0 ? "无结果" : sb.substring(0, sb.length() - 2);
             boolean claimed = msg.contains("已领取");
             TaskOutcome sr = new TaskOutcome("supply", "仓库补给",
@@ -690,6 +955,7 @@ public final class ServerTasks {
             if (rewardParts.length() > 0) {
                 sr.rewards = rewardParts.substring(0, rewardParts.length() - 1);
             }
+            sr.wakeAt(supplyWakeAt);
             return sr;
         } catch (Exception e) {
             return classifyException(e, "仓库补给");
@@ -1014,8 +1280,10 @@ public final class ServerTasks {
             if (accumulated >= 0L && accumulated < minSeconds) {
                 long needSec = minSeconds - accumulated;
                 saveAdventureNext(tc, now + needSec);
+                // C3：到量时刻精确唤醒（+2s 余量防边界 4004；TaskOutcome.nextWakeAtMillis）
                 return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.SKIPPED,
-                        "挂机累积 " + accumulated + "s，还差 " + needSec + "s 到可领（10 分钟起领）");
+                        "挂机累积 " + accumulated + "s，还差 " + needSec + "s 到可领（10 分钟起领）")
+                        .wakeAt((now + needSec + 2L) * 1000L);
             }
             GameMessage view = tc.engine.request("req_open_hang_up_reward_view", null);
             String previewText = "";
@@ -1025,9 +1293,13 @@ public final class ServerTasks {
                 long previewTs = firstLongOf(view.getContent(),
                         "open_hang_up_reward_view_time", "endtime", "end_time");
                 if (vcode == 4004 || vcode == 4003) {
-                    saveAdventureNext(tc, previewTs > 0L ? previewTs : now + 600L);
+                    long nextAt = previewTs > 0L ? previewTs : now + 15L;
+                    saveAdventureNext(tc, nextAt);
+                    // C3：预览给出 open_hang_up_reward_view_time，按它精确唤醒（缺省 15s 重试，
+                    // 对齐网页版 DailyAdventureRewardService.java:167-171 的 4004 处理）
                     return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.SKIPPED,
-                            "挂机奖励尚未解锁或间隔未到（码" + vcode + "）");
+                            "挂机奖励尚未解锁或间隔未到（码" + vcode + "）")
+                            .wakeAt(nextAt * 1000L);
                 }
                 if (vcode != 0 && !isActivityUnavailableCode(vcode)) {
                     return classifyServerCode(vcode, "探险挂机");
@@ -1041,9 +1313,11 @@ public final class ServerTasks {
             int code = Exec.codeOf(claim);
             if (code != 0) {
                 if (code == 4004) {
-                    saveAdventureNext(tc, now + 600L);
+                    saveAdventureNext(tc, now + 15L);
+                    // C3：4004=领取间隔未到 → 15s 后重试（网页版 DailyAdventureRewardService.java:167-171）
                     return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.SKIPPED,
-                            "领取间隔未到（约10分钟一领）");
+                            "领取间隔未到（约10分钟一领）")
+                            .wakeAt((now + 15L) * 1000L);
                 }
                 if (code == 4003) {
                     return new TaskOutcome("adventure", "探险挂机奖励", TaskOutcome.Category.SKIPPED,
@@ -1068,6 +1342,8 @@ public final class ServerTasks {
                             + "（下次可领 " + Beijing.fmt("HH:mm")
                             .format(new java.util.Date(nextAt * 1000L)) + "）");
             r.rewards = d;
+            // C3：按 hang_start_time+600s 精确唤醒（状态：State:105-116 acceptClaim）
+            r.wakeAt(nextAt * 1000L);
             return r;
         } catch (Exception e) {
             return classifyException(e, "探险挂机");
@@ -1082,6 +1358,30 @@ public final class ServerTasks {
         if (passCheckpoint <= 0L) return 0L;
         if (hangStartTime <= 0L) return 32400L;
         return Math.min(Math.max(0L, nowSec - hangStartTime), 32400L);
+    }
+
+    /**
+     * C3：挂机下次业务态唤醒（epoch millis；0=不覆盖节奏间隔）。网页版
+     * DailyAdventureRewardStateSnapshot.java:39-57 nextClaimInSeconds：未解锁=0；
+     * 已累积>=600s（现在可领）=0；否则 now+(600-累积)。纯函数便于单测。
+     */
+    static long adventureNextWakeAtMillis(long passCheckpoint, long hangStartTime, long nowSec) {
+        if (passCheckpoint <= 0L) return 0L;
+        long accum = adventureAccumulatedSeconds(passCheckpoint, hangStartTime, nowSec);
+        if (accum >= 600L) return 0L;
+        return (nowSec + (600L - accum)) * 1000L;
+    }
+
+    /**
+     * C3：补给下次业务态唤醒（epoch millis；0=不覆盖节奏间隔）。
+     * 来源 = {@code mod:…:supply.online_ts}（CaptureTasks.captureSupplyState:322-343 从
+     * notify_recover_resource_init 的 next_calc_ts 族字段取最早到点；与 RoundRunner.supplyWakeAt:194-202
+     * 同口径），秒→毫秒。纯函数便于单测。
+     */
+    static long supplyNextWakeAtMillis(org.json.JSONObject supplyMod) {
+        if (supplyMod == null) return 0L;
+        long ts = supplyMod.optLong("online_ts", 0L);
+        return ts > 0L ? ts * 1000L : 0L;
     }
 
     /** 写挂机下次可领时间（沿用旧 mod 键 adventure.hang_up，供 App 页展示/唤醒调度读取）。 */

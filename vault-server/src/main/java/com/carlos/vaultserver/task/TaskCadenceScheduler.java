@@ -65,6 +65,12 @@ public final class TaskCadenceScheduler {
      * “未同步/未开放”并写进状态与台账。
      */
     static final long INIT_GRACE_MILLIS = 20_000L;
+    /** 上轮“已检查无可领”（st=4）的退避倍数与下限：×3 且 ≥180s。 */
+    static final long SKIP_BACKOFF_MULTIPLIER = 3L;
+    static final long SKIP_BACKOFF_MIN_MILLIS = 180_000L;
+    /** 上轮异常（st=3）的退避倍数与下限：×2 且 ≥120s。 */
+    static final long ERROR_BACKOFF_MULTIPLIER = 2L;
+    static final long ERROR_BACKOFF_MIN_MILLIS = 120_000L;
     /** 慢任务（间隔 ≥ 该值）提交时打 info 日志，快任务靠单任务轮次日志观测。 */
     private static final long LOG_INTERVAL_THRESHOLD_SECONDS = 300L;
 
@@ -207,9 +213,10 @@ public final class TaskCadenceScheduler {
         }
 
         long intervalMs = TaskCadence.intervalSeconds(dueFn) * 1000L;
-        long jitter = intervalMs >= 60_000L
-                ? (long) ((random.nextDouble() * 0.2d - 0.1d) * intervalMs) : 0L;
-        stateStore.putLong(nextKey(acc.fpid, sid, dueFn), now + intervalMs + jitter);
+        long baseMs = nextIntervalForResult(acc, sid, dueFn, intervalMs, stateStore.snapshot());
+        long jitter = baseMs >= 60_000L
+                ? (long) ((random.nextDouble() * 0.2d - 0.1d) * baseMs) : 0L;
+        stateStore.putLong(nextKey(acc.fpid, sid, dueFn), now + baseMs + jitter);
         stateStore.putLong("srv:cadlast:" + acc.fpid, now);
         lastDispatchInMemory.put(acc.fpid, now);
         busyWarned.remove(acc.fpid + ":" + dueFn);
@@ -242,6 +249,31 @@ public final class TaskCadenceScheduler {
 
     private static String nextKey(String fpid, long sid, String fn) {
         return "srv:cad:" + fpid + ":" + sid + ":" + fn;
+    }
+
+    /**
+     * 依据上轮结果类别计算下次间隔（{@code st:} 当日状态机：2=已领取、4=已检查无可领、3=异常、1=会话中断）。
+     *
+     * <p>生产观察（2026-10-23 14:0x）：60s 任务下限 + 约 40 个默认任务后，节奏调度持续跑在
+     * 10 轮/分钟上限（平均间隔 6.02s），说明大量“无可领空转”任务占满提交位。本方法按结果退避：
+     * <ul>
+     *   <li>4=已检查无可领 → 间隔 ×3 且 ≥180s（事件类任务由 TaskWakeRouter 推送提前唤醒，不受影响）；</li>
+     *   <li>3=异常 → 间隔 ×2 且 ≥120s（防错误风暴）；</li>
+     *   <li>2=已领取 / 未知 → 正常间隔。</li>
+     * </ul>
+     */
+    static long nextIntervalForResult(VaultStore.Account acc, long sid, String fn,
+                                      long intervalMillis, Map<String, Object> snapshot) {
+        String stKey = "st:" + Beijing.fmt("yyyy-MM-dd").format(new Date())
+                + ":" + acc.fpid + ":" + sid + ":" + fn;
+        int st = (int) longOf(snapshot, stKey);
+        if (st == 4) {
+            return Math.max(intervalMillis * SKIP_BACKOFF_MULTIPLIER, SKIP_BACKOFF_MIN_MILLIS);
+        }
+        if (st == 3) {
+            return Math.max(intervalMillis * ERROR_BACKOFF_MULTIPLIER, ERROR_BACKOFF_MIN_MILLIS);
+        }
+        return intervalMillis;
     }
 
     private static long longOf(Map<String, Object> snap, String key) {

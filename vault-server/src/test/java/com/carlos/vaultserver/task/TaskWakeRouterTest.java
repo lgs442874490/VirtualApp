@@ -178,7 +178,9 @@ public class TaskWakeRouterTest {
                 "activity_rewards", "commander_gift", "mail", "daily_mission", "adventure", "supply",
                 "alliance_chest", "alliance_donate", "alliance_mobilization", "alliance_showdown",
                 "alliance_help", "arena", "gather", "intel", "act_endless", "login_rewards",
-                "red_packet", "achievement_claim", "chapter_quest", "backpack"));
+                "red_packet", "achievement_claim", "chapter_quest", "backpack",
+                // 批次4 C3 配套：巨熊预约/场次/集结推送、专家推送也纳入唤醒
+                "bear", "expert"));
         assertEquals(expected, new HashSet<>(TaskWakeRouter.mappedTaskIds()));
         for (String fn : TaskWakeRouter.mappedTaskIds()) {
             assertTrue("映射任务必须在 TaskCadence 节奏表中：" + fn, TaskCadence.contains(fn));

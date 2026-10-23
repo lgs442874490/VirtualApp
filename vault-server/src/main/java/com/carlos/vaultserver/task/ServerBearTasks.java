@@ -95,6 +95,14 @@ public final class ServerBearTasks {
     static final long SYNC_IDLE_SEC = 6 * 3600L;
     /** 行军/集结候选缓存 TTL（内存，仅用于上车候选发现）。 */
     static final long RALLY_CACHE_TTL_SEC = 15 * 60L;
+    /**
+     * C3 业务态唤醒（网页版 TaskDecision.SleepUntil 语义）：
+     * 已预约且窗口未开始 → 开赛前 60 秒唤醒（在最后 60 秒内则直接唤醒到开赛时刻）；
+     * 窗口内已发车 → 30 秒后唤醒做上车/对账（不晚于窗口结束）。
+     */
+    static final long BEAR_WAKE_LEAD_SECONDS = 60L;
+    /** 窗口内已发车后的上车/对账复查间隔（秒）。 */
+    static final long BEAR_JOIN_RECHECK_SECONDS = 30L;
 
     private ServerBearTasks() {
     }
@@ -111,6 +119,8 @@ public final class ServerBearTasks {
         String trapText = "";
         String windowText = "";
         String launchText = "";
+        // C3 业务态唤醒时刻（0=不覆盖节奏间隔）；窗口/发车状态确定后由 bearNextWakeAtMillis 计算。
+        long nextWakeAt = 0L;
         try {
             if (!WjdrEngine.STATE_ONLINE.equals(tc.engine.sessionState())) {
                 return new TaskOutcome(TASK_ID, TASK_NAME, TaskOutcome.Category.SKIPPED, "会话不在线，跳过巨熊行动");
@@ -162,6 +172,7 @@ public final class ServerBearTasks {
                 return Exec.result(m, TASK_ID, TASK_NAME);
             }
 
+            boolean launchedForWindowNow = false;
             if (window.phase == Window.ENDED) {
                 m.skip("本场巨熊已结束" + syncNote);
                 launchText = "本场已结束";
@@ -194,16 +205,22 @@ public final class ServerBearTasks {
                 boolean launchedNow = launchRally(tc, m, cfg, state, nowSec, window);
                 Window refreshed = windowOf(nowSec(tc), state.reserve, state.start, cfg);
                 joinRallies(tc, m, cfg, state, nowSec(tc), refreshed);
+                launchedForWindowNow = launchedNow || launchedForWindow(
+                        tc.store.getString(launchedKeyOf(tc)), dayKey(nowSec), window.startSec);
                 if (launchedNow) {
                     launchText = "已发起";
-                } else if (launchedForWindow(tc.store.getString(launchedKeyOf(tc)),
-                        dayKey(nowSec), window.startSec)) {
+                } else if (launchedForWindowNow) {
                     launchText = "本场已发起（不重复发车）";
                 } else {
                     launchText = "未发起";
                 }
             }
             writeMod(tc, trapText, windowText, launchText);
+            // C3 业务态唤醒（网页版 TaskDecision.SleepUntil）：
+            // 已预约→开赛前 60 秒；窗口内已发车→30 秒后做上车/对账；未预约/已结束→不覆盖节奏。
+            // 落盘由 RoundRunner 在单任务模式下完成（整轮不写），并受 now..now+24h 边界约束。
+            nextWakeAt = bearNextWakeAtMillis(nowSec(tc) * 1000L, window,
+                    isValidEpoch(state.reserve), launchedForWindowNow);
         } catch (Exception e) {
             try {
                 writeMod(tc, trapText, windowText, "异常：" + ServerTasks.brief(String.valueOf(e.getMessage())));
@@ -211,7 +228,9 @@ public final class ServerBearTasks {
             }
             return ServerTasks.classifyException(e, TASK_NAME);
         }
-        return Exec.result(m, TASK_ID, TASK_NAME);
+        TaskOutcome out = Exec.result(m, TASK_ID, TASK_NAME);
+        if (nextWakeAt > 0L) out.wakeAt(nextWakeAt);
+        return out;
     }
 
     // ==================================================================================
@@ -607,6 +626,37 @@ public final class ServerBearTasks {
 
     private static long epochOf(LocalDate day, int minuteOfDay) {
         return day.atStartOfDay(Beijing.ZONE_ID).plusMinutes(minuteOfDay).toEpochSecond();
+    }
+
+    /**
+     * C3 业务态唤醒（纯函数，网页版 {@code TaskDecision.SleepUntil} 语义）：
+     * 巨熊任务下一次该跑的时刻（epoch millis；0=不覆盖 15s 节奏间隔）。
+     *
+     * <ul>
+     *   <li>已预约（{@code reserve_time} 有效）且窗口未开始（WAITING/PREPARING）→ 开赛前 60 秒；
+     *       若当前已进入最后 60 秒 → 直接睡到开赛时刻（发车点）；</li>
+     *   <li>窗口内（ACTIVE）且已发车 → {@code min(now+30s, 窗口结束)}（上车/对账复查）；</li>
+     *   <li>未预约 / 已结束 / 其它 → 0（交给固定 15s 节奏兜底，未预约不发车）。</li>
+     * </ul>
+     *
+     * <p>返回值仍受 {@link RoundRunner#acceptNextWakeAt} 的 {@code now..now+24h} 边界约束：
+     * 下一场在 24 小时之外时不会落盘，节奏继续按 15s 探测（预约同步本身有 5min/6h 节流）。
+     */
+    static long bearNextWakeAtMillis(long nowMillis, Window window, boolean reserved, boolean launched) {
+        if (window == null || !reserved) return 0L;      // 未预约：不臆造窗口/不发车，交给节奏兜底
+        long nowSec = nowMillis / 1000L;
+        if (window.phase == Window.WAITING || window.phase == Window.PREPARING) {
+            long candidate = nowSec + BEAR_WAKE_LEAD_SECONDS < window.startSec
+                    ? window.startSec - BEAR_WAKE_LEAD_SECONDS   // 开赛前 60 秒
+                    : window.startSec;                            // 已进入最后 60 秒 → 开赛时刻
+            return candidate > nowSec ? candidate * 1000L : 0L;
+        }
+        if (window.phase == Window.ACTIVE && launched) {
+            long candidate = Math.min(nowSec + BEAR_JOIN_RECHECK_SECONDS,
+                    Math.max(nowSec + 1L, window.endSec));
+            return candidate > nowSec ? candidate * 1000L : 0L;
+        }
+        return 0L;                                        // ENDED / 窗口内未发车：交给 15s 节奏
     }
 
     // ==================================================================================

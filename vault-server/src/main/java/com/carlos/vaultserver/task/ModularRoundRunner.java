@@ -112,10 +112,12 @@ public final class ModularRoundRunner {
 
         int success = 0, claimed = 0, skipped = 0, abnormal = 0;
         StringBuilder summary = new StringBuilder();
+        // C3：只有单任务模式才允许任务自报的业务态唤醒覆盖节奏键（整轮不写，避免互相覆盖）。
+        boolean singleTaskMode = fnOnly != null && !fnOnly.isEmpty();
         for (ModuleResult mr : results) {
             for (ModuleResult.Entry e : mr.entries) {
                 TaskOutcome o = e.outcome;
-                RoundRunner.applyResult(store, fpid, sid, e.actionId, o, trigger);
+                RoundRunner.applyResult(store, fpid, sid, e.actionId, o, trigger, singleTaskMode);
                 if (o.category == TaskOutcome.Category.CLAIMED) claimed++;
                 if (o.category == TaskOutcome.Category.SKIPPED) skipped++;
                 if (o.category == TaskOutcome.Category.DEGRADED
