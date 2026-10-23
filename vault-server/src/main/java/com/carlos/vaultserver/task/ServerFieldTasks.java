@@ -451,7 +451,15 @@ public final class ServerFieldTasks {
      * 参考网页版 DailyGatherService.maintainAllianceMine:1181-1313 +
      * findAllianceMineTargets:1316-1354 + allianceMineMarchPayload:1652-1654。
      */
-    private static AllianceMineOutcome maintainAllianceMine(TaskContext tc, MarchSnapshot snapshot, int worldCapacity) {
+    private static AllianceMineOutcome maintainAllianceMine(TaskContext tc, MarchSnapshot snapshot,
+                                                            int worldCapacity) {
+        return maintainAllianceMine(tc, snapshot, worldCapacity, null);
+    }
+
+    /** B2-T5：v2 联盟矿（编队参数可覆盖；null=legacy 功能级编队，行为不变）。 */
+    private static AllianceMineOutcome maintainAllianceMine(TaskContext tc, MarchSnapshot snapshot,
+                                                            int worldCapacity,
+                                                            JSONObject formationParamsOverride) {
         long now = System.currentTimeMillis();
         if (snapshot != null && snapshot.count(GATHER_MINE_MARCH_TYPE) > 0) {
             return new AllianceMineOutcome(false, "联盟矿采集中，占用 1 个世界出征队列");
@@ -487,11 +495,21 @@ public final class ServerFieldTasks {
                 markGatherMineRetry(tc, now);
                 return new AllianceMineOutcome(false, "联盟资源中心已失效或不属于本盟");
             }
-            StringBuilder formationWhy = new StringBuilder();
-            Map<String, Object> formation = formationFor(tc, "gather", 1, formationWhy);
-            if (formation == null) {
-                return new AllianceMineOutcome(false, formationWhy.length() > 0
-                        ? "联盟矿编队跳过：" + formationWhy : "联盟矿无英雄可派");
+            Map<String, Object> formation;
+            if (formationParamsOverride != null) {
+                FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(tc.engine,
+                        FormationResolver.libraryFor(tc, "gather"), formationParamsOverride);
+                if (!ro.ready()) {
+                    return new AllianceMineOutcome(false, "联盟矿编队跳过：" + ro.reason);
+                }
+                formation = ro.formation.toFormationPayload();
+            } else {
+                StringBuilder formationWhy = new StringBuilder();
+                formation = formationFor(tc, "gather", 1, formationWhy);
+                if (formation == null) {
+                    return new AllianceMineOutcome(false, formationWhy.length() > 0
+                            ? "联盟矿编队跳过：" + formationWhy : "联盟矿无英雄可派");
+                }
             }
             GameMessage march = tc.engine.request("req_world_march", Exec.args(
                     "type", GATHER_MINE_MARCH_TYPE,
@@ -509,6 +527,54 @@ public final class ServerFieldTasks {
             markGatherMineRetry(tc, now);
             return new AllianceMineOutcome(false, "联盟矿异常：" + ServerTasks.brief(String.valueOf(e.getMessage())));
         }
+    }
+
+    /** 资产库队列 → MarchSnapshot（类型计数 + type4/110 最早结束毫秒；未 know 返回 unknown）。 */
+    static MarchSnapshot marchSnapshotFromAsset(AssetSnapshot.Queue queue) {
+        if (queue == null || !queue.known()) return MarchSnapshot.unknown();
+        Map<Long, Integer> counts = new LinkedHashMap<>();
+        long earliest = 0L;
+        for (AssetSnapshot.QueueMarch march : queue.marches) {
+            if (march == null) continue;
+            counts.merge(march.type, 1, Integer::sum);
+            if (march.type == GATHER_MARCH_TYPE || march.type == GATHER_MINE_MARCH_TYPE) {
+                long end = queueMarchEndMillis(march);
+                if (end > 0L && (earliest == 0L || end < earliest)) earliest = end;
+            }
+        }
+        return new MarchSnapshot(counts, earliest, true);
+    }
+
+    /** v2 联盟矿编队参数（与 queueFormationParams 同口径）。 */
+    static JSONObject allianceMineFormationParams(GatherConfigV2 cfg) {
+        JSONObject f = new JSONObject();
+        if (cfg == null) return f;
+        String mode = GatherConfigV2.normalizeMode(cfg.allianceMineFormationMode);
+        long total = cfg.allianceMineInfantry + cfg.allianceMineLancer + cfg.allianceMineMarksman;
+        if (GatherConfigV2.MODE_ROLE.equals(mode)) {
+            f.put("formation_mode", GatherConfigV2.MODE_ROLE);
+            f.put("formation_id", cfg.allianceMineFormationId);
+            JSONObject soldiers = new JSONObject();
+            soldiers.put("infantry", Math.max(0L, cfg.allianceMineInfantry));
+            soldiers.put("lancer", Math.max(0L, cfg.allianceMineLancer));
+            soldiers.put("marksman", Math.max(0L, cfg.allianceMineMarksman));
+            f.put("soldiers", soldiers);
+            return f;
+        }
+        f.put("formation_mode", GatherConfigV2.MODE_AUTOMATIC);
+        JSONObject ratio = new JSONObject();
+        if (total > 0L) {
+            ratio.put("infantry", Math.max(0L, cfg.allianceMineInfantry));
+            ratio.put("lancer", Math.max(0L, cfg.allianceMineLancer));
+            ratio.put("marksman", Math.max(0L, cfg.allianceMineMarksman));
+        } else {
+            ratio.put("infantry", 40L);
+            ratio.put("lancer", 30L);
+            ratio.put("marksman", 30L);
+        }
+        f.put("ratio", ratio);
+        f.put("total", total);
+        return f;
     }
 
     /** 联盟建筑列表 → type=39 资源中心坐标（纯函数；resource_info.end_time 已过期的丢弃）。 */
@@ -983,7 +1049,32 @@ public final class ServerFieldTasks {
             writeQueueMapping(tc, mapping);
             return;
         }
-        int slots = slotCount(cfg, queue.idle, unbound, queue.capacity, queue.limitReached);
+        // B2-T5 联盟矿（type=110）：占 1 个世界队列；失败只记子项，不影响普通队列派队。
+        int allianceMineReserved = 0;
+        if (cfg.allianceMineEnabled) {
+            MarchSnapshot mineSnapshot = marchSnapshotFromAsset(queue);
+            if (mineSnapshot.count(GATHER_MINE_MARCH_TYPE) > 0) {
+                allianceMineReserved = 1;
+                m.subSkip("alliance_mine", "联盟矿已在途，占用 1 队");
+                tc.saveModText("gather", "alliance_mine", "联盟矿已在途，占用 1 队");
+            } else if (queue.capacity <= 0) {
+                m.subSkip("alliance_mine", "世界容量未知，跳过联盟矿");
+                tc.saveModText("gather", "alliance_mine", "世界容量未知，跳过");
+            } else {
+                AllianceMineOutcome mine = maintainAllianceMine(tc, mineSnapshot, queue.capacity,
+                        allianceMineFormationParams(cfg));
+                if (mine.dispatched) {
+                    allianceMineReserved = 1;
+                    m.claimed("联盟矿已派出");
+                    m.subOk("alliance_mine", mine.message);
+                } else {
+                    m.subSkip("alliance_mine", mine.message);
+                }
+                tc.saveModText("gather", "alliance_mine", mine.message);
+            }
+        }
+        int slots = Math.max(0, slotCount(cfg, queue.idle, unbound, queue.capacity,
+                queue.limitReached) - allianceMineReserved);
         if (queue.limitReached || slots <= 0) {
             String text = "采集队列已满(capacity=" + queue.capacity + " occupied=" + queue.occupied
                     + " idle=" + queue.idle + " unbound=" + unbound + ")";
@@ -991,12 +1082,6 @@ public final class ServerFieldTasks {
             tc.saveModText("gather", "send", text);
             writeQueueMapping(tc, mapping);
             return;
-        }
-        // 联盟矿本期不接入 v2 队列化（用户决策：核心三项；旧 alliance_mine 路径仅保留在 legacy 分支）。
-        if (cfg.allianceMineEnabled) {
-            String note = "联盟矿本期未接入队列化执行，跳过";
-            m.subSkip("alliance_mine", note);
-            tc.saveModText("gather", "alliance_mine", note);
         }
 
         List<QueuePlan> plans = planQueues(cfg, maxLevel);

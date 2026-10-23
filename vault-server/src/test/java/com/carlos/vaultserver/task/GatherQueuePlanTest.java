@@ -503,4 +503,30 @@ public class GatherQueuePlanTest {
         assertNull(ServerFieldTasks.gatherPauseReason(
                 (com.carlos.vault.wjdr.asset.CoreAssetLibrary) null, 10_000L));
     }
+
+    @Test
+    public void allianceMineFormationParams_roleAndAuto() {
+        GatherConfigV2 cfg = GatherConfigV2.legacyDefaults();
+        cfg.allianceMineEnabled = true;
+        cfg.allianceMineFormationMode = GatherConfigV2.MODE_ROLE;
+        cfg.allianceMineFormationId = 7L;
+        org.json.JSONObject role = ServerFieldTasks.allianceMineFormationParams(cfg);
+        assertEquals(GatherConfigV2.MODE_ROLE, role.optString("formation_mode"));
+        assertEquals(7L, role.optLong("formation_id"));
+        cfg.allianceMineFormationMode = GatherConfigV2.MODE_AUTOMATIC;
+        cfg.allianceMineInfantry = 40000L;
+        cfg.allianceMineLancer = 30000L;
+        cfg.allianceMineMarksman = 30000L;
+        org.json.JSONObject auto = ServerFieldTasks.allianceMineFormationParams(cfg);
+        assertEquals(GatherConfigV2.MODE_AUTOMATIC, auto.optString("formation_mode"));
+        assertEquals(100000L, auto.optLong("total"));
+        assertEquals(40000L, auto.optJSONObject("ratio").optLong("infantry"));
+    }
+
+    @Test
+    public void marchSnapshotFromAsset_countsAndSpecial() {
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Queue empty =
+                com.carlos.vault.wjdr.asset.AssetSnapshot.Queue.empty();
+        assertFalse(ServerFieldTasks.marchSnapshotFromAsset(empty).known());
+    }
 }
