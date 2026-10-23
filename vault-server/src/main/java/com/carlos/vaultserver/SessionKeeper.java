@@ -2,6 +2,7 @@ package com.carlos.vaultserver;
 
 import com.carlos.vault.wjdr.AssetSource;
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vaultserver.task.ServerNotifyHistory;
 import com.carlos.vaultserver.task.TaskWakeRouter;
 
 import java.net.InetSocketAddress;
@@ -323,6 +324,9 @@ public final class SessionKeeper implements SessionControl,
             });
             // C2 推送唤醒：会话创建即挂载（登录期早到的 init 推送也不丢）
             attachWakeHook();
+            // R2 通知历史（批次3 2026-10-23）：与唤醒钩子并列挂同一 inbound 线程，
+            // 登录期早到的多实例活动 init 推送也不丢（引擎 per-proto 只留最后一帧）。
+            attachNotifyHistoryHook();
         }
 
         // ---------- C2 推送唤醒（notify → 任务 cadence 立即到期） ----------
@@ -349,6 +353,38 @@ public final class SessionKeeper implements SessionControl,
                 wakeRouter.onNotify(fp, sd, proto);
             });
             FileLog.info("推送唤醒钩子已挂载 {}", key);
+        }
+
+        // ---------- R2 通知历史（多实例活动取数；批次3 2026-10-23） ----------
+
+        /** 历史钩子幂等标记（每会话至多一个；引擎 close 后不再产生消息，无需解绑）。 */
+        private final java.util.concurrent.atomic.AtomicBoolean historyHookAttached =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        /**
+         * 挂载 inbound 消息钩子 → {@link com.carlos.vaultserver.task.ServerNotifyHistory}。
+         *
+         * <p>对齐网页版 {@code DailyActivityCalendarService.register()} 的
+         * {@code session.observeInbound(...)}（service/DailyActivityCalendarService.java:50-61）与
+         * {@code TaskEngine} 逐条 notify 派发（engine/TaskEngine.java:446-483）：每条 inbound 都进
+         * 环形历史，任务线程再从历史里取“同协议多实例”（曙光市集 7 档/自选箱多组/卡 BP 多卡）。
+         *
+         * <p>守卫：会话必须在线（离线/暂停/关闭不写）、账号指纹非空；<b>只按 fpid 存</b>
+         * （同账号多角色共用一份历史，sid 不作键，符合需求口径）；allowlist/容量/拷贝上限由
+         * {@link com.carlos.vaultserver.task.ServerNotifyHistory} 内部保证（生产 -Xmx256m）。
+         * 钩子异常由引擎捕获，不影响其它监听者（wake/战争/互助钩子）。
+         */
+        private void attachNotifyHistoryHook() {
+            if (!historyHookAttached.compareAndSet(false, true)) return;
+            final WjdrEngine eng = engine;
+            final String fp = fpid;
+            eng.addMessageHook((proto, content) -> {
+                if (!wantOnline || !WjdrEngine.STATE_ONLINE.equals(eng.sessionState())) return;
+                if (fp == null || fp.trim().isEmpty()) return;
+                if (!ServerNotifyHistory.isAllowlisted(proto)) return;
+                ServerNotifyHistory.record(fp, proto, content);
+            });
+            FileLog.info("通知历史钩子已挂载 {}", key);
         }
 
         void start() {

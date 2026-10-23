@@ -115,7 +115,7 @@ public class TaskCadenceSchedulerTest {
         assertEquals(1, keeper.submitted.size());
         scheduler.tick(now + 1_000L);        // 最小间隔 3s 内不派
         assertEquals(1, keeper.submitted.size());
-        scheduler.tick(now + 4_000L);        // 过了间隔，派下一个到点任务
+        scheduler.tick(now + 7_000L);        // 过了最小间隔（6s），派下一个到点任务
         assertEquals(2, keeper.submitted.size());
         assertFalse("同一任务不应连续两拍派发",
                 keeper.submitted.get(0).equals(keeper.submitted.get(1)));

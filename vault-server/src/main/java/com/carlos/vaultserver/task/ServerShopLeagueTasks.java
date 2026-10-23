@@ -5,12 +5,24 @@ import com.carlos.vault.wjdr.protocol.GameMessage;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.time.Instant;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 商店/联盟/背包类任务（App 端 daily/ShopTasks + LeagueTasks 逐行移植，改动须两侧同步）。
@@ -156,10 +168,10 @@ public final class ServerShopLeagueTasks {
     static final String PARAM_BUY_NAMES = "buy_names";
 
     /**
-     * 名单模式判定。App SubCardUi 保存时会写 buy_names（名字→1），同时为兼容旧读取把
-     * 该名字的**全部 variant confId** 写进 buys（SubCardUi.java:601-614）。服务端目前只认
-     * buys，若照单执行会把同一个名字的所有档位各买一份（重复购买/买贵档）。
-     * 安全第一：识别到名单模式即整轮跳过，等名称模式移植后再放开（audit §6.4 P1）。
+     * 名单模式判定（S2 起正式支持 buy_names；此函数保留为解析入口与批次2单测契约）。
+     * App SubCardUi 保存时会写 buy_names（名字→1），同时为兼容旧读取把该名字的**全部 variant
+     * confId** 写进 buys（SubCardUi.java:601-614）；服务端以 buy_names 为准（名字模式优先），
+     * 只在同名多 variant 中选「最便宜且可支付」的一档。
      */
     static boolean nameModeConfigured(JSONObject params) {
         if (params == null) return false;
@@ -180,7 +192,319 @@ public final class ServerShopLeagueTasks {
                 tmp[n++] = shopId;
             }
         }
-        return java.util.Arrays.copyOf(tmp, n);
+        return Arrays.copyOf(tmp, n);
+    }
+
+    // ---------- S2：名单模式（名字 → 候选 variant，最便宜且可支付） ----------
+
+    /** 钻石币种 id（网页版 DailyShopService.DIAMOND_RESOURCE_ID=101）。 */
+    static final long SHOP_DIAMOND_CURRENCY_ID = 101L;
+    /** pending 对账窗口：窗口内同商品不重复下单（网页版 pending 检查点的最小版）。 */
+    static final long SHOP_PENDING_TTL_MS = 120_000L;
+
+    /** 网页版流动商人刷新费用：前 3 次免费，其后 50/100/100/200/200/500/1000 钻。 */
+    static final long[] VENDOR_REFRESH_COSTS = {0L, 0L, 0L, 50L, 100L, 100L, 200L, 200L, 500L, 1000L};
+    /** 网页版神秘商店刷新费用：首次免费，其后 100…2000 钻。 */
+    static final long[] MYSTERIOUS_REFRESH_COSTS = {0L, 100L, 200L, 300L, 400L, 500L, 600L, 700L,
+            800L, 900L, 1000L, 1100L, 1200L, 1300L, 1400L, 1500L, 1600L, 1700L, 1800L, 1900L, 2000L};
+
+    /** 货架候选：某店铺当前在架的单个商品实例（含实时价/已购/限购）。 */
+    static record ShopShelfItem(long shopId, long goodsId, long configId, long currencyId,
+                                long price, long buyCount, long limit) {
+        /** 剩余可购数；limit<=0 视为不限购（名单模式仍只买 1 件）。 */
+        long remaining() {
+            return limit <= 0L ? Long.MAX_VALUE : Math.max(0L, limit - buyCount);
+        }
+    }
+
+    /** 购买预算（安全默认：钻石关、钻石预算 0、每轮最多 20 件）。 */
+    static record ShopBudget(boolean allowDiamond, long maxDiamondSpend, int maxBuysPerRound) {
+        static ShopBudget from(JSONObject refreshCfg) {
+            if (refreshCfg == null) return new ShopBudget(false, 0L, 20);
+            long maxDiamond = Math.max(0L, refreshCfg.optLong("max_diamond_spend", 0L));
+            int maxBuys = Math.max(1, Math.min(200, refreshCfg.optInt("max_buys", 20)));
+            return new ShopBudget(refreshCfg.optBoolean("allow_diamond", false), maxDiamond, maxBuys);
+        }
+    }
+
+    /** 解析 App 新 UI 名单：兼容 {名字:数量} / ["名字"] / [{name,count}] / "名字"。 */
+    static Map<String, Long> parseBuyNames(Object raw) {
+        LinkedHashMap<String, Long> out = new LinkedHashMap<>();
+        try {
+            if (raw instanceof JSONObject) {
+                JSONObject names = (JSONObject) raw;
+                for (Iterator<String> it = names.keys(); it.hasNext(); ) {
+                    String rawName = it.next();
+                    String name = rawName == null ? "" : rawName.trim();
+                    if (name.isEmpty()) continue;
+                    long count = Math.max(1L, names.optLong(rawName, 1L));
+                    out.merge(name, count, Math::max);
+                }
+            } else if (raw instanceof JSONArray) {
+                JSONArray names = (JSONArray) raw;
+                for (int i = 0; i < names.length(); i++) {
+                    Object value = names.opt(i);
+                    if (value instanceof JSONObject) {
+                        JSONObject item = (JSONObject) value;
+                        String name = item.optString("name", "").trim();
+                        if (!name.isEmpty()) {
+                            out.merge(name, Math.max(1L, item.optLong("count", 1L)), Math::max);
+                        }
+                    } else if (value != null) {
+                        String name = String.valueOf(value).trim();
+                        if (!name.isEmpty()) out.merge(name, 1L, Math::max);
+                    }
+                }
+            } else if (raw instanceof String) {
+                String name = ((String) raw).trim();
+                if (!name.isEmpty()) out.put(name, 1L);
+            }
+        } catch (Exception ignored) {
+        }
+        return out;
+    }
+
+    /** 旧 configId 勾选兼容：解析成去重后的 configId→数量（同一 variant 只买一次）。 */
+    static LinkedHashMap<Long, Long> parseLegacyBuys(JSONObject buys) {
+        LinkedHashMap<Long, Long> out = new LinkedHashMap<>();
+        if (buys == null) return out;
+        for (Iterator<String> it = buys.keys(); it.hasNext(); ) {
+            String key = it.next();
+            long configId;
+            try {
+                configId = Long.parseLong(key == null ? "" : key.trim());
+            } catch (Exception ignored) {
+                continue;
+            }
+            if (configId <= 0L) continue;
+            out.merge(configId, Math.max(1L, buys.optLong(key, 1L)), Math::max);
+        }
+        return out;
+    }
+
+    /** 实时价防御式提取（字段名未实证，与 App ShopTasks.livePriceOf 同款）。 */
+    static long livePriceOf(Map<String, Object> goods, long fallback) {
+        if (goods != null) {
+            for (String key : new String[]{"price", "cur_price", "now_price", "discount_price"}) {
+                long value = Exec.longOf(goods.get(key));
+                if (value > 0L) return value;
+            }
+        }
+        return fallback;
+    }
+
+    /**
+     * 单件是否可支付（资金安全核心）：
+     * <ul>
+     *   <li>免费档(price=0) 永远可买（不消耗币种）；</li>
+     *   <li>钻石(101) 必须显式 allow_diamond + 剩余钻石预算足够；</li>
+     *   <li>其它币种必须余额已知且足够（余额未知不买）。</li>
+     * </ul>
+     */
+    static boolean shopItemPayable(ShopShelfItem item, Map<Long, Long> balances,
+                                   ShopBudget budget, long diamondSpent) {
+        if (item == null || item.price() < 0L) return false;
+        if (item.price() == 0L) return true;
+        if (item.currencyId() == SHOP_DIAMOND_CURRENCY_ID) {
+            if (budget == null || !budget.allowDiamond()) return false;
+            long remaining = budget.maxDiamondSpend() - Math.max(0L, diamondSpent);
+            if (remaining < item.price()) return false;
+        }
+        Long balance = balances == null ? null : balances.get(item.currencyId());
+        return balance != null && balance >= item.price();
+    }
+
+    /**
+     * 同名多 variant 选「最便宜且可支付」的实例：绝不买贵档，也绝不买余额未知/超预算的档。
+     * 同价时按 goodsId 升序稳定选择（便于复现与测试）。
+     */
+    static ShopShelfItem chooseCheapestVariant(List<ShopShelfItem> shelf,
+                                               Map<Long, String> nameByConfigId, String name,
+                                               Map<Long, Long> balances, ShopBudget budget,
+                                               long diamondSpent) {
+        if (shelf == null || name == null) return null;
+        ShopShelfItem best = null;
+        for (ShopShelfItem item : shelf) {
+            if (!name.equals(nameByConfigId.get(item.configId()))) continue;
+            if (item.remaining() <= 0L) continue;
+            if (!shopItemPayable(item, balances, budget, diamondSpent)) continue;
+            if (best == null || item.price() < best.price()
+                    || (item.price() == best.price() && item.goodsId() < best.goodsId())) {
+                best = item;
+            }
+        }
+        return best;
+    }
+
+    /** 货架扁平化：店号 + goods 实例 → 候选；catalog 缺失的未知商品不参与（避免误判价格）。 */
+    static List<ShopShelfItem> flattenShelf(Map<String, Object> mapInfo,
+                                            Map<Long, Good> byConfigId) {
+        List<ShopShelfItem> out = new ArrayList<>();
+        if (mapInfo == null) return out;
+        for (Map.Entry<String, Object> e : mapInfo.entrySet()) {
+            long shopId;
+            try {
+                shopId = Long.parseLong(e.getKey() == null ? "" : e.getKey().trim());
+            } catch (Exception ignored) {
+                continue;
+            }
+            Map<String, Object> shopInfo = Exec.mapOf(e.getValue());
+            if (shopInfo == null) continue;
+            for (Map<String, Object> goods : Exec.mapsOf(shopInfo.get("goods"))) {
+                long goodsId = Exec.longOf(goods.get("id"));
+                long configId = Exec.longOf(goods.get("conf_id"));
+                if (goodsId <= 0L || configId <= 0L) continue;
+                Good meta = byConfigId == null ? null : byConfigId.get(configId);
+                if (meta == null) continue;
+                out.add(new ShopShelfItem(shopId, goodsId, configId, meta.currencyId,
+                        livePriceOf(goods, meta.price), Exec.longOf(goods.get("buy_count")), meta.limit));
+            }
+        }
+        return out;
+    }
+
+    /** 从 shop_info 响应里读每店 refresh_times（用于免费次数/钻石预算判定）。 */
+    static Map<Long, Integer> refreshTimesFrom(Map<String, Object> mapInfo) {
+        Map<Long, Integer> out = new HashMap<>();
+        if (mapInfo == null) return out;
+        for (Map.Entry<String, Object> e : mapInfo.entrySet()) {
+            long shopId;
+            try {
+                shopId = Long.parseLong(e.getKey() == null ? "" : e.getKey().trim());
+            } catch (Exception ignored) {
+                continue;
+            }
+            Map<String, Object> shopInfo = Exec.mapOf(e.getValue());
+            if (shopInfo == null) continue;
+            // 只收录响应里真实带 refresh_times 的店铺：缺失=刷新次数未同步，不刷新（防误花钻石）。
+            if (!shopInfo.containsKey("refresh_times")) continue;
+            out.put(shopId, Math.max(0, (int) Exec.longOf(shopInfo.get("refresh_times"))));
+        }
+        return out;
+    }
+
+    /** 当前刷新费用：0=免费，>0=钻石，-1=超出费用表（不可刷新）。 */
+    static long shopRefreshCost(long shopId, int refreshTimes) {
+        long[] costs = shopId == SHOP_ID_VENDOR ? VENDOR_REFRESH_COSTS
+                : shopId == SHOP_ID_MYSTERIOUS ? MYSTERIOUS_REFRESH_COSTS : null;
+        if (costs == null || refreshTimes < 0 || refreshTimes >= costs.length) return -1L;
+        return costs[refreshTimes];
+    }
+
+    /** 付费刷新门控：必须 allow_diamond 且剩余钻石预算覆盖本次费用。 */
+    static boolean diamondRefreshAllowed(ShopBudget budget, long shopId, int refreshTimes,
+                                         long diamondSpent) {
+        long cost = shopRefreshCost(shopId, refreshTimes);
+        if (cost < 0L) return false;
+        if (cost == 0L) return true;
+        if (budget == null || !budget.allowDiamond()) return false;
+        return budget.maxDiamondSpend() - Math.max(0L, diamondSpent) >= cost;
+    }
+
+    /** 币种余额：notify_resource_init/produced_resource_init 为绝对值，resource_update 为差值。 */
+    static Map<Long, Long> currencyBalances(TaskContext tc) {
+        Map<Long, Long> out = new HashMap<>();
+        applyResourceList(out, tc.engine.notifyContent("notify_resource_init"));
+        applyResourceList(out, tc.engine.notifyContent("notify_produced_resource_init"));
+        applyResourceDelta(out, tc.engine.notifyContent("notify_resource_update"));
+        applyResourceList(out, tc.engine.notifyContent("notify_produced_resource_update"));
+        return out;
+    }
+
+    /** 绝对计数列表：content.data[] = [{id,count}]。 */
+    static void applyResourceList(Map<Long, Long> out, Map<String, Object> content) {
+        if (out == null || content == null) return;
+        for (Map<String, Object> item : Exec.mapsOf(content.get("data"))) {
+            long id = Exec.longOf(item.get("id"));
+            long count = Exec.longOf(item.get("count"));
+            if (id > 0L && count >= 0L) out.put(id, count);
+        }
+    }
+
+    /** 差值更新：content.data[] = [{id,count}]；content.type=="del" 时为减少。 */
+    static void applyResourceDelta(Map<Long, Long> out, Map<String, Object> content) {
+        if (out == null || content == null) return;
+        long sign = "del".equals(String.valueOf(content.get("type"))) ? -1L : 1L;
+        for (Map<String, Object> item : Exec.mapsOf(content.get("data"))) {
+            long id = Exec.longOf(item.get("id"));
+            long delta = sign * Exec.longOf(item.get("count"));
+            if (id > 0L) out.merge(id, delta, Long::sum);
+        }
+    }
+
+    /** pending 对账记录（防超时/断线后重复下单）。 */
+    static record ShopPending(long shopId, long goodsId, long configId, long price,
+                              long currencyId, long buyCountBefore, long atMillis) {
+        String toJson() {
+            JSONObject o = new JSONObject();
+            o.put("shop_id", shopId);
+            o.put("goods_id", goodsId);
+            o.put("config_id", configId);
+            o.put("price", price);
+            o.put("currency_id", currencyId);
+            o.put("buy_count_before", buyCountBefore);
+            o.put("at", atMillis);
+            return o.toString();
+        }
+
+        static ShopPending fromJson(String raw) {
+            if (raw == null || raw.isBlank()) return null;
+            try {
+                JSONObject o = new JSONObject(raw);
+                long shopId = o.optLong("shop_id", 0L);
+                long goodsId = o.optLong("goods_id", 0L);
+                if (shopId <= 0L || goodsId <= 0L) return null;
+                return new ShopPending(shopId, goodsId, o.optLong("config_id", 0L),
+                        o.optLong("price", 0L), o.optLong("currency_id", 0L),
+                        o.optLong("buy_count_before", 0L), o.optLong("at", 0L));
+            } catch (Exception ignored) {
+                return null;
+            }
+        }
+    }
+
+    static String shopPendingKey(TaskContext tc, String fnId) {
+        return "srv:shop:" + tc.fpid + ":" + tc.sid + ":" + fnId + ":pending";
+    }
+
+    static ShopPending loadShopPending(TaskContext tc, String fnId) {
+        try {
+            return ShopPending.fromJson(tc.store.getString(shopPendingKey(tc, fnId)));
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    static void saveShopPending(TaskContext tc, String fnId, ShopPending pending) {
+        try {
+            tc.store.putString(shopPendingKey(tc, fnId), pending == null ? "" : pending.toJson());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static void clearShopPending(TaskContext tc, String fnId) {
+        try {
+            tc.store.putString(shopPendingKey(tc, fnId), "");
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** pending 是否仍在防重窗口内（>= TTL 视为过期可重试）。 */
+    static boolean shopPendingFresh(ShopPending pending, long nowMillis) {
+        return pending != null && pending.atMillis() > 0L
+                && nowMillis - pending.atMillis() >= 0L
+                && nowMillis - pending.atMillis() < SHOP_PENDING_TTL_MS;
+    }
+
+    /** 货架已购数增加 → 上轮请求已被服务端处理（无论响应是否丢失）。 */
+    static boolean shopPendingCompleted(ShopPending pending, long shelfBuyCount) {
+        return pending != null && shelfBuyCount > pending.buyCountBefore();
+    }
+
+    /** 购买条件类错误码（网页版 DailyShopService.isPurchaseConditionBlocked 同款）。 */
+    static boolean isPurchaseConditionBlocked(int code) {
+        if (code >= 800 && code <= 830) return true;
+        return code == 10521 || code == 40240;
     }
 
     public static TaskOutcome shopBuy(TaskContext tc) {
@@ -196,34 +520,40 @@ public final class ServerShopLeagueTasks {
         Exec.Multi m = new Exec.Multi();
         try {
             JSONObject p = tc.params(fnId);
-            if (nameModeConfigured(p)) {
-                // 名单模式未移植（server 只认 buys）：按 buys 全 variant 买会重复购买/买贵档，安全跳过。
-                m.skip("名单模式未支持，安全跳过");
-                return Exec.result(m, fnId, fnName);
-            }
-            JSONObject buys = p.optJSONObject("buys");
-            if (buys == null || buys.length() == 0) {
+            Map<String, Long> wantNames = parseBuyNames(p.opt(PARAM_BUY_NAMES));
+            LinkedHashMap<Long, Long> wantConfigIds = parseLegacyBuys(p.optJSONObject("buys"));
+            boolean nameMode = !wantNames.isEmpty();
+            if (!nameMode && wantConfigIds.isEmpty()) {
                 m.skip("未勾选商品（设置页配置）");
                 return Exec.result(m, fnId, fnName);
             }
-            Map<Long, Long> want = new HashMap<>();
-            for (Iterator<String> it = buys.keys(); it.hasNext(); ) {
-                String k = it.next();
-                want.put(Long.parseLong(k), buys.optLong(k));
+            Map<Long, Good> byConfigId = new HashMap<>();
+            Map<Long, String> nameByConfigId = new HashMap<>();
+            for (List<Good> gl : shops().values()) {
+                for (Good g : gl) {
+                    if (g == null || g.configId <= 0L) continue;
+                    byConfigId.put(g.configId, g);
+                    String name = g.name == null ? "" : g.name.trim();
+                    if (!name.isEmpty()) nameByConfigId.put(g.configId, name);
+                }
             }
             List<Object> arr = new ArrayList<>();
             for (long sid : shopIds) arr.add(sid);
-            Map<Long, Good> catalog = new HashMap<>();
-            for (List<Good> gl : shops().values()) {
-                for (Good g : gl) catalog.put(g.configId, g);
-            }
             JSONObject refreshCfg = p.optJSONObject("refresh");
             int refreshRounds = refreshCfg == null ? 0
                     : Math.max(0, Math.min(5, refreshCfg.optInt("rounds", 0)));
             int targetPurchases = refreshCfg == null ? 0
                     : Math.max(0, refreshCfg.optInt("target_purchases", 0));
-            boolean allowDiamond = refreshCfg != null
-                    && refreshCfg.optBoolean("allow_diamond", false);
+            ShopBudget budget = ShopBudget.from(refreshCfg);
+            // 币种余额：未知币种一律不买（资金安全）；钻石另需显式预算。
+            Map<Long, Long> balances = currencyBalances(tc);
+            long nowMillis = System.currentTimeMillis();
+            ShopPending pending = loadShopPending(tc, fnId);
+            if (pending != null && !shopPendingFresh(pending, nowMillis)) {
+                clearShopPending(tc, fnId);
+                pending = null;
+            }
+            long diamondSpent = 0L;
             int boughtTotal = 0;
             for (int round = 0; round <= refreshRounds; round++) {
                 GameMessage info = tc.engine.request("req_shop_info_array",
@@ -237,55 +567,125 @@ public final class ServerShopLeagueTasks {
                     if (round == 0) m.skip("商店响应缺商品表");
                     break;
                 }
-                int bought = 0;
-                for (Map.Entry<String, Object> e : mapInfo.entrySet()) {
-                    long shopId = Long.parseLong(e.getKey());
-                    Map<String, Object> shopInfo = Exec.mapOf(e.getValue());
-                    if (shopInfo == null) continue;
-                    for (Map<String, Object> g : Exec.mapsOf(shopInfo.get("goods"))) {
-                        long confId = Exec.longOf(g.get("conf_id"));
-                        Long w = want.get(confId);
-                        if (w == null || w <= 0) continue;
-                        long goodsId = Exec.longOf(g.get("id"));
-                        long boughtCount = Exec.longOf(g.get("buy_count"));
-                        Good meta = catalog.get(confId);
-                        long limit = meta == null ? 0 : meta.limit;
-                        long remaining = limit > 0 ? Math.max(0, limit - boughtCount) : w;
-                        if (remaining <= 0) continue;
-                        long count = Math.min(w, remaining);
+                List<ShopShelfItem> shelf = flattenShelf(mapInfo, byConfigId);
+                Map<Long, Integer> refreshTimes = refreshTimesFrom(mapInfo);
+                int boughtThisRound = 0;
+                if (nameMode) {
+                    for (String name : wantNames.keySet()) {
+                        if (boughtThisRound >= budget.maxBuysPerRound()) break;
+                        ShopShelfItem chosen = chooseCheapestVariant(shelf, nameByConfigId, name,
+                                balances, budget, diamondSpent);
+                        if (chosen == null) continue;
+                        boolean[] cleared = new boolean[1];
+                        pending = reconcileShopPending(tc, fnId, pending, shelf, nowMillis, cleared);
+                        if (pending != null && pending.shopId() == chosen.shopId()
+                                && pending.goodsId() == chosen.goodsId()) {
+                            m.skip(name + " 上轮购买待对账，跳过防重复");
+                            continue;
+                        }
+                        saveShopPending(tc, fnId, new ShopPending(chosen.shopId(), chosen.goodsId(),
+                                chosen.configId(), chosen.price(), chosen.currencyId(),
+                                chosen.buyCount(), nowMillis));
                         GameMessage buy = tc.engine.request("req_shop_buy", Exec.args(
-                                "shop_id", shopId, "goods_id", goodsId, "count", count));
+                                "shop_id", chosen.shopId(), "goods_id", chosen.goodsId(), "count", 1L));
                         int code = Exec.codeOf(buy);
                         if (Exec.ok(buy)) {
-                            bought++;
-                            m.claimed((meta == null ? confId : meta.name) + "×" + count);
-                            m.rewards(meta == null ? "商品" + confId : meta.name, buy);
-                        } else if (code >= 800 && code <= 830) {
-                            m.skip((meta == null ? confId : meta.name) + "条件不满足");
-                        } else if (code == 10521 || code == 40240) {
-                            m.skip((meta == null ? confId : meta.name) + "条件不满足");
+                            clearShopPending(tc, fnId);
+                            if (chosen.currencyId() == SHOP_DIAMOND_CURRENCY_ID) {
+                                diamondSpent += chosen.price();
+                            }
+                            boughtThisRound++;
+                            m.claimed(name + "×1（" + chosen.price() + "）");
+                        } else if (isPurchaseConditionBlocked(code)) {
+                            clearShopPending(tc, fnId);
+                            m.skip(name + " 条件不满足");
+                        } else if (code >= 0) {
+                            clearShopPending(tc, fnId);
+                            m.skip(name + " 码" + code);
                         } else {
-                            m.skip((meta == null ? confId : meta.name) + "码" + code);
+                            // 响应未知（超时/断线）：保留 pending，下一轮/下次运行先对账，不重复下单。
+                            m.skip(name + " 响应未知，等待对账");
+                        }
+                    }
+                } else {
+                    Set<Long> seenConfigIds = new HashSet<>();
+                    for (ShopShelfItem item : shelf) {
+                        Long want = wantConfigIds.get(item.configId());
+                        if (want == null || want <= 0L) continue;
+                        if (!seenConfigIds.add(item.configId())) continue;   // 旧 buys 去重
+                        long remaining = item.remaining();
+                        if (remaining <= 0L) continue;
+                        Good meta = byConfigId.get(item.configId());
+                        String label = meta == null || meta.name == null || meta.name.isBlank()
+                                ? String.valueOf(item.configId()) : meta.name;
+                        if (boughtThisRound >= budget.maxBuysPerRound()) break;
+                        if (!shopItemPayable(item, balances, budget, diamondSpent)) {
+                            m.skip(label + " 余额/预算不足或余额未知，跳过");
+                            continue;
+                        }
+                        pending = reconcileShopPending(tc, fnId, pending, shelf, nowMillis, new boolean[1]);
+                        if (pending != null && pending.shopId() == item.shopId()
+                                && pending.goodsId() == item.goodsId()) {
+                            m.skip(label + " 上轮购买待对账，跳过防重复");
+                            continue;
+                        }
+                        long count = Math.min(want, remaining);
+                        saveShopPending(tc, fnId, new ShopPending(item.shopId(), item.goodsId(),
+                                item.configId(), item.price(), item.currencyId(), item.buyCount(),
+                                nowMillis));
+                        GameMessage buy = tc.engine.request("req_shop_buy", Exec.args(
+                                "shop_id", item.shopId(), "goods_id", item.goodsId(), "count", count));
+                        int code = Exec.codeOf(buy);
+                        if (Exec.ok(buy)) {
+                            clearShopPending(tc, fnId);
+                            if (item.currencyId() == SHOP_DIAMOND_CURRENCY_ID) {
+                                diamondSpent += item.price() * count;
+                            }
+                            boughtThisRound++;
+                            m.claimed(label + "×" + count);
+                            m.rewards(label, buy);
+                        } else if (isPurchaseConditionBlocked(code)) {
+                            clearShopPending(tc, fnId);
+                            m.skip(label + " 条件不满足");
+                        } else if (code >= 0) {
+                            clearShopPending(tc, fnId);
+                            m.skip(label + " 码" + code);
+                        } else {
+                            m.skip(label + " 响应未知，等待对账");
                         }
                     }
                 }
-                boughtTotal += bought;
+                boughtTotal += boughtThisRound;
                 if (targetPurchases > 0 && boughtTotal >= targetPurchases) break;
                 if (round == refreshRounds) break;
-                // 只刷新网页版可刷新店铺（801 流动商人/601 神秘商店）；联盟商店(401/501)、
-                // 固定店/钻石店等不刷新（audit §6.4 P3）。
+                // 只刷新 801/601；钻石刷新必须显式 allow_diamond + 预算覆盖当次费用。
                 long[] refreshShops = refreshableShopIds(shopIds);
                 if (refreshShops.length == 0) break;
                 boolean refreshed = false;
                 for (long shopId : refreshShops) {
+                    Integer timesValue = refreshTimes.get(shopId);
+                    if (timesValue == null) {
+                        m.skip("刷新次数未同步，跳过刷新（店铺" + shopId + "）");
+                        break;
+                    }
+                    int times = timesValue;
+                    long cost = shopRefreshCost(shopId, times);
+                    if (cost < 0L) break;
+                    if (cost > 0L) {
+                        if (!diamondRefreshAllowed(budget, shopId, times, diamondSpent)) {
+                            m.skip("钻石刷新预算不足，已停止（店铺" + shopId + "）");
+                            break;
+                        }
+                        diamondSpent += cost;   // 仅预算记账；实际扣费以服务端为准
+                    }
                     GameMessage rr = tc.engine.request("req_shop_refresh",
                             Exec.args("shop_id", shopId));
                     int rc = Exec.codeOf(rr);
                     if (Exec.ok(rr)) {
                         refreshed = true;
-                    } else if (rc == 51 && !allowDiamond) {
-                        // 免费次数用完且未允许钻石刷新：停止，避免误花钻石。
-                        m.skip("刷新需钻石，已按配置停止");
+                        refreshTimes.put(shopId, times + 1);
+                    } else if (rc == 51) {
+                        m.skip("刷新需钻石且预算未通过，已停止（店铺" + shopId + "）");
                         break;
                     }
                 }
@@ -297,6 +697,31 @@ public final class ServerShopLeagueTasks {
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, fnId, fnName);
+    }
+
+    /**
+     * pending 对账：若货架显示该商品已购数增加 → 上轮请求已被服务端处理，清 pending；
+     * 过期 pending 直接清理（允许重试）；窗口内的 pending 原样返回（本轮不再对同商品下单）。
+     */
+    static ShopPending reconcileShopPending(TaskContext tc, String fnId, ShopPending pending,
+                                            List<ShopShelfItem> shelf, long nowMillis,
+                                            boolean[] clearedOut) {
+        if (pending == null) return null;
+        if (!shopPendingFresh(pending, nowMillis)) {
+            clearShopPending(tc, fnId);
+            return null;
+        }
+        if (shelf != null) {
+            for (ShopShelfItem item : shelf) {
+                if (item.shopId() == pending.shopId() && item.goodsId() == pending.goodsId()
+                        && shopPendingCompleted(pending, item.buyCount())) {
+                    clearShopPending(tc, fnId);
+                    if (clearedOut != null && clearedOut.length > 0) clearedOut[0] = true;
+                    return null;
+                }
+            }
+        }
+        return pending;
     }
 
     // ================= 烈焰与獠牙 =================
@@ -620,7 +1045,7 @@ public final class ServerShopLeagueTasks {
         return Exec.result(m, "act_frostfire", "燃霜矿区");
     }
 
-    // ================= 联盟类（App LeagueTasks 移植） =================
+    // ================= 联盟总动员（L3 最小状态机） =================
 
     /**
      * 总动员「购买接取次数」决策结果。allowed=false 时 reason 会作为 SKIP 文案展示。
@@ -629,18 +1054,8 @@ public final class ServerShopLeagueTasks {
     }
 
     /**
-     * 总动员购买接取次数决策（宁漏不花）。网页版价目
-     * catalog/alliance-mobilization.json purchaseCosts=[0,50,50,50,200,200,200,1000,1000,1000]：
-     * 仅首档免费，其后分别消耗 50/200/1000 钻石，且网页版要求显式打开 autoPurchaseCountEnabled
-     * 并配置 maxPaidPurchasesPerDay/maxDiamondSpendPerDay/maxSinglePurchaseCost 三重预算
-     * （DailyAllianceMobilizationService.java:660-673）。
-     *
-     * <p>本地仓库未携带该价目表、服务端也没有每日购买计数（dailyPurchaseCount）状态机，
-     * 因此无法证明“本次是免费首购” → 一律不买。等总动员状态机/catalog 接入后，
-     * 才能在这里放行「dailyPurchaseCount==0 && purchaseCosts[0]==0」的唯一一次免费购买。
-     *
-     * @param params roleParams 里 alliance_mobilization 的参数对象（可空；仅用于未来扩展，
-     *               当前不消费 allow_paid_count 之类开关，避免误开付费购买）
+     * 旧签名保留：批次2 单测锁定「默认不买」。免费首购判定见
+     * {@link #mobilizationFreeCountBuyDecision(MobilizationState, long, JSONObject)}。
      */
     static MobilizationCountBuy mobilizationCountBuyDecision(JSONObject params) {
         if (params != null && params.optBoolean("allow_paid_count", false)) {
@@ -651,62 +1066,666 @@ public final class ServerShopLeagueTasks {
                 "总动员购买次数已跳过：服务端未接价目/状态机，无法确认免费首购（安全跳过）");
     }
 
+    static final int MOB_CODE_NOT_OPEN = 7401;
+    static final int MOB_CODE_NO_QUEST = 8409;
+    static final int MOB_CODE_QUEST_NOT_DONE = 8410;
+    static final int MOB_CODE_NO_MILESTONE = 8413;
+    /** 网页版 catalog/alliance-mobilization.json purchaseCosts[0]==0（首购免费，仅此一次允许购买）。 */
+    static final long MOB_FIRST_PURCHASE_COST = 0L;
+    static final long MOB_EMPTY_MEMORY_MS = 300_000L;
+    static final long MOB_OPEN_INFO_7401_RETRY_MS = 3_600_000L;
+    static final long MOB_OPEN_INFO_OTHER_RETRY_MS = 300_000L;
+    static final int MOB_REFRESH_HOUR_LIMIT_DEFAULT = 12;
+    static final int MOB_REFRESH_DAY_LIMIT_DEFAULT = 100;
+
+    /** 推送来源（生产用 engine::notifyData；单测用 Map 注入）。 */
+    interface MobilizationNotifySource {
+        Map<String, Object> notify(String proto);
+    }
+
+    /** 总动员最小状态（从 notify_mobilization_* 推送增量维护，见网页版 DailyAllianceMobilizationState）。 */
+    static final class MobilizationState {
+        long activityId;
+        final List<Long> stageTimestamps = new ArrayList<>();
+        boolean boardInitialized;
+        long allianceId;
+        long participantAllianceId;
+        boolean allianceJoined;
+        long playerScore;
+        int remainingAcceptCount;
+        int dailyPurchaseCount;
+        long questId;
+        long questProgress;
+        long questEndTime;
+        int questPosition;
+        final Map<Integer, Long> publicPositions = new LinkedHashMap<>();
+        final Map<Integer, Long> personalPositions = new LinkedHashMap<>();
+
+        /** stage：1=未开启 2=预告 3=开启中 4=结算；activity/阶段缺失按 1 处理。 */
+        int stage(long nowSec) {
+            if (activityId <= 0L || stageTimestamps.size() < 3) return 1;
+            if (nowSec < stageTimestamps.get(0)) return 1;
+            if (nowSec < stageTimestamps.get(1)) return 2;
+            return nowSec < stageTimestamps.get(2) ? 3 : 4;
+        }
+
+        boolean active(long nowSec) {
+            return stage(nowSec) == 3;
+        }
+
+        boolean boardAvailable(long nowSec) {
+            int stage = stage(nowSec);
+            return stage == 3 || stage == 4;
+        }
+
+        boolean inAlliance() {
+            return allianceId > 0L;
+        }
+
+        boolean hasQuest() {
+            return questId > 0L;
+        }
+    }
+
+    static List<Object> valuesOf(Object raw) {
+        if (raw instanceof Map) return new ArrayList<>(((Map<?, ?>) raw).values());
+        if (raw instanceof java.util.Collection) return new ArrayList<>((java.util.Collection<?>) raw);
+        return new ArrayList<>();
+    }
+
+    static boolean boolOf(Object raw) {
+        if (raw instanceof Boolean) return (Boolean) raw;
+        if (raw instanceof Number) return ((Number) raw).longValue() != 0L;
+        return "true".equalsIgnoreCase(String.valueOf(raw)) || "1".equals(String.valueOf(raw));
+    }
+
+    static int mobPositionOf(Object key) {
+        long value = Exec.longOf(key);
+        if (value <= 0L) {
+            try {
+                value = (long) Double.parseDouble(String.valueOf(key).trim());
+            } catch (Exception ignored) {
+            }
+        }
+        return value > 0L && value <= 200L ? (int) value : 0;
+    }
+
+    static void putMobPosition(Map<Integer, Long> target, int pos, Object raw, boolean keepEmpty) {
+        if (target == null || pos <= 0) return;
+        Map<String, Object> data = Exec.mapOf(raw);
+        long taskId = data == null ? 0L : Exec.longOf(data.get("id"));
+        if (taskId > 0L || keepEmpty) target.put(pos, taskId);
+        else target.remove(pos);
+    }
+
+    /** 解析 positions：Map{pos:{id}} 或 List[{id}]（index=pos，从 1 起）。 */
+    static Map<Integer, Long> parseMobPositions(Object raw, boolean keepEmpty) {
+        LinkedHashMap<Integer, Long> out = new LinkedHashMap<>();
+        if (raw instanceof Map) {
+            for (Map.Entry<?, ?> entry : ((Map<?, ?>) raw).entrySet()) {
+                int pos = mobPositionOf(entry.getKey());
+                if (pos > 0) putMobPosition(out, pos, entry.getValue(), keepEmpty);
+            }
+        } else {
+            int pos = 1;
+            for (Object value : valuesOf(raw)) putMobPosition(out, pos++, value, keepEmpty);
+        }
+        return out;
+    }
+
+    static void applyMobActivity(MobilizationState st, Object raw) {
+        Map<String, Object> activity = Exec.mapOf(raw);
+        if (activity == null) return;
+        long id = Exec.longOf(activity.get("id"));
+        if (id > 0L) st.activityId = id;
+        st.stageTimestamps.clear();
+        for (Object value : valuesOf(activity.get("stage_ts"))) {
+            long ts = Exec.longOf(value);
+            if (ts > 0L) st.stageTimestamps.add(ts);
+        }
+    }
+
+    static void applyMobQuest(MobilizationState st, Object raw) {
+        Map<String, Object> quest = Exec.mapOf(raw);
+        long id = quest == null ? 0L : Exec.longOf(quest.get("id"));
+        st.questId = Math.max(0L, id);
+        st.questProgress = id > 0L ? Math.max(0L, Exec.longOf(quest.get("progress"))) : 0L;
+        st.questEndTime = id > 0L ? Math.max(0L, Exec.longOf(quest.get("endtime"))) : 0L;
+        st.questPosition = id > 0L ? Math.max(0, (int) Exec.longOf(quest.get("pos"))) : 0;
+    }
+
+    static void applyMobAlliance(MobilizationState st, Object raw) {
+        Map<String, Object> alliance = Exec.mapOf(raw);
+        if (alliance == null) return;
+        long aid = Exec.longOf(alliance.get("aid"));
+        if (aid > 0L) st.allianceId = aid;
+        st.participantAllianceId = Math.max(st.participantAllianceId, st.allianceId);
+        st.allianceJoined = st.allianceJoined || boolOf(alliance.get("is_join")) || aid > 0L;
+    }
+
+    static void applyMobAllianceIdentity(MobilizationState st, Map<String, Object> data) {
+        if (data == null) return;
+        Map<String, Object> player = Exec.mapOf(data.get("player"));
+        long aid = player == null ? Exec.longOf(data.get("aid")) : Exec.longOf(player.get("aid"));
+        if (aid > 0L) {
+            st.allianceId = aid;
+            st.participantAllianceId = aid;
+            st.allianceJoined = true;
+        }
+    }
+
+    static void applyMobPosition(MobilizationState st, Map<String, Object> data, boolean personal) {
+        if (data == null) return;
+        int pos = Math.max(0, (int) Exec.longOf(data.get("pos")));
+        if (pos <= 0) return;
+        Map<String, Object> position = Exec.mapOf(data.get("position"));
+        long taskId = position == null ? 0L : Exec.longOf(position.get("id"));
+        if (taskId <= 0L) taskId = Exec.longOf(data.get("id"));
+        (personal ? st.personalPositions : st.publicPositions).put(pos, taskId);
+    }
+
+    /** 公共任务板静态数据（网页版 req_mobilization_open_info 的 fallback 路径）。 */
+    static void applyMobOpenInfo(MobilizationState st, Map<String, Object> content) {
+        if (content == null) return;
+        applyMobActivity(st, content.get("activity"));
+        st.publicPositions.clear();
+        st.publicPositions.putAll(parseMobPositions(content.get("positions"), false));
+        st.boardInitialized = true;
+    }
+
+    /** 从推送增量装配最小状态（生产入口）。 */
+    static MobilizationState readMobilizationState(MobilizationNotifySource src) {
+        MobilizationState st = new MobilizationState();
+        if (src == null) return st;
+        Map<String, Object> init = src.notify("notify_mobilization_init");
+        if (init != null) applyMobInit(st, init);
+        applyMobAllianceIdentity(st, src.notify("notify_alliance_init"));
+        applyMobAllianceIdentity(st, src.notify("notify_alliance_player_update"));
+        Map<String, Object> activityUpdate = src.notify("notify_mobilization_activity_update");
+        if (activityUpdate != null) applyMobActivity(st, activityUpdate.get("activity"));
+        Map<String, Object> questUpdate = src.notify("notify_mobilization_quest_update");
+        if (questUpdate != null) applyMobQuest(st, questUpdate.get("quest"));
+        Map<String, Object> personalPos = src.notify("notify_mobilization_personal_position_update");
+        if (personalPos != null) applyMobPosition(st, personalPos, true);
+        Map<String, Object> publicPos = src.notify("notify_mobilization_position_update");
+        if (publicPos != null) applyMobPosition(st, publicPos, false);
+        Map<String, Object> mobAlliance = src.notify("notify_mobilization_alliance_init");
+        if (mobAlliance != null) applyMobAlliance(st, mobAlliance.get("alliance"));
+        Map<String, Object> scoreUpdate = src.notify("notify_mobilization_score_update");
+        if (scoreUpdate != null) st.playerScore = Math.max(0L, Exec.longOf(scoreUpdate.get("score")));
+        return st;
+    }
+
+    static void applyMobInit(MobilizationState st, Map<String, Object> init) {
+        applyMobActivity(st, init.get("activity"));
+        applyMobAlliance(st, init.get("alliance"));
+        Map<String, Object> player = Exec.mapOf(init.get("player"));
+        if (player == null) return;
+        st.remainingAcceptCount = Math.max(0, (int) Exec.longOf(player.get("count")));
+        st.playerScore = Math.max(0L, Exec.longOf(player.get("score")));
+        Map<String, Object> dayData = Exec.mapOf(player.get("day_data"));
+        if (dayData != null) st.dailyPurchaseCount = Math.max(0, (int) Exec.longOf(dayData.get("count")));
+        long aid = Exec.longOf(player.get("aid"));
+        if (aid > 0L) st.participantAllianceId = aid;
+        applyMobQuest(st, player.get("quest"));
+        st.personalPositions.clear();
+        st.personalPositions.putAll(parseMobPositions(player.get("positions"), true));
+    }
+
+    static String mobilizationStateSkipReason(MobilizationState st, long nowSec) {
+        if (st == null || st.activityId <= 0L) return "总动员未开放或未同步";
+        if (!st.inAlliance()) return "当前未加入联盟，总动员不执行";
+        if (st.stage(nowSec) <= 2) return "总动员尚未进入开启阶段";
+        return null;
+    }
+
+    /**
+     * 购买接取次数：只允许「cost=0 的免费首购」（网页版 purchaseCosts[0]==0 且 dailyPurchaseCount==0）。
+     * 付费购买一律拒绝（零新增钻石消耗路径）；已有接取次数时保留首购，先接任务。
+     */
+    static MobilizationCountBuy mobilizationFreeCountBuyDecision(MobilizationState st, long nowSec,
+                                                                  JSONObject params) {
+        if (st == null) return new MobilizationCountBuy(false, "总动员状态未同步，跳过购买次数");
+        if (params != null && params.optBoolean("allow_paid_count", false)) {
+            return new MobilizationCountBuy(false,
+                    "付费购买接取次数未开放：仅免费首购(cost=0)允许（allow_paid_count 不生效）");
+        }
+        if (!st.active(nowSec)) return new MobilizationCountBuy(false, "非总动员开启阶段，跳过购买次数");
+        if (st.hasQuest()) return new MobilizationCountBuy(false, "已有进行中任务，跳过购买次数");
+        if (st.remainingAcceptCount > 0) {
+            return new MobilizationCountBuy(false, "当前已有接取次数，保留免费首购稍后使用");
+        }
+        if (st.dailyPurchaseCount != 0) {
+            return new MobilizationCountBuy(false, "今日已购买过接取次数，仅首购免费，跳过");
+        }
+        if (MOB_FIRST_PURCHASE_COST != 0L) {
+            return new MobilizationCountBuy(false, "首购价目非免费，跳过");
+        }
+        return new MobilizationCountBuy(true, "免费首购(cost=0)");
+    }
+
+    /** 总动员检查点：空奖记忆 + open_info 探测节流（避免 7401 每轮打）。 */
+    static record MobilizationCheckpoint(long emptyQuestUntil, String emptyQuestFp,
+                                         long emptyMilestoneUntil, String emptyMilestoneFp,
+                                         long lastOpenInfoAt, int lastOpenInfoCode) {
+        static final MobilizationCheckpoint EMPTY =
+                new MobilizationCheckpoint(0L, "", 0L, "", 0L, 0);
+
+        MobilizationCheckpoint rememberQuestEmpty(String fp, long nowMillis) {
+            return new MobilizationCheckpoint(nowMillis + MOB_EMPTY_MEMORY_MS,
+                    fp == null ? "" : fp, emptyMilestoneUntil, emptyMilestoneFp,
+                    lastOpenInfoAt, lastOpenInfoCode);
+        }
+
+        MobilizationCheckpoint clearQuestEmpty() {
+            return new MobilizationCheckpoint(0L, "", emptyMilestoneUntil, emptyMilestoneFp,
+                    lastOpenInfoAt, lastOpenInfoCode);
+        }
+
+        MobilizationCheckpoint rememberMilestoneEmpty(String fp, long nowMillis) {
+            return new MobilizationCheckpoint(emptyQuestUntil, emptyQuestFp,
+                    nowMillis + MOB_EMPTY_MEMORY_MS, fp == null ? "" : fp,
+                    lastOpenInfoAt, lastOpenInfoCode);
+        }
+
+        MobilizationCheckpoint clearMilestoneEmpty() {
+            return new MobilizationCheckpoint(emptyQuestUntil, emptyQuestFp, 0L, "",
+                    lastOpenInfoAt, lastOpenInfoCode);
+        }
+
+        MobilizationCheckpoint rememberOpenInfo(long atMillis, int code) {
+            return new MobilizationCheckpoint(emptyQuestUntil, emptyQuestFp,
+                    emptyMilestoneUntil, emptyMilestoneFp, atMillis, code);
+        }
+
+        String toJson() {
+            JSONObject o = new JSONObject();
+            o.put("empty_quest_until", emptyQuestUntil);
+            o.put("empty_quest_fp", emptyQuestFp == null ? "" : emptyQuestFp);
+            o.put("empty_milestone_until", emptyMilestoneUntil);
+            o.put("empty_milestone_fp", emptyMilestoneFp == null ? "" : emptyMilestoneFp);
+            o.put("last_open_info_at", lastOpenInfoAt);
+            o.put("last_open_info_code", lastOpenInfoCode);
+            return o.toString();
+        }
+
+        static MobilizationCheckpoint fromJson(String raw) {
+            if (raw == null || raw.isBlank()) return EMPTY;
+            try {
+                JSONObject o = new JSONObject(raw);
+                return new MobilizationCheckpoint(o.optLong("empty_quest_until", 0L),
+                        o.optString("empty_quest_fp", ""),
+                        o.optLong("empty_milestone_until", 0L),
+                        o.optString("empty_milestone_fp", ""),
+                        o.optLong("last_open_info_at", 0L),
+                        o.optInt("last_open_info_code", 0));
+            } catch (Exception ignored) {
+                return EMPTY;
+            }
+        }
+    }
+
+    static String mobCheckpointKey(TaskContext tc) {
+        return "srv:mobilization:" + tc.fpid + ":" + tc.sid;
+    }
+
+    static MobilizationCheckpoint loadMobCheckpoint(TaskContext tc) {
+        try {
+            return MobilizationCheckpoint.fromJson(tc.store.getString(mobCheckpointKey(tc)));
+        } catch (Throwable ignored) {
+            return MobilizationCheckpoint.EMPTY;
+        }
+    }
+
+    static void saveMobCheckpoint(TaskContext tc, MobilizationCheckpoint cp) {
+        try {
+            tc.store.putString(mobCheckpointKey(tc), cp == null ? "" : cp.toJson());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static boolean mobQuestMemoryActive(MobilizationCheckpoint cp, String fingerprint,
+                                        long nowMillis) {
+        return cp != null && cp.emptyQuestUntil() > nowMillis
+                && fingerprint != null && !fingerprint.isEmpty()
+                && fingerprint.equals(cp.emptyQuestFp());
+    }
+
+    static boolean mobMilestoneMemoryActive(MobilizationCheckpoint cp, String fingerprint,
+                                            long nowMillis) {
+        return cp != null && cp.emptyMilestoneUntil() > nowMillis
+                && fingerprint != null && !fingerprint.isEmpty()
+                && fingerprint.equals(cp.emptyMilestoneFp());
+    }
+
+    /** 7401 上一次探测在 1 小时内 → 不再探测；其它失败码 5 分钟内不重复探测。 */
+    static boolean shouldProbeOpenInfo(MobilizationCheckpoint cp, long nowMillis) {
+        if (cp == null || cp.lastOpenInfoAt() <= 0L) return true;
+        long elapsed = Math.max(0L, nowMillis - cp.lastOpenInfoAt());
+        long wait = cp.lastOpenInfoCode() == MOB_CODE_NOT_OPEN
+                ? MOB_OPEN_INFO_7401_RETRY_MS : MOB_OPEN_INFO_OTHER_RETRY_MS;
+        return elapsed >= wait;
+    }
+
+    static String mobQuestFingerprint(MobilizationState st) {
+        return st == null ? "" : st.activityId + "#" + st.questId + "#" + st.questProgress;
+    }
+
+    static String mobMilestoneFingerprint(MobilizationState st, long nowSec) {
+        if (st == null) return "";
+        int stage = st.stage(nowSec);
+        return st.activityId + "#" + stage + "#" + st.allianceId + "#" + st.playerScore;
+    }
+
+    static int firstPositionWithTask(Map<Integer, Long> positions) {
+        int best = 0;
+        if (positions == null) return 0;
+        for (Map.Entry<Integer, Long> entry : positions.entrySet()) {
+            Integer pos = entry.getKey();
+            Long taskId = entry.getValue();
+            if (pos == null || pos <= 0 || taskId == null || taskId <= 0L) continue;
+            if (best == 0 || pos < best) best = pos;
+        }
+        return best;
+    }
+
+    /** 刷新限频预算（每小时/每日；默认关闭时不会写入）。 */
+    static record MobilizationRefreshBudget(long hourKey, int hourCount,
+                                            long dayKey, int dayCount) {
+        static final MobilizationRefreshBudget EMPTY =
+                new MobilizationRefreshBudget(0L, 0, 0L, 0);
+
+        String toJson() {
+            JSONObject o = new JSONObject();
+            o.put("hour_key", hourKey);
+            o.put("hour_count", hourCount);
+            o.put("day_key", dayKey);
+            o.put("day_count", dayCount);
+            return o.toString();
+        }
+
+        static MobilizationRefreshBudget fromJson(String raw) {
+            if (raw == null || raw.isBlank()) return EMPTY;
+            try {
+                JSONObject o = new JSONObject(raw);
+                return new MobilizationRefreshBudget(o.optLong("hour_key", 0L),
+                        o.optInt("hour_count", 0), o.optLong("day_key", 0L),
+                        o.optInt("day_count", 0));
+            } catch (Exception ignored) {
+                return EMPTY;
+            }
+        }
+    }
+
+    static long mobHourKey(long nowMillis) {
+        return nowMillis / 3_600_000L;
+    }
+
+    static long mobDayKey(long nowMillis) {
+        return (nowMillis + 8L * 3_600_000L) / 86_400_000L;   // 北京时间自然日
+    }
+
+    static MobilizationRefreshBudget mobRefreshNormalized(MobilizationRefreshBudget budget,
+                                                          long nowMillis) {
+        if (budget == null) budget = MobilizationRefreshBudget.EMPTY;
+        long hourKey = mobHourKey(nowMillis);
+        long dayKey = mobDayKey(nowMillis);
+        int hourCount = budget.hourKey() == hourKey ? Math.max(0, budget.hourCount()) : 0;
+        int dayCount = budget.dayKey() == dayKey ? Math.max(0, budget.dayCount()) : 0;
+        return new MobilizationRefreshBudget(hourKey, hourCount, dayKey, dayCount);
+    }
+
+    static boolean mobRefreshAllowed(MobilizationRefreshBudget budget, long nowMillis,
+                                     int hourLimit, int dayLimit) {
+        MobilizationRefreshBudget normalized = mobRefreshNormalized(budget, nowMillis);
+        return normalized.hourCount() < Math.max(1, hourLimit)
+                && normalized.dayCount() < Math.max(1, dayLimit);
+    }
+
+    static MobilizationRefreshBudget mobRefreshRecorded(MobilizationRefreshBudget budget,
+                                                        long nowMillis) {
+        MobilizationRefreshBudget normalized = mobRefreshNormalized(budget, nowMillis);
+        return new MobilizationRefreshBudget(normalized.hourKey(), normalized.hourCount() + 1,
+                normalized.dayKey(), normalized.dayCount() + 1);
+    }
+
+    static String mobRefreshKey(TaskContext tc) {
+        return "srv:mobilization:" + tc.fpid + ":" + tc.sid + ":refresh";
+    }
+
+    /** 刷新（默认关；分个人/公共，独立每小时/每日限频）。 */
+    static void handleMobilizationRefresh(TaskContext tc, Exec.Multi m, MobilizationState st,
+                                          JSONObject p, long nowSec) throws Exception {
+        boolean personal = tc.subOn("alliance_mobilization", "refresh_personal", false);
+        boolean pub = tc.subOn("alliance_mobilization", "refresh_public", false);
+        if (!personal && !pub) return;
+        if (st == null || !st.active(nowSec)) return;
+        MobilizationRefreshBudget budget;
+        try {
+            budget = MobilizationRefreshBudget.fromJson(
+                    tc.store.getString(mobRefreshKey(tc)));
+        } catch (Throwable ignored) {
+            budget = MobilizationRefreshBudget.EMPTY;
+        }
+        long nowMillis = System.currentTimeMillis();
+        int hourLimit = p == null ? MOB_REFRESH_HOUR_LIMIT_DEFAULT
+                : Math.max(1, p.optInt("refresh_hour_limit", MOB_REFRESH_HOUR_LIMIT_DEFAULT));
+        int dayLimit = p == null ? MOB_REFRESH_DAY_LIMIT_DEFAULT
+                : Math.max(1, p.optInt("refresh_day_limit", MOB_REFRESH_DAY_LIMIT_DEFAULT));
+        if (personal) {
+            int pos = firstPositionWithTask(st.personalPositions);
+            if (pos > 0 && mobRefreshAllowed(budget, nowMillis, hourLimit, dayLimit)) {
+                GameMessage r = tc.engine.request("req_mobilization_refresh_personal_quest",
+                        Exec.args("pos", (long) pos));
+                if (Exec.ok(r)) {
+                    m.claimed("专属任务刷新(pos=" + pos + ")");
+                    budget = mobRefreshRecorded(budget, nowMillis);
+                } else {
+                    m.skip("专属刷新码" + Exec.codeOf(r));
+                }
+            }
+        }
+        if (pub) {
+            int pos = firstPositionWithTask(st.publicPositions);
+            if (pos > 0 && mobRefreshAllowed(budget, nowMillis, hourLimit, dayLimit)) {
+                GameMessage r = tc.engine.request("req_mobilization_refresh_quest",
+                        Exec.args("pos", (long) pos));
+                if (Exec.ok(r)) {
+                    m.claimed("公共任务刷新(pos=" + pos + ")");
+                    budget = mobRefreshRecorded(budget, nowMillis);
+                } else {
+                    m.skip("公共刷新码" + Exec.codeOf(r));
+                }
+            }
+        }
+        try {
+            tc.store.putString(mobRefreshKey(tc), budget.toJson());
+        } catch (Throwable ignored) {
+        }
+    }
+
     public static TaskOutcome mobilization(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
             tc.engine.collectNotifies(2000);
-            // 该协议没有请求字段；传 null 会被编码器当成缺失 Map，传空对象最稳。
-            GameMessage info = tc.engine.request("req_mobilization_open_info",
-                    new LinkedHashMap<String, Object>());
-            if (!Exec.ok(info)) {
-                m.skip("总动员未开启(码" + Exec.codeOf(info) + ")");
-            } else {
-                Map<String, Object> ni = tc.engine.notifyContent("notify_mobilization_init");
-                int claimed = 0;
-                if (ni != null) {
-                    for (String key : new String[]{"quests", "quest_list", "data"}) {
-                        for (Map<String, Object> q : Exec.mapsOf(ni.get(key))) {
-                            long pos = Exec.longOf(q.get("pos"));
-                            long progress = Exec.longOf(q.get("progress"));
-                            long target = Exec.longOf(q.get("target"));
-                            if (pos > 0 && target > 0 && progress >= target) {
-                                GameMessage r = tc.engine.request("req_mobilization_get_quest_reward",
-                                        Exec.args("pos", pos));
-                                if (Exec.ok(r)) {
-                                    claimed++;
-                                    m.rewards("任务奖励", r);
-                                }
-                            }
-                        }
+            JSONObject p = tc.params("alliance_mobilization");
+            MobilizationState st = readMobilizationState(tc.engine::notifyData);
+            MobilizationCheckpoint cp = loadMobCheckpoint(tc);
+            long nowMillis = System.currentTimeMillis();
+            long nowSec = nowMillis / 1000L;
+            // ① 静态数据缺失：open_info 仅按节流探测（7401 不再每轮打）。
+            if (st.activityId <= 0L) {
+                if (shouldProbeOpenInfo(cp, nowMillis)) {
+                    // 该协议没有请求字段；传空对象最稳。
+                    GameMessage info = tc.engine.request("req_mobilization_open_info",
+                            new LinkedHashMap<String, Object>());
+                    int code = Exec.codeOf(info);
+                    cp = cp.rememberOpenInfo(nowMillis, code);
+                    saveMobCheckpoint(tc, cp);
+                    if (code == MOB_CODE_NOT_OPEN) {
+                        m.skip("总动员未开放(码7401)，1小时内不再探测");
+                    } else if (!Exec.ok(info)) {
+                        m.skip("总动员未开启(码" + code + ")");
+                    } else {
+                        st = readMobilizationState(tc.engine::notifyData);
+                        applyMobOpenInfo(st, info.getContent());
+                    }
+                } else {
+                    m.skip("总动员未开放/未同步（open_info 探测节流中）");
+                }
+                if (st.activityId <= 0L) return Exec.result(m, "alliance_mobilization", "联盟总动员");
+            }
+            String stateSkip = mobilizationStateSkipReason(st, nowSec);
+            if (stateSkip != null) {
+                m.skip(stateSkip);
+                return Exec.result(m, "alliance_mobilization", "联盟总动员");
+            }
+            // ② 已完成任务奖励：quest 存在且 progress>0 才尝试（无 catalog 目标值，8409/8410 兜底）。
+            if (st.hasQuest() && st.questProgress > 0L) {
+                String fingerprint = mobQuestFingerprint(st);
+                if (mobQuestMemoryActive(cp, fingerprint, nowMillis)) {
+                    m.skip("任务奖励 8409/8410 记忆期内，跳过");
+                } else {
+                    GameMessage r = tc.engine.request("req_mobilization_get_quest_reward",
+                            new LinkedHashMap<String, Object>());
+                    int code = Exec.codeOf(r);
+                    if (Exec.ok(r)) {
+                        m.claimed("任务奖励");
+                        m.rewards("任务奖励", r);
+                    } else if (code == MOB_CODE_NO_QUEST || code == MOB_CODE_QUEST_NOT_DONE) {
+                        cp = cp.rememberQuestEmpty(fingerprint, nowMillis);
+                        saveMobCheckpoint(tc, cp);
+                        m.skip(code == MOB_CODE_QUEST_NOT_DONE
+                                ? "任务未完成，300秒内不重试" : "暂无已完成任务奖励，300秒内不重试");
+                    } else {
+                        m.skip("任务奖励码" + code);
                     }
                 }
-                if (claimed > 0) m.claimed("任务奖励×" + claimed);
-                // 购买接取次数：网页版价目 catalog/alliance-mobilization.json purchaseCosts=
-                // [0,50,50,50,200,200,200,1000,1000,1000] —— 只有首档免费，其后每次花 50/200/1000 钻；
-                // 服务端未携带该价目表、也未接每日购买计数状态机，无法证明“本次是免费首购”，
-                // 因此宁漏不花：不调用 req_mobilization_buy_count（audit §4.3 M1）。
-                MobilizationCountBuy countBuy =
-                        mobilizationCountBuyDecision(tc.params("alliance_mobilization"));
-                if (countBuy.allowed()) {
-                    GameMessage buy = tc.engine.request("req_mobilization_buy_count",
-                            Exec.args("count", 1));
-                    if (Exec.ok(buy)) m.claimed("接取次数+1（免费）");
-                    else m.skip("接取次数码" + Exec.codeOf(buy));
-                } else {
-                    m.skip(countBuy.reason());
-                }
-                GameMessage ms = tc.engine.request("req_mobilization_batch_get_milestone", null);
-                if (Exec.ok(ms)) {
-                    m.claimed("里程碑");
-                    m.rewards("里程碑", ms);
-                }
-                else if (Exec.codeOf(ms) != 8413) m.skip("里程碑码" + Exec.codeOf(ms));
             }
+            // ③ 里程碑（8413 空奖 300s 记忆，避免每轮空打）。
+            String milestoneFp = mobMilestoneFingerprint(st, nowSec);
+            if (mobMilestoneMemoryActive(cp, milestoneFp, nowMillis)) {
+                m.skip("暂无里程碑可领（300秒内不重试）");
+            } else {
+                GameMessage r = tc.engine.request("req_mobilization_batch_get_milestone",
+                        new LinkedHashMap<String, Object>());
+                int code = Exec.codeOf(r);
+                if (Exec.ok(r)) {
+                    m.claimed("里程碑");
+                    m.rewards("里程碑", r);
+                    cp = cp.clearMilestoneEmpty();
+                    saveMobCheckpoint(tc, cp);
+                } else if (code == MOB_CODE_NO_MILESTONE) {
+                    cp = cp.rememberMilestoneEmpty(milestoneFp, nowMillis);
+                    saveMobCheckpoint(tc, cp);
+                    m.skip("暂无里程碑可领（300秒内不重试）");
+                } else if (code != 0) {
+                    m.skip("里程碑码" + code);
+                }
+            }
+            // ④ 购买接取次数：仅免费首购(cost=0)，付费一律不做。
+            MobilizationCountBuy freeBuy = mobilizationFreeCountBuyDecision(st, nowSec, p);
+            if (freeBuy.allowed()) {
+                GameMessage r = tc.engine.request("req_mobilization_buy_count",
+                        Exec.args("count", 1));
+                if (Exec.ok(r)) m.claimed("接取次数+1（免费首购）");
+                else m.skip("免费首购码" + Exec.codeOf(r));
+            } else if (!st.hasQuest()) {
+                m.skip(freeBuy.reason());
+            }
+            // ⑤ 自动接取（默认关）：从公共/专属板挑一个已有任务的槽位接取。
+            if (tc.subOn("alliance_mobilization", "auto_accept", false)
+                    && !st.hasQuest() && st.remainingAcceptCount > 0 && st.active(nowSec)) {
+                int pos = firstPositionWithTask(st.publicPositions);
+                boolean publicTask = pos > 0;
+                if (!publicTask) pos = firstPositionWithTask(st.personalPositions);
+                if (pos > 0) {
+                    String proto = publicTask ? "req_mobilization_get_quest"
+                            : "req_mobilization_get_personal_quest";
+                    GameMessage r = tc.engine.request(proto, Exec.args("pos", (long) pos));
+                    if (Exec.ok(r)) m.claimed("自动接取总动员任务(pos=" + pos + ")");
+                    else m.skip("自动接取码" + Exec.codeOf(r));
+                } else {
+                    m.skip("无已上板任务可接取");
+                }
+            }
+            // ⑥ 刷新（默认关 + 每小时/每日限频）。
+            handleMobilizationRefresh(tc, m, st, p, nowSec);
         } catch (Exception e) {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "联盟总动员");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "alliance_mobilization", "联盟总动员");
+    }
+
+    // ================= 联盟争霸赛（L4 赛季/报名窗口） =================
+
+    static final ZoneId SHOWDOWN_ZONE = ZoneId.of("Asia/Shanghai");
+    static final int SHOWDOWN_DEFAULT_SIGNUP_DAY = 1;        // 周一
+    static final String SHOWDOWN_DEFAULT_SIGNUP_TIME = "00:00";
+    static final int SHOWDOWN_DEFAULT_PATH = 2;              // 中路
+    static final int SHOWDOWN_CODE_TIMEOUT = 7705;
+    static final int SHOWDOWN_CODE_NO_SOLDIER = 401;
+    static final int SHOWDOWN_WINDOW_END_HOUR = 23;          // 周二 23:00 截止
+    static final DateTimeFormatter SHOWDOWN_TIME_FORMAT = DateTimeFormatter.ofPattern("HH:mm");
+
+    /** 报名日：默认周一；只接受周一/周二（网页版同校验），其它值回落周一。 */
+    static int showdownSignupDay(JSONObject p) {
+        int day = p == null ? SHOWDOWN_DEFAULT_SIGNUP_DAY : p.optInt("signup_day",
+                SHOWDOWN_DEFAULT_SIGNUP_DAY);
+        return day == 2 ? 2 : 1;
+    }
+
+    static LocalTime showdownSignupTime(JSONObject p) {
+        String raw = p == null ? "" : p.optString("signup_time", SHOWDOWN_DEFAULT_SIGNUP_TIME).trim();
+        if (raw.isEmpty()) return LocalTime.MIDNIGHT;
+        try {
+            return LocalTime.parse(raw, SHOWDOWN_TIME_FORMAT);
+        } catch (DateTimeParseException ignored) {
+            return LocalTime.MIDNIGHT;
+        }
+    }
+
+    /** 报名分路：默认中路(2)，限制 1..3。 */
+    static int showdownPath(JSONObject p) {
+        int path = p == null ? SHOWDOWN_DEFAULT_PATH : p.optInt("path", SHOWDOWN_DEFAULT_PATH);
+        return Math.max(1, Math.min(3, path));
+    }
+
+    /** 下一次报名窗口起点（epoch 秒）：本周报名日 signupTime；若已过周二 23:00 截止则顺延下周。 */
+    static long showdownNextDueEpoch(long nowEpochSeconds, int signupDayValue, LocalTime time) {
+        LocalTime signupTime = time == null ? LocalTime.MIDNIGHT : time;
+        ZonedDateTime now = Instant.ofEpochSecond(nowEpochSeconds).atZone(SHOWDOWN_ZONE);
+        LocalDate monday = now.toLocalDate().minusDays(now.getDayOfWeek().getValue() - 1L);
+        int dayOffset = signupDayValue == 2 ? 1 : 0;
+        ZonedDateTime windowEnd = LocalDateTime.of(monday.plusDays(1),
+                LocalTime.of(SHOWDOWN_WINDOW_END_HOUR, 0)).atZone(SHOWDOWN_ZONE);
+        LocalDate dueDate = now.isAfter(windowEnd) ? monday.plusWeeks(1L) : monday;
+        return LocalDateTime.of(dueDate.plusDays(dayOffset), signupTime)
+                .atZone(SHOWDOWN_ZONE).toEpochSecond();
+    }
+
+    /** 报名窗口是否已到（窗口内=已到；窗口结束后自动滚动到下周）。 */
+    static boolean showdownWindowOpen(long nowEpochSeconds, int signupDayValue, LocalTime time) {
+        return nowEpochSeconds >= showdownNextDueEpoch(nowEpochSeconds, signupDayValue, time);
+    }
+
+    static String showdownWindowSkipReason(long nowEpochSeconds, int signupDayValue, LocalTime time) {
+        if (showdownWindowOpen(nowEpochSeconds, signupDayValue, time)) return null;
+        String day = signupDayValue == 2 ? "周二" : "周一";
+        String hhmm = time == null ? SHOWDOWN_DEFAULT_SIGNUP_TIME : time.format(SHOWDOWN_TIME_FORMAT);
+        return "争霸赛报名窗口未到（" + day + " " + hhmm + " 开放）";
+    }
+
+    /** 报名失败文案：7705 超时 / 401 兵不足 单独分类，不再一律“未开启”。 */
+    static String showdownApplyFailureNote(int code) {
+        if (code == SHOWDOWN_CODE_TIMEOUT) {
+            return "争霸赛请求超时，稍后重试（码7705）";
+        }
+        if (code == SHOWDOWN_CODE_NO_SOLDIER) {
+            return "可用士兵不足，等待部队回城后重试（码401）";
+        }
+        return "报名码" + code;
     }
 
     /**
@@ -746,14 +1765,24 @@ public final class ServerShopLeagueTasks {
             } else {
                 Map<String, Object> all = info.getContent();
                 String skipReason = showdownSkipReason(all);
+                JSONObject p = tc.params("alliance_showdown");
                 if (skipReason != null) {
                     m.skip(skipReason);
                 } else {
-                    Map<String, Object> formation = Exec.formation(tc.engine, 1);
-                    GameMessage apply = tc.engine.request("req_alliance_showdown_apply", Exec.args(
-                            "type", 1L, "formation", formation));
-                    if (Exec.ok(apply)) m.claimed("已报名赛道1");
-                    else m.skip("报名码" + Exec.codeOf(apply));
+                    String windowSkip = showdownWindowSkipReason(
+                            System.currentTimeMillis() / 1000L,
+                            showdownSignupDay(p), showdownSignupTime(p));
+                    if (windowSkip != null) {
+                        m.skip(windowSkip);
+                    } else {
+                        // 编队：沿用 1 号编队（AUTOMATIC 5:2:3 需编队规划器，后续接入）。
+                        Map<String, Object> formation = Exec.formation(tc.engine, 1);
+                        int path = showdownPath(p);
+                        GameMessage apply = tc.engine.request("req_alliance_showdown_apply", Exec.args(
+                                "type", (long) path, "formation", formation));
+                        if (Exec.ok(apply)) m.claimed("已报名赛道" + path);
+                        else m.skip(showdownApplyFailureNote(Exec.codeOf(apply)));
+                    }
                 }
             }
         } catch (Exception e) {

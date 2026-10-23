@@ -50,8 +50,13 @@ public final class TaskCadenceScheduler {
 
     /** 扫描节拍。 */
     static final long TICK_MILLIS = 2_000L;
-    /** 同一账号两次提交的最小间隔（模拟人手停顿，防请求突发）。 */
-    static final long MIN_DISPATCH_GAP_MILLIS = 3_000L;
+    /**
+     * 同一账号两次提交的最小间隔（模拟人手停顿，防请求突发）。
+     *
+     * <p>生产观察（2026-10-23 12:28–12:33）：3 秒间隔在 40+ 默认任务下被 15-30 秒级任务打满，
+     * 约 19 轮/分钟。收紧到 6 秒（≤10 轮/分钟）并与 60 秒任务下限配合，降低游戏端请求密度。
+     */
+    static final long MIN_DISPATCH_GAP_MILLIS = 6_000L;
     /** 会话忙/未受理时的重试间隔。 */
     static final long RETRY_MILLIS = 60_000L;
     /**

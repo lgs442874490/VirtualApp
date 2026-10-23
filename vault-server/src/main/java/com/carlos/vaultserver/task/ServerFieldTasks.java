@@ -25,6 +25,7 @@ public final class ServerFieldTasks {
 
     public static TaskOutcome gather(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
+        MarchSnapshot marchSnapshot = null;   // G2：catch 兜底出口也要写续派唤醒
         try {
             tc.engine.collectNotifies(2500);
             JSONObject p = tc.params("gather");
@@ -64,10 +65,32 @@ public final class ServerFieldTasks {
                     }
                 }
             }
-            int active = countMarches(tc.engine, 4);
-            int capacity = Math.min(maxQueues, marchCapacity(tc.engine));
+            // G2 续派：一次查询同时取“各类型行军数 + type3/4 最早结束时刻”，
+            // 不新增协议请求（与旧 countMarches 同一 req_world_march_detail_4_player_situation）。
+            marchSnapshot = snapshotMarches(tc.engine);
+            int active = marchSnapshot.count(4);
+            int worldCapacity = marchCapacity(tc.engine);
+            int capacity = Math.min(maxQueues, worldCapacity);
             boolean fullOnly = "full".equals(tc.strategy("gather", "send", "any"));
-            int slots = Math.max(0, capacity - active);
+            // G3 联盟矿（默认关）：开启时按网页版为联盟矿预留 1 个世界队列
+            // （DailyGatherService.regularQueueCapacity = capacity - allianceMineReserved，
+            //   :1181-1313 联盟矿/普通采集双池）。默认关=行为与旧实现完全一致。
+            boolean allianceMine = gatherAllianceMineEnabled(p);
+            boolean mineReserved = allianceMine && marchSnapshot.count(GATHER_MINE_MARCH_TYPE) > 0;
+            if (allianceMine) {
+                AllianceMineOutcome mine = maintainAllianceMine(tc, marchSnapshot, worldCapacity);
+                if (mine.dispatched) {
+                    m.claimed("联盟矿已派出");
+                    m.subOk("alliance_mine", mine.message);
+                    mineReserved = true;            // 联盟矿占 1 个世界出征队列
+                    active += 1;
+                } else {
+                    m.subSkip("alliance_mine", mine.message);
+                }
+                tc.saveModText("gather", "alliance_mine", mine.message);
+            }
+            int regularCapacity = Math.max(0, capacity - (mineReserved ? 1 : 0));
+            int slots = Math.max(0, regularCapacity - active);
             if (slots == 0) {
                 m.skip("采集队列已满(" + active + "/" + capacity + ")");
             } else {
@@ -80,7 +103,7 @@ public final class ServerFieldTasks {
                         Map<String, Object> formation = formationFor(tc, "gather", 1 + (sent % 3));
                         if (formation == null) {
                             m.skip("无英雄可派");
-                            return Exec.result(m, "gather", "野外采集");
+                            return finishGather(tc, m, marchSnapshot);
                         }
                         GameMessage march = tc.engine.request("req_world_march", Exec.args(
                                 "type", 4L, "endpoint", pt, "formation", formation,
@@ -91,7 +114,7 @@ public final class ServerFieldTasks {
                             int code = Exec.codeOf(march);
                             if (code == 2878 || code == 401) {
                                 m.skip("派出" + sent + "后受阻(码" + code + ")");
-                                return Exec.result(m, "gather", "野外采集");
+                                return finishGather(tc, m, marchSnapshot);
                             }
                         }
                     }
@@ -106,7 +129,7 @@ public final class ServerFieldTasks {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "野外采集");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
-        return Exec.result(m, "gather", "野外采集");
+        return finishGather(tc, m, marchSnapshot);
     }
 
     /**
@@ -193,32 +216,336 @@ public final class ServerFieldTasks {
         return null;
     }
 
-    /** 当前 type=N 的行军数。协议盘点 2026-10-12 两级实锤（与 App FieldTasks 2026-10-14 版一致）：
-     * ① notify_player_march_init 不在 s2c schema（旧实现恒返回 0 → 已派出队列被重复计入空位）；
-     * ② schema 解析得 req_world_march_detail_4_player_situation.request{owner,kid}，
-     *    空参被服务端拒（code 2 实证）——owner=玩家uid、kid=区号，行军列表在响应 detail 字段。
-     *  查询失败按 0 处理（回退旧行为，宁可让服务端拒多发也不漏发）。 */
-    private static int countMarches(WjdrEngine engine, int type) {
+    // ---------- G2 采集续派 + G3 联盟矿（P1 2026-10-23） ----------
+
+    /** 续派唤醒上限/兜底：min(now+180s, 最早结束-1s)；取不到 endtime → now+120s
+     *  （1:1 网页版 DailyGatherService.nextMarchTransitionAt:1060-1074 + queueWaitUntil 180s 封顶）。 */
+    static final long GATHER_WAKE_CAP_MILLIS = 180_000L;
+    static final long GATHER_WAKE_FALLBACK_MILLIS = 120_000L;
+
+    /** 联盟矿失败冷却：默认关的功能，失败后 10 分钟再试，避免 15s 节奏刷请求（G3“失败不重试风暴”）。 */
+    static final long GATHER_MINE_RETRY_MILLIS = 600_000L;
+    static final long GATHER_MINE_BUILDING_TYPE = 39L;
+    static final long GATHER_MINE_MARCH_TYPE = 110L;
+
+    /** 行军快照：各类型计数 + type3/4 最早结束时刻（毫秒）。known=false 表示查询失败。 */
+    static final class MarchSnapshot {
+        private final Map<Long, Integer> countsByType;
+        private final long earliestMarchEndMillis;
+        private final boolean known;
+
+        MarchSnapshot(Map<Long, Integer> countsByType, long earliestMarchEndMillis, boolean known) {
+            this.countsByType = countsByType == null ? new LinkedHashMap<>() : countsByType;
+            this.earliestMarchEndMillis = Math.max(0L, earliestMarchEndMillis);
+            this.known = known;
+        }
+
+        static MarchSnapshot unknown() {
+            return new MarchSnapshot(new LinkedHashMap<>(), 0L, false);
+        }
+
+        int count(long type) {
+            Integer n = countsByType.get(type);
+            return n == null ? 0 : n;
+        }
+
+        int totalActive() {
+            int n = 0;
+            for (Integer v : countsByType.values()) if (v != null) n += v;
+            return n;
+        }
+
+        long earliestMarchEndMillis() {
+            return earliestMarchEndMillis;
+        }
+
+        boolean known() {
+            return known;
+        }
+    }
+
+    /**
+     * G2：与旧 countMarches 同一个 {@code req_world_march_detail_4_player_situation} 请求
+     * （不新增查询协议），一次解析出“各类型行军数 + type3/4 最早结束时刻”。
+     * 协议实证见旧注释：owner=玩家uid、kid=区号，行军列表在响应 detail 字段。
+     */
+    static MarchSnapshot snapshotMarches(WjdrEngine engine) {
         try {
             Map<String, Object> args = new LinkedHashMap<>();
             args.put("owner", engine.lastUid());
             args.put("kid", engine.lastServerId());
             GameMessage rsp = engine.request("req_world_march_detail_4_player_situation", args);
-            if (rsp == null || rsp.getContent() == null) return 0;
+            if (rsp == null || rsp.getContent() == null) return MarchSnapshot.unknown();
             Object code = rsp.getContent().get("code");
-            if (code != null && Exec.longOf(code) != 0) return 0;
-            Map<String, Object> detail = Exec.mapOf(rsp.getContent().get("detail"));
-            int n = 0;
-            for (String k : new String[]{"marchs", "march_list", "list", "marches"}) {
-                for (Map<String, Object> march : Exec.mapsOf(detail == null ? null : detail.get(k))) {
-                    if (Exec.longOf(march.get("type")) == type) n++;
-                }
-                if (n > 0) break;   // 取第一个命中的列表形状
+            if (code != null && Exec.longOf(code) != 0) return MarchSnapshot.unknown();
+            List<Map<String, Object>> marches = marchDetailList(rsp.getContent());
+            if (marches == null) return MarchSnapshot.unknown();
+            Map<Long, Integer> counts = new LinkedHashMap<>();
+            for (Map<String, Object> march : marches) {
+                long type = Exec.longOf(march.get("type"));
+                counts.merge(type, 1, Integer::sum);
             }
-            return n;
+            return new MarchSnapshot(counts, gatherEarliestMarchEndMillis(marches), true);
         } catch (Throwable ignored) {
-            return 0;
+            return MarchSnapshot.unknown();
         }
+    }
+
+    /** 行军列表解析（纯函数）：无 detail=未知(null)；有 detail 无列表=已知为空。
+     *  兼容 marchs/march_list/list/marches 形状。 */
+    static List<Map<String, Object>> marchDetailList(Map<String, Object> content) {
+        if (content == null) return null;
+        Object code = content.get("code");
+        if (code != null && Exec.longOf(code) != 0) return null;
+        Map<String, Object> detail = Exec.mapOf(content.get("detail"));
+        if (detail == null) return null;
+        for (String k : new String[]{"marchs", "march_list", "list", "marches"}) {
+            List<Map<String, Object>> list = Exec.mapsOf(detail.get(k));
+            if (!list.isEmpty()) return list;
+        }
+        return List.of();
+    }
+
+    /** 行军结束时刻（秒/毫秒兼容）：endtime/end_time/endAt/end_at/end。 */
+    static long gatherMarchEndMillis(Map<String, Object> march) {
+        if (march == null) return 0L;
+        for (String k : new String[]{"endtime", "end_time", "endAt", "end_at", "end"}) {
+            Object v = march.get(k);
+            if (v == null) continue;
+            long t = Exec.longOf(v);
+            if (t <= 0L) continue;
+            return t >= 100_000_000_000L ? t : t * 1000L;   // >=1e11 视为毫秒（秒级 epoch 约 1.8e9）
+        }
+        return 0L;
+    }
+
+    /** type=3/4 行军的最早结束毫秒（0=取不到）。 */
+    static long gatherEarliestMarchEndMillis(List<Map<String, Object>> marches) {
+        long earliest = 0L;
+        if (marches == null) return 0L;
+        for (Map<String, Object> march : marches) {
+            long type = Exec.longOf(march.get("type"));
+            if (type != 3L && type != 4L) continue;
+            long end = gatherMarchEndMillis(march);
+            if (end <= 0L) continue;
+            if (earliest == 0L || end < earliest) earliest = end;
+        }
+        return earliest;
+    }
+
+    /** 续派唤醒：min(now+180s, earliestEnd-1s)；取不到 → now+120s（过期给 1s 兜底）。 */
+    static long gatherNextWakeMillis(long nowMillis, long earliestMarchEndMillis) {
+        if (earliestMarchEndMillis <= 0L) return nowMillis + GATHER_WAKE_FALLBACK_MILLIS;
+        long wake = earliestMarchEndMillis - 1000L;
+        if (wake <= nowMillis) wake = nowMillis + 1000L;
+        return Math.min(nowMillis + GATHER_WAKE_CAP_MILLIS, wake);
+    }
+
+    /** 写 TaskCadenceScheduler 同键 {@code srv:cad:{fpid}:{sid}:gather}（毫秒）。 */
+    static void writeGatherWake(TaskContext tc, long wakeAtMillis) {
+        try {
+            tc.store.putLong(gatherWakeKey(tc), Math.max(1L, wakeAtMillis));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static String gatherWakeKey(TaskContext tc) {
+        return "srv:cad:" + tc.fpid + ":" + tc.sid + ":gather";
+    }
+
+    /** 采集任何出口（派出/跳过/异常）都先写续派唤醒，再出结果。 */
+    private static TaskOutcome finishGather(TaskContext tc, Exec.Multi m, MarchSnapshot snapshot) {
+        long earliest = snapshot == null ? 0L : snapshot.earliestMarchEndMillis();
+        writeGatherWake(tc, gatherNextWakeMillis(System.currentTimeMillis(), earliest));
+        return Exec.result(m, "gather", "野外采集");
+    }
+
+    /** G3 联盟矿开关（默认关；params.alliance_mine=true 才做）。 */
+    static boolean gatherAllianceMineEnabled(JSONObject gatherParams) {
+        return gatherParams != null && gatherParams.optBoolean("alliance_mine", false);
+    }
+
+    static final class AllianceMineOutcome {
+        final boolean dispatched;
+        final String message;
+
+        AllianceMineOutcome(boolean dispatched, String message) {
+            this.dispatched = dispatched;
+            this.message = message == null ? "" : message;
+        }
+    }
+
+    /**
+     * G3：联盟矿（默认关）——{@code req_alliance_building_list} type=39 →
+     * {@code req_world_mapobj} 二次校验 → {@code req_world_march type=110}。
+     * 一次运行最多派 1 队；失败走 10 分钟冷却台账，避免节奏调度刷请求。
+     * 参考网页版 DailyGatherService.maintainAllianceMine:1181-1313 +
+     * findAllianceMineTargets:1316-1354 + allianceMineMarchPayload:1652-1654。
+     */
+    private static AllianceMineOutcome maintainAllianceMine(TaskContext tc, MarchSnapshot snapshot, int worldCapacity) {
+        long now = System.currentTimeMillis();
+        if (snapshot != null && snapshot.count(GATHER_MINE_MARCH_TYPE) > 0) {
+            return new AllianceMineOutcome(false, "联盟矿采集中，占用 1 个世界出征队列");
+        }
+        if (snapshot == null || !snapshot.known()) {
+            return new AllianceMineOutcome(false, "行军数据未同步，本轮跳过联盟矿");
+        }
+        if (snapshot.totalActive() >= worldCapacity) {
+            return new AllianceMineOutcome(false, "无空闲世界出征队列，联盟矿等待");
+        }
+        if (!gatherMineRetryDue(tc, now)) {
+            return new AllianceMineOutcome(false, "联盟矿失败冷却中，稍后重试");
+        }
+        try {
+            GameMessage buildings = tc.engine.request("req_alliance_building_list", Exec.args());
+            if (!Exec.ok(buildings)) {
+                markGatherMineRetry(tc, now);
+                return new AllianceMineOutcome(false, "联盟建筑列表码" + Exec.codeOf(buildings));
+            }
+            long nowSeconds = now / 1000L;
+            List<Map<String, Object>> targets = allianceMineTargets(buildings.getContent(), nowSeconds);
+            if (targets.isEmpty()) {
+                markGatherMineRetry(tc, now);
+                return new AllianceMineOutcome(false, "联盟尚无可采资源中心");
+            }
+            Map<String, Object> target = targets.get(0);
+            long x = Exec.longOf(target.get("x"));
+            long y = Exec.longOf(target.get("y"));
+            GameMessage mapobj = tc.engine.request("req_world_mapobj", Exec.args(
+                    "kid", tc.engine.lastServerId(), "point", Exec.point(x, y)));
+            if (!Exec.ok(mapobj)
+                    || !allianceMineMapobjOk(mapobj.getContent(), gatherAllianceId(tc.engine), nowSeconds)) {
+                markGatherMineRetry(tc, now);
+                return new AllianceMineOutcome(false, "联盟资源中心已失效或不属于本盟");
+            }
+            Map<String, Object> formation = formationFor(tc, "gather", 1);
+            if (formation == null) {
+                return new AllianceMineOutcome(false, "联盟矿无英雄可派");
+            }
+            GameMessage march = tc.engine.request("req_world_march", Exec.args(
+                    "type", GATHER_MINE_MARCH_TYPE,
+                    "endpoint", Exec.point(x, y),
+                    "formation", formation,
+                    "extra", new LinkedHashMap<>()));
+            if (Exec.marchId(march) > 0L) {
+                tc.store.putLong(gatherMineRetryKey(tc), 0L);
+                return new AllianceMineOutcome(true, "已派出联盟矿采集");
+            }
+            int code = Exec.codeOf(march);
+            markGatherMineRetry(tc, now);
+            return new AllianceMineOutcome(false, "联盟矿出征码" + code);
+        } catch (Exception e) {
+            markGatherMineRetry(tc, now);
+            return new AllianceMineOutcome(false, "联盟矿异常：" + ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+    }
+
+    /** 联盟建筑列表 → type=39 资源中心坐标（纯函数；resource_info.end_time 已过期的丢弃）。 */
+    static List<Map<String, Object>> allianceMineTargets(Map<String, Object> content, long nowSeconds) {
+        if (content == null) return List.of();
+        List<Map<String, Object>> buildings = new ArrayList<>();
+        for (Map<String, Object> group : Exec.mapsOf(content.get("building_type_2_list"))) {
+            if (Exec.longOf(group.get("mapobj_type")) != GATHER_MINE_BUILDING_TYPE) continue;
+            buildings.addAll(Exec.mapsOf(group.get("building_list")));
+        }
+        buildings.addAll(Exec.mapsOf(content.get("building_list")));
+        List<Map<String, Object>> out = new ArrayList<>();
+        HashSet<String> seen = new HashSet<>();
+        for (Map<String, Object> b : buildings) {
+            Object type = b.get("mapobj_type");
+            if (type != null && Exec.longOf(type) > 0L && Exec.longOf(type) != GATHER_MINE_BUILDING_TYPE) continue;
+            long x = Exec.longOf(b.get("x"));
+            long y = Exec.longOf(b.get("y"));
+            if (x <= 0L || y <= 0L) continue;
+            long endAt = allianceMineResourceEndAt(b);
+            if (endAt > 0L && endAt <= nowSeconds) continue;
+            if (seen.add(x + "," + y)) out.add(b);
+        }
+        return out;
+    }
+
+    static long allianceMineResourceEndAt(Map<String, Object> building) {
+        if (building == null) return 0L;
+        Map<String, Object> res = Exec.mapOf(building.get("resource_info"));
+        if (res != null) {
+            long end = Exec.longOf(res.get("end_time"));
+            if (end > 0L) return end;
+        }
+        for (String k : new String[]{"end_time", "resource_endtime"}) {
+            long end = Exec.longOf(building.get(k));
+            if (end > 0L) return end;
+        }
+        return 0L;
+    }
+
+    /** mapobj 二次校验（纯函数）：type=39 + map_alliance_resource 存在 + 未到期 + 归属当前联盟。 */
+    static boolean allianceMineMapobjOk(Map<String, Object> content, long allianceId, long nowSeconds) {
+        Map<String, Object> mapObj = Exec.mapOf(content == null ? null : content.get("mapobj"));
+        if (mapObj == null || Exec.longOf(mapObj.get("type")) != GATHER_MINE_BUILDING_TYPE) return false;
+        Map<String, Object> res = Exec.mapOf(mapObj.get("map_alliance_resource"));
+        if (res == null || res.isEmpty()) return false;
+        long endAt = Exec.longOf(res.get("resource_endtime"));
+        if (endAt > 0L && endAt <= nowSeconds) return false;
+        if (allianceId > 0L) {
+            long aid = Exec.longOf(res.get("aid"));
+            if (aid > 0L && aid != allianceId) return false;
+        }
+        return true;
+    }
+
+    /** 当前联盟 id（notify_alliance_init / notify_world_alliance_situation_init；形状兼容）。取不到 0。 */
+    static long gatherAllianceId(WjdrEngine engine) {
+        Long id = gatherAllianceIdOf(engine.notifyData("notify_alliance_init"));
+        if (id == null) id = gatherAllianceIdOf(engine.notifyData("notify_world_alliance_situation_init"));
+        return id == null ? 0L : id;
+    }
+
+    static Long gatherAllianceIdOf(Map<String, Object> data) {
+        if (data == null) return null;
+        Long direct = positiveAllianceId(data);
+        if (direct != null) return direct;
+        for (String k : new String[]{"alliance", "info", "alliance_info", "data"}) {
+            Long nested = positiveAllianceId(Exec.mapOf(data.get(k)));
+            if (nested != null) return nested;
+        }
+        return null;
+    }
+
+    private static Long positiveAllianceId(Map<String, Object> m) {
+        if (m == null) return null;
+        for (String k : new String[]{"id", "alliance_id", "aid"}) {
+            long v = Exec.longOf(m.get(k));
+            if (v > 0L) return v;
+        }
+        return null;
+    }
+
+    static boolean gatherMineRetryDue(TaskContext tc, long nowMillis) {
+        long retryAt = stateLongOf(tc, gatherMineRetryKey(tc));
+        return retryAt <= 0L || nowMillis >= retryAt;
+    }
+
+    private static void markGatherMineRetry(TaskContext tc, long nowMillis) {
+        try {
+            tc.store.putLong(gatherMineRetryKey(tc), nowMillis + GATHER_MINE_RETRY_MILLIS);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    static String gatherMineRetryKey(TaskContext tc) {
+        return "srv:gather:mine:retry:" + tc.fpid + ":" + tc.sid;
+    }
+
+    static long stateLongOf(TaskContext tc, String key) {
+        Object v = tc.store.snapshot().get(key);
+        if (v instanceof Number) return ((Number) v).longValue();
+        if (v instanceof String) {
+            try {
+                return Long.parseLong(((String) v).trim());
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return 0L;
     }
 
     private static int marchCapacity(WjdrEngine engine) {

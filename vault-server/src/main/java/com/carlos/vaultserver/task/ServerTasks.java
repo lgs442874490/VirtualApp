@@ -1116,6 +1116,16 @@ public final class ServerTasks {
     //
     // 节奏：本分支 TaskCadence.activity_rewards=180s（TaskCadence.java）→ 每个领取目标用
     // ClaimLedger 按天去重（跨轮次不重复请求），可领判定用推送状态；宁漏不花：全部为免费领取协议。
+    //
+    // R2（批次3 2026-10-23）多实例活动：引擎 per-proto 只留最后一条推送
+    // （app/src/main/java/com/carlos/vault/wjdr/WjdrEngine.java:686-688），而网页版按活动 id 逐个维护
+    // （service/DailyActivityRewardsState.java:95-225）并逐个 claimOne（:398-411）——曙光市集 7 档、
+    // 自选箱 15 id、卡 BP 6 卡、失落宝藏 2 个等每轮只能覆盖最后到达项。现从
+    // {@link ServerNotifyHistory}（SessionKeeper inbound 钩子写入，每协议最多 8 条）取全部实例 id，
+    // 按 id 去重（后者覆盖前者）后逐个领取；每轮请求总数硬上限
+    // {@link #ACTIVITY_MAX_REQUESTS_PER_ROUND}=40，超限下轮继续；ClaimLedger 按天去重防重复请求。
+    // 活动日历门控（C5）见 {@link #activityCalendarBlock}：只对“能确认未开放/已结束”的活动生效，
+    // 日历未收到/过旧/未列出该活动（解析不出）一律不拦。
 
     /** 活动领取协议名（权威来源：网页版 DailyActivityRewardsService.java:398-411 claimOne 表）。 */
     static final String NOTIFY_DAILY_CLAIM_INFO = "notify_daily_claim_info";
@@ -1180,6 +1190,13 @@ public final class ServerTasks {
         int ok;
         int skip;
         int fail;
+        /**
+         * 本轮已发出的领取请求数（R2，批次3 2026-10-23）：历史里同一协议可能有多个活动实例
+         * （曙光市集 7 档/自选箱多组/卡 BP 多卡/多封邮件），逐个 claimOne 时硬上限
+         * {@link #ACTIVITY_MAX_REQUESTS_PER_ROUND}=40，超限本轮停手、下轮（180s）继续，
+         * 防止推送风暴/历史放大成协议风暴或触发反挂。
+         */
+        int requests;
         final StringBuilder rewards = new StringBuilder();
         final Map<String, String> subs = new LinkedHashMap<>();
 
@@ -1279,6 +1296,256 @@ public final class ServerTasks {
             if (info != null && !info.isEmpty()) out.add(info);
         }
         return out;
+    }
+
+    // =======================================================================
+    // R2 通知历史消费 + C5 活动日历门控（批次3 2026-10-23）
+    //
+    // 网页版把每条 inbound notify 都当一次状态更新（engine/TaskEngine.java:446-483），
+    // 活动状态机按活动 id 逐个维护并逐个 claimOne（service/DailyActivityRewardsState.java:95-225、
+    // service/DailyActivityRewardsService.java:398-411）；我方引擎 per-proto 只留最后一帧
+    // （app/src/main/java/com/carlos/vault/wjdr/WjdrEngine.java:686-688），多实例活动每轮只覆盖最后到达项。
+    // 这里从 {@link ServerNotifyHistory}（SessionKeeper inbound 钩子写入的环形历史）补齐，
+    // 并保留 engine.notifyContent 单条路径兜底：历史被容量淘汰/钩子晚挂时仍按旧行为执行。
+    // =======================================================================
+
+    /** 每轮活动领取请求上限（历史多实例放大保护；网页版 claimOne 逐项领取，无批量捷径）。 */
+    static final int ACTIVITY_MAX_REQUESTS_PER_ROUND = 40;
+
+    /** 活动日历新鲜度：超过该时长视为“无法确认”（不拦）；对齐网页版日历周期续拉语义
+     *  （service/DailyActivityCalendarSyncScheduler.java:29-120）。 */
+    static final long ACTIVITY_CALENDAR_FRESH_MILLIS = 24L * 3600_000L;
+
+    /**
+     * “刚结束”守卫：只拦最近 {@value} 秒内结束的窗口。
+     * 对齐网页版 {@code DailyActivityCalendarState.recentEndFamily(guardSeconds)}
+     * （service/DailyActivityCalendarState.java:222-243）——周期活动（周常/月常）当前日历帧
+     * 可能只含本期窗口，久远结束 ≠ 活动永不再开，此时不能确认未开放，不拦。
+     */
+    static final long ACTIVITY_CALENDAR_RECENT_END_GUARD = 12L * 3600L;
+
+    /**
+     * 历史原始内容解包（与 {@link #activityInfoOf} 同构，作用于历史快照）：
+     * 先找顶层 wrapper（{@code {"ogp_info":{...}}}），再找 data/info/content 一层内的 wrapper，
+     * 都不命中回退原内容（对齐 service/DailyActivityRewardsState.java:95-225 的包装层处理）。
+     */
+    static Map<String, Object> activityInfoSnapshot(Map<String, Object> content, String wrapper) {
+        if (content == null) return null;
+        if (wrapper == null) return content;
+        Map<String, Object> inner = Exec.mapOf(content.get(wrapper));
+        if (inner != null) return inner;
+        for (String k : new String[]{"data", "info", "content"}) {
+            Map<String, Object> data = Exec.mapOf(content.get(k));
+            if (data == null) continue;
+            inner = Exec.mapOf(data.get(wrapper));
+            if (inner != null) return inner;
+        }
+        return content;
+    }
+
+    /**
+     * 活动内层内容合集（R2）：历史快照（每协议最多 8 条）+ 引擎最新一条兜底。
+     *
+     * <p>按到达顺序追加，最后调用 {@link #dedupeLatestActivityInfos} 做“同 id 后者覆盖”。
+     * 历史为空（未挂钩子/被淘汰）时行为与旧 {@link #activityInfos(WjdrEngine, String, String...)} 一致。
+     */
+    static List<Map<String, Object>> activityInfos(TaskContext tc, String wrapper, String... protos) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (tc == null) return out;
+        for (ServerNotifyHistory.Entry entry : ServerNotifyHistory.history(tc.fpid, protos)) {
+            Map<String, Object> info = activityInfoSnapshot(entry.content, wrapper);
+            if (info != null && !info.isEmpty()) out.add(info);
+        }
+        // 旧单条路径兜底：引擎快照可能比历史更新（历史未收录/被淘汰时）
+        if (tc.engine != null) {
+            for (String proto : protos) {
+                Map<String, Object> raw = tc.engine.notifyContent(proto);
+                if (raw == null) continue;
+                Map<String, Object> info = activityInfoSnapshot(raw, wrapper);
+                if (info != null && !info.isEmpty()) out.add(info);
+            }
+        }
+        return dedupeLatestActivityInfos(out);
+    }
+
+    /** 历史优先、引擎兜底的单个协议内层内容（历史最新一帧通常与引擎一致，历史缺失时回落引擎）。 */
+    static Map<String, Object> activityInfoOf(TaskContext tc, String proto, String wrapper) {
+        if (tc == null) return null;
+        Map<String, Object> latest = ServerNotifyHistory.latestContent(tc.fpid, proto);
+        if (latest != null) {
+            Map<String, Object> info = activityInfoSnapshot(latest, wrapper);
+            if (info != null) return info;
+        }
+        return activityInfoOf(tc.engine, proto, wrapper);
+    }
+
+    /** 原始内容合集（不拆包装层；月卡 cardList 这类整帧字段用）：历史 + 引擎最新兜底。 */
+    static List<Map<String, Object>> activityContents(TaskContext tc, String... protos) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (tc == null) return out;
+        for (ServerNotifyHistory.Entry entry : ServerNotifyHistory.history(tc.fpid, protos)) {
+            if (entry.content != null && !entry.content.isEmpty()) out.add(entry.content);
+        }
+        if (tc.engine != null) {
+            for (String proto : protos) {
+                Map<String, Object> raw = tc.engine.notifyContent(proto);
+                if (raw != null && !raw.isEmpty() && !out.contains(raw)) out.add(raw);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 同 id 活动实例只保留最后一次推送（历史按到达顺序，后者覆盖前者；无 id 的条目原样保留）。
+     * 网页版按活动 id 维护状态（service/DailyActivityRewardsState.java:95-225），同一 id 的
+     * version/进度以最新帧为准。
+     */
+    static List<Map<String, Object>> dedupeLatestActivityInfos(List<Map<String, Object>> infos) {
+        if (infos == null || infos.isEmpty()) return new ArrayList<>();
+        Map<Long, Map<String, Object>> byId = new LinkedHashMap<>();
+        List<Map<String, Object>> noId = new ArrayList<>();
+        for (Map<String, Object> info : infos) {
+            if (info == null) continue;
+            long id = Exec.longOf(info.get("id"));
+            if (id > 0L) byId.put(id, info);
+            else noId.add(info);
+        }
+        List<Map<String, Object>> out = new ArrayList<>(byId.values());
+        out.addAll(noId);
+        return out;
+    }
+
+    // ---------------- C5 活动日历门控 ----------------
+
+    /**
+     * 解析 {@code notify_activity_calendar_data}（纯函数，逐行对齐网页版
+     * service/DailyActivityCalendarState.java:37-140 parse）：{@code data} 为 List 或
+     * Map&lt;id, {id, schedule:[{begin_ts,end_ts}]}&gt;；解析不出/非法返回空 map（调用方“不拦”）。
+     *
+     * @return 活动 id → 开放窗口 [{begin,end}]（按 begin 升序；无窗口的活动不收录）
+     */
+    static Map<Long, List<long[]>> parseActivityCalendar(Map<String, Object> content) {
+        Map<Long, List<long[]>> out = new LinkedHashMap<>();
+        if (content == null) return out;
+        Object data = content.get("data");
+        List<Map<String, Object>> entries;
+        if (data instanceof List) {
+            entries = Exec.mapsOf(data);
+        } else if (data instanceof Map) {
+            entries = Exec.mapsOf(data);   // Exec.mapsOf 会把数值 key 回填为 id（网页版同款形状兼容）
+        } else {
+            return out;
+        }
+        for (Map<String, Object> entry : entries) {
+            long id = Exec.longOf(entry.get("id"));
+            if (id <= 0L) continue;
+            List<long[]> windows = new ArrayList<>();
+            for (Map<String, Object> schedule : Exec.mapsOf(entry.get("schedule"))) {
+                long begin = firstLongOf(schedule, "begin_ts", "begin");
+                long end = firstLongOf(schedule, "end_ts", "end");
+                if (begin > 0L && end > begin) windows.add(new long[]{begin, end});
+            }
+            if (windows.isEmpty()) continue;
+            windows.sort((a, b) -> Long.compare(a[0], b[0]));
+            out.put(id, windows);
+        }
+        return out;
+    }
+
+    /** 当前活动日历（最新一帧；网页版 accept 是整体替换而非增量合并，service/DailyActivityCalendarState.java:68-79）。 */
+    static Map<Long, List<long[]>> activityCalendar(TaskContext tc) {
+        if (tc == null) return new LinkedHashMap<>();
+        Map<String, Object> latest = ServerNotifyHistory.latestContent(tc.fpid,
+                "notify_activity_calendar_data");
+        if (latest == null && tc.engine != null) {
+            latest = tc.engine.notifyContent("notify_activity_calendar_data");
+        }
+        return parseActivityCalendar(latest);
+    }
+
+    /**
+     * 取某活动 id 的日历窗口：先精确 id，再按 family=id/1000 合并同族（网页版
+     * service/DailyActivityCalendarState.java:126-256 openFamily/nextBeginFamily 同口径）。
+     * 日历未列出该活动 → null（=无法确认，不拦）。
+     */
+    static List<long[]> calendarWindows(Map<Long, List<long[]>> calendar, long activityId) {
+        if (calendar == null || calendar.isEmpty() || activityId <= 0L) return null;
+        List<long[]> exact = calendar.get(activityId);
+        if (exact != null && !exact.isEmpty()) return exact;
+        long family = activityId / 1000L;
+        if (family <= 0L) return null;
+        List<long[]> merged = null;
+        for (Map.Entry<Long, List<long[]>> e : calendar.entrySet()) {
+            if (e.getKey() / 1000L != family) continue;
+            if (merged == null) merged = new ArrayList<>();
+            merged.addAll(e.getValue());
+        }
+        return merged == null || merged.isEmpty() ? null : merged;
+    }
+
+    /**
+     * 活动日历门控（C5）：只对<b>能确认</b>未开放/已结束的活动生效——
+     * <ul>
+     *   <li>日历未收到 / 最新一帧超过 {@link #ACTIVITY_CALENDAR_FRESH_MILLIS} → 不拦；</li>
+     *   <li>日历未列出该 id 及同 family 活动 → 不拦（解析不出不拦）；</li>
+     *   <li>窗口正在开放 → 不拦；有未来窗口（尚未开始）→ 拦；</li>
+     *   <li>窗口全部结束：仅最近 {@link #ACTIVITY_CALENDAR_RECENT_END_GUARD} 内结束才拦
+     *       （周期活动久远结束不能确认不会重开，见网页版 recentlyEndedFamily 语义）。</li>
+     * </ul>
+     *
+     * @return null = 放行；非 null = SKIP 原因（含“活动日历”字样，便于 App 展示）
+     */
+    static String activityCalendarBlock(TaskContext tc, long activityId, long nowSec) {
+        if (tc == null || activityId <= 0L) return null;
+        long latestAt = ServerNotifyHistory.latestRecordedAt(tc.fpid, "notify_activity_calendar_data");
+        boolean knownToEngine = tc.engine != null
+                && tc.engine.notifyContent("notify_activity_calendar_data") != null;
+        if (latestAt <= 0L && !knownToEngine) return null;               // 没收到日历：不拦
+        if (latestAt > 0L && System.currentTimeMillis() - latestAt > ACTIVITY_CALENDAR_FRESH_MILLIS) {
+            return null;                                                 // 日历过旧：无法确认，不拦
+        }
+        List<long[]> windows = calendarWindows(activityCalendar(tc), activityId);
+        if (windows == null) return null;                                // 日历未收录：无法确认，不拦
+        long nextBegin = 0L;
+        long latestEnd = 0L;
+        for (long[] window : windows) {
+            if (window[0] <= nowSec && nowSec < window[1]) return null;  // 正在开放
+            if (window[0] > nowSec && (nextBegin == 0L || window[0] < nextBegin)) nextBegin = window[0];
+            latestEnd = Math.max(latestEnd, window[1]);
+        }
+        if (nextBegin > 0L) {
+            return "活动日历显示尚未开启（" + Beijing.fmt("MM-dd HH:mm")
+                    .format(new java.util.Date(nextBegin * 1000L)) + " 开始）";
+        }
+        if (latestEnd > 0L && nowSec - latestEnd <= ACTIVITY_CALENDAR_RECENT_END_GUARD) {
+            return "活动日历显示活动已结束";
+        }
+        return null;   // 久远结束：周期活动可能重开，无法确认未开放 → 不拦
+    }
+
+    /** 日历窗口文案（SKIP/调试用）：begin-end 北京时间。 */
+    static String calendarWindowsText(List<long[]> windows) {
+        if (windows == null || windows.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        java.text.SimpleDateFormat fmt = Beijing.fmt("MM-dd HH:mm");
+        for (long[] window : windows) {
+            if (sb.length() > 0) sb.append('/');
+            sb.append(fmt.format(new java.util.Date(window[0] * 1000L)))
+                    .append('-').append(fmt.format(new java.util.Date(window[1] * 1000L)));
+        }
+        return sb.toString();
+    }
+
+    /** 本轮请求预算是否还有余量。 */
+    static boolean activityBudgetLeft(ClaimStat st) {
+        return st != null && st.requests < ACTIVITY_MAX_REQUESTS_PER_ROUND;
+    }
+
+    /** 占用一次请求预算（返回 false = 本轮已达上限，调用方必须停手且不要记录“已尝试”状态）。 */
+    static boolean spendActivityRequest(ClaimStat st) {
+        if (!activityBudgetLeft(st)) return false;
+        st.requests++;
+        return true;
     }
 
     /** 数值/浮点键（"132.0"/132）→ 132；无法解析 → 0。 */
@@ -1482,6 +1749,11 @@ public final class ServerTasks {
             st.skipped(subKey, name + "今日已判活动未开启（不重复探测）");
             return;
         }
+        // R2 请求上限：历史多实例（7 档曙光/多卡 BP/多封邮件）逐个领取时防协议风暴。
+        if (!spendActivityRequest(st)) {
+            st.skipped(subKey, name + "本轮请求上限" + ACTIVITY_MAX_REQUESTS_PER_ROUND + "已到（下轮继续）");
+            return;
+        }
         try {
             GameMessage rsp = tc.engine.request(proto, args);
             if (isDegraded(rsp)) {
@@ -1566,20 +1838,27 @@ public final class ServerTasks {
         }
     }
 
-    /** 月卡/周卡每日奖励：notify_month_card_info.cardList[]，按卡 id 领（Service:325-362/State:932-1003）。 */
+    /**
+     * 月卡/周卡每日奖励：notify_month_card_info.cardList[]，按卡 id 领（Service:325-362/State:932-1003）。
+     *
+     * <p>R2：历史里同一协议可能有多帧（多卡先后到/月卡变更），按 card id 合并为“每卡最新一帧”，
+     * 引擎单条路径仍作为兜底（{@link #activityContents}）。
+     */
     static void claimWelfareCardDaily(TaskContext tc, ClaimStat st, long now) {
-        Map<String, Object> raw = firstNotify(tc.engine, "notify_month_card_info");
-        if (raw == null) {
-            st.skipped("welfare_card", "月卡通知未同步");
-            return;
+        List<Map<String, Object>> contents = activityContents(tc, "notify_month_card_info");
+        Map<Long, Map<String, Object>> cards = new LinkedHashMap<>();
+        for (Map<String, Object> raw : contents) {
+            for (Map<String, Object> card : Exec.mapsOf(raw.get("cardList"))) {
+                long id = Exec.longOf(card.get("id"));
+                if (id > 0L) cards.put(id, card);   // 后到覆盖先到
+            }
         }
-        List<Map<String, Object>> cards = Exec.mapsOf(raw.get("cardList"));
         if (cards.isEmpty()) {
-            st.skipped("welfare_card", "未购买月卡/周卡");
+            st.skipped("welfare_card", contents.isEmpty() ? "月卡通知未同步" : "未购买月卡/周卡");
             return;
         }
         int claimed = 0;
-        for (Map<String, Object> card : cards) {
+        for (Map<String, Object> card : cards.values()) {
             long id = Exec.longOf(card.get("id"));
             long validity = firstLongOf(card, "validity_period", "validity");
             long claimAt = firstLongOf(card, "daily_reaward_time", "daily_reward_time");
@@ -1598,7 +1877,9 @@ public final class ServerTasks {
 
     /** VIP 每日经验：req_vip_get_daily_exp 无参；状态判据 get_daily_exp_ts（State:1005-1030）。 */
     static void claimVipDailyExp(TaskContext tc, ClaimStat st, long now) {
-        Map<String, Object> vip = firstNotify(tc.engine, "notify_vip_info", "notify_vip_update");
+        // R2：历史最新一帧优先（notify_vip_update 可能晚到覆盖 info），引擎兜底在 activityInfoOf 内。
+        Map<String, Object> vip = activityInfoOf(tc, "notify_vip_info", null);
+        if (vip == null) vip = activityInfoOf(tc, "notify_vip_update", null);
         if (vip != null) {
             long lv = Exec.longOf(vip.get("vip_lv"));
             if (lv <= 0L) {
@@ -1622,11 +1903,22 @@ public final class ServerTasks {
 
     /** 远征/征途宝藏：notify_daily_claim_info{id:2435002,info{free_reward_ts}}（State:897-910；抓包 :98）。 */
     static void claimJourneyTreasure(TaskContext tc, ClaimStat st, long now) {
-        Map<String, Object> info = activityInfoOf(tc.engine, NOTIFY_DAILY_CLAIM_INFO, "info");
+        // R2：同一协议会推多个“每日领取”活动，历史里按 id 找 2435002（引擎单条兜底也在这里）。
+        Map<String, Object> info = null;
+        for (Map<String, Object> candidate : activityInfos(tc, "info", NOTIFY_DAILY_CLAIM_INFO)) {
+            long cid = Exec.longOf(candidate.get("id"));
+            if (cid == ACT_JOURNEY_TREASURE_ID) info = candidate;
+            else if (cid <= 0L && info == null) info = candidate;
+        }
         long id = info == null ? ACT_JOURNEY_TREASURE_ID : Exec.longOf(info.get("id"));
         if (id <= 0L) id = ACT_JOURNEY_TREASURE_ID;
         if (id != ACT_JOURNEY_TREASURE_ID) {
             st.skipped("journey_treasure", "远征宝藏活动 id 不匹配（" + id + "）");
+            return;
+        }
+        String calBlock = activityCalendarBlock(tc, ACT_JOURNEY_TREASURE_ID, now);
+        if (calBlock != null) {
+            st.skipped("journey_treasure", "远征宝藏" + calBlock);
             return;
         }
         if (info != null && sameBeijingDay(Exec.longOf(info.get("free_reward_ts")), now)) {
@@ -1641,11 +1933,17 @@ public final class ServerTasks {
     /** 失落宝藏：notify_lost_treasure_info.info{id,daily_reward_get_ts}（State:756-762）。 */
     static void claimLostTreasure(TaskContext tc, ClaimStat st, long now) {
         boolean any = false;
-        for (Map<String, Object> info : activityInfos(tc.engine, "info", "notify_lost_treasure_info")) {
+        // R2：历史里两个失落宝藏活动（2706001/2706002）各有一帧，逐 id 领取。
+        for (Map<String, Object> info : activityInfos(tc, "info", "notify_lost_treasure_info")) {
             long id = Exec.longOf(info.get("id"));
             if (!isOneOf(id, ACT_LOST_TREASURE_IDS)) continue;
             any = true;
             if (!activityActive(firstLongOf(info, "start_ts"), firstLongOf(info, "end_ts"), now)) continue;
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped("lost_treasure", "失落宝藏" + calBlock);
+                continue;
+            }
             if (sameBeijingDay(firstLongOf(info, "daily_reward_get_ts", "daily_reward_ts"), now)) continue;
             activityClaim(tc, st, "lost_treasure", "失落宝藏",
                     "req_lost_treasure_get_daily_reward", Exec.args("id", id), "lost_treasure:" + id);
@@ -1658,12 +1956,17 @@ public final class ServerTasks {
     /** 许愿屋：notify_hero_turntable_info|_init.ht_info{id,free_gift_get_time}（State:144-153）。 */
     static void claimWishHouse(TaskContext tc, ClaimStat st, long now) {
         boolean any = false;
-        for (Map<String, Object> info : activityInfos(tc.engine, "ht_info",
+        for (Map<String, Object> info : activityInfos(tc, "ht_info",
                 "notify_hero_turntable_info", "notify_hero_turntable_init")) {
             any = true;
             long id = Exec.longOf(info.get("id"));
             if (id <= 0L) id = ACT_WISH_HOUSE_ID;
             if (!activityActive(firstLongOf(info, "start_ts"), firstLongOf(info, "end_ts"), now)) continue;
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped("wish_house", "许愿屋" + calBlock);
+                continue;
+            }
             if (sameBeijingDay(firstLongOf(info, "free_gift_get_time"), now)) continue;
             activityClaim(tc, st, "wish_house", "许愿屋",
                     "req_hero_turntable_get_free_gift", Exec.args("id", id), "wish_house:" + id);
@@ -1676,12 +1979,17 @@ public final class ServerTasks {
     /** 米娅的许愿小屋：notify_fortune_card_info|_init.fc_info{daily_reward_ts}（State:154-158）。 */
     static void claimMiaWishHouse(TaskContext tc, ClaimStat st, long now) {
         boolean any = false;
-        for (Map<String, Object> info : activityInfos(tc.engine, "fc_info",
+        for (Map<String, Object> info : activityInfos(tc, "fc_info",
                 "notify_fortune_card_info", "notify_fortune_card_init")) {
             any = true;
             long id = Exec.longOf(info.get("id"));
             if (id <= 0L) id = ACT_MIA_WISH_HOUSE_ID;
             if (!activityActive(firstLongOf(info, "start_ts"), firstLongOf(info, "end_ts"), now)) continue;
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped("mia_wish_house", "米娅许愿屋" + calBlock);
+                continue;
+            }
             if (sameBeijingDay(firstLongOf(info, "daily_reward_ts"), now)) continue;
             activityClaim(tc, st, "mia_wish_house", "米娅许愿屋",
                     "req_fortune_card_get_daily_free_gift", Exec.args("id", id),
@@ -1695,12 +2003,18 @@ public final class ServerTasks {
     /** 万象杂货铺：notify_infinite_box_info|_prepared.info{reward_group,cur_order}（State:1032-1048）。 */
     static void claimInfiniteGrocery(TaskContext tc, ClaimStat st, long now) {
         boolean any = false;
-        for (Map<String, Object> info : activityInfos(tc.engine, "info",
+        // R2：同协议多帧历史（免费档位随 cur_order 推进），按 id 去重后逐项判免费档。
+        for (Map<String, Object> info : activityInfos(tc, "info",
                 "notify_infinite_box_info", "notify_infinite_box_prepared")) {
             any = true;
             long id = Exec.longOf(info.get("id"));
             if (id <= 0L) id = ACT_INFINITE_GROCERY_ID;
             if (!activityActive(firstLongOf(info, "start_ts"), firstLongOf(info, "end_ts"), now)) continue;
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped("infinite_grocery", "无限宝箱" + calBlock);
+                continue;
+            }
             long group = Exec.longOf(info.get("reward_group"));
             long order = Exec.longOf(info.get("cur_order"));
             if (!infiniteFree(group, order + 1L)) continue;
@@ -1717,6 +2031,9 @@ public final class ServerTasks {
      * （DailyActivityRewardsService.java:398-411 + State.java:912-920），协议族不是 duck_market
      * ——旧 notify_duck_market_act_info/req_duck_market_* 已按审计 §3 移除（网页版源码 0 命中），
      * 保留同名子项文案兜底，避免 App 页显示空白。
+     *
+     * <p>R2：7 个市集档位 + 智慧各占一帧推送，引擎只留最后一帧 → 从历史取全部 id 逐个 claimOne
+     * （同 id 后到帧覆盖：free_box_get_time 等最新状态），台账按 id 去重防重复请求。
      */
     static void claimOptionalGiftFamily(TaskContext tc, ClaimStat st, long now) {
         if (!tc.subOn("activity_rewards", "dawn_market", true)) {
@@ -1724,11 +2041,10 @@ public final class ServerTasks {
             return;
         }
         boolean any = false;
-        java.util.Set<Long> seen = new java.util.HashSet<>();
-        for (Map<String, Object> info : activityInfos(tc.engine, "ogp_info",
+        for (Map<String, Object> info : activityInfos(tc, "ogp_info",
                 "notify_optional_gift_pack_info", "notify_optional_gift_pack_init")) {
             long id = Exec.longOf(info.get("id"));
-            if (id <= 0L || !seen.add(id)) continue;
+            if (id <= 0L) continue;
             boolean wisdom = id == ACT_DAWN_WISDOM_ID;
             boolean market = isOneOf(id, ACT_DAWN_MARKET_IDS);
             if (!wisdom && !market) {
@@ -1739,6 +2055,11 @@ public final class ServerTasks {
             String subKey = wisdom ? "dawn_wisdom" : "dawn_market";
             String name = wisdom ? "曙光智慧" : "曙光市集";
             if (!activityActive(firstLongOf(info, "start_ts"), firstLongOf(info, "end_ts"), now)) continue;
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped(subKey, name + calBlock);
+                continue;
+            }
             if (sameBeijingDay(firstLongOf(info, "free_box_get_time"), now)) continue;
             activityClaim(tc, st, subKey, name, PROTO_OPTIONAL_GIFT_FREE_BOX,
                     activityIdArgs(id), subKey + ":" + id);
@@ -1751,11 +2072,11 @@ public final class ServerTasks {
     /** 奇货/匠心/武备自选：notify_customize_item_info|_init.ci_info{id,free_box_get_time}（State:1050-1058）。 */
     static void claimCustomizeFamily(TaskContext tc, ClaimStat st, long now) {
         boolean any = false;
-        java.util.Set<Long> seen = new java.util.HashSet<>();
-        for (Map<String, Object> info : activityInfos(tc.engine, "ci_info",
+        // R2：15 个自选活动 id 分散在多帧推送，历史逐 id 领取（同 id 后到帧覆盖）。
+        for (Map<String, Object> info : activityInfos(tc, "ci_info",
                 "notify_customize_item_info", "notify_customize_item_init")) {
             long id = Exec.longOf(info.get("id"));
-            if (id <= 0L || !seen.add(id)) continue;
+            if (id <= 0L) continue;
             String subKey;
             String name;
             if (isOneOf(id, ACT_RARE_CUSTOM_IDS)) {
@@ -1773,6 +2094,11 @@ public final class ServerTasks {
             }
             any = true;
             if (!activityActive(firstLongOf(info, "start_ts"), firstLongOf(info, "end_ts"), now)) continue;
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped(subKey, name + calBlock);
+                continue;
+            }
             if (sameBeijingDay(firstLongOf(info, "free_box_get_time"), now)) continue;
             activityClaim(tc, st, subKey, name, PROTO_CUSTOMIZE_FREE_BOX,
                     Exec.args("id", id), subKey + ":" + id);
@@ -1785,13 +2111,18 @@ public final class ServerTasks {
     /** 匠人宝库：notify_multiple_choice_pack_info|_init.mcp_info{id,free_box_get_time}（State:171-176）。 */
     static void claimCraftsmanTreasury(TaskContext tc, ClaimStat st, long now) {
         boolean any = false;
-        java.util.Set<Long> seen = new java.util.HashSet<>();
-        for (Map<String, Object> info : activityInfos(tc.engine, "mcp_info",
+        // R2：历史逐 id（匠人宝库可能多期/多 id 先后推送），同 id 后到帧覆盖。
+        for (Map<String, Object> info : activityInfos(tc, "mcp_info",
                 "notify_multiple_choice_pack_info", "notify_multiple_choice_pack_init")) {
             long id = Exec.longOf(info.get("id"));
-            if (id <= 0L || !seen.add(id)) continue;
+            if (id <= 0L) continue;
             any = true;
             if (!activityActive(firstLongOf(info, "start_ts"), firstLongOf(info, "end_ts"), now)) continue;
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped("craftsman_treasury", "匠人宝库" + calBlock);
+                continue;
+            }
             if (sameBeijingDay(firstLongOf(info, "free_box_get_time"), now)) continue;
             activityClaim(tc, st, "craftsman_treasury", "匠人宝库",
                     PROTO_MULTIPLE_CHOICE_FREE_BOX, Exec.args("id", id),
@@ -1805,7 +2136,8 @@ public final class ServerTasks {
     /** 钓鱼锦标赛免费礼：notify_fishing_activity_info.activity_info{id,free_gift_get_time}（State:1060-1080）。 */
     static void claimFishingChampionship(TaskContext tc, ClaimStat st, long now) {
         boolean any = false;
-        for (Map<String, Object> info : activityInfos(tc.engine, "activity_info",
+        // R2：历史多帧（两个钓鱼活动 id 先后开启），逐 id 领取。
+        for (Map<String, Object> info : activityInfos(tc, "activity_info",
                 "notify_fishing_activity_info")) {
             long id = Exec.longOf(info.get("id"));
             if (!isOneOf(id, ACT_FISHING_IDS)) continue;
@@ -1813,6 +2145,11 @@ public final class ServerTasks {
             long start = firstLongOf(info, "preview_end_ts");
             long end = firstLongOf(info, "start_end_ts");
             if (!(start > 0L && end > start && now >= start && now < end)) continue;
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped("fishing_championship", "钓鱼免费礼" + calBlock);
+                continue;
+            }
             if (sameBeijingDay(firstLongOf(info, "free_gift_get_time"), now)) continue;
             activityClaim(tc, st, "fishing_championship", "钓鱼免费礼",
                     "req_fishing_get_free_gift", Exec.args("id", id), "fishing:" + id);
@@ -1826,15 +2163,20 @@ public final class ServerTasks {
      * 英雄集结（战令）：notify_battle_pass_info|_prepared.bp_info{id,score,free_reward}（State:790-811）；
      * 在线积分变化 notify_battle_pass_score_change{id,score} 也要合并（State:824-836），
      * 否则当天涨分后的新档位要等次日。防重复请求用「上轮已尝试积分」而非按天台账（积分日内在变）。
+     *
+     * <p>R2：历史里同协议多活动 id（网页版常量 10 个英雄集结 id）逐 id 合并领取；日历门控只拦
+     * “能确认未开放”的活动，被门控拦下时<b>不写</b>“已尝试积分”，下轮开窗后仍会补领。
      */
     static void claimHeroRally(TaskContext tc, ClaimStat st, long now) {
         Map<Long, Map<String, Object>> infos = new LinkedHashMap<>();
-        for (String proto : new String[]{"notify_battle_pass_info",
-                "notify_battle_pass_prepared"}) {
-            mergeActivityInfoById(infos, activityInfoOf(tc.engine, proto, "bp_info"));
+        for (Map<String, Object> info : activityInfos(tc, "bp_info",
+                "notify_battle_pass_info", "notify_battle_pass_prepared")) {
+            mergeActivityInfoById(infos, info);
         }
-        mergeActivityInfoById(infos, activityInfoOf(tc.engine,
-                "notify_battle_pass_score_change", null));
+        for (Map<String, Object> info : activityInfos(tc, null,
+                "notify_battle_pass_score_change")) {
+            mergeActivityInfoById(infos, info);
+        }
         boolean any = false;
         for (Map.Entry<Long, Map<String, Object>> e : infos.entrySet()) {
             long id = e.getKey();
@@ -1843,6 +2185,11 @@ public final class ServerTasks {
             Map<String, Object> info = e.getValue();
             if (!activityActive(firstLongOf(info, "start_ts"), firstLongOf(info, "end_ts"), now)) {
                 st.skipped("hero_rally", "英雄集结未开启/已结束");
+                continue;
+            }
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped("hero_rally", "英雄集结" + calBlock);
                 continue;
             }
             long score = Exec.longOf(info.get("score"));
@@ -1854,53 +2201,68 @@ public final class ServerTasks {
                 st.skipped("hero_rally", "英雄集结积分未变化（上轮已尝试）");
                 continue;
             }
-            claimHeroRallyOne(tc, st, id, info);
-            saveModNumber(tc, "hero_rally_" + id, score);
+            if (claimHeroRallyOne(tc, st, id, info)) {
+                saveModNumber(tc, "hero_rally_" + id, score);
+            }
         }
         if (!any && !st.has("hero_rally")) {
             st.skipped("hero_rally", "英雄集结战令通知未同步");
         }
     }
 
-    /** 英雄集结单活动：先批量 req_battle_pass_collect_all_reward；7307 走逐档兜底（Service:241-316）。 */
-    static void claimHeroRallyOne(TaskContext tc, ClaimStat st, long activityId,
-                                  Map<String, Object> info) {
+    /**
+     * 英雄集结单活动：先批量 req_battle_pass_collect_all_reward；7307 走逐档兜底（Service:241-316）。
+     *
+     * @return false = 本轮请求预算已耗尽（未真正尝试，调用方不得记录“已尝试积分”）
+     */
+    static boolean claimHeroRallyOne(TaskContext tc, ClaimStat st, long activityId,
+                                     Map<String, Object> info) {
+        if (!spendActivityRequest(st)) {
+            st.skipped("hero_rally", "本轮请求上限" + ACTIVITY_MAX_REQUESTS_PER_ROUND + "已到（下轮继续）");
+            return false;
+        }
         try {
             GameMessage rsp = tc.engine.request(PROTO_BATTLE_PASS_COLLECT_ALL,
                     battlePassAllArgs(activityId));
             if (isDegraded(rsp)) {
                 st.skipped("hero_rally", "英雄集结响应异常（协议未收录）");
-                return;
+                return true;
             }
             int code = Exec.codeOf(rsp);
             if (code == 0) {
                 st.claimed("hero_rally", "英雄集结", rsp);
-                return;
+                return true;
             }
             if (code == 7307) {
                 // 批量领取被拒（7307）→ 逐档 req_battle_pass_collect_reward{id,reward_id}
-                int claimed = claimHeroRallyStages(tc, activityId, info);
+                int claimed = claimHeroRallyStages(tc, st, activityId, info);
                 if (claimed > 0) {
                     st.okCount("hero_rally", "英雄集结逐档", claimed);
                 } else {
                     st.skipped("hero_rally", "英雄集结暂无可领免费档");
                 }
-                return;
+                return true;
             }
             if (isActivityUnavailableCode(code)) {
                 st.skipped("hero_rally", "英雄集结" + activityUnavailableText(code));
-                return;
+                return true;
             }
             st.failed("hero_rally", "英雄集结错误码" + code);
+            return true;
         } catch (Exception e) {
             TaskOutcome r = classifyException(e, "英雄集结");
             if (r.category == TaskOutcome.Category.SESSION_CLOSED) throw new RuntimeException(e);
             st.failed("hero_rally", r.message);
+            return true;
         }
     }
 
-    /** 英雄集结逐档：reward_id = (version-1)*31 + 1..31；7301/7303/7306 停，7302/7307 继续。 */
-    static int claimHeroRallyStages(TaskContext tc, long activityId, Map<String, Object> info) throws Exception {
+    /**
+     * 英雄集结逐档：reward_id = (version-1)*31 + 1..31；7301/7303/7306 停，7302/7307 继续。
+     * R2：逐档请求也占本轮预算（{@link #ACTIVITY_MAX_REQUESTS_PER_ROUND}），预算尽即停。
+     */
+    static int claimHeroRallyStages(TaskContext tc, ClaimStat st, long activityId,
+                                    Map<String, Object> info) throws Exception {
         long version = Exec.longOf(info.get("bp_version_idx"));
         if (version <= 0L || version > 39L) return 0;
         long first = (version - 1L) * 31L + 1L;
@@ -1909,6 +2271,7 @@ public final class ServerTasks {
         for (long offset = 0L; offset < 31L; offset++) {
             long rewardId = first + offset;
             if (received.contains(rewardId)) continue;
+            if (!spendActivityRequest(st)) break;
             GameMessage r = tc.engine.request(PROTO_BATTLE_PASS_COLLECT,
                     battlePassStageArgs(activityId, rewardId));
             int code = Exec.codeOf(r);
@@ -1931,11 +2294,14 @@ public final class ServerTasks {
     /** 卡 BP 逐档：req_card_bp_collect_reward{id,stage_id}，8201/8202 停、8203 记已领（Service:368-396）。 */
     static void claimCardBp(TaskContext tc, ClaimStat st, long now) throws Exception {
         Map<Long, Map<String, Object>> infos = new LinkedHashMap<>();
-        for (String proto : new String[]{"notify_card_bp_info", "notify_card_bp_prepared"}) {
-            mergeActivityInfoById(infos, activityInfoOf(tc.engine, proto, "info"));
+        // R2：历史里 6 张卡 BP（2505001-3/2506001-3）可能各有一帧，逐 id 合并领取。
+        for (Map<String, Object> info : activityInfos(tc, "info",
+                "notify_card_bp_info", "notify_card_bp_prepared")) {
+            mergeActivityInfoById(infos, info);
         }
-        for (String proto : new String[]{"notify_card_bp_progress_change", "notify_card_bp_buy_gfit"}) {
-            mergeActivityInfoById(infos, activityInfoOf(tc.engine, proto, null));
+        for (Map<String, Object> info : activityInfos(tc, null,
+                "notify_card_bp_progress_change", "notify_card_bp_buy_gfit")) {
+            mergeActivityInfoById(infos, info);
         }
         boolean any = false;
         for (Map.Entry<Long, Map<String, Object>> e : infos.entrySet()) {
@@ -1947,6 +2313,11 @@ public final class ServerTasks {
                 st.skipped("card_bp", "卡BP活动未开启/已结束");
                 continue;
             }
+            String calBlock = activityCalendarBlock(tc, id, now);
+            if (calBlock != null) {
+                st.skipped("card_bp", "卡BP" + calBlock);
+                continue;
+            }
             long progress = Exec.longOf(info.get("progress"));
             if (progress <= 0L) {
                 st.skipped("card_bp", "卡BP进度 0，暂无免费档可领");
@@ -1956,8 +2327,9 @@ public final class ServerTasks {
                 st.skipped("card_bp", "卡BP进度未变化（上轮已尝试）");
                 continue;
             }
-            claimCardBpStages(tc, st, id, info, progress);
-            saveModNumber(tc, "card_bp_" + id, progress);
+            if (claimCardBpStages(tc, st, id, info, progress)) {
+                saveModNumber(tc, "card_bp_" + id, progress);
+            }
         }
         if (!any && !st.has("card_bp")) {
             st.skipped("card_bp", "卡BP通知未同步");
@@ -1979,16 +2351,27 @@ public final class ServerTasks {
         }
     }
 
-    static void claimCardBpStages(TaskContext tc, ClaimStat st, long activityId,
-                                  Map<String, Object> info, long progress) throws Exception {
+    /**
+     * 卡 BP 逐档（R2：逐档请求占本轮预算，预算尽即停；原 120 次上限改为全局 40 次/轮）。
+     *
+     * @return false = 本轮请求预算已耗尽（未真正尝试，调用方不得记录“已尝试进度”）
+     */
+    static boolean claimCardBpStages(TaskContext tc, ClaimStat st, long activityId,
+                                     Map<String, Object> info, long progress) throws Exception {
         java.util.Set<Long> rx = loadModStages(tc, "card_bp_rx_" + activityId);
         rx.addAll(markedStageIds(info.get("free_reward")));
         int claimed = 0;
-        int requests = 0;
         boolean stopped = false;
-        for (long stage = 1L; stage <= 100L && requests < 120; stage++) {
+        boolean attempted = false;
+        for (long stage = 1L; stage <= 100L; stage++) {
             if (rx.contains(stage)) continue;
-            requests++;
+            if (!activityBudgetLeft(st)) {
+                stopped = true;
+                st.skipped("card_bp", "本轮请求上限" + ACTIVITY_MAX_REQUESTS_PER_ROUND + "已到（下轮继续）");
+                break;
+            }
+            spendActivityRequest(st);
+            attempted = true;
             GameMessage r = tc.engine.request(PROTO_CARD_BP_COLLECT,
                     cardBpStageArgs(activityId, stage));
             int code = Exec.codeOf(r);
@@ -2016,6 +2399,7 @@ public final class ServerTasks {
         } else if (!stopped) {
             st.skipped("card_bp", "卡BP暂无可领阶段");
         }
+        return attempted;
     }
 
     /** 英雄殿堂（value_exchange 每日档）：req_value_exchange_exchange{id:2702001,idx,count:1}（State:764-778）。 */
@@ -2032,12 +2416,18 @@ public final class ServerTasks {
         String key = witness ? "heroic_witness" : "hero_hall";
         String name = witness ? "英勇的见证" : "英雄殿堂";
         boolean any = false;
-        for (Map<String, Object> info : activityInfos(tc.engine, "ve_info",
+        // R2：历史多帧（_init/_info 及版本推进）按 id 去重取最新一帧（dedupeLatestActivityInfos）。
+        for (Map<String, Object> info : activityInfos(tc, "ve_info",
                 "notify_value_exchange_info", "notify_value_exchange_init")) {
             if (Exec.longOf(info.get("id")) != ACT_VALUE_EXCHANGE_ID) continue;
             any = true;
             if (!activityActive(firstLongOf(info, "start_ts"), firstLongOf(info, "end_ts"), now)) {
                 st.skipped(key, name + "活动未开启/已结束");
+                continue;
+            }
+            String calBlock = activityCalendarBlock(tc, ACT_VALUE_EXCHANGE_ID, now);
+            if (calBlock != null) {
+                st.skipped(key, name + calBlock);
                 continue;
             }
             long version = Exec.longOf(info.get("version"));

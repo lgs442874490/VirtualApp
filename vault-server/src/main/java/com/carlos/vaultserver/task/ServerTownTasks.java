@@ -11,6 +11,7 @@ import org.json.JSONObject;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -572,11 +573,216 @@ public final class ServerTownTasks {
                     m.subSkip("afk", "按保留阈值跳过");
                 }
             }
+            // I3 专家情报技能（免费日技能，默认开；与网页版 expert-intelligence 60s 节奏同语义，
+            // 由 TaskCadenceScheduler 的 expert=60s 驱动，不新增 task id）。
+            if (tc.subOn("expert", "skill", true)) {
+                expertSkill(tc, m);
+            }
         } catch (Exception e) {
             if (sessionLost(e)) return ServerTasks.classifyException(e, "专家游历");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "expert", "专家游历");
+    }
+
+    // ---------- 专家情报技能（I3，1:1 网页版 DailyExpertIntelligenceService） ----------
+    //
+    // 网页版：notify_expert_info/update_expert_info/update_expert_skill_info 的
+    // experts[].skills[].effects[] 中扫描 effect id=6 的“情报”技能；服务器当日 00:01:30
+    // 安全窗（dayStart+90s，DailyExpertIntelligenceState.ServerDay.requestWindowEpochSecond）
+    // 后调 req_use_expert_skill{expert_id, skill_id, effect_type:6}；成功或 40237（当日刷新
+    // 上限）记当日台账，当天不再重试（DailyExpertIntelligenceService.java:39-143,200-214）。
+
+    static final long EXPERT_SKILL_WINDOW_OFFSET_MILLIS = 90_000L;
+    static final int EXPERT_SKILL_EFFECT_ID = 6;
+    static final String EXPERT_SKILL_LEDGER_SCOPE = "expert_skill";
+
+    /** 情报技能快照：专家/技能 id + 该技能情报效果的最近使用时刻（秒，0=未用）。 */
+    static final class ExpertSkill {
+        final long expertId;
+        final long skillId;
+        final long lastUseTs;
+
+        ExpertSkill(long expertId, long skillId, long lastUseTs) {
+            this.expertId = expertId;
+            this.skillId = skillId;
+            this.lastUseTs = Math.max(0L, lastUseTs);
+        }
+
+        boolean ready() {
+            return expertId > 0L && skillId > 0L;
+        }
+    }
+
+    /** 00:01:30 安全窗（北京时间当日 00:00 后 90 秒）。 */
+    static boolean expertSkillWindowOpen(long nowMillis) {
+        java.time.ZonedDateTime now = java.time.Instant.ofEpochMilli(nowMillis).atZone(Beijing.ZONE_ID);
+        java.time.ZonedDateTime window = now.toLocalDate().atStartOfDay(Beijing.ZONE_ID)
+                .plusSeconds(EXPERT_SKILL_WINDOW_OFFSET_MILLIS / 1000L);
+        return !now.isBefore(window);
+    }
+
+    /** 是否“今日已用过”（效果 last_use_ts/last_refresh_time 的北京日期==今天）。 */
+    static boolean expertSkillUsedToday(long lastUseTs, long nowMillis) {
+        if (lastUseTs <= 0L) return false;
+        String usedDay = Beijing.fmt("yyyy-MM-dd").format(new java.util.Date(lastUseTs * 1000L));
+        String today = Beijing.fmt("yyyy-MM-dd").format(new java.util.Date(nowMillis));
+        return usedDay.equals(today);
+    }
+
+    /** 从通知扫描情报技能（info 全量 → update_expert_info 覆盖 → update_expert_skill_info 更新使用时刻）。 */
+    static ExpertSkill expertSkillOf(WjdrEngine engine) {
+        ExpertSkill skill = scanExpertSkillNotify(engine.notifyData("notify_expert_info"));
+        ExpertSkill updated = scanExpertSkillNotify(engine.notifyData("notify_update_expert_info"));
+        if (updated != null) skill = updated;
+        Map<String, Object> skillUpdate = engine.notifyData("notify_update_expert_skill_info");
+        if (skillUpdate != null && skill != null) {
+            long eid = Exec.longOf(skillUpdate.get("expert_id"));
+            Map<String, Object> skillInfo = Exec.mapOf(skillUpdate.get("skill_info"));
+            if (skillInfo == null) skillInfo = Exec.mapOf(skillUpdate.get("skill"));
+            long sid = skillInfo == null ? 0L : Exec.longOf(skillInfo.get("id"));
+            if (skillInfo != null && (eid <= 0L || eid == skill.expertId)
+                    && (sid <= 0L || sid == skill.skillId)) {
+                Long ts = intelligenceEffectUseTs(skillInfo);
+                if (ts != null) skill = new ExpertSkill(skill.expertId, skill.skillId, ts);
+            }
+        }
+        return skill;
+    }
+
+    static ExpertSkill scanExpertSkillNotify(Map<String, Object> data) {
+        if (data == null) return null;
+        List<Map<String, Object>> experts = new ArrayList<>();
+        Object raw = data.get("experts");
+        if (raw instanceof Map) {
+            for (Object v : ((Map<?, ?>) raw).values()) {
+                Map<String, Object> m = Exec.mapOf(v);
+                if (m != null) experts.add(m);
+            }
+        } else {
+            experts.addAll(Exec.mapsOf(raw));
+        }
+        Map<String, Object> single = Exec.mapOf(data.get("expert"));
+        if (single != null) experts.add(single);
+        if (data.containsKey("skills")) experts.add(data);   // update_expert_info 的形状可能直接是 expert 本体
+        for (Map<String, Object> expert : experts) {
+            ExpertSkill s = scanExpertSkill(expert);
+            if (s != null) return s;
+        }
+        return null;
+    }
+
+    static ExpertSkill scanExpertSkill(Map<String, Object> expert) {
+        if (expert == null) return null;
+        long eid = Exec.longOf(expert.get("id"));
+        if (eid <= 0L) return null;
+        List<Map<String, Object>> skills = new ArrayList<>();
+        Object raw = expert.get("skills");
+        if (raw instanceof Map) {
+            for (Object v : ((Map<?, ?>) raw).values()) {
+                Map<String, Object> m = Exec.mapOf(v);
+                if (m != null) skills.add(m);
+            }
+        } else {
+            skills.addAll(Exec.mapsOf(raw));
+        }
+        for (Map<String, Object> skill : skills) {
+            Long ts = intelligenceEffectUseTs(skill);
+            if (ts == null) continue;
+            long sid = Exec.longOf(skill.get("id"));
+            if (sid <= 0L) continue;
+            return new ExpertSkill(eid, sid, ts);
+        }
+        return null;
+    }
+
+    /** 技能效果里 effect id=6（情报）的最近使用时刻：返回 null=没有情报效果，0=有但未用。 */
+    static Long intelligenceEffectUseTs(Map<String, Object> skill) {
+        if (skill == null) return null;
+        Object effects = skill.get("effects");
+        List<Map<String, Object>> matched = new ArrayList<>();
+        if (effects instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) effects).entrySet()) {
+                Map<String, Object> effect = Exec.mapOf(e.getValue());
+                long id = effect == null ? 0L : Exec.longOf(effect.get("id"));
+                if (id <= 0L) id = expertNumericId(e.getKey());
+                if (id <= 0L && effect != null) id = Exec.longOf(effect.get("type"));
+                if (id == EXPERT_SKILL_EFFECT_ID) {
+                    matched.add(effect == null ? new LinkedHashMap<>() : effect);
+                }
+            }
+        } else {
+            for (Map<String, Object> effect : Exec.mapsOf(effects)) {
+                long id = Exec.longOf(effect.get("id"));
+                if (id <= 0L) id = Exec.longOf(effect.get("type"));
+                if (id == EXPERT_SKILL_EFFECT_ID) matched.add(effect);
+            }
+        }
+        if (matched.isEmpty()) return null;
+        long ts = 0L;
+        for (Map<String, Object> effect : matched) {
+            if (effect == null) continue;
+            long t = Exec.longOf(effect.get("last_refresh_time"));
+            if (t <= 0L) t = Exec.longOf(effect.get("last_use_ts"));
+            if (t > ts) ts = t;
+        }
+        return ts;
+    }
+
+    /** "6.0" 这类数字键解析（网页版 DailyServiceSupport.number 同款）。 */
+    private static long expertNumericId(Object v) {
+        if (v instanceof Number) return ((Number) v).longValue();
+        if (v == null) return 0L;
+        try {
+            return (long) Double.parseDouble(String.valueOf(v).trim());
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    /** I3 执行：默认开（sub.skill），当日台账用 ClaimLedger（跨天自动失效）。 */
+    private static void expertSkill(TaskContext tc, Exec.Multi m) throws Exception {
+        long now = System.currentTimeMillis();
+        if (ClaimLedger.isClaimed(tc, EXPERT_SKILL_LEDGER_SCOPE, "done")
+                || ClaimLedger.isClaimed(tc, EXPERT_SKILL_LEDGER_SCOPE, "limit")) {
+            m.subSkip("skill", "今日专家情报技能已处理");
+            return;
+        }
+        if (!expertSkillWindowOpen(now)) {
+            m.subSkip("skill", "待服务器00:01:30安全窗");
+            return;
+        }
+        ExpertSkill skill = expertSkillOf(tc.engine);
+        if (skill == null || !skill.ready()) {
+            m.subSkip("skill", "专家数据未同步");
+            return;
+        }
+        if (expertSkillUsedToday(skill.lastUseTs, now)) {
+            ClaimLedger.mark(tc, EXPERT_SKILL_LEDGER_SCOPE, "done");
+            tc.saveModText("expert", "skill", "今日专家情报技能已使用");
+            m.subSkip("skill", "今日已使用");
+            return;
+        }
+        GameMessage rsp = tc.engine.request("req_use_expert_skill", Exec.args(
+                "expert_id", skill.expertId, "skill_id", skill.skillId,
+                "effect_type", (long) EXPERT_SKILL_EFFECT_ID));
+        int code = Exec.codeOf(rsp);
+        if (Exec.ok(rsp)) {
+            ClaimLedger.mark(tc, EXPERT_SKILL_LEDGER_SCOPE, "done");
+            tc.saveModText("expert", "skill", "专家情报技能已使用（expert " + skill.expertId
+                    + " · skill " + skill.skillId + "）");
+            m.claimed("专家情报技能");
+            m.subOk("skill", "专家情报技能已用");
+        } else if (code == 40237 || code == 40238 || code == 40236) {
+            // 40237=当日刷新次数上限；40236/40238 与 town_affairs 已领家族同义（防 60s 节奏重复请求）
+            ClaimLedger.mark(tc, EXPERT_SKILL_LEDGER_SCOPE, "limit");
+            tc.saveModText("expert", "skill", "今日专家情报技能次数已用尽(40237)");
+            m.skip("专家情报技能今日次数已用尽(40237)");
+            m.subSkip("skill", "今日已用尽");
+        } else {
+            m.subSkip("skill", "技能码" + code);
+            tc.saveModText("expert", "skill", "专家情报技能待重试(码" + code + ")");
+        }
     }
 
     // ---------- 晨曦岛 ----------
@@ -769,6 +975,10 @@ public final class ServerTownTasks {
             // ② 一旦拿到过今天 fight 响应的 base，就不再回灌登录时旧快照（否则每轮把今日已打计数覆盖回 0，
             //    会导致结算窗里误判“次数不足”而不领奖）。
             day.mergeInitBase(arenaBaseOf(tc.engine.notifyData("notify_arena_init")), now);
+            // A2 买次数（默认关）：网页版在 00:00-20:00 预购挑战次数（DailyArenaService.prePurchase:421-467,
+            // req_arena_buy_challenge_times:439）；默认 off=不花钻，只有显式 buy_times=true + 预算才买。
+            arenaBuyTimes(tc, m, day, ap, now, inWindow);
+            day.save(tc);
 
             // 1. 挑战：结算窗内不新开挑战（网页版 23:10 后只做领奖，DailyArenaService.java:390-400）
             if (!onFight) {
@@ -779,6 +989,12 @@ public final class ServerTownTasks {
                 m.subSkip("fight", "结算窗不新开");
             } else {
                 int budget = arenaFightBudget(day.knownCompleted(), day.fightsSent, maxFights);
+                // 买来的次数可以继续打（网页版打到 totalRemaining=0，不只看每日奖励目标 5 场）
+                if (day.boughtTimes > 0) {
+                    int cap = arenaDailyFightCap(day.boughtTimes);
+                    int used = Math.max(day.fightsSent, Math.max(0, day.knownCompleted()));
+                    budget = Math.min(maxFights, Math.max(budget, cap - used));
+                }
                 if (budget <= 0) {
                     int completed = day.knownCompleted();
                     String why = completed >= ARENA_DAILY_REWARD_CHALLENGES
@@ -842,7 +1058,7 @@ public final class ServerTownTasks {
         StringBuilder failCodes = new StringBuilder();
         for (Map<String, Object> o : list) {
             if (fights >= budget || heroes.isEmpty()
-                    || day.fightsSent >= ARENA_DAILY_REWARD_CHALLENGES) break;
+                    || day.fightsSent >= arenaDailyFightCap(day.boughtTimes)) break;
             long oid = Exec.longOf(o.get("uid"));
             if (oid <= 0) oid = Exec.longOf(o.get("id"));
             if (oid <= 0) continue;
@@ -959,6 +1175,256 @@ public final class ServerTownTasks {
             m.skip("每日奖励领取未完成(码" + dc + ")，5分钟后重试");
             m.subSkip("daily", "码" + dc);
         }
+    }
+
+    // ---------- A2 竞技场买次数（默认关，显式预算，余额未知不买） ----------
+    //
+    // 网页版：00:00-20:00 预购（DailyArenaService.PRE_PURCHASE_WINDOW_START/END:78-79，
+    // prePurchase:421-467）→ req_arena_buy_challenge_times{buy_times:remaining}:439；
+    // 非定时模式次数用完再买 1（:538-562）。我方默认关（零花钻），只有显式参数
+    // arena.buy_times=true 且 max_buy_times/max_diamond>0 才买；钻石余额未知不买；
+    // 单价未知时最多探 1 次并把当日预算视为耗尽（防无预算买钻）。
+
+    static final int ARENA_BUY_WINDOW_END_MINUTE = 20 * 60;   // 网页版 PRE_PURCHASE_WINDOW_END=20:00
+    static final long ARENA_DIAMOND_RESOURCE_ID = 101L;
+    static final String ARENA_DIAMOND_LEDGER_PREFIX = "srv:arena:diamond:";
+    static final String ARENA_BUY_SUB_ID = "buy_times";
+
+    /** 买次数窗口：北京时间 00:00-20:00（网页版 PRE_PURCHASE_WINDOW_START/END）。 */
+    static boolean arenaBuyWindowOpen(long epochMillis) {
+        Calendar c = Calendar.getInstance(Beijing.TZ);
+        c.setTimeInMillis(epochMillis);
+        return c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE) < ARENA_BUY_WINDOW_END_MINUTE;
+    }
+
+    /** 当日总挑战上限 = 每日奖励目标 5 + 已购买次数（网页版打到 totalRemaining=0）。 */
+    static int arenaDailyFightCap(int boughtTimes) {
+        return ARENA_DAILY_REWARD_CHALLENGES + Math.max(0, boughtTimes);
+    }
+
+    /**
+     * 买次数预算门控（纯函数；返回本轮请求次数，0=不买）：
+     * <ul>
+     *   <li>默认关 / 未显式给 max_buy_times、max_diamond → 0；</li>
+     *   <li>钻石余额未知（null/负数）→ 0（“余额未知不买”）；</li>
+     *   <li>今日已买次数达上限 / 钻石预算已耗尽 → 0；</li>
+     *   <li>单价已知 → 按预算与余额封顶；单价未知 → 最多探 1 次。</li>
+     * </ul>
+     */
+    static int arenaBuyCount(boolean enabled, int maxBuyTimes, long maxDiamond,
+                             int boughtTimes, Long diamondBalance, long spentDiamonds, long price) {
+        if (!enabled || maxBuyTimes <= 0 || maxDiamond <= 0L) return 0;
+        int remainCount = maxBuyTimes - Math.max(0, boughtTimes);
+        if (remainCount <= 0) return 0;
+        long remainBudget = maxDiamond - Math.max(0L, spentDiamonds);
+        if (remainBudget <= 0L) return 0;
+        if (diamondBalance == null || diamondBalance < 0L) return 0;
+        int count;
+        if (price > 0L) {
+            count = (int) Math.min((long) remainCount, remainBudget / price);
+            count = (int) Math.min((long) count, diamondBalance / price);
+        } else {
+            count = Math.min(remainCount, 1);
+        }
+        return Math.max(0, count);
+    }
+
+    /** 买次数响应里的单次价格（防御式）：cost/diamond_cost/price/consume/diamond，或 {cost:{diamond:n}}。 */
+    static long arenaBuyCostOf(Map<String, Object> content) {
+        if (content == null) return 0L;
+        for (String k : new String[]{"cost", "diamond_cost", "price", "consume", "diamond"}) {
+            Object v = content.get(k);
+            if (v instanceof Map) {
+                Map<String, Object> m = Exec.mapOf(v);
+                if (m == null) continue;
+                long n = Exec.longOf(m.get("diamond"));
+                if (n <= 0L) n = Exec.longOf(m.get("count"));
+                if (n > 0L) return n;
+            } else if (v != null && !(v instanceof Map)) {
+                long n = Exec.longOf(v);
+                if (n > 0L) return n;
+            }
+        }
+        return 0L;
+    }
+
+    /** 资源推送里的钻石数（id=101）：兼容 list / map / notifyData 解包后的 "101.0" 键形状。 */
+    static Long arenaDiamondOf(Map<String, Object> content) {
+        if (content == null) return null;
+        Long direct = arenaDiamondIn(content.get("data"));
+        if (direct != null) return direct;
+        return arenaDiamondIn(content);
+    }
+
+    private static Long arenaDiamondIn(Object raw) {
+        if (raw instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) raw;
+            if (arenaResourceId(map.get("id")) == ARENA_DIAMOND_RESOURCE_ID) {
+                Object count = map.get("count");
+                if (count != null) return Exec.longOf(count);
+            }
+            for (Map.Entry<?, ?> e : map.entrySet()) {
+                if (arenaResourceId(e.getKey()) != ARENA_DIAMOND_RESOURCE_ID) continue;
+                if (e.getValue() instanceof Map) {
+                    Map<String, Object> item = Exec.mapOf(e.getValue());
+                    Object count = item == null ? null : item.get("count");
+                    if (count != null) return Exec.longOf(count);
+                } else if (e.getValue() instanceof Number) {
+                    return ((Number) e.getValue()).longValue();
+                }
+            }
+            return null;
+        }
+        for (Map<String, Object> item : Exec.mapsOf(raw)) {
+            if (arenaResourceId(item.get("id")) != ARENA_DIAMOND_RESOURCE_ID) continue;
+            Object count = item.get("count");
+            if (count != null) return Exec.longOf(count);
+        }
+        return null;
+    }
+
+    private static long arenaResourceId(Object v) {
+        if (v instanceof Number) return ((Number) v).longValue();
+        if (v == null) return 0L;
+        try {
+            return (long) Double.parseDouble(String.valueOf(v).trim());
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    static boolean arenaResourceDeltaDelete(Map<String, Object> content) {
+        return content != null && "del".equals(String.valueOf(content.get("type")));
+    }
+
+    static String arenaDiamondKey(TaskContext tc) {
+        return ARENA_DIAMOND_LEDGER_PREFIX + tc.fpid + ":" + tc.sid;
+    }
+
+    /**
+     * 钻石余额（跨轮台账，形状同网页版 DailyArenaState:305-324）：
+     * notify_resource_init 提供一次绝对值；notify_resource_update 按 type(add/del) 应用增量，
+     * 用内容哈希去重避免同一推送被重复累加。返回 null=未知（此时不买）。
+     */
+    static Long arenaDiamondBalance(TaskContext tc) {
+        try {
+            JSONObject st;
+            String raw = tc.store.getString(arenaDiamondKey(tc));
+            st = raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+            long balance = st.optLong("balance", -1L);
+            boolean abs = st.optBoolean("abs", false);
+            Long init = arenaDiamondOf(tc.engine.notifyData("notify_resource_init"));
+            if (init != null && !abs) {
+                balance = init;
+                abs = true;
+            }
+            Map<String, Object> update = tc.engine.notifyContent("notify_resource_update");
+            if (update != null) {
+                Long delta = arenaDiamondOf(update);
+                if (delta != null) {
+                    String hash = String.valueOf(update.get("type")) + "|"
+                            + String.valueOf(update.get("data")) + "|" + delta;
+                    if (!hash.equals(st.optString("hash", ""))) {
+                        if (balance >= 0L) {
+                            balance = arenaResourceDeltaDelete(update)
+                                    ? Math.max(0L, balance - delta) : balance + delta;
+                        }
+                        st.put("hash", hash);
+                    }
+                }
+            }
+            if (balance >= 0L) st.put("balance", balance);
+            st.put("abs", abs);
+            tc.store.putString(arenaDiamondKey(tc), st.toString());
+            return balance >= 0L ? balance : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * A2 执行：默认关；显式 buy_times=true + max_buy_times/max_diamond 才请求
+     * {@code req_arena_buy_challenge_times{buy_times:n}}；成功累计当日台账，
+     * 单价未知时只探 1 次并把预算视为耗尽（零默认花钻）。
+     */
+    private static void arenaBuyTimes(TaskContext tc, Exec.Multi m, ArenaDay day, JSONObject ap,
+                                      long nowMillis, boolean settlementWindow) throws Exception {
+        boolean enabled = ap != null && ap.optBoolean("buy_times", false);
+        if (!enabled) {
+            m.subSkip(ARENA_BUY_SUB_ID, "买次数默认关");
+            return;
+        }
+        if (settlementWindow) {
+            m.subSkip(ARENA_BUY_SUB_ID, "结算窗不买");
+            return;
+        }
+        if (!arenaBuyWindowOpen(nowMillis)) {
+            m.subSkip(ARENA_BUY_SUB_ID, "买次数窗口00:00-20:00外");
+            return;
+        }
+        int maxBuyTimes = ap.optInt("max_buy_times", 0);
+        long maxDiamond = ap.optLong("max_diamond", 0L);
+        long explicitPrice = Math.max(0L, ap.optLong("buy_cost", 0L));
+        long price = explicitPrice > 0L ? explicitPrice : day.buyPrice;
+        Long balance = arenaDiamondBalance(tc);
+        int count = arenaBuyCount(true, maxBuyTimes, maxDiamond, day.boughtTimes,
+                balance, day.diamondSpent, price);
+        if (count <= 0) {
+            String why;
+            if (maxBuyTimes <= 0 || maxDiamond <= 0L) {
+                why = "缺显式 max_buy_times/max_diamond 预算，不买";
+            } else if (balance == null) {
+                why = "钻石余额未知，不买";
+            } else if (day.boughtTimes >= maxBuyTimes) {
+                why = "今日买次数已达上限";
+            } else if (day.diamondSpent >= maxDiamond) {
+                why = "钻石预算已耗尽";
+            } else {
+                why = "余额不足/暂不满足购买条件";
+            }
+            tc.saveModText("arena", ARENA_BUY_SUB_ID, why);
+            m.subSkip(ARENA_BUY_SUB_ID, why);
+            return;
+        }
+        GameMessage rsp = tc.engine.request("req_arena_buy_challenge_times",
+                Exec.args("buy_times", (long) count));
+        int code = Exec.codeOf(rsp);
+        if (!Exec.ok(rsp)) {
+            String why;
+            if (code == 2902 || code == 2924) {
+                why = "服务端暂不允许买次数(码" + code + ")";
+            } else {
+                why = "买次数码" + code;
+            }
+            tc.saveModText("arena", ARENA_BUY_SUB_ID, why);
+            m.subSkip(ARENA_BUY_SUB_ID, why);
+            return;
+        }
+        day.boughtTimes += count;
+        day.mergeBase(arenaBaseOf(rsp.getContent()), nowMillis);
+        long cost = arenaBuyCostOf(rsp.getContent());
+        if (cost <= 0L) {
+            Long after = arenaDiamondBalance(tc);
+            if (balance != null && after != null && balance > after) {
+                cost = Math.max(1L, (balance - after) / Math.max(1, count));
+            }
+        }
+        if (cost <= 0L) cost = explicitPrice;
+        if (cost > 0L) {
+            day.buyPrice = cost;
+            day.diamondSpent += cost * count;
+            tc.saveModText("arena", ARENA_BUY_SUB_ID,
+                    "今日买次数 " + day.boughtTimes + "/" + maxBuyTimes
+                            + " · 约 " + (cost * count) + " 钻");
+        } else {
+            // 价格未确认：今日预算视为耗尽，避免无预算继续买钻（宁可少买，不可超支）
+            day.buyPrice = 0L;
+            day.diamondSpent = maxDiamond;
+            tc.saveModText("arena", ARENA_BUY_SUB_ID,
+                    "买次数×" + count + " · 价格未确认，今日停止继续买");
+        }
+        m.claimed("竞技场买次数×" + count);
+        m.subOk(ARENA_BUY_SUB_ID, "买次数×" + count);
     }
 
     // ---------- 竞技场纯函数/当日台账（A1，单测见 IntelArenaFixTest） ----------
@@ -1114,6 +1580,10 @@ public final class ServerTownTasks {
         boolean rewardClaimed;
         long lastRewardAttemptAt;
         int rewardRetries;
+        /** A2 买次数：今日已买次数/已花钻石/单次价格（0=价格未确认，当天停止继续买）。 */
+        int boughtTimes;
+        long diamondSpent;
+        long buyPrice;
 
         static ArenaDay load(TaskContext tc, long nowMillis) {
             String today = arenaBeijingDay(nowMillis);
@@ -1137,6 +1607,9 @@ public final class ServerTownTasks {
                         d.rewardClaimed = o.optBoolean("reward_claimed", false);
                         d.lastRewardAttemptAt = o.optLong("reward_last_attempt", 0L);
                         d.rewardRetries = o.optInt("reward_retries", 0);
+                        d.boughtTimes = o.optInt("bought_times", 0);
+                        d.diamondSpent = o.optLong("diamond_spent", 0L);
+                        d.buyPrice = o.optLong("buy_price", 0L);
                         return d;
                     }
                 }
@@ -1164,6 +1637,9 @@ public final class ServerTownTasks {
                 o.put("reward_claimed", rewardClaimed);
                 o.put("reward_last_attempt", lastRewardAttemptAt);
                 o.put("reward_retries", rewardRetries);
+                o.put("bought_times", boughtTimes);
+                o.put("diamond_spent", diamondSpent);
+                o.put("buy_price", buyPrice);
                 tc.store.putString(ARENA_DAY_KEY_PREFIX + tc.fpid + ":" + tc.sid, o.toString());
             } catch (Throwable ignored) {
             }
@@ -1176,6 +1652,8 @@ public final class ServerTownTasks {
             freeUsed = base.freeUsed;
             buyTimes = base.buyTimes;
             leftTimes = base.leftTimes;
+            // 服务端 buy_times 是当日累计购买次数：重连/台账丢失后用它兜底，避免重复买钻
+            boughtTimes = Math.max(boughtTimes, base.buyTimes);
             if (base.lastResetTs > 0L) lastResetTs = base.lastResetTs;
             baseKnown = true;
             if (base.dailyRewardClaimed) {

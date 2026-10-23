@@ -26,7 +26,7 @@ public class TaskCadenceTest {
         assertEquals(3600L, TaskCadence.intervalSeconds("adventure"));      // adventure-rewards 3600
         assertEquals(180L, TaskCadence.intervalSeconds("activity_rewards"));// activity-rewards 180
         assertEquals(120L, TaskCadence.intervalSeconds("alliance_chest"));  // alliance-chests 120
-        assertEquals(30L, TaskCadence.intervalSeconds("alliance_donate"));  // alliance-donation 30
+        assertEquals(60L, TaskCadence.intervalSeconds("alliance_donate"));  // 网页 30s → 60s 下限
         assertEquals(300L, TaskCadence.intervalSeconds("login_rewards"));   // login-rewards 300
         assertEquals(60L, TaskCadence.intervalSeconds("shop"));             // shops 60
         assertEquals(300L, TaskCadence.intervalSeconds("fire_crystal"));    // fire-crystal-refine 300

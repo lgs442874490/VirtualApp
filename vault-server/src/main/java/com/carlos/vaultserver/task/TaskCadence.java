@@ -23,8 +23,15 @@ import java.util.Set;
  */
 public final class TaskCadence {
 
-    /** 执行间隔安全下限（秒）：网页版 2-10 秒级任务抬到 15 秒。 */
-    public static final long MIN_INTERVAL_SECONDS = 15L;
+    /**
+     * 执行间隔安全下限（秒）。
+     *
+     * <p>网页版 TaskEngine 的 status/decide 是内存态评估（不发协议），因此 2-15 秒间隔合理；
+     * 我方任务每次都要发协议请求，生产实测 15s 下限会让节奏调度一直跑在最小提交间隔上
+     * （约 19 轮/分钟，请求量不可控）。2026-10-23 生产观察后统一抬到 60 秒：
+     * 事件响应由 TaskWakeRouter 推送唤醒兜底（宝箱/情报/行军/活动等），不依赖高频轮询。
+     */
+    public static final long MIN_INTERVAL_SECONDS = 60L;
 
     /** 未收录任务（不应出现）的兜底间隔：5 分钟。 */
     public static final long FALLBACK_INTERVAL_SECONDS = 300L;
