@@ -24,6 +24,9 @@ final class AssetState {
     // ---------- META ----------
     long uid;
     long kid;
+    /** 城市坐标（notify_world_player_init 的 city_point{x,y}）；未知/未到帧为 0。 */
+    long cityX;
+    long cityY;
     long fid;
     String nickName = "";
     long level;
@@ -217,8 +220,9 @@ final class AssetState {
 
     AssetSnapshot build(long version, boolean ready, java.util.Set<String> missingProtocols) {
         long nowMs = System.currentTimeMillis();
-        AssetSnapshot.Meta meta = new AssetSnapshot.Meta(uid, kid, fid, nickName, level, stoveLv,
-                power, registerTime, allianceId, allianceName, allianceAbbr, metaAtMs);
+        AssetSnapshot.Meta meta = new AssetSnapshot.Meta(uid, kid, cityX, cityY, fid, nickName,
+                level, stoveLv, power, registerTime, allianceId, allianceName, allianceAbbr,
+                metaAtMs);
         int day = kingdomDay();
         AssetSnapshot.Clock clock = new AssetSnapshot.Clock(serverTimeSec, serverTimeRecvAtMs,
                 projectStartTs, openTime, utcOffsetSec, zeroTime, day,
