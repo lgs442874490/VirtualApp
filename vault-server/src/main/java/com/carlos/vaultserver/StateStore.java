@@ -89,6 +89,35 @@ public final class StateStore {
         }
     }
 
+    /**
+     * 删除单个键（批次6：日报 30 天清理用）。键不存在时静默返回；线程安全、有删除才标脏。
+     */
+    public void remove(String key) {
+        if (key == null) return;
+        synchronized (lock) {
+            if (states.remove(key) != null) {
+                dirtyAt = System.currentTimeMillis();
+            }
+        }
+    }
+
+    /**
+     * 删除前缀匹配的全部键（如 {@code srv:digest:}），返回删除条数；线程安全、有删除才标脏。
+     * 空/null 前缀直接返回 0（防止误删全表）。
+     */
+    public int removePrefix(String prefix) {
+        if (prefix == null || prefix.isEmpty()) return 0;
+        synchronized (lock) {
+            int before = states.size();
+            states.keySet().removeIf(k -> k != null && k.startsWith(prefix));
+            int removed = before - states.size();
+            if (removed > 0) {
+                dirtyAt = System.currentTimeMillis();
+            }
+            return removed;
+        }
+    }
+
     /** 落盘（由 SessionKeeper 周期调用；无变更跳过）。 */
     public void flush() {
         synchronized (lock) {

@@ -22,7 +22,10 @@ import java.util.Set;
 import java.util.function.IntSupplier;
 
 /**
- * 每日自动化日报（批次5 2026-10-23）：每天北京时间定点（默认 09:00）汇总近 24h 自动化结果，
+ * 每日自动化日报（批次5 2026-10-23，批次6 2026-10-23 增强）：
+ * 每天北京时间定点（默认 09:00）汇总<b>昨日自然日 00:00-24:00（北京时间）</b>的自动化结果
+ * （批次6 由滚动 24h 改为自然日，便于“日报=昨天一天”的运营口径；跨零点边界见
+ * {@link #naturalDayWindow(long)}），并清理 30 天前的 {@code srv:digest:*} 键；
  * 推送企业微信机器人（复用 {@link WeComNotifier} + {@code vault.json} 的 {@code watch} 配置）；
  * 无可用 webhook 时只写日志 + {@link StateStore} 键 {@code srv:digest:{yyyy-MM-dd}}（App/运维可查）。
  *
@@ -60,8 +63,13 @@ public final class DailyDigest {
     /** 时刻覆盖环境变量：{@code HH:mm}。 */
     public static final String ENV_TIME = "VAULT_DIGEST_TIME";
 
-    /** 汇总窗口：近 24h。 */
+    /** 汇总窗口：近 24h（批次5 滚动窗口；批次6 起日报实际使用 {@link #naturalDayWindow(long)}，
+     *  本常量保留给 {@link #collect(StateStore, long, long, int)} 兼容/单测）。 */
     static final long WINDOW_MILLIS = 24L * 3600_000L;
+    /** 日报 state 键保留天数（批次6：每天 +1~1.5KB，保留最近 30 份=含今天 30 个自然日）。 */
+    static final long KEEP_DIGEST_DAYS = 30L;
+    /** 在线数首次采样为 0 时的重采等待（生产首推与登录同秒竞争）；仅 daemon loop 路径真实等待。 */
+    static final long ONLINE_RETRY_MILLIS = 30_000L;
     /** 启动补发窗口：当天触发点已过 ≤12h 且当日未生成 → 立即补一次（服务重启不丢当日日报）。 */
     static final long CATCHUP_MILLIS = 12L * 3600_000L;
     /** 每个角色展示的奖励摘要条数。 */
@@ -84,6 +92,8 @@ public final class DailyDigest {
     private final WeComNotifier notifier;
     /** 当前在线账号数（Main 注入 keeper::status 统计；null = 未知，文案显示 -1）。 */
     private final IntSupplier onlineAccounts;
+    /** 最近一次在线数采样时刻（epoch millis；0=未采样；批次6 用于 0 值文案标注）。 */
+    private volatile long lastOnlineSampledAtMillis;
     private volatile boolean stopped;
     private volatile Thread thread;
 
@@ -152,6 +162,26 @@ public final class DailyDigest {
     /** 北京时间日期键 {@code yyyy-MM-dd}。 */
     public static String dayKey(long nowMillis) {
         return Beijing.fmt("yyyy-MM-dd").format(new Date(nowMillis));
+    }
+
+    /** 北京时间当日 00:00:00.000（epoch millis）。纯函数（注入 now 可测）。 */
+    static long dayStartMillis(long nowMillis) {
+        Calendar c = Calendar.getInstance(Beijing.TZ);
+        c.setTimeInMillis(nowMillis);
+        c.set(Calendar.HOUR_OF_DAY, 0);
+        c.set(Calendar.MINUTE, 0);
+        c.set(Calendar.SECOND, 0);
+        c.set(Calendar.MILLISECOND, 0);
+        return c.getTimeInMillis();
+    }
+
+    /**
+     * 自然日统计窗口（批次6）：返回 {@code [昨日 00:00, 今日 00:00)}（北京时间，epoch millis）。
+     * 09:00 触发时即“昨日 00:00-24:00”；GMT+8 无夏令时，跨日 -24h 安全。纯函数可测跨零点。
+     */
+    static long[] naturalDayWindow(long nowMillis) {
+        long todayStart = dayStartMillis(nowMillis);
+        return new long[]{todayStart - 24L * 3600_000L, todayStart};
     }
 
     /** 北京时间当天 HH:mm 的时刻（epoch millis；可能早于 now）。 */
@@ -230,8 +260,13 @@ public final class DailyDigest {
     public static final class DigestData {
         public long nowMillis;
         public String day = "";
+        /** 自然日统计窗口 [start,end)（epoch millis；0=未标注，兼容批次5 直接构造的调用方）。 */
+        public long windowStartMillis;
+        public long windowEndMillis;
         /** 在线账号数（-1 = 未知/未注入）。 */
         public int onlineAccounts = -1;
+        /** 在线数采样时刻（epoch millis；0=未采样；为 0 时文案标注“采样时点”）。 */
+        public long onlineSampledAtMillis;
         /** 有任务日志的账号-角色数。 */
         public int roleCount;
         public int totalRuns;
@@ -256,17 +291,37 @@ public final class DailyDigest {
     }
 
     /**
-     * 聚合近 {@code windowMillis} 的 StateStore 状态（纯读）。
+     * 聚合近 {@code windowMillis} 的 StateStore 状态（批次5 滚动窗口口径，纯读；保留兼容/单测）。
      *
      * @param onlineAccounts 在线账号数（-1/负数 = 未知）
      */
     public static DigestData collect(StateStore store, long nowMillis, long windowMillis,
                                      int onlineAccounts) {
+        long from = nowMillis - Math.max(0L, windowMillis);
+        return collectBetween(store, from, nowMillis + 1L, nowMillis, onlineAccounts);
+    }
+
+    /**
+     * 聚合“昨日自然日 00:00-24:00（北京时间）”（批次6 日报口径，纯读）。
+     * 窗口右开区间：{@code [昨日00:00, 今日00:00)}，不含今天 00:00 之后的日志。
+     */
+    public static DigestData collectNaturalDay(StateStore store, long nowMillis, int onlineAccounts) {
+        long[] win = naturalDayWindow(nowMillis);
+        return collectBetween(store, win[0], win[1], nowMillis, onlineAccounts);
+    }
+
+    /**
+     * 聚合 {@code [fromMillis, toMillis)} 窗口的 StateStore 状态（纯读；所有窗口口径的唯一实现）。
+     */
+    static DigestData collectBetween(StateStore store, long fromMillis, long toMillis,
+                                     long nowMillis, int onlineAccounts) {
         DigestData d = new DigestData();
         d.nowMillis = nowMillis;
         d.day = dayKey(nowMillis);
+        d.windowStartMillis = fromMillis;
+        d.windowEndMillis = toMillis;
         d.onlineAccounts = onlineAccounts;
-        long from = nowMillis - Math.max(0L, windowMillis);
+        long from = fromMillis;
         Map<String, RoleDigest> roles = new LinkedHashMap<>();
         if (store != null) {
             Map<String, Object> snap = store.snapshot();
@@ -274,7 +329,7 @@ public final class DailyDigest {
                 String key = e.getKey();
                 if (key == null) continue;
                 if (key.startsWith(LOG_PREFIX)) {
-                    collectLogEntries(d, roles, key, e.getValue(), from, nowMillis);
+                    collectLogEntries(d, roles, key, e.getValue(), from, toMillis);
                 } else if (key.startsWith(CADENCE_PREFIX)) {
                     d.cadenceKeys++;
                 } else if (key.startsWith(LASTRUN_PREFIX)) {
@@ -301,7 +356,7 @@ public final class DailyDigest {
 
     /** 解析一条 {@code log:{fpid}:{sid}:{fn}}（fn 可含子项冒号）并聚合（仅窗口内 ts）。 */
     private static void collectLogEntries(DigestData d, Map<String, RoleDigest> roles, String key,
-                                          Object raw, long from, long nowMillis) {
+                                          Object raw, long from, long toExclusive) {
         String[] parts = key.split(":", 4);
         if (parts.length < 4) return;
         String fpid = parts[1];
@@ -315,7 +370,7 @@ public final class DailyDigest {
             JSONObject o = arr.optJSONObject(i);
             if (o == null) continue;
             long ts = o.optLong("ts", 0L);
-            if (ts < from || ts > nowMillis) continue;   // 只看近 24h（历史保留 50 条/任务）
+            if (ts < from || ts >= toExclusive) continue;   // 只看统计窗口（右开区间；历史保留 50 条/任务）
             String cat = o.optString("cat", "");
             String reason = trimTo(o.optString("reason", ""), MAX_ITEM_CHARS);
             String detail = trimTo(o.optString("detail", ""), MAX_ITEM_CHARS);
@@ -409,8 +464,20 @@ public final class DailyDigest {
         sb.append("【自动化日报】").append(d.day);
         sb.append(String.format(Locale.ROOT, " %s\n", Beijing.fmt("HH:mm")
                 .format(new Date(d.nowMillis))));
-        sb.append("在线账号 ").append(d.onlineAccounts < 0 ? "?" : String.valueOf(d.onlineAccounts))
-                .append(" · 角色 ").append(d.roleCount)
+        if (d.windowStartMillis > 0L && d.windowEndMillis > d.windowStartMillis) {
+            // 批次6：明示统计区间（自然日 → 昨日 00:00-24:00），避免读者误以为是滚动 24h
+            sb.append("统计窗口 ").append(Beijing.fmt("MM-dd HH:mm").format(new Date(d.windowStartMillis)))
+                    .append(" — ")
+                    .append(Beijing.fmt("MM-dd HH:mm").format(new Date(d.windowEndMillis)))
+                    .append("（北京时间）\n");
+        }
+        sb.append("在线账号 ").append(d.onlineAccounts < 0 ? "?" : String.valueOf(d.onlineAccounts));
+        if (d.onlineAccounts == 0 && d.onlineSampledAtMillis > 0L) {
+            // 批次6：0 在线多为“日报与登录同秒竞争”，标注采样时点，便于运营判断
+            sb.append("（采样 ").append(Beijing.fmt("HH:mm")
+                    .format(new Date(d.onlineSampledAtMillis))).append("，可能仍在登录）");
+        }
+        sb.append(" · 角色 ").append(d.roleCount)
                 .append(" · 任务 ").append(d.totalRuns)
                 .append(" · 领取 ").append(d.totalClaimed)
                 .append(" · 跳过 ").append(d.totalSkipped)
@@ -425,7 +492,7 @@ public final class DailyDigest {
         }
         sb.append('\n');
         if (d.roles.isEmpty()) {
-            sb.append("近 24h 无任务日志\n");
+            sb.append("统计窗口内无任务日志\n");
         }
         int lines = 0;
         for (RoleDigest r : d.roles) {
@@ -461,12 +528,56 @@ public final class DailyDigest {
     // 执行（幂等；单测注入 nowMillis）
     // =======================================================================
 
+    /** 在线数等待器：生产传 {@code Thread::sleep}（0 值重采前等 30s）；单测可注入 fake。 */
+    interface Waiter {
+        void await(long millis) throws InterruptedException;
+    }
+
+    /** 生产等待器（daemon 线程内 30s 重采）。 */
+    static final Waiter THREAD_WAITER = Thread::sleep;
+
     /**
-     * 生成一次日报（幂等：当日 state 键已存在直接跳过）。
+     * 采样在线账号数（批次6 竞态修复）：首次为 0 且提供 waiter 时等待
+     * {@link #ONLINE_RETRY_MILLIS} 后重采一次（生产首推“在线=0 角色=2”是与登录同秒竞争）。
+     * waiter=null（公开 runOnce/单测路径）不等待，只采一次。
+     */
+    int sampleOnlineAccounts(Waiter waiter) {
+        long sampledAt = System.currentTimeMillis();
+        if (onlineAccounts == null) {
+            lastOnlineSampledAtMillis = sampledAt;
+            return -1;
+        }
+        int n = onlineAccounts.getAsInt();
+        if (n == 0 && waiter != null) {
+            try {
+                waiter.await(ONLINE_RETRY_MILLIS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+            sampledAt = System.currentTimeMillis();
+            n = onlineAccounts.getAsInt();
+            FileLog.info("自动化日报首次采样在线账号=0，等待 {}s 重采后={}",
+                    String.valueOf(ONLINE_RETRY_MILLIS / 1000L), String.valueOf(n));
+        }
+        lastOnlineSampledAtMillis = sampledAt;
+        return n;
+    }
+
+    /**
+     * 生成一次日报（幂等：当日 state 键已存在直接跳过）。公开入口不等待在线数重采（单测/手动触发快速返回）。
      *
      * @return true = 已尝试推送且企微确认送达；false = 跳过/仅落 state（无 webhook 或推送失败）
      */
     public boolean runOnce(long nowMillis) {
+        return runOnce(nowMillis, null);
+    }
+
+    /**
+     * 生成一次日报（批次6：自然日窗口 + 在线数 0 值等待重采 + 30 天 digest 历史清理）。
+     *
+     * @param waiter 在线数 0 时的等待器（daemon loop 传 {@link #THREAD_WAITER}；null=不等待）
+     */
+    boolean runOnce(long nowMillis, Waiter waiter) {
         if (!enabled()) return false;
         if (stateStore == null) {   // 无状态仓：无法幂等/落盘，直接放弃（不影响主流程）
             FileLog.warn("自动化日报缺少 StateStore，跳过本次生成");
@@ -476,18 +587,52 @@ public final class DailyDigest {
             FileLog.info("自动化日报 {} 今日已生成过，跳过（幂等）", dayKey(nowMillis));
             return false;
         }
-        int online = onlineAccounts == null ? -1 : onlineAccounts.getAsInt();
-        DigestData data = collect(stateStore, nowMillis, WINDOW_MILLIS, online);
+        int online = sampleOnlineAccounts(waiter);
+        // 批次6：统计「昨日 00:00-24:00（北京时间）」自然日窗口
+        DigestData data = collectNaturalDay(stateStore, nowMillis, online);
+        data.onlineSampledAtMillis = lastOnlineSampledAtMillis > 0L
+                ? lastOnlineSampledAtMillis : nowMillis;
         String text = format(data);
         boolean sent = trySend(text);
         stateStore.putString(STATE_PREFIX + data.day, text);   // 幂等标记 + App/运维可查
-        FileLog.info("自动化日报{} day={} 在线账号={} 角色={} 任务={} 领取={} 跳过={} 异常={} 节奏键={}",
+        int purged = purgeOldDigests(stateStore, nowMillis);
+        FileLog.info("自动化日报{} day={} 在线账号={} 角色={} 任务={} 领取={} 跳过={} 异常={} 节奏键={} 清理={}",
                 sent ? "已推送企微；" : "仅落日志/state（无可用 webhook）；",
                 data.day, String.valueOf(data.onlineAccounts), String.valueOf(data.roleCount),
                 String.valueOf(data.totalRuns), String.valueOf(data.totalClaimed),
                 String.valueOf(data.totalSkipped), String.valueOf(data.totalFailed),
-                String.valueOf(data.cadenceKeys));
+                String.valueOf(data.cadenceKeys), String.valueOf(purged));
         return sent;
+    }
+
+    // =======================================================================
+    // 批次6：digest 历史清理（每天 +1~1.5KB 且此前无清理）
+    // =======================================================================
+
+    /** 需清理的 {@code srv:digest:yyyy-MM-dd} 键：早于“含今天共 30 个自然日”的窗口。纯函数可测。 */
+    static List<String> expiredDigestKeys(java.util.Collection<String> keys, long nowMillis) {
+        List<String> out = new ArrayList<>();
+        if (keys == null || keys.isEmpty()) return out;
+        String cutoff = dayKey(dayStartMillis(nowMillis)
+                - (KEEP_DIGEST_DAYS - 1L) * 24L * 3600_000L);
+        for (String key : keys) {
+            if (key == null || !key.startsWith(STATE_PREFIX)) continue;
+            String date = key.substring(STATE_PREFIX.length());
+            if (!date.matches("\\d{4}-\\d{2}-\\d{2}")) continue;   // 只清规范日期键，非法键不误删
+            if (date.compareTo(cutoff) < 0) out.add(key);
+        }
+        return out;
+    }
+
+    /** 清理 30 天前的 digest 键（保留最近 30 份）；返回删除条数。 */
+    static int purgeOldDigests(StateStore store, long nowMillis) {
+        if (store == null) return 0;
+        List<String> expired = expiredDigestKeys(store.snapshot().keySet(), nowMillis);
+        for (String key : expired) store.remove(key);
+        if (!expired.isEmpty()) {
+            FileLog.info("自动化日报历史清理：删除 {} 个 30 天前 srv:digest 键", String.valueOf(expired.size()));
+        }
+        return expired.size();
     }
 
     /** 企微推送（复用 watch 配置；无 webhook/未启用/异常 → false，绝不抛出）。 */
@@ -538,7 +683,7 @@ public final class DailyDigest {
         try {
             long now = System.currentTimeMillis();
             if (catchUpDue(now, hhmm) && shouldSend(stateStore, now)) {
-                safeRunOnce(now);
+                safeRunOnce(now, THREAD_WAITER);
             }
             while (!stopped) {
                 long at = nextDigestAt(System.currentTimeMillis(), hhmm);
@@ -546,16 +691,16 @@ public final class DailyDigest {
                 Thread.sleep(Math.max(500L, Math.min(wait, 60_000L)));   // 分段 sleep，stop 可及时退出
                 if (stopped) return;
                 if (System.currentTimeMillis() < at) continue;
-                safeRunOnce(System.currentTimeMillis());
+                safeRunOnce(System.currentTimeMillis(), THREAD_WAITER);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
         }
     }
 
-    private void safeRunOnce(long nowMillis) {
+    private void safeRunOnce(long nowMillis, Waiter waiter) {
         try {
-            runOnce(nowMillis);
+            runOnce(nowMillis, waiter);
         } catch (Throwable t) {
             FileLog.warn("自动化日报生成失败（忽略，不影响任务/会话）：{}",
                     t.getMessage() == null ? String.valueOf(t) : t.getMessage());

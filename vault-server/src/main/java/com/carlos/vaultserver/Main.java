@@ -65,8 +65,17 @@ public final class Main {
                         });
         digest.start();
 
+        // 自动化健康告警（批次6）：每 5 分钟只读 StateStore 评估 会话离线/节奏停滞/零领取/错误率/
+        // 节奏键缺失，命中推企微（同类 6 小时节流）；无 webhook 只落日志；回滚 VAULT_ALERTS=off。
+        // 0 游戏协议，只读 log:/srv:cad: 与账号 keep/auto、会话在线态。
+        com.carlos.vaultserver.task.HealthMonitor health =
+                new com.carlos.vaultserver.task.HealthMonitor(store, stateStore, new WeComNotifier(),
+                        keeper::status);
+        health.start();
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             FileLog.info("vault-server 停止");
+            health.stop();
             digest.stop();
             api.stop();
             cadence.stop();

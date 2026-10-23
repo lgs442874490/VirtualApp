@@ -1755,36 +1755,399 @@ public final class ServerShopLeagueTasks {
         return "争霸赛未开启(码" + code + ")";
     }
 
+    // ---- L4 尾项：完整编队 / 赛季状态 / 战报只读（批次6） ----
+
+    /** 单队出征容量上限（与 Exec.formationWithHeroes 同口径，防服务端 code=2）。 */
+    static final long SHOWDOWN_SOLDIER_CAP = 50_000L;
+    /** 默认出征比例 5:2:3（盾:矛:弓 = 50%:20%:30%，网页版 DailyAllianceShowdownConfig 默认值）。 */
+    static final int SHOWDOWN_INFANTRY_RATIO = 5;
+    static final int SHOWDOWN_LANCER_RATIO = 2;
+    static final int SHOWDOWN_MARKSMAN_RATIO = 3;
+    /** 默认 5 英雄。 */
+    static final int SHOWDOWN_HERO_LIMIT = 5;
+    /** 战报最多读取条数（只读、低频）。 */
+    static final int SHOWDOWN_REPORT_LIMIT = 3;
+
+    /** 编队解析结果：error 非空时调用方 SKIP 并展示原因。 */
+    static record ShowdownFormation(List<Long> heroIds, long[] soldierCounts,
+                                    String source, String error) {
+        boolean ready() {
+            return error == null && heroIds != null && !heroIds.isEmpty()
+                    && totalSoldiers() > 0L;
+        }
+
+        long totalSoldiers() {
+            long total = 0L;
+            if (soldierCounts != null) {
+                for (long count : soldierCounts) total += Math.max(0L, count);
+            }
+            return total;
+        }
+    }
+
+    /** 争霸赛活动首页状态（网页版 DailyAllianceShowdownState.updateHome 同字段）。 */
+    static record ShowdownActivity(Map<String, Object> activity, Map<String, Object> player,
+                                   Map<String, Object> group, Map<String, Object> target,
+                                   long count, long grade) {
+        long season() {
+            return activity == null ? 0L : Math.max(0L, Exec.longOf(activity.get("season")));
+        }
+
+        int stage() {
+            return activity == null ? 0 : (int) Math.max(0L, Exec.longOf(activity.get("stage")));
+        }
+
+        boolean signedUp() {
+            return player != null && !player.isEmpty();
+        }
+
+        boolean initialized() {
+            return activity != null && !activity.isEmpty();
+        }
+
+        /** 分组 aid：group.aids 首个 >0，否则 target.aid（网页版 groupAid 同款）。 */
+        long groupAid() {
+            if (group != null) {
+                for (Object value : valuesOf(group.get("aids"))) {
+                    long aid = Exec.longOf(value);
+                    if (aid > 0L) return aid;
+                }
+            }
+            return target == null ? 0L : Math.max(0L, Exec.longOf(target.get("aid")));
+        }
+    }
+
+    static ShowdownActivity showdownActivity(Map<String, Object> content) {
+        if (content == null) {
+            return new ShowdownActivity(Map.of(), Map.of(), Map.of(), Map.of(), 0L, 0L);
+        }
+        Map<String, Object> activity = Exec.mapOf(content.get("activity"));
+        Map<String, Object> player = Exec.mapOf(content.get("player"));
+        Map<String, Object> group = Exec.mapOf(content.get("group"));
+        Map<String, Object> target = Exec.mapOf(content.get("target"));
+        return new ShowdownActivity(
+                activity == null ? Map.of() : activity,
+                player == null ? Map.of() : player,
+                group == null ? Map.of() : group,
+                target == null ? Map.of() : target,
+                Math.max(0L, Exec.longOf(content.get("count"))),
+                Math.max(0L, Exec.longOf(content.get("grade"))));
+    }
+
+    /** hero_ids 覆盖：JSONArray / "11,12,13" 逗号串；去重、过滤非法、上限 5。 */
+    static List<Long> showdownHeroIdsOverride(JSONObject p) {
+        List<Long> out = new ArrayList<>();
+        if (p == null) return out;
+        Object raw = p.opt("hero_ids");
+        List<Object> values = new ArrayList<>();
+        if (raw instanceof JSONArray) {
+            JSONArray array = (JSONArray) raw;
+            for (int i = 0; i < array.length(); i++) values.add(array.opt(i));
+        } else if (raw instanceof String) {
+            for (String part : ((String) raw).split("[,，\\s]+")) values.add(part);
+        }
+        for (Object value : values) {
+            long id = Exec.longOf(value);
+            if (id > 0L && !out.contains(id) && out.size() < SHOWDOWN_HERO_LIMIT) out.add(id);
+        }
+        return out;
+    }
+
+    /** 5:2:3 兵力分配：按各兵种库存夹取，总兵力 ≤ cap；不足时宁可少带不超发。 */
+    static long[] showdownSoldierCounts(long[] stock, long cap) {
+        long[] counts = new long[3];
+        if (stock == null || stock.length < 3) return counts;
+        long total = Math.max(0L, Math.min(cap <= 0L ? SHOWDOWN_SOLDIER_CAP : cap,
+                Math.max(0L, stock[0]) + Math.max(0L, stock[1]) + Math.max(0L, stock[2])));
+        long ratioTotal = (long) SHOWDOWN_INFANTRY_RATIO + SHOWDOWN_LANCER_RATIO + SHOWDOWN_MARKSMAN_RATIO;
+        long wantInfantry = Math.min(Math.max(0L, stock[0]),
+                total * SHOWDOWN_INFANTRY_RATIO / ratioTotal);
+        long wantLancer = Math.min(Math.max(0L, stock[1]),
+                total * SHOWDOWN_LANCER_RATIO / ratioTotal);
+        long wantMarksman = Math.min(Math.max(0L, stock[2]),
+                Math.max(0L, total - wantInfantry - wantLancer));
+        counts[0] = wantInfantry;
+        counts[1] = wantLancer;
+        counts[2] = wantMarksman;
+        return counts;
+    }
+
+    /**
+     * 编队解析（纯函数）：hero_ids 覆盖 > formation_index 指定客户端编队 > AUTOMATIC 5:2:3。
+     * 英雄/兵力/兵种任一缺失 → error（调用方 SKIP，不发报名请求）。
+     */
+    static ShowdownFormation resolveShowdownFormation(JSONObject p, List<Long> squadHeroes,
+                                                      List<Long> strongestHeroes,
+                                                      long[] soldierStock, long[] soldierIds) {
+        List<Long> heroes = new ArrayList<>();
+        String source;
+        List<Long> override = showdownHeroIdsOverride(p);
+        if (!override.isEmpty()) {
+            heroes.addAll(override);
+            source = "hero_ids覆盖(" + override.size() + "英雄)";
+        } else {
+            int formationIndex = p == null ? 0 : p.optInt("formation_index", 0);
+            if (formationIndex > 0 && squadHeroes != null && !squadHeroes.isEmpty()) {
+                for (Long hero : squadHeroes) {
+                    if (hero != null && hero > 0L && heroes.size() < SHOWDOWN_HERO_LIMIT) {
+                        heroes.add(hero);
+                    }
+                }
+                source = "客户端编队" + formationIndex;
+            } else {
+                if (strongestHeroes != null) {
+                    for (Long hero : strongestHeroes) {
+                        if (hero != null && hero > 0L && heroes.size() < SHOWDOWN_HERO_LIMIT) {
+                            heroes.add(hero);
+                        }
+                    }
+                }
+                source = "AUTOMATIC 5:2:3";
+            }
+        }
+        if (heroes.isEmpty()) {
+            return new ShowdownFormation(List.of(), new long[3], source,
+                    "当前角色没有可用英雄（英雄数据未同步）");
+        }
+        long[] counts = showdownSoldierCounts(soldierStock, SHOWDOWN_SOLDIER_CAP);
+        long total = counts[0] + counts[1] + counts[2];
+        if (total <= 0L) {
+            return new ShowdownFormation(heroes, counts, source,
+                    "当前角色出征容量/兵力未同步");
+        }
+        if (soldierIds == null || soldierIds.length < 3) {
+            return new ShowdownFormation(heroes, counts, source, "士兵兵种数据未同步");
+        }
+        return new ShowdownFormation(heroes, counts, source, null);
+    }
+
+    /** 构造报名 formation 载荷（网页版 DailyResolvedFormation → {hero_id, soldier} 同形状）。 */
+    static Map<String, Object> showdownFormationPayload(ShowdownFormation formation,
+                                                        long[] soldierIds) {
+        List<Map<String, Object>> heroPairs = new ArrayList<>();
+        if (formation != null && formation.heroIds() != null) {
+            for (Long hero : formation.heroIds()) {
+                if (hero != null && hero > 0L) heroPairs.add(Exec.kv(hero, 1L));
+            }
+        }
+        List<Map<String, Object>> soldierPairs = new ArrayList<>();
+        long[] counts = formation == null ? null : formation.soldierCounts();
+        if (counts != null && soldierIds != null) {
+            for (int i = 0; i < Math.min(3, Math.min(counts.length, soldierIds.length)); i++) {
+                if (counts[i] > 0L && soldierIds[i] > 0L) {
+                    soldierPairs.add(Exec.kv(soldierIds[i], counts[i]));
+                }
+            }
+        }
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("hero_id", heroPairs);
+        payload.put("soldier", soldierPairs);
+        return payload;
+    }
+
+    /** 首页状态 SKIP 原因（新状态机；与旧 showdownSkipReason 同文案口径）。 */
+    static String showdownActivitySkipReason(ShowdownActivity activity) {
+        if (activity == null || !activity.initialized()) {
+            return "争霸赛无活动数据（未开启或未同步）";
+        }
+        if (activity.season() <= 0L) {
+            return "争霸赛当前无赛季（未开启）";
+        }
+        if (activity.signedUp()) {
+            return "争霸赛已报名（本季）";
+        }
+        return null;
+    }
+
+    /** 幂等：本季已报名（服务端 player 非空或 mod 记录同赛季）→ 不再请求报名。 */
+    static boolean showdownSignedIdempotent(ShowdownActivity activity, long modSignedSeason) {
+        if (activity == null) return false;
+        if (activity.signedUp()) return true;
+        return activity.season() > 0L && modSignedSeason == activity.season();
+    }
+
+    /** 从 group.内容提取战报 id：rounds[].results[].report_id（兼容 Map/List 形状）。 */
+    static List<String> showdownReportIds(Map<String, Object> group) {
+        List<String> out = new ArrayList<>();
+        if (group == null) return out;
+        for (Object rawRound : valuesOf(group.get("rounds"))) {
+            Map<String, Object> round = Exec.mapOf(rawRound);
+            if (round == null) continue;
+            for (Object rawResult : valuesOf(round.get("results"))) {
+                Map<String, Object> result = Exec.mapOf(rawResult);
+                if (result == null) continue;
+                Object rawId = result.get("report_id");
+                String reportId = rawId == null ? "" : String.valueOf(rawId).trim();
+                if (!reportId.isEmpty() && !"null".equals(reportId) && !out.contains(reportId)) {
+                    out.add(reportId);
+                }
+                if (out.size() >= SHOWDOWN_REPORT_LIMIT) return out;
+            }
+        }
+        return out;
+    }
+
+    /** 战报结果文案：只读文本字段（二进制 report 不解码，避免误报）。 */
+    static String showdownReportResultText(Map<String, Object> reportContent) {
+        if (reportContent == null) return "";
+        for (String key : new String[]{"result", "win", "is_win", "score", "grade", "rank"}) {
+            Object value = reportContent.get(key);
+            if (value == null || value instanceof byte[]) continue;
+            String text = String.valueOf(value).trim();
+            if (!text.isEmpty() && !"null".equals(text)) return key + "=" + text;
+        }
+        return "";
+    }
+
+    /** mod:alliance_showdown 摘要文案（赛季/报名/战报数/赛道/结果）。 */
+    static String showdownModSummary(ShowdownActivity activity, int reports, int path,
+                                     String action) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("赛季").append(activity == null ? 0L : activity.season());
+        if (activity != null && activity.initialized()) sb.append(" · 阶段").append(activity.stage());
+        sb.append(activity != null && activity.signedUp() ? " · 已报名" : " · 未报名");
+        sb.append(" · 战报").append(Math.max(0, reports)).append("条");
+        if (path > 0) sb.append(" · 赛道").append(path);
+        if (action != null && !action.isEmpty()) sb.append(" · ").append(action);
+        return sb.toString();
+    }
+
+    static String showdownModKey(TaskContext tc) {
+        return "mod:" + tc.fpid + ":" + tc.sid + ":alliance_showdown";
+    }
+
+    /** 写单键 mod（保留 App 今日页 mod 文案契约：key + key_ts）。 */
+    static void saveShowdownMod(TaskContext tc, String key, Object value) {
+        try {
+            JSONObject mod = tc.modState("alliance_showdown");
+            mod.put(key, value);
+            mod.put(key + "_ts", System.currentTimeMillis());
+            tc.store.putString(showdownModKey(tc), mod.toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 报名后只读 group_info / battle_report；返回读到的战报条数。 */
+    private static int readShowdownReports(TaskContext tc, ShowdownActivity activity,
+                                           Exec.Multi m) {
+        if (activity == null || activity.season() <= 0L || activity.groupAid() <= 0L) return 0;
+        int read = 0;
+        try {
+            GameMessage group = tc.engine.request("req_alliance_showdown_group_info",
+                    Exec.args("season", activity.season(), "aid", activity.groupAid()));
+            int groupCode = Exec.codeOf(group);
+            if (!Exec.ok(group)) {
+                m.skip(groupCode == 7705 ? "战报组信息超时，稍后重试"
+                        : "战报组信息码" + groupCode);
+                return 0;
+            }
+            Map<String, Object> content = group.getContent();
+            Map<String, Object> groupData = Exec.mapOf(content == null ? null : content.get("group"));
+            if (groupData == null) groupData = content == null ? Map.of() : content;
+            String firstResult = "";
+            for (String reportId : showdownReportIds(groupData)) {
+                try {
+                    GameMessage report = tc.engine.request("req_alliance_showdown_battle_report",
+                            Exec.args("reportid", reportId));
+                    if (!Exec.ok(report)) {
+                        m.skip("战报" + reportId + "码" + Exec.codeOf(report));
+                        continue;
+                    }
+                    read++;
+                    if (firstResult.isEmpty()) {
+                        firstResult = showdownReportResultText(report.getContent());
+                    }
+                } catch (Exception reportError) {
+                    if (ServerTownTasks.sessionLost(reportError)) throw reportError;
+                    m.skip("战报" + reportId + "读取中断");
+                }
+            }
+            if (!firstResult.isEmpty()) saveShowdownMod(tc, "battle_result", firstResult);
+            if (read > 0) m.claimed("战报只读×" + read);
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) throw new RuntimeException(e);
+            m.skip("战报只读失败，稍后重试");
+        }
+        return read;
+    }
+
     public static TaskOutcome showdown(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
             tc.engine.collectNotifies(1500);
+            JSONObject p = tc.params("alliance_showdown");
             GameMessage info = tc.engine.request("req_alliance_showdown_activity_info", null);
             if (!Exec.ok(info)) {
                 m.skip(showdownInfoFailureNote(Exec.codeOf(info)));
+                saveShowdownMod(tc, "last_error", showdownInfoFailureNote(Exec.codeOf(info)));
+                return Exec.result(m, "alliance_showdown", "争霸赛");
+            }
+            ShowdownActivity activity = showdownActivity(info.getContent());
+            int path = showdownPath(p);
+            long modSignedSeason = tc.modState("alliance_showdown").optLong("signed_season", 0L);
+            saveShowdownMod(tc, "season", activity.season());
+            saveShowdownMod(tc, "stage", activity.stage());
+            saveShowdownMod(tc, "count", activity.count);
+            saveShowdownMod(tc, "signed", activity.signedUp());
+
+            String skipReason = showdownActivitySkipReason(activity);
+            if (skipReason != null) {
+                m.skip(skipReason);
+            } else if (showdownSignedIdempotent(activity, modSignedSeason)) {
+                // 幂等：本季已报名（服务端状态或 mod 记录）→ 不再发报名请求。
+                m.skip("本季已报名（幂等，跳过重复报名）");
+                saveShowdownMod(tc, "signed", true);
+                if (activity.season() > 0L) saveShowdownMod(tc, "signed_season", activity.season());
             } else {
-                Map<String, Object> all = info.getContent();
-                String skipReason = showdownSkipReason(all);
-                JSONObject p = tc.params("alliance_showdown");
-                if (skipReason != null) {
-                    m.skip(skipReason);
+                String windowSkip = showdownWindowSkipReason(System.currentTimeMillis() / 1000L,
+                        showdownSignupDay(p), showdownSignupTime(p));
+                if (windowSkip != null) {
+                    m.skip(windowSkip);
                 } else {
-                    String windowSkip = showdownWindowSkipReason(
-                            System.currentTimeMillis() / 1000L,
-                            showdownSignupDay(p), showdownSignupTime(p));
-                    if (windowSkip != null) {
-                        m.skip(windowSkip);
+                    // 编队：hero_ids 覆盖 > formation_index 客户端编队 > AUTOMATIC 5:2:3。
+                    Map<Long, List<Long>> squads = Exec.clientSquads(tc.engine);
+                    int formationIndex = p.optInt("formation_index", 0);
+                    List<Long> squadHeroes = formationIndex > 0 ? squads.get((long) formationIndex) : null;
+                    List<Long> strongestHeroes = Exec.allHeroes(tc.engine);
+                    long[] stock = Exec.baseSoldiers(tc.engine);
+                    long[] soldierIds = Exec.bestSoldierIds(Exec.soldiers(tc.engine));
+                    ShowdownFormation formation = resolveShowdownFormation(p, squadHeroes,
+                            strongestHeroes, stock, soldierIds);
+                    if (!formation.ready()) {
+                        m.skip("编队不可用：" + formation.error());
+                        saveShowdownMod(tc, "last_error", "编队不可用：" + formation.error());
                     } else {
-                        // 编队：沿用 1 号编队（AUTOMATIC 5:2:3 需编队规划器，后续接入）。
-                        Map<String, Object> formation = Exec.formation(tc.engine, 1);
-                        int path = showdownPath(p);
-                        GameMessage apply = tc.engine.request("req_alliance_showdown_apply", Exec.args(
-                                "type", (long) path, "formation", formation));
-                        if (Exec.ok(apply)) m.claimed("已报名赛道" + path);
-                        else m.skip(showdownApplyFailureNote(Exec.codeOf(apply)));
+                        Map<String, Object> payload = showdownFormationPayload(formation, soldierIds);
+                        saveShowdownMod(tc, "formation", formation.source()
+                                + " · 英雄" + formation.heroIds().size()
+                                + " · 兵" + formation.totalSoldiers());
+                        GameMessage apply = tc.engine.request("req_alliance_showdown_apply",
+                                Exec.args("type", (long) path, "formation", payload));
+                        int code = Exec.codeOf(apply);
+                        if (Exec.ok(apply)) {
+                            m.claimed("已报名赛道" + path + "（" + formation.source() + "）");
+                            saveShowdownMod(tc, "signed", true);
+                            saveShowdownMod(tc, "path", path);
+                            if (activity.season() > 0L) {
+                                saveShowdownMod(tc, "signed_season", activity.season());
+                            }
+                        } else {
+                            String note = showdownApplyFailureNote(code);
+                            m.skip(note);
+                            saveShowdownMod(tc, "last_error", note);
+                            if (code != SHOWDOWN_CODE_NO_SOLDIER && code != SHOWDOWN_CODE_TIMEOUT) {
+                                saveShowdownMod(tc, "last_error_code", code);
+                            }
+                        }
                     }
                 }
             }
+            // 赛季/战报只读：已报名且有赛季+aid 时读 group_info / battle_report（无付费路径）。
+            int reports = readShowdownReports(tc, activity, m);
+            if (reports > 0) saveShowdownMod(tc, "reports", reports);
+            String action = m.sb.length() == 0 ? "" : "已处理";
+            saveShowdownMod(tc, "state",
+                    showdownModSummary(activity, reports, path, action));
         } catch (Exception e) {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "联盟争霸赛");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
