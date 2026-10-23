@@ -130,6 +130,11 @@ public final class ServerGuardianEngine {
         List<Long> heroIds = new ArrayList<>();
         double recallDistance = 0d;          // 预留
         long dSec = DEFAULT_D_SEC;
+        // ---- 批次10 统一编队（task-32；缺省=旧行为零变化） ----
+        /** 原始 roleParams（JSONObject→Map 深转换；FormationResolver 契约入参）。 */
+        Map<String, Object> rawParams = new LinkedHashMap<>();
+        /** formation_library JSON（先取 guardian 自身，其次 formation fn 参数）。 */
+        String formationLibraryJson = "";
 
         static Config disabled() {
             return new Config();
@@ -528,7 +533,18 @@ public final class ServerGuardianEngine {
             VaultStore.Account acc = vault == null ? null : vault.find(fpid);
             Map<String, String> raw = acc == null ? null : acc.roleParams.get(String.valueOf(sid));
             String json = raw == null ? null : raw.get(FN_ID);
-            config = json == null || json.isEmpty() ? Config.disabled() : parseConfig(new JSONObject(json));
+            Config parsed = json == null || json.isEmpty() ? Config.disabled() : parseConfig(new JSONObject(json));
+            // 批次10：编队库可能由 App 同步在独立 formation fn 参数里（与 FormationResolver.libraryFor 同口径兜底）
+            if (parsed.formationLibraryJson.isEmpty() && raw != null) {
+                try {
+                    String fj = raw.get("formation");
+                    if (fj != null && !fj.isEmpty()) {
+                        parsed.formationLibraryJson = new JSONObject(fj).optString("formation_library", "");
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            config = parsed;
         } catch (Throwable t) {
             config = Config.disabled();
         }
@@ -600,6 +616,9 @@ public final class ServerGuardianEngine {
         } catch (Throwable ignored) {
             return Config.disabled();
         }
+        // 批次10：统一编队参数（无这些键 → isConfigured=false → 旧行为）
+        c.rawParams = ServerGuardianLauncher.toParamMap(p);
+        c.formationLibraryJson = p.optString("formation_library", "");
         return c;
     }
 
@@ -888,9 +907,28 @@ public final class ServerGuardianEngine {
         return sb.toString();
     }
 
-    /** 编队：配置 hero_ids 优先；否则 Exec.formation(engine, squad_index)（缺省队 1）。 */
+    /**
+     * 编队（批次10 统一编队接入）：
+     * <ol>
+     *   <li>显式编队参数 → {@link ServerGuardianLauncher#resolveFormation}（ROLE/AUTOMATIC；不可用→null=上层
+     *       SKIP，不静默回退）；</li>
+     *   <li>无编队参数 → 旧行为：hero_ids 优先，否则 Exec.formation(engine, squad_index)（缺省队 1）。</li>
+     * </ol>
+     * 三变体自发现在 {@link ServerGuardianLauncher#launch}（与本方法解耦，保留不变）。
+     */
     Map<String, Object> formationOf(WjdrEngine engine, Config cfg) {
         try {
+            ServerGuardianLauncher.FormationResolution resolved = ServerGuardianLauncher.resolveFormation(
+                    engine, cfg == null ? null : cfg.rawParams,
+                    cfg == null ? "" : cfg.formationLibraryJson);
+            if (resolved.configured) {
+                if (!resolved.ready()) {
+                    FileLog.warn("守护盟友统一编队不可用 {}:{}：{}", fpid, String.valueOf(sid), resolved.reason);
+                    return null;
+                }
+                FileLog.info("守护盟友统一编队 {}:{}：{}", fpid, String.valueOf(sid), resolved.label);
+                return resolved.payload;
+            }
             if (cfg != null && cfg.heroIds != null && !cfg.heroIds.isEmpty()) {
                 return Exec.formationWithHeroes(engine, cfg.heroIds);
             }

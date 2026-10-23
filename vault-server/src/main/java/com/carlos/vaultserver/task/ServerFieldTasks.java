@@ -3,6 +3,9 @@ package com.carlos.vaultserver.task;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.FileLog;
+import com.carlos.vaultserver.formation.FormationLibrary;
+import com.carlos.vaultserver.formation.FormationResolver;
+import com.carlos.vaultserver.formation.ResolvedFormation;
 
 import org.json.JSONObject;
 
@@ -100,9 +103,10 @@ public final class ServerFieldTasks {
                     for (int level = Math.min(6, minLevel); level >= 1 && sent < slots; level--) {
                         Map<String, Object> pt = searchResource(tc.engine, res, level, fullOnly);
                         if (pt == null) continue;
-                        Map<String, Object> formation = formationFor(tc, "gather", 1 + (sent % 3));
+                        StringBuilder formationWhy = new StringBuilder();
+                        Map<String, Object> formation = formationFor(tc, "gather", 1 + (sent % 3), formationWhy);
                         if (formation == null) {
-                            m.skip("无英雄可派");
+                            m.skip(formationWhy.length() > 0 ? "编队跳过：" + formationWhy : "无英雄可派");
                             return finishGather(tc, m, marchSnapshot);
                         }
                         GameMessage march = tc.engine.request("req_world_march", Exec.args(
@@ -133,14 +137,57 @@ public final class ServerFieldTasks {
     }
 
     /**
-     * 编队：配置了 hero_ids 时按“英雄 id + 动态兵力”构造；否则回退旧 Exec.formation。
+     * 统一编队解析（批次10，1:1 参考网页版 DailyFormationConfigSupport/DailyMarchFormationResolver）：
+     * <ul>
+     *   <li><b>无编队参数</b>（旧 App / 未配置）→ 返回 {@link #legacyFormationFor}（旧行为零变化）；</li>
+     *   <li>配置了 {@code formation_mode/formation_id/soldiers/ratio/total} → {@link FormationResolver}
+     *       （ROLE=功能页编队；AUTOMATIC=自动英雄+比例），无法解析返回 null 并由调用方 SKIP；</li>
+     *   <li>日志/mod 写「编队 来源=… 英雄=… 兵种=…」或 SKIP 原因。</li>
+     * </ul>
+     *
+     * @param reasonOut 非 null 时写入 SKIP 原因（调用方拼进任务 reason）
+     */
+    static Map<String, Object> formationFor(TaskContext tc, String fnId, int fallbackSquad,
+                                            StringBuilder reasonOut) {
+        try {
+            JSONObject p = tc.params(fnId);
+            if (!FormationResolver.isConfigured(p)) {
+                return legacyFormationFor(tc, fnId, fallbackSquad);   // 无参数=旧行为
+            }
+            FormationLibrary lib = FormationResolver.libraryFor(tc, fnId);
+            FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(tc.engine, lib, p);
+            if (!ro.ready()) {
+                if (reasonOut != null) reasonOut.append(ro.reason);
+                FileLog.info("编队解析跳过 fpid={} fn={}：{}", tc.fpid, fnId, ro.reason);
+                tc.saveModText(fnId, "formation", "编队跳过：" + ro.reason);
+                return null;
+            }
+            ResolvedFormation rf = ro.formation;
+            tc.saveModText(fnId, "formation", rf.describe() + " · " + ro.reason);
+            FileLog.info("编队 fpid={} fn={} {}", tc.fpid, fnId, rf.describe());
+            return rf.toFormationPayload();
+        } catch (Throwable t) {
+            if (reasonOut != null) reasonOut.append("编队异常：").append(ServerTasks.brief(String.valueOf(t.getMessage())));
+            FileLog.warn("编队解析异常 fpid={} fn={}：{}", tc.fpid, fnId, String.valueOf(t));
+            return null;
+        }
+    }
+
+    /** 兼容旧调用（无 SKIP 原因）。 */
+    static Map<String, Object> formationFor(TaskContext tc, String fnId, int fallbackSquad) {
+        return formationFor(tc, fnId, fallbackSquad, null);
+    }
+
+    /**
+     * 旧编队逻辑（无编队参数时保持逐字节行为不变）：配置了 hero_ids 时按“英雄 id + 动态兵力”构造；
+     * 否则回退旧 Exec.formation（按 squad_index/fallbackSquad 轮换）。
      *
      * <p>字段（存于 daily_params 的 fnId 参数）：
      * hero_ids:[id1,id2,id3]、troop_count、full_troops、
      * shield_ratio/spear_ratio/bow_ratio。
      * 采集/打野兽共用同一套，避免两处算法漂移。
      */
-    static Map<String, Object> formationFor(TaskContext tc, String fnId, int fallbackSquad) {
+    static Map<String, Object> legacyFormationFor(TaskContext tc, String fnId, int fallbackSquad) {
         org.json.JSONObject p = tc.params(fnId);
         // App 采集弹窗的“编队”选择：直接使用游戏内第 N 队布阵。
         int squad = p.optInt("squad_index", 0);
@@ -418,9 +465,11 @@ public final class ServerFieldTasks {
                 markGatherMineRetry(tc, now);
                 return new AllianceMineOutcome(false, "联盟资源中心已失效或不属于本盟");
             }
-            Map<String, Object> formation = formationFor(tc, "gather", 1);
+            StringBuilder formationWhy = new StringBuilder();
+            Map<String, Object> formation = formationFor(tc, "gather", 1, formationWhy);
             if (formation == null) {
-                return new AllianceMineOutcome(false, "联盟矿无英雄可派");
+                return new AllianceMineOutcome(false, formationWhy.length() > 0
+                        ? "联盟矿编队跳过：" + formationWhy : "联盟矿无英雄可派");
             }
             GameMessage march = tc.engine.request("req_world_march", Exec.args(
                     "type", GATHER_MINE_MARCH_TYPE,
@@ -734,10 +783,12 @@ public final class ServerFieldTasks {
                         }
                     } else if (worldMarch) {
                         long marchType = type == 2 ? 301L : 302L;
-                        Map<String, Object> formation = Exec.formation(tc.engine, 1);
+                        StringBuilder formationWhy = new StringBuilder();
+                        Map<String, Object> formation = formationFor(tc, "intel", 1, formationWhy);
                         if (formation == null) {
                             waiting++;
-                            appendWait(waits, "无英雄可派");
+                            appendWait(waits, formationWhy.length() > 0
+                                    ? "编队：" + formationWhy : "无英雄可派");
                             continue;
                         }
                         GameMessage march = tc.engine.request("req_world_march", Exec.args(
@@ -1136,6 +1187,8 @@ public final class ServerFieldTasks {
             int hunted = 0;
             int noTarget = 0;
             List<Long> allHeroes = Exec.allHeroes(tc.engine);
+            // 批次10：新编队系统（formation_mode/id/soldiers/ratio）优先于旧 hero_ids/squad_index 分支
+            boolean newFormation = FormationResolver.isConfigured(hp);
             boolean heroConfigured = hp.has("hero_ids") || hp.optInt("squad_index", 0) > 0;
             int heroOffset = 0;
             for (int round = 0; round < maxTimes; round++) {
@@ -1148,15 +1201,16 @@ public final class ServerFieldTasks {
                     break;
                 }
                 Map<String, Object> formation;
-                if (!heroConfigured && heroOffset + 3 <= allHeroes.size()) {
+                StringBuilder formationWhy = new StringBuilder();
+                if (!newFormation && !heroConfigured && heroOffset + 3 <= allHeroes.size()) {
                     // 301=英雄不在城（正在采集/狩猎）：每队轮换下一组 3 个空闲候选。
                     formation = Exec.formationWithHeroes(tc.engine,
                             allHeroes.subList(heroOffset, heroOffset + 3));
                 } else {
-                    formation = formationFor(tc, "hunt", 1 + (round % 3));
+                    formation = formationFor(tc, "hunt", 1 + (round % 3), formationWhy);
                 }
                 if (formation == null) {
-                    m.skip("无英雄可派");
+                    m.skip(formationWhy.length() > 0 ? "编队跳过：" + formationWhy : "无英雄可派");
                     break;
                 }
                 long monsterId = Exec.longOf(target.get("monsterid"));

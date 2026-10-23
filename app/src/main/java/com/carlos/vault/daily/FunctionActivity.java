@@ -334,13 +334,15 @@ public class FunctionActivity extends Activity {
             mid.setOrientation(LinearLayout.VERTICAL);
             mid.setPadding(dp(12), 0, dp(8), 0);
             TextView t = new TextView(this);
-            t.setText("采集编队");
+            t.setText("采集参数");
             t.setTextSize(15);
             t.setTypeface(Typeface.DEFAULT_BOLD);
             t.setTextColor(UiStyle.INK);
             mid.addView(t);
             TextView s = new TextView(this);
-            s.setText("选择编队、矿种、矿点等级与队列数");
+            // 批次10：编队改由上方「统一编队」卡片配置；本弹窗保留矿种/等级/队列
+            // 与旧的游戏内存编队（squad_index，兼容存量配置）。
+            s.setText("矿种、矿点等级、队列数与旧版内存编队");
             s.setTextSize(11.5f);
             s.setTextColor(UiStyle.INK2);
             mid.addView(s);
@@ -392,6 +394,17 @@ public class FunctionActivity extends Activity {
         scrollBox.setOrientation(LinearLayout.VERTICAL);
         scrollBox.setPadding(0, 0, 0, dp(16));
         scroll.addView(scrollBox);
+
+        // ⓪ 批次10（2026-10-23）：队列类功能统一编队（英雄/兵种/比例，随角色 params 同步服务器）。
+        // 采集/情报/狩猎/巨兽/巨熊/守护盟友按此编队出征（服务器 FormationResolver 消费）。
+        if (fn.formation) {
+            scrollBox.addView(FormationPicker.buildCard(this, account.fpid, serverid, fn.id, null));
+            if ("bear".equals(fn.id)) {
+                // 巨熊另需「发起编队（上方通用卡片）」+「上车编队 1-6」（每支可独立自动/指定）
+                scrollBox.addView(FormationPicker.buildBearJoinCard(
+                        this, account.fpid, serverid, null));
+            }
+        }
 
         // ⓪ 登录好礼专属：十四天签到网格（游戏同款元素）
         if ("login_rewards".equals(fn.id)) {
@@ -1262,7 +1275,7 @@ public class FunctionActivity extends Activity {
         box.setPadding(dp(18), dp(8), dp(18), dp(8));
 
         TextView squadLabel = new TextView(this);
-        squadLabel.setText("编队");
+        squadLabel.setText("游戏内存编队（旧，兼容；新编队见页面顶部「编队」）");
         squadLabel.setTextSize(13);
         squadLabel.setTypeface(Typeface.DEFAULT_BOLD);
         squadLabel.setTextColor(UiStyle.INK);
@@ -1359,7 +1372,7 @@ public class FunctionActivity extends Activity {
         box.addView(fullBox);
 
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("采集编队")
+                .setTitle("采集参数")
                 .setView(box)
                 .setPositiveButton("保存", (d, w) -> {
                     try {
@@ -1416,6 +1429,14 @@ public class FunctionActivity extends Activity {
                     try {
                         String raw = text == null ? "" : text.trim();
                         JSONObject next = raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+                        // 批次10：高级 JSON 编辑整对象替换，不应意外清掉「统一编队」配置
+                        // （未在新 JSON 里出现的编队字段从旧参数保留）。
+                        JSONObject prev = FnParams.params(FunctionActivity.this,
+                                account.fpid, serverid, fn.id);
+                        for (String k : new String[]{"formation_mode", "formation_id",
+                                "soldiers", "ratio", "total", "join_formations"}) {
+                            if (!next.has(k) && prev.has(k)) next.put(k, prev.opt(k));
+                        }
                         FnParams.saveParams(FunctionActivity.this, account.fpid, serverid,
                                 fn.id, next);
                         VaultSync.onAccountsChanged(FunctionActivity.this);

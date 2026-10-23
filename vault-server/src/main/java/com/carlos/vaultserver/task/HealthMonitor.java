@@ -32,6 +32,10 @@ import java.util.function.Supplier;
  *   <li>{@code zero_claim} 零领取：在线账号近 2h CLAIMED=0 且 SKIPPED&gt;50（可能配置/协议全灭）；</li>
  *   <li>{@code error_rate} 错误率：近 1h 样本 ≥20 且 ERROR/(CLAIMED+SKIPPED+ERROR) &gt;30%；</li>
  *   <li>{@code cadence} 节奏键缺失：在线但 {@code srv:cad:*}=0（节奏调度可能没跑起来）。</li>
+ *   <li>{@code cadence_stall} 派单停滞（批次10）：有在线账号且 30 分钟窗口内
+ *       {@code srv:cad:stats:{today}.dispatch} 无增长；</li>
+ *   <li>全局预算打满（批次10，仅 INFO 不进告警）：{@code minuteDispatch/globalMax ≥ 95%}
+ *       持续 15 分钟 → 日志提示提高 {@code VAULT_CADENCE_GLOBAL_MAX}（6h 限流）。</li>
  * </ul>
  *
  * <p><b>数据只读</b>：{@link StateStore} 的 {@code log:{fpid}:{sid}:{fn}}（ts/cat/...，RoundRunner 落账）、
@@ -79,6 +83,19 @@ public final class HealthMonitor {
     public static final String KIND_ZERO_CLAIM = "zero_claim";
     public static final String KIND_ERROR_RATE = "error_rate";
     public static final String KIND_CADENCE = "cadence";
+    /** 批次10：派单停滞（全局，30 分钟无派单增长）。 */
+    public static final String KIND_CADENCE_STALL = "cadence_stall";
+
+    /** 批次10：派单停滞阈值（30 分钟窗口内 dispatch 无增长）。 */
+    public static final long CADENCE_STALL_MILLIS = 30L * 60_000L;
+    /** 批次10：全局预算打满持续阈值（15 分钟）。 */
+    public static final long BUDGET_SATURATED_MILLIS = 15L * 60_000L;
+    /** 批次10：全局预算打满阈值（≥ 全局上限的 95%）。 */
+    public static final int BUDGET_SATURATED_PERCENT = 95;
+    /** 批次10：全局类告警/INFO 的 fpid 维度（节流键用）。 */
+    static final String GLOBAL_FPID = "global";
+    /** 批次10：派单统计键前缀（{@code srv:cad:stats:{yyyy-MM-dd}}，契约见 TaskCadenceScheduler:90-108）。 */
+    static final String CADENCE_STATS_PREFIX = "srv:cad:stats:";
 
     private static final String LOG_PREFIX = "log:";
     private static final String CADENCE_PREFIX = "srv:cad:";
@@ -91,6 +108,11 @@ public final class HealthMonitor {
     private final Map<String, Long> offlineSince = new ConcurrentHashMap<>();
     /** 内存节流兜底：{@code kind|fpid → 上次告警毫秒}（state 缺失/重置时仍能节流）。 */
     private final Map<String, Long> lastAlertMemory = new ConcurrentHashMap<>();
+    /** 批次10：派单统计追踪（进程内）：上次 dispatch / 上次增长时刻 / 预算持续起点 / 预算 INFO 上次时刻。 */
+    private long lastDispatchSeen = -1L;
+    private long lastDispatchChangeMillis;
+    private long budgetHighSinceMillis;
+    private long lastBudgetInfoMillis;
     private volatile boolean stopped;
     private volatile Thread thread;
 
@@ -213,6 +235,8 @@ public final class HealthMonitor {
                 if (key == null) continue;
                 if (key.startsWith(LOG_PREFIX)) {
                     collectLog(stats, key, e.getValue(), from2h, from1h, nowMillis);
+                } else if (key.startsWith(CADENCE_STATS_PREFIX)) {
+                    // 批次10：派单统计键不是节奏派发键，不参与 cadenceKeys（避免虚高/误判）
                 } else if (key.startsWith(CADENCE_PREFIX)) {
                     // 键型：srv:cad:{fpid}:{sid}:{fn}（TaskCadenceScheduler.nextKey）
                     String[] parts = key.split(":", 4);
@@ -409,6 +433,143 @@ public final class HealthMonitor {
     }
 
     // =======================================================================
+    // 批次10：派单停滞 / 全局预算打满（读 srv:cad:stats；纯函数可测）
+    // =======================================================================
+
+    /** 当日派单统计快照（批次10；契约见 TaskCadenceScheduler:90-108 的 STATS_KEY_PREFIX 注释）。 */
+    public static final class CadenceStat {
+        public long dispatch;
+        public long firstAt;
+        public int globalMax;
+        public int minuteDispatch;
+    }
+
+    /** 解析派单统计 JSON（{@code srv:cad:stats:{date}}）；缺失/坏 JSON → null。 */
+    static CadenceStat parseCadenceStat(Object raw) {
+        if (raw == null) return null;
+        try {
+            JSONObject o = raw instanceof JSONObject ? (JSONObject) raw
+                    : new JSONObject(String.valueOf(raw));
+            CadenceStat c = new CadenceStat();
+            c.dispatch = Math.max(0L, o.optLong("dispatch", 0L));
+            c.firstAt = Math.max(0L, o.optLong("firstAt", 0L));
+            c.globalMax = Math.max(0, o.optInt("globalMax", 0));
+            c.minuteDispatch = Math.max(0, o.optInt("minuteDispatch", 0));
+            return c;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 读今日派单统计（{@code srv:cad:stats:{yyyy-MM-dd}}）；无 StateStore/缺失 → null。 */
+    static CadenceStat readCadenceStat(StateStore store, long nowMillis) {
+        if (store == null) return null;
+        try {
+            Object raw = store.snapshot().get(CADENCE_STATS_PREFIX
+                    + Beijing.fmt("yyyy-MM-dd").format(new Date(nowMillis)));
+            return parseCadenceStat(raw);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 是否存在在线账号（派单停滞/预算告警前置；与 snapshot 同口径，异常按不在线处理）。 */
+    public static boolean anyOnline(Supplier<List<SessionControl.SessionStatus>> sessionStatus) {
+        if (sessionStatus == null) return false;
+        try {
+            List<SessionControl.SessionStatus> list = sessionStatus.get();
+            if (list == null) return false;
+            for (SessionControl.SessionStatus st : list) {
+                if (st != null && com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(st.state)) {
+                    return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /**
+     * 派单停滞判定（纯函数）：有在线账号，且 30 分钟窗口内当日 dispatch 无增长。
+     *
+     * <ul>
+     *   <li>当日 dispatch=0：统计起点（firstAt，未知则用首次观测时刻）已 ≥30 分钟 → 停滞；</li>
+     *   <li>当日 dispatch&gt;0：上次评估已有基线（lastSeenDispatch≥0）且与当前相同、
+     *       距上次观察到增长 ≥30 分钟 → 停滞；首拍只建基线不告警。</li>
+     * </ul>
+     */
+    public static boolean dispatchStalled(boolean hasOnline, long dispatch, long firstAt,
+                                          long lastSeenDispatch, long lastChangeMillis,
+                                          long nowMillis) {
+        if (!hasOnline) return false;
+        if (dispatch <= 0L) {
+            long start = firstAt > 0L ? firstAt : lastChangeMillis;
+            return start > 0L && nowMillis - start >= CADENCE_STALL_MILLIS;
+        }
+        if (lastSeenDispatch < 0L) return false;          // 首拍只建基线
+        if (dispatch != lastSeenDispatch) return false;   // 有增长
+        return lastChangeMillis > 0L && nowMillis - lastChangeMillis >= CADENCE_STALL_MILLIS;
+    }
+
+    /** 全局预算打满判定（纯函数）：globalMax&gt;0 且 minuteDispatch/globalMax ≥ 95%（整数比较防浮点误差）。 */
+    public static boolean budgetSaturated(int minuteDispatch, int globalMax) {
+        if (globalMax <= 0 || minuteDispatch < 0) return false;
+        return (long) minuteDispatch * 100L >= (long) globalMax * BUDGET_SATURATED_PERCENT;
+    }
+
+    /** 预算打满持续判定（纯函数）：首次命中时刻起 ≥15 分钟。 */
+    public static boolean budgetSustained(long highSinceMillis, long nowMillis) {
+        return highSinceMillis > 0L && nowMillis - highSinceMillis >= BUDGET_SATURATED_MILLIS;
+    }
+
+    /** 构造派单停滞告警（全局一条；6h 节流键 fpid=global）。 */
+    public static Alert cadenceStallAlert(long dispatch, long nowMillis) {
+        return new Alert(KIND_CADENCE_STALL, GLOBAL_FPID, "派单停滞", "全局",
+                "30 分钟无派单（当日累计 " + dispatch + "）",
+                "检查 TaskCadenceScheduler / Token / 会话在线态；确认 VAULT_TASK_CADENCE 未关闭",
+                nowMillis);
+    }
+
+    /**
+     * 批次10：全局派单停滞告警 + 全局预算打满 INFO（不允许影响原 5 类按账号告警）。
+     *
+     * <p>停滞：有在线账号且 30 分钟无派单增长 → 加入 out（后续统一 6h 节流/企微/日志）。
+     * <p>预算打满：仅 {@link FileLog#info}（持续 15 分钟 + 6h 限流），不进告警列表。
+     */
+    void addCadenceAlerts(List<Alert> out, long nowMillis) {
+        CadenceStat stat = readCadenceStat(stateStore, nowMillis);
+        if (stat == null) return;
+        long prevSeen = lastDispatchSeen;
+        long prevChange = lastDispatchChangeMillis;
+        if (lastDispatchSeen < 0L) {
+            lastDispatchSeen = stat.dispatch;
+            lastDispatchChangeMillis = stat.firstAt > 0L ? stat.firstAt : nowMillis;
+        } else if (stat.dispatch != lastDispatchSeen) {
+            lastDispatchSeen = stat.dispatch;
+            lastDispatchChangeMillis = nowMillis;
+        }
+        boolean online = anyOnline(sessionStatus);
+        if (dispatchStalled(online, stat.dispatch, stat.firstAt, prevSeen, prevChange, nowMillis)) {
+            out.add(cadenceStallAlert(stat.dispatch, nowMillis));
+        }
+        if (budgetSaturated(stat.minuteDispatch, stat.globalMax)) {
+            if (budgetHighSinceMillis <= 0L) budgetHighSinceMillis = nowMillis;
+            if (budgetSustained(budgetHighSinceMillis, nowMillis)
+                    && (lastBudgetInfoMillis <= 0L
+                    || nowMillis - lastBudgetInfoMillis >= THROTTLE_MILLIS)) {
+                lastBudgetInfoMillis = nowMillis;
+                FileLog.info("派单全局预算打满：minuteDispatch={}/globalMax={}（≥{}% 已持续 {} 分钟），"
+                                + "考虑提高 VAULT_CADENCE_GLOBAL_MAX",
+                        String.valueOf(stat.minuteDispatch), String.valueOf(stat.globalMax),
+                        String.valueOf(BUDGET_SATURATED_PERCENT),
+                        String.valueOf((nowMillis - budgetHighSinceMillis) / 60_000L));
+            }
+        } else {
+            budgetHighSinceMillis = 0L;
+        }
+    }
+
+    // =======================================================================
     // 文本（纯函数）
     // =======================================================================
 
@@ -503,7 +664,9 @@ public final class HealthMonitor {
         try {
             List<AccountHealth> health = snapshot(vaultStore, stateStore, sessionStatus,
                     nowMillis, offlineSince);
-            List<Alert> alerts = evaluate(health, nowMillis, cadenceSchedulerEnabled());
+            List<Alert> alerts = new ArrayList<>(evaluate(health, nowMillis, cadenceSchedulerEnabled()));
+            // 批次10：全局派单停滞告警（预算打满只在 addCadenceAlerts 内记 INFO，不进告警）
+            addCadenceAlerts(alerts, nowMillis);
             if (alerts.isEmpty()) return 0;
             Map<String, Object> snap = stateStore == null ? Collections.emptyMap()
                     : stateStore.snapshot();
@@ -555,7 +718,7 @@ public final class HealthMonitor {
         }
         if (thread != null && thread.isAlive()) return;
         stopped = false;
-        FileLog.info("自动化健康告警已启用：每 {} 分钟评估（会话离线/节奏停滞/零领取/错误率/节奏键）",
+        FileLog.info("自动化健康告警已启用：每 {} 分钟评估（会话离线/节奏停滞/零领取/错误率/节奏键/派单停滞）",
                 String.valueOf(EVAL_INTERVAL_MILLIS / 60_000L));
         Thread t = new Thread(this::loop, "health-monitor");
         t.setDaemon(true);

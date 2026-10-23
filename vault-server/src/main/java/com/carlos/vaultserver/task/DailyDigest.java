@@ -86,6 +86,14 @@ public final class DailyDigest {
     static final String LOG_PREFIX = "log:";
     static final String CADENCE_PREFIX = "srv:cad:";
     static final String LASTRUN_PREFIX = "srv:lastrun:";
+    /** 批次10：自动派单统计键前缀（{@code srv:cad:stats:{yyyy-MM-dd}}，契约见 TaskCadenceScheduler:90-108）。 */
+    static final String CADENCE_STATS_PREFIX = "srv:cad:stats:";
+    /** 批次10：守护盟友账本键前缀（{@code srv:guardian:{fpid}:{sid}:ledger}）。 */
+    static final String GUARDIAN_LEDGER_PREFIX = "srv:guardian:";
+    /** 批次10：守护盟友 mod 状态键后缀（{@code mod:{fpid}:{sid}:guardian}）。 */
+    static final String GUARDIAN_MOD_SUFFIX = ":guardian";
+    /** 批次10：派单段「每账号」展示条数上限（防 1500 字符爆掉）。 */
+    static final int TOP_CADENCE_ACCOUNTS = 5;
 
     private final VaultStore vaultStore;
     private final StateStore stateStore;
@@ -280,6 +288,10 @@ public final class DailyDigest {
         /** 通知历史容量（ServerNotifyHistory：条数/账号数）。 */
         public int notifyEntries;
         public int notifyAccounts;
+        /** 批次10：自动派单段（null=统计缺失 → 该段省略，不报错）。 */
+        public CadenceDigest cadence;
+        /** 批次10：守护盟友段（null=无 guardian 状态 → 该段省略）。 */
+        public GuardianDigest guardian;
         public final List<RoleDigest> roles = new ArrayList<>();
 
         /** 最近整轮时刻（毫秒；0=无）。 */
@@ -288,6 +300,179 @@ public final class DailyDigest {
             for (Long v : lastRuns.values()) max = Math.max(max, v == null ? 0L : v);
             return max;
         }
+    }
+
+    // =======================================================================
+    // 批次10：日报追加段（自动派单 / 守护盟友）——纯数据 + 纯解析
+    // =======================================================================
+
+    /** 自动派单段数据（来源 {@code srv:cad:stats:{yyyy-MM-dd}}；键型契约见 TaskCadenceScheduler:90-108）。 */
+    public static final class CadenceDigest {
+        /** 统计日期（yyyy-MM-dd；日报取“统计窗口那一天”的 stats）。 */
+        public String day = "";
+        /** 当日成功派单数。 */
+        public long dispatch;
+        /** 有派单记录的账号数。 */
+        public int accounts;
+        /** 全局每分钟预算（0=不限）。 */
+        public int globalMax;
+        /** 每账号派单数（fpid → count）。 */
+        public final Map<String, Long> byAccount = new LinkedHashMap<>();
+        /** 各闸门跳过次数（原因 → 次数）。 */
+        public final Map<String, Long> skip = new LinkedHashMap<>();
+
+        /** 跳过原因 Top N：次数降序、同次数按原因名升序（确定性，便于日报稳定输出/单测）。 */
+        public List<Map.Entry<String, Long>> topSkips(int n) {
+            List<Map.Entry<String, Long>> list = new ArrayList<>(skip.entrySet());
+            list.sort((a, b) -> {
+                int c = Long.compare(b.getValue(), a.getValue());
+                return c != 0 ? c : a.getKey().compareTo(b.getKey());
+            });
+            return list.size() > n ? new ArrayList<>(list.subList(0, n)) : list;
+        }
+
+        /** 每账号派单数 Top N：次数降序、同次数按 fpid 升序。 */
+        public List<Map.Entry<String, Long>> topAccounts(int n) {
+            List<Map.Entry<String, Long>> list = new ArrayList<>(byAccount.entrySet());
+            list.sort((a, b) -> {
+                int c = Long.compare(b.getValue(), a.getValue());
+                return c != 0 ? c : a.getKey().compareTo(b.getKey());
+            });
+            return list.size() > n ? new ArrayList<>(list.subList(0, n)) : list;
+        }
+    }
+
+    /** 守护盟友段数据（来源 {@code srv:guardian:{fpid}:{sid}:ledger} / {@code mod:{fpid}:{sid}:guardian}）。 */
+    public static final class GuardianDigest {
+        /** 有守护状态的账号数（fpid:sid 去重）。 */
+        public int accounts;
+        /** 账本总条数（≤50/账号）。 */
+        public int ledgerEntries;
+        public int dryRun;
+        public int launched;
+        public int launchFailed;
+        public int recalled;
+        /** 最近一次事件时刻（epoch millis；0=未知）。 */
+        public long lastTs;
+        public String lastEvent = "";
+        public String lastNote = "";
+        public String lastAccount = "";
+
+        /** 合并另一份段数据（同账号 ledger+mod 兜底、多账号汇总）。 */
+        void merge(GuardianDigest o) {
+            if (o == null) return;
+            ledgerEntries += o.ledgerEntries;
+            dryRun += o.dryRun;
+            launched += o.launched;
+            launchFailed += o.launchFailed;
+            recalled += o.recalled;
+            if (o.lastTs >= lastTs && o.lastTs > 0L) {
+                lastTs = o.lastTs;
+                lastEvent = o.lastEvent;
+                lastNote = o.lastNote;
+                lastAccount = o.lastAccount;
+            }
+        }
+    }
+
+    /** 解析 {@code srv:cad:stats:{date}} JSON → {@link CadenceDigest}；缺失/坏 JSON → null（段落省略）。 */
+    static CadenceDigest parseCadenceStats(Object raw, String day) {
+        if (raw == null) return null;
+        try {
+            JSONObject o = raw instanceof JSONObject ? (JSONObject) raw
+                    : new JSONObject(String.valueOf(raw));
+            CadenceDigest c = new CadenceDigest();
+            c.day = day == null || day.isEmpty() ? o.optString("date", "") : day;
+            c.dispatch = Math.max(0L, o.optLong("dispatch", 0L));
+            c.globalMax = Math.max(0, o.optInt("globalMax", 0));
+            JSONObject by = o.optJSONObject("byAccount");
+            if (by != null) {
+                for (String k : by.keySet()) {
+                    long v = by.optLong(k, 0L);
+                    if (v > 0L) c.byAccount.put(k, v);
+                }
+            }
+            JSONObject sk = o.optJSONObject("skip");
+            if (sk != null) {
+                for (String k : sk.keySet()) {
+                    long v = sk.optLong(k, 0L);
+                    if (v > 0L) c.skip.put(k, v);
+                }
+            }
+            c.accounts = c.byAccount.size();
+            return c;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 解析守护盟友账本 JSON 数组（最新在前）：dry_run/launched/launch_failed/recalled 计数 +
+     * 最近一次（ts 最大）原因。空/坏数组 → null（该段省略）。
+     */
+    static GuardianDigest parseGuardianLedger(Object raw) {
+        JSONArray arr = jsonArray(raw);
+        if (arr.length() == 0) return null;
+        GuardianDigest g = new GuardianDigest();
+        g.ledgerEntries = arr.length();
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject e = arr.optJSONObject(i);
+            if (e == null) continue;
+            String ev = e.optString("ev", "");
+            switch (ev) {
+                case "dry_run":
+                    g.dryRun++;
+                    break;
+                case "launched":
+                    g.launched++;
+                    break;
+                case "launch_failed":
+                    g.launchFailed++;
+                    break;
+                case "recalled":
+                case "recall_failed":
+                case "recall_error":
+                    g.recalled++;
+                    break;
+                default:
+                    break;
+            }
+            long ts = e.optLong("ts", 0L);
+            if (ts >= g.lastTs && ts > 0L) {
+                g.lastTs = ts;
+                g.lastEvent = ev;
+                g.lastNote = trimTo(e.optString("note", ""), MAX_ITEM_CHARS);
+            }
+        }
+        return g;
+    }
+
+    /** 解析 {@code mod:{fpid}:{sid}:guardian} 兜底（无账本时的最近一次原因）；空 → null。 */
+    static GuardianDigest parseGuardianMod(Object raw) {
+        if (raw == null) return null;
+        try {
+            JSONObject o = raw instanceof JSONObject ? (JSONObject) raw
+                    : new JSONObject(String.valueOf(raw));
+            long ts = o.optLong("last_ts", 0L);
+            String last = trimTo(o.optString("last", ""), MAX_ITEM_CHARS);
+            if (ts <= 0L && last.isEmpty()) return null;
+            GuardianDigest g = new GuardianDigest();
+            g.lastTs = ts;
+            g.lastEvent = "state";
+            g.lastNote = last;
+            return g;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 守护键 → 账号键 {@code fpid:sid}（ledger 取第 3/4 段；mod 取第 2/3 段）；无法识别 → null。 */
+    static String guardianAccountKey(String key) {
+        if (key == null) return null;
+        String[] p = key.split(":");
+        if (key.startsWith(GUARDIAN_LEDGER_PREFIX) && p.length >= 5) return p[2] + ":" + p[3];
+        if (key.startsWith("mod:") && p.length >= 4) return p[1] + ":" + p[2];
+        return null;
     }
 
     /**
@@ -323,6 +508,9 @@ public final class DailyDigest {
         d.onlineAccounts = onlineAccounts;
         long from = fromMillis;
         Map<String, RoleDigest> roles = new LinkedHashMap<>();
+        Object cadenceStatsRaw = null;   // 统计窗口那一天（昨日）的派单统计
+        GuardianDigest guardian = null;
+        Set<String> guardianAccounts = new LinkedHashSet<>();
         if (store != null) {
             Map<String, Object> snap = store.snapshot();
             for (Map.Entry<String, Object> e : snap.entrySet()) {
@@ -330,15 +518,43 @@ public final class DailyDigest {
                 if (key == null) continue;
                 if (key.startsWith(LOG_PREFIX)) {
                     collectLogEntries(d, roles, key, e.getValue(), from, toMillis);
+                } else if (key.startsWith(CADENCE_STATS_PREFIX)) {
+                    // 批次10：派单统计键只取“统计窗口那一天”，其它日期不混入；也不计入 cadenceKeys
+                    if (dayKey(fromMillis).equals(key.substring(CADENCE_STATS_PREFIX.length()))) {
+                        cadenceStatsRaw = e.getValue();
+                    }
                 } else if (key.startsWith(CADENCE_PREFIX)) {
                     d.cadenceKeys++;
                 } else if (key.startsWith(LASTRUN_PREFIX)) {
                     String fpid = key.substring(LASTRUN_PREFIX.length());
                     long ts = longOf(e.getValue());
                     if (!fpid.isEmpty() && ts > 0L) d.lastRuns.put(fpid, ts);
+                } else if (key.startsWith(GUARDIAN_LEDGER_PREFIX) && key.endsWith(":ledger")) {
+                    // 批次10：守护盟友账本（dry_run/实发/最近原因）
+                    GuardianDigest g = parseGuardianLedger(e.getValue());
+                    if (g != null) {
+                        if (guardian == null) guardian = new GuardianDigest();
+                        guardian.merge(g);
+                        String account = guardianAccountKey(key);
+                        if (account != null) guardianAccounts.add(account);
+                    }
+                } else if (key.startsWith("mod:") && key.endsWith(GUARDIAN_MOD_SUFFIX)) {
+                    // 批次10：仅当同账号没有账本时用 mod 的 last/last_ts 兜底
+                    String account = guardianAccountKey(key);
+                    if (account != null && !guardianAccounts.contains(account)) {
+                        GuardianDigest g = parseGuardianMod(e.getValue());
+                        if (g != null) {
+                            if (guardian == null) guardian = new GuardianDigest();
+                            guardian.merge(g);
+                            guardianAccounts.add(account);
+                        }
+                    }
                 }
             }
         }
+        if (guardian != null) guardian.accounts = guardianAccounts.size();
+        d.guardian = guardian;
+        d.cadence = parseCadenceStats(cadenceStatsRaw, dayKey(fromMillis));
         List<RoleDigest> sorted = new ArrayList<>(roles.values());
         sorted.sort(Comparator.comparing(RoleDigest::label));
         d.roles.addAll(sorted);
@@ -491,6 +707,43 @@ public final class DailyDigest {
                     .format(new Date(lastRun)));
         }
         sb.append('\n');
+        // 批次10：自动派单段（统计缺失则整段省略，不报错）
+        if (d.cadence != null) {
+            CadenceDigest c = d.cadence;
+            sb.append("自动派单 ").append(c.day).append("：派单 ").append(c.dispatch)
+                    .append(" · 账号 ").append(c.accounts)
+                    .append(" · 全局预算 ").append(c.globalMax <= 0 ? "不限" : c.globalMax + "/min");
+            List<Map.Entry<String, Long>> skips = c.topSkips(3);
+            if (!skips.isEmpty()) {
+                sb.append(" · 跳过TOP ");
+                for (int i = 0; i < skips.size(); i++) {
+                    if (i > 0) sb.append('；');
+                    sb.append(skips.get(i).getKey()).append('×').append(skips.get(i).getValue());
+                }
+            }
+            sb.append('\n');
+            List<Map.Entry<String, Long>> accounts = c.topAccounts(TOP_CADENCE_ACCOUNTS);
+            if (!accounts.isEmpty()) {
+                sb.append("  每账号：");
+                for (int i = 0; i < accounts.size(); i++) {
+                    if (i > 0) sb.append('；');
+                    sb.append(accounts.get(i).getKey()).append('×').append(accounts.get(i).getValue());
+                }
+                if (c.byAccount.size() > accounts.size()) sb.append(" …");
+                sb.append('\n');
+            }
+        }
+        // 批次10：守护盟友段（无 guardian 状态则整段省略）
+        if (d.guardian != null) {
+            GuardianDigest g = d.guardian;
+            sb.append("守护盟友：dry_run ").append(g.dryRun)
+                    .append(" · 实发 ").append(g.launched);
+            if (g.launchFailed > 0) sb.append("（失败 ").append(g.launchFailed).append("）");
+            if (g.recalled > 0) sb.append(" · 撤防 ").append(g.recalled);
+            if (!g.lastEvent.isEmpty()) sb.append(" · 最近 ").append(trimTo(g.lastEvent, 20));
+            if (!g.lastNote.isEmpty()) sb.append("：").append(trimTo(g.lastNote, 40));
+            sb.append('\n');
+        }
         if (d.roles.isEmpty()) {
             sb.append("统计窗口内无任务日志\n");
         }
@@ -592,6 +845,11 @@ public final class DailyDigest {
         DigestData data = collectNaturalDay(stateStore, nowMillis, online);
         data.onlineSampledAtMillis = lastOnlineSampledAtMillis > 0L
                 ? lastOnlineSampledAtMillis : nowMillis;
+        if (data.cadence == null) {
+            // 批次10：数据缺失时段落省略并留痕（不报错、不占企微字符）
+            FileLog.info("自动化日报：{} 自动派单统计缺失（{}{} 未落盘），该段省略",
+                    data.day, CADENCE_STATS_PREFIX, dayKey(data.windowStartMillis));
+        }
         String text = format(data);
         boolean sent = trySend(text);
         stateStore.putString(STATE_PREFIX + data.day, text);   // 幂等标记 + App/运维可查

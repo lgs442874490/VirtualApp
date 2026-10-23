@@ -371,6 +371,8 @@ public final class VaultSync {
             // 立刻迁移，否则这些修改永远不会进入 roles[].config/params。
             new com.carlos.vault.daily.DailyConfigStore(app).migrateRole(fpid, 0, sid);
             com.carlos.vault.daily.FnParams.migrateRole(app, fpid, 0, sid);
+            // 批次10：编队库同样按 sid=0 预配置 → 学到真实 sid 后迁移（与参数同口径）
+            com.carlos.vault.daily.FormationStore.migrateRole(app, fpid, 0, sid);
             String name = status.optString("roleName", "");
             // 服务器实际登录角色的 uid（同服多角色区分依据；旧服务器无此字段=0）
             long uid = parseUidSafe(status.optString("activeUid", ""));
@@ -912,6 +914,14 @@ public final class VaultSync {
                         JSONObject p = com.carlos.vault.daily.FnParams
                                 .params(ctx, a.fpid, r.serverid, fn.id);
                         if (p.length() > 0) prm.put(fn.id, p);
+                    }
+                    // 批次10：统一编队库作为角色保留参数随 params 上传（字符串 JSON，
+                    // 服务器 FormationLibrary.parse 读取；仅新增保留键，不改现有结构。
+                    // 无编队时不上传 → 服务器保持旧行为）。
+                    String formLib = com.carlos.vault.daily.FormationStore
+                            .libraryJsonForSync(ctx, a.fpid, r.serverid);
+                    if (formLib != null && !formLib.isEmpty()) {
+                        prm.put(com.carlos.vault.daily.FormationStore.KEY_LIBRARY, formLib);
                     }
                     if (prm.length() > 0) ro.put("params", prm);
                     roles.put(ro);

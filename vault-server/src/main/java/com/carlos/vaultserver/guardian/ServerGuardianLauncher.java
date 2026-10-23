@@ -2,6 +2,9 @@ package com.carlos.vaultserver.guardian;
 
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
+import com.carlos.vaultserver.formation.FormationLibrary;
+import com.carlos.vaultserver.formation.FormationResolver;
+import com.carlos.vaultserver.formation.ResolvedFormation;
 import com.carlos.vaultserver.task.Exec;
 
 import java.util.LinkedHashMap;
@@ -253,6 +256,85 @@ public final class ServerGuardianLauncher {
     /** 单测用：重置变体锁定。 */
     void resetVariant() {
         lockedVariant = -1;
+    }
+
+    // =====================================================================
+    // 批次10：统一编队接入（task-32）——type=5 驻防编队
+    // 1:1 参考网页版 DailyMarchFormationResolver（AUTOMATIC/ROLE 两模式；库缺失/编队不存在
+    // /英雄无效/兵量超库存 → SKIP，不静默回退）+ FormationResolver 冻结契约。
+    // =====================================================================
+
+    /** 编队解析结果：configured=false 表示无编队参数（调用方保持旧行为）。 */
+    public static final class FormationResolution {
+        public final boolean configured;
+        public final Map<String, Object> payload;
+        public final String label;
+        public final String reason;
+
+        FormationResolution(boolean configured, Map<String, Object> payload, String label, String reason) {
+            this.configured = configured;
+            this.payload = payload;
+            this.label = label == null ? "" : label;
+            this.reason = reason == null ? "" : reason;
+        }
+
+        public boolean ready() {
+            return payload != null && !payload.isEmpty();
+        }
+    }
+
+    /**
+     * 解析 type=5 驻防编队（批次10）：
+     * <ul>
+     *   <li>无任何编队参数 → configured=false（调用方走旧 hero_ids/squad_index/队1，零行为变化）；</li>
+     *   <li>显式编队参数 → FormationResolver 解析；失败 → configured=true + payload=null + 可读原因（SKIP）；</li>
+     *   <li>保留 squad_index 兼容：由 FormationResolver 的 FALLBACK 分支覆盖（无参数时）。</li>
+     * </ul>
+     *
+     * @param formationLibraryJson App 同步的 formation_library JSON（可为空=无库）
+     */
+    public static FormationResolution resolveFormation(WjdrEngine engine, Map<String, Object> fnParams,
+                                                       String formationLibraryJson) {
+        if (!FormationResolver.isConfigured(fnParams)) {
+            return new FormationResolution(false, null, "旧编队", "无编队参数");
+        }
+        try {
+            FormationLibrary lib = FormationLibrary.parse(formationLibraryJson);
+            FormationResolver.ResolveOutcome out = FormationResolver.resolveOutcome(engine, lib, fnParams);
+            if (!out.ready()) {
+                return new FormationResolution(true, null, "统一编队", out.reason);
+            }
+            ResolvedFormation resolved = out.formation;
+            Map<String, Object> payload = resolved.toFormationPayload();
+            return new FormationResolution(true, payload, resolved.describe(),
+                    payload == null ? "编队英雄/兵种为空" : "");
+        } catch (Throwable t) {
+            return new FormationResolution(true, null, "统一编队",
+                    "编队解析异常：" + brief(String.valueOf(t.getMessage())));
+        }
+    }
+
+    /** JSONObject → Map 深转换（Engine 配置解析用；FormationResolver 契约入参是 Map）。 */
+    public static Map<String, Object> toParamMap(org.json.JSONObject p) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (p == null) return out;
+        java.util.Iterator<String> it = p.keys();
+        while (it.hasNext()) {
+            String key = it.next();
+            out.put(key, toJavaValue(p.opt(key)));
+        }
+        return out;
+    }
+
+    private static Object toJavaValue(Object v) {
+        if (v instanceof org.json.JSONObject) return toParamMap((org.json.JSONObject) v);
+        if (v instanceof org.json.JSONArray) {
+            org.json.JSONArray arr = (org.json.JSONArray) v;
+            java.util.List<Object> list = new java.util.ArrayList<>();
+            for (int i = 0; i < arr.length(); i++) list.add(toJavaValue(arr.opt(i)));
+            return list;
+        }
+        return v;
     }
 
     private static String brief(String s) {

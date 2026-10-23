@@ -463,6 +463,17 @@ public final class SessionKeeper implements SessionControl,
                         long captureSid = resolveSid();
                         String err = CaptureTasks.captureAll(engine, stateStore, fpid, captureSid);
                         if (err != null) FileLog.warn("采集失败 fpid={}：{}", fpid, err);
+                        // 统一编队目录（批次10）：与周期采集一起刷新（只读、幂等），
+                        // 写冻结 state 键供 App 功能页/日报消费（键型见 FormationCatalog.STATE_KEY_PREFIX）。
+                        try {
+                            com.carlos.vaultserver.formation.FormationCatalog.capture(engine);
+                            stateStore.putString(
+                                    com.carlos.vaultserver.formation.FormationCatalog.STATE_KEY_PREFIX
+                                            + fpid + ":" + captureSid,
+                                    new org.json.JSONObject(
+                                            com.carlos.vaultserver.formation.FormationCatalog.snapshot(engine)).toString());
+                        } catch (Throwable ignored) {
+                        }
                         nextCaptureAt = System.currentTimeMillis() + CaptureTasks.CAPTURE_INTERVAL_MILLIS;
                         stateStore.flush();
                     }

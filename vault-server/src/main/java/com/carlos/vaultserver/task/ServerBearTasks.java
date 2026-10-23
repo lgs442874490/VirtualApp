@@ -4,6 +4,9 @@ import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.Beijing;
 import com.carlos.vaultserver.FileLog;
+import com.carlos.vaultserver.formation.FormationLibrary;
+import com.carlos.vaultserver.formation.FormationResolver;
+import com.carlos.vaultserver.formation.ResolvedFormation;
 
 import org.json.JSONObject;
 
@@ -112,6 +115,12 @@ public final class ServerBearTasks {
     static final long PREHEAT_ARM_SEC = 2L * 3600L;
     /** 编队英雄上限（网页版 HeroFormationRules.MAX_HERO_COUNT=3）。 */
     static final int MAX_FORMATION_HEROES = 3;
+    /** 英雄不在城（ServerGuardianLauncher.CODE_HERO_AWAY / ServerFieldTasks 采集同码）：换英雄组合重试用。 */
+    static final int CODE_HERO_NOT_IN_CITY = 301;
+    /** 巨熊 301 降级重试最大轮数（网页版语义：拉黑 301 英雄后换其余英雄组合，最多 2 轮）。 */
+    static final int MAX_BEAR_301_ROUNDS = 2;
+    /** 降级重试时自动编队取用的英雄数（巨熊集结一队 3 英雄）。 */
+    static final int BEAR_DOWNGRADE_HERO_COUNT = 3;
     /** 状态键前缀（幂等/缓存）。 */
     static final String KEY_PREFIX = "srv:bear:";
     /** 预约同步节流：窗口附近 5 分钟、平时 6 小时。 */
@@ -301,10 +310,11 @@ public final class ServerBearTasks {
             }
         }
         state.setTarget(target);
-        String formationSource = effectiveFormationSource(tc.engine, cfg);
-        Map<String, Object> formation = launchFormation(tc.engine, cfg);
+        BearFormationChoice initial = chooseLaunchFormation(tc, cfg);
+        String formationSource = initial.label;
+        Map<String, Object> formation = initial.payload;
         if (!formationReady(formation)) {
-            String text = "无可用英雄/兵力编队（来源=" + formationSource + "），未发起集结";
+            String text = "无可用英雄/兵力编队（" + formationSource + "）：" + initial.reason;
             m.skip(text);
             saveState(tc, state);
             writeLaunchMod(tc, state, text);
@@ -314,7 +324,11 @@ public final class ServerBearTasks {
         state.launchPrepareIndexUsed = prepareIndex;
         saveState(tc, state);
 
-        for (int attempt = 1; attempt <= 2; attempt++) {
+        // 批次10：301（英雄不在城）降级重试预算 + 5204 降档预算（各自独立，总请求数受限，不重试风暴）
+        int used301Rounds = 0;
+        int used5204Downgrade = 0;
+        java.util.Set<Long> blacklist301 = new java.util.LinkedHashSet<>();
+        for (int attempt = 1; attempt <= 6; attempt++) {
             long now = nowSec(tc);
             long secondsToEnd = window.endSec - now;
             if (!enoughTimeToLaunch(secondsToEnd, prepareIndex)) {
@@ -378,9 +392,57 @@ public final class ServerBearTasks {
                 return false;
             }
             state.lastLaunchCode = code;
+            // 批次10：301=英雄不在城 → 拉黑本编队英雄，换其余英雄组合重试（最多 2 轮）
+            if (code == CODE_HERO_NOT_IN_CITY) {
+                blacklist301 = blacklistHeroes(blacklist301, heroIdsOf(formation));
+                if (!canRetry301(used301Rounds)) {
+                    String text = "301(英雄不在城)降级 " + MAX_BEAR_301_ROUNDS
+                            + " 轮仍失败，本场不再重试（避免风暴）；拉黑英雄 " + blacklist301;
+                    tc.store.putString(key, launchedFailedRecord(day, window.startSec, code));
+                    state.lastLaunchCode = code;
+                    state.lastLaunchText = text;
+                    saveState(tc, state);
+                    m.skip(text);
+                    writeLaunchMod(tc, state, text);
+                    FileLog.warn("巨熊301降级耗尽 fpid={} sid={} 拉黑={} 场次={}", tc.fpid,
+                            String.valueOf(tc.sid), String.valueOf(blacklist301),
+                            day + "#" + window.startSec);
+                    return false;
+                }
+                used301Rounds++;
+                Map<String, Object> downgraded = downgrade301Formation(tc.engine, blacklist301);
+                if (!formationReady(downgraded)) {
+                    String text = "301(英雄不在城)降级失败：拉黑 " + blacklist301
+                            + " 后无可用英雄组合，本场不再重试";
+                    tc.store.putString(key, launchedFailedRecord(day, window.startSec, code));
+                    state.lastLaunchCode = code;
+                    state.lastLaunchText = text;
+                    saveState(tc, state);
+                    m.skip(text);
+                    writeLaunchMod(tc, state, text);
+                    FileLog.warn("巨熊301降级无英雄 fpid={} sid={} 拉黑={}", tc.fpid,
+                            String.valueOf(tc.sid), String.valueOf(blacklist301));
+                    return false;
+                }
+                formation = downgraded;
+                formationSource = "301降级#" + used301Rounds + " 英雄=" + heroIdsOf(formation)
+                        + "（拉黑" + blacklist301 + "）";
+                state.launchHeroes = appendHeroIds("", heroIdsOf(formation));
+                state.lastLaunchCode = code;
+                state.lastLaunchText = bear301Text(used301Rounds, blacklist301);
+                saveState(tc, state);
+                m.skip(state.lastLaunchText + "（换英雄组合立即重试）");
+                writeLaunchMod(tc, state, state.lastLaunchText);
+                FileLog.info("巨熊301降级 fpid={} sid={} round={} 新英雄={} 拉黑={} 场次={}",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(used301Rounds),
+                        String.valueOf(heroIdsOf(formation)), String.valueOf(blacklist301),
+                        day + "#" + window.startSec);
+                continue;
+            }
             LaunchRetry retry = launchRetryDecision(code, now, window, cfg, state);
-            if (retry.retry && retry.immediate && attempt == 1) {
+            if (retry.retry && retry.immediate && used5204Downgrade == 0) {
                 // 5204 降一档：服务端明确拒绝（未发车/未消耗），本轮立即重试 1 次
+                used5204Downgrade++;
                 state.downgradeRetries++;
                 prepareIndex = retry.nextPrepareIndex;
                 state.launchPrepareIndexUsed = prepareIndex;
@@ -450,24 +512,73 @@ public final class ServerBearTasks {
         usedHeroes.addAll(parseHeroIds(state.launchHeroes));
         usedHeroes.addAll(parseHeroIds(state.joinHeroes));
         Map<Long, List<Long>> squads = Exec.clientSquads(tc.engine);
+        // 批次10：上车编队 1-6（join_formations）——空=沿用旧自动上车逻辑（零行为变化）
+        FormationLibrary joinLib = cfg.joinFormations.isEmpty()
+                ? null : FormationResolver.libraryFor(tc, TASK_ID);
         boolean detailQueried = false;
         boolean joinTextWritten = false;
         int tried = 0;
         for (RallyCandidate candidate : candidates) {
             if (tried >= remaining) break;
-            List<Long> heroes = chooseSquadHeroes(squads, usedHeroes);
-            if (heroes.isEmpty()) {
-                m.skip("无空闲英雄编队可上车");
-                writeJoinMod(tc, "未上车 · 无空闲英雄编队（发起队/已上车队占用）");
-                joinTextWritten = true;
-                break;
-            }
-            Map<String, Object> formation = Exec.formationWithHeroes(tc.engine, heroes);
-            if (!formationReady(formation)) {
-                m.skip("上车编队无可用兵力，停止上车");
-                writeJoinMod(tc, "未上车 · 上车编队无可用兵力");
-                joinTextWritten = true;
-                break;
+            List<Long> heroes;
+            Map<String, Object> formation;
+            String joinSource;
+            JoinFormationConfig slot = cfg.joinFormations.isEmpty()
+                    ? null : joinFormationAt(cfg, joined.size() + tried);
+            if (!cfg.joinFormations.isEmpty()) {
+                if (slot == null) {
+                    m.skip("上车编队已用完（配置 " + enabledJoinFormationIds(cfg) + "），本场上车结束");
+                    writeJoinMod(tc, "未上车 · 上车编队配置已用完（" + enabledJoinFormationIds(cfg) + "）");
+                    joinTextWritten = true;
+                    break;
+                }
+                if (joinLib == null) joinLib = FormationResolver.libraryFor(tc, TASK_ID);
+                FormationResolver.ResolveOutcome slotOut = FormationResolver.resolveOutcome(
+                        tc.engine, joinLib, slot.params);
+                if (!slotOut.ready()) {
+                    m.skip(slot.label() + "不可用：" + slotOut.reason);
+                    writeJoinMod(tc, "未上车 · " + slot.label() + "不可用：" + slotOut.reason);
+                    joinTextWritten = true;
+                    break;
+                }
+                formation = slotOut.formation.toFormationPayload();
+                heroes = slotOut.formation.heroIds;
+                joinSource = slotOut.formation.describe();
+                if (!formationReady(formation)) {
+                    m.skip(slot.label() + "编队不可用（无英雄/兵种）");
+                    writeJoinMod(tc, "未上车 · " + slot.label() + "编队不可用（无英雄/兵种）");
+                    joinTextWritten = true;
+                    break;
+                }
+                boolean conflict = false;
+                for (Long heroId : heroes) {
+                    if (heroId != null && usedHeroes.contains(heroId)) {
+                        conflict = true;
+                        break;
+                    }
+                }
+                if (conflict) {
+                    m.skip(slot.label() + "英雄已被发起队/前序上车占用：" + heroes);
+                    writeJoinMod(tc, "未上车 · " + slot.label() + "英雄已被占用：" + heroes);
+                    joinTextWritten = true;
+                    break;
+                }
+            } else {
+                heroes = chooseSquadHeroes(squads, usedHeroes);
+                if (heroes.isEmpty()) {
+                    m.skip("无空闲英雄编队可上车");
+                    writeJoinMod(tc, "未上车 · 无空闲英雄编队（发起队/已上车队占用）");
+                    joinTextWritten = true;
+                    break;
+                }
+                formation = Exec.formationWithHeroes(tc.engine, heroes);
+                if (!formationReady(formation)) {
+                    m.skip("上车编队无可用兵力，停止上车");
+                    writeJoinMod(tc, "未上车 · 上车编队无可用兵力");
+                    joinTextWritten = true;
+                    break;
+                }
+                joinSource = "旧自动上车（客户端队）";
             }
             Map<String, Object> payload = joinPayload(candidate.masterMarchId,
                     candidate.startX, candidate.startY, formation);
@@ -503,11 +614,13 @@ public final class ServerBearTasks {
                 if (confirmed) {
                     m.claimed("上车×1(车头" + candidate.masterMarchId + ")");
                     writeJoinMod(tc, "已上车 车头=" + candidate.masterMarchId
+                            + " · " + joinSource
                             + (detailText.isEmpty() ? "" : " · " + detailText));
                     joinTextWritten = true;
-                    FileLog.info("巨熊上车成功 fpid={} sid={} masterMarchId={} 车头=({},{})",
+                    FileLog.info("巨熊上车成功 fpid={} sid={} masterMarchId={} 车头=({},{}) 编队={}",
                             tc.fpid, String.valueOf(tc.sid), String.valueOf(candidate.masterMarchId),
-                            String.valueOf(candidate.startX), String.valueOf(candidate.startY));
+                            String.valueOf(candidate.startX), String.valueOf(candidate.startY),
+                            joinSource);
                 } else {
                     m.skip("上车请求已发(车头" + candidate.masterMarchId + ")，成员详情未确认");
                     writeJoinMod(tc, "上车已请求(车头=" + candidate.masterMarchId + ")，对账未确认"
@@ -563,8 +676,9 @@ public final class ServerBearTasks {
             saveState(tc, state);
         }
         boolean targetReady = targetUsable(state);
-        String formationSource = effectiveFormationSource(tc.engine, cfg);
-        boolean formationOk = formationReady(launchFormation(tc.engine, cfg));
+        BearFormationChoice choice = chooseLaunchFormation(tc, cfg);
+        String formationSource = choice.label;
+        boolean formationOk = formationReady(choice.payload);
         long secondsToStart = Math.max(0L, window.startSec - nowSec);
         String summary = preheatSummary(targetReady, state.targetX, state.targetY,
                 state.targetMonsterId, formationOk, formationSource, secondsToStart);
@@ -578,7 +692,8 @@ public final class ServerBearTasks {
         writeLaunchMod(tc, state, (targetReady && formationOk ? "预热就绪" : "预热未就绪") + " · " + summary);
         saveState(tc, state);
         if (!formationOk) {
-            m.skip("巨熊预热：无可用英雄/兵力编队（来源=" + formationSource + "），到点将无法发车");
+            m.skip("巨熊预热：无可用英雄/兵力编队（" + formationSource + "）"
+                    + (choice.reason.isEmpty() ? "，到点将无法发车" : "：" + choice.reason));
         } else if (!targetReady) {
             m.skip(summary + " · 目标未就绪（每 60s 重试）");
         } else {
@@ -1129,6 +1244,278 @@ public final class ServerBearTasks {
         if (formationReady(bySquad)) return bySquad;
         // 最终兜底现有行为：默认第 1 队（可能仍为空，由调用方 SKIP 并写清原因）
         return squad == 1 ? bySquad : Exec.formation(engine, 1);
+    }
+
+    /** 发车编队选择结果（批次10：统一编队 / 旧行为回退；payload=null 表示 SKIP）。 */
+    static final class BearFormationChoice {
+        final Map<String, Object> payload;
+        final String label;
+        final String reason;
+
+        BearFormationChoice(Map<String, Object> payload, String label, String reason) {
+            this.payload = payload;
+            this.label = label == null ? "" : label;
+            this.reason = reason == null ? "" : reason;
+        }
+    }
+
+    /**
+     * 选发车编队（批次10 统一编队接入，1:1 参考网页版 DailyBearMarchExecutor.resolveFormation:562-570）：
+     * <ul>
+     *   <li>显式编队参数（{@link FormationResolver#isConfigured}）→ 统一编队解析；库缺失/编队不存在/
+     *       英雄无效/兵量超库存 → payload=null + 可读原因（调用方 SKIP，不静默回退旧编队）；</li>
+     *   <li>无编队参数 → 旧行为（hero_ids→squad_index→队1，payload 与既有逐字节一致）。</li>
+     * </ul>
+     */
+    static BearFormationChoice chooseLaunchFormation(TaskContext tc, BearConfig cfg) {
+        if (FormationResolver.isConfigured(cfg.paramsMap)) {
+            FormationLibrary lib = FormationResolver.libraryFor(tc, TASK_ID);
+            FormationResolver.ResolveOutcome out = FormationResolver.resolveOutcome(
+                    tc.engine, lib, cfg.paramsMap);
+            if (!out.ready()) {
+                return new BearFormationChoice(null, "统一编队", out.reason);
+            }
+            ResolvedFormation resolved = out.formation;
+            Map<String, Object> payload = resolved.toFormationPayload();
+            return new BearFormationChoice(payload, resolved.describe(),
+                    payload == null ? "编队英雄/兵种为空" : "");
+        }
+        String label = effectiveFormationSource(tc.engine, cfg);
+        Map<String, Object> payload = launchFormation(tc.engine, cfg);
+        return new BearFormationChoice(payload, label,
+                formationReady(payload) ? "" : "空编队(无英雄/兵力)");
+    }
+
+    // ---------- 5.1b 统一编队（批次10）：参数转换 / 上车 1-6 编队 / 301 降级（纯函数） ----------
+
+    /** JSONObject → Map 深转换（{@code FormationResolver.resolve} 契约入参是 Map<String,Object>）。 */
+    static Map<String, Object> paramsToMap(JSONObject p) {
+        Map<String, Object> out = new LinkedHashMap<>();
+        if (p == null) return out;
+        java.util.Iterator<String> it = p.keys();
+        while (it.hasNext()) {
+            String key = it.next();
+            out.put(key, jsonValueToJava(p.opt(key)));
+        }
+        return out;
+    }
+
+    /** JSON 值 → Java 值（嵌套 JSONObject/JSONArray 递归转换）。 */
+    static Object jsonValueToJava(Object v) {
+        if (v instanceof JSONObject) return paramsToMap((JSONObject) v);
+        if (v instanceof org.json.JSONArray) {
+            org.json.JSONArray arr = (org.json.JSONArray) v;
+            List<Object> list = new ArrayList<>();
+            for (int i = 0; i < arr.length(); i++) list.add(jsonValueToJava(arr.opt(i)));
+            return list;
+        }
+        return v;
+    }
+
+    /**
+     * 是否显式配置了通用编队字段（批次10）：formation_mode/formation_id/soldiers/ratio/total
+     * 或 clarify join_formations 任一出现即 true。只有旧 hero_ids/squad_index → false（走旧行为）。
+     */
+    static boolean hasGenericFormationConfig(Map<String, Object> params) {
+        if (params == null || params.isEmpty()) return false;
+        for (String key : new String[]{"formation_mode", "formationMode", "mode",
+                "formation_id", "formationId", "soldiers", "ratio", "total",
+                "join_formations", "joinFormations"}) {
+            if (params.containsKey(key) && params.get(key) != null) return true;
+        }
+        return false;
+    }
+
+    /** 任意 JSON/Map → Map 深副本（join_formations 元素兼容两种输入形状）。 */
+    @SuppressWarnings("unchecked")
+    static Map<String, Object> anyToMap(Object raw) {
+        if (raw instanceof JSONObject) return paramsToMap((JSONObject) raw);
+        if (raw instanceof Map) {
+            Map<String, Object> out = new LinkedHashMap<>();
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) raw).entrySet()) {
+                if (e.getKey() == null) continue;
+                out.put(String.valueOf(e.getKey()), jsonValueToJava(e.getValue()));
+            }
+            return out;
+        }
+        return null;
+    }
+
+    /**
+     * 巨熊上车编队配置（App {@code join_formations} 数组元素；id 1-6 对应网页版
+     * {@code DailyBearFormationConfig}）。mode/soldiers/ratio/total 原样保留，解析由 formation 包完成。
+     */
+    static final class JoinFormationConfig {
+        final int id;
+        final boolean enabled;
+        final String mode;
+        final long formationId;
+        final long infantry;
+        final long lancer;
+        final long marksman;
+        final Map<String, Object> params;
+
+        JoinFormationConfig(int id, boolean enabled, String mode, long formationId,
+                            long infantry, long lancer, long marksman, Map<String, Object> params) {
+            this.id = id;
+            this.enabled = enabled;
+            this.mode = mode == null ? "" : mode;
+            this.formationId = formationId;
+            this.infantry = Math.max(0L, infantry);
+            this.lancer = Math.max(0L, lancer);
+            this.marksman = Math.max(0L, marksman);
+            this.params = params == null ? new LinkedHashMap<>() : params;
+        }
+
+        String label() {
+            return "上车编队" + id;
+        }
+
+        String describe() {
+            return label() + "[" + (mode.isEmpty() ? "AUTO" : mode)
+                    + (formationId > 0 ? "#" + formationId : "")
+                    + " 兵=" + infantry + "/" + lancer + "/" + marksman + "]";
+        }
+    }
+
+    /**
+     * 解析巨熊 {@code join_formations}（纯函数）：支持 JSONArray/List；id 缺省=下标+1；
+     * id 越界(1-6)/重复 → 丢弃；保持数组顺序。缺失/非法 → 空列表（调用方走旧自动上车逻辑）。
+     */
+    static List<JoinFormationConfig> parseJoinFormations(JSONObject params) {
+        List<JoinFormationConfig> out = new ArrayList<>();
+        if (params == null) return out;
+        Object raw = params.opt("join_formations");
+        if (raw == null) raw = params.opt("joinFormations");
+        List<Object> rows = new ArrayList<>();
+        if (raw instanceof org.json.JSONArray) {
+            org.json.JSONArray arr = (org.json.JSONArray) raw;
+            for (int i = 0; i < arr.length(); i++) rows.add(arr.opt(i));
+        } else if (raw instanceof List) {
+            rows.addAll((List<?>) raw);
+        }
+        java.util.Set<Integer> seen = new java.util.LinkedHashSet<>();
+        for (int i = 0; i < rows.size(); i++) {
+            Map<String, Object> m = anyToMap(rows.get(i));
+            if (m == null || m.isEmpty()) continue;
+            long rawId = Exec.longOf(m.containsKey("id") ? m.get("id") : null);
+            int id = (int) (rawId > 0 ? rawId : i + 1);
+            if (id < 1 || id > MAX_JOIN_COUNT || !seen.add(id)) continue;
+            boolean enabled = optBoolValue(m.get("enabled"), true);
+            Object modeRaw = m.containsKey("mode") ? m.get("mode")
+                    : (m.containsKey("formation_mode") ? m.get("formation_mode") : m.get("formationMode"));
+            String mode = modeRaw == null ? "" : String.valueOf(modeRaw).trim();
+            long formationId = Exec.longOf(m.containsKey("formation_id") ? m.get("formation_id")
+                    : m.get("formationId"));
+            long infantry = 0L, lancer = 0L, marksman = 0L;
+            Map<String, Object> soldiers = anyToMap(m.get("soldiers"));
+            if (soldiers != null) {
+                infantry = Exec.longOf(soldiers.get("infantry"));
+                lancer = Exec.longOf(soldiers.get("lancer"));
+                marksman = Exec.longOf(soldiers.get("marksman"));
+            }
+            // 传给 FormationResolver 的槽参数：统一键名（App 用 mode，契约用 formation_mode）
+            Map<String, Object> slotParams = new LinkedHashMap<>(m);
+            if (!mode.isEmpty()) slotParams.put("formation_mode", mode);
+            if (formationId > 0L) slotParams.put("formation_id", formationId);
+            out.add(new JoinFormationConfig(id, enabled, mode, formationId,
+                    infantry, lancer, marksman, slotParams));
+        }
+        return out;
+    }
+
+    /** 已启用的上车编队 id 升序（网页版 1-6 固定顺序）；无配置 → 空。 */
+    static List<Integer> enabledJoinFormationIds(BearConfig cfg) {
+        List<Integer> ids = new ArrayList<>();
+        if (cfg == null || cfg.joinFormations == null) return ids;
+        for (JoinFormationConfig slot : cfg.joinFormations) {
+            if (slot != null && slot.enabled && !ids.contains(slot.id)) ids.add(slot.id);
+        }
+        ids.sort(Integer::compareTo);
+        return ids;
+    }
+
+    /** 第 n 个上车尝试使用的编队槽（按启用 id 升序；越界 → null=走旧逻辑）。 */
+    static JoinFormationConfig joinFormationAt(BearConfig cfg, int attemptIndex) {
+        if (attemptIndex < 0) return null;
+        List<Integer> ids = enabledJoinFormationIds(cfg);
+        if (attemptIndex >= ids.size()) return null;
+        int want = ids.get(attemptIndex);
+        for (JoinFormationConfig slot : cfg.joinFormations) {
+            if (slot != null && slot.id == want) return slot;
+        }
+        return null;
+    }
+
+    // ---------- 巨熊 301（英雄不在城）降级重试（纯函数；批次10） ----------
+
+    /** 把本次编队的英雄加入拉黑集合（返回新集合；null 安全）。 */
+    static java.util.Set<Long> blacklistHeroes(java.util.Set<Long> blacklist, List<Long> formationHeroes) {
+        java.util.Set<Long> out = new java.util.LinkedHashSet<>();
+        if (blacklist != null) out.addAll(blacklist);
+        if (formationHeroes != null) {
+            for (Long id : formationHeroes) {
+                if (id != null && id > 0L) out.add(id);
+            }
+        }
+        return out;
+    }
+
+    /** 301 降级轮次是否还有预算（最多 {@value #MAX_BEAR_301_ROUNDS} 轮，不重试风暴）。 */
+    static boolean canRetry301(int usedRounds) {
+        return usedRounds >= 0 && usedRounds < MAX_BEAR_301_ROUNDS;
+    }
+
+    /** 301 降级文案（日志/mod 可读）。 */
+    static String bear301Text(int round, java.util.Set<Long> blacklist) {
+        StringBuilder sb = new StringBuilder("301(英雄不在城)降级第").append(round).append("轮：拉黑英雄 ");
+        if (blacklist == null || blacklist.isEmpty()) {
+            sb.append("(无)");
+        } else {
+            int i = 0;
+            for (Long id : blacklist) {
+                if (i++ > 0) sb.append(',');
+                sb.append(id);
+            }
+        }
+        return sb.append("，换其余英雄组合重试").toString();
+    }
+
+    /** 从全部英雄中挑出未被拉黑/未占用的候选（去重、保序、最多 max 个；不足返回空）。 */
+    static List<Long> pickHeroesExcluding(List<Long> allHeroes, java.util.Set<Long> excluded, int max) {
+        List<Long> out = new ArrayList<>();
+        if (allHeroes == null || max <= 0) return out;
+        java.util.Set<Long> skip = excluded == null ? Collections.emptySet() : excluded;
+        java.util.Set<Long> seen = new java.util.LinkedHashSet<>();
+        for (Long id : allHeroes) {
+            if (id == null || id <= 0L || skip.contains(id) || !seen.add(id)) continue;
+            out.add(id);
+            if (out.size() >= max) break;
+        }
+        return out;
+    }
+
+    /** 301 降级编队（换其余英雄组合；无可用英雄 → null=停止重试）。 */
+    static Map<String, Object> downgrade301Formation(WjdrEngine engine, java.util.Set<Long> blacklist) {
+        try {
+            List<Long> heroes = pickHeroesExcluding(Exec.allHeroes(engine), blacklist,
+                    BEAR_DOWNGRADE_HERO_COUNT);
+            if (heroes.isEmpty()) return null;
+            return Exec.formationWithHeroes(engine, heroes);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** Map 值转布尔（App 参数/JSON 混用 Boolean/Number/String 三种形状）。 */
+    static boolean optBoolValue(Object v, boolean def) {
+        if (v == null) return def;
+        if (v instanceof Boolean) return (Boolean) v;
+        if (v instanceof Number) return ((Number) v).longValue() != 0L;
+        String s = String.valueOf(v).trim();
+        if ("true".equalsIgnoreCase(s) || "1".equals(s)) return true;
+        if ("false".equalsIgnoreCase(s) || "0".equals(s)) return false;
+        return def;
     }
 
     // ---------- 5.2 发车重试决策（批次5，纯函数） ----------
@@ -1730,6 +2117,15 @@ public final class ServerBearTasks {
         /** 编队配置（批次5）：hero_ids 优先（≤3 名）；为空时用 squad_index 客户端布阵；都缺省沿用队1。 */
         final List<Long> heroIds;
         final int squadIndex;
+        // ---- 批次10 统一编队（非 final：defaults() 之外由 of() 填充；缺省=旧行为） ----
+        /** 原始 fnParams（JSONObject→Map 深转换；供 FormationResolver.resolve 使用）。 */
+        final Map<String, Object> paramsMap = new LinkedHashMap<>();
+        /** 是否显式配置了通用编队字段（formation_mode/formation_id/soldiers/ratio/total）。 */
+        boolean formationConfigured;
+        /** formation_library 原始 JSON（空=无库）。 */
+        String formationLibraryJson = "";
+        /** 巨熊上车编队 1-6（App join_formations；空=沿用旧自动上车逻辑）。 */
+        List<JoinFormationConfig> joinFormations = Collections.emptyList();
 
         BearConfig(boolean launchEnabled, boolean joinEnabled, boolean prepareRecallEnabled,
                    boolean launchWithoutReserve, int joinCount, int prepareTimeIndex,
@@ -1775,7 +2171,7 @@ public final class ServerBearTasks {
             int endMinute = endHour * 60 + endMin;
             int duration = endMinute - startMinute;
             if (duration <= 0) duration = ACTIVITY_MINUTES;  // 不支持跨零点：非法配置回落到 30 分钟
-            return new BearConfig(
+            BearConfig cfg = new BearConfig(
                     optBool(p, "launch_enabled", true),
                     optBool(p, "join_enabled", true),
                     optBool(p, "prepare_recall", false),
@@ -1786,6 +2182,12 @@ public final class ServerBearTasks {
                     startMinute, duration,
                     parseConfiguredHeroIds(p),
                     p.optInt("squad_index", 1));
+            // 批次10：统一编队参数（无这些键 → formationConfigured=false → 完全旧行为）
+            cfg.paramsMap.putAll(paramsToMap(p));
+            cfg.formationConfigured = hasGenericFormationConfig(cfg.paramsMap);
+            cfg.formationLibraryJson = p.optString("formation_library", "");
+            cfg.joinFormations = parseJoinFormations(p);
+            return cfg;
         }
     }
 

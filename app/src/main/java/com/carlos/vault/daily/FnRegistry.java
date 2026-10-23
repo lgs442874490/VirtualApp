@@ -25,13 +25,24 @@ public final class FnRegistry {
         public final int cat;
         public final boolean implemented;
         public final String desc;
+        /**
+         * 批次10：是否需要「统一编队」（采集/情报/狩猎/巨兽/巨熊/守护盟友等队列功能）。
+         * true 时功能页显示编队卡片（英雄/兵种/比例，随角色 params 同步服务器）。
+         */
+        public final boolean formation;
 
         public Fn(String id, String name, int cat, boolean implemented, String desc) {
+            this(id, name, cat, implemented, desc, false);
+        }
+
+        public Fn(String id, String name, int cat, boolean implemented, String desc,
+                  boolean formation) {
             this.id = id;
             this.name = name;
             this.cat = cat;
             this.implemented = implemented;
             this.desc = desc;
+            this.formation = formation;
         }
     }
 
@@ -80,12 +91,12 @@ public final class FnRegistry {
         l.add(new Fn("act_icehunter", "冰原猎人", CAT_ACTIVITY, true, "进度奖励+生成BOSS+集结"));
 
         // ===== 野外 =====
-        l.add(new Fn("gather", "野外采集", CAT_FIELD, true, "搜索资源点派出空闲队列"));
+        l.add(new Fn("gather", "野外采集", CAT_FIELD, true, "搜索资源点派出空闲队列", true));
         l.add(new Fn("adventure_sweep", "探险速刷", CAT_FIELD, true, "已通关关卡 is_fast 快速推进（每日可刷）"));
-        l.add(new Fn("intel", "情报任务", CAT_FIELD, true, "处理待办情报事件并领奖"));
-        l.add(new Fn("behemoth", "巨兽狩猎", CAT_FIELD, true, "开启原生自动上车(巨兽/死神/巨熊)"));
-        l.add(new Fn("bear", "巨熊行动", CAT_FIELD, true, "陷阱预约同步（上车由自动上车承接）"));
-        l.add(new Fn("hunt", "自动狩猎", CAT_FIELD, true, "搜索野怪自动出征×8"));
+        l.add(new Fn("intel", "情报任务", CAT_FIELD, true, "处理待办情报事件并领奖", true));
+        l.add(new Fn("behemoth", "巨兽狩猎", CAT_FIELD, true, "开启原生自动上车(巨兽/死神/巨熊)", true));
+        l.add(new Fn("bear", "巨熊行动", CAT_FIELD, true, "陷阱预约同步（上车由自动上车承接）", true));
+        l.add(new Fn("hunt", "自动狩猎", CAT_FIELD, true, "搜索野怪自动出征×8", true));
         l.add(new Fn("battle_shield", "战斗护盾", CAT_FIELD, true, "每日免费护盾+反应式开盾"));
 
         // ===== 联盟 =====
@@ -93,7 +104,7 @@ public final class FnRegistry {
         l.add(new Fn("alliance_donate", "联盟捐献", CAT_ALLIANCE, true, "科技捐献+发展/排名奖励"));
         l.add(new Fn("alliance_mobilization", "联盟动员", CAT_ALLIANCE, true, "任务奖励+免费次数+里程碑"));
         l.add(new Fn("alliance_showdown", "争霸赛", CAT_ALLIANCE, true, "未报名时自动报名赛道1"));
-        l.add(new Fn("guardian", "守护盟友", CAT_ALLIANCE, true, "盟友被攻实时监测+卡秒驻防（建设中：监测已上线）"));
+        l.add(new Fn("guardian", "守护盟友", CAT_ALLIANCE, true, "盟友被攻实时监测+卡秒驻防（建设中：监测已上线）", true));
         l.add(new Fn("war", "战争状态", CAT_ALLIANCE, true, "H0-H4 硬触发+全敌静默/开盾退出的战时总闸（E1 任务闸/敌情板/人工强制）"));
         l.add(new Fn("alliance_help", "联盟互助", CAT_ALLIANCE, true, "一键帮助全盟（常驻互助接管时自动跳过）"));
         l.add(new Fn("homeland_visit", "晨曦岛拜访", CAT_ALLIANCE, true, "拜访活跃盟友晨曦岛并协助（每日3次）"));

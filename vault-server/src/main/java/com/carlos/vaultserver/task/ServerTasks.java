@@ -5,6 +5,9 @@ import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.Beijing;
 import com.carlos.vaultserver.CaptureTasks;
 import com.carlos.vaultserver.FileLog;
+import com.carlos.vaultserver.formation.FormationLibrary;
+import com.carlos.vaultserver.formation.FormationResolver;
+import com.carlos.vaultserver.formation.ResolvedFormation;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -3862,10 +3865,12 @@ public final class ServerTasks {
             out.text = "行军队列已满（" + active + "/" + queueLimit + "），等待部队回城";
             return out;
         }
-        // ③ 编队（hero_ids 优先 → 客户端队 squad_index；缺省队1，与既有 Exec.formation 一致）
-        Map<String, Object> formation = behemothFormation(tc.engine, cfg);
+        // ③ 编队（批次10 统一编队：显式参数→FormationResolver；无参数→旧 hero_ids/squad_index/队1）
+        BehemothFormationChoice launchFormationChoice = chooseBehemothFormation(tc, cfg);
+        Map<String, Object> formation = launchFormationChoice.payload;
         if (!behemothFormationReady(formation)) {
-            out.text = "无可用英雄/兵力编队（hero_ids 或客户端队" + cfg.squadIndex + "），未发起";
+            out.text = "无可用英雄/兵力编队（" + launchFormationChoice.label + "）："
+                    + launchFormationChoice.reason + "，未发起";
             return out;
         }
         // ④ 等级倒序搜索 + 目标校验 + 发起（每级 1 次搜索，防请求风暴）
@@ -3992,9 +3997,11 @@ public final class ServerTasks {
             out.text = "行军队列已满（" + active + "/" + queueLimit + "），本轮不上车";
             return out;
         }
-        Map<String, Object> formation = behemothFormation(tc.engine, cfg);
+        BehemothFormationChoice joinFormationChoice = chooseBehemothFormation(tc, cfg);
+        Map<String, Object> formation = joinFormationChoice.payload;
         if (!behemothFormationReady(formation)) {
-            out.text = "无可用上车编队（hero_ids 或客户端队" + cfg.squadIndex + "）";
+            out.text = "无可用上车编队（" + joinFormationChoice.label + "）："
+                    + joinFormationChoice.reason;
             return out;
         }
         int tried = 0;
@@ -4016,9 +4023,10 @@ public final class ServerTasks {
                 out.joined++;
                 out.text = "已手工上车 1 队(车头" + rally.masterMarchId + ") 今日 "
                         + state.joinCount + "/" + cfg.joinLimit;
-                FileLog.info("巨兽手动上车成功 fpid={} sid={} masterMarchId={} 今日={}/{}",
+                FileLog.info("巨兽手动上车成功 fpid={} sid={} masterMarchId={} 今日={}/{} 编队={}",
                         tc.fpid, String.valueOf(tc.sid), String.valueOf(rally.masterMarchId),
-                        String.valueOf(state.joinCount), String.valueOf(cfg.joinLimit));
+                        String.valueOf(state.joinCount), String.valueOf(cfg.joinLimit),
+                        joinFormationChoice.label);
                 return out;
             }
             ClaimLedger.mark(tc, "behemoth_join", "m" + rally.masterMarchId);
@@ -4524,6 +4532,13 @@ public final class ServerTasks {
         List<Long> autoJoinIds = java.util.Arrays.asList(1L, 4L, 3L);
         List<Long> heroIds = new ArrayList<>();
         int squadIndex = 1;
+        // ---- 批次10 统一编队（缺省=旧行为） ----
+        /** 原始 fnParams（JSONObject→Map 深转换；供 FormationResolver.resolve 使用）。 */
+        final Map<String, Object> paramsMap = new LinkedHashMap<>();
+        /** 是否显式配置了通用编队字段（formation_mode/formation_id/soldiers/ratio/total）。 */
+        boolean formationConfigured;
+        /** formation_library 原始 JSON（空=无库）。 */
+        String formationLibraryJson = "";
 
         static BehemothConfig of(org.json.JSONObject params) {
             BehemothConfig cfg = new BehemothConfig();
@@ -4549,6 +4564,10 @@ public final class ServerTasks {
             cfg.heroIds = parseIds(p.optString("hero_ids", ""), new ArrayList<Long>());
             if (cfg.heroIds.size() > 3) cfg.heroIds = new ArrayList<>(cfg.heroIds.subList(0, 3));
             cfg.squadIndex = clamp(p.optInt("squad_index", 1), 1, 6);
+            // 批次10：统一编队参数（无这些键 → formationConfigured=false → 完全旧行为）
+            cfg.paramsMap.putAll(ServerBearTasks.paramsToMap(p));
+            cfg.formationConfigured = ServerBearTasks.hasGenericFormationConfig(cfg.paramsMap);
+            cfg.formationLibraryJson = p.optString("formation_library", "");
             return cfg;
         }
 
@@ -4644,7 +4663,49 @@ public final class ServerTasks {
         }
     }
 
-    /** 编队：hero_ids 优先（≤3）→ 客户端队 squad_index → 默认队1（与既有 Exec.formation 行为一致）。 */
+    /** 巨兽编队选择结果（批次10：统一编队 / 旧行为回退；payload=null 表示 SKIP）。 */
+    static final class BehemothFormationChoice {
+        final Map<String, Object> payload;
+        final String label;
+        final String reason;
+
+        BehemothFormationChoice(Map<String, Object> payload, String label, String reason) {
+            this.payload = payload;
+            this.label = label == null ? "" : label;
+            this.reason = reason == null ? "" : reason;
+        }
+    }
+
+    /**
+     * 选巨兽编队（批次10 统一编队接入，1:1 参考网页版 DailyBehemothConfig 编队字段 +
+     * DailyBehemothService：编队不可用→SKIP）：
+     * <ul>
+     *   <li>显式编队参数（formation_mode/formation_id/soldiers/ratio/total）→ FormationResolver；
+     *       库缺失/编队不存在/英雄无效/兵量超库存 → payload=null + 可读原因（SKIP，不静默回退）；</li>
+     *   <li>无编队参数 → 旧行为（hero_ids→squad_index→队1，零行为变化）。</li>
+     * </ul>
+     */
+    static BehemothFormationChoice chooseBehemothFormation(TaskContext tc, BehemothConfig cfg) {
+        if (FormationResolver.isConfigured(cfg.paramsMap)) {
+            FormationLibrary lib = FormationResolver.libraryFor(tc, "behemoth");
+            FormationResolver.ResolveOutcome out = FormationResolver.resolveOutcome(
+                    tc.engine, lib, cfg.paramsMap);
+            if (!out.ready()) {
+                return new BehemothFormationChoice(null, "统一编队", out.reason);
+            }
+            ResolvedFormation resolved = out.formation;
+            Map<String, Object> payload = resolved.toFormationPayload();
+            return new BehemothFormationChoice(payload, resolved.describe(),
+                    payload == null ? "编队英雄/兵种为空" : "");
+        }
+        Map<String, Object> payload = behemothFormation(tc.engine, cfg);
+        String label = cfg.heroIds.isEmpty()
+                ? "squad_index(" + cfg.squadIndex + ")" : "hero_ids(" + cfg.heroIds + ")";
+        return new BehemothFormationChoice(payload, label,
+                behemothFormationReady(payload) ? "" : "空编队(无英雄/兵力)");
+    }
+
+    /** 旧编队：hero_ids 优先（≤3）→ 客户端队 squad_index → 默认队1（与既有 Exec.formation 行为一致）。 */
     static Map<String, Object> behemothFormation(WjdrEngine engine, BehemothConfig cfg) {
         if (cfg != null && !cfg.heroIds.isEmpty()) {
             Map<String, Object> byHeroIds = Exec.formationWithHeroes(engine, cfg.heroIds);
