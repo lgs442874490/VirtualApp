@@ -255,6 +255,11 @@ public final class SessionKeeper implements SessionControl,
         volatile ServerShieldResponder shield;
         /** P7 战争状态对等（世界/联盟行军推送 → WarState 判定；惰性挂载同上）。 */
         volatile ServerWarState war;
+        /**
+         * 守护盟友 P0（批次9）：推送 → 威胁表 → type=5 驻防/撤防。
+         * 默认关（roleParams `guardian` 未配置时 enabled=false/dry_run=true，零请求零状态写入）。
+         */
+        volatile com.carlos.vaultserver.guardian.ServerGuardianEngine guardian;
         /** 下次热载 p:war.* 参数时刻（60s 一次；配置来自 App 同步的 roleParams）。 */
         volatile long nextWarCfgAt;
         /** 下次全量采集时刻（登录后 3s 首采，之后每 10 分钟）。 */
@@ -444,6 +449,14 @@ public final class SessionKeeper implements SessionControl,
                     // 反应式开盾优先于采集/互助：攻击行军按分钟计，开盾早一秒是一秒
                     ServerShieldResponder s = shield;
                     if (s != null) s.tick(engine);
+                    // 守护盟友 P0（批次9）：钩子只入账（默认关，零请求）；tick 做配置热载/内存清理
+                    if (guardian == null) {
+                        guardian = new com.carlos.vaultserver.guardian.ServerGuardianEngine(
+                                fpid, resolveSid(), stateStore, store);
+                        guardian.attach(engine);
+                    }
+                    com.carlos.vaultserver.guardian.ServerGuardianEngine g = guardian;
+                    if (g != null) g.tick(engine);
                     ServerHelpResponder h = help;
                     long now = System.currentTimeMillis();
                     if (now >= nextCaptureAt) {
@@ -714,6 +727,14 @@ public final class SessionKeeper implements SessionControl,
 
         void shutdown() {
             wantOnline = false;
+            // 守护盟友 P0：停掉 guardian 单线程执行器（不挂起线程，不发请求）
+            com.carlos.vaultserver.guardian.ServerGuardianEngine g = guardian;
+            if (g != null) {
+                try {
+                    g.shutdown();
+                } catch (Throwable ignored) {
+                }
+            }
             try {
                 engine.close();
             } catch (Throwable ignored) {
