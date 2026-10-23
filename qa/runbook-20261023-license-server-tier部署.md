@@ -66,3 +66,17 @@ curl -s http://127.0.0.1:8787/healthz
 - 旧库升级重启即自动迁移，无需手工 SQL。
 - 旧 APK（≤v4.1.8）+ 新发的 T1/T2 码：旧客户端无 tier 逻辑，激活时会把 tier 纳入 HMAC 校验场景处理不完整（README §5.1/§10-7 已注明“极端组合可能需重新激活”）；**存量 T3 码不受影响**。
 - 新 APK v4.1.9 + 旧服务端（无 tier 字段）：App 保持 T3（不降权），可正常使用；升级服务端后新发码才生效。
+
+## 七、实际部署记录（2026-10-23 20:40，已执行）
+
+| 项 | 内容 |
+|---|---|
+| 主机 | `ubuntu@43.163.7.111`（sshpass + servers.env；sudo NOPASSWD） |
+| 备份 | `/opt/license-server/backup/license-server.bak-20261023-2022`、`license.db.bak-20261023-2022`（192,512 B） |
+| 旧二进制 | sha256 `3d643026f415fe711040d41f9d61cd0c95b926f8545ae6ba8f979e6e754e0462` |
+| 新二进制 | sha256 `6d082066835cd738cb05258b9e48f92d24224072ce3a996b88bf4bbe736292be`（10,526,880 B；gz 4.5MB 上传受跨境带宽限制约 12KB/s，需 gzip+断点续传） |
+| 服务 | `systemctl restart license-server` → active；`172.17.0.1:8787/healthz` ok；公网 `https://cs.888syd.xyz/healthz` ok |
+| DB 迁移 | 自动补列 `tier INTEGER NOT NULL DEFAULT 3`；存量 5 个 active 码全部 `高级会员(3)`（不降权） |
+| CLI 验证 | `license-ctl list` 显示 TIER 列；`issue -tier 1|2|3`（默认3）可用 |
+| 回滚 | `cp backup/license-server.bak-20261023-2022 /opt/license-server/license-server && systemctl restart license-server`；DB 回滚同理（会丢回滚后新数据） |
+| 备注 | 客户端 v4.1.8 及以下无 tier 逻辑；新发 T1/T2 码建议配合 v4.1.9 APK（≥23509）使用；存量 T3 码对旧客户端兼容 |
