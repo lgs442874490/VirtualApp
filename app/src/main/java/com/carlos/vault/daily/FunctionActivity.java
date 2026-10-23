@@ -27,6 +27,7 @@ import android.widget.Toast;
 import com.carlos.vault.AccountStore;
 import com.carlos.vault.UiStyle;
 import com.carlos.vault.VaultSync;
+import com.carlos.vault.daily.gather.GatherConfigV2;
 
 import org.json.JSONObject;
 
@@ -69,6 +70,8 @@ public class FunctionActivity extends Activity {
     private TextView logView;
     private TextView claimView;
     private UiStyle.Switch toggle;
+    /** 采集卡副标题（配置摘要）：保存采集设置返回本页时原位刷新，无需整页重建。 */
+    private TextView gatherSummaryView;
     // 每日任务专属（原日常页模块迁移）
     private LinearLayout extraBox;
     private TextView actTitle, actSub;
@@ -119,6 +122,24 @@ public class FunctionActivity extends Activity {
                         } catch (Throwable ignored) {
                         }
                     }));
+        }
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 从「采集设置」页保存返回时原位刷新副标题摘要（整页重建会丢掉滚动位置/执行结果区）
+        refreshGatherSummary();
+    }
+
+    /** 刷新采集卡副标题：GatherConfigV2.summary()（如「3队 · 肉8/木7/煤9」）。 */
+    private void refreshGatherSummary() {
+        if (gatherSummaryView == null || account == null) return;
+        try {
+            GatherConfigV2 cfg = GatherConfigV2.parse(
+                    FnParams.params(this, account.fpid, serverid, "gather"));
+            gatherSummaryView.setText(cfg.summary());
+        } catch (Throwable ignored) {
         }
     }
 
@@ -318,7 +339,8 @@ public class FunctionActivity extends Activity {
         enableRow.addView(toggle);
         root.addView(enableRow);
 
-        // 采集：直接弹窗选编队/矿种/等级/队列，替代高级 JSON 参数。
+        // 批次12：采集改为独立「采集设置」页（6 队列 × 资源/等级/编队/兵量，GatherConfigV2 单一事实源），
+        // 原弹窗降级为设置页底部「旧版参数（兼容）」，本卡片不再直接弹窗。
         if ("gather".equals(fn.id)) {
             LinearLayout pick = UiStyle.outlineCard(this);
             pick.setOrientation(LinearLayout.HORIZONTAL);
@@ -341,16 +363,30 @@ public class FunctionActivity extends Activity {
             t.setTextColor(UiStyle.INK);
             mid.addView(t);
             TextView s = new TextView(this);
-            // 批次10：编队改由上方「统一编队」卡片配置；本弹窗保留矿种/等级/队列
-            // 与旧的游戏内存编队（squad_index，兼容存量配置）。
-            s.setText("矿种、矿点等级、队列数与旧版内存编队");
+            // 动态摘要：v2 优先；无 v2 时按旧配置迁移后的等价摘要（如「3队 · 肉8/木7/煤9」）
+            gatherSummaryView = s;
             s.setTextSize(11.5f);
             s.setTextColor(UiStyle.INK2);
             mid.addView(s);
             pick.addView(mid, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+            TextView arrow = new TextView(this);
+            arrow.setText("›");
+            arrow.setTextSize(18);
+            arrow.setTextColor(UiStyle.INK2);
+            pick.addView(arrow);
             UiStyle.press(pick);
-            pick.setOnClickListener(v -> showGatherFormationDialog());
+            pick.setOnClickListener(v -> {
+                try {
+                    startActivity(new Intent(this, GatherConfigActivity.class)
+                            .putExtra(EXTRA_ACCOUNT_ID, account.id)
+                            .putExtra(EXTRA_FN_ID, "gather")
+                            .putExtra(EXTRA_SERVERID, serverid));
+                } catch (Throwable e) {
+                    toast("打开采集设置失败：" + e.getMessage());
+                }
+            });
+            refreshGatherSummary();
             root.addView(pick);
         }
 
@@ -1271,27 +1307,43 @@ public class FunctionActivity extends Activity {
         }.execute();
     }
 
-    /** 采集编队弹窗：编队/矿种/矿点等级/队列数，保存即同步服务器。 */
-    private void showGatherFormationDialog() {
-        if (account == null) return;
-        JSONObject p = FnParams.params(this, account.fpid, serverid, "gather");
+    /**
+     * 旧版采集参数弹窗（兼容/回滚）：从「采集设置」页底部「旧版参数（兼容）」进入。
+     *
+     * <p>只写旧版键（squad_index/resources_named/min_level/max_queues/strategy.send），
+     * 不触碰 v2（新版 6 队列配置）。旧服务端 jar 忽略 v2、只读这些旧键，因此该入口
+     * 可用于「新 App + 旧 server」兼容与线上回滚；新版配置仍以设置页为准。
+     *
+     * @param onSaved 保存成功回调（可空；设置页用它重新读取参数并刷新预览）
+     */
+    public static void showLegacyGatherDialog(final Activity act, final String fpid,
+                                              final long sid, final Runnable onSaved) {
+        if (act == null || fpid == null) return;
+        JSONObject p = FnParams.params(act, fpid, sid, "gather");
 
-        LinearLayout box = new LinearLayout(this);
+        LinearLayout box = new LinearLayout(act);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(8), dp(18), dp(8));
+        box.setPadding(UiStyle.dp(act, 18), UiStyle.dp(act, 8), UiStyle.dp(act, 18), UiStyle.dp(act, 8));
 
-        TextView squadLabel = new TextView(this);
+        TextView legacyTip = new TextView(act);
+        legacyTip.setText("旧版参数（兼容旧服务端/回滚）：只改下方旧版键，不影响新版 6 队列配置");
+        legacyTip.setTextSize(11);
+        legacyTip.setTextColor(UiStyle.WARN_INK);
+        legacyTip.setPadding(0, 0, 0, UiStyle.dp(act, 6));
+        box.addView(legacyTip);
+
+        TextView squadLabel = new TextView(act);
         squadLabel.setText("游戏内存编队（旧，兼容；新编队见页面顶部「编队」）");
         squadLabel.setTextSize(13);
         squadLabel.setTypeface(Typeface.DEFAULT_BOLD);
         squadLabel.setTextColor(UiStyle.INK);
         box.addView(squadLabel);
 
-        final RadioGroup squadGroup = new RadioGroup(this);
+        final RadioGroup squadGroup = new RadioGroup(act);
         squadGroup.setOrientation(RadioGroup.VERTICAL);
         String[] squadNames = {"自动（沿用游戏当前编队）", "第1队", "第2队", "第3队", "第4队", "第5队"};
         for (int i = 0; i < squadNames.length; i++) {
-            RadioButton rb = new RadioButton(this);
+            RadioButton rb = new RadioButton(act);
             // 0 是合法 id 但不是合法的选中态标记，统一用 100+i 再换算回队号。
             rb.setId(100 + i);
             rb.setText(squadNames[i]);
@@ -1303,12 +1355,12 @@ public class FunctionActivity extends Activity {
         squadGroup.check(100 + curSquad);
         box.addView(squadGroup);
 
-        TextView resLabel = new TextView(this);
+        TextView resLabel = new TextView(act);
         resLabel.setText("采集矿种");
         resLabel.setTextSize(13);
         resLabel.setTypeface(Typeface.DEFAULT_BOLD);
         resLabel.setTextColor(UiStyle.INK);
-        resLabel.setPadding(0, dp(10), 0, 0);
+        resLabel.setPadding(0, UiStyle.dp(act, 10), 0, 0);
         box.addView(resLabel);
 
         String[] resNames = {"肉", "木", "煤", "铁"};
@@ -1316,7 +1368,7 @@ public class FunctionActivity extends Activity {
         org.json.JSONArray curRes = p.optJSONArray("resources_named");
         final CheckBox[] resBoxes = new CheckBox[4];
         for (int i = 0; i < 4; i++) {
-            CheckBox cb = new CheckBox(this);
+            CheckBox cb = new CheckBox(act);
             cb.setText(resNames[i]);
             cb.setTextSize(13);
             cb.setTextColor(UiStyle.INK);
@@ -1331,45 +1383,45 @@ public class FunctionActivity extends Activity {
             box.addView(cb);
         }
 
-        LinearLayout levelRow = new LinearLayout(this);
+        LinearLayout levelRow = new LinearLayout(act);
         levelRow.setOrientation(LinearLayout.HORIZONTAL);
         levelRow.setGravity(Gravity.CENTER_VERTICAL);
-        levelRow.setPadding(0, dp(10), 0, 0);
-        TextView levelLabel = new TextView(this);
+        levelRow.setPadding(0, UiStyle.dp(act, 10), 0, 0);
+        TextView levelLabel = new TextView(act);
         levelLabel.setText("矿点等级");
         levelLabel.setTextSize(13);
         levelLabel.setTypeface(Typeface.DEFAULT_BOLD);
         levelLabel.setTextColor(UiStyle.INK);
         levelRow.addView(levelLabel, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        final NumberPicker levelPick = new NumberPicker(this);
+        final NumberPicker levelPick = new NumberPicker(act);
         levelPick.setMinValue(1);
         levelPick.setMaxValue(6);
         levelPick.setWrapSelectorWheel(false);
         levelPick.setValue(Math.max(1, Math.min(6, p.optInt("min_level", 5))));
-        levelRow.addView(levelPick, new LinearLayout.LayoutParams(dp(80), dp(90)));
+        levelRow.addView(levelPick, new LinearLayout.LayoutParams(UiStyle.dp(act, 80), UiStyle.dp(act, 90)));
         box.addView(levelRow);
 
-        LinearLayout queueRow = new LinearLayout(this);
+        LinearLayout queueRow = new LinearLayout(act);
         queueRow.setOrientation(LinearLayout.HORIZONTAL);
         queueRow.setGravity(Gravity.CENTER_VERTICAL);
-        queueRow.setPadding(0, dp(6), 0, 0);
-        TextView queueLabel = new TextView(this);
+        queueRow.setPadding(0, UiStyle.dp(act, 6), 0, 0);
+        TextView queueLabel = new TextView(act);
         queueLabel.setText("队列数");
         queueLabel.setTextSize(13);
         queueLabel.setTypeface(Typeface.DEFAULT_BOLD);
         queueLabel.setTextColor(UiStyle.INK);
         queueRow.addView(queueLabel, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        final NumberPicker queuePick = new NumberPicker(this);
+        final NumberPicker queuePick = new NumberPicker(act);
         queuePick.setMinValue(1);
         queuePick.setMaxValue(5);
         queuePick.setWrapSelectorWheel(false);
         queuePick.setValue(Math.max(1, Math.min(5, p.optInt("max_queues", 3))));
-        queueRow.addView(queuePick, new LinearLayout.LayoutParams(dp(80), dp(90)));
+        queueRow.addView(queuePick, new LinearLayout.LayoutParams(UiStyle.dp(act, 80), UiStyle.dp(act, 90)));
         box.addView(queueRow);
 
-        final CheckBox fullBox = new CheckBox(this);
+        final CheckBox fullBox = new CheckBox(act);
         fullBox.setText("只采满矿");
         fullBox.setTextSize(13);
         fullBox.setTextColor(UiStyle.INK);
@@ -1377,12 +1429,12 @@ public class FunctionActivity extends Activity {
                 ? "any" : p.optJSONObject("strategy").optString("send", "any")));
         box.addView(fullBox);
 
-        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("采集参数")
+        new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("采集参数（旧版）")
                 .setView(box)
                 .setPositiveButton("保存", (d, w) -> {
                     try {
-                        JSONObject next = FnParams.params(this, account.fpid, serverid, "gather");
+                        JSONObject next = FnParams.params(act, fpid, sid, "gather");
                         next.put("squad_index",
                                 Math.max(0, squadGroup.getCheckedRadioButtonId() - 100));
                         org.json.JSONArray names = new org.json.JSONArray();
@@ -1401,11 +1453,12 @@ public class FunctionActivity extends Activity {
                         next.remove("troop_count");
                         next.remove("target_amount");
                         next.remove("carry_per_troop");
-                        FnParams.saveParams(this, account.fpid, serverid, "gather", next);
-                        VaultSync.onAccountsChanged(this);
-                        toast("采集编队已保存并同步服务器");
+                        FnParams.saveParams(act, fpid, sid, "gather", next);
+                        VaultSync.onAccountsChanged(act);
+                        UiStyle.toast(act, "旧版采集参数已保存并同步服务器（兼容旧服务端）");
+                        if (onSaved != null) onSaved.run();
                     } catch (Throwable t) {
-                        toast("保存失败：" + t.getMessage());
+                        UiStyle.toast(act, "保存失败：" + t.getMessage());
                     }
                 })
                 .setNegativeButton("取消", null)
@@ -1632,6 +1685,8 @@ public class FunctionActivity extends Activity {
         return "hunt".equals(fnId) || "shop".equals(fnId)
                 || "alliance_shop".equals(fnId) || "pet".equals(fnId) || "medic".equals(fnId)
                 || "intel".equals(fnId) || "behemoth".equals(fnId)
+                // gather：设置页为主入口，JSON 仅兜底排障（保存时保留 v2，见 showAdvancedConfig）
+                || "gather".equals(fnId)
                 || "activity_rewards".equals(fnId);
     }
 
@@ -1652,10 +1707,12 @@ public class FunctionActivity extends Activity {
                         JSONObject next = raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
                         // 批次10：高级 JSON 编辑整对象替换，不应意外清掉「统一编队」配置
                         // （未在新 JSON 里出现的编队字段从旧参数保留）。
+                        // 批次12：同理保留采集 v2（否则高级 JSON 保存会清掉 6 队列采集配置）。
                         JSONObject prev = FnParams.params(FunctionActivity.this,
                                 account.fpid, serverid, fn.id);
                         for (String k : new String[]{"formation_mode", "formation_id",
-                                "soldiers", "ratio", "total", "join_formations"}) {
+                                "soldiers", "ratio", "total", "join_formations",
+                                GatherConfigV2.KEY}) {
                             if (!next.has(k) && prev.has(k)) next.put(k, prev.opt(k));
                         }
                         FnParams.saveParams(FunctionActivity.this, account.fpid, serverid,

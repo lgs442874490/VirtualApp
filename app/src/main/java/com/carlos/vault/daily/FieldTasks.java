@@ -205,12 +205,194 @@ final class FieldTasks {
         }
     }
 
+    /**
+     * 普通行军队列容量（1:1 网页 {@code MarchCapacityState.worldMarchCapacity}）：
+     * {@code 1 + Σ科技{1007,1020,1027}(lev>0) + (VIP≥6 且 vip_active_endtime>now) +
+     * Σbuff(buff_map[10505], expire_ts>now) + max(0, world_extra_march.value)}，只读层 clamp 1..6。
+     *
+     * <p>读取顺序（W2 全局替换错误读取）：① 核心资产库 {@code queue().capacity}（登录 READY 后
+     * 即权威派生值）；② 资产库未 READY / 回滚开关 off → 从登录批通知按公式现算（科技/世界/额外
+     * 队列两类必经通知缺失时视为未知，不拿半套数据压低容量）；③ 都未知 → 旧行为回退 3
+     * （宁可少发不漏发）。旧实现对 {@code notify_world_player_init.world.capacity} 的读取是错误字段
+     * （schema 无 world/capacity，恒回退 3），仅在公式路径不可用时保留为最终兜底。
+     */
     private static int marchCapacity(WjdrEngine engine) {
-        Map<String, Object> wp = engine.notifyData("notify_world_player_init");
-        if (wp == null) return 3;
-        Map<String, Object> world = ExecUtil.mapOf(wp.get("world"));
-        long cap = world == null ? 0 : ExecUtil.longOf(world.get("capacity"));
-        return cap > 0 ? (int) cap : 3;
+        int fromAsset = assetMarchCapacity(engine);
+        if (fromAsset > 0) return fromAsset;
+        int computed = marchCapacityFromNotify(engine);
+        if (computed > 0) return computed;
+        try {
+            Map<String, Object> wp = engine.notifyData("notify_world_player_init");
+            if (wp != null) {
+                Map<String, Object> world = ExecUtil.mapOf(wp.get("world"));
+                long cap = world == null ? 0 : ExecUtil.longOf(world.get("capacity"));
+                if (cap > 0) return (int) Math.min(cap, 6L);
+            }
+        } catch (Throwable ignored) {
+        }
+        return 3;
+    }
+
+    /** 资产库容量（未 READY / 回滚开关 off / 未知 → 0）。 */
+    private static int assetMarchCapacity(WjdrEngine engine) {
+        if (engine == null || !assetLibraryEnabled()) return 0;
+        try {
+            com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                    com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(engine);
+            if (lib == null || !lib.ready()) return 0;
+            com.carlos.vault.wjdr.asset.AssetSnapshot.Queue q = lib.queue();
+            return q != null && q.capacity > 0 ? q.capacity : 0;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** 资产库读侧回滚开关（默认 on；{@code VAULT_ASSET_LIBRARY=off} 走旧读法）。 */
+    private static boolean assetLibraryEnabled() {
+        try {
+            String v = System.getenv("VAULT_ASSET_LIBRARY");
+            return v == null || !"off".equalsIgnoreCase(v.trim());
+        } catch (Throwable ignored) {
+            return true;
+        }
+    }
+
+    /**
+     * 公式兜底：从登录批通知现算容量（资产库不可用时）。
+     *
+     * <p>科技 1007/1020/1027 → {@code notify_all_research.researched}；VIP →
+     * {@code notify_vip_info/update.vip_lv/vip_active_endtime}；临时队列 →
+     * {@code notify_buff_show.map[*].buff_map[10505]（expire_ts 过滤）}；额外队列 →
+     * {@code notify_world_player_init.world_extra_march.value}（或
+     * {@code notify_world_add_extra_march}）。科技/世界 init 任一缺失 → 0=未知（不猜）。
+     */
+    private static int marchCapacityFromNotify(WjdrEngine engine) {
+        if (engine == null) return 0;
+        try {
+            Map<String, Object> wpi = engine.notifyData("notify_world_player_init");
+            Map<String, Object> researchNotify = engine.notifyData("notify_all_research");
+            if (wpi == null || researchNotify == null) return 0;   // 登录批未齐：未知，交给旧兜底
+            long nowSec;
+            try {
+                com.carlos.vault.wjdr.GameServerClock ck = engine.serverClock();
+                nowSec = ck != null && ck.locked() ? ck.nowServerSec()
+                        : System.currentTimeMillis() / 1000L;
+            } catch (Throwable t) {
+                nowSec = System.currentTimeMillis() / 1000L;
+            }
+            int tech = researchQueueCount(researchNotify);
+            boolean vip6 = vipQueueActive(engine, nowSec);
+            int buffQueues = buffQueueCount(engine, nowSec);
+            long extra = extraMarchCount(engine, wpi);
+            int raw = com.carlos.vault.wjdr.asset.QueueCapacity.rawCapacity(
+                    tech, vip6, buffQueues, extra);
+            return com.carlos.vault.wjdr.asset.QueueCapacity.clampCapacity(raw);
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** 科技队列数：notify_all_research.researched 中 tid∈{1007,1020,1027} 且 lev>0 的个数。 */
+    private static int researchQueueCount(Map<String, Object> researchNotify) {
+        Map<Long, Long> levels = new java.util.LinkedHashMap<>();
+        Object researched = researchNotify.get("researched");
+        if (researched == null) researched = researchNotify.get("research");
+        if (researched instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) researched).entrySet()) {
+                long tid = keyLong(e.getKey());
+                long lev;
+                if (e.getValue() instanceof Map) {
+                    Map<?, ?> row = (Map<?, ?>) e.getValue();
+                    if (tid <= 0) tid = ExecUtil.longOf(row.get("tid"));
+                    lev = ExecUtil.longOf(row.get("lev"));
+                } else {
+                    lev = ExecUtil.longOf(e.getValue());
+                }
+                if (tid > 0 && lev > 0) levels.put(tid, lev);
+            }
+        } else {
+            for (Map<String, Object> row : ExecUtil.mapsOf(researched)) {
+                long tid = ExecUtil.longOf(row.get("tid"));
+                long lev = ExecUtil.longOf(row.get("lev"));
+                if (tid > 0 && lev > 0) levels.put(tid, lev);
+            }
+        }
+        int n = 0;
+        for (long tid : com.carlos.vault.wjdr.asset.QueueCapacity.TECH_IDS) {
+            Long lev = levels.get(tid);
+            if (lev != null && lev > 0) n++;
+        }
+        return n;
+    }
+
+    /** VIP 队列加成：vip_lv≥6 且 vip_active_endtime>now（网页同口径，无「0=永久」例外）。 */
+    private static boolean vipQueueActive(WjdrEngine engine, long nowSec) {
+        Map<String, Object> vip = engine.notifyData("notify_vip_info");
+        if (vip == null) vip = engine.notifyData("notify_vip_update");
+        if (vip == null) return false;
+        long lv = ExecUtil.longOf(vip.get("vip_lv"));
+        long end = ExecUtil.longOf(vip.get("vip_active_endtime"));
+        return lv >= com.carlos.vault.wjdr.asset.QueueCapacity.VIP_QUEUE_LEVEL && end > nowSec;
+    }
+
+    /** 临时队列 buff：buff_show.map[*].buff_map[10505] 未过期项求和。 */
+    private static int buffQueueCount(WjdrEngine engine, long nowSec) {
+        Map<String, Object> show = engine.notifyData("notify_buff_show");
+        if (show == null) show = engine.notifyData("notify_buff_show_update");
+        if (show == null) return 0;
+        Object mapObj = show.get("map");
+        if (mapObj == null) mapObj = show.get("buffs");
+        if (mapObj == null) mapObj = show;
+        int sum = 0;
+        for (Map<String, Object> buff : ExecUtil.mapsOf(mapObj)) {
+            long expire = ExecUtil.longOf(buff.get("expire_ts"));
+            if (expire > 0 && expire <= nowSec) continue;
+            Object buffMap = buff.get("buff_map");
+            if (buffMap == null) continue;
+            if (buffMap instanceof Map) {
+                for (Map.Entry<?, ?> e : ((Map<?, ?>) buffMap).entrySet()) {
+                    long attr = keyLong(e.getKey());
+                    long val;
+                    if (e.getValue() instanceof Map) {
+                        Map<?, ?> v = (Map<?, ?>) e.getValue();
+                        if (attr <= 0) attr = ExecUtil.longOf(v.get("k"));
+                        val = ExecUtil.longOf(v.get("v"));
+                    } else {
+                        val = ExecUtil.longOf(e.getValue());
+                    }
+                    if (attr == 10505L && val > 0) sum += (int) Math.min(6L, val);
+                }
+            }
+        }
+        return sum;
+    }
+
+    /** map key（sproto map 形如 "1020.0"）→ 长整型；解析失败 0。 */
+    private static long keyLong(Object k) {
+        long v = ExecUtil.longOf(k);
+        if (v > 0) return v;
+        if (k == null) return 0;
+        try {
+            return (long) Double.parseDouble(String.valueOf(k).trim());
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** 额外队列：world_player_init.world_extra_march.value（或 world_add_extra_march 增量）。 */
+    private static long extraMarchCount(WjdrEngine engine, Map<String, Object> worldPlayerInit) {
+        long extra = 0;
+        Object raw = worldPlayerInit == null ? null : worldPlayerInit.get("world_extra_march");
+        Map<String, Object> m = ExecUtil.mapOf(raw);
+        if (m != null) extra = ExecUtil.longOf(m.get("value"));
+        if (extra <= 0) {
+            Map<String, Object> add = engine.notifyData("notify_world_add_extra_march");
+            Object addRaw = add == null ? null : add.get("world_extra_march");
+            if (addRaw == null && add != null) addRaw = add;
+            Map<String, Object> am = ExecUtil.mapOf(addRaw);
+            if (am != null) extra = ExecUtil.longOf(am.get("value"));
+        }
+        return Math.max(0L, extra);
     }
 
     // ---------- 情报任务：处理当前可派事件 ----------

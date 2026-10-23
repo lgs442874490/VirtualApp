@@ -119,6 +119,11 @@
             android:name="com.carlos.vault.daily.FunctionActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
+        <!-- 采集设置页（批次12）：6 队列采集配置，从功能详情页「采集参数」卡片进入 -->
+        <activity
+            android:name="com.carlos.vault.daily.GatherConfigActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
         <activity
             android:name="com.carlos.vault.ToolBoxActivity"
             android:exported="false"

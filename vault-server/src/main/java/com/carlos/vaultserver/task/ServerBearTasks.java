@@ -174,6 +174,15 @@ public final class ServerBearTasks {
                 } else {
                     syncFailCode = rsp == null ? -1 : Exec.codeOf(rsp);
                 }
+                // 核心资产库：陷阱响应回灌（reserve_time 权威；任务线程调用，串行于 session requestLock）
+                try {
+                    com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                            com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(tc.engine);
+                    if (lib != null && rsp != null && rsp.getContent() != null) {
+                        lib.applyResponse("req_alliance_trap_info", rsp.getContent());
+                    }
+                } catch (Throwable ignored) {
+                }
             }
             TrapTimes pushed = trapTimesFromNotifies(tc.engine);
             if (pushed != null) {

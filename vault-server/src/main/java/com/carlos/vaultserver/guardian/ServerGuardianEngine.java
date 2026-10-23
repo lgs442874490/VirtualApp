@@ -943,9 +943,29 @@ public final class ServerGuardianEngine {
     // 队列校验（发射前；未知一律宁可不发）
     // =====================================================================
 
-    /** 剩余可出征队列数；容量/占用取不到 → -1（上层跳过发射）。 */
+    /**
+     * 剩余可出征队列数；容量/占用取不到 → -1（上层跳过发射）。
+     *
+     * <p>W2：优先核心资产库 {@code queue().capacity/occupied}（网页 MarchCapacityState 派生公式 +
+     * 排除巨熊等特殊队列、含 type=99 上车）。seed 未 READY / 回滚开关 off / 队列域未知时，
+     * 逐项回退旧读法（容量读 {@code notify_world_player_init} 的 capacity 字段 + 行军明细请求）。
+     */
     int freeMarchSlots(WjdrEngine engine) {
         try {
+            if (assetLibraryEnabled()) {
+                try {
+                    com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                            com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(engine);
+                    if (lib != null && lib.ready()) {
+                        com.carlos.vault.wjdr.asset.AssetSnapshot.Queue q = lib.queue();
+                        if (q != null && q.capacity > 0) {
+                            // idle 已含 pending 与 limitReached 语义（网页 BehemothAccountState.idle 同口径）
+                            return Math.max(0, q.idle);
+                        }
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
             int capacity = capacityOf(engine.notifyData(PROTO_WORLD_PLAYER_INIT));
             if (capacity <= 0) return -1;
             GameMessage rsp = engine.request(PROTO_MARCH_DETAIL,
@@ -954,6 +974,16 @@ public final class ServerGuardianEngine {
             return freeSlots(capacity, activeMarchesOf(rsp.getContent()));
         } catch (Throwable t) {
             return -1;
+        }
+    }
+
+    /** 资产库读侧回滚开关（默认 on；{@code VAULT_ASSET_LIBRARY=off} 全部回退旧读取）。 */
+    static boolean assetLibraryEnabled() {
+        try {
+            String v = System.getenv("VAULT_ASSET_LIBRARY");
+            return v == null || !"off".equalsIgnoreCase(v.trim());
+        } catch (Throwable ignored) {
+            return true;
         }
     }
 

@@ -3794,8 +3794,10 @@ public final class ServerTasks {
             return out;
         }
         try {
-            tc.engine.request("req_alliance_activity_auto_join_info",
+            GameMessage autoJoinInfo = tc.engine.request("req_alliance_activity_auto_join_info",
                     args("auto_mass_id_list", cfg.autoJoinIds));
+            // W1 响应回灌：auto_join 状态无独立推送，响应即权威源
+            applyAssetResponse(tc.engine, "req_alliance_activity_auto_join_info", autoJoinInfo);
             GameMessage open = tc.engine.request("req_alliance_activity_auto_join_open",
                     args("auto_mass_id_list", cfg.autoJoinIds, "march_limit", (long) cfg.autoJoinMarchLimit));
             if (isDegraded(open)) {
@@ -3899,6 +3901,8 @@ public final class ServerTasks {
                 return out;
             }
             GameMessage rsp = tc.engine.request("req_world_march", payload);
+            // W1 响应回灌：发起成功即新增一条在途行军，资产库队列占用立刻可见
+            applyAssetResponse(tc.engine, "req_world_march", rsp);
             int code = rsp == null ? -1 : Exec.codeOf(rsp);
             long marchId = Exec.marchId(rsp);
             if (marchId > 0L) {
@@ -4012,6 +4016,8 @@ public final class ServerTasks {
                     rally.startX, rally.startY, formation);
             if (payload == null) continue;
             GameMessage rsp = tc.engine.request("req_world_march", payload);
+            // W1 响应回灌（上车 type=99 占普通队列）
+            applyAssetResponse(tc.engine, "req_world_march", rsp);
             tried++;
             int code = rsp == null ? -1 : Exec.codeOf(rsp);
             long marchId = Exec.marchId(rsp);
@@ -4086,10 +4092,13 @@ public final class ServerTasks {
     }
 
     /**
-     * 读体力：只消费推送（notify_recover_resource_init 全量 / notify_recover_resource_update 增量），
-     * 不新增任何查询协议。init 缺失 → hasCurrent=false（未知，SKIP）。
+     * 读体力：优先核心资产库（recover id=201 的唯一权威派生视图），资产库未 READY/回滚
+     * 开关 off 时保留旧读取（notify_recover_resource_init 全量 + 历史兜底），不新增查询协议。
+     * init 缺失 → hasCurrent=false（未知，SKIP）。
      */
     static BehemothStamina behemothReadStamina(TaskContext tc, long nowSec) {
+        BehemothStamina fromAsset = behemothAssetStamina(tc);
+        if (fromAsset != null) return fromAsset;
         BehemothStamina out = new BehemothStamina();
         if (tc == null || tc.engine == null) return out;
         Map<String, Object> init = null;
@@ -4110,6 +4119,52 @@ public final class ServerTasks {
         } catch (Throwable ignored) {
         }
         return out;
+    }
+
+    /**
+     * 资产库体力视图（W2）：ready 且体力已知才返回，否则 null 交给旧读法兜底。
+     * 字段口径与 {@link BehemothStamina#currentAt(long)} 一致：
+     * count/max_count/recover/next_calc_ts/interval（recover id=201）。
+     */
+    private static BehemothStamina behemothAssetStamina(TaskContext tc) {
+        if (tc == null || tc.engine == null || !AssetStateProjector.enabled()) return null;
+        try {
+            com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                    com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(tc.engine);
+            if (lib == null || !lib.ready()) return null;
+            com.carlos.vault.wjdr.asset.AssetSnapshot.Stamina st = lib.stamina();
+            if (st == null || !st.known()) return null;
+            BehemothStamina out = new BehemothStamina();
+            out.hasCurrent = true;
+            out.current = Math.max(0L, st.current);
+            out.max = Math.max(0L, st.max);
+            out.recover = Math.max(0L, st.recoverPer);
+            out.nextRecoverAt = Math.max(0L, st.nextCalcTs);
+            out.interval = Math.max(0L, st.intervalSec);
+            return out;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * 主动请求响应回灌资产库（W1；资产库未 READY/回滚 off 时静默跳过）。
+     *
+     * <p>设计中的「单写者」是 engine inbound 钩子线程；任务线程在 request 返回后串行回灌
+     * 权威响应（auto_join 状态 / req_world_march 行军），CoreAssetLibrary 内部有锁，安全。
+     */
+    static void applyAssetResponse(WjdrEngine engine, String proto, GameMessage response) {
+        if (engine == null || response == null || proto == null || proto.isEmpty()) return;
+        if (!AssetStateProjector.enabled()) return;
+        Map<String, Object> content = response.getContent();
+        if (content == null) return;
+        try {
+            com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                    com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(engine);
+            if (lib == null || !lib.ready()) return;
+            lib.applyResponse(proto, content);
+        } catch (Throwable ignored) {
+        }
     }
 
     /** 从 notify_recover_resource_init 内容解析体力（id==201，字段 count/max_count/recover/next_calc_ts/interval）。 */
@@ -4142,8 +4197,23 @@ public final class ServerTasks {
         return st;
     }
 
-    /** 世界行军队列容量（notify_world_player_init.world.capacity；未知 0）。 */
+    /**
+     * 世界行军队列容量：优先资产库 queue().capacity（网页 MarchCapacityState 派生公式：
+     * 科技 1007/1020/1027 + VIP≥6 + buff 10505 + extra_march + 1，只读层 clamp 1..6）；
+     * 资产库未 READY/回滚 off 时保留旧读取（notify_world_player_init.world.capacity；未知 0）。
+     */
     static int behemothQueueCapacity(WjdrEngine engine) {
+        if (AssetStateProjector.enabled()) {
+            try {
+                com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                        com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(engine);
+                if (lib != null && lib.ready()) {
+                    com.carlos.vault.wjdr.asset.AssetSnapshot.Queue q = lib.queue();
+                    if (q != null && q.capacity > 0) return q.capacity;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         try {
             Map<String, Object> content = engine.notifyData("notify_world_player_init");
             if (content == null) return 0;
@@ -4156,8 +4226,23 @@ public final class ServerTasks {
         }
     }
 
-    /** 自己当前行军队列占用（req_world_march_detail_4_player_situation，既有协议；-1=未知）。 */
+    /**
+     * 自己当前行军队列占用：优先资产库 queue().occupied（排除巨熊等特殊队列 + 含 type=99
+     * 上车，同网页 BehemothAccountState 口径；资产库未 READY/回滚 off 时保留旧协议查询）。
+     * 旧读法：req_world_march_detail_4_player_situation（既有协议，-1=未知）。
+     */
     static int behemothActiveMarchCount(TaskContext tc) throws Exception {
+        if (tc != null && tc.engine != null && AssetStateProjector.enabled()) {
+            try {
+                com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                        com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(tc.engine);
+                if (lib != null && lib.ready()) {
+                    com.carlos.vault.wjdr.asset.AssetSnapshot.Queue q = lib.queue();
+                    if (q != null && q.known()) return Math.max(0, q.occupied);
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         try {
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("owner", tc.engine.lastUid());

@@ -37,6 +37,7 @@ compileTestJava.options.encoding = 'UTF-8'
 sourceSets.main.java {
     srcDir '../app/src/main/java'
     include 'com/carlos/vaultserver/**', 'com/carlos/vault/wjdr/**', 'com/carlos/vault/daily/RewardText.java',
+            'com/carlos/vault/daily/gather/**',
             'com/carlos/vault/daily/guardian/WarState.java', 'com/carlos/vault/daily/guardian/ThreatBoard.java'
 }
 
