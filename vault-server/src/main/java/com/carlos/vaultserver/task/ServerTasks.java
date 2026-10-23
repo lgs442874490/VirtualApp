@@ -3793,6 +3793,22 @@ public final class ServerTasks {
             out.text = "自动上车已关闭（App 设置页可开）";
             return out;
         }
+        // B2-T3：资产库优先（auto_join 状态无独立推送，req 响应已回灌）；明确未开启才走原请求路径。
+        try {
+            com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                    com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(tc.engine);
+            if (lib != null && lib.ready()) {
+                com.carlos.vault.wjdr.asset.AssetSnapshot.AutoJoin aj = lib.autoJoin();
+                long nowSec = lib.clock().serverNowSec();
+                if (autoJoinActive(aj, cfg.autoJoinIds, nowSec)) {
+                    out.on = true;
+                    out.text = "自动上车已开启(巨兽/死神/巨熊)（资产库）";
+                    tc.saveModText("behemoth", "auto_join", "原生自动上车：已开启（资产库）");
+                    return out;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
         try {
             GameMessage autoJoinInfo = tc.engine.request("req_alliance_activity_auto_join_info",
                     args("auto_mass_id_list", cfg.autoJoinIds));
@@ -3818,6 +3834,20 @@ public final class ServerTasks {
             out.text = "自动上车异常：" + brief(String.valueOf(e.getMessage()));
         }
         return out;
+    }
+
+    /** 资产库 auto_join 是否已开启：选中类目与期望有交集且未过期。 */
+    static boolean autoJoinActive(com.carlos.vault.wjdr.asset.AssetSnapshot.AutoJoin aj,
+                                  java.util.List<Long> wantedIds, long nowSec) {
+        if (aj == null || aj.updatedAtMs <= 0L || aj.selectedIds == null || aj.selectedIds.isEmpty()) {
+            return false;
+        }
+        if (aj.endTime > 0L && aj.endTime <= nowSec) return false;
+        if (wantedIds == null || wantedIds.isEmpty()) return true;
+        for (Long id : wantedIds) {
+            if (id != null && aj.selectedIds.contains(id)) return true;
+        }
+        return false;
     }
 
     // ---------- 3.2 每日发起（默认关；流程 1:1 DailyBehemothService.evaluateLocked:579-700） ----------

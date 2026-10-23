@@ -184,7 +184,8 @@ public final class ServerBearTasks {
                 } catch (Throwable ignored) {
                 }
             }
-            TrapTimes pushed = trapTimesFromNotifies(tc.engine);
+            TrapTimes pushed = trapTimesFromAssets(tc.engine);
+            if (pushed == null) pushed = trapTimesFromNotifies(tc.engine);
             if (pushed != null) {
                 // 预约/场次时间在生产上只向前推进（reserve 每场向后翻），推送按“更大者胜”合并：
                 // 既不让旧推送回退请求结果，也能在 reserve 已翻到下一场时用 mass_start_time 兜底本场。
@@ -2020,6 +2021,25 @@ public final class ServerBearTasks {
             }
         }
         return null;
+    }
+
+    /** B2-T3：资产库 trap 域（reserve_time 权威，来自 req 响应回灌）→ TrapTimes；未 ready/无数据返回 null。 */
+    static TrapTimes trapTimesFromAssets(WjdrEngine engine) {
+        try {
+            com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                    com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(engine);
+            if (lib == null || !lib.ready()) return null;
+            com.carlos.vault.wjdr.asset.AssetSnapshot.Bear bear = lib.bear();
+            if (bear == null || !bear.reserveKnown) return null;
+            TrapTimes t = new TrapTimes();
+            t.reserve = bear.reserveTime;
+            t.start = bear.massStartTime;
+            t.end = bear.massEndTime;
+            t.cool = bear.coolEndTime;
+            return t.any() ? t : null;
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     /** 熊坑目标（req_world_mapobj 解析结果）：monsterid + 坐标 + 归属联盟。 */
