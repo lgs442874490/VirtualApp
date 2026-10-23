@@ -5,6 +5,8 @@ import android.content.SharedPreferences;
 
 import com.carlos.vault.license.LicenseManager;
 
+import java.util.List;
+
 /**
  * 批次7（task-25）：新用户初始化四步引导的状态机 + 首启跳转判定。
  *
@@ -55,6 +57,8 @@ public final class OnboardingState {
     static final String KEY_DONE = "onboarding_done";
     static final String KEY_STEPS = "onboarding_steps";
     static final String KEY_VERSION = "onboarding_version";
+    /** 用户点过「稍后再说」：后续冷启动不再自动弹引导（☰ 功能菜单入口保留）。批次8（P0-3）。 */
+    static final String KEY_DEFERRED = "onboarding_deferred";
 
     /**
      * 本进程是否已自动拉起过引导：防止 AccountVaultActivity/HomeActivity 在授权校验
@@ -78,9 +82,20 @@ public final class OnboardingState {
 
     /** 记录整页完成标记（不清各步状态，便于「我的→新手引导」再次查看）。 */
     public void setDone(boolean done) {
-        sp.edit().putBoolean(KEY_DONE, done)
-                .putInt(KEY_VERSION, CURRENT_VERSION)
-                .apply();
+        SharedPreferences.Editor ed = sp.edit().putBoolean(KEY_DONE, done)
+                .putInt(KEY_VERSION, CURRENT_VERSION);
+        if (done) ed.putBoolean(KEY_DEFERRED, false);   // 完成引导后清「稍后再提」标记
+        ed.apply();
+    }
+
+    /** 用户是否点过「稍后再说」（记录后不再自动弹，入口保留）。批次8（P0-3）。 */
+    public boolean isDeferred() {
+        return sp.getBoolean(KEY_DEFERRED, false);
+    }
+
+    /** 记录/清除「稍后再说」。完成引导或重置时自动清除。批次8（P0-3）。 */
+    public void setDeferred(boolean deferred) {
+        sp.edit().putBoolean(KEY_DEFERRED, deferred).apply();
     }
 
     /** 四步状态（永远返回长度 4 的数组，下标 = 步骤号-1）。 */
@@ -121,6 +136,7 @@ public final class OnboardingState {
         sp.edit().putBoolean(KEY_DONE, false)
                 .putString(KEY_STEPS, "")
                 .putInt(KEY_VERSION, 0)
+                .putBoolean(KEY_DEFERRED, false)
                 .apply();
         sRedirectedThisProcess = false;
     }
@@ -130,8 +146,16 @@ public final class OnboardingState {
     /**
      * 是否应该自动拉起引导页（AccountVaultActivity.onCreate 调用）。
      *
-     * <p>必须同时满足：未完成引导 + 授权已可用（未激活时先走授权门禁，那本身是第①步）+ 本进程未拉过。
-     * 满足时置位进程标记并返回 true（调用方 startActivity）。
+     * <p>必须同时满足：未完成引导 + 授权已可用（未激活时先走授权门禁，那本身是第①步）+ 本进程未拉过
+     * + **不是老用户** + 未点过「稍后再说」。
+     *
+     * <p>批次8（P0-3）修复“老用户被引导反复打扰”：
+     * <ul>
+     *   <li><b>老用户</b>：AccountStore 已有账号，或持久化的步骤状态已完成 ①授权+②克隆+③账号
+     *       （{@code autoDetect} 上轮已判定过 ≥3 步）→ 视为已完成初始化，冷启动直接进主页；</li>
+     *   <li><b>稍后再说</b>：用户点过「稍后再说」写入 {@code onboarding_deferred} 后，
+     *       后续冷启动不再自动弹（☰ 功能菜单「新手引导」入口保留，可随时补做）。</li>
+     * </ul>
      */
     public static boolean shouldRedirect(Context ctx) {
         if (ctx == null) return false;
@@ -145,12 +169,18 @@ public final class OnboardingState {
             licensed = false;
         }
         boolean done;
+        boolean deferred = false;
+        boolean existingUser = false;
         try {
-            done = new OnboardingState(ctx).isDone();
+            OnboardingState st = new OnboardingState(ctx);
+            done = st.isDone();
+            deferred = st.isDeferred();
+            existingUser = isLikelyExistingUser(st.steps(), hasAccounts(ctx));
         } catch (Throwable t) {
             done = true;   // 读不到状态时宁可不打扰
         }
-        boolean redirect = shouldRedirect(done, licensed, sRedirectedThisProcess);
+        boolean redirect = shouldRedirect(done, licensed, sRedirectedThisProcess,
+                existingUser, deferred);
         if (redirect) sRedirectedThisProcess = true;
         return redirect;
     }
@@ -158,7 +188,42 @@ public final class OnboardingState {
     /** 纯判定（单测用）：已完成 / 未授权 / 本进程已拉过 → 不跳。 */
     public static boolean shouldRedirect(boolean onboardingDone, boolean licenseUsable,
                                          boolean alreadyRedirected) {
+        return shouldRedirect(onboardingDone, licenseUsable, alreadyRedirected, false, false);
+    }
+
+    /**
+     * 纯判定（批次8，单测用）：在原有三条之上，老用户（已有账号或已自动检测完成≥3步）与
+     * 「稍后再说」标记都不再自动弹。
+     */
+    public static boolean shouldRedirect(boolean onboardingDone, boolean licenseUsable,
+                                         boolean alreadyRedirected, boolean existingUser,
+                                         boolean deferred) {
+        if (existingUser || deferred) return false;
         return !onboardingDone && licenseUsable && !alreadyRedirected;
+    }
+
+    /**
+     * 老用户判定（纯函数，批次8 P0-3）：
+     * <ul>
+     *   <li>号库已有账号 → 老用户（用户已完成“添加分身”这一步）；</li>
+     *   <li>或步骤状态里 ①授权 ②克隆 ③账号 都已完成（OnboardingActivity 的 autoDetect 已判定 ≥3 步）。</li>
+     * </ul>
+     */
+    public static boolean isLikelyExistingUser(int[] steps, boolean hasAccount) {
+        if (hasAccount) return true;
+        return statusOf(steps, STEP_LICENSE) == DONE
+                && statusOf(steps, STEP_CLONE) == DONE
+                && statusOf(steps, STEP_ACCOUNT) == DONE;
+    }
+
+    /** 号库是否已有账号（读不到按无账号处理：新用户仍可被引导）。 */
+    private static boolean hasAccounts(Context ctx) {
+        try {
+            List<AccountStore.Account> accounts = new AccountStore(ctx).all();
+            return accounts != null && !accounts.isEmpty();
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** 调试用：允许再次自动拉起（不持久化）。 */

@@ -1,8 +1,8 @@
 package com.carlos.vault;
 
 import android.content.Context;
-import android.content.pm.ApplicationInfo;
 
+import com.carlos.BuildConfig;
 import com.carlos.vault.license.LicenseConfig;
 import com.carlos.vault.license.LicenseManager;
 
@@ -254,12 +254,37 @@ public final class FeatureGate {
         }
     }
 
-    /** 是否调试包（决定调试/实测项是否渲染）。取不到信息时按正式包保守处理（隐藏）。 */
+    /**
+     * 是否调试包（决定调试/实测项是否渲染）。取不到信息时按正式包保守处理（隐藏）。
+     *
+     * <p><b>批次8（P0-1）修正</b>：不能用 {@code ApplicationInfo.FLAG_DEBUGGABLE}——本项目
+     * release 构建为支持 run-as 读取容器数据**恒开 debuggable true**（{@code app/build.gradle:83}）；
+     * 且 AGP 7.2 生成的 {@link BuildConfig#DEBUG} 跟随构建类型 debuggable 标记，release 包里
+     * 同样为 {@code true}（实测生成代码 {@code DEBUG=Boolean.parseBoolean("true")}）。
+     * 唯一稳定的“正式包/调试包”判据是 {@link BuildConfig#BUILD_TYPE}：
+     * release="release"、debug="debug"。
+     */
     public static boolean isDebugBuild(Context ctx) {
         try {
-            return (ctx.getApplicationInfo().flags & ApplicationInfo.FLAG_DEBUGGABLE) != 0;
+            return isDebugBuildType(BuildConfig.BUILD_TYPE);
         } catch (Throwable t) {
-            return false;
+            return false;   // 判定异常 → 按正式包处理（调试项不渲染，宁缺勿滥）
         }
+    }
+
+    /** 纯函数（JVM 单测）：构建类型是否 debug。 */
+    public static boolean isDebugBuildType(String buildType) {
+        return "debug".equals(buildType);
+    }
+
+    /**
+     * 工具箱当前等级/构建下的可用工具数（release 下仅 T3 敌情监控；debug 包额外协议监听）。
+     * 用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
+     */
+    public static int visibleToolCount(int tier, boolean debugBuild) {
+        int n = 0;
+        if (visible(Feature.ENEMY_WATCH, tier, debugBuild)) n++;
+        if (visible(Feature.PROTOCOL_LOGGER, tier, debugBuild)) n++;
+        return n;
     }
 }

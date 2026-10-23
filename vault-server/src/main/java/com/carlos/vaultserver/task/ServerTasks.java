@@ -3667,31 +3667,1037 @@ public final class ServerTasks {
         }
     }
 
+    // ==================================================================================
+    // 巨兽狩猎（批次8，task-27）：每日发起(type=102) + 手工上车(type=99) + 体力保留 + 唤醒
+    //
+    // 1:1 基准：网页版 wjdr-review/src-tool/com/wjdr/tool/modules/daily/
+    //   - config/DailyBehemothConfig.java：enabled/queueCount/launchLimit(默认10)/minLevel/maxLevel/
+    //     forceMaxLevel/prepareTimeIndex/autoUseStaminaItems/autoJoin*（默认 enabled=false）
+    //   - service/DailyBehemothService.java:579-700 evaluateLocked：次数→情报让位→队列→
+    //     体力(保留+25)→编队→BehemothLaunchFacade；:652-690 体力道具；:752-800 下次唤醒
+    //   - modules/behemoth/service/BehemothLaunchFacade.java:34-107 searchTargets：
+    //     等级倒序、req_world_map_search{mapobj_type:4,level_min,level_max} → response.point
+    //     → req_world_mapobj{kid,point} → mapobj.type==4 且 map_boss.id/march_count
+    //   - BehemothAutomationService.java:984-1005：发起 type=102 extra{monsterid,prepare_time_index}；
+    //     上车 type=99 extra{master_marchid}（坐标=车头城市 startpoint）
+    //   - BehemothStaminaItemSupport.java:20-44：体力道具 610002，每颗 +10，单次最多 6
+    //
+    // 批次安全口径（宁漏不花）：
+    //   - 每日发起默认关闭（behemoth.launch_enabled=false），开启后默认每人每日 1 次；
+    //   - 零钻石协议：本区只发 req_world_map_search / req_world_mapobj / req_world_march /
+    //     req_use_item(610002，仅显式开关) / 原生 auto_join 两条（保留现状）；
+    //   - 体力/队列/编队/目标任一未知 → SKIP + 可读原因，绝不猜；
+    //   - 原生 auto_join 行为原样保留（文案/请求不变）；手工上车与其互斥（默认不叠加）。
+    // ==================================================================================
+
+    /** 巨兽发起行军 type（BehemothAutomationService.java:1000）。 */
+    static final long BEHEMOTH_MARCH_TYPE_LAUNCH = 102L;
+    /** 加入集结（上车）type（BehemothAutomationService.java:988）。 */
+    static final long BEHEMOTH_MARCH_TYPE_JOIN = 99L;
+    /** 世界巨兽 mapobj 类型（BehemothAutomationService.searchPayload：mapobj_type=4）。 */
+    static final long BEHEMOTH_MAPOBJ_TYPE = 4L;
+    /** 单次发起体力消耗（DailyBehemothService.java:77 BOSS_STAMINA_COST=25）。 */
+    static final long BEHEMOTH_STAMINA_PER_LAUNCH = 25L;
+    /** 体力道具 id / 每颗恢复 / 单次最多（BehemothStaminaItemSupport.java:12-14）。 */
+    static final long BEHEMOTH_STAMINA_ITEM_ID = 610002L;
+    static final long BEHEMOTH_STAMINA_ITEM_RECOVERY = 10L;
+    static final int BEHEMOTH_STAMINA_ITEM_MAX = 6;
+    /** 搜索无目标（BehemothAutomationService.isNoTargetSearchError:2872）。 */
+    static final int CODE_BEHEMOTH_NO_TARGET = 2872;
+    /** 目标已被抢先集结（isTargetAlreadyRalliedError:2851）。 */
+    static final int CODE_BEHEMOTH_TARGET_TAKEN = 2851;
+    /** 加入集结类错误：2844 已加入 / 2845 集结失效 / 2846 集结满员。 */
+    static final int CODE_BEHEMOTH_JOIN_ALREADY = 2844;
+    static final int CODE_BEHEMOTH_JOIN_INVALID = 2845;
+    static final int CODE_BEHEMOTH_JOIN_FULL = 2846;
+    /** 其它已知错误码。 */
+    static final int CODE_BEHEMOTH_STAMINA_SHORT = 51;
+    static final int CODE_BEHEMOTH_ALLIANCE = 1507;
+    static final int CODE_BEHEMOTH_LIMIT = 1600;
+    static final int CODE_BEHEMOTH_FORMATION_SHORT = 401;
+    static final int CODE_BEHEMOTH_FROSTFIRE_LOCK = 8637;
+    /** 发起成功后的复查间隔（等行军创建/世界状态刷新）。 */
+    static final long BEHEMOTH_LAUNCH_RECHECK_SEC = 180L;
+    /** 巨兽状态键前缀（srv:behemoth:{fpid}:{sid}:state）。 */
+    static final String BEHEMOTH_KEY_PREFIX = "srv:behemoth:";
+
     static TaskOutcome behemoth(TaskContext tc) throws Exception {
+        Exec.Multi m = new Exec.Multi();
+        long wakeAtMs = 0L;
+        String launchText = "";
+        String joinText = "";
+        String staminaText = "";
         try {
-            if (!tc.subOn("behemoth", "auto_join", true)) {
-                return new TaskOutcome("behemoth", "巨兽狩猎", TaskOutcome.Category.SKIPPED,
-                        "自动上车已关闭（App 设置页可开）");
+            BehemothConfig cfg = BehemothConfig.of(tc.params("behemoth"));
+            BehemothState state = BehemothState.load(tc);
+            long now = serverNowSec(tc);
+            state.rollDay(now);
+
+            // ---------- 1) 原生自动上车（既有行为保留；失败只记录，不阻断每日发起/手工上车兜底） ----------
+            BehemothAutoJoin autoJoin = behemothAutoJoin(tc, cfg);
+            if (autoJoin.on) m.claimed(autoJoin.text);
+            else m.skip(autoJoin.text);
+
+            // ---------- 2) 体力（只读推送 notify_recover_resource_*；未知一律 SKIP） ----------
+            BehemothStamina stamina = behemothReadStamina(tc, now);
+            long requiredStamina = cfg.staminaReserve + BEHEMOTH_STAMINA_PER_LAUNCH;
+            staminaText = stamina.describe(now, cfg.staminaReserve);
+
+            // ---------- 3) 每日发起（默认关；开启后保守 N 次/日，默认 1） ----------
+            boolean launchedNow = false;
+            if (!cfg.launchEnabled) {
+                m.skip("每日巨兽发起默认关（behemoth.launch_enabled=false）；原生自动上车行为不变");
+                launchText = "每日发起关闭（默认安全）";
+            } else if (state.launchCount >= cfg.launchLimit) {
+                m.skip("今日巨兽发起已完成 " + state.launchCount + "/" + cfg.launchLimit);
+                launchText = "今日已完成 " + state.launchCount + "/" + cfg.launchLimit;
+            } else {
+                BehemothLaunch launch = behemothLaunchOnce(tc, cfg, state, stamina, requiredStamina, now);
+                launchedNow = launch.launched;
+                launchText = launch.text;
+                if (launch.launched) m.claimed(launch.text);
+                else m.skip(launch.text);
             }
-            tc.engine.request("req_alliance_activity_auto_join_info",
-                    args("auto_mass_id_list", java.util.Arrays.asList(1L, 4L, 3L)));
-            GameMessage open = tc.engine.request("req_alliance_activity_auto_join_open",
-                    args("auto_mass_id_list", java.util.Arrays.asList(1L, 4L, 3L), "march_limit", 3L));
-            if (!isDegraded(open)) {
-                Object code = open.getContent().get("code");
-                if (code == null || toInt(code) == 0) {
-                    tc.saveModText("behemoth", "auto_join", "原生自动上车：已开启（巨兽/死神/巨熊）");
-                    return new TaskOutcome("behemoth", "巨兽狩猎", TaskOutcome.Category.CLAIMED,
-                            "自动上车已开启(巨兽/死神/巨熊)");
-                }
-                return new TaskOutcome("behemoth", "巨兽狩猎", TaskOutcome.Category.SKIPPED,
-                        "开启码" + toInt(code));
-            }
-            return new TaskOutcome("behemoth", "巨兽狩猎", TaskOutcome.Category.DEGRADED,
-                    "响应异常（协议可能变更）");
+
+            // ---------- 4) 手工上车（type=99；默认上限 1 队；与原生自动上车互斥） ----------
+            BehemothJoin join = behemothJoinOnce(tc, cfg, state, stamina, autoJoin.on, now);
+            joinText = join.text;
+            if (join.joined > 0) m.claimed(join.text);
+            else m.skip(join.text);
+
+            // ---------- 5) 状态落盘 + mod + 下次唤醒 ----------
+            state.save(tc);
+            behemothWriteMod(tc, autoJoin, staminaText, launchText, joinText, cfg, state);
+            wakeAtMs = behemothWakeAtMillis(now, cfg, state, stamina, requiredStamina, launchedNow);
         } catch (Exception e) {
             return classifyException(e, "巨兽狩猎");
         }
+        TaskOutcome out = Exec.result(m, "behemoth", "巨兽狩猎");
+        if (wakeAtMs > 0L) out.wakeAt(wakeAtMs);
+        return out;
+    }
+
+    // ---------- 3.1 原生自动上车（保留既有行为：同请求、同文案、同错误码记录） ----------
+
+    static final class BehemothAutoJoin {
+        boolean on;
+        String text = "";
+    }
+
+    private static BehemothAutoJoin behemothAutoJoin(TaskContext tc, BehemothConfig cfg) {
+        BehemothAutoJoin out = new BehemothAutoJoin();
+        if (!cfg.autoJoinEnabled) {
+            out.text = "自动上车已关闭（App 设置页可开）";
+            return out;
+        }
+        try {
+            tc.engine.request("req_alliance_activity_auto_join_info",
+                    args("auto_mass_id_list", cfg.autoJoinIds));
+            GameMessage open = tc.engine.request("req_alliance_activity_auto_join_open",
+                    args("auto_mass_id_list", cfg.autoJoinIds, "march_limit", (long) cfg.autoJoinMarchLimit));
+            if (isDegraded(open)) {
+                out.text = "原生自动上车响应异常（协议可能变更）";
+                return out;
+            }
+            int code = open == null ? -1 : Exec.codeOf(open);
+            if (code == 0) {
+                tc.saveModText("behemoth", "auto_join", "原生自动上车：已开启（巨兽/死神/巨熊）");
+                out.on = true;
+                out.text = "自动上车已开启(巨兽/死神/巨熊)";
+                return out;
+            }
+            String why = behemothCodeText(code);
+            out.text = "自动上车开启失败（码" + code + "）" + (why.isEmpty() ? "" : "：" + why);
+        } catch (Exception e) {
+            if (isSessionClosed(e)) throw new RuntimeException(e);
+            out.text = "自动上车异常：" + brief(String.valueOf(e.getMessage()));
+        }
+        return out;
+    }
+
+    // ---------- 3.2 每日发起（默认关；流程 1:1 DailyBehemothService.evaluateLocked:579-700） ----------
+
+    static final class BehemothLaunch {
+        boolean launched;
+        String text = "";
+    }
+
+    private static BehemothLaunch behemothLaunchOnce(TaskContext tc, BehemothConfig cfg,
+                                                     BehemothState state, BehemothStamina stamina,
+                                                     long requiredStamina, long now) throws Exception {
+        BehemothLaunch out = new BehemothLaunch();
+        // ① 体力：低于“保留 + 25”不发；道具仅显式开关才用（默认关）
+        long current = stamina.currentAt(now);
+        if (!stamina.hasCurrent) {
+            out.text = "体力状态未知（未收到 notify_recover_resource_init），本轮不发起";
+            return out;
+        }
+        if (current < requiredStamina) {
+            if (!cfg.autoUseStaminaItem) {
+                out.text = "体力不足（当前 " + current + " < 保留" + cfg.staminaReserve
+                        + "+" + BEHEMOTH_STAMINA_PER_LAUNCH + "），等待自然恢复";
+                return out;
+            }
+            String refill = behemothUseStaminaItems(tc, requiredStamina - current);
+            if (!refill.isEmpty()) {
+                out.text = refill;
+                return out;
+            }
+            stamina = behemothReadStamina(tc, now);
+            current = stamina.currentAt(now);
+            if (!stamina.hasCurrent || current < requiredStamina) {
+                out.text = "体力道具使用后仍不足（当前 " + current + "），本轮不发起";
+                return out;
+            }
+        }
+        // ② 队列：容量/占用任一未知 → SKIP（宁漏不花）
+        int capacity = behemothQueueCapacity(tc.engine);
+        int active = behemothActiveMarchCount(tc);
+        if (capacity <= 0 || active < 0) {
+            out.text = "行军队列状态未知（容量=" + capacity + " 占用=" + (active < 0 ? "未知" : String.valueOf(active)) + "），本轮不发起";
+            return out;
+        }
+        int queueLimit = cfg.effectiveQueueCount(capacity);
+        if (active >= queueLimit) {
+            out.text = "行军队列已满（" + active + "/" + queueLimit + "），等待部队回城";
+            return out;
+        }
+        // ③ 编队（hero_ids 优先 → 客户端队 squad_index；缺省队1，与既有 Exec.formation 一致）
+        Map<String, Object> formation = behemothFormation(tc.engine, cfg);
+        if (!behemothFormationReady(formation)) {
+            out.text = "无可用英雄/兵力编队（hero_ids 或客户端队" + cfg.squadIndex + "），未发起";
+            return out;
+        }
+        // ④ 等级倒序搜索 + 目标校验 + 发起（每级 1 次搜索，防请求风暴）
+        for (int level : behemothLevels(cfg)) {
+            Map<String, Object> point;
+            try {
+                point = behemothSearchPoint(tc.engine, level);
+            } catch (Exception e) {
+                if (isSessionClosed(e)) throw e;
+                continue;
+            }
+            if (point == null) continue;
+            BehemothBossTarget target;
+            try {
+                target = behemothTargetAt(tc.engine, point, level);
+            } catch (Exception e) {
+                if (isSessionClosed(e)) throw e;
+                continue;
+            }
+            if (target == null) continue;
+            if (target.marchCount > 0L) continue;   // 已有集结（别人已发起）
+            Map<String, Object> payload = behemothLaunchPayload(target.x, target.y,
+                    target.monsterId, formation, cfg.prepareTimeIndex);
+            if (payload == null) {
+                out.text = "发起参数不完整（坐标/monsterid/编队缺失），未发起";
+                return out;
+            }
+            GameMessage rsp = tc.engine.request("req_world_march", payload);
+            int code = rsp == null ? -1 : Exec.codeOf(rsp);
+            long marchId = Exec.marchId(rsp);
+            if (marchId > 0L) {
+                state.launchCount++;
+                state.lastLaunchAtSec = now;
+                state.lastLaunchLevel = level;
+                state.lastCode = 0;
+                state.save(tc);
+                out.launched = true;
+                out.text = "已发起巨兽集结(level=" + level + " monster=" + target.monsterId
+                        + " marchId=" + marchId + ") 今日 " + state.launchCount + "/" + cfg.launchLimit;
+                FileLog.info("巨兽发起成功 fpid={} sid={} level={} monsterid={} marchId={} 今日={}/{}",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(level),
+                        String.valueOf(target.monsterId), String.valueOf(marchId),
+                        String.valueOf(state.launchCount), String.valueOf(cfg.launchLimit));
+                return out;
+            }
+            if (code == CODE_BEHEMOTH_TARGET_TAKEN) {
+                // 目标被抢先集结：换下一个目标/等级，不记失败
+                FileLog.info("巨兽发起目标被抢先 fpid={} level={} point=({},{})", tc.fpid,
+                        String.valueOf(level), String.valueOf(target.x), String.valueOf(target.y));
+                continue;
+            }
+            state.lastCode = code;
+            state.save(tc);
+            out.text = "巨兽发起失败（码" + code + "）：" + behemothCodeText(code);
+            FileLog.warn("巨兽发起失败 fpid={} sid={} level={} code={}", tc.fpid,
+                    String.valueOf(tc.sid), String.valueOf(level), String.valueOf(code));
+            return out;
+        }
+        out.text = "附近未搜到可发起的巨兽（等级 " + cfg.minLevel + "-" + cfg.maxLevel
+                + "；已被集结/无目标）";
+        return out;
+    }
+
+    /** 显式开关下的体力道具（默认关）：失败返回可读原因；成功/无需补充返回空串。 */
+    private static String behemothUseStaminaItems(TaskContext tc, long deficit) {
+        int count = behemothStaminaItemCount(deficit);
+        if (count <= 0) return "体力道具数量计算为 0，未使用";
+        try {
+            GameMessage rsp = tc.engine.request("req_use_item",
+                    args("id", BEHEMOTH_STAMINA_ITEM_ID, "count", (long) count));
+            int code = rsp == null ? -1 : Exec.codeOf(rsp);
+            if (code != 0) return "体力道具使用失败（码" + code + "）";
+            FileLog.info("巨兽体力道具已使用 fpid={} count={}（每颗+{}）", tc.fpid,
+                    String.valueOf(count), String.valueOf(BEHEMOTH_STAMINA_ITEM_RECOVERY));
+            return "";
+        } catch (Exception e) {
+            return "体力道具请求异常：" + brief(String.valueOf(e.getMessage()));
+        }
+    }
+
+    // ---------- 3.3 手工上车（type=99；默认 1 队；与原生自动上车互斥） ----------
+
+    static final class BehemothJoin {
+        int joined;
+        String text = "";
+    }
+
+    private static BehemothJoin behemothJoinOnce(TaskContext tc, BehemothConfig cfg, BehemothState state,
+                                                 BehemothStamina stamina, boolean autoJoinOn, long now) throws Exception {
+        BehemothJoin out = new BehemothJoin();
+        if (!cfg.joinEnabled) {
+            out.text = "手工上车关闭（join_enabled=false）";
+            return out;
+        }
+        if (autoJoinOn && !cfg.manualJoinWithAutoJoin) {
+            out.text = "原生自动上车已开启成功，手工上车互斥跳过（避免重复上车）";
+            return out;
+        }
+        int remaining = cfg.joinLimit - state.joinCount;
+        if (remaining <= 0) {
+            out.text = "今日手工上车已达上限 " + cfg.joinLimit + " 队";
+            return out;
+        }
+        long ownUid = tc.engine.lastUid();
+        List<BossRally> candidates = behemothRallyCandidates(tc.engine, tc.fpid, now, ownUid);
+        if (candidates.isEmpty()) {
+            out.text = "未发现可加入的巨兽集结（可开启原生自动上车；本任务不主动搜索他人集结）";
+            return out;
+        }
+        // 体力/队列未知 → 不上车（宁漏不花；上车暂按保留值门控，不扣 25 发起成本）
+        long current = stamina.currentAt(now);
+        if (!stamina.hasCurrent || current < cfg.staminaReserve) {
+            out.text = "体力未知或低于保留值 " + cfg.staminaReserve + "，本轮不上车";
+            return out;
+        }
+        int capacity = behemothQueueCapacity(tc.engine);
+        int active = behemothActiveMarchCount(tc);
+        if (capacity <= 0 || active < 0) {
+            out.text = "行军队列状态未知，本轮不上车";
+            return out;
+        }
+        int queueLimit = cfg.effectiveQueueCount(capacity);
+        if (active >= queueLimit) {
+            out.text = "行军队列已满（" + active + "/" + queueLimit + "），本轮不上车";
+            return out;
+        }
+        Map<String, Object> formation = behemothFormation(tc.engine, cfg);
+        if (!behemothFormationReady(formation)) {
+            out.text = "无可用上车编队（hero_ids 或客户端队" + cfg.squadIndex + "）";
+            return out;
+        }
+        int tried = 0;
+        for (BossRally rally : candidates) {
+            if (tried >= remaining) break;
+            if (ClaimLedger.isClaimed(tc, "behemoth_join", "m" + rally.masterMarchId)) continue;
+            Map<String, Object> payload = behemothJoinPayload(rally.masterMarchId,
+                    rally.startX, rally.startY, formation);
+            if (payload == null) continue;
+            GameMessage rsp = tc.engine.request("req_world_march", payload);
+            tried++;
+            int code = rsp == null ? -1 : Exec.codeOf(rsp);
+            long marchId = Exec.marchId(rsp);
+            if (code == 0 || marchId > 0L) {
+                ClaimLedger.mark(tc, "behemoth_join", "m" + rally.masterMarchId);
+                state.joinCount++;
+                state.lastJoinMasterId = rally.masterMarchId;
+                state.save(tc);
+                out.joined++;
+                out.text = "已手工上车 1 队(车头" + rally.masterMarchId + ") 今日 "
+                        + state.joinCount + "/" + cfg.joinLimit;
+                FileLog.info("巨兽手动上车成功 fpid={} sid={} masterMarchId={} 今日={}/{}",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(rally.masterMarchId),
+                        String.valueOf(state.joinCount), String.valueOf(cfg.joinLimit));
+                return out;
+            }
+            ClaimLedger.mark(tc, "behemoth_join", "m" + rally.masterMarchId);
+            String cls = behemothCodeText(code);
+            out.text = "手工上车失败（码" + code + "）" + (cls.isEmpty() ? "" : "：" + cls);
+            FileLog.warn("巨兽手动上车失败 fpid={} code={} masterMarchId={}", tc.fpid,
+                    String.valueOf(code), String.valueOf(rally.masterMarchId));
+            if (code == CODE_BEHEMOTH_JOIN_ALREADY) continue;   // 已在集结：换下一车头
+            if (code == CODE_BEHEMOTH_JOIN_INVALID || code == CODE_BEHEMOTH_JOIN_FULL) continue;
+            return out;
+        }
+        if (out.text.isEmpty()) out.text = "可加入集结均已在今日尝试过（台账去重）";
+        return out;
+    }
+
+    // ---------- 3.4 只读状态读取（体力/队列/联盟集结） ----------
+
+    /** 体力快照（网页版 BehemothAccountState.currentStaminaLocked:2245-2270 同口径）。 */
+    static final class BehemothStamina {
+        boolean hasCurrent;
+        long current;
+        long max;
+        long recover;
+        long nextRecoverAt;   // 秒
+        long interval;        // 秒
+
+        /** 当前体力（含自然恢复外推；未知返回 0）。 */
+        long currentAt(long nowSec) {
+            if (!hasCurrent) return 0L;
+            long base = Math.max(0L, current);
+            if (max <= base || recover <= 0L || nextRecoverAt <= 0L || interval <= 0L) return base;
+            long now = nowSec > 0L ? nowSec : System.currentTimeMillis() / 1000L;
+            if (now < nextRecoverAt) return base;
+            long completed = (now - nextRecoverAt) / interval;
+            long periods = completed == Long.MAX_VALUE ? Long.MAX_VALUE : completed + 1L;
+            long recovered;
+            try {
+                recovered = Math.multiplyExact(recover, periods);
+            } catch (ArithmeticException ex) {
+                recovered = Long.MAX_VALUE;
+            }
+            if (recovered > Long.MAX_VALUE - base) return max;
+            return Math.min(max, base + recovered);
+        }
+
+        String describe(long nowSec, long reserve) {
+            if (!hasCurrent) return "体力未知（等待 notify_recover_resource_init）";
+            StringBuilder sb = new StringBuilder("体力 ").append(currentAt(nowSec));
+            if (max > 0L) sb.append("/").append(max);
+            sb.append("（保留 ").append(reserve).append("）");
+            if (recover > 0L && nextRecoverAt > 0L) {
+                sb.append(" · 下次恢复 +").append(recover).append('@')
+                        .append(Beijing.fmt("HH:mm").format(new java.util.Date(nextRecoverAt * 1000L)));
+            }
+            return sb.toString();
+        }
+    }
+
+    /**
+     * 读体力：只消费推送（notify_recover_resource_init 全量 / notify_recover_resource_update 增量），
+     * 不新增任何查询协议。init 缺失 → hasCurrent=false（未知，SKIP）。
+     */
+    static BehemothStamina behemothReadStamina(TaskContext tc, long nowSec) {
+        BehemothStamina out = new BehemothStamina();
+        if (tc == null || tc.engine == null) return out;
+        Map<String, Object> init = null;
+        try {
+            init = tc.engine.notifyData("notify_recover_resource_init");
+        } catch (Throwable ignored) {
+        }
+        BehemothStamina parsed = behemothStaminaFromContent(init);
+        if (parsed != null) return parsed;
+        // 历史兜底（ServerNotifyHistory 保留最近 8 帧；登录批 init 可能已被 update 覆盖）
+        try {
+            for (ServerNotifyHistory.Entry entry : ServerNotifyHistory.history(
+                    tc.fpid, "notify_recover_resource_init")) {
+                if (entry == null || !"notify_recover_resource_init".equals(entry.proto)) continue;
+                BehemothStamina fromHistory = behemothStaminaFromContent(entry.content);
+                if (fromHistory != null) return fromHistory;
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /** 从 notify_recover_resource_init 内容解析体力（id==201，字段 count/max_count/recover/next_calc_ts/interval）。 */
+    static BehemothStamina behemothStaminaFromContent(Map<String, Object> content) {
+        if (content == null) return null;
+        Object data = content.get("data");
+        if (data == null) data = content.get("list");
+        for (Map<String, Object> item : Exec.mapsOf(data)) {
+            if (Exec.longOf(item.get("id")) != 201L) continue;
+            return behemothStaminaOf(item);
+        }
+        // 兼容 data 本身是 {201:{count,...}} 的 map 形状
+        Map<String, Object> byId = Exec.mapOf(data);
+        if (byId != null) {
+            Map<String, Object> row = Exec.mapOf(byId.get("201"));
+            if (row == null) row = Exec.mapOf(byId.get(201L));
+            if (row != null) return behemothStaminaOf(row);
+        }
+        return null;
+    }
+
+    private static BehemothStamina behemothStaminaOf(Map<String, Object> row) {
+        BehemothStamina st = new BehemothStamina();
+        st.hasCurrent = true;
+        st.current = Math.max(0L, Exec.longOf(row.get("count")));
+        st.max = Math.max(0L, Exec.longOf(row.get("max_count")));
+        st.recover = Math.max(0L, Exec.longOf(row.get("recover")));
+        st.nextRecoverAt = Math.max(0L, Exec.longOf(row.get("next_calc_ts")));
+        st.interval = Math.max(0L, Exec.longOf(row.get("interval")));
+        return st;
+    }
+
+    /** 世界行军队列容量（notify_world_player_init.world.capacity；未知 0）。 */
+    static int behemothQueueCapacity(WjdrEngine engine) {
+        try {
+            Map<String, Object> content = engine.notifyData("notify_world_player_init");
+            if (content == null) return 0;
+            Map<String, Object> world = Exec.mapOf(content.get("world"));
+            if (world == null) world = content;
+            long cap = Exec.longOf(world.get("capacity"));
+            return cap > 0L ? (int) Math.min(cap, 20L) : 0;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** 自己当前行军队列占用（req_world_march_detail_4_player_situation，既有协议；-1=未知）。 */
+    static int behemothActiveMarchCount(TaskContext tc) throws Exception {
+        try {
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("owner", tc.engine.lastUid());
+            payload.put("kid", tc.engine.lastServerId());
+            GameMessage rsp = tc.engine.request("req_world_march_detail_4_player_situation", payload);
+            if (rsp == null || !Exec.ok(rsp)) return -1;
+            Map<String, Object> detail = Exec.mapOf(rsp.getContent().get("detail"));
+            if (detail == null) detail = rsp.getContent();
+            int n = 0;
+            for (String key : new String[]{"marchs", "march_list", "list", "marches"}) {
+                List<Map<String, Object>> rows = Exec.mapsOf(detail.get(key));
+                if (rows.isEmpty()) continue;
+                for (Map<String, Object> row : rows) {
+                    if (Exec.longOf(row.get("id")) > 0L) n++;
+                }
+                return n;
+            }
+            return 0;
+        } catch (Exception e) {
+            if (isSessionClosed(e)) throw e;
+            return -1;
+        }
+    }
+
+    // ---------- 3.5 世界搜索 / 目标校验 / 集结候选 ----------
+
+    /** 按等级搜索巨兽（req_world_map_search；2872/无 point → null 表示该级无目标）。 */
+    static Map<String, Object> behemothSearchPoint(WjdrEngine engine, int level) throws Exception {
+        GameMessage rsp = engine.request("req_world_map_search",
+                Exec.args("mapobj_type", BEHEMOTH_MAPOBJ_TYPE,
+                        "level_min", (long) level, "level_max", (long) level));
+        if (rsp == null || !Exec.ok(rsp)) return null;
+        Map<String, Object> point = Exec.mapOf(rsp.getContent().get("point"));
+        if (point == null) point = Exec.mapOf(rsp.getContent().get("target"));
+        long x = point == null ? 0L : Exec.longOf(point.get("x"));
+        long y = point == null ? 0L : Exec.longOf(point.get("y"));
+        if (x <= 0L || y <= 0L) return null;
+        return Exec.point(x, y);
+    }
+
+    /** req_world_mapobj 二次校验并解析巨兽目标（mapobj.type==4 / map_boss.id / march_count）。 */
+    static BehemothBossTarget behemothTargetAt(WjdrEngine engine, Map<String, Object> point,
+                                               int level) throws Exception {
+        GameMessage rsp = engine.request("req_world_mapobj",
+                Exec.args("kid", engine.lastServerId(), "point", point));
+        if (rsp == null || !Exec.ok(rsp)) return null;
+        Map<String, Object> mapobj = Exec.mapOf(rsp.getContent().get("mapobj"));
+        if (mapobj == null) mapobj = Exec.mapOf(rsp.getContent().get("change"));
+        if (mapobj == null) mapobj = rsp.getContent();
+        long x = Exec.longOf(point.get("x"));
+        long y = Exec.longOf(point.get("y"));
+        return parseBehemothBossTarget(mapobj, level, x, y);
+    }
+
+    /** 世界巨兽目标。 */
+    static final class BehemothBossTarget {
+        int level;
+        long monsterId;
+        long x;
+        long y;
+        long marchCount;
+    }
+
+    /** 纯函数：从 mapobj 解析巨兽目标（BehemothMapTarget.parse 同口径）。 */
+    static BehemothBossTarget parseBehemothBossTarget(Map<String, Object> mapobj, int level,
+                                                      long fallbackX, long fallbackY) {
+        if (mapobj == null) return null;
+        Map<String, Object> obj = mapobj;
+        Map<String, Object> nested = Exec.mapOf(mapobj.get("mapobj"));
+        if (nested != null) obj = nested;
+        if (Exec.longOf(obj.get("type")) != BEHEMOTH_MAPOBJ_TYPE) return null;
+        Map<String, Object> boss = Exec.mapOf(obj.get("map_boss"));
+        if (boss == null) boss = Exec.mapOf(obj.get("boss"));
+        if (boss == null) return null;
+        long monsterId = Exec.longOf(boss.get("id"));
+        if (monsterId <= 0L) monsterId = Exec.longOf(boss.get("monster_id"));
+        if (monsterId <= 0L) return null;
+        Map<String, Object> point = Exec.mapOf(obj.get("point"));
+        long x = point == null ? 0L : Exec.longOf(point.get("x"));
+        long y = point == null ? 0L : Exec.longOf(point.get("y"));
+        if (x <= 0L) x = fallbackX;
+        if (y <= 0L) y = fallbackY;
+        if (x <= 0L || y <= 0L) return null;
+        BehemothBossTarget target = new BehemothBossTarget();
+        target.level = level;
+        target.monsterId = monsterId;
+        target.x = x;
+        target.y = y;
+        target.marchCount = Math.max(0L, Exec.longOf(boss.get("march_count")));
+        return target;
+    }
+
+    /** 可加入的巨兽集结（type=102/5004；来自 notify_mass_march_* 历史，不新增查询协议）。 */
+    static final class BossRally {
+        long masterMarchId;
+        long ownerUid;
+        long ownerKid;
+        long startX;
+        long startY;
+        long endAt;
+    }
+
+    /** 从通知历史/单帧里筛巨兽集结候选（纯聚合；同 id 去重，保留最新帧）。 */
+    static List<BossRally> behemothRallyCandidates(WjdrEngine engine, String fpid, long nowSec, long ownUid) {
+        Map<Long, BossRally> merged = new LinkedHashMap<>();
+        try {
+            for (ServerNotifyHistory.Entry entry : ServerNotifyHistory.history(fpid, "notify_mass_march_")) {
+                if (entry == null || entry.content == null) continue;
+                for (BossRally rally : parseBehemothRallies(entry.content, nowSec, ownUid)) {
+                    merged.put(rally.masterMarchId, rally);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Map<String, Object> latestAdd = engine == null ? null : engine.notifyContent("notify_mass_march_add");
+            if (latestAdd != null) {
+                for (BossRally rally : parseBehemothRallies(latestAdd, nowSec, ownUid)) {
+                    merged.put(rally.masterMarchId, rally);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        List<BossRally> out = new ArrayList<>(merged.values());
+        out.sort((a, b) -> Long.compare(a.masterMarchId, b.masterMarchId));
+        if (out.size() > 6) out = new ArrayList<>(out.subList(0, 6));
+        return out;
+    }
+
+    /**
+     * 纯函数：解析一帧 notify_mass_march_add（{march:{...}} 或 {data:{marchs:[...]}} 兼容）里的巨兽集结。
+     * 过滤：type=102/5004、id/owner/startpoint>0、非自己、未过期、未满员。
+     */
+    static List<BossRally> parseBehemothRallies(Map<String, Object> content, long nowSec, long ownUid) {
+        List<BossRally> out = new ArrayList<>();
+        if (content == null) return out;
+        Map<String, Object> data = content;
+        for (String key : new String[]{"data", "info", "content"}) {
+            Map<String, Object> inner = Exec.mapOf(data.get(key));
+            if (inner != null) {
+                data = inner;
+                break;
+            }
+        }
+        Map<String, Object> single = Exec.mapOf(data.get("march"));
+        if (single != null && !single.isEmpty()) {
+            BossRally rally = parseBossRally(single, nowSec, ownUid);
+            if (rally != null) out.add(rally);
+            return out;
+        }
+        List<Map<String, Object>> marchs = Exec.mapsOf(data.get("marchs"));
+        if (marchs.isEmpty()) marchs = Exec.mapsOf(data.get("marches"));
+        if (marchs.isEmpty()) marchs = Exec.mapsOf(data.get("march_list"));
+        if (marchs.isEmpty()) {
+            BossRally self = parseBossRally(data, nowSec, ownUid);
+            if (self != null) out.add(self);
+            return out;
+        }
+        for (Map<String, Object> march : marchs) {
+            BossRally rally = parseBossRally(march, nowSec, ownUid);
+            if (rally != null) out.add(rally);
+        }
+        return out;
+    }
+
+    static BossRally parseBossRally(Map<String, Object> march, long nowSec, long ownUid) {
+        if (march == null) return null;
+        long type = Exec.longOf(march.get("type"));
+        if (type != BEHEMOTH_MARCH_TYPE_LAUNCH && type != 5004L) return null;
+        long id = Exec.longOf(march.get("id"));
+        long owner = Exec.longOf(march.get("owner"));
+        if (id <= 0L || owner <= 0L) return null;
+        if (ownUid > 0L && owner == ownUid) return null;
+        Map<String, Object> start = Exec.mapOf(march.get("startpoint"));
+        if (start == null) start = Exec.mapOf(march.get("start_point"));
+        long sx = start == null ? 0L : Exec.longOf(start.get("x"));
+        long sy = start == null ? 0L : Exec.longOf(start.get("y"));
+        if (sx <= 0L || sy <= 0L) return null;
+        long endAt = Exec.longOf(march.get("endtime"));
+        if (endAt > 0L && nowSec > 0L && endAt <= nowSec) return null;
+        long state = Exec.longOf(march.get("state"));
+        if (state == 4L || state == 0L) return null;   // 已完成/失效
+        // 满员过滤（mass_* 详情，max/uids 口径同网页版 isRallyFull）
+        Map<String, Object> mass = Exec.mapOf(march.get("mass_alliance_trap"));
+        if (mass == null || mass.isEmpty()) mass = Exec.mapOf(march.get("mass_boss"));
+        if (mass == null || mass.isEmpty()) mass = Exec.mapOf(march.get("mass_master"));
+        if (mass != null && !mass.isEmpty()) {
+            long memberMax = Exec.longOf(mass.get("max"));
+            int memberCount = Exec.listOf(mass.get("uids")) == null ? 0 : Exec.listOf(mass.get("uids")).size();
+            long soldierMax = Exec.longOf(mass.get("soldier_max"));
+            long soldierCount = Exec.longOf(mass.get("soldier_count"));
+            if (memberMax > 0L && memberCount >= memberMax) return null;
+            if (soldierMax > 0L && soldierCount >= soldierMax) return null;
+        }
+        BossRally rally = new BossRally();
+        rally.masterMarchId = id;
+        rally.ownerUid = owner;
+        rally.ownerKid = Exec.longOf(march.get("kid"));
+        rally.startX = sx;
+        rally.startY = sy;
+        rally.endAt = endAt;
+        return rally;
+    }
+
+    // ---------- 3.6 参数构造 / 配置 / 状态 / 唤醒（纯函数，单测覆盖） ----------
+
+    /** 发起 payload（BehemothAutomationService.java:991-1005）：type=102 + extra{monsterid,prepare_time_index}。 */
+    static Map<String, Object> behemothLaunchPayload(long x, long y, long monsterId,
+                                                     Map<String, Object> formation, int prepareTimeIndex) {
+        if (x <= 0L || y <= 0L || monsterId <= 0L) return null;
+        if (!behemothFormationReady(formation)) return null;
+        return Exec.args("type", BEHEMOTH_MARCH_TYPE_LAUNCH,
+                "endpoint", Exec.point(x, y),
+                "formation", formation,
+                "extra", Exec.args("monsterid", monsterId,
+                        "prepare_time_index", (long) clampBehemothPrepareIndex(prepareTimeIndex)));
+    }
+
+    /** 手工上车 payload（BehemothAutomationService.java:984-989）：type=99 + extra{master_marchid}。 */
+    static Map<String, Object> behemothJoinPayload(long masterMarchId, long leaderCityX, long leaderCityY,
+                                                   Map<String, Object> formation) {
+        if (masterMarchId <= 0L || leaderCityX <= 0L || leaderCityY <= 0L) return null;
+        if (!behemothFormationReady(formation)) return null;
+        return Exec.args("type", BEHEMOTH_MARCH_TYPE_JOIN,
+                "endpoint", Exec.point(leaderCityX, leaderCityY),
+                "formation", formation,
+                "extra", Exec.args("master_marchid", masterMarchId));
+    }
+
+    static boolean behemothFormationReady(Map<String, Object> formation) {
+        if (formation == null || formation.isEmpty()) return false;
+        List<Object> heroes = Exec.listOf(formation.get("hero_id"));
+        if (heroes == null || heroes.isEmpty()) return false;
+        List<Object> soldiers = Exec.listOf(formation.get("soldier"));
+        return soldiers != null && !soldiers.isEmpty();
+    }
+
+    static int clampBehemothPrepareIndex(int index) {
+        return Math.max(1, Math.min(4, index));
+    }
+
+    /** 准备档 index → 秒（网页版 DailyBehemothService.minimumRemainingSeconds 同档位）。 */
+    static int behemothPrepareSeconds(int index) {
+        switch (clampBehemothPrepareIndex(index)) {
+            case 1: return 320;
+            case 2: return 620;
+            case 3: return 1820;
+            case 4: return 3620;
+            default: return 320;
+        }
+    }
+
+    /** 等级搜索顺序：max→min 倒序（BehemothAutomationService.searchLevels:1174-1180）。 */
+    static List<Integer> behemothLevels(BehemothConfig cfg) {
+        List<Integer> levels = new ArrayList<>();
+        int min = Math.max(1, Math.min(cfg == null ? 1 : cfg.minLevel, 8));
+        int max = Math.max(1, Math.min(cfg == null ? 8 : cfg.maxLevel, 8));
+        if (cfg != null && cfg.forceMaxLevel) min = max;
+        if (min > max) {
+            int t = min;
+            min = max;
+            max = t;
+        }
+        for (int level = max; level >= min; level--) levels.add(level);
+        return levels;
+    }
+
+    /** 体力道具数量：缺多少补多少（每颗+10，单次≤6；BehemothStaminaItemSupport.itemUseCount 同口径）。 */
+    static int behemothStaminaItemCount(long deficit) {
+        if (deficit <= 0L) return 0;
+        long items = (deficit + BEHEMOTH_STAMINA_ITEM_RECOVERY - 1) / BEHEMOTH_STAMINA_ITEM_RECOVERY;
+        return (int) Math.min(Math.min(items, BEHEMOTH_STAMINA_ITEM_MAX), Integer.MAX_VALUE);
+    }
+
+    /** 体力自然恢复到目标值还需秒数（BehemothAccountState.staminaRecoveryWaitSeconds:2205-2240 同口径）。 */
+    static long behemothStaminaWaitSeconds(BehemothStamina stamina, long requiredStamina, long nowSec) {
+        if (stamina == null || !stamina.hasCurrent) return 0L;
+        long current = stamina.currentAt(nowSec);
+        if (current >= requiredStamina) return 0L;
+        if (stamina.max <= 0L || requiredStamina > stamina.max) return 0L;
+        if (stamina.recover <= 0L || stamina.nextRecoverAt <= 0L || stamina.interval <= 0L) return 0L;
+        long now = nowSec > 0L ? nowSec : System.currentTimeMillis() / 1000L;
+        long missing = requiredStamina - current;
+        long periods = (missing + stamina.recover - 1L) / stamina.recover;
+        long nextRecovery = stamina.nextRecoverAt;
+        if (now >= nextRecovery) {
+            long completed = (now - nextRecovery) / stamina.interval;
+            nextRecovery = nextRecovery + (completed + 1L) * stamina.interval;
+        }
+        long targetAt = nextRecovery + (periods - 1L) * stamina.interval;
+        return Math.max(1L, targetAt - now);
+    }
+
+    /**
+     * 下次唤醒时刻（epoch millis；0=不覆盖节奏）：
+     * 今日次数已满 → 次日 00:05；体力不足 → 自然恢复到“保留+25”的时刻（≤1h 封顶）；
+     * 刚发起成功 → 180s 后复查；其它情况交给节奏间隔。
+     */
+    static long behemothWakeAtMillis(long nowSec, BehemothConfig cfg, BehemothState state,
+                                     BehemothStamina stamina, long requiredStamina, boolean launchedNow) {
+        if (cfg == null || !cfg.launchEnabled) return 0L;
+        if (state == null) return 0L;
+        if (state.launchCount >= cfg.launchLimit) {
+            return behemothNextDayWakeSec(nowSec, 300L) * 1000L;
+        }
+        if (stamina != null && stamina.hasCurrent
+                && stamina.currentAt(nowSec) < requiredStamina) {
+            long wait = behemothStaminaWaitSeconds(stamina, requiredStamina, nowSec);
+            if (wait > 0L) return (nowSec + Math.min(wait, 3600L)) * 1000L;
+        }
+        if (launchedNow) return (nowSec + BEHEMOTH_LAUNCH_RECHECK_SEC) * 1000L;
+        return 0L;
+    }
+
+    /** 北京时间下一个自然日 + offset 秒（如 00:05）。 */
+    static long behemothNextDayWakeSec(long nowSec, long offsetSec) {
+        try {
+            java.time.ZonedDateTime now = java.time.Instant.ofEpochSecond(
+                    nowSec > 0L ? nowSec : System.currentTimeMillis() / 1000L)
+                    .atZone(Beijing.ZONE_ID);
+            return now.toLocalDate().plusDays(1).atStartOfDay(Beijing.ZONE_ID).toEpochSecond()
+                    + Math.max(0L, offsetSec);
+        } catch (Throwable t) {
+            return (nowSec > 0L ? nowSec : System.currentTimeMillis() / 1000L) + 3600L;
+        }
+    }
+
+    /** 失败码分类（错误码原码保留；语义以网页版/审计为准，未知码不猜）。 */
+    static String behemothCodeText(int code) {
+        switch (code) {
+            case CODE_BEHEMOTH_NO_TARGET:
+                return "搜索无目标（码2872）";
+            case CODE_BEHEMOTH_TARGET_TAKEN:
+                return "目标已被抢先集结（码2851）";
+            case CODE_BEHEMOTH_JOIN_ALREADY:
+                return "已在目标集结中（码2844）";
+            case CODE_BEHEMOTH_JOIN_INVALID:
+                return "目标集结已失效（码2845）";
+            case CODE_BEHEMOTH_JOIN_FULL:
+                return "目标集结已满员（码2846）";
+            case CODE_BEHEMOTH_STAMINA_SHORT:
+                return "体力不足（码51）";
+            case CODE_BEHEMOTH_ALLIANCE:
+                return "联盟未加入/活动未开放（码1507，审计语义待真机复核）";
+            case CODE_BEHEMOTH_LIMIT:
+                return "医院容量/次数限制（码1600，审计语义待真机复核）";
+            case CODE_BEHEMOTH_FORMATION_SHORT:
+                return "编队兵力不足（码401）";
+            case CODE_BEHEMOTH_FROSTFIRE_LOCK:
+                return "燃霜矿区战区锁未释放（码8637）";
+            default:
+                return "";
+        }
+    }
+
+    /** 任务参数（App FnParams 同源；全部有安全默认：发起默认关、零钻石）。 */
+    static final class BehemothConfig {
+        boolean autoJoinEnabled = true;
+        boolean launchEnabled = false;
+        int launchLimit = 1;
+        int queueCount = 1;
+        boolean joinEnabled = true;
+        int joinLimit = 1;
+        boolean manualJoinWithAutoJoin = false;
+        int minLevel = 1;
+        int maxLevel = 8;
+        boolean forceMaxLevel = false;
+        int prepareTimeIndex = 1;
+        long staminaReserve = 50L;
+        boolean autoUseStaminaItem = false;
+        int autoJoinMarchLimit = 3;
+        List<Long> autoJoinIds = java.util.Arrays.asList(1L, 4L, 3L);
+        List<Long> heroIds = new ArrayList<>();
+        int squadIndex = 1;
+
+        static BehemothConfig of(org.json.JSONObject params) {
+            BehemothConfig cfg = new BehemothConfig();
+            org.json.JSONObject p = params == null ? new org.json.JSONObject() : params;
+            // App FnParams：开关可能放 sub:{auto_join/launch/join:bool}，也可能放顶层（两者都兼容）
+            org.json.JSONObject sub = p.optJSONObject("sub");
+            cfg.autoJoinEnabled = optSubBool(p, sub, "auto_join", "auto_join", true);
+            cfg.launchEnabled = optSubBool(p, sub, "launch", "launch_enabled", false);
+            cfg.launchLimit = clamp(p.optInt("launch_limit", 1), 1, 100);
+            cfg.queueCount = clamp(p.optInt("queue_count", 1), 1, 6);
+            cfg.joinEnabled = optSubBool(p, sub, "join", "join_enabled", true);
+            cfg.joinLimit = clamp(p.optInt("join_limit", 1), 1, 6);
+            cfg.manualJoinWithAutoJoin = optBool(p, "manual_join_with_auto_join", false);
+            cfg.minLevel = clamp(p.optInt("min_level", 1), 1, 8);
+            cfg.maxLevel = clamp(p.optInt("max_level", 8), 1, 8);
+            cfg.forceMaxLevel = optBool(p, "force_max_level", false);
+            cfg.prepareTimeIndex = clampBehemothPrepareIndex(p.optInt("prepare_time_index", 1));
+            cfg.staminaReserve = clampLong(p.optLong("stamina_reserve", 50L), 0L, 500L);
+            cfg.autoUseStaminaItem = optBool(p, "auto_use_stamina_item", false);
+            cfg.autoJoinMarchLimit = clamp(p.optInt("auto_join_march_limit", 3), 1, 6);
+            cfg.autoJoinIds = parseIds(p.optString("auto_join_ids", "1,4,3"),
+                    java.util.Arrays.asList(1L, 4L, 3L));
+            cfg.heroIds = parseIds(p.optString("hero_ids", ""), new ArrayList<Long>());
+            if (cfg.heroIds.size() > 3) cfg.heroIds = new ArrayList<>(cfg.heroIds.subList(0, 3));
+            cfg.squadIndex = clamp(p.optInt("squad_index", 1), 1, 6);
+            return cfg;
+        }
+
+        /** 队列上限 = min(配置 queueCount, 世界容量)（DailyBehemothService.effectiveQueueCount:701-711）。 */
+        int effectiveQueueCount(int capacity) {
+            if (capacity <= 0) return queueCount;
+            return Math.max(1, Math.min(queueCount, capacity));
+        }
+    }
+
+    /** 巨兽本地台账（srv:behemoth:{fpid}:{sid}:state，按北京时间自然日滚动）。 */
+    static final class BehemothState {
+        String day = "";
+        int launchCount;
+        long lastLaunchAtSec;
+        int lastLaunchLevel = -1;
+        int lastCode;
+        int joinCount;
+        long lastJoinMasterId;
+
+        static BehemothState load(TaskContext tc) {
+            BehemothState st = new BehemothState();
+            try {
+                String raw = tc.store.getString(BEHEMOTH_KEY_PREFIX + tc.fpid + ":" + tc.sid + ":state");
+                if (raw == null || raw.isEmpty()) return st;
+                org.json.JSONObject o = new org.json.JSONObject(raw);
+                st.day = o.optString("day", "");
+                st.launchCount = o.optInt("launchCount", 0);
+                st.lastLaunchAtSec = o.optLong("lastLaunchAtSec", 0L);
+                st.lastLaunchLevel = o.optInt("lastLaunchLevel", -1);
+                st.lastCode = o.optInt("lastCode", 0);
+                st.joinCount = o.optInt("joinCount", 0);
+                st.lastJoinMasterId = o.optLong("lastJoinMasterId", 0L);
+            } catch (Throwable ignored) {
+            }
+            return st;
+        }
+
+        void save(TaskContext tc) {
+            try {
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("day", day);
+                o.put("launchCount", launchCount);
+                o.put("lastLaunchAtSec", lastLaunchAtSec);
+                o.put("lastLaunchLevel", lastLaunchLevel);
+                o.put("lastCode", lastCode);
+                o.put("joinCount", joinCount);
+                o.put("lastJoinMasterId", lastJoinMasterId);
+                tc.store.putString(BEHEMOTH_KEY_PREFIX + tc.fpid + ":" + tc.sid + ":state", o.toString());
+            } catch (Throwable ignored) {
+            }
+        }
+
+        void rollDay(long nowSec) {
+            String current = Beijing.fmt("yyyy-MM-dd").format(
+                    new java.util.Date((nowSec > 0L ? nowSec : System.currentTimeMillis() / 1000L) * 1000L));
+            if (current.equals(day)) return;
+            day = current;
+            launchCount = 0;
+            lastLaunchAtSec = 0L;
+            lastLaunchLevel = -1;
+            lastCode = 0;
+            joinCount = 0;
+            lastJoinMasterId = 0L;
+        }
+    }
+
+    /**
+     * mod 文案：auto_join 保持既有口径（成功文案不变），新增 stamina / launch / join 三行
+     * （批次8 可观测性：今日发起进度、体力、手工上车结果一眼可读）。
+     */
+    private static void behemothWriteMod(TaskContext tc, BehemothAutoJoin autoJoin, String staminaText,
+                                         String launchText, String joinText,
+                                         BehemothConfig cfg, BehemothState state) {
+        try {
+            String autoJoinLine;
+            if (autoJoin != null && autoJoin.on) {
+                autoJoinLine = "原生自动上车：已开启（巨兽/死神/巨熊）";
+            } else if (autoJoin == null) {
+                autoJoinLine = "原生自动上车：未知";
+            } else if (autoJoin.text.startsWith("自动上车")) {
+                autoJoinLine = autoJoin.text;   // 「自动上车已关闭（App 设置页可开）」保持原样
+            } else {
+                autoJoinLine = "原生自动上车：" + autoJoin.text;
+            }
+            tc.saveModText("behemoth", "auto_join", autoJoinLine);
+            tc.saveModText("behemoth", "stamina", staminaText == null ? "" : staminaText);
+            tc.saveModText("behemoth", "launch",
+                    (launchText == null ? "" : launchText) + "（今日 " + state.launchCount
+                            + "/" + cfg.launchLimit + "）");
+            tc.saveModText("behemoth", "join", joinText == null ? "" : joinText);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 编队：hero_ids 优先（≤3）→ 客户端队 squad_index → 默认队1（与既有 Exec.formation 行为一致）。 */
+    static Map<String, Object> behemothFormation(WjdrEngine engine, BehemothConfig cfg) {
+        if (cfg != null && !cfg.heroIds.isEmpty()) {
+            Map<String, Object> byHeroIds = Exec.formationWithHeroes(engine, cfg.heroIds);
+            if (behemothFormationReady(byHeroIds)) return byHeroIds;
+        }
+        int squad = cfg == null ? 1 : cfg.squadIndex;
+        Map<String, Object> bySquad = Exec.formation(engine, squad);
+        if (behemothFormationReady(bySquad)) return bySquad;
+        return squad == 1 ? bySquad : Exec.formation(engine, 1);
+    }
+
+    private static List<Long> parseIds(String raw, List<Long> fallback) {
+        List<Long> out = new ArrayList<>();
+        if (raw != null && !raw.trim().isEmpty()) {
+            for (String part : raw.split("[,;\\s]+")) {
+                try {
+                    long id = Long.parseLong(part.trim());
+                    if (id > 0L && !out.contains(id)) out.add(id);
+                } catch (NumberFormatException ignored) {
+                }
+            }
+        }
+        return out.isEmpty() ? fallback : out;
+    }
+
+    /** 子项开关优先（App sub:{key:bool}），否则读顶层 key（兼容旧参数/RPC 直传）。 */
+    private static boolean optSubBool(org.json.JSONObject p, org.json.JSONObject sub,
+                                      String subKey, String topKey, boolean def) {
+        if (sub != null && sub.has(subKey)) {
+            Object v = sub.opt(subKey);
+            if (v instanceof Boolean) return (Boolean) v;
+            if (v instanceof Number) return ((Number) v).longValue() != 0L;
+        }
+        return optBool(p, topKey, def);
+    }
+
+    private static boolean optBool(org.json.JSONObject p, String key, boolean def) {
+        if (p == null || !p.has(key)) return def;
+        Object v = p.opt(key);
+        if (v instanceof Boolean) return (Boolean) v;
+        if (v instanceof Number) return ((Number) v).longValue() != 0L;
+        String s = String.valueOf(v).trim();
+        if ("true".equalsIgnoreCase(s) || "1".equals(s)) return true;
+        if ("false".equalsIgnoreCase(s) || "0".equals(s)) return false;
+        return def;
+    }
+
+    private static int clamp(int v, int min, int max) {
+        return Math.max(min, Math.min(max, v));
+    }
+
+    private static long clampLong(long v, long min, long max) {
+        return Math.max(min, Math.min(max, v));
     }
 
     static TaskOutcome bear(TaskContext tc) throws Exception {

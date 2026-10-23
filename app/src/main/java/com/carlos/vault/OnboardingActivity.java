@@ -204,7 +204,9 @@ public final class OnboardingActivity extends Activity {
         bottom.setGravity(Gravity.CENTER_VERTICAL);
         bottom.setPadding(dp(18), dp(10), dp(18), dp(18));
 
-        TextView later = UiStyle.ghostBtn(this, "稍后再说", this::finish);
+        // 批次8（P0-3）：点「稍后再说」记录 onboarding_deferred，后续冷启动不再自动弹
+        // （☰ 功能菜单「新手引导」入口保留，可随时补做）。
+        TextView later = UiStyle.ghostBtn(this, "稍后再说", this::deferAndFinish);
         bottom.addView(later, new LinearLayout.LayoutParams(0, dp(48), 1));
         primaryBtn = UiStyle.primaryBtn(this, "进入主页", this::finishFlow);
         LinearLayout.LayoutParams primaryLp = new LinearLayout.LayoutParams(0, dp(48), 1.6f);
@@ -650,6 +652,18 @@ public final class OnboardingActivity extends Activity {
             if (isFinishing() || isDestroyed()) return;
             finishFlow();
         }, 700L);
+    }
+
+    /**
+     * 批次8（P0-3）：「稍后再说」= 记 onboarding_deferred 后关闭当前页。
+     * 之后冷启动不再自动弹出（老用户不被反复打扰），入口保留在 ☰ 功能菜单里。
+     */
+    private void deferAndFinish() {
+        try {
+            if (state != null) state.setDeferred(true);
+        } catch (Throwable ignored) {
+        }
+        finish();
     }
 
     /** 完成引导：持久化 onboarding_done 并回到主页（主页实例在引导页下面，finish 即可见）。 */

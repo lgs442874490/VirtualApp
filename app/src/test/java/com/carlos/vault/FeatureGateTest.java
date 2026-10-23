@@ -125,6 +125,50 @@ public class FeatureGateTest {
         assertEquals("仅调试版可用", FeatureGate.reasonText(FeatureGate.Feature.PROTOCOL_LOGGER));
     }
 
+    // ========== 批次8（P0-1）：release 包调试功能泄漏回归 ==========
+    //
+    // 根因：release 构建为 run-as 调试容器数据恒开 debuggable true（app/build.gradle:83），
+    // 且 AGP 7.2 的 BuildConfig.DEBUG 跟随 debuggable 标记 → release 包里也是 true。
+    // 因此判定必须用 BuildConfig.BUILD_TYPE；下面的纯函数测试锁住“release 判为正式包”。
+
+    @Test
+    public void isDebugBuildType_releaseIsNotDebug() {
+        assertFalse("release 构建类型不得判为调试包（debuggable=true 也不影响）",
+                FeatureGate.isDebugBuildType("release"));
+        assertTrue(FeatureGate.isDebugBuildType("debug"));
+        assertFalse("未知构建类型按正式包保守处理", FeatureGate.isDebugBuildType(null));
+        assertFalse(FeatureGate.isDebugBuildType(""));
+        assertFalse(FeatureGate.isDebugBuildType("Release"));
+    }
+
+    @Test
+    public void releaseBuild_hidesDebugTools_evenAtTier3() {
+        boolean debug = FeatureGate.isDebugBuildType("release");
+        assertFalse("release(T3) 不显示协议监听",
+                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
+        assertFalse("release(T3) 不显示协议探针",
+                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_PROBE, 3, debug));
+        assertEquals("release(T3) 工具箱仅剩敌情监控", 1, FeatureGate.visibleToolCount(3, debug));
+    }
+
+    @Test
+    public void debugBuild_showsDebugTools() {
+        boolean debug = FeatureGate.isDebugBuildType("debug");
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_PROBE, 3, debug));
+        assertEquals("debug(T3) 工具数=敌情监控+协议监听", 2, FeatureGate.visibleToolCount(3, debug));
+        assertEquals("debug(T1) 仅协议监听（敌情监控需 T3）", 1, FeatureGate.visibleToolCount(1, debug));
+    }
+
+    @Test
+    public void visibleToolCount_emptyGroupWhenNoPermission() {
+        // ToolBox「无任何可见工具时整组不渲染」的判据
+        assertEquals("release 无 T3 权限 → 0 个工具（整组不渲染）",
+                0, FeatureGate.visibleToolCount(2, false));
+        assertEquals(0, FeatureGate.visibleToolCount(1, false));
+        assertEquals(0, FeatureGate.visibleToolCount(0, false));
+    }
+
     // ================= 未知功能 / 越界等级安全 =================
 
     @Test

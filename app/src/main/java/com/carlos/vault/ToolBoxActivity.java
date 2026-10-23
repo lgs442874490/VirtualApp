@@ -120,9 +120,10 @@ public class ToolBoxActivity extends Activity {
         // 三消/爆兵/宠物洗练/移民抢位/侦察战报/迁城/坐标查询/充值记录/巨兽批量等均无实现）；
         // ③ 工具箱内调试/实测项仅调试包可见。
         final boolean debugBuild = FeatureGate.isDebugBuild(this);
-        final boolean canWatch = FeatureGate.visible(this, FeatureGate.Feature.ENEMY_WATCH);      // T3 高阶
-        final boolean canProto = FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER); // 仅调试包
-        final int toolCount = (canWatch ? 1 : 0) + (canProto ? 1 : 0);
+        final int tier = FeatureGate.currentTier(this);
+        final boolean canWatch = FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, tier, debugBuild);      // T3 高阶
+        final boolean canProto = FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, tier, debugBuild); // 仅调试包
+        final int toolCount = FeatureGate.visibleToolCount(tier, debugBuild);
         if (toolCount > 0) {
             box.addView(sectionRow("可用工具 · " + toolCount, "诊断与监控"));
             // 协议监听（调试包专属：正式包不渲染）
@@ -163,14 +164,8 @@ public class ToolBoxActivity extends Activity {
                 box.addView(watchCard);
             }
         } else {
-            // 无「已开发且有权」功能：只给空态，不渲染任何规划中占位（未开发功能不下放）
-            TextView empty = new TextView(this);
-            empty.setText("暂无可用的工具箱功能");
-            empty.setTextSize(13);
-            empty.setTextColor(UiStyle.INK2);
-            empty.setGravity(Gravity.CENTER);
-            empty.setPadding(0, dp(40), 0, dp(40));
-            box.addView(empty);
+            // 批次8（P0-1）：无任何可见工具时**整组/占位都不渲染**（不放空卡片、不放“暂无”占位）。
+            // 正常路径下 onCreate 已 finish（防直开旁路），此处仅防御异常路径。
         }
 
         // 开发调试（P1 协议探针）保留为隐藏入口：长按「开放策略」卡片进入；仅调试包渲染。

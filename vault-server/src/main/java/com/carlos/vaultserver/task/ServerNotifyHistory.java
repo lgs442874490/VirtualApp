@@ -205,11 +205,21 @@ public final class ServerNotifyHistory {
     /** 活动日历协议名（与网页版 DailyActivityCalendarState.NOTIFY_PROTOCOL 一致）。 */
     public static final String ACTIVITY_CALENDAR_PROTO = "notify_activity_calendar_data";
 
-    /** 已同步账号 → 上次活动数（仅用于日志去噪；不参与业务）。 */
-    private static final Map<String, Integer> CALENDAR_SYNCED = new LinkedHashMap<>();
+    /**
+     * 日历同步日志心跳：内容指纹未变时也每 6 小时打一条 info，证明“同步仍在跑”。
+     * 批次8 2026-10-23：生产批次5 jar 每 ~6s 一条同步日志（约 1.4 万行/天）——
+     * 根因见 {@link #syncActivityCalendar(String, Map, long)} 注释（深拷贝把 Map 非 String 键规整为
+     * String，原帧 `Map.equals` 恒不等；且每次节奏派单收尾都会触发一次 captureAll）。
+     */
+    static final long CALENDAR_LOG_HEARTBEAT_MILLIS = 6L * 3600_000L;
+
+    /** fpid → 上次打印时的日历“语义指纹”（活动 id+窗口；null=从未打印）。仅用于日志去噪。 */
+    private static final Map<String, String> CALENDAR_LOG_FINGERPRINT = new LinkedHashMap<>();
+    /** fpid → 上次打印时刻（毫秒；6h 心跳边界）。 */
+    private static final Map<String, Long> CALENDAR_LOG_AT = new LinkedHashMap<>();
 
     /**
-     * 主动同步活动日历（CaptureTasks.captureCalendar 每 10 分钟调用一次）：
+     * 主动同步活动日历（CaptureTasks.captureCalendar 周期调用）：
      * 把 {@code req_activity_calendar_get_data} 的响应（或 notify 兜底内容）以
      * {@link #ACTIVITY_CALENDAR_PROTO} 写入环形历史，让 C5 门控始终有新鲜数据。
      *
@@ -220,27 +230,35 @@ public final class ServerNotifyHistory {
      * {@code {活动id:{id,schedule}}}——后者包装回 {@code data} 形状再入历史，保证
      * {@code ServerTasks.parseActivityCalendar}（data List/Map 两形状）可直接消费。
      *
-     * <p><b>观测</b>：首次写入或内容变化成功时打一条 info（含 fpid、活动数量），不刷屏、失败不影响主流程。
+     * <p><b>日志降噪（批次8）</b>：只在“活动集合/窗口内容指纹”变化、或距上次日志 ≥6 小时时打一条 info；
+     * 同内容重复同步只刷新历史条目的 recordedAt（C5 新鲜度不受影响），不打印。为何不能按整帧
+     * {@code Map.equals} 判定：协议解码出的结构数组是 {@code Map<Double, ...>}（id 为 Double 键），
+     * {@link #immutableCopy} 为防外部可变引用会把 Map 键规整为 String——深拷贝快照与原始帧
+     * {@code equals} 恒不相等，于是“每同步必打”（生产噪声根因）。语义指纹只取 C5 真正消费的
+     * id + begin/end 窗口，与键类型/易变字段无关。
      *
      * @return 本次同步的活动数量（0 = 内容无效/未写入）
      */
     public static int syncActivityCalendar(String fpid, Map<String, Object> content) {
+        return syncActivityCalendar(fpid, content, System.currentTimeMillis());
+    }
+
+    /** 可注入时钟的实现（包级可见：单测确定性地覆盖 6h 心跳边界）。 */
+    static int syncActivityCalendar(String fpid, Map<String, Object> content, long nowMillis) {
         if (fpid == null || fpid.trim().isEmpty() || content == null || content.isEmpty()) return 0;
         Map<String, Object> payload;
         int activities;
+        String fingerprint;
         try {
             payload = normalizeCalendarPayload(content);
             activities = countCalendarActivities(payload);
+            fingerprint = calendarFingerprint(payload);
         } catch (Throwable t) {
             return 0;
         }
         if (payload == null || payload.isEmpty() || activities <= 0) return 0;
         String key = fpid.trim();
-        boolean changed;
-        synchronized (LOCK) {
-            Map<String, Object> prev = latestContent(key, ACTIVITY_CALENDAR_PROTO);
-            changed = prev == null || !prev.equals(payload);
-        }
+        // 每轮仍写入历史（同内容由 record 去重并刷新 recordedAt），保证 C5 门控新鲜度。
         boolean written;
         try {
             written = record(key, ACTIVITY_CALENDAR_PROTO, payload);
@@ -248,13 +266,79 @@ public final class ServerNotifyHistory {
             return 0;   // 同步失败不影响采集主流程
         }
         if (!written) return 0;
-        if (changed) {
-            synchronized (LOCK) {
-                CALENDAR_SYNCED.put(key, activities);
+        boolean changed;
+        boolean heartbeat;
+        synchronized (LOCK) {
+            String lastFp = CALENDAR_LOG_FINGERPRINT.get(key);
+            Long lastAt = CALENDAR_LOG_AT.get(key);
+            changed = lastFp == null || !lastFp.equals(fingerprint);
+            heartbeat = !changed && lastAt != null
+                    && nowMillis - lastAt >= CALENDAR_LOG_HEARTBEAT_MILLIS;
+            if (changed || heartbeat) {
+                CALENDAR_LOG_FINGERPRINT.put(key, fingerprint);
+                CALENDAR_LOG_AT.put(key, nowMillis);
             }
+        }
+        if (changed) {
             FileLog.info("活动日历同步 fpid={} 活动数={}（历史已更新，C5 门控可消费）", key, activities);
+        } else if (heartbeat) {
+            FileLog.info("活动日历同步 fpid={} 活动数={}（6h 心跳，内容未变化）", key, activities);
         }
         return activities;
+    }
+
+    /**
+     * 日历“语义指纹”（纯函数）：活动 id → 窗口 [begin,end] 集合的规范化字符串。
+     *
+     * <p>只取 C5 门控实际消费的字段（{@code ServerTasks.parseActivityCalendar} 同口径），
+     * 因此与 data 的 List/Map 形状、Map 键是 String 还是 Double、以及任何易变附加字段无关；
+     * 活动集合变化和窗口 begin/end 变化都会反映到指纹里。
+     */
+    static String calendarFingerprint(Map<String, Object> content) {
+        if (content == null) return "";
+        Object data = content.get("data");
+        Map<Long, List<long[]>> windows = new java.util.TreeMap<>();
+        if (data instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) data).entrySet()) {
+                Map<String, Object> item = Exec.mapOf(e.getValue());
+                long id = item == null ? 0L : calendarEntryId(item);
+                if (id <= 0L) id = numericValue(e.getKey());
+                if (id > 0L) windows.computeIfAbsent(id, k -> new ArrayList<>())
+                        .addAll(calendarWindowsOf(item));
+            }
+        } else if (data instanceof List) {
+            for (Map<String, Object> item : Exec.mapsOf(data)) {
+                long id = calendarEntryId(item);
+                if (id > 0L) windows.computeIfAbsent(id, k -> new ArrayList<>())
+                        .addAll(calendarWindowsOf(item));
+            }
+        } else {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder(128);
+        for (Map.Entry<Long, List<long[]>> e : windows.entrySet()) {
+            sb.append(e.getKey()).append('=');
+            List<long[]> list = e.getValue();
+            list.sort((a, b) -> {
+                int c = Long.compare(a[0], b[0]);
+                return c != 0 ? c : Long.compare(a[1], b[1]);
+            });
+            for (long[] w : list) sb.append(w[0]).append('-').append(w[1]).append(',');
+            sb.append(';');
+        }
+        return sb.toString();
+    }
+
+    /** 单个活动条目的 schedule 窗口（{@code schedule:[{begin_ts,end_ts}]}）。 */
+    private static List<long[]> calendarWindowsOf(Map<String, Object> item) {
+        List<long[]> out = new ArrayList<>();
+        if (item == null) return out;
+        for (Map<String, Object> schedule : Exec.mapsOf(item.get("schedule"))) {
+            long begin = numericValue(schedule.get("begin_ts"));
+            long end = numericValue(schedule.get("end_ts"));
+            if (begin > 0L && end > begin) out.add(new long[]{begin, end});
+        }
+        return out;
     }
 
     /**
@@ -410,7 +494,10 @@ public final class ServerNotifyHistory {
     public static void clear(String fpid) {
         if (fpid == null) return;
         synchronized (LOCK) {
-            removeAccount(fpid.trim());
+            String key = fpid.trim();
+            removeAccount(key);
+            CALENDAR_LOG_FINGERPRINT.remove(key);
+            CALENDAR_LOG_AT.remove(key);
         }
     }
 
@@ -419,6 +506,8 @@ public final class ServerNotifyHistory {
         synchronized (LOCK) {
             ACCOUNTS.clear();
             LAST_WRITE_AT.clear();
+            CALENDAR_LOG_FINGERPRINT.clear();
+            CALENDAR_LOG_AT.clear();
             totalEntries = 0L;
             totalChars = 0L;
             seqCounter = 0L;

@@ -3492,6 +3492,24 @@ public class HomeActivity extends AccountVaultActivity {
             goBox.addView(legacyLoginBtn(a, r));
         }
 
+        // ⑥.5 批次8（P0-2）：所有 tier 都能从账户页「启动分身」——
+        // 复用既有 launchRole（预登录对齐角色 → doSwitch → VaultEngine/EntryDetail 启动链路，
+        // 不新造协议）。行内动作列 COL_GO=74dp 放不下第三个按钮，故放行下独立小按钮；
+        // T1 的动作列已直接显示「启动」（见上），此处不再重复。
+        if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
+            LinearLayout launchBar = new LinearLayout(this);
+            launchBar.setOrientation(LinearLayout.HORIZONTAL);
+            launchBar.setGravity(Gravity.END);
+            launchBar.setPadding(dp(COL_ONLINE), dp(2), 0, dp(2));
+            TextView launch = poolMiniBtn(roleBusy ? "启动中…" : "▶ 启动分身",
+                    UiStyle.SURFACE_3, UiStyle.INK, UiStyle.LINE_STRONG);
+            launch.setEnabled(!roleBusy);
+            launch.setAlpha(roleBusy ? .5f : 1f);
+            launch.setOnClickListener(v -> launchRole(a, r));
+            launchBar.addView(launch);
+            wrap.addView(launchBar);
+        }
+
         // ⑦ 被顶号/待恢复 banner（行下，M2 契约 §3.1）
         if (poolState != null) {
             String banner = poolState.bannerText(nowMs);

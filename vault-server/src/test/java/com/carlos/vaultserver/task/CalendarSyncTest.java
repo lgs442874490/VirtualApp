@@ -10,6 +10,9 @@ import org.junit.Rule;
 import org.junit.Test;
 import org.junit.rules.TemporaryFolder;
 
+import java.io.ByteArrayOutputStream;
+import java.io.PrintStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -34,6 +37,12 @@ import static org.junit.Assert.assertFalse;
  *
  * <p>对照：网页版 service/DailyActivityCalendarState.java:17-18（REQUEST/NOTIFY 双协议同状态）、
  * :37-140（data List/Map + schedule[{begin_ts,end_ts}] 解析口径）。
+ *
+ * <p>批次8（2026-10-23）日志降噪回归：生产结构数组是 {@code Map<Double,...>}（id 为 Double 键），
+ * 深拷贝会把 Map 键规整为 String → 旧实现“整帧 Map.equals”恒不等，于是每次同步都打 info
+ * （生产批次5 jar 每 ~6s 一条，约 1.4 万行/天）。现改为“活动 id+窗口语义指纹变化 或 距上次日志 ≥6h”
+ * 才打印；同内容重复同步只刷新 recordedAt（C5 新鲜度不变）。本测试覆盖 12 次同内容 1 条日志、
+ * 内容变化立即打印、6h 心跳边界、Double/String 键等价。
  */
 public class CalendarSyncTest {
 
@@ -275,5 +284,140 @@ public class CalendarSyncTest {
                 ServerNotifyHistory.ACTIVITY_CALENDAR_PROTO).size());
         assertEquals(2, Collections.frequency(engine.requestedProtos,
                 "req_activity_calendar_get_data"));
+    }
+
+    // ===================================================================
+    // 5) 批次8：日志降噪（语义指纹 + 6h 心跳）
+    // ===================================================================
+
+    /** 生产真实形状：data 为 Map，键是 Double（sproto 结构数组按 id 键），条目 id/schedule 也是 Double。 */
+    private static Map<String, Object> calendarDoubleKeyPayload(long id, long begin, long end) {
+        Map<Object, Object> data = new LinkedHashMap<>();
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("id", (double) id);
+        item.put("schedule", Collections.singletonList(map("begin_ts", (double) begin,
+                "end_ts", (double) end)));
+        data.put((double) id, item);   // Double 键：旧实现深拷贝后被 String 化，导致整帧 equals 恒不等
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("code", 0.0d);
+        content.put("data", data);
+        return content;
+    }
+
+    /** 捕获同步期间 stdout（FileLog 未 setup 时纯 stdout 输出），返回日志文本。 */
+    private static String captureStdout(Runnable action) {
+        PrintStream old = System.out;
+        ByteArrayOutputStream bo = new ByteArrayOutputStream();
+        System.setOut(new PrintStream(bo, true, StandardCharsets.UTF_8));
+        try {
+            action.run();
+        } finally {
+            System.setOut(old);
+        }
+        return new String(bo.toByteArray(), StandardCharsets.UTF_8);
+    }
+
+    private static int countSyncLogs(String stdout) {
+        int n = 0;
+        for (String line : stdout.split("\n")) {
+            if (line.contains("活动日历同步")) n++;
+        }
+        return n;
+    }
+
+    @Test
+    public void syncCalendar_repeatedSameContent_logsOnlyOnceAndKeepsFreshness() {
+        long now = nowSec();
+        Map<String, Object> payload = calendarDoubleKeyPayload(2508001L, now - 600L, now + 600L);
+        String stdout = captureStdout(() -> {
+            for (int i = 0; i < 12; i++) {
+                assertEquals(1, ServerNotifyHistory.syncActivityCalendar(FPID, payload));
+            }
+        });
+        assertEquals("同内容连续同步 12 次只打 1 条", 1, countSyncLogs(stdout));
+        // 历史仍写入且只剩 1 帧（同帧去重语义不变），recordedAt 持续刷新 → C5 新鲜度不受影响
+        assertEquals(1, ServerNotifyHistory.history(FPID,
+                ServerNotifyHistory.ACTIVITY_CALENDAR_PROTO).size());
+        assertTrue(ServerNotifyHistory.latestRecordedAt(FPID,
+                ServerNotifyHistory.ACTIVITY_CALENDAR_PROTO) > 0L);
+        Map<Long, List<long[]>> parsed = ServerTasks.parseActivityCalendar(
+                ServerNotifyHistory.latestContent(FPID, ServerNotifyHistory.ACTIVITY_CALENDAR_PROTO));
+        assertTrue(parsed.containsKey(2508001L));
+        assertNull(ServerTasks.activityCalendarBlock(context(new CalendarEngine()),
+                2508001L, now));
+
+        // 等价内容换成 String 键（语义相同）→ 指纹一致，不再打印
+        String stdout2 = captureStdout(() -> assertEquals(1, ServerNotifyHistory.syncActivityCalendar(
+                FPID, calendarMapPayload(2508001L, now - 600L, now + 600L))));
+        assertEquals("Double/String 键语义相同不重复打印", 0, countSyncLogs(stdout2));
+    }
+
+    @Test
+    public void syncCalendar_contentChange_logsImmediately() {
+        long now = nowSec();
+        String stdout = captureStdout(() -> {
+            assertEquals(1, ServerNotifyHistory.syncActivityCalendar(FPID,
+                    calendarDoubleKeyPayload(2508001L, now - 600L, now + 600L)));
+            // 同一活动窗口变化 → 语义指纹变化 → 立即再打一条
+            assertEquals(1, ServerNotifyHistory.syncActivityCalendar(FPID,
+                    calendarDoubleKeyPayload(2508001L, now - 600L, now + 7200L)));
+            // 与上一帧完全相同 → 不再打印
+            assertEquals(1, ServerNotifyHistory.syncActivityCalendar(FPID,
+                    calendarDoubleKeyPayload(2508001L, now - 600L, now + 7200L)));
+        });
+        assertEquals(2, countSyncLogs(stdout));
+        // 历史保留 2 帧（内容确实变化）
+        assertEquals(2, ServerNotifyHistory.history(FPID,
+                ServerNotifyHistory.ACTIVITY_CALENDAR_PROTO).size());
+    }
+
+    @Test
+    public void syncCalendar_sixHourHeartbeat() {
+        long t0 = System.currentTimeMillis();
+        Map<String, Object> payload = calendarDoubleKeyPayload(2508001L,
+                t0 / 1000L - 600L, t0 / 1000L + 600L);
+        String stdout = captureStdout(() -> {
+            assertEquals(1, ServerNotifyHistory.syncActivityCalendar(FPID, payload, t0));
+            assertEquals(1, ServerNotifyHistory.syncActivityCalendar(FPID, payload,
+                    t0 + 5L * 3600_000L));                     // 5h：静默
+            assertEquals(1, ServerNotifyHistory.syncActivityCalendar(FPID, payload,
+                    t0 + 6L * 3600_000L - 60_000L));           // 5h59m：仍未到心跳
+            assertEquals(1, ServerNotifyHistory.syncActivityCalendar(FPID, payload,
+                    t0 + 6L * 3600_000L));                     // 6h 边界：心跳
+            assertEquals(1, ServerNotifyHistory.syncActivityCalendar(FPID, payload,
+                    t0 + 7L * 3600_000L));                     // 心跳后 1h：静默
+        });
+        assertEquals(2, countSyncLogs(stdout));
+        assertTrue("心跳日志需有标识", stdout.contains("6h 心跳"));
+    }
+
+    @Test
+    public void calendarFingerprint_semanticOnly() {
+        long now = nowSec();
+        // 同语义：Double 键 vs String 键 → 指纹一致
+        assertEquals(ServerNotifyHistory.calendarFingerprint(
+                        calendarDoubleKeyPayload(2508001L, now - 600L, now + 600L)),
+                ServerNotifyHistory.calendarFingerprint(
+                        calendarMapPayload(2508001L, now - 600L, now + 600L)));
+        // 附加易变字段（如刷新时间）不影响指纹
+        Map<String, Object> withVolatile = calendarDoubleKeyPayload(2508001L,
+                now - 600L, now + 600L);
+        @SuppressWarnings("unchecked")
+        Map<Object, Object> data = (Map<Object, Object>) withVolatile.get("data");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> item = (Map<String, Object>) data.get((double) 2508001L);
+        item.put("refresh_ts", (double) now);
+        assertEquals(ServerNotifyHistory.calendarFingerprint(
+                        calendarDoubleKeyPayload(2508001L, now - 600L, now + 600L)),
+                ServerNotifyHistory.calendarFingerprint(withVolatile));
+        // 活动集合/窗口变化 → 指纹变化
+        assertFalse(ServerNotifyHistory.calendarFingerprint(
+                        calendarDoubleKeyPayload(2508001L, now - 600L, now + 600L))
+                .equals(ServerNotifyHistory.calendarFingerprint(
+                        calendarDoubleKeyPayload(2508001L, now - 600L, now + 7200L))));
+        assertFalse(ServerNotifyHistory.calendarFingerprint(
+                        calendarDoubleKeyPayload(2508001L, now - 600L, now + 600L))
+                .equals(ServerNotifyHistory.calendarFingerprint(
+                        calendarDoubleKeyPayload(2508002L, now - 600L, now + 600L))));
     }
 }
