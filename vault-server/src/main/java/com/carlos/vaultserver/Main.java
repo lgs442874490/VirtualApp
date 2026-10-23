@@ -42,12 +42,19 @@ public final class Main {
                 new com.carlos.vaultserver.task.RoundScheduler(store, stateStore, keeper);
         scheduler.start();
 
+        // 任务节奏调度：网页版 1:1 语义（每任务独立间隔持续执行），修复“一天只跑一轮、
+        // 大量奖励全天漏领”的长期缺陷。回滚：VAULT_TASK_CADENCE=off。
+        com.carlos.vaultserver.task.TaskCadenceScheduler cadence =
+                new com.carlos.vaultserver.task.TaskCadenceScheduler(store, stateStore, keeper);
+        cadence.start();
+
         VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war);
         api.start();
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             FileLog.info("vault-server 停止");
             api.stop();
+            cadence.stop();
             scheduler.stop();
             keeper.shutdownAll();
             stateStore.flush();

@@ -62,12 +62,33 @@ public final class ExecUtil {
         return v instanceof List ? (List<Object>) v : null;
     }
 
+    /**
+     * 形状兼容的列表取出（与服务端 task/Exec.mapsOf 同源）：游戏推送同一字段在不同版本/场景
+     * 可能既是 List 又是 Map——
+     * - List：逐项转 map，空 map 丢弃；
+     * - Map：逐项取 value 转 map，并把 key 回填为 {@code id}（如 sciences: {科技id: {...}}、
+     *   chests: {箱id: {...}}），保证上游按 {@code id} 取值不丢；
+     * - 其它：空列表。
+     */
+    @SuppressWarnings("unchecked")
     public static List<Map<String, Object>> mapsOf(Object v) {
-        List<Object> l = listOf(v);
-        if (l == null) return new ArrayList<>();
+        if (v instanceof Map) {
+            List<Map<String, Object>> out = new ArrayList<>();
+            for (Object e : ((Map<Object, Object>) v).entrySet()) {
+                Map.Entry<Object, Object> entry = (Map.Entry<Object, Object>) e;
+                Map<String, Object> inner = mapOf(entry.getValue());
+                if (inner == null || inner.isEmpty()) continue;
+                Map<String, Object> item = new java.util.LinkedHashMap<>(inner);
+                item.putIfAbsent("id", entry.getKey());
+                out.add(item);
+            }
+            return out;
+        }
+        if (!(v instanceof java.util.Collection)) return new ArrayList<>();
         List<Map<String, Object>> out = new ArrayList<>();
-        for (Object o : l) {
-            if (o instanceof Map) out.add((Map<String, Object>) o);
+        for (Object o : (java.util.Collection<Object>) v) {
+            Map<String, Object> item = mapOf(o);
+            if (item != null && !item.isEmpty()) out.add(item);
         }
         return out;
     }

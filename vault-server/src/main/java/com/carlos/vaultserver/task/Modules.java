@@ -112,7 +112,9 @@ public final class Modules {
                 actions(
                         action("intel", "情报任务", ServerFieldTasks::intel),
                         action("behemoth", "巨兽狩猎", ServerTasks::behemoth),
-                        action("bear", "巨熊行动", ServerTasks::bear),
+                        // 巨熊行动（2026-10-23 B1）：周窗口预约→type=411 发车→99 上车→mass 对账，
+                        // 1:1 网页版 DailyBearActionService；ServerTasks.bear 保留为兼容 fallback（旧映射入口）。
+                        action("bear", "巨熊行动", ServerBearTasks::bear),
                         action("hunt", "自动狩猎", ServerFieldTasks::hunt)
                 ));
     }

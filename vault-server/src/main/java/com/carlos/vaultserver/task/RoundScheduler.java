@@ -60,6 +60,20 @@ public final class RoundScheduler {
         /** 确保账号有会话并开始登录（账号页“登录”按钮/手动触发用）。 */
         boolean ensureSession(String fpid);
 
+        /** 该账号会话线程是否正在执行任务（整轮/单任务）；节奏调度据此避免排队堆积。 */
+        default boolean executorBusy(String fpid) {
+            return false;
+        }
+
+        /**
+         * 会话进入“在线”状态的时刻（epoch millis；未知/离线返回 0）。
+         * 节奏调度用它做登录初始化保护：刚上线的 20 秒内先不派任务，等服务端 init 推送（活动/宝箱/
+         * 补给/联盟科技等）到达——生产实测建会话即开任务比推送早约 20 秒，会导致“未同步”误判。
+         */
+        default long sessionOnlineSince(String fpid) {
+            return 0L;
+        }
+
         /** P7 战时让位：该账号任一角色处于战争态 → 自动整轮延后（退出后窗口补跑；手动触发不受限）。 */
         default boolean wartimeYield(String fpid) {
             return false;

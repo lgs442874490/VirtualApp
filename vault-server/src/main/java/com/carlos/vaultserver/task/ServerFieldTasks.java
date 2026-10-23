@@ -33,7 +33,9 @@ public final class ServerFieldTasks {
             List<Integer> resList = new ArrayList<>();
             org.json.JSONArray named = p.optJSONArray("resources_named");
             if (named != null && named.length() > 0) {
-                // 业务名 → 游戏资源 id：肉102/木103/煤104/铁105 → 采集 res_id 1/2/3/4
+                // 业务名 → 采集 res_id：肉102/木103/煤104/铁105（1:1 网页版
+                // DailyGatherConfig 的 res_id 直传 102-105；旧实现错误地再减 101 成 1-4，
+                // req_world_map_search 恒返回 2872 → 生产从未派出过采集队，P0 2026-10-23 修）。
                 for (int i = 0; i < named.length(); i++) {
                     String n = named.optString(i, "").trim().toUpperCase();
                     int raw;
@@ -44,17 +46,21 @@ public final class ServerFieldTasks {
                         case "IRON": raw = 105; break;
                         default: raw = 0;
                     }
-                    if (raw > 0) resList.add(raw - 101);
+                    if (raw > 0) resList.add(raw);
                 }
             }
             if (resList.isEmpty()) {
                 org.json.JSONArray resArr = p.optJSONArray("resources");
                 if (resArr == null || resArr.length() == 0) {
-                    resList.add(1);
-                    resList.add(2);
+                    resList.add(102);   // 默认肉
+                    resList.add(103);   // 默认木
                 } else {
                     for (int i = 0; i < resArr.length(); i++) {
-                        resList.add(resArr.optInt(i) - 101);
+                        int v = resArr.optInt(i);
+                        // 兼容历史配置：旧版本 JSON 里可能存的是 1-4 的“资源序号”，
+                        // 统一换算成游戏 res_id 102-105（新 UI 只写 resources_named）。
+                        if (v >= 1 && v <= 4) v += 101;
+                        resList.add(v);
                     }
                 }
             }
@@ -225,30 +231,139 @@ public final class ServerFieldTasks {
 
     // ---------- 情报任务 ----------
 
+    /**
+     * 情报体力底仓（1:1 网页版 DailyIntelligenceService.staminaReserve:256-262 的 50 点保留：
+     * 网页版由巨兽侧为情报保留 50；我方同样保守保留，避免情报把体力打空影响巨兽/后续任务）。
+     */
+    static final long INTEL_STAMINA_RESERVE = 50L;
+
+    /** 体力资源 id：notify_recover_resource_init/update 的 data[] 中 id=201 项
+     *  （1:1 网页版 BehemothAccountState.recoverUpdate:2645-2653）。 */
+    static final long INTEL_STAMINA_RESOURCE_ID = 201L;
+
+    /**
+     * 情报派队去重窗：网页版用本地状态机 markFighting(status=3) 与失败 blockEvent 300s 防重复
+     * （DailyIntelligenceService.java:723-724,779-800）；我方 15s 节奏无常驻状态机，
+     * 用 10 分钟去重窗防止对同一事件重复 req_world_march / start_battle。
+     */
+    static final long INTEL_DISPATCH_DEDUPE_MILLIS = 600_000L;
+
+    /** 专家情报初始化宽限（I4）：前 3 次且 10 分钟内不判“未同步”（生产推送迟到 ~30s）。 */
+    static final int INTEL_EXPERT_FIRST_MAX_ATTEMPTS = 3;
+
+    /** 专家情报初始化宽限时长（I4）：10 分钟。 */
+    static final long INTEL_EXPERT_FIRST_GRACE_MILLIS = 600_000L;
+
+    /**
+     * 情报任务（P0 修复 2026-10-23，1:1 对齐网页版 DailyIntelligenceState/Service）：
+     * <ul>
+     *   <li>数据源修正：全量初始化来自 {@code notify_intelligence_info}（登录批实际只有它，
+     *       旧实现只读 {@code notify_intelligence_events} → 生产每天恒“暂无情报事件”），
+     *       events 增量合并 + events_del 删除；</li>
+     *   <li>类型判定改为网页版口径：由 {@code event_id}(eventConfigId) 区间解析
+     *       1 怪物 / 2 营救 / 3 英雄之旅(PVE) / 11 活动巨兽 / 100 冒险巨兽，
+     *       不再把消息里的 type 字段当事件类型（旧映射 3→302 与网页版相反）；</li>
+     *   <li>status==2（已可领）→ {@code req_intelligence_receive}；status==1 才派队；
+     *       派队后不再立刻领奖（等战斗结果推送把 status 变 2 后下一轮再领）。</li>
+     * </ul>
+     */
     public static TaskOutcome intel(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
             tc.engine.collectNotifies(2500);
-            Map<String, Object> ev = tc.engine.notifyData("notify_intelligence_events");
-            if (ev == null) {
+            Map<Long, Map<String, Object>> events = new LinkedHashMap<>();
+            mergeIntelEvents(tc.engine, "notify_intelligence_info", events);    // 全量初始化
+            mergeIntelEvents(tc.engine, "notify_intelligence_events", events);  // 增量
+            Map<String, Object> del = notifyContentOf(tc.engine, "notify_intelligence_events_del");
+            if (del != null) {
+                for (Object rawId : rawValues(del.get("ids"))) {
+                    long id = Exec.longOf(rawId);
+                    if (id > 0) events.remove(id);
+                }
+            }
+            if (events.isEmpty()) {
                 m.skip("暂无情报事件");
             } else {
-                int handled = 0;
-                for (Map<String, Object> e : Exec.mapsOf(ev.get("events"))) {
+                // I2 门控（P0 2026-10-23，1:1 网页版 DailyIntelligenceService）：
+                // ① 普通队列数 = min(世界容量, 配置 queueCount，默认 1)（:256-262,598-606 的
+                //    effectiveQueueCount = min(config.queueCount, playerQueueLimit(world))）；
+                // ② 已占用情报行军（type=301/302）不重复派（:919-928 activeIntelligenceMarchCount）；
+                // ③ 体力门：普通事件 10/12 点、保留 50 点底仓（:598-606 staminaCost、:256-262
+                //    staminaReserve）；体力取不到（notify_recover_resource_init 未到）时只做队列门。
+                // 15s 节奏天然重试：本轮条件不足只写 SKIP“待下一次”，不循环重试、不刷 ERROR。
+                JSONObject ip = tc.params("intel");
+                long now = System.currentTimeMillis();
+                boolean hasDispatchable = false;
+                for (Map<String, Object> e : events.values()) {
                     long id = Exec.longOf(e.get("id"));
-                    long status = Exec.longOf(e.get("status"));
-                    long type = Exec.longOf(e.get("type"));
-                    if (id <= 0 || status != 1) continue;
-                    boolean doneOne = false;
-                    if (type == 2 || type == 3) {
-                        Map<String, Object> formation = Exec.formation(tc.engine, 1);
-                        GameMessage march = tc.engine.request("req_world_march", Exec.args(
-                                "type", type == 2 ? 301L : 302L,
-                                "endpoint", Exec.point(Exec.longOf(e.get("x")), Exec.longOf(e.get("y"))),
-                                "formation", formation,
-                                "extra", Exec.args("event_id", id)));
-                        doneOne = Exec.marchId(march) > 0;
-                    } else {
+                    if (id <= 0) continue;
+                    long status = e.containsKey("status") ? Exec.longOf(e.get("status")) : 1L;
+                    if (status != 1) continue;
+                    int t = intelEventType(intelEventConfigId(e));
+                    if (t == 0 || intelDispatchBlocked(tc, id, now)) continue;
+                    hasDispatchable = true;
+                    break;
+                }
+                int allowedSlots = 0, activeIntelMarches = 0, freeSlots = 0;
+                boolean staminaKnown = false;
+                long usableStamina = Long.MAX_VALUE;
+                if (hasDispatchable) {
+                    // 页面/请求只在有可派事件时取，避免纯领奖轮次多发队列查询。
+                    allowedSlots = intelQueueSlots(intelQueueCount(ip), marchCapacity(tc.engine));
+                    activeIntelMarches = countIntelMarches(tc.engine);
+                    freeSlots = Math.max(0, allowedSlots - activeIntelMarches);
+                    Long stamina = intelStamina(tc.engine);
+                    staminaKnown = stamina != null;
+                    if (staminaKnown) usableStamina = Math.max(0L, stamina - INTEL_STAMINA_RESERVE);
+                }
+                int handled = 0, claimed = 0, dispatched = 0, waiting = 0, deduped = 0;
+                StringBuilder waits = new StringBuilder();
+                for (Map<String, Object> e : events.values()) {
+                    long id = Exec.longOf(e.get("id"));
+                    if (id <= 0) continue;
+                    long status = e.containsKey("status") ? Exec.longOf(e.get("status")) : 1L;
+                    long configId = intelEventConfigId(e);
+                    int type = intelEventType(configId);
+                    if (status == 2) {
+                        // 已可领：领取即视为移除（2501=游戏端已处理）；按天台账去重，
+                        // 避免 notify 未刷新时 15s 节奏重复 req_intelligence_receive。
+                        if (ClaimLedger.isClaimed(tc, "intel_receive", String.valueOf(id))) {
+                            deduped++;
+                            continue;
+                        }
+                        GameMessage rc = tc.engine.request("req_intelligence_receive",
+                                Exec.args("id", id));
+                        int rcCode = Exec.codeOf(rc);
+                        if (Exec.ok(rc) || rcCode == 2501) {
+                            handled++;
+                            claimed++;
+                            ClaimLedger.mark(tc, "intel_receive", String.valueOf(id));
+                        } else {
+                            waiting++;
+                            appendWait(waits, "领奖码" + rcCode);
+                        }
+                        continue;
+                    }
+                    if (status != 1) continue;
+                    if (type == 0) continue;
+                    if (intelDispatchBlocked(tc, id, now)) {
+                        // 已派出/已开战（或 10 分钟内刚失败）：等推送把 status 变 2 或去重窗过期。
+                        deduped++;
+                        continue;
+                    }
+                    boolean worldMarch = intelIsWorldMarch(type);
+                    long staminaCost = intelStaminaCost(type);
+                    if (worldMarch && freeSlots <= 0) {
+                        waiting++;      // 队列满：留待下一次节奏，不写失败
+                        continue;
+                    }
+                    if (staminaKnown && !intelStaminaAllows(usableStamina, staminaCost)) {
+                        waiting++;      // 体力不足：留待下一次节奏，不写失败
+                        continue;
+                    }
+                    if (type == 3) {
+                        // 英雄之旅（PVE，不占普通队列、仍耗体力）：start_battle → 结算 → end_battle；
+                        // 领奖等 status=2。失败只写 SKIP 文案（15s 节奏再试），不写 ERROR。
                         List<Long> heroes = ServerTownTasks.squadHeroes(tc.engine);
                         List<Object> fightHeros = new ArrayList<>(heroes);
                         GameMessage st = tc.engine.request("req_intelligence_start_battle",
@@ -258,20 +373,61 @@ public final class ServerFieldTasks {
                             Exec.sleep(3000);
                             GameMessage en = tc.engine.request("req_intelligence_end_battle",
                                     Exec.args("id", id));
-                            doneOne = Exec.ok(en);
+                            if (Exec.ok(en)) {
+                                handled++;
+                                markIntelDispatched(tc, id, now);
+                                if (staminaKnown) usableStamina = Math.max(0L, usableStamina - staminaCost);
+                            } else {
+                                waiting++;
+                                appendWait(waits, "英雄之旅结算码" + Exec.codeOf(en));
+                            }
+                        } else {
+                            waiting++;
+                            appendWait(waits, "英雄之旅码" + Exec.codeOf(st));
+                            if (Exec.codeOf(st) == 51) break;   // 体力不足：本轮停止，等恢复（避免连续失败刷请求）
                         }
-                    }
-                    if (doneOne) {
-                        handled++;
-                        GameMessage rc = tc.engine.request("req_intelligence_receive",
-                                Exec.args("id", id));
-                        if (!Exec.ok(rc) && Exec.codeOf(rc) != 2501) {
-                            m.skip("领奖码" + Exec.codeOf(rc));
+                    } else if (worldMarch) {
+                        long marchType = type == 2 ? 301L : 302L;
+                        Map<String, Object> formation = Exec.formation(tc.engine, 1);
+                        if (formation == null) {
+                            waiting++;
+                            appendWait(waits, "无英雄可派");
+                            continue;
+                        }
+                        GameMessage march = tc.engine.request("req_world_march", Exec.args(
+                                "type", marchType,
+                                "endpoint", Exec.point(Exec.longOf(e.get("x")), Exec.longOf(e.get("y"))),
+                                "formation", formation,
+                                "extra", Exec.args("event_id", id)));
+                        if (Exec.marchId(march) > 0) {
+                            handled++;
+                            dispatched++;
+                            freeSlots--;
+                            markIntelDispatched(tc, id, now);
+                            if (staminaKnown) usableStamina = Math.max(0L, usableStamina - staminaCost);
+                        } else {
+                            int mc = Exec.codeOf(march);
+                            waiting++;
+                            appendWait(waits, "派队码" + mc);
+                            if (mc == 51) break;   // 体力不足：本轮停止，等恢复（避免连续失败刷请求）
                         }
                     }
                 }
-                if (handled > 0) m.claimed("处理情报×" + handled);
-                else m.skip("无可派情报");
+                if (handled > 0) {
+                    m.claimed("处理情报×" + handled
+                            + (claimed > 0 ? "（领奖" + claimed + "）" : "")
+                            + (dispatched > 0 ? "（派队" + dispatched + "）" : ""));
+                } else if (hasDispatchable && freeSlots <= 0) {
+                    m.skip("情报队列已满(" + activeIntelMarches + "/" + allowedSlots + ")，待下一次");
+                } else if (hasDispatchable && staminaKnown && usableStamina < intelStaminaCost(1)) {
+                    m.skip("情报体力不足(可用" + usableStamina + "·保留" + INTEL_STAMINA_RESERVE + ")，待下一次");
+                } else if (waiting > 0) {
+                    m.skip("情报待重试：" + waits.toString().trim());
+                } else if (deduped > 0) {
+                    m.skip("情报行军/领奖进行中，待下一次");
+                } else {
+                    m.skip("无可派情报");
+                }
             }
 
             // 专家额外情报页：notify_expert_quests.finishs 中 isgetaward=false 的项，
@@ -279,9 +435,23 @@ public final class ServerFieldTasks {
             if (tc.subOn("intel", "expert_extra", true)) {
                 Map<String, Object> eq = tc.engine.notifyData("notify_expert_quests");
                 if (eq == null) {
-                    m.subSkip("expert_extra", "专家情报未同步");
-                    tc.saveModText("intel", "expert_extra", "未同步");
+                    // I4 初始化竞态（P0 2026-10-23）：生产实测整轮开始时（16:58:45 建会话即开跑）
+                    // notify_expert_quests 还没到，16:59:16 才推 → 首读为空不再直接判“未同步”。
+                    // 前 3 次 / 10 分钟内保持上轮文案，只写子项“同步中”；超过宽限才写“未同步（待重试）”。
+                    long nowMs = System.currentTimeMillis();
+                    JSONObject first = intelExpertFirstState(tc);
+                    long firstTs = first.optLong("ts", 0L);
+                    int attempts = first.optInt("attempts", 0) + 1;
+                    if (firstTs <= 0L) firstTs = nowMs;
+                    saveIntelExpertFirst(tc, firstTs, attempts);
+                    if (intelExpertGraceActive(firstTs, attempts, nowMs)) {
+                        m.subSkip("expert_extra", "专家情报同步中（第" + attempts + "次·待重试）");
+                    } else {
+                        m.subSkip("expert_extra", "专家情报未同步（待重试）");
+                        tc.saveModText("intel", "expert_extra", "未同步（待重试）");
+                    }
                 } else {
+                    clearIntelExpertFirst(tc);
                     List<Long> pending = ServerTasks.unclaimedFinishIds(eq.get("finishs"));
                     int claimed = 0, failed = 0;
                     int skipped = Math.max(0, ServerTasks.finishCount(eq.get("finishs")) - pending.size());
@@ -324,6 +494,281 @@ public final class ServerFieldTasks {
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "intel", "情报任务");
+    }
+
+    /** 合并情报事件推送（info 全量 / events 增量）：以事件实例 id 归并。 */
+    private static void mergeIntelEvents(WjdrEngine engine, String proto,
+                                         Map<Long, Map<String, Object>> events) {
+        Map<String, Object> content = notifyContentOf(engine, proto);
+        if (content == null) return;
+        for (Map<String, Object> raw : Exec.mapsOf(content.get("events"))) {
+            long id = Exec.longOf(raw.get("id"));
+            if (id <= 0) continue;
+            Map<String, Object> merged = new LinkedHashMap<>();
+            Map<String, Object> prev = events.get(id);
+            if (prev != null) merged.putAll(prev);
+            for (Map.Entry<String, Object> e : raw.entrySet()) {
+                if (e.getValue() != null) merged.put(e.getKey(), e.getValue());
+            }
+            merged.put("id", id);
+            events.put(id, merged);
+        }
+    }
+
+    /** 情报事件配置 id（协议字段 event_id；兼容历史形状的 event_cfg_id/type）。 */
+    private static long intelEventConfigId(Map<String, Object> e) {
+        for (String k : new String[]{"event_id", "event_cfg_id", "event_config_id", "type"}) {
+            Object v = e.get(k);
+            if (v != null) return Exec.longOf(v);
+        }
+        return 0L;
+    }
+
+    /**
+     * 事件类型：1:1 网页版 {@code DailyIntelligenceEventCatalog.resolveType}——
+     * 由 eventConfigId 区间解析（不是读消息里的 type 字段）。
+     */
+    static int intelEventType(long configId) {
+        if (configId >= 11001L && configId <= 11010L) return 11;   // 活动巨兽（烈焰獠牙）
+        if (configId >= 100000L) return 100;                        // 冒险巨兽
+        if (configId == 4001L || intelBetween(configId, 2001L, 2050L)
+                || intelBetween(configId, 6001L, 6050L)) return 2;  // 营救幸存者
+        if (intelBetween(configId, 3001L, 3050L) || intelBetween(configId, 7001L, 7050L)) return 3; // 英雄之旅
+        if (intelBetween(configId, 1001L, 1050L) || intelBetween(configId, 4002L, 4004L)
+                || intelBetween(configId, 5001L, 5050L)
+                || intelBetween(configId, 8001L, 8050L)) return 1;  // 怪物情报
+        return 0;
+    }
+
+    private static boolean intelBetween(long v, long min, long max) {
+        return v >= min && v <= max;
+    }
+
+    /** 世界行军类：1 怪物 / 2 营救 / 11 活动巨兽 / 100 冒险巨兽。 */
+    static boolean intelIsWorldMarch(int type) {
+        return type == 1 || type == 2 || type == 11 || type == 100;
+    }
+
+    // ---------- 情报门控/竞态纯函数（I2/I4，单测见 IntelArenaFixTest） ----------
+
+    /** 情报普通队列配置数：网页版 DailyIntelligenceConfig 默认 queueCount=1、上限 6；
+     *  兼容旧参数名 queueCount / max_queues。 */
+    static int intelQueueCount(JSONObject intelParams) {
+        if (intelParams == null) return 1;
+        int v = intelParams.optInt("queue_count", 0);
+        if (v <= 0) v = intelParams.optInt("queueCount", 0);
+        if (v <= 0) v = intelParams.optInt("max_queues", 0);
+        return v <= 0 ? 1 : v;
+    }
+
+    /** 情报普通队列上限 = min(配置数, 世界容量)（1:1 网页版
+     *  effectiveQueueCount = min(config.queueCount, playerQueueLimit(world))，DailyIntelligenceService:594-606）。 */
+    static int intelQueueSlots(int configuredQueueCount, int worldCapacity) {
+        int cfg = Math.max(1, Math.min(6, configuredQueueCount));
+        int cap = worldCapacity > 0 ? worldCapacity : 3;   // 世界容量取不到时沿用 marchCapacity 的兜底 3
+        return Math.max(0, Math.min(cfg, cap));
+    }
+
+    /** 单次情报体力消耗（1:1 网页版 DailyIntelligenceService.staminaCost:602-604）：
+     *  营救(2)/英雄之旅(3) 12 点，其余 10 点。 */
+    static long intelStaminaCost(int type) {
+        return type == 2 || type == 3 ? 12L : 10L;
+    }
+
+    /** 体力门判定：unknown(null)=体力数据未到 → 只做队列门，不阻塞派队。 */
+    static boolean intelStaminaAllows(Long usableStamina, long cost) {
+        return usableStamina == null || usableStamina >= cost;
+    }
+
+    /** 派队去重判定（纯函数）：同一事件在窗口内只派一次。 */
+    static boolean intelDispatchBlocked(long lastDispatchAtMillis, long nowMillis, long windowMillis) {
+        return lastDispatchAtMillis > 0L && nowMillis - lastDispatchAtMillis < windowMillis;
+    }
+
+    /** I4 初始化宽限（纯函数）：前 3 次且 10 分钟内不判“未同步”。 */
+    static boolean intelExpertGraceActive(long firstAttemptMillis, int attempts, long nowMillis) {
+        if (firstAttemptMillis <= 0L) return true;
+        return attempts <= INTEL_EXPERT_FIRST_MAX_ATTEMPTS
+                && nowMillis - firstAttemptMillis <= INTEL_EXPERT_FIRST_GRACE_MILLIS;
+    }
+
+    /** 体力读取：先 update（增量，最新值）再 init（全量），取 notify_data 的 id=201 项。
+     *  1:1 网页版 BehemothAccountState.recoverUpdate:2645-2653（id==201 → count）。 */
+    static Long intelStamina(WjdrEngine engine) {
+        Long v = intelStaminaOf(notifyContentOf(engine, "notify_recover_resource_update"));
+        if (v == null) v = intelStaminaOf(notifyContentOf(engine, "notify_recover_resource_init"));
+        return v;
+    }
+
+    /** 基础资源推送中的体力值；形状兼容 List&lt;{id,count}&gt; / Map{"201.0":{count}} / 本体即条目。
+     *  取不到返回 null（体力门退化为只做队列门）。 */
+    static Long intelStaminaOf(Map<String, Object> recoverNotify) {
+        if (recoverNotify == null) return null;
+        for (Map<String, Object> item : intelRecoverItems(recoverNotify)) {
+            if (intelNumericId(item.get("id")) != INTEL_STAMINA_RESOURCE_ID) continue;
+            Object count = item.get("count");
+            if (count == null) count = item.get("value");
+            if (count != null) return Exec.longOf(count);
+        }
+        return null;
+    }
+
+    private static List<Map<String, Object>> intelRecoverItems(Map<String, Object> recoverNotify) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        Object data = recoverNotify.get("data");
+        if (data != null) out.addAll(Exec.mapsOf(data));
+        if (out.isEmpty() && recoverNotify.containsKey("id")) {
+            out.add(recoverNotify);
+            return out;
+        }
+        if (out.isEmpty()) {
+            // notifyData 已把 data（Map 形状）解包成内层：{ "201.0": {count,...} }
+            addIdKeyedItems(out, data instanceof Map ? (Map<?, ?>) data : recoverNotify);
+        }
+        return out;
+    }
+
+    /** 形状兼容：{ "201.0": {count,max_count,...} }（键即资源 id，notifyData 解包后常见）。 */
+    private static void addIdKeyedItems(List<Map<String, Object>> out, Map<?, ?> container) {
+        int numericKeys = 0;
+        for (Object k : container.keySet()) {
+            if (intelNumericId(k) > 0L) numericKeys++;
+        }
+        if (numericKeys == 0) return;
+        for (Map.Entry<?, ?> en : container.entrySet()) {
+            if (intelNumericId(en.getKey()) <= 0L) continue;
+            Map<String, Object> item = Exec.mapOf(en.getValue());
+            if (item == null) continue;
+            Map<String, Object> withId = new LinkedHashMap<>(item);
+            withId.putIfAbsent("id", en.getKey());
+            out.add(withId);
+        }
+    }
+
+    /** "201.0" 这类字符串/数字 id 的统一解析。 */
+    private static long intelNumericId(Object v) {
+        if (v instanceof Number) return ((Number) v).longValue();
+        if (v == null) return 0L;
+        try {
+            return (long) Double.parseDouble(String.valueOf(v).trim());
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    /** 情报派队去重台账（srv:intel:dispatch:&lt;fpid&gt;:&lt;sid&gt; → {eventId: epochMillis}）。 */
+    static boolean intelDispatchBlocked(TaskContext tc, long eventId, long nowMillis) {
+        return intelDispatchBlocked(intelDispatchLedger(tc).optLong(String.valueOf(eventId), 0L),
+                nowMillis, INTEL_DISPATCH_DEDUPE_MILLIS);
+    }
+
+    static void markIntelDispatched(TaskContext tc, long eventId, long nowMillis) {
+        if (eventId <= 0L) return;
+        JSONObject ledger = intelDispatchLedger(tc);
+        try {
+            java.util.Iterator<String> it = ledger.keys();
+            List<String> stale = new ArrayList<>();
+            while (it.hasNext()) {
+                String k = it.next();
+                if (nowMillis - ledger.optLong(k, 0L) > 86_400_000L) stale.add(k);
+            }
+            for (String k : stale) ledger.remove(k);
+            ledger.put(String.valueOf(eventId), nowMillis);
+            tc.store.putString(intelDispatchKey(tc), ledger.toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static JSONObject intelDispatchLedger(TaskContext tc) {
+        try {
+            String raw = tc.store.getString(intelDispatchKey(tc));
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+        } catch (Throwable t) {
+            return new JSONObject();
+        }
+    }
+
+    private static String intelDispatchKey(TaskContext tc) {
+        return "srv:intel:dispatch:" + tc.fpid + ":" + tc.sid;
+    }
+
+    /** I4：首次“notify_expert_quests 未到”的时间与尝试次数（srv:intel:expertfirst:&lt;fpid&gt;:&lt;sid&gt;）。 */
+    private static JSONObject intelExpertFirstState(TaskContext tc) {
+        try {
+            String raw = tc.store.getString(intelExpertFirstKey(tc));
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+        } catch (Throwable t) {
+            return new JSONObject();
+        }
+    }
+
+    private static void saveIntelExpertFirst(TaskContext tc, long firstMillis, int attempts) {
+        try {
+            JSONObject o = new JSONObject();
+            o.put("ts", firstMillis);
+            o.put("attempts", attempts);
+            tc.store.putString(intelExpertFirstKey(tc), o.toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static void clearIntelExpertFirst(TaskContext tc) {
+        try {
+            tc.store.putString(intelExpertFirstKey(tc), "");
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String intelExpertFirstKey(TaskContext tc) {
+        return "srv:intel:expertfirst:" + tc.fpid + ":" + tc.sid;
+    }
+
+    /** 追加等待原因（限长，避免状态文案无限增长）。 */
+    private static void appendWait(StringBuilder sb, String reason) {
+        if (sb.length() < 60) sb.append(reason).append(' ');
+    }
+
+    /**
+     * 当前情报行军数（type=301/302 合计）：1:1 网页版 activeIntelligenceMarchCount
+     * （DailyIntelligenceService.java:926-928）。与 countMarches 同协议，
+     * 但一次查询统计两种类型（gather 用的 countMarches 保持不动，避免回退采集修复）。
+     */
+    private static int countIntelMarches(WjdrEngine engine) {
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("owner", engine.lastUid());
+            args.put("kid", engine.lastServerId());
+            GameMessage rsp = engine.request("req_world_march_detail_4_player_situation", args);
+            if (rsp == null || rsp.getContent() == null) return 0;
+            Object code = rsp.getContent().get("code");
+            if (code != null && Exec.longOf(code) != 0) return 0;
+            Map<String, Object> detail = Exec.mapOf(rsp.getContent().get("detail"));
+            int n = 0;
+            for (String k : new String[]{"marchs", "march_list", "list", "marches"}) {
+                for (Map<String, Object> march : Exec.mapsOf(detail == null ? null : detail.get(k))) {
+                    long t = Exec.longOf(march.get("type"));
+                    if (t == 301L || t == 302L) n++;
+                }
+                if (n > 0) break;
+            }
+            return n;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** 推送内容：优先解包 data/info/content 内层，取不到再回退原始 content。 */
+    private static Map<String, Object> notifyContentOf(WjdrEngine engine, String proto) {
+        Map<String, Object> inner = engine.notifyData(proto);
+        return inner != null ? inner : engine.notifyContent(proto);
+    }
+
+    /** Map → values；Collection → 原样；其它 → 空（用于形状不固定的 ids 字段）。 */
+    private static List<Object> rawValues(Object v) {
+        if (v instanceof Map) return new ArrayList<>(((Map<?, ?>) v).values());
+        if (v instanceof List) return new ArrayList<>((List<?>) v);
+        if (v instanceof java.util.Collection) return new ArrayList<>((java.util.Collection<?>) v);
+        return new ArrayList<>();
     }
 
     // ---------- 自动狩猎野怪 ----------

@@ -2,6 +2,7 @@ package com.carlos.vaultserver;
 
 import com.carlos.vault.wjdr.AssetSource;
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vaultserver.task.TaskWakeRouter;
 
 import java.net.InetSocketAddress;
 import java.net.Proxy;
@@ -55,6 +56,8 @@ public final class SessionKeeper implements SessionControl,
     private final VaultConfig config;
     private final AssetSource assets;
     private final StateStore stateStore;
+    /** notify 推送唤醒路由器（C2）：会话 inbound 引擎钩子 → 命中任务 cadence 置 0。 */
+    private final TaskWakeRouter wakeRouter;
     /** 战争通知中枢（可 null：测试/未启用；每个在线角色会话挂引擎钩子）。 */
     private final WarNotify war;
     /** 角色会话表：key = {@link #sessionKey}(fpid,sid,uid)（M1d 多角色并行容器）。 */
@@ -97,6 +100,7 @@ public final class SessionKeeper implements SessionControl,
         this.config = config;
         this.assets = assets;
         this.stateStore = stateStore;
+        this.wakeRouter = new TaskWakeRouter(stateStore);
         this.engineFactory = engineFactory;
         this.manualTick = manualTick;
         this.war = war;
@@ -256,6 +260,16 @@ public final class SessionKeeper implements SessionControl,
         volatile long nextCaptureAt;
         volatile long stateSince = System.currentTimeMillis();
         volatile String state = WjdrEngine.STATE_OFFLINE;
+        /**
+         * 本次在线周期开始时刻（C4）：引擎状态进入 {@link WjdrEngine#STATE_ONLINE} 时置 now，
+         * 离开 ONLINE（含 recovering/offline/takeover）时清 0。节奏调度据此做登录初始化保护
+         * ——刚上线的 20 秒内不派任务，等服务端 init 推送（活动/宝箱/补给/联盟科技等）到达，
+         * 避免把「尚未推送」误判成「未同步/未开放」（生产实测推送比建会话晚约 20 秒）。
+         */
+        volatile long onlineSince;
+        /** 正在执行的任务数（整轮/单任务；节奏调度据此避免把任务排队堆积）。 */
+        final java.util.concurrent.atomic.AtomicInteger inFlight =
+                new java.util.concurrent.atomic.AtomicInteger();
         /** 登录学到的角色元数据（/status 回传 App 角色卡）。 */
         volatile String roleName = "";
         volatile long roleLevel;
@@ -292,14 +306,49 @@ public final class SessionKeeper implements SessionControl,
                 return t;
             });
             engine.setStateListener(s -> {
+                long nowMs = System.currentTimeMillis();
                 state = s;
-                stateSince = System.currentTimeMillis();
+                stateSince = nowMs;
+                // C4：进入 ONLINE 记录本次在线起点；离开清 0（重复收到 ONLINE 不重置起点）
+                if (WjdrEngine.STATE_ONLINE.equals(s)) {
+                    if (onlineSince <= 0L) onlineSince = nowMs;
+                } else {
+                    onlineSince = 0L;
+                }
                 // 引擎自发顶号（code=5）无外部指令时刻可读：按默认探测间隔给 App 倒计时
                 if (WjdrEngine.STATE_TAKEOVER.equals(s) && yieldProbeAt == 0) {
-                    yieldProbeAt = System.currentTimeMillis() + TAKEOVER_PROBE_DEFAULT_MILLIS;
+                    yieldProbeAt = nowMs + TAKEOVER_PROBE_DEFAULT_MILLIS;
                 }
                 if (WjdrEngine.STATE_ONLINE.equals(s)) yieldProbeAt = 0;
             });
+            // C2 推送唤醒：会话创建即挂载（登录期早到的 init 推送也不丢）
+            attachWakeHook();
+        }
+
+        // ---------- C2 推送唤醒（notify → 任务 cadence 立即到期） ----------
+
+        /** 唤醒钩子幂等标记（每会话至多一个；引擎 close 后连接不再产生消息，无需解绑）。 */
+        private final java.util.concurrent.atomic.AtomicBoolean wakeHookAttached =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        /**
+         * 挂载 inbound 消息钩子 → {@link TaskWakeRouter}：命中 notify 协议时把对应任务的
+         * {@code srv:cad:{fpid}:{sid}:{fn}} 写成 0，{@code TaskCadenceScheduler} 下一拍（2s）派单。
+         *
+         * <p>守卫：会话必须在线（离线/暂停/关闭不写状态）、角色 sid 已落地（登录未完成 skip）、
+         * 未知协议零副作用（router 内保证）；钩子异常由引擎捕获，不影响其它监听者。
+         */
+        private void attachWakeHook() {
+            if (!wakeHookAttached.compareAndSet(false, true)) return;
+            final WjdrEngine eng = engine;
+            final String fp = fpid;
+            eng.addMessageHook((proto, content) -> {
+                if (!wantOnline || !WjdrEngine.STATE_ONLINE.equals(eng.sessionState())) return;
+                long sd = resolveSid();
+                if (sd <= 0L) return;   // 登录未落地：sid 未知，跳过（不写任何状态）
+                wakeRouter.onNotify(fp, sd, proto);
+            });
+            FileLog.info("推送唤醒钩子已挂载 {}", key);
         }
 
         void start() {
@@ -1371,6 +1420,7 @@ public final class SessionKeeper implements SessionControl,
         if (ls == null || !ls.wantOnline) return false;
         if (!VaultStore.RUN_RUNNING.equals(ls.runState)) return false;   // 暂停：不执行任务
         ls.exec.execute(() -> {
+            ls.inFlight.incrementAndGet();
             try {
                 if (!WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
                     FileLog.warn("整轮跳过 fpid={}（会话不在线）", fpid);
@@ -1400,9 +1450,18 @@ public final class SessionKeeper implements SessionControl,
                 }
             } catch (Throwable t) {
                 FileLog.warn("整轮异常 fpid={}：{}", fpid, String.valueOf(t));
+            } finally {
+                ls.inFlight.decrementAndGet();
             }
         });
         return true;
+    }
+
+    /** 该账号会话线程是否正在执行任务（节奏调度防堆积用）。 */
+    @Override
+    public boolean executorBusy(String fpid) {
+        LiveSession ls = sessionForAccount(fpid);
+        return ls != null && ls.inFlight.get() > 0;
     }
 
     /** 账号当前 active 角色会话 sid（无会话 0）。 */
@@ -1421,6 +1480,18 @@ public final class SessionKeeper implements SessionControl,
     public boolean sessionOnline(String fpid) {
         LiveSession ls = sessionForAccount(fpid);
         return ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState());
+    }
+
+    /**
+     * C4 登录初始化就绪：本次进入 ONLINE 状态的时刻（epoch millis）。
+     * 未知/离线/登录未落地返回 0（节奏调度按「无保护信息」处理，不做 20s 延迟派单）。
+     *
+     * @see RoundScheduler.KeeperFacade#sessionOnlineSince(String)
+     */
+    @Override
+    public long sessionOnlineSince(String fpid) {
+        LiveSession ls = sessionForAccount(fpid);
+        return ls == null ? 0L : ls.onlineSince;
     }
 
     @Override

@@ -148,6 +148,41 @@ public final class ServerShopLeagueTasks {
     public static final long[] SHOP_IDS_TOWN = {801, 701, 1001, 901, 1201, 301, 2001, 601, 1101, 2401};
     public static final long[] SHOP_IDS_ALLIANCE = {401, 501};
 
+    /** 网页版仅流动商人(801)/神秘商店(601)支持 req_shop_refresh；其余店铺为日/周重置。 */
+    public static final long SHOP_ID_VENDOR = 801L;
+    public static final long SHOP_ID_MYSTERIOUS = 601L;
+
+    /** App 新 UI「按名字勾选」参数键：roleParams 里存在非空对象即视为名单模式。 */
+    static final String PARAM_BUY_NAMES = "buy_names";
+
+    /**
+     * 名单模式判定。App SubCardUi 保存时会写 buy_names（名字→1），同时为兼容旧读取把
+     * 该名字的**全部 variant confId** 写进 buys（SubCardUi.java:601-614）。服务端目前只认
+     * buys，若照单执行会把同一个名字的所有档位各买一份（重复购买/买贵档）。
+     * 安全第一：识别到名单模式即整轮跳过，等名称模式移植后再放开（audit §6.4 P1）。
+     */
+    static boolean nameModeConfigured(JSONObject params) {
+        if (params == null) return false;
+        JSONObject names = params.optJSONObject(PARAM_BUY_NAMES);
+        return names != null && names.length() > 0;
+    }
+
+    /**
+     * 过滤出网页版支持刷新的店铺（801/601），其余店铺不发送 req_shop_refresh
+     * （audit §6.4 P3：原实现会对 12 店铺全量刷新，且对不可刷新店发协议）。
+     */
+    static long[] refreshableShopIds(long[] shopIds) {
+        if (shopIds == null) return new long[0];
+        long[] tmp = new long[shopIds.length];
+        int n = 0;
+        for (long shopId : shopIds) {
+            if (shopId == SHOP_ID_VENDOR || shopId == SHOP_ID_MYSTERIOUS) {
+                tmp[n++] = shopId;
+            }
+        }
+        return java.util.Arrays.copyOf(tmp, n);
+    }
+
     public static TaskOutcome shopBuy(TaskContext tc) {
         return buyFromShops(tc, SHOP_IDS_TOWN, "shop", "商店购买");
     }
@@ -161,6 +196,11 @@ public final class ServerShopLeagueTasks {
         Exec.Multi m = new Exec.Multi();
         try {
             JSONObject p = tc.params(fnId);
+            if (nameModeConfigured(p)) {
+                // 名单模式未移植（server 只认 buys）：按 buys 全 variant 买会重复购买/买贵档，安全跳过。
+                m.skip("名单模式未支持，安全跳过");
+                return Exec.result(m, fnId, fnName);
+            }
             JSONObject buys = p.optJSONObject("buys");
             if (buys == null || buys.length() == 0) {
                 m.skip("未勾选商品（设置页配置）");
@@ -232,8 +272,12 @@ public final class ServerShopLeagueTasks {
                 boughtTotal += bought;
                 if (targetPurchases > 0 && boughtTotal >= targetPurchases) break;
                 if (round == refreshRounds) break;
+                // 只刷新网页版可刷新店铺（801 流动商人/601 神秘商店）；联盟商店(401/501)、
+                // 固定店/钻石店等不刷新（audit §6.4 P3）。
+                long[] refreshShops = refreshableShopIds(shopIds);
+                if (refreshShops.length == 0) break;
                 boolean refreshed = false;
-                for (long shopId : shopIds) {
+                for (long shopId : refreshShops) {
                     GameMessage rr = tc.engine.request("req_shop_refresh",
                             Exec.args("shop_id", shopId));
                     int rc = Exec.codeOf(rr);
@@ -578,6 +622,35 @@ public final class ServerShopLeagueTasks {
 
     // ================= 联盟类（App LeagueTasks 移植） =================
 
+    /**
+     * 总动员「购买接取次数」决策结果。allowed=false 时 reason 会作为 SKIP 文案展示。
+     */
+    static record MobilizationCountBuy(boolean allowed, String reason) {
+    }
+
+    /**
+     * 总动员购买接取次数决策（宁漏不花）。网页版价目
+     * catalog/alliance-mobilization.json purchaseCosts=[0,50,50,50,200,200,200,1000,1000,1000]：
+     * 仅首档免费，其后分别消耗 50/200/1000 钻石，且网页版要求显式打开 autoPurchaseCountEnabled
+     * 并配置 maxPaidPurchasesPerDay/maxDiamondSpendPerDay/maxSinglePurchaseCost 三重预算
+     * （DailyAllianceMobilizationService.java:660-673）。
+     *
+     * <p>本地仓库未携带该价目表、服务端也没有每日购买计数（dailyPurchaseCount）状态机，
+     * 因此无法证明“本次是免费首购” → 一律不买。等总动员状态机/catalog 接入后，
+     * 才能在这里放行「dailyPurchaseCount==0 && purchaseCosts[0]==0」的唯一一次免费购买。
+     *
+     * @param params roleParams 里 alliance_mobilization 的参数对象（可空；仅用于未来扩展，
+     *               当前不消费 allow_paid_count 之类开关，避免误开付费购买）
+     */
+    static MobilizationCountBuy mobilizationCountBuyDecision(JSONObject params) {
+        if (params != null && params.optBoolean("allow_paid_count", false)) {
+            return new MobilizationCountBuy(false,
+                    "总动员购买次数已跳过：服务端未接价目/状态机，allow_paid_count 暂不生效（安全跳过）");
+        }
+        return new MobilizationCountBuy(false,
+                "总动员购买次数已跳过：服务端未接价目/状态机，无法确认免费首购（安全跳过）");
+    }
+
     public static TaskOutcome mobilization(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
@@ -608,8 +681,20 @@ public final class ServerShopLeagueTasks {
                     }
                 }
                 if (claimed > 0) m.claimed("任务奖励×" + claimed);
-                GameMessage buy = tc.engine.request("req_mobilization_buy_count", Exec.args("count", 1));
-                if (Exec.ok(buy)) m.claimed("接取次数+1");
+                // 购买接取次数：网页版价目 catalog/alliance-mobilization.json purchaseCosts=
+                // [0,50,50,50,200,200,200,1000,1000,1000] —— 只有首档免费，其后每次花 50/200/1000 钻；
+                // 服务端未携带该价目表、也未接每日购买计数状态机，无法证明“本次是免费首购”，
+                // 因此宁漏不花：不调用 req_mobilization_buy_count（audit §4.3 M1）。
+                MobilizationCountBuy countBuy =
+                        mobilizationCountBuyDecision(tc.params("alliance_mobilization"));
+                if (countBuy.allowed()) {
+                    GameMessage buy = tc.engine.request("req_mobilization_buy_count",
+                            Exec.args("count", 1));
+                    if (Exec.ok(buy)) m.claimed("接取次数+1（免费）");
+                    else m.skip("接取次数码" + Exec.codeOf(buy));
+                } else {
+                    m.skip(countBuy.reason());
+                }
                 GameMessage ms = tc.engine.request("req_mobilization_batch_get_milestone", null);
                 if (Exec.ok(ms)) {
                     m.claimed("里程碑");
@@ -624,19 +709,45 @@ public final class ServerShopLeagueTasks {
         return Exec.result(m, "alliance_mobilization", "联盟总动员");
     }
 
+    /**
+     * 争霸赛最小前置状态判定：返回非空字符串=明确 SKIP 原因；返回 null=状态未知/可尝试报名
+     * （保持原行为，最终由服务端判定）。只做“能读到就明确”的保守判断，不臆测字段。
+     */
+    static String showdownSkipReason(Map<String, Object> activityInfo) {
+        if (activityInfo == null || activityInfo.isEmpty()) {
+            return "争霸赛无活动数据（未开启或未同步）";
+        }
+        boolean signed = Exec.longOf(activityInfo.get("apply")) == 1
+                || "true".equalsIgnoreCase(String.valueOf(activityInfo.get("is_apply")));
+        if (signed) {
+            return "争霸赛已报名（本季）";
+        }
+        if (activityInfo.containsKey("season") && Exec.longOf(activityInfo.get("season")) <= 0) {
+            return "争霸赛当前无赛季（未开启）";
+        }
+        return null;
+    }
+
+    /** 活动信息拉取失败的 SKIP 文案：超时(7705)不再伪装成“未开启”。 */
+    static String showdownInfoFailureNote(int code) {
+        if (code == 7705) {
+            return "争霸赛请求超时，稍后重试（码7705）";
+        }
+        return "争霸赛未开启(码" + code + ")";
+    }
+
     public static TaskOutcome showdown(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
             tc.engine.collectNotifies(1500);
             GameMessage info = tc.engine.request("req_alliance_showdown_activity_info", null);
             if (!Exec.ok(info)) {
-                m.skip("争霸赛未开启(码" + Exec.codeOf(info) + ")");
+                m.skip(showdownInfoFailureNote(Exec.codeOf(info)));
             } else {
                 Map<String, Object> all = info.getContent();
-                boolean signed = Exec.longOf(all == null ? null : all.get("apply")) == 1
-                        || "true".equals(String.valueOf(all == null ? null : all.get("is_apply")));
-                if (signed) {
-                    m.skip("已报名");
+                String skipReason = showdownSkipReason(all);
+                if (skipReason != null) {
+                    m.skip(skipReason);
                 } else {
                     Map<String, Object> formation = Exec.formation(tc.engine, 1);
                     GameMessage apply = tc.engine.request("req_alliance_showdown_apply", Exec.args(

@@ -52,14 +52,33 @@ final class FieldTasks {
             int minLevel = Math.max(1, Math.min(6, p.optInt("min_level", 5)));
             int maxQueues = Math.max(1, Math.min(5, p.optInt("max_queues", 3)));
             java.util.List<Integer> resList = new java.util.ArrayList<>();
-            org.json.JSONArray resArr = p.optJSONArray("resources");
-            if (resArr == null || resArr.length() == 0) {
-                resList.add(1);
-                resList.add(2);
-            } else {
-                for (int i = 0; i < resArr.length(); i++) {
-                    // 资源id 102肉/103木/104煤/105铁 → 采集 res_id 1/2/3/4
-                    resList.add(resArr.optInt(i) - 101);
+            // 与服务器侧（ServerFieldTasks.gather）同源修复：UI 写的是 resources_named；
+            // 采集 res_id 直接是 102肉/103木/104煤/105铁，旧实现再减 101 → 搜索恒 2872（采集从未派出）。
+            org.json.JSONArray named = p.optJSONArray("resources_named");
+            if (named != null && named.length() > 0) {
+                for (int i = 0; i < named.length(); i++) {
+                    String n = named.optString(i, "").trim().toUpperCase();
+                    switch (n) {
+                        case "MEAT": resList.add(102); break;
+                        case "WOOD": resList.add(103); break;
+                        case "COAL": resList.add(104); break;
+                        case "IRON": resList.add(105); break;
+                        default: break;
+                    }
+                }
+            }
+            if (resList.isEmpty()) {
+                org.json.JSONArray resArr = p.optJSONArray("resources");
+                if (resArr == null || resArr.length() == 0) {
+                    resList.add(102);   // 默认肉
+                    resList.add(103);   // 默认木
+                } else {
+                    for (int i = 0; i < resArr.length(); i++) {
+                        // 兼容历史配置：旧版本 JSON 里可能存 1-4 的“资源序号”，统一换算成 102-105。
+                        int v = resArr.optInt(i);
+                        if (v >= 1 && v <= 4) v += 101;
+                        resList.add(v);
+                    }
                 }
             }
             int active = countMarches(engine, 4);
@@ -228,26 +247,37 @@ final class FieldTasks {
                 return off;
             }
             engine.collectNotifies(2500);
-            Map<String, Object> ev = engine.notifyData("notify_intelligence_events");
-            if (ev == null) {
+            // 与服务器侧（ServerFieldTasks.intel）同源修复：全量初始化在 notify_intelligence_info，
+            // events 只是增量；事件类型由 event_id 区间解析（1怪物/2营救/3英雄之旅/11活动巨兽/100冒险巨兽），
+            // status=2 才领奖，status=1 才派队；派队后不立即领奖（等战斗结果推送）。
+            Map<Long, Map<String, Object>> events = new java.util.LinkedHashMap<>();
+            mergeIntelEvents(engine, "notify_intelligence_info", events);
+            mergeIntelEvents(engine, "notify_intelligence_events", events);
+            Map<String, Object> del = notifyContentOf(engine, "notify_intelligence_events_del");
+            if (del != null) {
+                for (Object rawId : rawValuesLoose(del.get("ids"))) {
+                    long id = ExecUtil.longOf(rawId);
+                    if (id > 0) events.remove(id);
+                }
+            }
+            if (events.isEmpty()) {
                 m.skip("暂无情报事件");
             } else {
                 int handled = 0;
-                for (Map<String, Object> e : ExecUtil.mapsOf(ev.get("events"))) {
+                for (Map<String, Object> e : events.values()) {
                     long id = ExecUtil.longOf(e.get("id"));
-                    long status = ExecUtil.longOf(e.get("status"));
-                    long type = ExecUtil.longOf(e.get("type"));
-                    if (id <= 0 || status != 1) continue;   // 1=待处理
-                    boolean doneOne = false;
-                    if (type == 2 || type == 3) {
-                        Map<String, Object> formation = ExecUtil.formation(engine, 1);
-                        GameMessage march = engine.request("req_world_march", ExecUtil.args(
-                                "type", type == 2 ? 301L : 302L,
-                                "endpoint", ExecUtil.point(ExecUtil.longOf(e.get("x")), ExecUtil.longOf(e.get("y"))),
-                                "formation", formation,
-                                "extra", ExecUtil.args("event_id", id)));
-                        doneOne = ExecUtil.marchId(march) > 0;
-                    } else {
+                    if (id <= 0) continue;
+                    long status = e.containsKey("status") ? ExecUtil.longOf(e.get("status")) : 1L;
+                    int type = intelEventType(intelEventConfigId(e));
+                    if (status == 2) {
+                        GameMessage rc = engine.request("req_intelligence_receive",
+                                ExecUtil.args("id", id));
+                        if (ExecUtil.ok(rc) || ExecUtil.codeOf(rc) == 2501) handled++;
+                        continue;
+                    }
+                    if (status != 1) continue;
+                    if (type == 3) {
+                        // 英雄之旅（PVE）：start_battle → 结算 → end_battle
                         List<Long> heroes = TownTasks.squadHeroes(engine);
                         List<Object> fightHeros = new ArrayList<>(heroes);
                         GameMessage st = engine.request("req_intelligence_start_battle",
@@ -257,16 +287,17 @@ final class FieldTasks {
                             ExecUtil.sleep(3000);
                             GameMessage en = engine.request("req_intelligence_end_battle",
                                     ExecUtil.args("id", id));
-                            doneOne = ExecUtil.ok(en);
+                            if (ExecUtil.ok(en)) handled++;
                         }
-                    }
-                    if (doneOne) {
-                        handled++;
-                        GameMessage rc = engine.request("req_intelligence_receive",
-                                ExecUtil.args("id", id));
-                        if (!ExecUtil.ok(rc) && ExecUtil.codeOf(rc) != 2501) {
-                            m.skip("领奖码" + ExecUtil.codeOf(rc));
-                        }
+                    } else if (intelIsWorldMarch(type)) {
+                        long marchType = type == 2 ? 301L : 302L;
+                        Map<String, Object> formation = ExecUtil.formation(engine, 1);
+                        GameMessage march = engine.request("req_world_march", ExecUtil.args(
+                                "type", marchType,
+                                "endpoint", ExecUtil.point(ExecUtil.longOf(e.get("x")), ExecUtil.longOf(e.get("y"))),
+                                "formation", formation,
+                                "extra", ExecUtil.args("event_id", id)));
+                        if (ExecUtil.marchId(march) > 0) handled++;
                     }
                 }
                 if (handled > 0) m.claimed("处理情报×" + handled);
@@ -280,6 +311,69 @@ final class FieldTasks {
         rr.rewards = m.rewardsText();
         rr.subResults.putAll(m.subResults);
         return rr;
+    }
+
+    // ---------- 情报事件状态工具（与服务器侧同源） ----------
+
+    /** 合并情报事件推送（info 全量 / events 增量）：以事件实例 id 归并。 */
+    private static void mergeIntelEvents(WjdrEngine engine, String proto,
+                                         Map<Long, Map<String, Object>> events) {
+        Map<String, Object> content = notifyContentOf(engine, proto);
+        if (content == null) return;
+        for (Map<String, Object> raw : ExecUtil.mapsOf(content.get("events"))) {
+            long id = ExecUtil.longOf(raw.get("id"));
+            if (id <= 0) continue;
+            Map<String, Object> merged = new java.util.LinkedHashMap<>();
+            Map<String, Object> prev = events.get(id);
+            if (prev != null) merged.putAll(prev);
+            for (Map.Entry<String, Object> en : raw.entrySet()) {
+                if (en.getValue() != null) merged.put(en.getKey(), en.getValue());
+            }
+            merged.put("id", id);
+            events.put(id, merged);
+        }
+    }
+
+    /** 情报事件配置 id（协议字段 event_id；兼容历史形状）。 */
+    private static long intelEventConfigId(Map<String, Object> e) {
+        for (String k : new String[]{"event_id", "event_cfg_id", "event_config_id", "type"}) {
+            Object v = e.get(k);
+            if (v != null) return ExecUtil.longOf(v);
+        }
+        return 0L;
+    }
+
+    /** 事件类型：1:1 网页版 DailyIntelligenceEventCatalog.resolveType。 */
+    static int intelEventType(long configId) {
+        if (configId >= 11001L && configId <= 11010L) return 11;
+        if (configId >= 100000L) return 100;
+        if (configId == 4001L || intelBetween(configId, 2001L, 2050L)
+                || intelBetween(configId, 6001L, 6050L)) return 2;
+        if (intelBetween(configId, 3001L, 3050L) || intelBetween(configId, 7001L, 7050L)) return 3;
+        if (intelBetween(configId, 1001L, 1050L) || intelBetween(configId, 4002L, 4004L)
+                || intelBetween(configId, 5001L, 5050L)
+                || intelBetween(configId, 8001L, 8050L)) return 1;
+        return 0;
+    }
+
+    private static boolean intelBetween(long v, long min, long max) {
+        return v >= min && v <= max;
+    }
+
+    static boolean intelIsWorldMarch(int type) {
+        return type == 1 || type == 2 || type == 11 || type == 100;
+    }
+
+    private static Map<String, Object> notifyContentOf(WjdrEngine engine, String proto) {
+        Map<String, Object> inner = engine.notifyData(proto);
+        return inner != null ? inner : engine.notifyContent(proto);
+    }
+
+    private static List<Object> rawValuesLoose(Object v) {
+        if (v instanceof Map) return new ArrayList<>(((Map<?, ?>) v).values());
+        if (v instanceof List) return new ArrayList<>((List<?>) v);
+        if (v instanceof java.util.Collection) return new ArrayList<>((java.util.Collection<?>) v);
+        return new ArrayList<>();
     }
 
     // ---------- 巨兽狩猎：开启客户端原生自动上车（巨兽/死神/巨熊） ----------

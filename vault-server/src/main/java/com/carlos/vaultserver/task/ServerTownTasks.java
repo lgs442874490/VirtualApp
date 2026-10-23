@@ -2,6 +2,7 @@ package com.carlos.vaultserver.task;
 
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
+import com.carlos.vaultserver.Beijing;
 import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.automation.services.MedicService;
 
@@ -727,62 +728,473 @@ public final class ServerTownTasks {
     }
 
     // ---------- 竞技场 ----------
+    //
+    // P0 修复 2026-10-23（1:1 网页版 DailyArenaService/DailyArenaState）：
+    //  ① 每日奖励不再“打完 5 场立即领”：网页版结算窗 23:10–24:00 才领
+    //     （DailyArenaService.java:74 DAILY_REWARD_WINDOW_START=LocalTime.MIDNIGHT.minusSeconds(3000)、
+    //      :761-768,774-809）；未到窗/次数不足写 SKIP“待结算窗”，领取失败 5 分钟重试、
+    //      2926/2925 记 settled，30s 节奏下不刷 ERROR。
+    //  ② 当日挑战次数/胜负按服务端 base 与 fight 响应 report.win 记录（DailyArenaState.java:160-186、
+    //     DailyArenaService.java:599-601），base 取不到时按本地当日已发场次封顶 5 次，
+    //     避免 30s 节奏重复请求；③ 买次数默认关（A2 一小项未做，宁漏不花）。
+
+    /** 每日奖励达标场次：1:1 网页版 DAILY_REWARD_CHALLENGE_TARGET=5。 */
+    static final int ARENA_DAILY_REWARD_CHALLENGES = 5;
+
+    /** 结算窗起点 23:10（网页版 DAILY_REWARD_WINDOW_START，窗口到次日 00:00 为止）。 */
+    static final int ARENA_REWARD_WINDOW_START_MINUTE = 23 * 60 + 10;
+
+    /** 领取失败后的重试间隔：1:1 网页版 DAILY_REWARD_RETRY_MILLIS=300000。 */
+    static final long ARENA_REWARD_RETRY_MILLIS = 300_000L;
+
+    private static final String ARENA_DAY_KEY_PREFIX = "srv:arena:day:";
 
     public static TaskOutcome arena(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
+        ArenaDay day = null;
         try {
             tc.engine.collectNotifies(1500);
-            GameMessage opp = tc.engine.request("req_arena_get_opponent", null);
-            if (Exec.ok(opp)) {
-                List<Map<String, Object>> list = new ArrayList<>();
-                for (String k : new String[]{"opponents", "data", "list"}) {
-                    list = Exec.mapsOf(opp.getContent().get(k));
-                    if (!list.isEmpty()) break;
-                }
-                list.sort((a, b) -> Long.compare(powerOf(a), powerOf(b)));
-                List<Long> heroes = squadHeroes(tc.engine);
-                JSONObject ap = tc.params("arena");
-                int maxFights = 5;
-                JSONObject strat = ap.optJSONObject("strategy");
-                if (strat != null && strat.has("fight")) {
-                    maxFights = strat.optInt("fight", 5);
-                } else if (ap.has("max_fights")) {
-                    maxFights = ap.optInt("max_fights", 5);
-                }
-                maxFights = Math.max(1, Math.min(10, maxFights));
-                int wins = 0, fights = 0;
-                for (Map<String, Object> o : list) {
-                    if (fights >= maxFights || heroes.isEmpty()) break;
-                    long oid = Exec.longOf(o.get("uid"));
-                    if (oid <= 0) oid = Exec.longOf(o.get("id"));
-                    if (oid <= 0) continue;
-                    List<Object> heroArray = new ArrayList<>(heroes);
-                    GameMessage f = tc.engine.request("req_arena_fight", Exec.args(
-                            "opponent_type", Exec.longOf(o.get("type")) == 0 ? 1 : Exec.longOf(o.get("type")),
-                            "opponent_id", oid,
-                            "hero_array", heroArray,
-                            "version", 26042101L));
-                    fights++;
-                    if (Exec.ok(f)) wins++;
-                    Exec.sleep(800);
-                }
-                if (fights > 0) {
-                    m.claimed("挑战" + fights + "场胜" + wins);
-                    m.subOk("fight", "挑战" + fights + "胜" + wins);
-                    tc.saveModText("arena", "fight", "上轮挑战 " + fights + " 场 · 胜 " + wins);
-                } else { m.skip("无对手数据"); m.subSkip("fight", "无对手数据"); }
+            JSONObject ap = tc.params("arena");
+            JSONObject strat = ap.optJSONObject("strategy");
+            int maxFights = strat != null && strat.has("fight") ? strat.optInt("fight", 5)
+                    : ap.optInt("max_fights", 5);
+            maxFights = Math.max(1, Math.min(10, maxFights));
+            boolean onFight = tc.subOn("arena", "fight", true);
+            boolean onDaily = tc.subOn("arena", "daily", true);
+            long now = System.currentTimeMillis();
+            boolean inWindow = arenaInDailyRewardWindow(now);
+            day = ArenaDay.load(tc, now);
+            // 登录推送 notify_arena_init 的 base 只在“当日尚无更权威计数”时采用（见 mergeInitBase）：
+            // ① 只在 last_reset_ts 属于今天时才当权威（网页版 resetDailyStateIfNeeded 同口径，DailyArenaState.java:246-261）；
+            // ② 一旦拿到过今天 fight 响应的 base，就不再回灌登录时旧快照（否则每轮把今日已打计数覆盖回 0，
+            //    会导致结算窗里误判“次数不足”而不领奖）。
+            day.mergeInitBase(arenaBaseOf(tc.engine.notifyData("notify_arena_init")), now);
+
+            // 1. 挑战：结算窗内不新开挑战（网页版 23:10 后只做领奖，DailyArenaService.java:390-400）
+            if (!onFight) {
+                m.skip("子开关「自动挑战」已关闭");
+                m.subSkip("fight", "子开关已关闭");
+            } else if (inWindow) {
+                m.skip("已进结算窗(23:10-24:00)，不新开挑战");
+                m.subSkip("fight", "结算窗不新开");
             } else {
-                m.skip("竞技场未解锁(码" + Exec.codeOf(opp) + ")");
+                int budget = arenaFightBudget(day.knownCompleted(), day.fightsSent, maxFights);
+                if (budget <= 0) {
+                    int completed = day.knownCompleted();
+                    String why = completed >= ARENA_DAILY_REWARD_CHALLENGES
+                            ? "今日挑战已完成(" + completed + "/5)·待结算窗"
+                            : "今日挑战场次已用完(" + day.fightsSent + "/5)·待结算窗";
+                    m.skip(why);
+                    m.subSkip("fight", "待结算窗");
+                } else {
+                    arenaFight(tc, m, day, budget, now);
+                }
             }
-            GameMessage daily = tc.engine.request("req_arena_get_daily_reward", null);
-            int dc = Exec.codeOf(daily);
-            if (Exec.ok(daily)) { m.claimed("每日奖励"); m.subOk("daily", "每日奖励已领"); }
-            else if (dc == 2926 || dc == 2925) { m.skip(dc == 2926 ? "每日奖励已领" : "次数未达标"); m.subSkip("daily", dc == 2926 ? "已领" : "次数未达标"); }
+            day.save(tc);
+            tc.saveModText("arena", "fight",
+                    "今日挑战 " + day.fightsSent + "/5 · 胜 " + day.wins
+                            + (day.losses > 0 ? " 负 " + day.losses : "")
+                            + (day.unknownResult > 0 ? " 结果未知 " + day.unknownResult : ""));
+
+            // 2. 每日奖励（结算窗 23:10–24:00；2926/2925 记 settled；失败 5 分钟重试、SKIP 不写 ERROR）
+            arenaDailyReward(tc, m, day, onDaily, inWindow);
+            day.save(tc);
+            int completedForText = day.knownCompleted();
+            tc.saveModText("arena", "daily", !onDaily
+                    ? "子开关「每日奖励」已关闭"
+                    : day.rewardClaimed
+                    ? "今日每日奖励已领取"
+                    : day.rewardSettled
+                    ? "今日每日奖励已处理 · 待次日重新统计"
+                    : "待结算窗(23:10-24:00) · 已完成"
+                    + (completedForText >= 0 ? completedForText : day.fightsSent) + "/5");
         } catch (Exception e) {
+            // 断线/异常也要保住当日已发场次与领奖状态，避免重连后按 0 重算再打一遍
+            if (day != null) day.save(tc);
             if (sessionLost(e)) return ServerTasks.classifyException(e, "竞技场");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "arena", "竞技场");
+    }
+
+    /** 挑战阶段（日场次上限内）：对手按战力升序；胜负读 report.win，不再用 Exec.ok 当胜场。 */
+    private static void arenaFight(TaskContext tc, Exec.Multi m, ArenaDay day, int budget, long now)
+            throws Exception {
+        GameMessage opp = tc.engine.request("req_arena_get_opponent", null);
+        if (!Exec.ok(opp)) {
+            m.skip("竞技场未解锁(码" + Exec.codeOf(opp) + ")");
+            m.subSkip("fight", "未解锁");
+            return;
+        }
+        List<Map<String, Object>> list = new ArrayList<>();
+        for (String k : new String[]{"opponents", "data", "list"}) {
+            list = Exec.mapsOf(opp.getContent().get(k));
+            if (!list.isEmpty()) break;
+        }
+        if (list.isEmpty()) {
+            m.skip("无对手数据");
+            m.subSkip("fight", "无对手数据");
+            return;
+        }
+        list.sort((a, b) -> Long.compare(powerOf(a), powerOf(b)));
+        List<Long> heroes = squadHeroes(tc.engine);
+        int fights = 0, wins = 0, losses = 0, unknownWins = 0;
+        StringBuilder failCodes = new StringBuilder();
+        for (Map<String, Object> o : list) {
+            if (fights >= budget || heroes.isEmpty()
+                    || day.fightsSent >= ARENA_DAILY_REWARD_CHALLENGES) break;
+            long oid = Exec.longOf(o.get("uid"));
+            if (oid <= 0) oid = Exec.longOf(o.get("id"));
+            if (oid <= 0) continue;
+            List<Object> heroArray = new ArrayList<>(heroes);
+            GameMessage f = tc.engine.request("req_arena_fight", Exec.args(
+                    "opponent_type", Exec.longOf(o.get("type")) == 0 ? 1 : Exec.longOf(o.get("type")),
+                    "opponent_id", oid,
+                    "hero_array", heroArray,
+                    "version", 26042101L));
+            day.fightsSent++;   // 封顶按“已发出场次”计：即使失败也不会 30s 节奏无限重发
+            int code = Exec.codeOf(f);
+            if (Exec.ok(f)) {
+                fights++;
+                day.mergeBase(arenaBaseOf(f.getContent()), now);
+                int win = arenaWinOf(f.getContent());
+                if (win > 0) wins++;
+                else if (win == 0) losses++;
+                else unknownWins++;
+            } else if (code == 2901 || code == 2902) {
+                // 挑战次数已用完/不可购买：本轮到此为止，等次日（本轮不做买次数）
+                day.mergeBase(arenaBaseOf(f.getContent()), now);
+                m.skip("挑战次数已用完(码" + code + ")");
+                break;
+            } else if (code == 2903) {
+                // 太频繁：不计入当日场次，退避到下一轮 30s 节奏
+                day.fightsSent = Math.max(0, day.fightsSent - 1);
+                m.skip("挑战过于频繁(2903)，待下一轮");
+                break;
+            } else if (code == 2904 || code == 2920 || code == 2921) {
+                // 对手过期/不可用：不计场次，下一轮重新拉对手（网页版视为需刷新）
+                day.fightsSent = Math.max(0, day.fightsSent - 1);
+                m.skip("对手已失效(码" + code + ")·下一轮刷新");
+                break;
+            } else {
+                day.mergeBase(arenaBaseOf(f.getContent()), now);
+                if (failCodes.length() < 40) failCodes.append(code).append(' ');
+            }
+            Exec.sleep(800);
+        }
+        day.wins += wins;
+        day.losses += losses;
+        day.unknownResult += unknownWins;
+        if (fights > 0) {
+            m.claimed("挑战" + fights + "场胜" + wins
+                    + (losses > 0 ? "负" + losses : "")
+                    + (unknownWins > 0 ? "结果未知" + unknownWins : "")
+                    + " · 今日" + day.fightsSent + "/5");
+            m.subOk("fight", "挑战" + fights + "胜" + wins);
+        } else if (failCodes.length() > 0) {
+            m.skip("挑战失败码" + failCodes.toString().trim());
+            m.subSkip("fight", "失败码" + failCodes.toString().trim());
+        }
+    }
+
+    /**
+     * 每日奖励领取（网页版 claimDailyRewardIfDue，DailyArenaService.java:774-809）：
+     * 结算窗 23:10–24:00 内、次数达标（或计数未知时由服务端裁决）才请求；
+     * 2926=已领、2925=次数未达标 → 记 settled（网页同款），当日不再重试；
+     * 其它失败 → SKIP“稍后重试”，5 分钟后下一轮（30s 节奏不刷 ERROR）。
+     */
+    private static void arenaDailyReward(TaskContext tc, Exec.Multi m, ArenaDay day,
+                                         boolean onDaily, boolean inWindow) throws Exception {
+        if (!onDaily) {
+            m.skip("子开关「每日奖励」已关闭");
+            m.subSkip("daily", "子开关已关闭");
+            return;
+        }
+        if (day.rewardSettled) {
+            m.skip(day.rewardClaimed ? "每日奖励今日已领" : "每日奖励今日已处理·待次日重新统计");
+            m.subSkip("daily", day.rewardClaimed ? "已领" : "已处理");
+            return;
+        }
+        long now = System.currentTimeMillis();
+        if (!inWindow) {
+            String hint = day.knownCompleted() >= ARENA_DAILY_REWARD_CHALLENGES
+                    || day.fightsSent >= ARENA_DAILY_REWARD_CHALLENGES
+                    ? "·挑战已完成，到点自动领取" : "";
+            m.skip("每日奖励待结算窗(23:10-24:00)" + hint);
+            m.subSkip("daily", "待结算窗");
+            return;
+        }
+        if (!arenaRewardRetryDue(day.lastRewardAttemptAt, now)) {
+            m.skip("每日奖励领取重试冷却中(5分钟)");
+            m.subSkip("daily", "重试冷却");
+            return;
+        }
+        int completed = day.knownCompleted();
+        if (!arenaRewardAttemptAllowed(completed, day.fightsSent)) {
+            // 计数明确不足且无“本地已发场次 > 服务端计数”的兜底证据：
+            // 网页版 dailyRewardClaimPending 同口径不请求；待次日重新统计。
+            m.skip("挑战完成" + completed + "/5未达标·待次日重新统计");
+            m.subSkip("daily", "次数不足");
+            return;
+        }
+        GameMessage daily = tc.engine.request("req_arena_get_daily_reward", null);
+        int dc = Exec.codeOf(daily);
+        day.lastRewardAttemptAt = now;
+        day.rewardRetries++;
+        if (Exec.ok(daily)) {
+            day.rewardClaimed = true;
+            day.rewardSettled = true;
+            m.claimed("每日奖励");
+            m.subOk("daily", "每日奖励已领");
+        } else if (dc == 2926) {
+            day.rewardClaimed = true;
+            day.rewardSettled = true;
+            m.skip("每日奖励已领(2926)");
+            m.subSkip("daily", "已领");
+        } else if (dc == 2925) {
+            day.rewardSettled = true;
+            m.skip("每日挑战次数未达标(2925)·待次日重新统计");
+            m.subSkip("daily", "次数未达标");
+        } else {
+            m.skip("每日奖励领取未完成(码" + dc + ")，5分钟后重试");
+            m.subSkip("daily", "码" + dc);
+        }
+    }
+
+    // ---------- 竞技场纯函数/当日台账（A1，单测见 IntelArenaFixTest） ----------
+
+    /** 结算窗判定：北京时间 >= 23:10（窗口到 00:00；与网页版
+     *  settlementStartsAt = 次日 0 点 - 3000s 一致，DailyArenaService.java:761-768）。 */
+    static boolean arenaInDailyRewardWindow(long epochMillis) {
+        Calendar c = Calendar.getInstance(Beijing.TZ);
+        c.setTimeInMillis(epochMillis);
+        return c.get(Calendar.HOUR_OF_DAY) * 60 + c.get(Calendar.MINUTE) >= ARENA_REWARD_WINDOW_START_MINUTE;
+    }
+
+    /** 今日已挑战场次：1:1 网页版 challengesCompletedToday = free_times_use + max(0,buy_times-left_times)
+     *  （DailyArenaState.java:179-186）。 */
+    static int arenaChallengesCompleted(int freeUsed, int buyTimes, int leftTimes) {
+        return Math.max(0, freeUsed) + Math.max(0, Math.max(0, buyTimes) - Math.max(0, leftTimes));
+    }
+
+    /** 领取重试是否到期（网页版 5 分钟重试，DailyArenaService.java:800-807）。 */
+    static boolean arenaRewardRetryDue(long lastAttemptAtMillis, long nowMillis) {
+        return lastAttemptAtMillis <= 0L || nowMillis - lastAttemptAtMillis >= ARENA_REWARD_RETRY_MILLIS;
+    }
+
+    /**
+     * 结算窗内是否允许请求 req_arena_get_daily_reward（免费请求，由服务端最终裁决）：
+     * <ul>
+     *   <li>服务端计数已达标 → 允许；</li>
+     *   <li>服务端计数未知（base 未同步）→ 允许（“拿不到真实计数时保守在窗口内重试领取”）；</li>
+     *   <li>服务端计数明确不足，但本地已发场次更多（fight 响应未带 base / 只有登录旧快照）→
+     *       仍允许一次，避免因计数陈旧漏掉真实达标的奖励；</li>
+     *   <li>其余（明确不足且无兜底证据）→ 不请求，写“次数不足·待次日”。</li>
+     * </ul>
+     */
+    static boolean arenaRewardAttemptAllowed(int challengesCompleted, int sentToday) {
+        if (challengesCompleted < 0) return true;
+        if (challengesCompleted >= ARENA_DAILY_REWARD_CHALLENGES) return true;
+        return sentToday >= ARENA_DAILY_REWARD_CHALLENGES && sentToday > challengesCompleted;
+    }
+
+    /** 本轮可挑战场数：服务端计数权威（-1=未知时不判超额，改用本地已发出场次封顶 5），
+     *  本轮不买次数，故每日上限固定 5（网页版 DAILY_REWARD_CHALLENGE_TARGET）。 */
+    static int arenaFightBudget(int challengesCompleted, int localSentToday, int maxFights) {
+        int sent = Math.max(0, localSentToday);
+        int remaining;
+        if (challengesCompleted < 0) {
+            remaining = ARENA_DAILY_REWARD_CHALLENGES - sent;
+        } else {
+            remaining = ARENA_DAILY_REWARD_CHALLENGES - Math.max(0, challengesCompleted);
+            // base 未刷新时本地已发场次也要计入，防止同一轮/下一轮重复打空
+            remaining = Math.min(remaining, ARENA_DAILY_REWARD_CHALLENGES - sent);
+        }
+        return Math.max(0, Math.min(Math.max(1, maxFights), remaining));
+    }
+
+    /** 战斗胜负：1:1 网页版 response.report.win（DailyArenaService.java:599-601）。
+     *  返回 1=胜 / 0=负 / -1=未知（防各种 Boolean/Number/String 形状）。 */
+    static int arenaWinOf(Map<String, Object> content) {
+        if (content == null) return -1;
+        Map<String, Object> report = Exec.mapOf(content.get("report"));
+        if (report == null) report = Exec.mapOf(content.get("battle_report"));
+        Object win = report == null ? null : report.get("win");
+        if (win instanceof Boolean) return (Boolean) win ? 1 : 0;
+        if (win instanceof Number) return ((Number) win).longValue() != 0L ? 1 : 0;
+        if (win != null) {
+            String s = String.valueOf(win).trim();
+            if ("true".equalsIgnoreCase(s) || "1".equals(s)) return 1;
+            if ("false".equalsIgnoreCase(s) || "0".equals(s)) return 0;
+        }
+        return -1;
+    }
+
+    /** 竞技场服务端 base（notify_arena_init.base / req_arena_fight 响应 base，DailyArenaState.java:237-244）。 */
+    static final class ArenaBase {
+        final int freeUsed;
+        final int buyTimes;
+        final int leftTimes;
+        final boolean dailyRewardClaimed;
+        final long lastResetTs;
+
+        ArenaBase(int freeUsed, int buyTimes, int leftTimes,
+                  boolean dailyRewardClaimed, long lastResetTs) {
+            this.freeUsed = Math.max(0, freeUsed);
+            this.buyTimes = Math.max(0, buyTimes);
+            this.leftTimes = Math.max(0, leftTimes);
+            this.dailyRewardClaimed = dailyRewardClaimed;
+            this.lastResetTs = lastResetTs;
+        }
+    }
+
+    /** 防御式解析 base：{base:{...}} / notifyData 已解包 / 直接就是 base 本体 / {data:{base:{...}}}。 */
+    static ArenaBase arenaBaseOf(Map<String, Object> content) {
+        if (content == null) return null;
+        Map<String, Object> base = Exec.mapOf(content.get("base"));
+        if (base == null && arenaHasCounts(content)) base = content;
+        if (base == null) {
+            Map<String, Object> data = Exec.mapOf(content.get("data"));
+            if (data != null) {
+                base = Exec.mapOf(data.get("base"));
+                if (base == null && arenaHasCounts(data)) base = data;
+            }
+        }
+        if (base == null) return null;
+        long freeUsed = arenaNum(base, "free_times_use");
+        long buyTimes = arenaNum(base, "buy_times");
+        long leftTimes = arenaNum(base, "left_times");
+        if (freeUsed < 0 && buyTimes < 0 && leftTimes < 0) return null;   // 无任何计数 = 未同步
+        Object dr = base.get("daily_reward");
+        boolean claimed = dr instanceof Boolean ? (Boolean) dr
+                : dr != null && ("true".equalsIgnoreCase(String.valueOf(dr))
+                || "1".equals(String.valueOf(dr)));
+        return new ArenaBase((int) Math.max(0, freeUsed), (int) Math.max(0, buyTimes),
+                (int) Math.max(0, leftTimes), claimed, arenaNum(base, "last_reset_ts"));
+    }
+
+    private static boolean arenaHasCounts(Map<String, Object> m) {
+        return m != null && (m.containsKey("free_times_use") || m.containsKey("left_times")
+                || m.containsKey("buy_times") || m.containsKey("daily_reward"));
+    }
+
+    private static long arenaNum(Map<String, Object> m, String key) {
+        Object v = m == null ? null : m.get(key);
+        return v instanceof Number ? ((Number) v).longValue() : -1L;
+    }
+
+    /** base.last_reset_ts 是否属于“今天”（北京时间）；毫秒时间戳兼容。 */
+    static boolean arenaBaseFreshForDay(long lastResetTs, long nowMillis) {
+        long ts = lastResetTs;
+        if (ts > 100_000_000_000L) ts = ts / 1000L;
+        return arenaBeijingDay(ts * 1000L).equals(arenaBeijingDay(nowMillis));
+    }
+
+    static String arenaBeijingDay(long epochMillis) {
+        return Beijing.fmt("yyyy-MM-dd").format(new java.util.Date(epochMillis));
+    }
+
+    /**
+     * 竞技场当日台账（srv:arena:day:&lt;fpid&gt;:&lt;sid&gt;）：挑战场次/胜负/服务端 base/领奖状态。
+     * 网页版由 DailyArenaState + checkpoint 维护（DailyArenaState.java:160-186、:1007），
+     * 我方无常驻状态机 → 按北京日期落盘，跨天自动重置。
+     */
+    static final class ArenaDay {
+        String day = "";
+        int fightsSent;
+        int wins;
+        int losses;
+        int unknownResult;
+        int freeUsed;
+        int buyTimes;
+        int leftTimes;
+        boolean baseKnown;
+        long lastResetTs;
+        boolean rewardSettled;
+        boolean rewardClaimed;
+        long lastRewardAttemptAt;
+        int rewardRetries;
+
+        static ArenaDay load(TaskContext tc, long nowMillis) {
+            String today = arenaBeijingDay(nowMillis);
+            try {
+                String raw = tc.store.getString(ARENA_DAY_KEY_PREFIX + tc.fpid + ":" + tc.sid);
+                if (raw != null && !raw.isEmpty()) {
+                    JSONObject o = new JSONObject(raw);
+                    if (today.equals(o.optString("day", ""))) {
+                        ArenaDay d = new ArenaDay();
+                        d.day = today;
+                        d.fightsSent = o.optInt("fights_sent", 0);
+                        d.wins = o.optInt("wins", 0);
+                        d.losses = o.optInt("losses", 0);
+                        d.unknownResult = o.optInt("unknown_result", 0);
+                        d.freeUsed = o.optInt("free_used", 0);
+                        d.buyTimes = o.optInt("buy_times", 0);
+                        d.leftTimes = o.optInt("left_times", 0);
+                        d.baseKnown = o.optBoolean("base_known", false);
+                        d.lastResetTs = o.optLong("last_reset_ts", 0L);
+                        d.rewardSettled = o.optBoolean("reward_settled", false);
+                        d.rewardClaimed = o.optBoolean("reward_claimed", false);
+                        d.lastRewardAttemptAt = o.optLong("reward_last_attempt", 0L);
+                        d.rewardRetries = o.optInt("reward_retries", 0);
+                        return d;
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            ArenaDay d = new ArenaDay();
+            d.day = today;
+            return d;
+        }
+
+        void save(TaskContext tc) {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("day", day);
+                o.put("fights_sent", fightsSent);
+                o.put("wins", wins);
+                o.put("losses", losses);
+                o.put("unknown_result", unknownResult);
+                o.put("free_used", freeUsed);
+                o.put("buy_times", buyTimes);
+                o.put("left_times", leftTimes);
+                o.put("base_known", baseKnown);
+                o.put("last_reset_ts", lastResetTs);
+                o.put("reward_settled", rewardSettled);
+                o.put("reward_claimed", rewardClaimed);
+                o.put("reward_last_attempt", lastRewardAttemptAt);
+                o.put("reward_retries", rewardRetries);
+                tc.store.putString(ARENA_DAY_KEY_PREFIX + tc.fpid + ":" + tc.sid, o.toString());
+            } catch (Throwable ignored) {
+            }
+        }
+
+        /** 合并服务端 base：只接受今天（或 last_reset_ts 缺失）的快照，跨天旧快照丢弃。 */
+        void mergeBase(ArenaBase base, long nowMillis) {
+            if (base == null) return;
+            if (base.lastResetTs > 0L && !arenaBaseFreshForDay(base.lastResetTs, nowMillis)) return;
+            freeUsed = base.freeUsed;
+            buyTimes = base.buyTimes;
+            leftTimes = base.leftTimes;
+            if (base.lastResetTs > 0L) lastResetTs = base.lastResetTs;
+            baseKnown = true;
+            if (base.dailyRewardClaimed) {
+                rewardClaimed = true;
+                rewardSettled = true;
+            }
+        }
+
+        /** 合并登录推送的 notify_arena_init 快照：当日已有更权威的 fight 响应 base 时不回灌，
+         *  防止每轮把旧登录快照覆盖回今日已打计数。 */
+        void mergeInitBase(ArenaBase base, long nowMillis) {
+            if (baseKnown) return;
+            mergeBase(base, nowMillis);
+        }
+
+        /** 服务端明确完成场次；-1=未知（基础数据未同步 → 领奖交给服务端裁决）。 */
+        int knownCompleted() {
+            return baseKnown ? arenaChallengesCompleted(freeUsed, buyTimes, leftTimes) : -1;
+        }
     }
 
     private static long powerOf(Map<String, Object> o) {
