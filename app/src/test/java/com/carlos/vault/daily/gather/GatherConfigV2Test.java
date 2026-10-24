@@ -571,4 +571,34 @@ public class GatherConfigV2Test {
         assertTrue(GatherConfigV2.speedupActive(now, 8, now + 3600_000L));
         assertFalse(GatherConfigV2.speedupActive(now, 8, now + 8 * 3600_000L - 60_000L));
     }
+
+    @Test
+    public void heavyLifting_roundTripAndValidate() {
+        GatherConfigV2 c = GatherConfigV2.parse(new JSONObject());
+        c.heavyLiftingEnabled = true;
+        c.heavyLiftingResourceType = "IRON";
+        c.heavyLiftingFormationMode = "ROLE";
+        c.heavyLiftingFormationId = 5L;
+        JSONObject params = c.applyTo(new JSONObject());
+        JSONObject v2 = params.optJSONObject("v2");
+        assertTrue(v2.optBoolean("heavyLiftingEnabled"));
+        JSONObject q = v2.optJSONObject("heavyLiftingQueue");
+        assertEquals("IRON", q.optString("resourceType"));
+        assertEquals("ROLE", q.optString("formationMode"));
+        assertEquals(5L, q.optLong("formationId"));
+        GatherConfigV2 back = GatherConfigV2.parse(params);
+        assertTrue(back.heavyLiftingEnabled);
+        assertEquals("IRON", back.heavyLiftingResourceType);
+        assertEquals("ROLE", back.heavyLiftingFormationMode);
+        assertEquals(5L, back.heavyLiftingFormationId);
+        back.validate();
+        back.heavyLiftingFormationId = 0L;
+        boolean threw = false;
+        try {
+            back.validate();
+        } catch (IllegalArgumentException e) {
+            threw = true;
+        }
+        assertTrue("ROLE 缺编队必须拦截", threw);
+    }
 }

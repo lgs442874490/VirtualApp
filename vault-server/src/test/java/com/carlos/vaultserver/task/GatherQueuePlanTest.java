@@ -575,4 +575,23 @@ public class GatherQueuePlanTest {
         assertEquals(0L, ServerFieldTasks.backpackCount(update, 302000L));
         assertEquals(0L, ServerFieldTasks.backpackCount(null, 302000L));
     }
+
+    @Test
+    public void heavyLifting_helpers() {
+        GatherConfigV2 cfg = GatherConfigV2.legacyDefaults();
+        cfg.heavyLiftingEnabled = true;
+        cfg.heavyLiftingResourceType = "COAL";
+        cfg.heavyLiftingFormationMode = GatherConfigV2.MODE_AUTOMATIC;
+        org.json.JSONObject auto = ServerFieldTasks.heavyLiftingFormationParams(cfg);
+        assertEquals(GatherConfigV2.MODE_AUTOMATIC, auto.optString("formation_mode"));
+        assertEquals(100000L, auto.optLong("total"));
+        cfg.heavyLiftingFormationMode = GatherConfigV2.MODE_ROLE;
+        cfg.heavyLiftingFormationId = 9L;
+        org.json.JSONObject role = ServerFieldTasks.heavyLiftingFormationParams(cfg);
+        assertEquals(GatherConfigV2.MODE_ROLE, role.optString("formation_mode"));
+        assertEquals(9L, role.optLong("formation_id"));
+        // 资产库未知时保守视为在途（避免误判完成重复消耗技能）
+        assertTrue(ServerFieldTasks.heavyMarchActive(null, 123L));
+        assertFalse(ServerFieldTasks.heavyMarchActive(null, 0L));
+    }
 }

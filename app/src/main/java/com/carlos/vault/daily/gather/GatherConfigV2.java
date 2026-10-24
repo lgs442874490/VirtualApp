@@ -149,6 +149,15 @@ public final class GatherConfigV2 {
     public boolean speedupDiamondPurchaseEnabled = false;   // 默认关：缺道具不花钻
     public long speedupDiamondDailyLimit = 2000L;
 
+    // ---------- 重物搬运（宠物技能 550031 专用队列：派遣最高级矿，额外 1 队） ----------
+    public boolean heavyLiftingEnabled = false;
+    public String heavyLiftingResourceType = RES_MEAT;
+    public String heavyLiftingFormationMode = MODE_AUTOMATIC;
+    public long heavyLiftingFormationId = 0L;
+    public long heavyLiftingInfantry = DEFAULT_INFANTRY;
+    public long heavyLiftingLancer = DEFAULT_LANCER;
+    public long heavyLiftingMarksman = DEFAULT_MARKSMAN;
+
     public GatherConfigV2() {
         for (int i = 1; i <= QUEUE_COUNT; i++) queues.add(new QueueCfg(i, false, defaultResource(i),
                 8, MODE_AUTOMATIC, 0L, DEFAULT_INFANTRY, DEFAULT_LANCER, DEFAULT_MARKSMAN));
@@ -221,6 +230,16 @@ public final class GatherConfigV2 {
                 v2.optString("gather_speedup_level", HOURS_8)));
         c.speedupDiamondPurchaseEnabled = v2.optBoolean("gatherSpeedupDiamondPurchaseEnabled", false);
         c.speedupDiamondDailyLimit = Math.max(0L, v2.optLong("gatherSpeedupDiamondDailyLimit", 2000L));
+        c.heavyLiftingEnabled = v2.optBoolean("heavyLiftingEnabled", false);
+        JSONObject heavy = v2.optJSONObject("heavyLiftingQueue");
+        if (heavy != null) {
+            c.heavyLiftingResourceType = normalizeResource(heavy.optString("resourceType", RES_MEAT));
+            c.heavyLiftingFormationMode = normalizeMode(heavy.optString("formationMode", MODE_AUTOMATIC));
+            c.heavyLiftingFormationId = heavy.optLong("formationId", 0L);
+            c.heavyLiftingInfantry = Math.max(0L, heavy.optLong("infantry", DEFAULT_INFANTRY));
+            c.heavyLiftingLancer = Math.max(0L, heavy.optLong("lancer", DEFAULT_LANCER));
+            c.heavyLiftingMarksman = Math.max(0L, heavy.optLong("marksman", DEFAULT_MARKSMAN));
+        }
         return c;
     }
 
@@ -360,6 +379,17 @@ public final class GatherConfigV2 {
         put(v2, "gatherSpeedupLevel", speedupHours == 24 ? HOURS_24 : HOURS_8);
         put(v2, "gatherSpeedupDiamondPurchaseEnabled", speedupDiamondPurchaseEnabled);
         put(v2, "gatherSpeedupDiamondDailyLimit", speedupDiamondDailyLimit);
+        put(v2, "heavyLiftingEnabled", heavyLiftingEnabled);
+        JSONObject heavy = new JSONObject();
+        put(heavy, "resourceType", normalizeResource(heavyLiftingResourceType));
+        put(heavy, "formationMode", normalizeMode(heavyLiftingFormationMode));
+        if (MODE_ROLE.equals(normalizeMode(heavyLiftingFormationMode)) && heavyLiftingFormationId > 0) {
+            put(heavy, "formationId", heavyLiftingFormationId);
+        }
+        put(heavy, "infantry", heavyLiftingInfantry);
+        put(heavy, "lancer", heavyLiftingLancer);
+        put(heavy, "marksman", heavyLiftingMarksman);
+        put(v2, "heavyLiftingQueue", heavy);
         return v2;
     }
 
@@ -482,6 +512,13 @@ public final class GatherConfigV2 {
         }
         if (maxQueues < 0 || maxQueues > QUEUE_COUNT) {
             throw new IllegalArgumentException("最多使用队列数必须为 0-6");
+        }
+        if (heavyLiftingEnabled && MODE_ROLE.equals(normalizeMode(heavyLiftingFormationMode))
+                && heavyLiftingFormationId <= 0) {
+            throw new IllegalArgumentException("重物搬运请选择指定编队");
+        }
+        if (heavyLiftingEnabled && !isValidResource(heavyLiftingResourceType)) {
+            throw new IllegalArgumentException("重物搬运未选择资源类型");
         }
         if (allianceMineEnabled && MODE_ROLE.equals(normalizeMode(allianceMineFormationMode))
                 && allianceMineFormationId > 0 && !roleFormationIds.add(allianceMineFormationId)) {

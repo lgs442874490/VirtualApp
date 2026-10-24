@@ -1062,6 +1062,8 @@ public final class ServerFieldTasks {
         // 采集加速维护（网页版 gatherSpeedupBlocked/GatherSpeedupLevel：8h=302000/250钻、24h=302001/600钻；
         // 默认仅用背包道具，钻石购买显式开启才花钻）
         maintainGatherSpeedup(tc, cfg, lib);
+        // 重物搬运（宠物技能 550031 专用队列：派遣最高级矿，额外 1 队；失败不影响普通采集）
+        maintainHeavyLifting(tc, cfg, lib);
 
         // B2-T4 暂停协调（1:1 网页版 DailyGatherService.pauseBeforeDispatch:694-712）：
         // 情报待办优先 / 巨熊活动窗口时让位，避免抢队列。
@@ -1686,6 +1688,188 @@ public final class ServerFieldTasks {
             }
         }
         return 0L;
+    }
+
+    // ---------- 重物搬运（宠物技能 550031：最高级矿专用队列，额外 1 队） ----------
+
+    /** 网页版 DailyPetSkillCatalog 的重物搬运技能 id。 */
+    static final long HEAVY_LIFTING_SKILL_ID = 550031L;
+    static final String HEAVY_LIFTING_STATE_PREFIX = "srv:gather:heavy:";
+
+    static String heavyLiftingStateKey(TaskContext tc) {
+        return HEAVY_LIFTING_STATE_PREFIX + tc.fpid + ":" + tc.sid;
+    }
+
+    /**
+     * 重物搬运（网页版 DailyGatherService.maintainHeavyLifting 的简化等价实现）：
+     * <ol>
+     *   <li>已在途 → 等待结束；</li>
+     *   <li>冷却中 → 等待；</li>
+     *   <li>搜索当前可采最高级矿（找不到不消耗技能）；</li>
+     *   <li>{@code req_pet_use_skill{skill_id_lst:[550031]}} 激活技能；</li>
+     *   <li>立即派出 type=4 专用队列（不占普通队列槽位，技能提供额外 1 队），记录 marchId；</li>
+     *   <li>队列结束后恢复普通采集；失败只写 mod，不阻塞普通采集。</li>
+     * </ol>
+     */
+    static void maintainHeavyLifting(TaskContext tc, GatherConfigV2 cfg, CoreAssetLibrary lib) {
+        if (cfg == null || !cfg.heavyLiftingEnabled) return;
+        try {
+            long now = System.currentTimeMillis();
+            JSONObject st = heavyLiftingState(tc);
+            long marchId = st.optLong("marchId", 0L);
+            if (marchId > 0L) {
+                if (heavyMarchActive(lib, marchId)) {
+                    tc.saveModText("gather", "heavy", "重物搬运专用队列在途（march#" + marchId + "）");
+                    return;
+                }
+                st.put("marchId", 0L);
+                st.put("state", "IDLE");
+                saveHeavyLiftingState(tc, st);
+                tc.saveModText("gather", "heavy", "重物搬运完成，恢复普通采集");
+                return;
+            }
+            long cooldownUntil = st.optLong("cooldownUntil", 0L);
+            if (cooldownUntil > now) {
+                tc.saveModText("gather", "heavy",
+                        "重物搬运冷却中（" + Math.max(1L, (cooldownUntil - now) / 1000L) + "s）");
+                return;
+            }
+            int maxLevel = gatherMaxResourceLevel(lib.clock());
+            int resId = GatherConfigV2.resId(cfg.heavyLiftingResourceType);
+            Map<String, Object> point = null;
+            int targetLevel = 0;
+            for (int lv = maxLevel; lv >= 1; lv--) {
+                SearchOutcome so = searchGatherResource(tc.engine, resId, lv, false);
+                if (so.found()) {
+                    point = so.point;
+                    targetLevel = lv;
+                    break;
+                }
+                if (so.code != 0 && so.code != GATHER_SEARCH_EMPTY) break;
+            }
+            if (point == null) {
+                tc.saveModText("gather", "heavy", "最高级矿暂未找到，稍后重试");
+                return;
+            }
+            // 先激活宠物技能（技能未拥有/冷却 → 15 分钟内不再尝试）
+            GameMessage skill = tc.engine.request("req_pet_use_skill", Exec.args(
+                    "skill_id_lst", java.util.Collections.singletonList(HEAVY_LIFTING_SKILL_ID)));
+            if (!Exec.ok(skill)) {
+                int code = Exec.codeOf(skill);
+                st.put("cooldownUntil", now + 15L * 60L * 1000L);
+                saveHeavyLiftingState(tc, st);
+                tc.saveModText("gather", "heavy", "重物搬运技能不可用（码" + code + "），15 分钟后重试");
+                return;
+            }
+            StringBuilder why = new StringBuilder();
+            Map<String, Object> formation = heavyLiftingFormation(tc, cfg, why);
+            if (formation == null) {
+                tc.saveModText("gather", "heavy", why.length() > 0
+                        ? "重物搬运编队跳过：" + why : "重物搬运无可用编队");
+                return;
+            }
+            GameMessage march = tc.engine.request("req_world_march", Exec.args(
+                    "type", GATHER_MARCH_TYPE,
+                    "endpoint", point,
+                    "formation", formation,
+                    "extra", new LinkedHashMap<String, Object>()));
+            long id = Exec.marchId(march);
+            if (id > 0L) {
+                st.put("marchId", id);
+                st.put("targetLevel", targetLevel);
+                st.put("appliedAt", now);
+                st.put("state", "WAITING_RETURN");
+                saveHeavyLiftingState(tc, st);
+                tc.saveModText("gather", "heavy",
+                        "重物搬运已派出（" + targetLevel + "级"
+                                + GatherConfigV2.resourceLabel(cfg.heavyLiftingResourceType) + "，march#" + id + "）");
+                applyGatherResponse(lib, march);
+            } else {
+                int code = Exec.codeOf(march);
+                st.put("cooldownUntil", now + (code == 2878 ? 60_000L : 5L * 60L * 1000L));
+                saveHeavyLiftingState(tc, st);
+                tc.saveModText("gather", "heavy", "重物搬运出征失败（码" + code + "）");
+            }
+        } catch (Throwable t) {
+            try {
+                tc.saveModText("gather", "heavy",
+                        "重物搬运异常：" + ServerTasks.brief(String.valueOf(t.getMessage())));
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    static JSONObject heavyLiftingState(TaskContext tc) {
+        try {
+            String raw = tc.store.getString(heavyLiftingStateKey(tc));
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+        } catch (Throwable t) {
+            return new JSONObject();
+        }
+    }
+
+    static void saveHeavyLiftingState(TaskContext tc, JSONObject st) {
+        try {
+            tc.store.putString(heavyLiftingStateKey(tc), st == null ? "{}" : st.toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 专用队列是否仍在途（资产库未知时保守为 true，避免误判完成重复消耗技能）。 */
+    static boolean heavyMarchActive(CoreAssetLibrary lib, long marchId) {
+        if (marchId <= 0L) return false;
+        if (lib == null || !lib.ready() || lib.queue() == null) return true;
+        for (AssetSnapshot.QueueMarch march : lib.queue().marches) {
+            if (march != null && march.id == marchId) return true;
+        }
+        return false;
+    }
+
+    /** 重物搬运编队参数（ROLE/AUTOMATIC，口径与采集队列一致）。 */
+    static JSONObject heavyLiftingFormationParams(GatherConfigV2 cfg) {
+        JSONObject f = new JSONObject();
+        if (cfg == null) return f;
+        long total = cfg.heavyLiftingInfantry + cfg.heavyLiftingLancer + cfg.heavyLiftingMarksman;
+        if (GatherConfigV2.MODE_ROLE.equals(GatherConfigV2.normalizeMode(cfg.heavyLiftingFormationMode))) {
+            f.put("formation_mode", GatherConfigV2.MODE_ROLE);
+            f.put("formation_id", cfg.heavyLiftingFormationId);
+            JSONObject soldiers = new JSONObject();
+            soldiers.put("infantry", Math.max(0L, cfg.heavyLiftingInfantry));
+            soldiers.put("lancer", Math.max(0L, cfg.heavyLiftingLancer));
+            soldiers.put("marksman", Math.max(0L, cfg.heavyLiftingMarksman));
+            f.put("soldiers", soldiers);
+            return f;
+        }
+        f.put("formation_mode", GatherConfigV2.MODE_AUTOMATIC);
+        JSONObject ratio = new JSONObject();
+        if (total > 0L) {
+            ratio.put("infantry", Math.max(0L, cfg.heavyLiftingInfantry));
+            ratio.put("lancer", Math.max(0L, cfg.heavyLiftingLancer));
+            ratio.put("marksman", Math.max(0L, cfg.heavyLiftingMarksman));
+        } else {
+            ratio.put("infantry", 40L);
+            ratio.put("lancer", 30L);
+            ratio.put("marksman", 30L);
+        }
+        f.put("ratio", ratio);
+        f.put("total", total);
+        return f;
+    }
+
+    private static Map<String, Object> heavyLiftingFormation(TaskContext tc, GatherConfigV2 cfg,
+                                                             StringBuilder reasonOut) {
+        try {
+            FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(tc.engine,
+                    FormationResolver.libraryFor(tc, "gather"), heavyLiftingFormationParams(cfg));
+            if (!ro.ready()) {
+                if (reasonOut != null) reasonOut.append(ro.reason);
+                return null;
+            }
+            return ro.formation.toFormationPayload();
+        } catch (Throwable t) {
+            if (reasonOut != null) reasonOut.append("编队异常：").append(ServerTasks.brief(String.valueOf(t.getMessage())));
+            return null;
+        }
     }
 
     /** 王国可采资源等级上限：资产库 clock.maxResourceLevel 优先，其次 kingdomDay 推导，未知=8。 */

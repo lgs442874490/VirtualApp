@@ -441,6 +441,80 @@ public class GatherConfigActivity extends Activity {
                         cfg.speedupDiamondDailyLimit + " 钻", () -> chooseSpeedupLimit(card)));
             }
         }
+
+        // ---------- 重物搬运（宠物技能 550031：派遣当前最高级矿，额外 1 队） ----------
+        card.addView(UiStyle.divider(this));
+        final UiStyle.Switch[] hlRef = new UiStyle.Switch[1];
+        hlRef[0] = new UiStyle.Switch(this, cfg.heavyLiftingEnabled, () -> {
+            cfg.heavyLiftingEnabled = hlRef[0].isOn();
+            markDirty();
+            fillGlobalCard(card);
+        });
+        card.addView(switchRow("重物搬运",
+                "宠物技能专用队列：消耗技能 550031 派遣当前最高级矿（额外 1 队，不影响普通采集）", hlRef[0]));
+        if (cfg.heavyLiftingEnabled) {
+            card.addView(UiStyle.dropdownRow(this, "搬运资源",
+                    GatherConfigV2.resourceLabel(cfg.heavyLiftingResourceType),
+                    () -> chooseHeavyResource(card)));
+            card.addView(UiStyle.dropdownRow(this, "搬运编队",
+                    GatherConfigV2.MODE_ROLE.equals(GatherConfigV2.normalizeMode(
+                            cfg.heavyLiftingFormationMode))
+                            ? "指定编队" : "自动编队", () -> chooseHeavyFormationMode(card)));
+            if (GatherConfigV2.MODE_ROLE.equals(GatherConfigV2.normalizeMode(
+                    cfg.heavyLiftingFormationMode))) {
+                card.addView(UiStyle.dropdownRow(this, "指定编队",
+                        formationText(cfg.heavyLiftingFormationId),
+                        () -> FormationPicker.pickFormationFor(this, fpid, serverid,
+                                (id, name) -> {
+                                    cfg.heavyLiftingFormationId = id;
+                                    cfg.heavyLiftingFormationMode = GatherConfigV2.MODE_ROLE;
+                                    markDirty();
+                                    fillGlobalCard(card);
+                                })));
+            }
+            TextView hlTip = hintText("※ 技能不可用/无最高级矿时自动等待，不消耗钻石、不影响普通采集。");
+            hlTip.setTextColor(UiStyle.INK3);
+            hlTip.setPadding(0, dp(2), 0, dp(2));
+            card.addView(hlTip);
+        }
+    }
+
+    private void chooseHeavyResource(final LinearLayout card) {
+        final String[] values = {GatherConfigV2.RES_MEAT, GatherConfigV2.RES_WOOD,
+                GatherConfigV2.RES_COAL, GatherConfigV2.RES_IRON};
+        final String[] labels = {"肉", "木", "煤", "铁"};
+        int selected = 0;
+        for (int i = 0; i < values.length; i++) {
+            if (values[i].equals(GatherConfigV2.normalizeResource(cfg.heavyLiftingResourceType))) {
+                selected = i;
+            }
+        }
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("重物搬运资源")
+                .setSingleChoiceItems(labels, selected, (d, which) -> {
+                    cfg.heavyLiftingResourceType = values[which];
+                    markDirty();
+                    d.dismiss();
+                    fillGlobalCard(card);
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void chooseHeavyFormationMode(final LinearLayout card) {
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("重物搬运编队")
+                .setSingleChoiceItems(new String[]{"自动编队", "指定编队"},
+                        GatherConfigV2.MODE_ROLE.equals(GatherConfigV2.normalizeMode(
+                                cfg.heavyLiftingFormationMode)) ? 1 : 0, (d, which) -> {
+                            cfg.heavyLiftingFormationMode = which == 1
+                                    ? GatherConfigV2.MODE_ROLE : GatherConfigV2.MODE_AUTOMATIC;
+                            markDirty();
+                            d.dismiss();
+                            fillGlobalCard(card);
+                        })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private void chooseSpeedupHours(final LinearLayout card) {
