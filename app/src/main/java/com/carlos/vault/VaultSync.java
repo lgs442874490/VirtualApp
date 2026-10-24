@@ -467,6 +467,27 @@ public final class VaultSync {
             }
             if (dsDirty) edDs.apply();
             if (dlDirty) edDl.apply();
+            // 角色列表统一标签（888-cch-昵称）数据源：从 srv:asset:{fpid}:{sid}:{uid}
+            // 投影的 meta.allianceAbbr 缓存联盟简称（只缓存，不新建/不改开关）。
+            java.util.Iterator<String> kit = states.keys();
+            while (kit.hasNext()) {
+                String k = kit.next();
+                if (!k.startsWith("srv:asset:")) continue;
+                try {
+                    String[] seg = k.split(":");
+                    if (seg.length < 5) continue;   // srv asset fpid sid [uid]
+                    String fpid = seg[2];
+                    long sid = Long.parseLong(seg[3]);
+                    long uid = seg.length >= 5 ? Long.parseLong(seg[4]) : 0L;
+                    JSONObject proj = new JSONObject(states.optString(k, "{}"));
+                    JSONObject meta = proj.optJSONObject("meta");
+                    String abbr = meta == null ? "" : meta.optString("allianceAbbr", "");
+                    if (!abbr.isEmpty()) {
+                        com.carlos.vault.daily.RoleStore.cacheAllianceAbbr(app, fpid, sid, uid, abbr);
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
         } catch (Throwable t) {
             Log.w(TAG, "daily_state 回写失败: " + t);
         }

@@ -184,4 +184,16 @@ public class RoleDisplayTest {
         assertNull(RoleDisplay.firstWorkspaceRole(new ArrayList<>(), ENABLED));
         assertNull(RoleDisplay.firstWorkspaceRole(null, ENABLED));
     }
+
+    @Test
+    public void roleListLabel_zoneAbbrName() {
+        assertEquals("888-cch-小鹿矿工5号",
+                RoleDisplay.roleListLabel(888L, "cch", "小鹿矿工5号"));
+        assertEquals("888-YvY-隆科多", RoleDisplay.roleListLabel(888L, "YvY", "隆科多"));
+        // 缺失段统一「未同步」，不编造
+        assertEquals("未同步-未同步-未同步", RoleDisplay.roleListLabel(0L, "", ""));
+        assertEquals("888-未同步-小鹿矿工5号", RoleDisplay.roleListLabel(888L, "", "小鹿矿工5号"));
+        // 简称去空白
+        assertEquals("888-cch-名字", RoleDisplay.roleListLabel(888L, " cch ", "名字"));
+    }
 }

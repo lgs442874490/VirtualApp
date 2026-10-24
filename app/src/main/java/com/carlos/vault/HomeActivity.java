@@ -887,17 +887,19 @@ public class HomeActivity extends AccountVaultActivity {
         for (int i = 0; i < cand.size(); i++) {
             AccountStore.Account a = cand.get(i);
             mainRoles[i] = mainRole(a);
-            String mainName = "";
+            String mainLabel = "";
             try {
                 for (RoleStore.Role r : RoleStore.roles(this, a.fpid)) {
-                    if (r.serverid == mainRoles[i][0] && r.name != null && !r.name.isEmpty()) {
-                        mainName = r.name;
+                    if (r.serverid == mainRoles[i][0]
+                            && (mainRoles[i][1] <= 0 || r.uid == mainRoles[i][1])) {
+                        mainLabel = RoleDisplay.roleListLabel(r);
                         break;
                     }
                 }
             } catch (Throwable ignored) {
             }
-            names[i] = a.label + "（主角色：" + (mainName.isEmpty() ? "K" + mainRoles[i][0] : mainName) + "）";
+            if (mainLabel.isEmpty()) mainLabel = RoleDisplay.roleListLabel(mainRoles[i][0], "", "");
+            names[i] = a.label + "（主角色：" + mainLabel + "）";
             if (cur != null && a.fpid != null && a.fpid.equals(cur.fpid)) checked = i;
         }
         final AccountStore.Account[] pick = {cand.get(checked)};
@@ -1184,14 +1186,13 @@ public class HomeActivity extends AccountVaultActivity {
         }
         for (RoleStore.Role r : rs) {
             if (!r.enabled) continue;   // 切换角色只展示已加入工作区的角色
-            // 标准展示（昵称 + UID/城堡/战力，缺失段「未同步」）——不再用「同服第N角色」
-            String rn = RoleDisplay.roleName(r.name);
+            // 统一角色标签：888-cch-角色昵称（服务器号不带 K、联盟简称、昵称）
+            String rn = RoleDisplay.roleListLabel(r);
             boolean isCur = r.serverid == curSid && (curUid <= 0 || r.uid == curUid);
             String tag = isCur ? " ✓当前" : "";
             pairs.add(new String[]{curAcc.fpid, String.valueOf(r.serverid),
                     String.valueOf(r.uid), rn});
-            items.add(rn + " · "
-                    + RoleDisplay.roleMetaLine(r.serverid, r.uid, r.level, r.power) + tag);
+            items.add(rn + tag);
         }
         if (items.isEmpty()) {
             new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
@@ -2551,9 +2552,8 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 角色操作菜单（矩阵格子/角色行用）。 */
     private void roleMenu(final AccountStore.Account a, final RoleStore.Role r) {
-        // 标题统一标准展示（昵称 + UID/城堡/战力，缺失段「未同步」）——不再用「同服第N角色」
-        String title = RoleDisplay.roleName(r.name)
-                + " · " + RoleDisplay.roleMetaLine(r.serverid, r.uid, r.level, r.power);
+        // 统一角色标签：888-cch-角色昵称
+        String title = RoleDisplay.roleListLabel(r);
         // 批次7：跑日常/日常详情 = T2 会员；T1（普通版）只保留「启动游戏 + 工作区」分身链路
         final boolean canScript = gate(FeatureGate.Feature.AUTOMATION_STATUS);
         final java.util.List<String> items = new ArrayList<>();
@@ -3082,7 +3082,6 @@ public class HomeActivity extends AccountVaultActivity {
         r.addView(colHead("状态", COL_ONLINE, Gravity.START));
         r.addView(colHead("角色", 0, Gravity.START),
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        r.addView(colHead("区号", COL_ZONE, Gravity.END));
         r.addView(colHead("今日完成", COL_DONE, Gravity.END));
         r.addView(colHead("上次登录", COL_LAST, Gravity.END));
         r.addView(colHead("防封", COL_AB, Gravity.CENTER));
@@ -3415,9 +3414,9 @@ public class HomeActivity extends AccountVaultActivity {
         stv.setWidth(dp(COL_ONLINE));
         row.addView(stv);
 
-        // ② 昵称（空=未同步；同服多角色靠角色管理弹层的 UID 段区分）
+        // ② 角色标签：888-cch-角色昵称（服务器号不带 K、联盟简称、昵称）
         TextView nm = new TextView(this);
-        nm.setText(RoleDisplay.roleName(r.name));
+        nm.setText(RoleDisplay.roleListLabel(r));
         nm.setTextSize(12.5f);
         nm.setTypeface(Typeface.DEFAULT_BOLD);
         nm.setTextColor(UiStyle.INK);
@@ -3426,8 +3425,7 @@ public class HomeActivity extends AccountVaultActivity {
         row.addView(nm, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        // ③ 区号 ④ 今日完成 ⑤ 上次登录
-        row.addView(cellText(String.valueOf(r.serverid), COL_ZONE, 10.5f, UiStyle.INK2, Gravity.END, false));
+        // ③ 今日完成 ④ 上次登录
         int dcol = total > 0 && done >= total ? UiStyle.OK_INK
                 : (done == 0 ? UiStyle.INK3 : UiStyle.WARN_INK);
         row.addView(cellText(done + "/" + total, COL_DONE, 11.5f, dcol, Gravity.END, true));
@@ -4015,8 +4013,7 @@ public class HomeActivity extends AccountVaultActivity {
         } catch (Throwable ignored) {
         }
         final ProgressDialog pd = new ProgressDialog(this);
-        pd.setMessage("正在切换到 K" + r.serverid
-                + (r.uid > 0 ? " uid=" + r.uid : "") + " «" + r.name + "»（预登录对齐角色…）");
+        pd.setMessage("正在切换到 " + RoleDisplay.roleListLabel(r) + "（预登录对齐角色…）");
         pd.setCancelable(false);
         pd.show();
         final AccountStore.Account acc = a;

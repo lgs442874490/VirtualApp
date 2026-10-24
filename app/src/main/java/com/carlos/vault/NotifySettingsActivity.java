@@ -125,6 +125,8 @@ public class NotifySettingsActivity extends Activity {
         accCard.setOnClickListener(v -> pickAccount());
         box.addView(accCard);
         box.addView(hint("监视名单按账号区分（该账号名下所有角色会话共同监视）；名单存服务器，多端共享。"));
+        box.addView(hint("⚠️ 只能监控进入本角色「联盟/世界视野」的敌方行军（自己城或盟友被攻击、联盟态势推送）；"
+                + "目标攻击视野外的其他联盟时游戏客户端不会收到该数据，无法产生通知。"));
 
         // —— 监视总开关 ——
         LinearLayout masterCard = UiStyle.outlineCard(this);

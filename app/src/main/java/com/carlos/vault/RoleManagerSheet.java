@@ -335,7 +335,7 @@ public final class RoleManagerSheet {
         mid.setOrientation(LinearLayout.VERTICAL);
         mid.setPadding(dp(act, 12), 0, dp(act, 8), 0);
         TextView nm = new TextView(act);
-        nm.setText(RoleDisplay.roleName(r.name));
+        nm.setText(RoleDisplay.roleListLabel(r));
         nm.setTextSize(16);
         nm.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
         nm.setTextColor(UiStyle.INK);
@@ -343,12 +343,7 @@ public final class RoleManagerSheet {
         nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
         mid.addView(nm);
 
-        TextView meta = new TextView(act);
-        meta.setText(RoleDisplay.roleMetaLine(r.serverid, r.uid, r.level, r.power));
-        meta.setTextSize(12);
-        meta.setTextColor(UiStyle.INK2);
-        meta.setPadding(0, dp(act, 4), 0, 0);
-        mid.addView(meta);
+        // （统一角色标签已含服务器/联盟/昵称，不再追加 UID/城堡/战力元数据行）
 
         // 统一状态行（服务器模式 cachedStatusOf / 本地模式会话快照；口径同账号页）
         TextView stv = new TextView(act);

@@ -1218,7 +1218,7 @@ public class DailyRunner {
             // 重复出征/购买类动作（真机 2026-10-14：913 已跑、916 被顶号，若整轮
             // 重跑会对 913 重复发兵）
             if (skipDoneToday && lastrToday(context, acc.fpid, sidF)) {
-                multi.append(r.name == null || r.name.isEmpty() ? "K" + r.serverid : r.name)
+                multi.append(RoleDisplay.roleListLabel(r))
                         .append("：今日已跑 · 补跑轮跳过\n");
                 continue;
             }
@@ -1287,7 +1287,7 @@ public class DailyRunner {
                 pendingRoles++;   // 本轮没跑成，且今日也没有通过其他触发跑过 → 待补
             }
             last = sum;
-            multi.append(r.name == null || r.name.isEmpty() ? "K" + r.serverid : r.name)
+            multi.append(RoleDisplay.roleListLabel(r))
                     .append("：").append(sum.loginError != null
                             ? "登录失败 " + sum.loginError : sum.toText().split("\n")[0])
                     .append('\n');
