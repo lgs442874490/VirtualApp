@@ -1491,6 +1491,8 @@ public class FunctionActivity extends Activity {
 
         addKV(card, "配置", (cfg.enabled ? "已启用" : "未启用")
                 + " · " + (cfg.dryRun ? "演练模式（只记录不派兵）" : "实发模式"));
+        addKV(card, "触发策略", "强制上线=" + (cfg.forceOnline ? "开" : "关")
+                + " · 来袭兵力下限=" + (cfg.troopsMin > 0 ? String.valueOf(cfg.troopsMin) : "不限"));
         if (!cfg.enabled) addKV(card, "提示", "未启用：服务器不处理敌情（等待配置）");
         String last = mod.optString("last", "");
         long lastTs = mod.optLong("last_ts", 0);
@@ -1590,11 +1592,29 @@ public class FunctionActivity extends Activity {
         card.addView(switchRow("敌人召回时撤防",
                 "recall=true：敌撤回后撤走我方驻防（默认开）", recallRef[0]));
 
+        // ④.5 触发策略（2026-10-24）：强制上线 + 来袭兵力预警阈值，均为独立可启用参数
+        final UiStyle.Switch[] forceRef = new UiStyle.Switch[1];
+        forceRef[0] = new UiStyle.Switch(this, cfg.forceOnline, () -> { });
+        card.addView(switchRow("风险时强制上线",
+                "盟友受攻击且兵力达阈值时，暂停/被顶号/掉线也允许抢登回连后派兵驻防（默认关；会顶掉其他设备）",
+                forceRef[0]));
+        final EditText troopsEt = numField("敌方来袭兵力下限（0=不限）", cfg.troopsMin);
+        card.addView(fieldRow("来袭兵力预警阈值", troopsEt));
+        TextView troopsTip = new TextView(this);
+        troopsTip.setText("敌方行军兵力（squad_list.soldier 合计）低于该值不派兵；"
+                + "推送不含兵力时按保守策略不发射。0=不限。");
+        troopsTip.setTextSize(10.5f);
+        troopsTip.setTextColor(UiStyle.INK2);
+        troopsTip.setPadding(0, dp(2), 0, 0);
+        card.addView(troopsTip);
+
         // ⑤ 保存（写 params.guardian；保留统一编队字段）
         TextView save = UiStyle.primaryBtn(this, "保存守护配置", () -> {
             FnParams.GuardianCfg next = FnParams.loadGuardianCfg(this, account.fpid, serverid);
             next.enabled = enRef[0].isOn();
             next.recall = recallRef[0].isOn();
+            next.forceOnline = forceRef[0].isOn();
+            next.troopsMin = numOf(troopsEt);
             next.allyUid = numOf(allyEt);
             next.targetUid = numOf(targetEt);
             next.targetX = (int) Math.min(Integer.MAX_VALUE, numOf(xEt));
@@ -1685,6 +1705,8 @@ public class FunctionActivity extends Activity {
         return "hunt".equals(fnId) || "shop".equals(fnId)
                 || "alliance_shop".equals(fnId) || "pet".equals(fnId) || "medic".equals(fnId)
                 || "intel".equals(fnId) || "behemoth".equals(fnId)
+                // battle_shield：兵力/ETA 阈值预设之外的自定义数值走高级 JSON（strategy 内）
+                || "battle_shield".equals(fnId)
                 // gather：设置页为主入口，JSON 仅兜底排障（保存时保留 v2，见 showAdvancedConfig）
                 || "gather".equals(fnId)
                 || "activity_rewards".equals(fnId);

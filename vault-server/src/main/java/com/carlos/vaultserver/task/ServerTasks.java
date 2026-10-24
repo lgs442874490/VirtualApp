@@ -3563,6 +3563,11 @@ public final class ServerTasks {
     /** 免费护盾执行器（整轮与 ServerShieldResponder 反应式开盾复用；free_id 动态取，码表归 SKIPPED）。 */
     public static TaskOutcome freeShield(TaskContext tc) throws Exception {
         try {
+            // 总开关 battle_shield.enabled（缺省 true=兼容旧行为）：关=定时免费盾与反应式都停
+            if (!tc.subOn("battle_shield", "enabled", true)) {
+                return new TaskOutcome("battle_shield", "战斗护盾", TaskOutcome.Category.SKIPPED,
+                        "总开关已关闭（App 设置页可开）");
+            }
             // free_id 来自 notify_city_item_init.data[].free_id，不能写死 1。
             long freeId = 0;
             Map<String, Object> ci = tc.engine.notifyData("notify_city_item_init");

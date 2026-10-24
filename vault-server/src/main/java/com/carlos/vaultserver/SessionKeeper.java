@@ -59,6 +59,14 @@ public final class SessionKeeper implements SessionControl,
     }
 
     private static final long TAKEOVER_PROBE_DEFAULT_MILLIS = 30 * 60_000L; // 对齐 WjdrEngine.TAKEOVER_PROBE_MILLIS
+    /** 风险强制上线节流：同一会话两次强制回连至少间隔 60s（防登录风暴与互踢环）。 */
+    static final long FORCE_LOGIN_THROTTLE_MS = 60_000L;
+    /**
+     * 同一在线周期内的风险强制回连次数上限（2026-10-24 审查补强）：若连续抢回仍被顶回，
+     * 说明对方设备在持续玩；达到上限后回到「让位/探测」路径，避免与对方形成每 60s 一轮的互踢环。
+     * 重新登录在线（STATE_ONLINE）后计数清零。
+     */
+    static final int MAX_FORCE_LOGIN_ATTEMPTS = 3;
 
     /** 资产库 state 投影最小写间隔（≤1 次/秒；节流器只写最后一帧）。 */
     private static final long ASSET_PROJECTION_MIN_INTERVAL_MS = 1000L;
@@ -268,6 +276,15 @@ public final class SessionKeeper implements SessionControl,
         volatile String statusMessage = "";
         /** 让位/顶号探测到期时刻（takeover 倒计时回传 App；0=未知）。 */
         volatile long yieldProbeAt;
+        /**
+         * 风险强制上线（force_online）最近一次动工时刻：60s 节流，防登录风暴/互踢环。
+         * 0=本进程尚未强制过（手动 role-action login 不受此字段限制）。
+         */
+        volatile long lastForceLoginAt;
+        /** 本在线周期内风险强制回连已尝试次数（达到 MAX_FORCE_LOGIN_ATTEMPTS 后回退让位/探测）。 */
+        volatile int forceLoginAttempts;
+        /** 强制回连预算耗尽日志节流（5 分钟一条，防 tick 刷屏）。 */
+        volatile long forceBudgetLogAt;
         final WjdrEngine engine;
         final ScheduledExecutorService exec;
         /** 互助自动响应（登录成功后按真实 sid 惰性挂载）。 */
@@ -348,6 +365,7 @@ public final class SessionKeeper implements SessionControl,
                 // C4：进入 ONLINE 记录本次在线起点；离开清 0（重复收到 ONLINE 不重置起点）
                 if (WjdrEngine.STATE_ONLINE.equals(s)) {
                     if (onlineSince <= 0L) onlineSince = nowMs;
+                    forceLoginAttempts = 0;   // 重新在线：重置风险强制回连预算
                 } else {
                     onlineSince = 0L;
                     // W1：离开 ONLINE（登录中/断线/被顶号/停机）→ 资产置 stale 并投影 ready=false；
@@ -602,8 +620,15 @@ public final class SessionKeeper implements SessionControl,
 
         void tick() {
             if (!wantOnline) return;
-            // 暂停（P1 升级）：连接已关闭，仅按恢复策略到点自动上线；不做心跳/任务
+            // 暂停（P1 升级）：连接已关闭，仅按恢复策略到点自动上线；不做心跳/任务。
+            // 风险强制上线（force_online）：暂停期间收到并挂起的新鲜风险（攻击开盾/盟友驻防）
+            // 可越过暂停直接恢复——这是用户显式配置的例外，仍受 60s 节流保护。
             if (VaultStore.RUN_PAUSED.equals(runState)) {
+                String risk = riskForceOnlineReason();
+                if (risk != null) {
+                    resumeForRisk(risk);
+                    return;
+                }
                 pauseRecoveryTick();
                 return;
             }
@@ -678,16 +703,104 @@ public final class SessionKeeper implements SessionControl,
                     if (h != null) h.tick(engine);
                     break;
                 case WjdrEngine.STATE_RECOVERING:
+                    // 风险强制上线：跳过退避立即重连（节流 60s；无风险时维持原退避）
+                    forceReconnectForRisk("断线恢复中");
                     engine.tryReconnect();
                     break;
-                case WjdrEngine.STATE_TAKEOVER:
+                case WjdrEngine.STATE_TAKEOVER: {
+                    // 风险强制上线：被顶号后若仍有新鲜风险，允许按配置抢回连接（会顶掉其他设备）
+                    if (forceReconnectForRisk("被顶号让位")) break;
                     if (engine.takeoverProbeDue(System.currentTimeMillis())) {
                         engine.beginRecoveryNow("让位探测到期，回连");
                     }
                     break;
+                }
                 default:
                     // logging：登录进行中；need_token：等 token 补给（token API 触发重启）
             }
+        }
+
+        /**
+         * 风险强制上线原因：本会话已收到并仍新鲜的风险，且对应模块配置允许 force_online 时
+         * 返回中文原因（"攻击风险"/"盟友受袭风险"）；否则 null。
+         *
+         * <p>只有此前在线时才可能收到推送，因此 shield/guardian 非空即代表本进程知悉风险；
+         * 完全离线（无会话）没有任何游戏推送通道，不在此能力范围（见可行性文档）。
+         */
+        private String riskForceOnlineReason() {
+            try {
+                ServerShieldResponder s = shield;
+                if (s != null && s.forceOnlineWanted()) return "自身城受攻击风险";
+            } catch (Throwable ignored) {
+            }
+            try {
+                com.carlos.vaultserver.guardian.ServerGuardianEngine g = guardian;
+                if (g != null && g.forceOnlineWanted()) return "盟友受攻击风险";
+            } catch (Throwable ignored) {
+            }
+            return null;
+        }
+
+        /**
+         * 非 online 分支的风险强制回连（takeover/recovering）：命中配置且有新鲜风险时调用
+         * {@link WjdrEngine#beginRecoveryNow(String)} 跳过退避/让位探测；60s 节流防互踢环。
+         *
+         * @return true=本次已发起强制回连（调用方不要再走原探测逻辑）
+         */
+        private boolean forceReconnectForRisk(String scene) {
+            String risk = riskForceOnlineReason();
+            if (risk == null) return false;
+            if (forceLoginBudgetExhausted()) {
+                // 连续抢回仍被顶回：回退「让位/探测」，不再参与互踢；探测到期后照常回连
+                if (yieldProbeAt <= 0) yieldProbeAt = System.currentTimeMillis() + TAKEOVER_PROBE_DEFAULT_MILLIS;
+                return false;
+            }
+            long now = System.currentTimeMillis();
+            long last = lastForceLoginAt;
+            if (last > 0 && now - last < FORCE_LOGIN_THROTTLE_MS) return true;  // 节流窗内：视为已处理
+            lastForceLoginAt = now;
+            forceLoginAttempts++;
+            yieldProbeAt = 0;
+            statusMessage = "风险强制上线（" + risk + "）";
+            engine.beginRecoveryNow("风险强制上线：" + risk + "（" + scene + "）");
+            FileLog.info("风险强制上线 {}：{}（{}，第{}/{}次，节流 {}s）", key, risk, scene,
+                    String.valueOf(forceLoginAttempts), String.valueOf(MAX_FORCE_LOGIN_ATTEMPTS),
+                    String.valueOf(FORCE_LOGIN_THROTTLE_MS / 1000L));
+            return true;
+        }
+
+        /** 暂停态风险强制恢复：清恢复计划、转 RUNNING；下一拍 OFFLINE → startLogin。 */
+        private void resumeForRisk(String risk) {
+            if (!desiredRoleInStore()) return;   // 已被显式停止/停用：不违背用户意图
+            if (forceLoginBudgetExhausted()) return;
+            long now = System.currentTimeMillis();
+            long last = lastForceLoginAt;
+            if (last > 0 && now - last < FORCE_LOGIN_THROTTLE_MS) return;
+            lastForceLoginAt = now;
+            forceLoginAttempts++;
+            runState = VaultStore.RUN_RUNNING;
+            pauseResumeAt = 0;
+            recoveryAttempts = 0;
+            statusMessage = "风险强制上线（" + risk + "）";
+            store.clearRolePause(fpid, norm(sid), uidArg == null ? "" : uidArg);
+            FileLog.info("风险强制上线：恢复暂停会话 {}（{}，第{}/{}次）", key, risk,
+                    String.valueOf(forceLoginAttempts), String.valueOf(MAX_FORCE_LOGIN_ATTEMPTS));
+        }
+
+        /**
+         * 风险强制回连预算是否耗尽（同一在线周期最多 {@link #MAX_FORCE_LOGIN_ATTEMPTS} 次）。
+         * 耗尽后回退让位/探测路径；日志 5 分钟节流防 tick 刷屏。
+         */
+        private boolean forceLoginBudgetExhausted() {
+            if (forceLoginAttempts < MAX_FORCE_LOGIN_ATTEMPTS) return false;
+            long now = System.currentTimeMillis();
+            if (now - forceBudgetLogAt > 5 * 60_000L) {
+                forceBudgetLogAt = now;
+                FileLog.warn("风险强制上线 {}：本在线周期已连续抢回 {} 次仍被顶回，"
+                                + "暂停强制回连（改走让位/探测，避免互踢环）",
+                        key, String.valueOf(forceLoginAttempts));
+            }
+            return true;
         }
 
         /** 战争监视钩子（幂等，每会话至多一个）；推送线程异常由 WarNotify.onPush 自兜。 */
@@ -1169,8 +1282,35 @@ public final class SessionKeeper implements SessionControl,
                 cur.recoveryAttempts = 0;
                 cur.statusMessage = "";
                 store.clearRolePause(fpid, role.sid, role.uid);
+                return RoleOpResult.ok(VaultStore.RUN_RUNNING, stopped);
             }
-            return RoleOpResult.ok(VaultStore.RUN_RUNNING, stopped);
+            // 2026-10-24 缺陷修复：会话存在但引擎不在线（典型=被顶号后 takeover、断线退避中、
+            // 登录前的 offline）时，旧逻辑直接返回 ok → App toast「上线成功」但实际不回连。
+            // 手动「上线」是用户的显式意图，必须真正推进引擎状态机：
+            String engState = cur.engine.sessionState();
+            if (WjdrEngine.STATE_ONLINE.equals(engState)) {
+                return RoleOpResult.ok(VaultStore.RUN_RUNNING, stopped);
+            }
+            if (WjdrEngine.STATE_NEED_TOKEN.equals(engState)) {
+                return RoleOpResult.fail(RoleOpResult.CODE_TOKEN_MISSING,
+                        "token 已失效，需重新导出/同步 token 后再上线");
+            }
+            if (WjdrEngine.STATE_TAKEOVER.equals(engState)
+                    || WjdrEngine.STATE_RECOVERING.equals(engState)) {
+                // 被顶号/退避中：清让位探测与节流，立即强制回连（会顶掉其他设备；App 有顶号策略提示）
+                cur.lastForceLoginAt = 0;
+                cur.yieldProbeAt = 0;
+                cur.statusMessage = "手动上线：正在强制回连";
+                cur.engine.beginRecoveryNow("手动上线：强制回连");
+                FileLog.info("手动上线强制回连 {}（原状态 {}）", key, engState);
+                RoleOpResult r = RoleOpResult.ok(VaultStore.RUN_RUNNING, stopped);
+                r.message = "已强制回连（可能顶掉其他设备）";
+                return r;
+            }
+            // offline：会话已就绪，节拍下一拍会 startLogin；logging：登录进行中
+            RoleOpResult r = RoleOpResult.ok(VaultStore.RUN_RUNNING, stopped);
+            r.message = WjdrEngine.STATE_OFFLINE.equals(engState) ? "会话已就绪，正在登录" : "正在登录中";
+            return r;
         }
         // 并发上限按角色会话数计（M1d，超限 code=1429）
         if (sessions.size() >= config.maxConcurrentSessions) {
