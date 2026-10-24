@@ -192,6 +192,24 @@ public class VaultHttpApiTest {
     }
 
     @Test
+    public void policy_warReset_clearsStuckWartime() throws Exception {
+        ServerWarState w = ServerWarState.forRole("80971192", 913L);
+        long now = System.currentTimeMillis();
+        w.core.forceWartime(true, "测试卡死", now);
+        assertTrue(w.core.wartime());
+
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("action", "war-reset");
+        f.put("fpid", "80971192");
+        JSONObject rsp = post("/v1/vault/policy", "vaultPolicy", f);
+        assertEquals(0, rsp.getInt("code"));
+        assertEquals("清除 1 个战时实例", 1, rsp.getJSONObject("data").getInt("cleared"));
+        assertFalse("解卡后不再拦截", w.core.wartime());
+        assertEquals(0, ServerWarState.resetWartime("80971192"));
+        ServerWarState.unregister("80971192", 913L);
+    }
+
+    @Test
     public void state_endpoint_returnsStatesAndAccounts() throws Exception {
         stateStore.putString("todo:111:913", "[{\"id\":2705001}]");
         stateStore.putString("mod:111:913:bear", "{\"trap\":\"未预约\"}");

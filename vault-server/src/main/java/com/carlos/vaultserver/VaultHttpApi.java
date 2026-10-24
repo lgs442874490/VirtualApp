@@ -21,7 +21,7 @@ import java.util.concurrent.Executors;
  * POST /v1/vault/sync    全量身份库同步（accountsJson 字符串字段）
  * POST /v1/vault/token   单账号 token 更新（NEED_TOKEN 补给通道）
  * POST /v1/vault/status  会话状态查询
- * POST /v1/vault/policy  顶号策略设置 / 让位指令
+ * POST /v1/vault/policy  顶号策略设置 / 让位指令 / 战时解卡（action=war-reset，2026-10-25）
  * POST /v1/vault/accounts        账号池列表+聚合计数+每角色运行态（M1）
  * POST /v1/vault/role-action     单角色 login/logout/pause/resume/stop（M1）
  * POST /v1/vault/account-action  账号级 login-all/stop-all（M1）
@@ -356,6 +356,18 @@ public final class VaultHttpApi {
             JSONObject data = new JSONObject();
             data.put("fpid", fpid);
             data.put("accepted", true);
+            return data;
+        }
+        if ("war-reset".equals(action)) {
+            // 运维解卡（2026-10-25）：清掉该账号所有角色的 WARTIME，不必重启进程。
+            // 事故场景：副角色实例卡在战时态且不再被 tick → 账号级战时让位无限期拦截节奏派单。
+            String fpid = str(fields, "fpid");
+            if (fpid == null || fpid.isEmpty()) throw new IllegalArgumentException("缺少 fpid");
+            int cleared = ServerWarState.resetWartime(fpid);
+            FileLog.info("战争态解卡 fpid={} 清除实例数={}", fpid, String.valueOf(cleared));
+            JSONObject data = new JSONObject();
+            data.put("fpid", fpid);
+            data.put("cleared", cleared);
             return data;
         }
         throw new IllegalArgumentException("未知 action: " + action);

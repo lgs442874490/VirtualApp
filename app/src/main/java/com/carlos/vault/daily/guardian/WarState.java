@@ -98,6 +98,15 @@ public final class WarState {
         public long feintWindowMs = 30 * 60_000L;
         /** war.war_duration_alert_min：持续超时提醒（仅提醒不自动退，0=关）。 */
         public long durationAlertMs = 120 * 60_000L;
+        /**
+         * 战时上限：WARTIME 持续达到该时长后<b>自动解除</b>（0=关，默认关）。
+         *
+         * <p>常规退出仍是「全敌静默 quiet_exit」/「全敌开盾」；本项是兜底——服务器 24h 常驻，
+         * 联盟态势推送会持续供信号，静默退出可能长期不可达；无上限时日常任务会被无限期拦截
+         * （2026-10-24 生产事故：战时让位卡死 2h33m，只有重启才恢复）。
+         * 仅 vault-server 从环境变量 {@code VAULT_WARTIME_MAX_MIN} 装配；App 侧不设置 → App 行为不变。
+         */
+        public long maxWartimeMs = 0L;
         /** war.allowlist：战时仍放行的任务（不占行军队列的战斗支援）。 */
         public Set<String> allowlist = defaultAllowlist();
         /** war.friendly_uids：自家关联小号白名单（侦查不算敌情；7.31）。 */
@@ -177,6 +186,7 @@ public final class WarState {
         config.feintBurstCount = c.feintBurstCount;
         config.feintWindowMs = c.feintWindowMs;
         config.durationAlertMs = c.durationAlertMs;
+        config.maxWartimeMs = Math.max(0L, c.maxWartimeMs);
         config.allowlist = c.allowlist == null ? Config.defaultAllowlist() : c.allowlist;
         config.friendlyUids = c.friendlyUids == null ? new LinkedHashSet<>() : c.friendlyUids;
     }
@@ -307,6 +317,12 @@ public final class WarState {
                 }
                 if (board.allQuiet(now, config.quietExitMs)) {
                     exitWartime("全敌静默 ≥ " + (config.quietExitMs / 60_000L) + "min", now);
+                    return;
+                }
+                if (config.maxWartimeMs > 0 && enteredAt > 0
+                        && now - enteredAt >= config.maxWartimeMs) {
+                    exitWartime("战时上限自动解除（已持续 ≥ " + (config.maxWartimeMs / 60_000L)
+                            + "min；兜底防日常任务被无限期拦截）", now);
                     return;
                 }
             }

@@ -1060,6 +1060,13 @@ public final class SessionKeeper implements SessionControl,
             }
             // W1：会话关闭 → 资产库 invalidate + 投影末帧 + 从注册表 detach（先于 engine.close）
             detachAssetLibrary("session-closed");
+            // P7：会话关闭 → 注销该角色战争态实例。否则旧角色的 WARTIME 会残留（实例从不回收），
+            // 经账号级 wartimeYield 继续拦截其它角色/整账号的节奏派单（2026-10-24 事故根因之一）。
+            ServerWarState w = war;
+            war = null;
+            if (w != null) {
+                ServerWarState.unregister(fpid, w.sid);
+            }
             try {
                 engine.close();
             } catch (Throwable ignored) {
