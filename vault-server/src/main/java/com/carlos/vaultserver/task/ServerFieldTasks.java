@@ -1516,10 +1516,33 @@ public final class ServerFieldTasks {
         long end = bear == null ? 0L : bear.massEndTime;
         int intel = 0;
         try {
-            intel = lib.intel().dispatchable(nowSec).size();
+            intel = intelGatherPriorityCount(lib.intel(), lib.stamina(), nowSec);
         } catch (Throwable ignored) {
         }
         return gatherPauseReason(reserve, start, end, intel, nowSec);
+    }
+
+    /**
+     * 情报优先事件数（1:1 网页版 {@code DailyIntelligenceService.gatherPriorityEventCount}）：
+     * 只统计 <b>status=1 且占普通队列</b>的可派事件（type 3 PVE 不占队列、type 11 巨兽需活动门控→保守排除），
+     * 且体力 >= 10×事件数时才返回事件数（体力不足时情报发不出去，采集不应让位）。
+     *
+     * <p>type 映射与 {@link #intelEventType(long)} 一致：1/2/100 为普通队列事件。
+     */
+    static int intelGatherPriorityCount(AssetSnapshot.Intel intel, AssetSnapshot.Stamina stamina,
+                                        long nowSec) {
+        if (intel == null || intel.events == null || intel.events.isEmpty()) return 0;
+        int count = 0;
+        for (AssetSnapshot.IntelEvent e : intel.events.values()) {
+            if (e == null || e.status != 1L) continue;
+            if (e.expireTs > 0L && e.expireTs <= nowSec) continue;
+            int type = intelEventType(e.eventId);
+            if (type == 0 || type == 3 || type == 11) continue;   // PVE / 活动巨兽不占普通队列
+            count++;
+        }
+        if (count <= 0) return 0;
+        long st = stamina == null || !stamina.known() ? 0L : stamina.staminaAt(nowSec);
+        return st >= count * 10L ? count : 0;
     }
 
     /** 纯函数：巨熊窗口 [reserve-600, reserve+1800] / [mass_start-600, mass_end]；情报可派优先。 */
