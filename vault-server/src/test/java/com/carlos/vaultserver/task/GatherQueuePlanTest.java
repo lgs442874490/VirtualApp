@@ -499,6 +499,38 @@ public class GatherQueuePlanTest {
     }
 
     @Test
+    public void intelGatherPriorityCount_rules() {
+        java.util.Map<Long, com.carlos.vault.wjdr.asset.AssetSnapshot.IntelEvent> events =
+                new java.util.LinkedHashMap<>();
+        // PVE（type 3，event_id 3001）不占普通队列 → 不计
+        events.put(1L, new com.carlos.vault.wjdr.asset.AssetSnapshot.IntelEvent(
+                1L, 3001L, 1L, 10L, 20L, 9_999_999_999L, false));
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Intel pveOnly =
+                new com.carlos.vault.wjdr.asset.AssetSnapshot.Intel(0, 0, 0, 0, events, 0L);
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Stamina st100 =
+                new com.carlos.vault.wjdr.asset.AssetSnapshot.Stamina(100, 200, 0, 0, 0);
+        assertEquals(0, ServerFieldTasks.intelGatherPriorityCount(pveOnly, st100, 1000L));
+        // 普通队列事件（event_id 1001 → type 1）体力足够 → 计 1
+        events.put(2L, new com.carlos.vault.wjdr.asset.AssetSnapshot.IntelEvent(
+                2L, 1001L, 1L, 1L, 2L, 9_999_999_999L, false));
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Intel mixed =
+                new com.carlos.vault.wjdr.asset.AssetSnapshot.Intel(0, 0, 0, 0, events, 0L);
+        assertEquals(1, ServerFieldTasks.intelGatherPriorityCount(mixed, st100, 1000L));
+        // 体力不足（<10）→ 情报发不出去，返回 0（采集不让位）
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Stamina st5 =
+                new com.carlos.vault.wjdr.asset.AssetSnapshot.Stamina(5, 200, 0, 0, 0);
+        assertEquals(0, ServerFieldTasks.intelGatherPriorityCount(mixed, st5, 1000L));
+        // 已可领（status=2）不计
+        java.util.Map<Long, com.carlos.vault.wjdr.asset.AssetSnapshot.IntelEvent> claimed =
+                new java.util.LinkedHashMap<>();
+        claimed.put(3L, new com.carlos.vault.wjdr.asset.AssetSnapshot.IntelEvent(
+                3L, 1001L, 2L, 1L, 2L, 9_999_999_999L, false));
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Intel claimedOnly =
+                new com.carlos.vault.wjdr.asset.AssetSnapshot.Intel(0, 0, 0, 0, claimed, 0L);
+        assertEquals(0, ServerFieldTasks.intelGatherPriorityCount(claimedOnly, st100, 1000L));
+    }
+
+    @Test
     public void gatherPause_notReadyIsNull() {
         assertNull(ServerFieldTasks.gatherPauseReason(
                 (com.carlos.vault.wjdr.asset.CoreAssetLibrary) null, 10_000L));
