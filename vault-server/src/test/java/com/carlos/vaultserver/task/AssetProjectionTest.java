@@ -290,6 +290,28 @@ public class AssetProjectionTest {
         assertEquals(300L, st.getLong("intervalSec"));
         assertTrue("currentAt 不应低于快照值", st.getLong("currentAt") >= 1035L);
 
+        // ---- W9 扩展域（资产中心页消费；字段必须齐全、不抛）----
+        JSONObject meta = o.getJSONObject("meta");
+        assertTrue(meta.has("nickName"));
+        assertEquals(0L, meta.getLong("level"));
+        JSONObject intel = o.getJSONObject("intel");
+        assertTrue(intel.has("dispatchable"));
+        assertEquals(0, intel.getInt("total"));
+        JSONObject behemoth = o.getJSONObject("behemoth");
+        assertEquals(0L, behemoth.getLong("monsterMaxLv"));
+        JSONObject bear = o.getJSONObject("bear");
+        assertFalse(bear.getBoolean("reserveKnown"));
+        JSONObject war = o.getJSONObject("war");
+        assertEquals(0, war.getInt("allianceMarches"));
+        JSONObject guardian = o.getJSONObject("guardian");
+        assertEquals(0, guardian.getInt("allies"));
+        JSONObject calendar = o.getJSONObject("calendar");
+        assertEquals(0, calendar.getInt("active"));
+        JSONObject backpack = o.getJSONObject("backpack");
+        assertEquals(0L, backpack.getLong("speedup302000"));
+        JSONObject autoJoin = o.getJSONObject("autoJoin");
+        assertEquals(0L, autoJoin.getLong("endTime"));
+
         // ---- 推荐协议全到 → missing 空 ----
         JSONArray missing = o.getJSONArray("missing");
         assertEquals(0, missing.length());
@@ -331,5 +353,15 @@ public class AssetProjectionTest {
         assertEquals(0, o.getJSONArray("missing").length());
         // 键契约
         assertEquals("srv:asset:48460403:913", AssetStateProjector.stateKey(FPID, SID));
+        // W9 扩展域空值也必须齐全（AssetCenterActivity 直接按契约取键）
+        assertEquals("", o.getJSONObject("meta").optString("nickName"));
+        assertEquals(0, o.getJSONObject("intel").optInt("dispatchable"));
+        assertEquals(0, o.getJSONObject("calendar").optInt("active"));
+        assertEquals(0, o.getJSONObject("backpack").optInt("items"));
+        assertEquals(0, o.getJSONObject("war").optInt("allianceMarches"));
+        assertEquals(0, o.getJSONObject("guardian").optInt("garrisons"));
+        assertEquals(0L, o.getJSONObject("bear").optLong("reserveTime"));
+        assertEquals(0L, o.getJSONObject("behemoth").optLong("monsterMaxLv"));
+        assertEquals(0L, o.getJSONObject("autoJoin").optLong("endTime"));
     }
 }

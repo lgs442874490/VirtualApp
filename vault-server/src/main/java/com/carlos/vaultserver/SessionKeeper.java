@@ -450,6 +450,12 @@ public final class SessionKeeper implements SessionControl,
                                 .onNotify(engine, proto, content);
                     } catch (Throwable ignored) {
                     }
+                    // W9：战争/驻防事实迁移——资产库联盟域行军作为第二事实源（与原始推送幂等去重）
+                    try {
+                        com.carlos.vaultserver.ServerWarState.syncAssets(fpid, resolveSid(), lib,
+                                engine.lastUid());
+                    } catch (Throwable ignored) {
+                    }
                 });
                 lib.addListener(pub);
                 assetLib = lib;

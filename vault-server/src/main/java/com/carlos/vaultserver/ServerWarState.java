@@ -3,10 +3,14 @@ package com.carlos.vaultserver;
 import com.carlos.vault.daily.guardian.ThreatBoard;
 import com.carlos.vault.daily.guardian.WarState;
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.AssetSnapshot;
+import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
+import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 
 import org.json.JSONObject;
 
 import java.util.List;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -180,6 +184,54 @@ public final class ServerWarState {
             known[2] = end;
             core.onAttackUpdated(id, end);
         }
+    }
+
+    /**
+     * 资产库事实迁移（W9）：从 {@link CoreAssetLibrary.war()} 的联盟域行军事实补齐/对账威胁，
+     * 作为原始推送之外的<b>第二事实源</b>（推送丢失/迟到时仍能判定；去重依赖 tracked id，幂等）。
+     *
+     * <p>只迁移联盟域（天然指向盟友，不依赖目标 uid 解析）；世界域仍需原始推送（需盟友坐标表）。
+     * 已消失的行军 → 按 handleDel 结算（召回/到达语义与推送路径一致）。
+     */
+    public void syncFromAssets(CoreAssetLibrary lib, long ownUidNow) {
+        if (lib == null || !lib.ready() || lib.war() == null) return;
+        try {
+            java.util.Set<Long> present = new java.util.HashSet<Long>();
+            for (AssetSnapshot.QueueMarch march : lib.war().allianceMarches.values()) {
+                if (march == null || march.id <= 0L) continue;
+                present.add(march.id);
+                Map<String, Object> m = new LinkedHashMap<String, Object>();
+                m.put("id", march.id);
+                m.put("owner", march.owner);
+                m.put("type", march.type);
+                m.put("endtime", march.endTime);
+                Map<String, Object> target = new LinkedHashMap<String, Object>();
+                target.put("uid", march.targetId);
+                target.put("target", march.targetId);
+                target.put("id", march.targetId);
+                target.put("target_type", march.targetType);
+                m.put("target", target);
+                m.put("target_type", march.targetType);
+                m.put("targetid", march.targetId);
+                handleMarch(m, true, ownUidNow);
+            }
+            // 已消失的联盟行军 → 结算
+            for (String id : new java.util.ArrayList<String>(tracked.keySet())) {
+                long mid = num(id);
+                if (mid <= 0L || present.contains(mid)) continue;
+                Map<String, Object> del = new LinkedHashMap<String, Object>();
+                del.put("id", mid);
+                handleDel(del);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** SessionKeeper 资产库钩子调用：不为未注册角色创建状态；已注册才同步。 */
+    public static void syncAssets(String fpid, long sid, CoreAssetLibrary lib, long ownUidNow) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid));
+        if (w == null) return;
+        w.syncFromAssets(lib, ownUidNow);
     }
 
     private void handleDel(Map<String, Object> m) {
