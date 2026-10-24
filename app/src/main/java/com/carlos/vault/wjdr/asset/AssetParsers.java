@@ -29,7 +29,7 @@ import java.util.Set;
  * RESOURCE:  notify_resource_init, notify_resource_update
  * RECOVER:   notify_recover_resource_init, notify_recover_resource_update
  * BACKPACK:  notify_backpack_init, notify_backpack_update
- * QUEUE:     notify_world_player_init, notify_player_march_add/update/del,
+ * QUEUE:     notify_world_player_init（其 city_point 归 META 域）, notify_player_march_add/update/del,
  *            notify_mass_march_add/update/del, notify_all_research, notify_research_complete,
  *            notify_vip_info, notify_vip_update, notify_buff_show, notify_buff_show_update,
  *            notify_buff_show_delete, notify_world_add_extra_march,
@@ -630,11 +630,34 @@ final class AssetParsers {
                 changed = true;
             }
         }
-        // city_point 在 AssetSnapshot 中暂无承载字段（框架未暴露），此处忽略（不影响队列口径）。
+        // city_point{x,y}：城市坐标（巨兽/巨熊/守护任务做距离/驻防判断）。
+        // 该字段随 notify_world_player_init 全量帧下发，但语义上是玩家元数据而非队列口径；
+        // 为避免坐标变化触发无关的 QUEUE 重建/队列时间戳抖动，这里选择归入 dirty 的 META 域
+        // （二选一取 META），与 base_info 等元数据变更共用 metaAtMs。
+        boolean cityChanged = false;
+        if (c.containsKey("city_point")) {
+            Map<String, Object> city = AssetParseSupport.child(c, "city_point");
+            if (!city.isEmpty()) {
+                long x = num(city, "x");
+                long y = num(city, "y");
+                if (x > 0L && x != st.cityX) {
+                    st.cityX = x;
+                    cityChanged = true;
+                }
+                if (y > 0L && y != st.cityY) {
+                    st.cityY = y;
+                    cityChanged = true;
+                }
+            }
+        }
         if (changed) {
             st.queueAtMs = now;
             st.queueSource = "init";
             mark(st, dirty, AssetDomain.QUEUE);
+        }
+        if (cityChanged) {
+            st.metaAtMs = now;
+            mark(st, dirty, AssetDomain.META);
         }
         return true;
     }

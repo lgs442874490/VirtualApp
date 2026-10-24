@@ -272,7 +272,10 @@ public class AssetParsersTest {
         assertEquals("init", st.queueSource);
         assertEquals(1, st.occupied());
         assertEquals(2, st.rawCapacity());
+        assertEquals("city_point 应承载到 Meta", 585L, st.cityX);
+        assertEquals(694L, st.cityY);
         assertTrue(dirty.contains(AssetDomain.QUEUE));
+        assertTrue("city_point 变化应标 META dirty", dirty.contains(AssetDomain.META));
 
         // 同一快照重放：无变化不 dirty
         dirty.clear();
@@ -282,6 +285,53 @@ public class AssetParsersTest {
                 "mass_master_marchs", list(master),
                 "world_extra_march", map("value", 1L))));
         assertTrue(dirty.isEmpty());
+    }
+
+    @Test
+    public void worldPlayerInit_cityPoint_metaProjection() {
+        // 首帧带 city_point：state 与快照 Meta 均承载坐标（走 build() 验证不可变快照）
+        assertTrue(apply("notify_world_player_init", map(
+                "city_point", map("x", 609L, "y", 704L),
+                "march_info", list(),
+                "mass_master_marchs", list())));
+        assertEquals(609L, st.cityX);
+        assertEquals(704L, st.cityY);
+        assertTrue(dirty.contains(AssetDomain.META));
+        AssetSnapshot s = st.build(1L, false, new LinkedHashSet<String>());
+        assertEquals(609L, s.meta.cityX);
+        assertEquals(704L, s.meta.cityY);
+
+        // 无 city_point 的帧：保留旧坐标，不触发 META/QUEUE dirty
+        dirty.clear();
+        assertTrue(apply("notify_world_player_init", map(
+                "march_info", list(),
+                "mass_master_marchs", list())));
+        assertEquals("无 city_point 不清旧坐标", 609L, st.cityX);
+        assertEquals(704L, st.cityY);
+        assertTrue(dirty.isEmpty());
+
+        // 坐标迁移（x/y 变化）：META dirty；非法/零值不覆盖
+        dirty.clear();
+        assertTrue(apply("notify_world_player_init", map(
+                "city_point", map("x", 700L, "y", 800L),
+                "march_info", list())));
+        assertEquals(700L, st.cityX);
+        assertEquals(800L, st.cityY);
+        assertTrue(dirty.contains(AssetDomain.META));
+
+        dirty.clear();
+        assertTrue(apply("notify_world_player_init", map(
+                "city_point", map("x", 0L, "y", 0L),
+                "march_info", list())));
+        assertEquals("x/y<=0 不覆盖", 700L, st.cityX);
+        assertEquals(800L, st.cityY);
+        assertTrue("零值坐标不算变化", dirty.isEmpty());
+
+        // city_point 形状异常（非 Map / 空 map）不抛、不 dirty
+        assertTrue(apply("notify_world_player_init", map("city_point", "bad")));
+        assertTrue(apply("notify_world_player_init", map("city_point", map())));
+        assertEquals(700L, st.cityX);
+        assertEquals(800L, st.cityY);
     }
 
     @Test

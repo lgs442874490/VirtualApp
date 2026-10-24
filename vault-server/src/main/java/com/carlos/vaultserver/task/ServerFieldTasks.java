@@ -451,7 +451,15 @@ public final class ServerFieldTasks {
      * 参考网页版 DailyGatherService.maintainAllianceMine:1181-1313 +
      * findAllianceMineTargets:1316-1354 + allianceMineMarchPayload:1652-1654。
      */
-    private static AllianceMineOutcome maintainAllianceMine(TaskContext tc, MarchSnapshot snapshot, int worldCapacity) {
+    private static AllianceMineOutcome maintainAllianceMine(TaskContext tc, MarchSnapshot snapshot,
+                                                            int worldCapacity) {
+        return maintainAllianceMine(tc, snapshot, worldCapacity, null);
+    }
+
+    /** B2-T5：v2 联盟矿（编队参数可覆盖；null=legacy 功能级编队，行为不变）。 */
+    private static AllianceMineOutcome maintainAllianceMine(TaskContext tc, MarchSnapshot snapshot,
+                                                            int worldCapacity,
+                                                            JSONObject formationParamsOverride) {
         long now = System.currentTimeMillis();
         if (snapshot != null && snapshot.count(GATHER_MINE_MARCH_TYPE) > 0) {
             return new AllianceMineOutcome(false, "联盟矿采集中，占用 1 个世界出征队列");
@@ -487,11 +495,21 @@ public final class ServerFieldTasks {
                 markGatherMineRetry(tc, now);
                 return new AllianceMineOutcome(false, "联盟资源中心已失效或不属于本盟");
             }
-            StringBuilder formationWhy = new StringBuilder();
-            Map<String, Object> formation = formationFor(tc, "gather", 1, formationWhy);
-            if (formation == null) {
-                return new AllianceMineOutcome(false, formationWhy.length() > 0
-                        ? "联盟矿编队跳过：" + formationWhy : "联盟矿无英雄可派");
+            Map<String, Object> formation;
+            if (formationParamsOverride != null) {
+                FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(tc.engine,
+                        FormationResolver.libraryFor(tc, "gather"), formationParamsOverride);
+                if (!ro.ready()) {
+                    return new AllianceMineOutcome(false, "联盟矿编队跳过：" + ro.reason);
+                }
+                formation = ro.formation.toFormationPayload();
+            } else {
+                StringBuilder formationWhy = new StringBuilder();
+                formation = formationFor(tc, "gather", 1, formationWhy);
+                if (formation == null) {
+                    return new AllianceMineOutcome(false, formationWhy.length() > 0
+                            ? "联盟矿编队跳过：" + formationWhy : "联盟矿无英雄可派");
+                }
             }
             GameMessage march = tc.engine.request("req_world_march", Exec.args(
                     "type", GATHER_MINE_MARCH_TYPE,
@@ -509,6 +527,54 @@ public final class ServerFieldTasks {
             markGatherMineRetry(tc, now);
             return new AllianceMineOutcome(false, "联盟矿异常：" + ServerTasks.brief(String.valueOf(e.getMessage())));
         }
+    }
+
+    /** 资产库队列 → MarchSnapshot（类型计数 + type4/110 最早结束毫秒；未 know 返回 unknown）。 */
+    static MarchSnapshot marchSnapshotFromAsset(AssetSnapshot.Queue queue) {
+        if (queue == null || !queue.known()) return MarchSnapshot.unknown();
+        Map<Long, Integer> counts = new LinkedHashMap<>();
+        long earliest = 0L;
+        for (AssetSnapshot.QueueMarch march : queue.marches) {
+            if (march == null) continue;
+            counts.merge(march.type, 1, Integer::sum);
+            if (march.type == GATHER_MARCH_TYPE || march.type == GATHER_MINE_MARCH_TYPE) {
+                long end = queueMarchEndMillis(march);
+                if (end > 0L && (earliest == 0L || end < earliest)) earliest = end;
+            }
+        }
+        return new MarchSnapshot(counts, earliest, true);
+    }
+
+    /** v2 联盟矿编队参数（与 queueFormationParams 同口径）。 */
+    static JSONObject allianceMineFormationParams(GatherConfigV2 cfg) {
+        JSONObject f = new JSONObject();
+        if (cfg == null) return f;
+        String mode = GatherConfigV2.normalizeMode(cfg.allianceMineFormationMode);
+        long total = cfg.allianceMineInfantry + cfg.allianceMineLancer + cfg.allianceMineMarksman;
+        if (GatherConfigV2.MODE_ROLE.equals(mode)) {
+            f.put("formation_mode", GatherConfigV2.MODE_ROLE);
+            f.put("formation_id", cfg.allianceMineFormationId);
+            JSONObject soldiers = new JSONObject();
+            soldiers.put("infantry", Math.max(0L, cfg.allianceMineInfantry));
+            soldiers.put("lancer", Math.max(0L, cfg.allianceMineLancer));
+            soldiers.put("marksman", Math.max(0L, cfg.allianceMineMarksman));
+            f.put("soldiers", soldiers);
+            return f;
+        }
+        f.put("formation_mode", GatherConfigV2.MODE_AUTOMATIC);
+        JSONObject ratio = new JSONObject();
+        if (total > 0L) {
+            ratio.put("infantry", Math.max(0L, cfg.allianceMineInfantry));
+            ratio.put("lancer", Math.max(0L, cfg.allianceMineLancer));
+            ratio.put("marksman", Math.max(0L, cfg.allianceMineMarksman));
+        } else {
+            ratio.put("infantry", 40L);
+            ratio.put("lancer", 30L);
+            ratio.put("marksman", 30L);
+        }
+        f.put("ratio", ratio);
+        f.put("total", total);
+        return f;
     }
 
     /** 联盟建筑列表 → type=39 资源中心坐标（纯函数；resource_info.end_time 已过期的丢弃）。 */
@@ -619,12 +685,167 @@ public final class ServerFieldTasks {
         return 0L;
     }
 
-    private static int marchCapacity(WjdrEngine engine) {
+    /**
+     * 世界出征容量（1:1 网页版 MarchCapacityState.worldMarchCapacity）：
+     * 资产库优先 → 登录批通知公式现算 → 旧字段（错误但保留兜底）→ 3。
+     *
+     * <p>公式：1 + Σ科技{1007,1020,1027} + (VIP≥6 且未过期) + Σbuff[10505] + extra_march，
+     * 只读层 clamp 1..6。旧实现读 {@code notify_world_player_init.world.capacity}（协议无此字段，恒 3）。
+     */
+    static int marchCapacity(WjdrEngine engine) {
+        int fromAsset = assetMarchCapacity(engine);
+        if (fromAsset > 0) return fromAsset;
+        int computed = marchCapacityFromNotify(engine);
+        if (computed > 0) return computed;
         Map<String, Object> wp = engine.notifyData("notify_world_player_init");
         if (wp == null) return 3;
         Map<String, Object> world = Exec.mapOf(wp.get("world"));
         long cap = world == null ? 0 : Exec.longOf(world.get("capacity"));
-        return cap > 0 ? (int) cap : 3;
+        return cap > 0 ? (int) Math.min(cap, 6L) : 3;
+    }
+
+    /** 资产库容量（未接线/未 READY/回滚开关 off/未知 → 0）。 */
+    static int assetMarchCapacity(WjdrEngine engine) {
+        if (engine == null || !assetReadsEnabled()) return 0;
+        try {
+            CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+            if (lib == null || !lib.ready()) return 0;
+            AssetSnapshot.Queue q = lib.queue();
+            return q != null && q.capacity > 0 ? q.capacity : 0;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** 资产库读侧回滚开关（默认 on；{@code VAULT_ASSET_LIBRARY=off} 回退旧读法）。 */
+    static boolean assetReadsEnabled() {
+        try {
+            String v = System.getenv("VAULT_ASSET_LIBRARY");
+            return v == null || !"off".equalsIgnoreCase(v.trim());
+        } catch (Throwable ignored) {
+            return true;
+        }
+    }
+
+    /** 公式兜底：从登录批通知现算容量；科技/世界 init 任一缺失 → 0（未知，不猜）。 */
+    static int marchCapacityFromNotify(WjdrEngine engine) {
+        if (engine == null) return 0;
+        try {
+            Map<String, Object> wpi = engine.notifyData("notify_world_player_init");
+            Map<String, Object> research = engine.notifyData("notify_all_research");
+            if (wpi == null || research == null) return 0;
+            long nowSec;
+            try {
+                com.carlos.vault.wjdr.GameServerClock ck = engine.serverClock();
+                nowSec = ck != null && ck.locked() ? ck.nowServerSec()
+                        : System.currentTimeMillis() / 1000L;
+            } catch (Throwable t) {
+                nowSec = System.currentTimeMillis() / 1000L;
+            }
+            return marchCapacityFromNotifies(wpi, research, engine.notifyData("notify_vip_info"),
+                    engine.notifyData("notify_buff_show"), nowSec);
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /** 纯函数：容量公式（科技 1007/1020/1027 + VIP≥6 + buff10505 + extra_march，clamp 1..6）。 */
+    static int marchCapacityFromNotifies(Map<String, Object> wpi, Map<String, Object> research,
+                                         Map<String, Object> vip, Map<String, Object> buffShow,
+                                         long nowSec) {
+        if (wpi == null || research == null) return 0;
+        int tech = researchQueueTechCount(research);
+        boolean vip6 = vipQueueActive(vip, nowSec);
+        int buffQueues = buffQueueCount(buffShow, nowSec);
+        long extra = extraMarchCount(wpi);
+        int raw = com.carlos.vault.wjdr.asset.QueueCapacity.rawCapacity(tech, vip6, buffQueues, extra);
+        return com.carlos.vault.wjdr.asset.QueueCapacity.clampCapacity(raw);
+    }
+
+    /** 队列科技数：researched 中 tid∈{1007,1020,1027} 且 lev>0 的个数（map "tid.0" / list / {tid,lev} 兼容）。 */
+    static int researchQueueTechCount(Map<String, Object> researchNotify) {
+        Map<Long, Long> levels = new LinkedHashMap<>();
+        Object researched = researchNotify == null ? null : researchNotify.get("researched");
+        if (researched == null && researchNotify != null) researched = researchNotify.get("research");
+        if (researched instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) researched).entrySet()) {
+                long tid = queueTechNumericId(e.getKey());
+                long lev;
+                if (e.getValue() instanceof Map) {
+                    Map<String, Object> row = Exec.mapOf(e.getValue());
+                    if (tid <= 0L) tid = Exec.longOf(row.get("tid"));
+                    lev = Exec.longOf(row.get("lev"));
+                } else {
+                    lev = Exec.longOf(e.getValue());
+                }
+                if (tid > 0L && lev > 0L) levels.put(tid, lev);
+            }
+        } else {
+            for (Map<String, Object> row : Exec.mapsOf(researched)) {
+                long tid = Exec.longOf(row.get("tid"));
+                long lev = Exec.longOf(row.get("lev"));
+                if (tid > 0L && lev > 0L) levels.put(tid, lev);
+            }
+        }
+        int n = 0;
+        for (long tid : com.carlos.vault.wjdr.asset.QueueCapacity.TECH_IDS) {
+            Long lev = levels.get(tid);
+            if (lev != null && lev > 0L) n++;
+        }
+        return n;
+    }
+
+    /** "1020.0" 这类键的 id 解析（字符串/数字兼容）。 */
+    static long queueTechNumericId(Object v) {
+        if (v instanceof Number) return ((Number) v).longValue();
+        if (v == null) return 0L;
+        try {
+            return (long) Double.parseDouble(String.valueOf(v).trim());
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    /** VIP 队列加成：vip_lv≥6 且 vip_active_endtime>now（网页同口径）。 */
+    static boolean vipQueueActive(Map<String, Object> vip, long nowSec) {
+        if (vip == null) return false;
+        long lv = Exec.longOf(vip.get("vip_lv"));
+        long end = Exec.longOf(vip.get("vip_active_endtime"));
+        return lv >= com.carlos.vault.wjdr.asset.QueueCapacity.VIP_QUEUE_LEVEL && end > nowSec;
+    }
+
+    /** 临时队列 buff：buff_map[10505] 未过期项求和（map "10505.0" / list 兼容）。 */
+    static int buffQueueCount(Map<String, Object> buffShow, long nowSec) {
+        if (buffShow == null) return 0;
+        Object raw = buffShow.get("map");
+        if (raw == null) raw = buffShow.get("data");
+        int sum = 0;
+        for (Map<String, Object> buff : Exec.mapsOf(raw)) {
+            long expire = Exec.longOf(buff.get("expire_ts"));
+            if (expire > 0L && expire <= nowSec) continue;
+            Object bmRaw = buff.get("buff_map");
+            if (bmRaw instanceof Map) {
+                for (Map.Entry<?, ?> e : ((Map<?, ?>) bmRaw).entrySet()) {
+                    if (queueTechNumericId(e.getKey()) != 10505L) continue;
+                    Object v = e.getValue();
+                    if (v instanceof Map) sum += (int) Math.max(0L, Exec.longOf(Exec.mapOf(v).get("v")));
+                    else sum += (int) Math.max(0L, Exec.longOf(v));
+                }
+            } else {
+                for (Map<String, Object> item : Exec.mapsOf(bmRaw)) {
+                    if (Exec.longOf(item.get("k")) != 10505L) continue;
+                    sum += (int) Math.max(0L, Exec.longOf(item.get("v")));
+                }
+            }
+        }
+        return sum;
+    }
+
+    /** 额外队列：world_extra_march.value（缺省 0）。 */
+    static long extraMarchCount(Map<String, Object> wpi) {
+        if (wpi == null) return 0L;
+        Map<String, Object> extra = Exec.mapOf(wpi.get("world_extra_march"));
+        return extra == null ? 0L : Math.max(0L, Exec.longOf(extra.get("value")));
     }
 
     // ---------- 野外采集 v2：队列化执行（I2，2026-10-24） ----------
@@ -808,6 +1029,15 @@ public final class ServerFieldTasks {
             return;
         }
 
+        // B2-T4 暂停协调（1:1 网页版 DailyGatherService.pauseBeforeDispatch:694-712）：
+        // 情报待办优先 / 巨熊活动窗口时让位，避免抢队列。
+        String pauseReason = gatherPauseReason(lib, System.currentTimeMillis() / 1000L);
+        if (pauseReason != null) {
+            m.skip(pauseReason);
+            tc.saveModText("gather", "send", pauseReason);
+            return;
+        }
+
         int maxLevel = gatherMaxResourceLevel(lib.clock());
         QueueMapping mapping = reconcileMapping(
                 parseQueueMapping(tc.store.getString(gatherQueueKey(tc))), queue.marches);
@@ -819,7 +1049,32 @@ public final class ServerFieldTasks {
             writeQueueMapping(tc, mapping);
             return;
         }
-        int slots = slotCount(cfg, queue.idle, unbound, queue.capacity, queue.limitReached);
+        // B2-T5 联盟矿（type=110）：占 1 个世界队列；失败只记子项，不影响普通队列派队。
+        int allianceMineReserved = 0;
+        if (cfg.allianceMineEnabled) {
+            MarchSnapshot mineSnapshot = marchSnapshotFromAsset(queue);
+            if (mineSnapshot.count(GATHER_MINE_MARCH_TYPE) > 0) {
+                allianceMineReserved = 1;
+                m.subSkip("alliance_mine", "联盟矿已在途，占用 1 队");
+                tc.saveModText("gather", "alliance_mine", "联盟矿已在途，占用 1 队");
+            } else if (queue.capacity <= 0) {
+                m.subSkip("alliance_mine", "世界容量未知，跳过联盟矿");
+                tc.saveModText("gather", "alliance_mine", "世界容量未知，跳过");
+            } else {
+                AllianceMineOutcome mine = maintainAllianceMine(tc, mineSnapshot, queue.capacity,
+                        allianceMineFormationParams(cfg));
+                if (mine.dispatched) {
+                    allianceMineReserved = 1;
+                    m.claimed("联盟矿已派出");
+                    m.subOk("alliance_mine", mine.message);
+                } else {
+                    m.subSkip("alliance_mine", mine.message);
+                }
+                tc.saveModText("gather", "alliance_mine", mine.message);
+            }
+        }
+        int slots = Math.max(0, slotCount(cfg, queue.idle, unbound, queue.capacity,
+                queue.limitReached) - allianceMineReserved);
         if (queue.limitReached || slots <= 0) {
             String text = "采集队列已满(capacity=" + queue.capacity + " occupied=" + queue.occupied
                     + " idle=" + queue.idle + " unbound=" + unbound + ")";
@@ -827,12 +1082,6 @@ public final class ServerFieldTasks {
             tc.saveModText("gather", "send", text);
             writeQueueMapping(tc, mapping);
             return;
-        }
-        // 联盟矿本期不接入 v2 队列化（用户决策：核心三项；旧 alliance_mine 路径仅保留在 legacy 分支）。
-        if (cfg.allianceMineEnabled) {
-            String note = "联盟矿本期未接入队列化执行，跳过";
-            m.subSkip("alliance_mine", note);
-            tc.saveModText("gather", "alliance_mine", note);
         }
 
         List<QueuePlan> plans = planQueues(cfg, maxLevel);
@@ -1247,6 +1496,36 @@ public final class ServerFieldTasks {
         return GATHER_DEFAULT_MAX_RESOURCE_LEVEL;
     }
 
+    /** 采集暂停原因（资产库事实）：巨熊活动窗口 / 情报待办优先；null=可派。 */
+    static String gatherPauseReason(CoreAssetLibrary lib, long nowSec) {
+        if (lib == null || !lib.ready()) return null;
+        AssetSnapshot.Bear bear = lib.bear();
+        long reserve = bear == null ? 0L : bear.reserveTime;
+        long start = bear == null ? 0L : bear.massStartTime;
+        long end = bear == null ? 0L : bear.massEndTime;
+        int intel = 0;
+        try {
+            intel = lib.intel().dispatchable(nowSec).size();
+        } catch (Throwable ignored) {
+        }
+        return gatherPauseReason(reserve, start, end, intel, nowSec);
+    }
+
+    /** 纯函数：巨熊窗口 [reserve-600, reserve+1800] / [mass_start-600, mass_end]；情报可派优先。 */
+    static String gatherPauseReason(long bearReserve, long bearMassStart, long bearMassEnd,
+                                    int intelDispatchableCount, long nowSec) {
+        if (bearReserve > 0L && nowSec >= bearReserve - 600L && nowSec < bearReserve + 1800L) {
+            return "巨熊活动窗口，采集让位";
+        }
+        if (bearMassStart > 0L) {
+            long begin = bearMassStart - 600L;
+            long finish = bearMassEnd > 0L ? bearMassEnd : bearMassStart + 1800L;
+            if (nowSec >= begin && nowSec < finish) return "巨熊活动窗口，采集让位";
+        }
+        if (intelDispatchableCount > 0) return "情报待办优先，采集让位";
+        return null;
+    }
+
     /** 特殊队列条数（仅展示；不参与普通队列空闲计算）。 */
     static int specialQueueCount(AssetSnapshot.Queue queue) {
         if (queue == null || queue.specialByType == null) return 0;
@@ -1389,13 +1668,24 @@ public final class ServerFieldTasks {
         try {
             tc.engine.collectNotifies(2500);
             Map<Long, Map<String, Object>> events = new LinkedHashMap<>();
-            mergeIntelEvents(tc.engine, "notify_intelligence_info", events);    // 全量初始化
-            mergeIntelEvents(tc.engine, "notify_intelligence_events", events);  // 增量
-            Map<String, Object> del = notifyContentOf(tc.engine, "notify_intelligence_events_del");
-            if (del != null) {
-                for (Object rawId : rawValues(del.get("ids"))) {
-                    long id = Exec.longOf(rawId);
-                    if (id > 0) events.remove(id);
+            // 资产库优先（notify_intelligence_info/events/del 已由解析器合并为权威快照）；
+            // 未接线/未 READY/快照为空时回退旧 notify 直读，保证推送缺失时仍可用。
+            boolean eventsFromAssets = false;
+            CoreAssetLibrary intelLib = assetReadsEnabled()
+                    ? CoreAssetRegistry.global().get(tc.engine) : null;
+            if (intelLib != null && intelLib.ready() && !intelLib.intel().events.isEmpty()) {
+                events.putAll(intelEventsFromAssets(intelLib.intel()));
+                eventsFromAssets = true;
+            }
+            if (!eventsFromAssets) {
+                mergeIntelEvents(tc.engine, "notify_intelligence_info", events);    // 全量初始化
+                mergeIntelEvents(tc.engine, "notify_intelligence_events", events);  // 增量
+                Map<String, Object> del = notifyContentOf(tc.engine, "notify_intelligence_events_del");
+                if (del != null) {
+                    for (Object rawId : rawValues(del.get("ids"))) {
+                        long id = Exec.longOf(rawId);
+                        if (id > 0) events.remove(id);
+                    }
                 }
             }
             if (events.isEmpty()) {
@@ -1720,9 +2010,41 @@ public final class ServerFieldTasks {
     /** 体力读取：先 update（增量，最新值）再 init（全量），取 notify_data 的 id=201 项。
      *  1:1 网页版 BehemothAccountState.recoverUpdate:2645-2653（id==201 → count）。 */
     static Long intelStamina(WjdrEngine engine) {
+        // 资产库优先（recover 域 id=201 权威；count 可超上限，按网页版不 clamp）
+        if (assetReadsEnabled()) {
+            try {
+                CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+                if (lib != null && lib.ready()) {
+                    AssetSnapshot.Stamina st = lib.stamina();
+                    if (st != null && st.known()) {
+                        return st.staminaAt(lib.clock().serverNowSec());
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         Long v = intelStaminaOf(notifyContentOf(engine, "notify_recover_resource_update"));
         if (v == null) v = intelStaminaOf(notifyContentOf(engine, "notify_recover_resource_init"));
         return v;
+    }
+
+    /** 资产库情报事件 → 旧循环使用的 Map 形状（id/status/x/y/event_id/expire_ts/played）。 */
+    static Map<Long, Map<String, Object>> intelEventsFromAssets(AssetSnapshot.Intel intel) {
+        Map<Long, Map<String, Object>> out = new LinkedHashMap<>();
+        if (intel == null || intel.events == null) return out;
+        for (AssetSnapshot.IntelEvent e : intel.events.values()) {
+            if (e == null || e.id <= 0L) continue;
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id", e.id);
+            m.put("status", e.status);
+            m.put("x", e.x);
+            m.put("y", e.y);
+            m.put("event_id", e.eventId);
+            m.put("expire_ts", e.expireTs);
+            m.put("played", e.played);
+            out.put(e.id, m);
+        }
+        return out;
     }
 
     /** 基础资源推送中的体力值；形状兼容 List&lt;{id,count}&gt; / Map{"201.0":{count}} / 本体即条目。
@@ -1859,6 +2181,20 @@ public final class ServerFieldTasks {
      * 但一次查询统计两种类型（gather 用的 countMarches 保持不动，避免回退采集修复）。
      */
     private static int countIntelMarches(WjdrEngine engine) {
+        // 资产库优先：type=301/302 在途行军数（push 维护，替代生产恒 code=2 的查询）
+        if (assetReadsEnabled()) {
+            try {
+                CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+                if (lib != null && lib.ready()) {
+                    int n = 0;
+                    for (AssetSnapshot.QueueMarch march : lib.queue().marches) {
+                        if (march != null && (march.type == 301L || march.type == 302L)) n++;
+                    }
+                    return n;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         try {
             Map<String, Object> args = new LinkedHashMap<>();
             args.put("owner", engine.lastUid());

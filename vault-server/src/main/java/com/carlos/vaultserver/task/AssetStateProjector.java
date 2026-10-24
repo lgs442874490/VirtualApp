@@ -29,6 +29,7 @@ import java.util.Map;
  *   "stamina": {"current": 1035, "max": 200, "nextRecalcAt": 169...s,
  *               "nextRecoverAt": 169...s, "recoverPer": 1, "intervalSec": 300,
  *               "currentAt": 1035},
+ *   "city": {"x": 585, "y": 694},
  *   "missing": ["notify_alliance_init", ...]
  * }
  * </pre>
@@ -78,6 +79,7 @@ public final class AssetStateProjector {
                 o.put("queue", emptyQueue());
                 o.put("resources", emptyResources());
                 o.put("stamina", emptyStamina());
+                o.put("city", emptyCity());
                 o.put("missing", new JSONArray());
                 return o.toString();
             }
@@ -92,6 +94,7 @@ public final class AssetStateProjector {
             o.put("queue", queueJson(s.queue));
             o.put("resources", resourcesJson(s.resources));
             o.put("stamina", staminaJson(s.stamina, nowSec));
+            o.put("city", cityJson(s.meta));
             o.put("missing", new JSONArray(s.missingProtocols == null
                     ? java.util.Collections.<String>emptySet() : s.missingProtocols));
             return o.toString();
@@ -193,6 +196,22 @@ public final class AssetStateProjector {
         o.put("recoverPer", 0L);
         o.put("intervalSec", 0L);
         o.put("currentAt", 0L);
+        return o;
+    }
+
+    /** 城市坐标投影：空快照/未知为 {x:0,y:0}（巨兽/巨熊/守护任务距离判断用）。 */
+    private static JSONObject cityJson(AssetSnapshot.Meta meta) {
+        if (meta == null) return emptyCity();
+        JSONObject o = new JSONObject();
+        o.put("x", meta.cityX);
+        o.put("y", meta.cityY);
+        return o;
+    }
+
+    private static JSONObject emptyCity() {
+        JSONObject o = new JSONObject();
+        o.put("x", 0L);
+        o.put("y", 0L);
         return o;
     }
 

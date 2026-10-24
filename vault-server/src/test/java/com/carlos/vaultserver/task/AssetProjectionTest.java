@@ -28,6 +28,7 @@ import java.util.Map;
  *   <li>队列容量派生公式（科技 1020 + VIP2 → capacity 2；科技 3 + VIP6 + buff 10505 + extra
  *       → raw 7 → 只读层 clamp 6）；</li>
  *   <li>占用口径（普通 type=4 占 1；特殊 411 不占普通队列但进 specialByType）；</li>
+ *   <li>城市坐标（world_player_init 的 city_point → meta.cityX/cityY → 投影 city.x/y）；</li>
  *   <li>资源（101 钻石/102 肉/103 木/104 煤/105 铁）、体力（recover id=201）。</li>
  * </ul>
  *
@@ -275,6 +276,11 @@ public class AssetProjectionTest {
         assertEquals(90L, r.getLong("coal"));
         assertEquals(12L, r.getLong("iron"));
 
+        // ---- 城市坐标（world_player_init 的 city_point）----
+        JSONObject city = o.getJSONObject("city");
+        assertEquals(585L, city.getLong("x"));
+        assertEquals(694L, city.getLong("y"));
+
         // ---- 体力（recover id=201；count 可超 max，不 clamp）----
         JSONObject st = o.getJSONObject("stamina");
         assertEquals(1035L, st.getLong("current"));
@@ -318,6 +324,10 @@ public class AssetProjectionTest {
         assertEquals(0, o.getJSONObject("queue").getInt("capacity"));
         assertEquals(0, o.getJSONObject("resources").getLong("diamond"));
         assertEquals(0, o.getJSONObject("stamina").getLong("current"));
+        // 空快照城市坐标必须为 {x:0,y:0}（不能缺键，App 读侧按契约解析）
+        JSONObject emptyCity = o.getJSONObject("city");
+        assertEquals(0L, emptyCity.getLong("x"));
+        assertEquals(0L, emptyCity.getLong("y"));
         assertEquals(0, o.getJSONArray("missing").length());
         // 键契约
         assertEquals("srv:asset:48460403:913", AssetStateProjector.stateKey(FPID, SID));

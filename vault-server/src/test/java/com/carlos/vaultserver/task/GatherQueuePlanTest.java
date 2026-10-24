@@ -22,6 +22,7 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
@@ -471,5 +472,61 @@ public class GatherQueuePlanTest {
         assertTrue("写续派唤醒（now+3s）", wake >= System.currentTimeMillis());
         String mod = tc.store.getString("mod:48460403:888:gather");
         assertTrue("写 mod:gather:send 状态", mod != null && mod.contains("资产库未就绪"));
+    }
+
+    // ==================== 8. B2-T4 采集暂停协调（情报优先/巨熊窗口） ====================
+
+    @Test
+    public void gatherPause_bearReserveWindow() {
+        long now = 10_000L;
+        assertNotNull(ServerFieldTasks.gatherPauseReason(now + 100L, 0L, 0L, 0, now));
+        // 窗口 [reserve-600, reserve+1800)：now=10000，reserve=7000 → 窗口 [6400, 8800)，已结束
+        assertNull(ServerFieldTasks.gatherPauseReason(now - 3_000L, 0L, 0L, 0, now));
+        assertNull(ServerFieldTasks.gatherPauseReason(now + 2_500L, 0L, 0L, 0, now));
+    }
+
+    @Test
+    public void gatherPause_bearMassWindow() {
+        long now = 10_000L;
+        assertNotNull(ServerFieldTasks.gatherPauseReason(0L, now + 100L, now + 2000L, 0, now));
+        assertNull(ServerFieldTasks.gatherPauseReason(0L, now + 700L, now + 2000L, 0, now));
+    }
+
+    @Test
+    public void gatherPause_intelPriority() {
+        assertNotNull(ServerFieldTasks.gatherPauseReason(0L, 0L, 0L, 2, 10_000L));
+        assertNull(ServerFieldTasks.gatherPauseReason(0L, 0L, 0L, 0, 10_000L));
+    }
+
+    @Test
+    public void gatherPause_notReadyIsNull() {
+        assertNull(ServerFieldTasks.gatherPauseReason(
+                (com.carlos.vault.wjdr.asset.CoreAssetLibrary) null, 10_000L));
+    }
+
+    @Test
+    public void allianceMineFormationParams_roleAndAuto() {
+        GatherConfigV2 cfg = GatherConfigV2.legacyDefaults();
+        cfg.allianceMineEnabled = true;
+        cfg.allianceMineFormationMode = GatherConfigV2.MODE_ROLE;
+        cfg.allianceMineFormationId = 7L;
+        org.json.JSONObject role = ServerFieldTasks.allianceMineFormationParams(cfg);
+        assertEquals(GatherConfigV2.MODE_ROLE, role.optString("formation_mode"));
+        assertEquals(7L, role.optLong("formation_id"));
+        cfg.allianceMineFormationMode = GatherConfigV2.MODE_AUTOMATIC;
+        cfg.allianceMineInfantry = 40000L;
+        cfg.allianceMineLancer = 30000L;
+        cfg.allianceMineMarksman = 30000L;
+        org.json.JSONObject auto = ServerFieldTasks.allianceMineFormationParams(cfg);
+        assertEquals(GatherConfigV2.MODE_AUTOMATIC, auto.optString("formation_mode"));
+        assertEquals(100000L, auto.optLong("total"));
+        assertEquals(40000L, auto.optJSONObject("ratio").optLong("infantry"));
+    }
+
+    @Test
+    public void marchSnapshotFromAsset_countsAndSpecial() {
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Queue empty =
+                com.carlos.vault.wjdr.asset.AssetSnapshot.Queue.empty();
+        assertFalse(ServerFieldTasks.marchSnapshotFromAsset(empty).known());
     }
 }

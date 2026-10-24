@@ -97,6 +97,9 @@ public final class AssetSnapshot {
     public static final class Meta {
         public final long uid;
         public final long kid;
+        /** 承载城市坐标（notify_world_player_init 的 city_point{x,y}）；未知/未到帧为 0。 */
+        public final long cityX;
+        public final long cityY;
         public final long fid;
         public final String nickName;
         public final long level;
@@ -108,11 +111,13 @@ public final class AssetSnapshot {
         public final String allianceAbbr;
         public final long updatedAtMs;
 
-        public Meta(long uid, long kid, long fid, String nickName, long level, long stoveLv,
-                    long power, long registerTime, long allianceId, String allianceName,
-                    String allianceAbbr, long updatedAtMs) {
+        public Meta(long uid, long kid, long cityX, long cityY, long fid, String nickName,
+                    long level, long stoveLv, long power, long registerTime, long allianceId,
+                    String allianceName, String allianceAbbr, long updatedAtMs) {
             this.uid = uid;
             this.kid = kid;
+            this.cityX = cityX;
+            this.cityY = cityY;
             this.fid = fid;
             this.nickName = nickName == null ? "" : nickName;
             this.level = level;
@@ -126,7 +131,7 @@ public final class AssetSnapshot {
         }
 
         public static Meta empty() {
-            return new Meta(0, 0, 0, "", 0, 0, 0, 0, 0, "", "", 0);
+            return new Meta(0, 0, 0, 0, 0, "", 0, 0, 0, 0, 0, "", "", 0);
         }
     }
 
