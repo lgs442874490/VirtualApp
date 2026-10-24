@@ -27,6 +27,17 @@ public class HotConfigReceiver extends BroadcastReceiver {
             }
         } catch (Throwable ignored) {
         }
-        HotConfig.forceRefresh(context);
+        // 广播回调在 Android 主线程：forceRefresh 内部是同步 OkHttp GET，主线程会直接抛
+        // NetworkOnMainThreadException（真机 2026-10-25 实测 fetchText 返回 null、版本不变）。
+        // 因此切到后台线程执行，结果仍看 logcat HotConfig；UI 手动检查本就在后台线程。
+        final Context app = context.getApplicationContext();
+        new Thread(() -> {
+            try {
+                long v = HotConfig.forceRefresh(app);
+                Log.i(HotConfig.TAG, "广播触发热更检查完成 version=" + v);
+            } catch (Throwable t) {
+                Log.w(HotConfig.TAG, "广播触发热更检查失败: " + t);
+            }
+        }, "hot-refresh").start();
     }
 }
