@@ -107,6 +107,10 @@ public final class WarNotify {
     static final String PHASE_SETTLE = "settle";
     static final String PHASE_ACTION = "action";
 
+    /** 诊断：situation 系列日志节流（每 60s 一条，输出候选 owner，定位「有推送但无命中」）。 */
+    private final ConcurrentHashMap<String, Long> diagAt = new ConcurrentHashMap<>();
+    private static final long DIAG_INTERVAL_MS = 60_000L;
+
     /** 昵称解析器（SessionKeeper 提供；实现里 engine.request 只准非推送线程调用）。 */
     public interface NameResolver {
         String resolve(String fpid, long sid, long uid);
@@ -190,6 +194,11 @@ public final class WarNotify {
     }
 
     private void handlePush(String fpid, long sid, String proto, Map<String, Object> content) {
+        if (proto != null && proto.contains("situation") && diagAllowed(proto)) {
+            FileLog.info("战争诊断 {} contentNull={} contentEmpty={} keys={}",
+                    proto, content == null, content != null && content.isEmpty(),
+                    content == null ? "null" : content.keySet());
+        }
         if (proto == null || content == null || content.isEmpty()) return;
         VaultStore.WatchConfig cfg = store.watchConfig();
         if (!cfg.enabled) return;
@@ -206,9 +215,32 @@ public final class WarNotify {
             }
             return;
         }
-        for (Map<String, Object> m : marchCandidates(content)) {
+        List<Map<String, Object>> candidates = marchCandidates(content);
+        if (proto.contains("situation") && diagAllowed(proto + "|owners")) {
+            List<Long> owners = new ArrayList<>();
+            List<Long> watchedOwners = new ArrayList<>();
+            for (Map<String, Object> m : candidates) {
+                long owner = Exec.longOf(m.get("owner"));
+                if (owner <= 0L) continue;
+                if (store.matchWatched(fpid, owner) != null && !watchedOwners.contains(owner)) {
+                    watchedOwners.add(owner);
+                }
+                if (!owners.contains(owner) && owners.size() < 6) owners.add(owner);
+            }
+            FileLog.info("战争诊断候选 {} candidates={} owners={} watched={}",
+                    proto, candidates.size(), owners, watchedOwners);
+        }
+        for (Map<String, Object> m : candidates) {
             handleMarch(fpid, sid, proto, cfg, m);
         }
+    }
+
+    private boolean diagAllowed(String proto) {
+        long now = System.currentTimeMillis();
+        Long at = diagAt.get(proto);
+        if (at != null && now - at < DIAG_INTERVAL_MS) return false;
+        diagAt.put(proto, now);
+        return true;
     }
 
     /** 一条行军候选命中处理：owner 命中监视名单 → 事件（冷却内丢弃）。 */

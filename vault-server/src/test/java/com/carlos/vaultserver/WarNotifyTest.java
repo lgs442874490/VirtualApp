@@ -875,4 +875,53 @@ public class WarNotifyTest {
         assertTrue(settle.contains("破城：" + WarNotify.BREACH_YES + "（战报 30/6）"));
         assertFalse(settle.contains("到达："));                  // 结算文案无到达倒计时
     }
+
+    @Test
+    public void onPush_allianceSituationFrameMatchesWatchedOwner() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        Map<String, Object> march = new LinkedHashMap<>();
+        march.put("id", 48714L);
+        march.put("owner", ENEMY_UID);
+        march.put("type", 2L);
+        march.put("starttime", nowS);
+        march.put("endtime", nowS + 600L);
+        Map<String, Object> sp = new LinkedHashMap<>();
+        sp.put("x", 779);
+        sp.put("y", 429);
+        march.put("startpoint", sp);
+        Map<String, Object> ep = new LinkedHashMap<>();
+        ep.put("x", 758);
+        ep.put("y", 435);
+        march.put("endpoint", ep);
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("marchs", new ArrayList<>(java.util.Collections.singletonList(march)));
+        content.put("to_marchs", new ArrayList<>());
+
+        store.updateWatchConfig(true, true,
+                "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x", 300, -1, 8);
+        war.onPush(FPID, 888L, "notify_world_alliance_situation_add", content);
+        assertEquals("联盟态势推送命中监视目标必须产生事件", 1, events.size());
+        JSONObject e = events.after(0).get(0);
+        assertEquals(ENEMY_UID, e.optLong("targetUid"));
+        assertEquals(WarNotify.ACT_ATTACK, e.optString("action"));
+        assertEquals(779, e.optJSONObject("startPoint").optInt("x"));
+        assertEquals("企微也必须发出", 1, notifier.sent.size());
+    }
+
+    @Test
+    public void onPush_allianceSituationToMarchsMatchesWatchedOwner() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        Map<String, Object> march = new LinkedHashMap<>();
+        march.put("id", 48715L);
+        march.put("owner", ENEMY_UID);
+        march.put("type", 2L);
+        march.put("starttime", nowS);
+        march.put("endtime", nowS + 300L);
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("marchs", new ArrayList<>());
+        content.put("to_marchs", new ArrayList<>(java.util.Collections.singletonList(march)));
+        war.onPush(FPID, 888L, "notify_world_alliance_situation_update", content);
+        assertEquals("to_marchs（敌方进攻盟友）也必须命中", 1, events.size());
+        assertEquals(ENEMY_UID, events.after(0).get(0).optLong("targetUid"));
+    }
 }
