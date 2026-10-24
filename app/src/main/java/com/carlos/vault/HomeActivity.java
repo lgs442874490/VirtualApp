@@ -813,18 +813,39 @@ public class HomeActivity extends AccountVaultActivity {
         box.addView(quick);
     }
 
-    /** 资产中心（W9）：带当前角色 fpid/sid 进入只读资产页。 */
+    /** 资产中心（W9）：带当前角色 fpid/sid 进入只读资产页（优先读前台 current_role，防内存快照滞后）。 */
     private void openAssetCenter() {
         try {
-            AccountStore.Account a = currentRoleAccount();
-            long sid = currentRoleSid();
-            if (a == null || a.fpid == null || a.fpid.trim().isEmpty() || sid <= 0L) {
+            String fpid = null;
+            long sid = 0L;
+            long uid = 0L;
+            String key = getSharedPreferences("home", MODE_PRIVATE)
+                    .getString("current_role", null);
+            if (key != null && key.contains(":")) {
+                int i = key.indexOf(':');
+                fpid = key.substring(0, i);
+                String rest = key.substring(i + 1);
+                int j = rest.indexOf(':');
+                sid = Long.parseLong(j < 0 ? rest : rest.substring(0, j));
+                if (j >= 0) {
+                    String us = rest.substring(j + 1);
+                    int k = us.indexOf(':');
+                    uid = Long.parseLong(k < 0 ? us : us.substring(0, k));
+                }
+            }
+            if (fpid == null || fpid.trim().isEmpty() || sid <= 0L) {
+                AccountStore.Account a = currentRoleAccount();
+                fpid = a == null ? null : a.fpid;
+                sid = currentRoleSid();
+            }
+            if (fpid == null || fpid.trim().isEmpty() || sid <= 0L) {
                 toast("请先选择角色");
                 return;
             }
             startActivity(new Intent(this, AssetCenterActivity.class)
-                    .putExtra("fpid", a.fpid)
-                    .putExtra("sid", sid));
+                    .putExtra("fpid", fpid)
+                    .putExtra("sid", sid)
+                    .putExtra("uid", uid));
         } catch (Throwable t) {
             toast("打开资产中心失败：" + t.getMessage());
         }

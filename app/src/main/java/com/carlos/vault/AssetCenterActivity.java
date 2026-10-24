@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.Intent;
 import android.graphics.Typeface;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -33,8 +35,23 @@ public class AssetCenterActivity extends Activity {
 
     private String fpid = "";
     private long serverid;
+    private long uid;
     private LinearLayout box;
+    private ScrollView scrollView;
     private JSONObject projection;
+    private String lastProjectionRaw = "";
+    private long lastServerFetchAt;
+    private final Handler autoRefresh = new Handler(Looper.getMainLooper());
+    private final Runnable refreshTick = new Runnable() {
+        @Override
+        public void run() {
+            try {
+                syncRoleAndReload();
+            } catch (Throwable ignored) {
+            }
+            if (!isFinishing()) autoRefresh.postDelayed(this, 3000L);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -49,12 +66,109 @@ public class AssetCenterActivity extends Activity {
         load();
     }
 
-    /** 角色解析：优先 Intent extras，其次 RoleStore 当前角色（防直接 Intent 无参数）。 */
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 切换角色后返回本页 / 前台期间切角色：跟随 home:current_role 重新加载投影
+        syncRoleAndReload();
+        refreshFromServer();
+        autoRefresh.removeCallbacks(refreshTick);
+        autoRefresh.postDelayed(refreshTick, 3000L);
+    }
+
+    @Override
+    protected void onPause() {
+        autoRefresh.removeCallbacks(refreshTick);
+        super.onPause();
+    }
+
+    @Override
+    protected void onDestroy() {
+        autoRefresh.removeCallbacks(refreshTick);
+        super.onDestroy();
+    }
+
+    /**
+     * 角色跟随：每次以前台 home:current_role 为准（切换角色会立即改写该键），
+     * 角色变化 → 重新解析投影；角色不变但投影更新（version/updatedAt 变化）→ 原地刷新。
+     * 刷新时保留滚动位置，避免 3s 自动刷新把页面拉回顶部。
+     */
+    /**
+     * 主动拉一次服务端 state（server 模式的 daily_state 回写）：切换角色/刚登录时本地
+     * prefs 可能还是旧角色的投影，必须拉最新再渲染；10s 内重复调用只加载本地缓存。
+     */
+    private void refreshFromServer() {
+        long now = System.currentTimeMillis();
+        if (now - lastServerFetchAt > 10_000L) {
+            lastServerFetchAt = now;
+            try {
+                com.carlos.vault.VaultSync.fetchState(this, (code, message, data) ->
+                        runOnUiThread(this::load));
+                return;
+            } catch (Throwable ignored) {
+            }
+        }
+        load();
+    }
+
+    private void syncRoleAndReload() {
+        String key = currentRoleKey();
+        if (key != null && key.contains(":")) {
+            try {
+                int i = key.indexOf(':');
+                String fp = key.substring(0, i);
+                String rest = key.substring(i + 1);
+                int j = rest.indexOf(':');
+                long sid = Long.parseLong(j < 0 ? rest : rest.substring(0, j));
+                long u = 0L;
+                if (j >= 0) {
+                    String us = rest.substring(j + 1);
+                    int k = us.indexOf(':');
+                    u = Long.parseLong(k < 0 ? us : us.substring(0, k));
+                }
+                if (!fp.isEmpty() && sid > 0L
+                        && (!fp.equals(fpid) || sid != serverid || (u > 0L && u != uid))) {
+                    fpid = fp;
+                    serverid = sid;
+                    if (u > 0L) uid = u;
+                    load();
+                    return;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        // 角色未变：投影有更新才重绘
+        try {
+            String raw = readProjectionRaw();
+            if (raw != null && !raw.equals(lastProjectionRaw)) {
+                int y = scrollView == null ? 0 : scrollView.getScrollY();
+                lastProjectionRaw = raw;
+                load();
+                if (scrollView != null) {
+                    final int restoreY = y;
+                    scrollView.post(() -> scrollView.scrollTo(0, restoreY));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private String currentRoleKey() {
+        try {
+            return getSharedPreferences("home", MODE_PRIVATE)
+                    .getString("current_role", null);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** 角色解析：优先前台 current_role（切换角色立即生效），其次 Intent extras 兜底。 */
     private void resolveRole(Intent intent) {
         try {
             if (intent != null) {
                 fpid = intent.getStringExtra("fpid");
                 serverid = intent.getLongExtra("sid", 0L);
+                uid = intent.getLongExtra("uid", 0L);
             }
         } catch (Throwable ignored) {
         }
@@ -69,6 +183,11 @@ public class AssetCenterActivity extends Activity {
                     String rest = key.substring(i + 1);
                     int j = rest.indexOf(':');
                     serverid = Long.parseLong(j < 0 ? rest : rest.substring(0, j));
+                    if (j >= 0) {
+                        String u = rest.substring(j + 1);
+                        int k = u.indexOf(':');
+                        uid = Long.parseLong(k < 0 ? u : u.substring(0, k));
+                    }
                 }
             } catch (Throwable ignored) {
             }
@@ -78,14 +197,30 @@ public class AssetCenterActivity extends Activity {
 
     // ==================== 生命周期/数据 ====================
 
+    private String readProjectionRaw() {
+        try {
+            android.content.SharedPreferences sp = getSharedPreferences(PREFS_STATE, MODE_PRIVATE);
+            String raw = null;
+            if (uid > 0L) {
+                raw = sp.getString(STATE_KEY_PREFIX + fpid + ":" + serverid + ":" + uid, null);
+            }
+            if (raw == null || raw.trim().isEmpty()) {
+                raw = sp.getString(STATE_KEY_PREFIX + fpid + ":" + serverid, null);
+            }
+            return raw == null ? "" : raw;
+        } catch (Throwable ignored) {
+            return "";
+        }
+    }
+
     private void load() {
         projection = null;
         try {
-            String raw = getSharedPreferences(PREFS_STATE, MODE_PRIVATE)
-                    .getString(STATE_KEY_PREFIX + fpid + ":" + serverid, null);
+            String raw = readProjectionRaw();
             if (raw != null && !raw.trim().isEmpty()) {
                 projection = new JSONObject(raw.trim());
             }
+            lastProjectionRaw = raw == null ? "" : raw;
         } catch (Throwable ignored) {
         }
         renderContent();
@@ -99,6 +234,7 @@ public class AssetCenterActivity extends Activity {
         root.setBackgroundColor(UiStyle.BG_V2);
         root.addView(topBar());
         ScrollView scroll = new ScrollView(this);
+        scrollView = scroll;
         box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
         box.setPadding(dp(18), dp(4), dp(18), dp(40));
@@ -133,7 +269,7 @@ public class AssetCenterActivity extends Activity {
         refresh.setTypeface(Typeface.DEFAULT_BOLD);
         refresh.setTextColor(UiStyle.BRAND_TEXT);
         UiStyle.press(refresh);
-        refresh.setOnClickListener(v -> load());
+        refresh.setOnClickListener(v -> refreshFromServer());
         bar.addView(refresh);
         return bar;
     }
@@ -162,6 +298,8 @@ public class AssetCenterActivity extends Activity {
     private View healthCard(boolean ready, int version) {
         LinearLayout card = UiStyle.card(this);
         card.addView(title("数据健康", 15));
+        card.addView(hint("角色键 " + fpid + ":" + serverid + (uid > 0L ? ":" + uid : "")
+                + (uid > 0L ? "（按 uid 独立投影）" : "（旧键，可能同服多角色覆盖）")));
         String status = ready ? "就绪 · 版本 " + version : "同步中 · 版本 " + version;
         TextView line = hint(status + " · 更新于 " + fmtTs(projection.optLong("updatedAt", 0)));
         line.setTextColor(ready ? UiStyle.INK2 : UiStyle.WARN_INK);
