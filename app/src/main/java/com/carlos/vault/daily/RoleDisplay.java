@@ -48,6 +48,25 @@ public final class RoleDisplay {
         return s + "万";
     }
 
+    // ---------- 角色列表统一标签 ----------
+
+    /**
+     * 角色列表统一展示：{@code 888-cch-小鹿矿工5号}（服务器号不带 K、联盟简称、角色昵称）。
+     * 缺失段用「未同步」占位（不编造）；同服多角色靠昵称/联盟区分。
+     */
+    public static String roleListLabel(long sid, String allianceAbbr, String name) {
+        String zone = sid > 0 ? String.valueOf(sid) : "未同步";
+        String abbr = allianceAbbr == null || allianceAbbr.trim().isEmpty()
+                ? "未同步" : allianceAbbr.trim();
+        return zone + "-" + abbr + "-" + roleName(name);
+    }
+
+    /** 角色列表统一展示（Role 版）。 */
+    public static String roleListLabel(RoleStore.Role r) {
+        if (r == null) return "未同步";
+        return roleListLabel(r.serverid, r.allianceAbbr, r.name);
+    }
+
     // ---------- 元数据行 ----------
 
     /**

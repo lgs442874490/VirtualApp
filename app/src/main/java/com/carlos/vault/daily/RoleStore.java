@@ -62,7 +62,8 @@ public class RoleStore {
         /** 角色元数据（登录摘要/玩家信息补全；老数据无这些字段，optLong/optString 兜底为零值）。 */
         public long level;            // 熔炉等级（0=未知）
         public long power;            // 战力（0=未知）
-        public String alliance = "";  // 联盟名（""=未知/无盟）
+        public String alliance = "";      // 联盟名（""=未知/无盟）
+        public String allianceAbbr = "";  // 联盟简称（notify_alliance_init.abbr；""=未知）
 
         @Override public long serverid() {
             return serverid;
@@ -100,6 +101,7 @@ public class RoleStore {
                 r.level = o.optLong("level", 0);
                 r.power = o.optLong("power", 0);
                 r.alliance = o.optString("alliance", "");
+                r.allianceAbbr = o.optString("allianceAbbr", "");
                 out.add(r);
             }
         } catch (Exception ignored) {
@@ -107,9 +109,36 @@ public class RoleStore {
         return out;
     }
 
+    /** 从服务端投影缓存联盟简称（不改变 enabled/其他元数据；角色不存在时不新建）。 */
+    public static void cacheAllianceAbbr(Context ctx, String fpid, long serverid, long uid,
+                                          String allianceAbbr) {
+        if (ctx == null || fpid == null || fpid.isEmpty() || serverid <= 0L
+                || allianceAbbr == null || allianceAbbr.isEmpty()) return;
+        synchronized (WRITE_LOCK) {
+            try {
+                List<Role> roles = roles(ctx, fpid);
+                boolean changed = false;
+                for (Role r : roles) {
+                    if (r.serverid == serverid && (uid <= 0L || r.uid <= 0L || r.uid == uid)) {
+                        if (!allianceAbbr.equals(r.allianceAbbr)) {
+                            r.allianceAbbr = allianceAbbr;
+                            changed = true;
+                        }
+                        if (uid > 0L && r.uid <= 0L) {
+                            r.uid = uid;
+                            changed = true;
+                        }
+                    }
+                }
+                if (changed) saveRoles(ctx, fpid, roles);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
     /** 登录成功后登记/刷新角色（按 (serverid,uid) 去重；无 serverid 也可登记 uid=0 槽）。 */
     public static void registerRole(Context ctx, String fpid, long serverid, long uid, String name) {
-        registerRole(ctx, fpid, serverid, uid, name, 0, 0, "");
+        registerRole(ctx, fpid, serverid, uid, name, 0, 0, "", "");
     }
 
     /**
@@ -121,6 +150,12 @@ public class RoleStore {
      */
     public static void registerRole(Context ctx, String fpid, long serverid, long uid, String name,
                                     long level, long power, String alliance) {
+        registerRole(ctx, fpid, serverid, uid, name, level, power, alliance, "");
+    }
+
+    /** 带联盟简称版（角色列表统一展示 {serverid}-{abbr}-{name} 的数据来源）。 */
+    public static void registerRole(Context ctx, String fpid, long serverid, long uid, String name,
+                                    long level, long power, String alliance, String allianceAbbr) {
         if (fpid == null || fpid.isEmpty()) return;
         synchronized (WRITE_LOCK) {
             try {
@@ -140,6 +175,7 @@ public class RoleStore {
                 if (level > 0) hit.level = level;
                 if (power > 0) hit.power = power;
                 if (alliance != null && !alliance.isEmpty()) hit.alliance = alliance;
+                if (allianceAbbr != null && !allianceAbbr.isEmpty()) hit.allianceAbbr = allianceAbbr;
                 saveRoles(ctx, fpid, list);
             } catch (Throwable ignored) {
             }
@@ -203,6 +239,7 @@ public class RoleStore {
                         if (keep.level <= 0) keep.level = target.level;
                         if (keep.power <= 0) keep.power = target.power;
                         if (keep.alliance == null || keep.alliance.isEmpty()) keep.alliance = target.alliance;
+                        if (keep.allianceAbbr == null || keep.allianceAbbr.isEmpty()) keep.allianceAbbr = target.allianceAbbr;
                         list.remove(idx);
                     }
                 }
@@ -268,6 +305,7 @@ public class RoleStore {
                 o.put("level", r.level);
                 o.put("power", r.power);
                 o.put("alliance", r.alliance == null ? "" : r.alliance);
+                o.put("allianceAbbr", r.allianceAbbr == null ? "" : r.allianceAbbr);
                 arr.put(o);
             }
             ctx.getSharedPreferences("daily_roles", Context.MODE_PRIVATE)
@@ -310,16 +348,19 @@ public class RoleStore {
             long lv = num(base.get("lv"));
             long power = num(base.get("power"));
             String alliance = "";
+            String allianceAbbr = "";
             try {
                 java.util.Map<String, Object> ai = engine.notifyData("notify_alliance_init");
                 Object all = ai == null ? null : ai.get("alliance");
                 if (all instanceof java.util.Map) {
                     Object n = ((java.util.Map<?, ?>) all).get("name");
                     if (n instanceof String) alliance = (String) n;
+                    Object ab = ((java.util.Map<?, ?>) all).get("abbr");
+                    if (ab instanceof String) allianceAbbr = (String) ab;
                 }
             } catch (Throwable ignored) {
             }
-            registerRole(ctx, fpid, kid, uid, name, lv, power, alliance);
+            registerRole(ctx, fpid, kid, uid, name, lv, power, alliance, allianceAbbr);
             try {
                 DailyRunner.debugLog(ctx, "syncRoleMeta: ok fpid=" + fpid + " kid=" + kid
                         + " uid=" + uid + " name=" + name + " lv=" + lv + " power=" + power);

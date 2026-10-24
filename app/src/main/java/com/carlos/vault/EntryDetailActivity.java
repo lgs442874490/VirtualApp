@@ -431,20 +431,14 @@ public class EntryDetailActivity extends Activity {
             mid.setOrientation(LinearLayout.VERTICAL);
             mid.setPadding(dp(12), 0, dp(8), 0);
             TextView nm = new TextView(this);
-            nm.setText(RoleDisplay.roleName(r.name));
+            nm.setText(RoleDisplay.roleListLabel(r));
             nm.setTextSize(15);
             nm.setTypeface(Typeface.DEFAULT_BOLD);
             nm.setTextColor(UiStyle.INK);
             nm.setMaxLines(1);
             nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
             mid.addView(nm);
-            TextView sub = new TextView(this);
-            // 标准展示：K888 · UID 88280792 · 城堡 70 级 · 战力 20784万（缺失段「未同步」）
-            sub.setText(RoleDisplay.roleMetaLine(r.serverid, r.uid, r.level, r.power));
-            sub.setTextSize(11.5f);
-            sub.setTextColor(UiStyle.INK2);
-            sub.setPadding(0, dp(3), 0, 0);
-            mid.addView(sub);
+            // 统一角色标签已含服务器/联盟/昵称，不再追加元数据行
             // 统一状态行（服务器模式 cachedStatusOf / 本地模式会话快照；与账号页同源）
             TextView stv = new TextView(this);
             String[] st = RoleManagerSheet.roleStatusLabel(this, acc, r);

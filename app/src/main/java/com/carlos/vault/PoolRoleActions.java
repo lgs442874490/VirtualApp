@@ -201,8 +201,7 @@ public final class PoolRoleActions {
     public static void showMenu(final Activity act, final AccountStore.Account a,
                                 final RoleStore.Role r, final boolean poolEnabled,
                                 final OnDone onDone) {
-        String title = RoleDisplay.roleName(r.name) + " · "
-                + RoleDisplay.roleMetaLine(r.serverid, r.uid, r.level, r.power);
+        String title = RoleDisplay.roleListLabel(r);
         new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle(title)
                 .setItems(new String[]{
