@@ -1042,7 +1042,7 @@ public final class ServerFieldTasks {
 
         // B2-T4 暂停协调（1:1 网页版 DailyGatherService.pauseBeforeDispatch:694-712）：
         // 情报待办优先 / 巨熊活动窗口时让位，避免抢队列。
-        String pauseReason = gatherPauseReason(lib, System.currentTimeMillis() / 1000L);
+        String pauseReason = gatherPauseReason(lib, System.currentTimeMillis() / 1000L, tc);
         if (pauseReason != null) {
             m.skip(pauseReason);
             tc.saveModText("gather", "send", pauseReason);
@@ -1509,6 +1509,11 @@ public final class ServerFieldTasks {
 
     /** 采集暂停原因（资产库事实）：巨熊活动窗口 / 情报待办优先；null=可派。 */
     static String gatherPauseReason(CoreAssetLibrary lib, long nowSec) {
+        return gatherPauseReason(lib, nowSec, null);
+    }
+
+    /** 同 {@link #gatherPauseReason(CoreAssetLibrary, long)}；tc 非空时排除“去重窗内不可派”的情报事件。 */
+    static String gatherPauseReason(CoreAssetLibrary lib, long nowSec, TaskContext tc) {
         if (lib == null || !lib.ready()) return null;
         AssetSnapshot.Bear bear = lib.bear();
         long reserve = bear == null ? 0L : bear.reserveTime;
@@ -1516,7 +1521,7 @@ public final class ServerFieldTasks {
         long end = bear == null ? 0L : bear.massEndTime;
         int intel = 0;
         try {
-            intel = intelGatherPriorityCount(lib.intel(), lib.stamina(), nowSec);
+            intel = intelGatherPriorityCount(lib.intel(), lib.stamina(), nowSec, tc);
         } catch (Throwable ignored) {
         }
         return gatherPauseReason(reserve, start, end, intel, nowSec);
@@ -1531,6 +1536,14 @@ public final class ServerFieldTasks {
      */
     static int intelGatherPriorityCount(AssetSnapshot.Intel intel, AssetSnapshot.Stamina stamina,
                                         long nowSec) {
+        return intelGatherPriorityCount(intel, stamina, nowSec, null);
+    }
+
+    /** 同 {@link #intelGatherPriorityCount(AssetSnapshot.Intel, AssetSnapshot.Stamina, long)}；
+     *  tc 非空时排除情报去重窗内（已尝试派出/失败阻塞）的事件——否则 301 英雄占用类无法派出的事件
+     *  会永久阻塞采集（生产实证：14 条事件全部 301 → 采集持续让位）。 */
+    static int intelGatherPriorityCount(AssetSnapshot.Intel intel, AssetSnapshot.Stamina stamina,
+                                        long nowSec, TaskContext tc) {
         if (intel == null || intel.events == null || intel.events.isEmpty()) return 0;
         int count = 0;
         for (AssetSnapshot.IntelEvent e : intel.events.values()) {
@@ -1538,6 +1551,7 @@ public final class ServerFieldTasks {
             if (e.expireTs > 0L && e.expireTs <= nowSec) continue;
             int type = intelEventType(e.eventId);
             if (type == 0 || type == 3 || type == 11) continue;   // PVE / 活动巨兽不占普通队列
+            if (tc != null && intelDispatchBlocked(tc, e.id, nowSec * 1000L)) continue;
             count++;
         }
         if (count <= 0) return 0;
@@ -1828,12 +1842,15 @@ public final class ServerFieldTasks {
                                 if (staminaKnown) usableStamina = Math.max(0L, usableStamina - staminaCost);
                             } else {
                                 waiting++;
+                                markIntelDispatched(tc, id, now);   // 失败计入去重窗，避免 15s 重试风暴+阻塞采集
                                 appendWait(waits, "英雄之旅结算码" + Exec.codeOf(en));
                             }
                         } else {
+                            int sc = Exec.codeOf(st);
                             waiting++;
-                            appendWait(waits, "英雄之旅码" + Exec.codeOf(st));
-                            if (Exec.codeOf(st) == 51) break;   // 体力不足：本轮停止，等恢复（避免连续失败刷请求）
+                            if (sc != 51) markIntelDispatched(tc, id, now);   // 非体力失败：计入去重窗
+                            appendWait(waits, "英雄之旅码" + sc);
+                            if (sc == 51) break;   // 体力不足：本轮停止，等恢复（避免连续失败刷请求）
                         }
                     } else if (worldMarch) {
                         long marchType = type == 2 ? 301L : 302L;
@@ -1841,6 +1858,7 @@ public final class ServerFieldTasks {
                         Map<String, Object> formation = formationFor(tc, "intel", 1, formationWhy);
                         if (formation == null) {
                             waiting++;
+                            markIntelDispatched(tc, id, now);   // 编队不可用同样计入去重窗
                             appendWait(waits, formationWhy.length() > 0
                                     ? "编队：" + formationWhy : "无英雄可派");
                             continue;
@@ -1859,6 +1877,7 @@ public final class ServerFieldTasks {
                         } else {
                             int mc = Exec.codeOf(march);
                             waiting++;
+                            if (mc != 51) markIntelDispatched(tc, id, now);   // 非体力失败：计入去重窗（修采集饿死）
                             appendWait(waits, "派队码" + mc);
                             if (mc == 51) break;   // 体力不足：本轮停止，等恢复（避免连续失败刷请求）
                         }
