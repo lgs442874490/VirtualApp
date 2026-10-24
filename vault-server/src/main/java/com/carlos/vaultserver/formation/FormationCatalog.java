@@ -206,6 +206,28 @@ public final class FormationCatalog {
         long now = System.currentTimeMillis();
         int capacity = worldCapacity(engine);
         List<Hero> heroes = heroesOf(engine.notifyData("notify_hero_init"));
+        // 诊断（301 排查）：英雄目录解析结果 + 原始帧前 2 条（截断），便于核对字段形状
+        try {
+            StringBuilder raw = new StringBuilder();
+            Map<String, Object> hi = engine.notifyData("notify_hero_init");
+            if (hi != null) {
+                int n = 0;
+                for (Object v : hi.values()) {
+                    if (n++ >= 2) break;
+                    raw.append(String.valueOf(v));
+                    if (raw.length() > 900) break;
+                }
+            }
+            StringBuilder parsed = new StringBuilder();
+            for (int i = 0; i < Math.min(3, heroes.size()); i++) {
+                Hero h = heroes.get(i);
+                parsed.append("{id=").append(h.id).append(",lv=").append(h.level)
+                        .append(",star=").append(h.star).append(",status=").append(h.status).append('}');
+            }
+            com.carlos.vaultserver.FileLog.info("hero catalog heroes={} parsed={} raw={}", heroes.size(),
+                    parsed.toString(), raw.length() > 900 ? raw.substring(0, 900) : raw.toString());
+        } catch (Throwable ignored) {
+        }
         Map<Long, Long> soldiers = Exec.soldiers(engine);
         long[] bestIds = Exec.bestSoldierIds(soldiers);
         long[] stock = baseStock(soldiers, bestIds);

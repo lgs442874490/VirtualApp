@@ -599,9 +599,7 @@ public class BearFormationTest {
 
     private static ServerBearTasks.JoinSlotPlan joinPlan(int slotId, List<Long> heroes) {
         Map<String, Object> payload = new LinkedHashMap<>();
-        List<Map<String, Object>> heroPairs = new ArrayList<>();
-        for (Long h : heroes) heroPairs.add(Exec.kv(h, 1L));
-        payload.put("hero_id", heroPairs);
+        payload.put("hero_id", Exec.heroPairs(heroes));
         payload.put("soldier", Arrays.asList(Exec.kv(11000L, 1000L)));
         ServerBearTasks.JoinFormationConfig slot = joinSlot(slotId, true, "ROLE", slotId);
         return new ServerBearTasks.JoinSlotPlan(slot, payload, "来源=ROLE#" + slotId, "");

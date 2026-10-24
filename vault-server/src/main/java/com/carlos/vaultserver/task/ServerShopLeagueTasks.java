@@ -1924,18 +1924,14 @@ public final class ServerShopLeagueTasks {
     /** 构造报名 formation 载荷（网页版 DailyResolvedFormation → {hero_id, soldier} 同形状）。 */
     static Map<String, Object> showdownFormationPayload(ShowdownFormation formation,
                                                         long[] soldierIds) {
-        List<Map<String, Object>> heroPairs = new ArrayList<>();
-        if (formation != null && formation.heroIds() != null) {
-            for (Long hero : formation.heroIds()) {
-                if (hero != null && hero > 0L) heroPairs.add(Exec.kv(hero, 1L));
-            }
-        }
+        List<Map<String, Object>> heroPairs = Exec.heroPairs(
+                formation == null ? null : formation.heroIds());
         List<Map<String, Object>> soldierPairs = new ArrayList<>();
         long[] counts = formation == null ? null : formation.soldierCounts();
         if (counts != null && soldierIds != null) {
             for (int i = 0; i < Math.min(3, Math.min(counts.length, soldierIds.length)); i++) {
                 if (counts[i] > 0L && soldierIds[i] > 0L) {
-                    soldierPairs.add(Exec.kv(soldierIds[i], counts[i]));
+                    soldierPairs.add(Exec.soldierPair(soldierIds[i], counts[i]));
                 }
             }
         }

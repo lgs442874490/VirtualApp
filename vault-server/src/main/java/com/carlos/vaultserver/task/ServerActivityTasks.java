@@ -632,7 +632,7 @@ public final class ServerActivityTasks {
                     List<Long> heroes = ServerTownTasks.squadHeroes(tc.engine);
                     if (!heroes.isEmpty()) {
                         Map<String, Object> formation = Exec.args(
-                                "hero_id", java.util.Collections.singletonList(Exec.kv(heroes.get(0), 1)),
+                                "hero_id", java.util.Collections.singletonList(Exec.heroPair(1L, heroes.get(0))),
                                 "soldier", new ArrayList<>());
                         GameMessage march = tc.engine.request("req_world_march", Exec.args(
                                 "type", 1201L, "endpoint", Exec.point(0, 0),

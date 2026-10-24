@@ -110,6 +110,37 @@ public final class Exec {
         return m;
     }
 
+    /**
+     * 英雄出征位次对（sproto {@code pair_int_int} 语义：k=上阵位次 1..n，v=英雄 id）。
+     * 实证：真实行军推送 {@code hero_id:{"1.0":{"k":1,"v":50002}}}；网页版
+     * {@code DailyMarchFormationResolver.heroPairs} = {@code pair(index+1, heroId)}。
+     */
+    public static Map<String, Object> heroPair(long position, long heroId) {
+        return kv(position, heroId);
+    }
+
+    /** 英雄 id 列表 → 位次对（自动编号 1..n；跳过非正 id）。 */
+    public static List<Map<String, Object>> heroPairs(List<Long> heroIds) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (heroIds == null) return out;
+        long position = 0L;
+        for (Long id : heroIds) {
+            if (id == null || id <= 0L) continue;
+            position++;
+            out.add(heroPair(position, id));
+        }
+        return out;
+    }
+
+    /**
+     * 士兵出征对：c2s schema 的 {@code formation.soldier[]} 元素类型是 {@code pair_int_int}（k,v），
+     * 语义 k=兵种 id、v=数量（与 s2c 推送里的 formation_soldier{id,count} 是同一数据的两套 schema
+     * 命名，请求侧必须用 k/v，否则编码为空结构）。
+     */
+    public static Map<String, Object> soldierPair(long soldierId, long count) {
+        return kv(soldierId, count);
+    }
+
     public static Map<String, Object> point(long x, long y) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("x", x);
@@ -298,11 +329,10 @@ public final class Exec {
             long[] want = new long[]{wantShield, wantSpear, wantBow};
             long[] ids = bestSoldierIds(sol);
             for (int i = 0; i < 3; i++) {
-                if (want[i] > 0) soldierPairs.add(kv(ids[i], want[i]));
+                if (want[i] > 0) soldierPairs.add(soldierPair(ids[i], want[i]));
             }
         }
-        List<Map<String, Object>> heroPairs = new ArrayList<>();
-        for (long h : heroes) heroPairs.add(kv(h, 1));
+        List<Map<String, Object>> heroPairs = heroPairs(heroes);
         Map<String, Object> f = new LinkedHashMap<>();
         f.put("hero_id", heroPairs);
         f.put("soldier", soldierPairs);

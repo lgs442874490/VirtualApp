@@ -48,7 +48,7 @@ public class HeroAvailabilityTest {
     @Test
     public void heroIdsFromPayload() {
         Map<String, Object> payload = Map.of("hero_id", List.of(
-                Map.of("k", 50001L, "v", 1L), Map.of("k", 50002L, "v", 1L)));
+                Map.of("k", 1L, "v", 50001L), Map.of("k", 2L, "v", 50002L)));
         List<Long> ids = HeroAvailability.heroIdsOf(payload);
         assertEquals(Arrays.asList(50001L, 50002L), ids);
         assertTrue(HeroAvailability.heroIdsOf(null).isEmpty());
@@ -61,5 +61,18 @@ public class HeroAvailabilityTest {
                 return new byte[0];
             }
         });
+    }
+
+    @Test
+    public void autoHeroLimit_adaptiveOn415() {
+        WjdrEngine e = engine();
+        assertEquals(HeroAvailability.DEFAULT_AUTO_HEROES, HeroAvailability.autoHeroLimit(e));
+        assertEquals(4, HeroAvailability.noteHeroCountRejected(e, 5));
+        assertEquals(4, HeroAvailability.autoHeroLimit(e));
+        assertEquals(3, HeroAvailability.noteHeroCountRejected(e, 4));
+        assertEquals(1, HeroAvailability.noteHeroCountRejected(e, 1));
+        assertEquals(1, HeroAvailability.autoHeroLimit(e));
+        HeroAvailability.clearHeroLimitHint(e);
+        assertEquals(HeroAvailability.DEFAULT_AUTO_HEROES, HeroAvailability.autoHeroLimit(e));
     }
 }
