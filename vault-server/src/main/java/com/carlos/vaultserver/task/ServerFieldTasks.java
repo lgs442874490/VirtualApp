@@ -8,6 +8,7 @@ import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.formation.FormationLibrary;
+import com.carlos.vaultserver.formation.HeroAvailability;
 import com.carlos.vaultserver.formation.FormationResolver;
 import com.carlos.vaultserver.formation.ResolvedFormation;
 
@@ -141,6 +142,9 @@ public final class ServerFieldTasks {
                             if (code == 2878 || code == 401) {
                                 m.skip("派出" + sent + "后受阻(码" + code + ")");
                                 return finishGather(tc, m, marchSnapshot);
+                            }
+                            if (code == GATHER_ERR_HERO_AWAY) {
+                                blockHeroesOn301(tc.engine, formation);   // 301：拉黑英雄，继续下一个候选
                             }
                         }
                     }
@@ -902,6 +906,9 @@ public final class ServerFieldTasks {
     /** 单队列每轮搜索次数上限（等级 1-9 递减，防请求风暴）。 */
     static final int GATHER_MAX_SEARCHES_PER_QUEUE = GatherConfigV2.MAX_RESOURCE_LEVEL;
 
+    /** 301=英雄不在城（换编队候选；与守护盟友/巨熊同码表语义）。 */
+    static final int GATHER_ERR_HERO_AWAY = 301;
+
     /** v2 单队列执行计划（纯函数产物：资源 res_id、等级递减序列、每队列编队参数）。 */
     static final class QueuePlan {
         final int queueId;
@@ -1166,6 +1173,11 @@ public final class ServerFieldTasks {
             } else if (code == GATHER_ERR_HERO_BUSY) {
                 statuses.add(label + " 英雄占用(403)");
                 m.subSkip("queue" + q.id, "英雄占用(403)");
+            } else if (code == GATHER_ERR_HERO_AWAY) {
+                // 301=英雄不在城：拉黑本轮编队英雄，下一队列/下一轮换候选
+                blockHeroesOn301(tc.engine, formation);
+                statuses.add(label + " 英雄不在城(301)，已轮换候选");
+                m.subSkip("queue" + q.id, "英雄不在城(301)");
             } else if (code == GATHER_ERR_TARGET_GONE || code == GATHER_ERR_TARGET_REFRESHED) {
                 statuses.add(label + " 矿点变化(" + code + ")，下轮重搜");
                 m.subSkip("queue" + q.id, "矿点变化(" + code + ")");
@@ -1288,6 +1300,18 @@ public final class ServerFieldTasks {
             }
             FileLog.warn("gather 编队异常 fpid={} queue#{}：{}", tc.fpid, plan.queueId, String.valueOf(t));
             return null;
+        }
+    }
+
+    /** 301=英雄不在城：把本次编队英雄拉黑 10 分钟，下一轮自动编队换候选（对齐守护盟友策略）。 */
+    static void blockHeroesOn301(WjdrEngine engine, Map<String, Object> formation) {
+        try {
+            List<Long> heroIds = HeroAvailability.heroIdsOf(formation);
+            if (!heroIds.isEmpty()) {
+                HeroAvailability.block(engine, heroIds, HeroAvailability.DEFAULT_BLOCK_MILLIS);
+                FileLog.info("301 英雄拉黑 fpid-less engine={} heroes={}", String.valueOf(heroIds));
+            }
+        } catch (Throwable ignored) {
         }
     }
 
@@ -1877,6 +1901,7 @@ public final class ServerFieldTasks {
                         } else {
                             int mc = Exec.codeOf(march);
                             waiting++;
+                            if (mc == GATHER_ERR_HERO_AWAY) blockHeroesOn301(tc.engine, formation);
                             if (mc != 51) markIntelDispatched(tc, id, now);   // 非体力失败：计入去重窗（修采集饿死）
                             appendWait(waits, "派队码" + mc);
                             if (mc == 51) break;   // 体力不足：本轮停止，等恢复（避免连续失败刷请求）

@@ -318,6 +318,8 @@ public final class FormationResolver {
         int cap = Math.max(1, Math.min(MAX_AUTO_HEROES, max));
         List<Long> out = new ArrayList<>();
         for (FormationCatalog.Hero h : FormationCatalog.heroes(engine)) {
+            // 301 拉黑窗内英雄跳过（换下一批候选；全部拉黑由调用方 SKIP）
+            if (HeroAvailability.isBlocked(engine, h.id)) continue;
             if (out.size() >= cap) break;
             out.add(h.id);
         }
