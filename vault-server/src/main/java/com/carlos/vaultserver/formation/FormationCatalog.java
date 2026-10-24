@@ -282,7 +282,7 @@ public final class FormationCatalog {
         if (id <= 0) id = Exec.longOf(m.get("hero_id"));
         if (id <= 0) return null;
         String name = str(m, "name", "nickName", "nick_name");
-        long level = firstLong(m, "level", "lv");
+        long level = firstLong(m, "level", "lv", "lev");
         long star = firstLong(m, "star", "star_lv", "starLevel");
         long power = firstLong(m, "power", "fight_num", "fight_capacity");
         String status = str(m, "status", "state");
