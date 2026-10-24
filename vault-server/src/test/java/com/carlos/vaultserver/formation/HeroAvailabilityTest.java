@@ -67,12 +67,24 @@ public class HeroAvailabilityTest {
     public void autoHeroLimit_adaptiveOn415() {
         WjdrEngine e = engine();
         assertEquals(HeroAvailability.DEFAULT_AUTO_HEROES, HeroAvailability.autoHeroLimit(e));
-        assertEquals(4, HeroAvailability.noteHeroCountRejected(e, 5));
-        assertEquals(4, HeroAvailability.autoHeroLimit(e));
-        assertEquals(3, HeroAvailability.noteHeroCountRejected(e, 4));
+        assertEquals(2, HeroAvailability.noteHeroCountRejected(e, 5));
+        assertEquals(2, HeroAvailability.autoHeroLimit(e));
+        assertEquals(1, HeroAvailability.noteHeroCountRejected(e, 2));
         assertEquals(1, HeroAvailability.noteHeroCountRejected(e, 1));
         assertEquals(1, HeroAvailability.autoHeroLimit(e));
         HeroAvailability.clearHeroLimitHint(e);
         assertEquals(HeroAvailability.DEFAULT_AUTO_HEROES, HeroAvailability.autoHeroLimit(e));
+    }
+
+    @Test
+    public void soldierScale_adaptiveOn406() {
+        WjdrEngine e = engine();
+        assertEquals(100, HeroAvailability.soldierScalePercent(e));
+        assertEquals(75, HeroAvailability.noteSoldierLimitRejected(e));
+        assertEquals(50, HeroAvailability.noteSoldierLimitRejected(e));
+        assertEquals(25, HeroAvailability.noteSoldierLimitRejected(e));
+        assertEquals(25, HeroAvailability.noteSoldierLimitRejected(e));
+        HeroAvailability.clear(e);
+        assertEquals(100, HeroAvailability.soldierScalePercent(e));
     }
 }

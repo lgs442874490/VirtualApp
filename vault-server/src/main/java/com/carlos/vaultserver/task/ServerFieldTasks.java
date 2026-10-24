@@ -3,6 +3,7 @@ package com.carlos.vaultserver.task;
 import com.carlos.vault.daily.gather.GatherConfigV2;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.asset.AssetSnapshot;
+import com.carlos.vault.wjdr.asset.MarchCapacityCalculator;
 import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
 import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vault.wjdr.protocol.GameMessage;
@@ -917,6 +918,8 @@ public final class ServerFieldTasks {
     static final int GATHER_ERR_HERO_AWAY = 301;
     /** 415=编队人数/配置超限（新号英雄上阵位不足等；下调自动编队英雄数重试）。 */
     static final int GATHER_ERR_FORMATION_LIMIT = 415;
+    /** 406=编队士兵数量达到允许上限（按兵力缩放比例自适应，配合容量夹取）。 */
+    static final int GATHER_ERR_SOLDIER_LIMIT = 406;
 
     /** v2 单队列执行计划（纯函数产物：资源 res_id、等级递减序列、每队列编队参数）。 */
     static final class QueuePlan {
@@ -1056,6 +1059,10 @@ public final class ServerFieldTasks {
             return;
         }
 
+        // 采集加速维护（网页版 gatherSpeedupBlocked/GatherSpeedupLevel：8h=302000/250钻、24h=302001/600钻；
+        // 默认仅用背包道具，钻石购买显式开启才花钻）
+        maintainGatherSpeedup(tc, cfg, lib);
+
         // B2-T4 暂停协调（1:1 网页版 DailyGatherService.pauseBeforeDispatch:694-712）：
         // 情报待办优先 / 巨熊活动窗口时让位，避免抢队列。
         String pauseReason = gatherPauseReason(lib, System.currentTimeMillis() / 1000L, tc);
@@ -1192,6 +1199,14 @@ public final class ServerFieldTasks {
                 int next = HeroAvailability.noteHeroCountRejected(tc.engine, used);
                 statuses.add(label + " 编队人数超限(415)，下轮改 " + next + " 英雄");
                 m.subSkip("queue" + q.id, "编队人数超限(415)");
+            } else if (code == GATHER_ERR_SOLDIER_LIMIT) {
+                int scale = HeroAvailability.noteSoldierLimitRejected(tc.engine);
+                List<Long> usedHeroes = HeroAvailability.heroIdsOf(formation);
+                FileLog.warn("gather 406 fpid={} queue#{} heroes={} soldiers={} capacity={} scale→{}%",
+                        tc.fpid, q.id, usedHeroes, formation.get("soldier"),
+                        MarchCapacityCalculator.capacityFor(tc.engine, usedHeroes), scale);
+                statuses.add(label + " 士兵超上限(406)，兵力缩放至" + scale + "%");
+                m.subSkip("queue" + q.id, "士兵超上限(406)");
             } else if (code == GATHER_ERR_HERO_AWAY) {
                 // 301=英雄不在城：拉黑本轮编队英雄，下一队列/下一轮换候选
                 blockHeroesOn301(tc.engine, formation);
@@ -1534,6 +1549,143 @@ public final class ServerFieldTasks {
             tc.store.putString(gatherQueueKey(tc), encodeQueueMapping(mapping));
         } catch (Throwable ignored) {
         }
+    }
+
+    // ---------- 采集加速（GatherSpeedup，默认关；缺道具不花钻） ----------
+
+    static final String GATHER_SPEEDUP_STATE_KEY_PREFIX = "srv:gather:speedup:";
+
+    static String gatherSpeedupStateKey(TaskContext tc) {
+        return GATHER_SPEEDUP_STATE_KEY_PREFIX + tc.fpid + ":" + tc.sid;
+    }
+
+    /**
+     * 维持采集加速 buff：已生效 → 跳过；否则优先用背包道具（302000/302001），
+     * 背包无道具且显式开启钻石购买 → {@code req_shop_quick_buy}（按日预算限流）。
+     * 失败只写 mod 文案，不阻塞采集派队。
+     */
+    static void maintainGatherSpeedup(TaskContext tc, GatherConfigV2 cfg, CoreAssetLibrary lib) {
+        if (cfg == null || !cfg.speedupEnabled) return;
+        try {
+            long now = System.currentTimeMillis();
+            int hours = cfg.speedupHours == 24 ? 24 : 8;
+            long itemId = GatherConfigV2.speedupItemId(hours);
+            JSONObject st = gatherSpeedupState(tc);
+            long appliedAt = st.optLong("appliedAt", 0L);
+            if (GatherConfigV2.speedupActive(appliedAt, hours, now)) {
+                tc.saveModText("gather", "speedup",
+                        (hours == 24 ? "24小时" : "8小时") + "采集加速生效中");
+                return;
+            }
+            long stock = itemCountOf(lib, tc.engine, itemId);
+            if (stock > 0L) {
+                GameMessage use = tc.engine.request("req_use_item", Exec.args(
+                        "id", itemId, "count", 1L, "extra", new LinkedHashMap<String, Object>()));
+                if (Exec.ok(use)) {
+                    st.put("appliedAt", now);
+                    st.put("itemId", itemId);
+                    st.put("hours", hours);
+                    saveGatherSpeedupState(tc, st);
+                    tc.saveModText("gather", "speedup",
+                            (hours == 24 ? "24小时" : "8小时") + "采集加速已续期（道具）");
+                } else {
+                    tc.saveModText("gather", "speedup", "采集加速道具使用失败码" + Exec.codeOf(use));
+                }
+                return;
+            }
+            if (!cfg.speedupDiamondPurchaseEnabled) {
+                tc.saveModText("gather", "speedup",
+                        (hours == 24 ? "24小时" : "8小时") + "加速道具不足（未开启钻石购买）");
+                return;
+            }
+            long price = GatherConfigV2.speedupDiamondPrice(hours);
+            long day = now / 86_400_000L;
+            long spent = st.optLong("day", 0L) == day ? st.optLong("spent", 0L) : 0L;
+            long limit = Math.max(0L, cfg.speedupDiamondDailyLimit);
+            if (spent + price > limit) {
+                tc.saveModText("gather", "speedup",
+                        "采集加速今日钻石预算已用尽(" + spent + "/" + limit + ")");
+                return;
+            }
+            GameMessage buy = tc.engine.request("req_shop_quick_buy", Exec.args(
+                    "id", itemId, "count", 1L, "use", true));
+            if (Exec.ok(buy)) {
+                st.put("appliedAt", now);
+                st.put("itemId", itemId);
+                st.put("hours", hours);
+                st.put("day", day);
+                st.put("spent", spent + price);
+                saveGatherSpeedupState(tc, st);
+                tc.saveModText("gather", "speedup",
+                        (hours == 24 ? "24小时" : "8小时") + "采集加速已续期（钻石-" + price + "）");
+            } else {
+                tc.saveModText("gather", "speedup", "采集加速钻石购买失败码" + Exec.codeOf(buy));
+            }
+        } catch (Throwable t) {
+            try {
+                tc.saveModText("gather", "speedup", "采集加速异常：" + ServerTasks.brief(String.valueOf(t.getMessage())));
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    static JSONObject gatherSpeedupState(TaskContext tc) {
+        try {
+            String raw = tc.store.getString(gatherSpeedupStateKey(tc));
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+        } catch (Throwable t) {
+            return new JSONObject();
+        }
+    }
+
+    static void saveGatherSpeedupState(TaskContext tc, JSONObject st) {
+        try {
+            tc.store.putString(gatherSpeedupStateKey(tc), st == null ? "{}" : st.toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 背包道具数量：资产库 backpack 优先；回退登录背包推送解析。 */
+    static long itemCountOf(CoreAssetLibrary lib, WjdrEngine engine, long itemId) {
+        try {
+            if (lib != null && lib.ready()) {
+                long n = lib.backpack().get(itemId);
+                if (n > 0L) return n;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Map<String, Object> bp = engine.notifyData("notify_backpack_init");
+            if (bp == null) bp = engine.notifyData("notify_backpack_update");
+            return backpackCount(bp, itemId);
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    /** 背包推送解析（data Map/List；元素 {id,count} 或 map 形 "302000.0"）。 */
+    static long backpackCount(Map<String, Object> backpack, long itemId) {
+        if (backpack == null || itemId <= 0L) return 0L;
+        Object data = backpack.get("data");
+        if (data == null) data = backpack;
+        if (data instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) data).entrySet()) {
+                long id = queueTechNumericId(e.getKey());
+                Object v = e.getValue();
+                long count = v instanceof Map ? Exec.longOf(Exec.mapOf(v).get("count")) : Exec.longOf(v);
+                if (v instanceof Map) {
+                    Map<String, Object> m = Exec.mapOf(v);
+                    if (id <= 0L) id = Exec.longOf(m.get("id"));
+                    count = Exec.longOf(m.get("count"));
+                }
+                if (id == itemId) return count;
+            }
+        } else {
+            for (Map<String, Object> m : Exec.mapsOf(data)) {
+                if (Exec.longOf(m.get("id")) == itemId) return Exec.longOf(m.get("count"));
+            }
+        }
+        return 0L;
     }
 
     /** 王国可采资源等级上限：资产库 clock.maxResourceLevel 优先，其次 kingdomDay 推导，未知=8。 */

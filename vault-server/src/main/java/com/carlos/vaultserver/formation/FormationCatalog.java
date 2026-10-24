@@ -4,6 +4,7 @@ import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.asset.AssetSnapshot;
 import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
 import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
+import com.carlos.vault.wjdr.asset.HeroCatalog;
 import com.carlos.vaultserver.task.Exec;
 
 import java.util.ArrayList;
@@ -48,6 +49,8 @@ public final class FormationCatalog {
         public final long star;
         public final long power;
         public final String status;
+        /** 职业：1=盾兵、2=矛兵、3=射手（游戏每队列只能上阵盾/矛/弓各一）。 */
+        public final int profession;
 
         Hero(long id, String name, long level, long star, long power, String status) {
             this.id = id;
@@ -56,6 +59,7 @@ public final class FormationCatalog {
             this.star = star;
             this.power = power;
             this.status = status == null ? "" : status;
+            this.profession = HeroCatalog.profession(id);
         }
 
         Map<String, Object> toMap() {
@@ -66,6 +70,7 @@ public final class FormationCatalog {
             m.put("star", star);
             m.put("power", power);
             m.put("status", status);
+            m.put("profession", profession);
             return m;
         }
     }
@@ -206,6 +211,40 @@ public final class FormationCatalog {
         return catalog(engine).capacity;
     }
 
+    /**
+     * 入站推送增量（SessionKeeper 资产库钩子调用）：目前维护兵力库存。
+     *
+     * <p>{@code notify_soldier_update{type:add|del,data:[{id,count}]}}：出征带走/回城归还兵力，
+     * 登录 {@code notify_soldier_init} 之后必须增量更新，否则编队库存是旧的（生产 401 士兵不足根因）。
+     * 增量只作用于已 capture 的缓存；缓存不存在时忽略（下次 capture 从 init 全量重建）。
+     */
+    public static void onNotify(WjdrEngine engine, String proto, Map<String, Object> content) {
+        if (engine == null || proto == null || content == null) return;
+        if (!"notify_soldier_update".equals(proto)) return;
+        try {
+            Snapshot old = CACHE.get(engine);
+            if (old == null) return;
+            Map<Long, Long> counts = new LinkedHashMap<>(old.soldierCounts);
+            boolean del = "del".equals(String.valueOf(content.get("type")));
+            for (Map<String, Object> item : Exec.mapsOf(content.get("data"))) {
+                long id = Exec.longOf(item.get("id"));
+                long n = Math.max(0L, Exec.longOf(item.get("count")));
+                if (id <= 0L) continue;
+                if (del) {
+                    long left = Math.max(0L, counts.getOrDefault(id, 0L) - n);
+                    if (left <= 0L) counts.remove(id); else counts.put(id, left);
+                } else {
+                    counts.merge(id, n, Long::sum);
+                }
+            }
+            long[] bestIds = Exec.bestSoldierIds(counts);
+            long[] stock = baseStock(counts, bestIds);
+            CACHE.put(engine, new Snapshot(old.capturedAt, old.capacity, old.heroes,
+                    bestIds, counts, stock));
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 单测：清空指定引擎缓存。 */
     public static void reset(WjdrEngine engine) {
         if (engine != null) CACHE.remove(engine);
@@ -328,6 +367,7 @@ public final class FormationCatalog {
         if (id <= 0) id = Exec.longOf(m.get("hero_id"));
         if (id <= 0) return null;
         String name = str(m, "name", "nickName", "nick_name");
+        if (name.isEmpty()) name = HeroCatalog.name(id);   // hero_init 无 name 字段：用内置目录补名
         long level = firstLong(m, "level", "lv", "lev");
         long star = firstLong(m, "star", "star_lv", "starLevel");
         long power = firstLong(m, "power", "fight_num", "fight_capacity");

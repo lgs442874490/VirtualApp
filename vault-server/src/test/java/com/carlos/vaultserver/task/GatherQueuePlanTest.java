@@ -561,4 +561,18 @@ public class GatherQueuePlanTest {
                 com.carlos.vault.wjdr.asset.AssetSnapshot.Queue.empty();
         assertFalse(ServerFieldTasks.marchSnapshotFromAsset(empty).known());
     }
+
+    @Test
+    public void backpackCount_parsesInitAndUpdateShapes() {
+        java.util.Map<String, Object> init = new java.util.LinkedHashMap<>();
+        init.put("data", java.util.Map.of("302000.0", java.util.Map.of("id", 302000L, "count", 3L)));
+        assertEquals(3L, ServerFieldTasks.backpackCount(init, 302000L));
+        java.util.Map<String, Object> update = new java.util.LinkedHashMap<>();
+        update.put("type", "add");
+        update.put("data", java.util.Arrays.asList(
+                java.util.Map.of("id", 302001L, "count", 2L)));
+        assertEquals(2L, ServerFieldTasks.backpackCount(update, 302001L));
+        assertEquals(0L, ServerFieldTasks.backpackCount(update, 302000L));
+        assertEquals(0L, ServerFieldTasks.backpackCount(null, 302000L));
+    }
 }

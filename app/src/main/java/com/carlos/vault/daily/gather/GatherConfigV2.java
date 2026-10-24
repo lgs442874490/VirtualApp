@@ -143,6 +143,12 @@ public final class GatherConfigV2 {
     public long allianceMineLancer = DEFAULT_LANCER;
     public long allianceMineMarksman = DEFAULT_MARKSMAN;
 
+    // ---------- 采集加速（网页版 GatherSpeedupLevel：8h 302000/250钻，24h 302001/600钻） ----------
+    public boolean speedupEnabled = false;
+    public int speedupHours = 8;                 // 8 | 24
+    public boolean speedupDiamondPurchaseEnabled = false;   // 默认关：缺道具不花钻
+    public long speedupDiamondDailyLimit = 2000L;
+
     public GatherConfigV2() {
         for (int i = 1; i <= QUEUE_COUNT; i++) queues.add(new QueueCfg(i, false, defaultResource(i),
                 8, MODE_AUTOMATIC, 0L, DEFAULT_INFANTRY, DEFAULT_LANCER, DEFAULT_MARKSMAN));
@@ -210,6 +216,11 @@ public final class GatherConfigV2 {
             c.allianceMineLancer = Math.max(0L, am.optLong("lancer", DEFAULT_LANCER));
             c.allianceMineMarksman = Math.max(0L, am.optLong("marksman", DEFAULT_MARKSMAN));
         }
+        c.speedupEnabled = v2.optBoolean("gatherSpeedupEnabled", false);
+        c.speedupHours = hoursOf(v2.optString("gatherSpeedupLevel",
+                v2.optString("gather_speedup_level", HOURS_8)));
+        c.speedupDiamondPurchaseEnabled = v2.optBoolean("gatherSpeedupDiamondPurchaseEnabled", false);
+        c.speedupDiamondDailyLimit = Math.max(0L, v2.optLong("gatherSpeedupDiamondDailyLimit", 2000L));
         return c;
     }
 
@@ -290,6 +301,40 @@ public final class GatherConfigV2 {
         return c;
     }
 
+    public static final String HOURS_8 = "HOURS_8";
+    public static final String HOURS_24 = "HOURS_24";
+    public static final long SPEEDUP_ITEM_8H = 302000L;
+    public static final long SPEEDUP_ITEM_24H = 302001L;
+    public static final long SPEEDUP_DIAMOND_PRICE_8H = 250L;
+    public static final long SPEEDUP_DIAMOND_PRICE_24H = 600L;
+    public static final long SPEEDUP_DURATION_8H_SEC = 28_800L;
+    public static final long SPEEDUP_DURATION_24H_SEC = 86_400L;
+
+    static int hoursOf(String level) {
+        String v = level == null ? "" : level.trim().toUpperCase(Locale.ROOT);
+        if (HOURS_24.equals(v) || "24".equals(v) || "24H".equals(v)) return 24;
+        return 8;
+    }
+
+    public static long speedupItemId(int hours) {
+        return hours == 24 ? SPEEDUP_ITEM_24H : SPEEDUP_ITEM_8H;
+    }
+
+    public static long speedupDurationSec(int hours) {
+        return hours == 24 ? SPEEDUP_DURATION_24H_SEC : SPEEDUP_DURATION_8H_SEC;
+    }
+
+    public static long speedupDiamondPrice(int hours) {
+        return hours == 24 ? SPEEDUP_DIAMOND_PRICE_24H : SPEEDUP_DIAMOND_PRICE_8H;
+    }
+
+    /** 加速是否仍生效（提前 5 分钟视为需续期，与网页版 renewal 同口径的保守近似）。 */
+    public static boolean speedupActive(long appliedAtMs, int hours, long nowMs) {
+        if (appliedAtMs <= 0L) return false;
+        long expireAt = appliedAtMs + speedupDurationSec(hours) * 1000L;
+        return nowMs < expireAt - 5L * 60L * 1000L;
+    }
+
     // ================= 输出 / 投影 =================
 
     /** v2 子对象。 */
@@ -311,6 +356,10 @@ public final class GatherConfigV2 {
         put(am, "lancer", allianceMineLancer);
         put(am, "marksman", allianceMineMarksman);
         put(v2, "allianceMine", am);
+        put(v2, "gatherSpeedupEnabled", speedupEnabled);
+        put(v2, "gatherSpeedupLevel", speedupHours == 24 ? HOURS_24 : HOURS_8);
+        put(v2, "gatherSpeedupDiamondPurchaseEnabled", speedupDiamondPurchaseEnabled);
+        put(v2, "gatherSpeedupDiamondDailyLimit", speedupDiamondDailyLimit);
         return v2;
     }
 

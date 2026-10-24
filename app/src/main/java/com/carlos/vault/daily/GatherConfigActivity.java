@@ -414,6 +414,67 @@ public class GatherConfigActivity extends Activity {
         amTip.setTextColor(UiStyle.WARN_INK);
         amTip.setPadding(0, dp(2), 0, dp(2));
         card.addView(amTip);
+
+        // ---------- 采集加速（网页版 GatherSpeedup：8h=302000、24h=302001；钻石购买默认关） ----------
+        card.addView(UiStyle.divider(this));
+        final UiStyle.Switch[] spRef = new UiStyle.Switch[1];
+        spRef[0] = new UiStyle.Switch(this, cfg.speedupEnabled, () -> {
+            cfg.speedupEnabled = spRef[0].isOn();
+            markDirty();
+            fillGlobalCard(card);
+        });
+        card.addView(switchRow("采集加速",
+                "自动使用采集加速道具（8/24 小时）；缺道具时默认不花钻", spRef[0]));
+        if (cfg.speedupEnabled) {
+            card.addView(UiStyle.dropdownRow(this, "加速时长",
+                    cfg.speedupHours == 24 ? "24 小时" : "8 小时", () -> chooseSpeedupHours(card)));
+            final UiStyle.Switch[] buyRef = new UiStyle.Switch[1];
+            buyRef[0] = new UiStyle.Switch(this, cfg.speedupDiamondPurchaseEnabled, () -> {
+                cfg.speedupDiamondPurchaseEnabled = buyRef[0].isOn();
+                markDirty();
+                fillGlobalCard(card);
+            });
+            card.addView(switchRow("缺道具时用钻石购买",
+                    "默认关；开启后按每日钻石预算自动购买（8h=250钻 / 24h=600钻）", buyRef[0]));
+            if (cfg.speedupDiamondPurchaseEnabled) {
+                card.addView(UiStyle.dropdownRow(this, "每日钻石上限",
+                        cfg.speedupDiamondDailyLimit + " 钻", () -> chooseSpeedupLimit(card)));
+            }
+        }
+    }
+
+    private void chooseSpeedupHours(final LinearLayout card) {
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("加速时长")
+                .setSingleChoiceItems(new String[]{"8 小时", "24 小时"},
+                        cfg.speedupHours == 24 ? 1 : 0, (d, which) -> {
+                            cfg.speedupHours = which == 1 ? 24 : 8;
+                            markDirty();
+                            d.dismiss();
+                            fillGlobalCard(card);
+                        })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private void chooseSpeedupLimit(final LinearLayout card) {
+        final long[] options = {0L, 500L, 1000L, 2000L, 5000L};
+        final String[] labels = new String[options.length];
+        int selected = 0;
+        for (int i = 0; i < options.length; i++) {
+            labels[i] = options[i] == 0L ? "不花钻" : options[i] + " 钻/天";
+            if (cfg.speedupDiamondDailyLimit == options[i]) selected = i;
+        }
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("采集加速每日钻石上限")
+                .setSingleChoiceItems(labels, selected, (d, which) -> {
+                    cfg.speedupDiamondDailyLimit = options[which];
+                    markDirty();
+                    d.dismiss();
+                    fillGlobalCard(card);
+                })
+                .setNegativeButton("取消", null)
+                .show();
     }
 
     private String maxQueuesText() {
