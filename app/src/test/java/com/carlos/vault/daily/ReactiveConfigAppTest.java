@@ -53,6 +53,17 @@ public class ReactiveConfigAppTest {
         assertTrue("ETA 必须有 30 秒档", hasValue(eta, "30"));
     }
 
+    @Test
+    public void battleShield_hasGatherAttackSubs() {
+        FnDetail.Sub notify = subOf("battle_shield", "gather_attack");
+        assertNotNull("采集点遭袭提醒子项缺失（用户实证该事件与主城被攻击同有提示）", notify);
+        assertTrue("采集点遭袭提醒默认开", notify.defOn);
+
+        FnDetail.Sub recall = subOf("battle_shield", "gather_recall");
+        assertNotNull("采集点遭袭自动撤矿子项缺失", recall);
+        assertFalse("自动撤矿默认关（避免未经确认的撤矿副作用）", recall.defOn);
+    }
+
     private static boolean hasValue(FnDetail.Sub sub, String value) {
         for (String[] s : sub.strategies) {
             if (s.length > 0 && value.equals(s[0])) return true;

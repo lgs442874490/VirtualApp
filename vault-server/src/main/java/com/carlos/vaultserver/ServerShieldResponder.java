@@ -2,6 +2,9 @@ package com.carlos.vaultserver;
 
 import com.carlos.vault.wjdr.GameServerClock;
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.AssetSnapshot;
+import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
+import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vaultserver.task.Exec;
 import com.carlos.vaultserver.task.ServerTasks;
 import com.carlos.vaultserver.task.TaskContext;
@@ -10,10 +13,12 @@ import com.carlos.vaultserver.task.TaskOutcome;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
@@ -56,11 +61,20 @@ public final class ServerShieldResponder {
 
     // ---------------- 协议常量（实证口径，勿凭猜测改） ----------------
 
-    /** 行军类型：1=侦查 2=进攻（5=驻防/增援不触发护盾）。 */
+    /** 行军类型：1=侦查 2=进攻 100=集结进攻（5=驻防/增援不触发护盾）。 */
     private static final long MARCH_RECON = 1L;
     private static final long MARCH_WAR = 2L;
+    /** 集结进攻（飞艇/集结）同样攻玩家城：按 WAR 触发护盾（对齐网页版 RALLY_CITY_ATTACK）。 */
+    private static final long MARCH_RALLY = 100L;
     /** 目标类型：1=玩家城（打野/情报类 target_type 非 1，不触发）。 */
     private static final long TARGET_CITY = 1L;
+    /** 目标类型：2=地图资源点（采集点遭袭识别用，对齐网页版 targetsOwnResource）。 */
+    private static final long TARGET_RESOURCE = 2L;
+    /** 目标采集行军类型：4=个人采集；110=联盟矿采集（仅识别，不自动撤联盟矿）。 */
+    private static final long MARCH_GATHER = 4L;
+    private static final long MARCH_ALLIANCE_GATHER = 110L;
+    /** 单条采集行军撤矿的最小重试间隔（同 marchId）。 */
+    static final long GATHER_RECALL_COOLDOWN_MILLIS = 10 * 60_000L;
 
     /** WAR/RECON 行军推送源。 */
     static final Set<String> SITUATION_PROTOS = Set.of(
@@ -96,6 +110,46 @@ public final class ServerShieldResponder {
         }
     }
 
+    /** 自己正在采集的行军（来源：核心资产库 QUEUE；type=4 且 state=3 才算“采集驻留”）。 */
+    static final class GatherMarch {
+        final long marchId;
+        final int x;
+        final int y;
+
+        GatherMarch(long marchId, int x, int y) {
+            this.marchId = marchId;
+            this.x = x;
+            this.y = y;
+        }
+    }
+
+    /** 自己采集行军来源（生产读核心资产库；单测可注入，避免依赖资产库 READY）。 */
+    interface MarchSource {
+        List<GatherMarch> ownGatheringMarches(WjdrEngine engine);
+    }
+
+    /** 一次采集点遭袭告警（钩子线程只入账，撤矿动作交给 tick 线程）。 */
+    private static final class GatherAlert {
+        final long enemyMarchId;
+        final long endtimeSec;
+        final int x;
+        final int y;
+        /** 命中的自己采集行军（可能为空：只有资源点归属能判、资产库未 READY）。 */
+        final List<GatherMarch> ownMarches;
+        /** 是否由 target.map_resource.uid==本人 直接判定（而非仅坐标匹配）。 */
+        final boolean ownResource;
+
+        GatherAlert(long enemyMarchId, long endtimeSec, int x, int y,
+                    List<GatherMarch> ownMarches, boolean ownResource) {
+            this.enemyMarchId = enemyMarchId;
+            this.endtimeSec = endtimeSec;
+            this.x = x;
+            this.y = y;
+            this.ownMarches = ownMarches == null ? Collections.<GatherMarch>emptyList() : ownMarches;
+            this.ownResource = ownResource;
+        }
+    }
+
     // ---------------- 状态 ----------------
 
     private final String fpid;
@@ -109,8 +163,16 @@ public final class ServerShieldResponder {
     private final LongSupplier serverNowSecSource;
     /** attach 时记录的引擎：forceOnlineWanted() 无引擎入参，取服务器时钟用。 */
     private volatile WjdrEngine engineRef;
+    /** 自己采集行军来源（默认读核心资产库；测试可注入）。 */
+    private volatile MarchSource marchSource = this::ownGatheringFromAssetLibrary;
     /** 最近一次命中的新鲜风险（未处理/挂起中）；null=无风险。 */
     private volatile Risk risk;
+    /** 最近一次采集点遭袭告警（钩子线程写入，tick 消费）。 */
+    private volatile GatherAlert gatherAlert;
+    /** 采集告警脏标记（与 city risk 的 dirty 分离：采集撤矿与开盾是两条独立反应链）。 */
+    private final AtomicBoolean gatherDirty = new AtomicBoolean(false);
+    /** 已撤矿 marchId → 最近一次撤矿时刻（防同威胁重复请求；10min 冷却）。 */
+    private final Map<Long, Long> gatherRecalledAt = new ConcurrentHashMap<>();
     /** 风险写入/清除互斥（推送线程 vs 会话线程），保证"处理旧风险时新推送不丢"。 */
     private final Object riskLock = new Object();
     /** 卡秒挂起下一次判定时刻（本机毫秒；0=无挂起）。 */
@@ -153,44 +215,61 @@ public final class ServerShieldResponder {
         engine.addMessageHook((proto, content) -> {
             if (!SITUATION_PROTOS.contains(proto)) return;
             try {
-                onPush(content, engine.lastUid());
+                onPush(content, engine.lastUid(), engine);
             } catch (Throwable ignored) {
             }
         });
     }
 
     /**
-     * 推送入口（钩子线程）：命中"自己城被侦查/进攻"才记录风险并置脏。
-     * 包可见供单测直接驱动（无需引擎钩子分发）。
+     * 推送入口（钩子线程）：命中"自己城被侦查/进攻"记入开盾风险；
+     * 命中"自己的采集点遭袭"记入采集告警（两条反应链独立）。
+     * 包可见供单测直接驱动（不经过引擎钩子分发）。
      */
     void onPush(Map<String, Object> content, long ownUid) {
+        onPush(content, ownUid, engineRef);
+    }
+
+    /** 推送入口（带引擎：采集行军来源需要读核心资产库；engine 可 null=测试无资产库）。 */
+    void onPush(Map<String, Object> content, long ownUid, WjdrEngine engine) {
         Risk r = riskOf(content, ownUid);
-        if (r == null) return;
-        synchronized (riskLock) {
-            risk = r;
-            lastEventKind = r.kind;
-            lastEventAt = nowMs.getAsLong();
-            etaCheckAtMs = 0;
-            dirty.set(true);
+        if (r != null) {
+            synchronized (riskLock) {
+                risk = r;
+                lastEventKind = r.kind;
+                lastEventAt = nowMs.getAsLong();
+                etaCheckAtMs = 0;
+                dirty.set(true);
+            }
+        }
+        GatherAlert g = gatherAlertOf(content, ownUid, engine);
+        if (g != null) {
+            gatherAlert = g;
+            gatherDirty.set(true);
         }
     }
 
     /**
-     * 会话线程 tick 驱动：有新鲜风险且过门控时开一次盾（或卡秒挂起）。
-     * 返回 true 表示本轮有动作（发请求/跳过留痕），false=让位/挂起等待/冷却/陈旧。
+     * 会话线程 tick 驱动：先处理采集点遭袭（提醒/可选撤矿），再处理开盾风险。
+     * 返回 true 表示本轮有动作（发请求/跳过留痕），false=无动作/挂起/冷却/陈旧。
      */
     boolean tick(WjdrEngine engine) {
-        // 让位/恢复/登录中：不开盾（人玩优先，防互踢）；风险保留，回连如仍新鲜才补
+        // 让位/恢复/登录中：不发请求（人玩优先，防互踢）；风险保留，回连如仍新鲜才补
         if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) return false;
         long now = nowMs.getAsLong();
+        boolean acted = false;
+        GatherAlert g = gatherAlert;
+        if (g != null && gatherDirty.compareAndSet(true, false)) {
+            acted = handleGather(engine, g, now);
+        }
         boolean fresh = dirty.compareAndSet(true, false);   // 先消费脏标记再读风险：避免与推送线程竞态丢事件
         Risk r = risk;
-        if (r == null) return false;
+        if (r == null) return acted;
         if (!fresh) {
             // 无新推送：仅"卡秒挂起"到点才继续推进（等待期间保持 pending，不受 10min 判死）
-            if (etaCheckAtMs <= 0 || now < etaCheckAtMs) return false;
+            if (etaCheckAtMs <= 0 || now < etaCheckAtMs) return acted;
         }
-        return decide(engine, r, now);
+        return decide(engine, r, now) || acted;
     }
 
     // ---------------- 决策（会话线程内执行） ----------------
@@ -303,6 +382,163 @@ public final class ServerShieldResponder {
                 String.valueOf(r.category), r.message);
     }
 
+    // ---------------- 采集点遭袭（2026-10-24：对齐网页版 GATHERING_ATTACK） ----------------
+
+    /**
+     * 处理一次采集点遭袭：写 App 状态提醒；`sub.gather_recall=true` 时对命中的自己采集行军
+     * 发 {@code req_world_march_off_work} 撤矿（同 marchId 10 分钟冷却，防重复请求）。
+     *
+     * <p>语义来源（网页版 wjdr-review，1:1 对齐）：
+     * {@code DailyBattleState.appendThreats} 对 type=4/110 且 {@code target.map_resource.uid==ownUid}
+     * 的来袭行军，用 endpoint 匹配自己 type=4、state=3 的采集行军；命中后
+     * {@code DailyBattleService.handleGatheringThreat} 发 {@code req_world_march_off_work {id}}。
+     */
+    private boolean handleGather(WjdrEngine engine, GatherAlert g, long now) {
+        VaultStore.Account acc = vault.find(fpid);
+        if (acc == null || !(acc.auto || acc.keep)) {
+            saveStateText(null, "gather", "自动化未开启，未处理采集告警");
+            return true;
+        }
+        TaskContext tc = new TaskContext(engine, fpid, sid, store, paramsOf(acc, sid), "反应式");
+        if (!tc.subOn("battle_shield", "enabled", true)) {
+            saveStateText(tc, "gather", "总开关已关闭（App 设置页可开）");
+            return true;
+        }
+        if (!tc.subOn("battle_shield", "gather_attack", true)) {
+            FileLog.info("采集点遭袭跳过 fpid={}：子开关 battle_shield.gather_attack 已关闭", fpid);
+            saveStateText(tc, "gather", "采集点遭袭提醒已关闭");
+            return true;
+        }
+        StringBuilder text = new StringBuilder("采集点遭袭");
+        if (g.ownResource) text.append("（资源点归属本人）");
+        if (g.x > 0 || g.y > 0) text.append(" @(").append(g.x).append(",").append(g.y).append(")");
+        if (g.enemyMarchId > 0) text.append(" 敌行军#").append(g.enemyMarchId);
+        if (g.ownMarches.isEmpty()) {
+            text.append(" · 未定位到在采队伍");
+        } else {
+            text.append(" · 在采队伍");
+            for (GatherMarch m : g.ownMarches) text.append(" #").append(m.marchId);
+        }
+        boolean recall = tc.subOn("battle_shield", "gather_recall", false);
+        String result = "";
+        if (recall && !g.ownMarches.isEmpty()) {
+            List<String> done = new ArrayList<>();
+            for (GatherMarch m : g.ownMarches) {
+                Long last = gatherRecalledAt.get(m.marchId);
+                if (last != null && now - last < GATHER_RECALL_COOLDOWN_MILLIS) {
+                    done.add("#" + m.marchId + "（冷却中）");
+                    continue;
+                }
+                gatherRecalledAt.put(m.marchId, now);
+                try {
+                    Map<String, Object> args = new LinkedHashMap<>();
+                    args.put("id", m.marchId);
+                    com.carlos.vault.wjdr.protocol.GameMessage rsp =
+                            engine.request("req_world_march_off_work", args);
+                    int code = Exec.codeOf(rsp);
+                    if (code == 0) {
+                        done.add("#" + m.marchId + " 已撤");
+                        FileLog.info("采集点遭袭撤矿成功 fpid={} marchId={}", fpid, String.valueOf(m.marchId));
+                    } else {
+                        done.add("#" + m.marchId + " 失败code=" + code);
+                        FileLog.warn("采集点遭袭撤矿失败 fpid={} marchId={} code={}",
+                                fpid, String.valueOf(m.marchId), String.valueOf(code));
+                    }
+                } catch (Throwable t) {
+                    done.add("#" + m.marchId + " 异常");
+                    FileLog.warn("采集点遭袭撤矿异常 fpid={} marchId={}：{}",
+                            fpid, String.valueOf(m.marchId), String.valueOf(t));
+                }
+            }
+            if (!done.isEmpty()) result = " · 自动撤矿 " + String.join("、", done);
+        } else if (recall) {
+            result = " · 自动撤矿已开但未定位队伍";
+        }
+        String line = text + result;
+        saveStateText(tc, "gather", line);
+        FileLog.info("采集点遭袭 fpid={}：{}", fpid, line);
+        return true;
+    }
+
+    /** 自己正在采集（type=4、state=3）的行军：生产读核心资产库 QUEUE。 */
+    private List<GatherMarch> ownGatheringFromAssetLibrary(WjdrEngine engine) {
+        try {
+            if (engine == null) return Collections.emptyList();
+            CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+            if (lib == null || !lib.ready() || lib.queue() == null) return Collections.emptyList();
+            List<GatherMarch> out = new ArrayList<>();
+            for (AssetSnapshot.QueueMarch m : lib.queue().marches) {
+                if (m == null) continue;
+                if (m.type != MARCH_GATHER || m.state != 3L) continue;   // 4=采集、3=已到达/采集中
+                if (m.endX <= 0 || m.endY <= 0) continue;
+                out.add(new GatherMarch(m.id, (int) m.endX, (int) m.endY));
+            }
+            return out;
+        } catch (Throwable ignored) {
+            return Collections.emptyList();
+        }
+    }
+
+    /** 单测注入采集行军来源（避免依赖资产库 READY）。 */
+    void setMarchSourceForTest(MarchSource source) {
+        this.marchSource = source;
+    }
+
+    /**
+     * 从一条 situation 推送中识别「自己的采集点遭袭」。
+     * 判定（网页版 appendThreats 同口径）：来袭 type=4/110、目标 {@code target.type=2} 且
+     * {@code target.map_resource.uid==本人}；同时用 endpoint 匹配自己正在采集的 type=4/state=3 行军。
+     * 仅坐标匹配也接受（资源点 uid 推送缺失时的兜底）。
+     */
+    GatherAlert gatherAlertOf(Map<String, Object> content, long ownUid, WjdrEngine engine) {
+        if (content == null || ownUid <= 0) return null;
+        List<GatherMarch> own = marchSource == null
+                ? Collections.<GatherMarch>emptyList() : marchSource.ownGatheringMarches(engine);
+        for (Map<String, Object> m : marchesOf(content)) {
+            long type = Exec.longOf(m.get("type"));
+            if (type != MARCH_GATHER && type != MARCH_ALLIANCE_GATHER) continue;
+            Map<String, Object> target = Exec.mapOf(m.get("target"));
+            boolean ownResource = false;
+            if (target != null) {
+                long targetType = Exec.longOf(target.get("type"));
+                Map<String, Object> resource = Exec.mapOf(target.get("map_resource"));
+                if (resource != null) {
+                    long uid = Exec.longOf(resource.get("uid"));
+                    if (uid == ownUid) ownResource = true;
+                    if (targetType == 0L && uid > 0) targetType = TARGET_RESOURCE;
+                }
+                if (targetType == TARGET_RESOURCE && !ownResource) {
+                    // 目标类型是资源点但归属未知：仅靠坐标匹配兜底（不因此直接判定本人）
+                }
+            }
+            Map<String, Object> endpoint = firstPoint(m);
+            int x = endpoint == null ? 0 : (int) Exec.longOf(endpoint.get("x"));
+            int y = endpoint == null ? 0 : (int) Exec.longOf(endpoint.get("y"));
+            List<GatherMarch> hit = new ArrayList<>();
+            for (GatherMarch gm : own) {
+                if (gm.x == x && gm.y == y) hit.add(gm);
+            }
+            if (!ownResource && hit.isEmpty()) continue;   // 既非本人资源点、也不匹配在采队伍：不是我的采集点
+            long endSec = Exec.longOf(m.get("endtime"));
+            return new GatherAlert(Exec.longOf(m.get("id")), endSec, x, y, hit, ownResource);
+        }
+        return null;
+    }
+
+    /** 行军 endpoint{x,y} → target.map_city{x,y}（网页版 endpointOf 同口径）。 */
+    private static Map<String, Object> firstPoint(Map<String, Object> m) {
+        Map<String, Object> p = Exec.mapOf(m.get("endpoint"));
+        if (p != null && (Exec.longOf(p.get("x")) != 0 || Exec.longOf(p.get("y")) != 0)) return p;
+        Map<String, Object> target = Exec.mapOf(m.get("target"));
+        if (target != null) {
+            Map<String, Object> city = Exec.mapOf(target.get("map_city"));
+            if (city != null && (Exec.longOf(city.get("x")) != 0 || Exec.longOf(city.get("y")) != 0)) {
+                return city;
+            }
+        }
+        return null;
+    }
+
     // ---------------- 强制上线查询（SessionKeeper 非 online 分支用） ----------------
 
     /**
@@ -375,16 +611,21 @@ public final class ServerShieldResponder {
 
     /** 写 mod:fpid:sid:battle_shield 的 reactive 子项（App FnDetail/今日页同键展示）。 */
     private void saveState(TaskContext tc, String text) {
+        saveStateText(tc, "reactive", text);
+    }
+
+    /** 写 mod:fpid:sid:battle_shield 的指定子项（reactive=开盾 / gather=采集点遭袭）。 */
+    private void saveStateText(TaskContext tc, String subId, String text) {
         try {
             if (tc != null) {
-                tc.saveModText("battle_shield", "reactive", text);
+                tc.saveModText("battle_shield", subId, text);
             } else {
                 JSONObject mod = new JSONObject();
                 String raw = store.getString("mod:" + fpid + ":" + sid + ":battle_shield");
                 if (raw != null) mod = new JSONObject(raw);
-                mod.put("reactive", text);
-                mod.put("reactive_ts", System.currentTimeMillis());
-                mod.put("reactive_trg", "反应式");
+                mod.put(subId, text);
+                mod.put(subId + "_ts", System.currentTimeMillis());
+                mod.put(subId + "_trg", "反应式");
                 store.putString("mod:" + fpid + ":" + sid + ":battle_shield", mod.toString());
             }
             store.flush();
@@ -429,12 +670,13 @@ public final class ServerShieldResponder {
         long endSec = 0, troops = 0;
         for (Map<String, Object> m : marchesOf(content)) {
             long type = Exec.longOf(m.get("type"));
-            if (type != MARCH_RECON && type != MARCH_WAR) continue;
+            // 1=侦查、2=进攻、100=集结进攻（网页版 RALLY_CITY_ATTACK 同按护盾处理）
+            if (type != MARCH_RECON && type != MARCH_WAR && type != MARCH_RALLY) continue;
             Object targetType = m.get("target_type");
             if (targetType != null && Exec.longOf(targetType) != TARGET_CITY) continue;
             if (targetUidOf(m) != ownUid) continue;
             hit = true;
-            if (type == MARCH_WAR) war = true;
+            if (type == MARCH_WAR || type == MARCH_RALLY) war = true;
             else recon = true;
             long e = Exec.longOf(m.get("endtime"));
             if (e > 0 && (endSec == 0 || e < endSec)) endSec = e;
