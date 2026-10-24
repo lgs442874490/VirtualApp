@@ -197,4 +197,16 @@ public class FormationCatalogTest {
         assertTrue("null 输入返回空目录", FormationCatalog.heroesOf(null).isEmpty());
         assertTrue(FormationCatalog.heroesOf(new LinkedHashMap<>()).isEmpty());
     }
+
+    @Test
+    public void heroInit_levAliasParsed() {
+        // 生产真实帧：notify_hero_init.data["50022.0"] = {id,lev,star,...}（无 name/power）
+        Map<String, Object> data = new java.util.LinkedHashMap<>();
+        data.put("50022.0", Map.of("id", 50022L, "lev", 45L, "star", 18L));
+        Map<String, Object> init = Map.of("data", data);
+        List<FormationCatalog.Hero> heroes = FormationCatalog.heroesOf(init);
+        assertEquals(1, heroes.size());
+        assertEquals(45L, heroes.get(0).level);
+        assertEquals(18L, heroes.get(0).star);
+    }
 }
