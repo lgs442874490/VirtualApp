@@ -605,9 +605,10 @@ public final class SessionKeeper implements SessionControl,
                     break;
                 case WjdrEngine.STATE_ONLINE:
                     engine.heartbeatTick();
-                    // 战争监视钩子（所有角色会话，不受 active 写入方限制——每个会话
-                    // 都能观察到自己视野内的行军推送；war=null 时跳过）
-                    if (war != null) attachWarHook();
+                    // 战争监视钩子（所有角色会话无条件挂载，不受 active 写入方限制）：
+                    // 联盟态势推送只会到达"在该联盟视野内"的角色会话，兄弟角色会话也必须监听，
+                    // 否则会出现「目标一直在打人但没有任何通知」。attachWarHook 幂等（每会话至多一个）。
+                    attachWarHook();
                     // 同 fpid 多会话（M1d）：App 消费的 state 键（res:/todo:/mod:… 均为
                     // fpid:sid 键型，/state 契约不变）只由 active 角色会话写入——
                     // 兄弟角色会话保持「占位在线」（连接/心跳/重连），不执行任务，
@@ -687,6 +688,7 @@ public final class SessionKeeper implements SessionControl,
         private void attachWarHook() {
             if (!warHookAttached.compareAndSet(false, true)) return;
             WarNotify w = SessionKeeper.this.war;   // 外部 WarNotify（LiveSession.war 是 gwar 的 ServerWarState，不可混用）
+            if (w == null) return;
             String fp = fpid;
             long sd = resolveSid();
             engine.addMessageHook((proto, content) -> w.onPush(fp, sd, proto, content));
