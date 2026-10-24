@@ -59,6 +59,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 形状 {@code {"sub":{...},"strategy":{...}}}（与 ServerWarState.configOf 同款；也容错扁平键）：
  * <pre>
  * enabled(默认false) dry_run(默认true) ally_uid target_uid target_point{x,y}
+ * force_online(默认false) troops_min(默认0=不限，兼容别名 min_enemy_troops)
  * formation{hero_ids:[],squad_index:1} recall(默认true) recall_distance(预留) speedup_enabled(默认false)
  * d_sec(默认38)  // P0 仅用于日志/D 展示，不参与排程（立即发射）
  * </pre>
@@ -104,6 +105,8 @@ public final class ServerGuardianEngine {
     static final long CONFIG_TTL_MILLIS = 10_000L;
     /** 威胁表保留：endtime 之后保留 90s（丢 del 推送时清理；同 App GuardianEngine.hasThreatOn 口径）。 */
     static final long THREAT_KEEP_AFTER_END_SEC = 90L;
+    /** 无 endtime 威胁的年龄上界（2026-10-24 审查补强：del 丢失时防 threats 永久累积）。 */
+    static final long STALE_NO_ETA_THREAT_MILLIS = 10 * 60_000L;
     /** 任务表保留：endtime 之后保留 10 分钟（等战报/敌情结束；P0 不主动撤已驻扎）。 */
     static final long MISSION_KEEP_AFTER_END_SEC = 600L;
     /** 同角色最多同时 1 个在途驻防任务（P0；App 上限 2，服务器先保守 1）。 */
@@ -122,6 +125,11 @@ public final class ServerGuardianEngine {
         boolean dryRun = true;
         boolean recall = true;
         boolean speedupEnabled = false;      // P1 预留，P0 忽略
+        // ---- 批次11 触发策略（2026-10-24；缺省=旧行为零变化） ----
+        /** 盟友受攻击风险时允许强制上线（默认 false；仅查询，不改变发送门控）。 */
+        boolean forceOnline = false;
+        /** 敌方来袭兵力下限（0=不限；兼容别名 min_enemy_troops；未知兵力→守护侧保守不发射）。 */
+        long troopsMin = 0L;
         long allyUid = 0L;
         long targetUid = 0L;
         int targetX = 0;
@@ -150,7 +158,8 @@ public final class ServerGuardianEngine {
                     + (hasTargetPoint() ? " target_point=" + targetX + "," + targetY : "")
                     + " squad=" + squadIndex
                     + (heroIds.isEmpty() ? "" : " heroes=" + heroIds)
-                    + " recall=" + recall + " d=" + dSec + "s";
+                    + " recall=" + recall + " d=" + dSec + "s"
+                    + " force_online=" + forceOnline + " troops_min=" + troopsMin;
         }
     }
 
@@ -166,10 +175,23 @@ public final class ServerGuardianEngine {
         final int y;
         final boolean hasXY;
         final long firstSeenMs;
+        /** 敌方兵力（{@code squad_list.soldier} 求和；未知时 0，见 {@link #troopsKnown}）。 */
+        final long troops;
+        /** 兵力是否可从推送算出（false=未知：只有 power 无 squad，或推送缺字段）。 */
+        final boolean troopsKnown;
+        /** 敌方战力（march.power 或观察哨外层 slot.power；0=未知）。 */
+        final long power;
         volatile long endEpochSec;
 
         Threat(long marchId, long ownerUid, long type, long targetUid,
                int x, int y, boolean hasXY, long endEpochSec, long firstSeenMs) {
+            this(marchId, ownerUid, type, targetUid, x, y, hasXY, endEpochSec, firstSeenMs,
+                    0L, false, 0L);
+        }
+
+        Threat(long marchId, long ownerUid, long type, long targetUid,
+               int x, int y, boolean hasXY, long endEpochSec, long firstSeenMs,
+               long troops, boolean troopsKnown, long power) {
             this.marchId = marchId;
             this.ownerUid = ownerUid;
             this.type = type;
@@ -179,6 +201,9 @@ public final class ServerGuardianEngine {
             this.hasXY = hasXY;
             this.endEpochSec = endEpochSec;
             this.firstSeenMs = firstSeenMs;
+            this.troops = troops;
+            this.troopsKnown = troopsKnown;
+            this.power = power;
         }
 
         /** 合并同一行军的新旧推送（endtime 前移=敌加速；坐标/target 以新值为准）。 */
@@ -191,13 +216,23 @@ public final class ServerGuardianEngine {
             boolean xy = newer.hasXY || hasXY;
             int nx = newer.hasXY ? newer.x : x;
             int ny = newer.hasXY ? newer.y : y;
+            // 兵力/战力：新推送能算出则以新值为准，否则沿用旧值（防 update 推送缺 squad 时丢失已知兵力）
+            long troopsNew = newer.troopsKnown ? newer.troops : troops;
+            boolean knownNew = newer.troopsKnown || troopsKnown;
+            long powerNew = newer.power > 0 ? newer.power : power;
             Threat t = new Threat(marchId, owner, typeNew, target,
-                    nx, ny, xy, end, Math.min(firstSeenMs, newer.firstSeenMs));
+                    nx, ny, xy, end, Math.min(firstSeenMs, newer.firstSeenMs),
+                    troopsNew, knownNew, powerNew);
             return t;
         }
 
         String kind() {
             return type == MARCH_TYPE_ATTACK ? "进攻" : (type == 1L ? "侦查" : "type" + type);
+        }
+
+        /** 兵力展示（日志/账本）；未知=「兵力未知」。 */
+        String troopsText() {
+            return troopsKnown ? String.valueOf(troops) : "兵力未知";
         }
     }
 
@@ -251,6 +286,8 @@ public final class ServerGuardianEngine {
     private final Set<Long> attempted = ConcurrentHashMap.newKeySet();
     /** 已入队待执行的威胁 id（防同 tick/连续推送重复提交）。 */
     private final Set<Long> submitted = ConcurrentHashMap.newKeySet();
+    /** 兵力阈值拒绝留痕（威胁 id → 已记录的判定值；同一值只记一次账本）。 */
+    private final Map<Long, String> thresholdNotes = new ConcurrentHashMap<>();
     /** 目标级进行中标记（"t:{uid}" / "p:{x},{y}"）。 */
     private final Set<String> activeTargets = ConcurrentHashMap.newKeySet();
 
@@ -306,10 +343,17 @@ public final class ServerGuardianEngine {
         if (stopped) return;
         reloadConfig(false);
         long nowS = nowSec(engine);
+        long nowMs = System.currentTimeMillis();
         try {
             for (Map.Entry<Long, Threat> e : threats.entrySet()) {
                 Threat t = e.getValue();
-                if (t.endEpochSec > 0 && nowS - t.endEpochSec > THREAT_KEEP_AFTER_END_SEC) {
+                boolean expiredByEnd = t.endEpochSec > 0
+                        && nowS - t.endEpochSec > THREAT_KEEP_AFTER_END_SEC;
+                // 无 endtime 的威胁无法按到达时刻过期：按首次入账年龄兜底清理（防 del 丢失累积）
+                boolean expiredNoEta = t.endEpochSec <= 0
+                        && t.firstSeenMs > 0
+                        && nowMs - t.firstSeenMs > STALE_NO_ETA_THREAT_MILLIS;
+                if (expiredByEnd || expiredNoEta) {
                     if (threats.remove(e.getKey(), t)) {
                         attempted.remove(t.marchId);
                         submitted.remove(t.marchId);
@@ -320,6 +364,7 @@ public final class ServerGuardianEngine {
                 Mission m = en.getValue();
                 return m.endtimeSec > 0 && nowS - m.endtimeSec > MISSION_KEEP_AFTER_END_SEC;
             });
+            thresholdNotes.keySet().removeIf(id -> !threats.containsKey(id));
         } catch (Throwable ignored) {
         }
     }
@@ -331,6 +376,40 @@ public final class ServerGuardianEngine {
             guardExec.shutdownNow();
         } catch (Throwable ignored) {
         }
+    }
+
+    // =====================================================================
+    // 强制上线（force_online）：SessionKeeper 在 paused/takeover/recovering 时查询
+    // =====================================================================
+
+    /**
+     * 是否存在「本进程已收到、仍新鲜、规则命中且会真实派兵」的盟友受攻击风险，供 SessionKeeper
+     * 在 {@code paused/takeover/recovering}（非 online）时强制回连并派兵驻防。
+     *
+     * <p>纯查询：不发请求、不写状态、不影响「每威胁最多 1 次动作」约束。判定 =
+     * 配置 {@code enabled ∧ force_online ∧ !dry_run} ∧ 威胁未过期（endtime 后
+     * {@link #THREAT_KEEP_AFTER_END_SEC} 内）∧ {@link #decide} 命中（decide 本就不看会话
+     * 在线状态，online 与否由调用方处理）。配置按热载纪律顺带刷新（10s 节流）。
+     *
+     * <p>{@code dry_run} 只记录不发射，为一个不会真实驻防的风险去抢占登录/顶掉其他设备不符合
+     * 用户预期（用户需求是「允许强制上线并派兵驻防」，派兵=实发），故强制上线仅实发模式生效。
+     */
+    public boolean forceOnlineWanted() {
+        if (stopped) return false;
+        reloadConfig(false);
+        Config cfg = config;
+        if (cfg == null || !cfg.enabled || !cfg.forceOnline || cfg.dryRun) return false;
+        long nowMs = System.currentTimeMillis();
+        long nowS = nowMs / 1000L;
+        for (Threat t : threats.values()) {
+            if (t == null) continue;
+            // 已过期的威胁不入账（避免拿旧情强制回连）；decide 内还有 ETA 窗口复核
+            if (t.endEpochSec > 0 && nowS - t.endEpochSec > THREAT_KEEP_AFTER_END_SEC) continue;
+            if (t.endEpochSec <= 0 && t.firstSeenMs > 0
+                    && nowMs - t.firstSeenMs > STALE_NO_ETA_THREAT_MILLIS) continue;
+            if (decide(t, cfg, nowMs).hit) return true;
+        }
+        return false;
     }
 
     // =====================================================================
@@ -368,7 +447,10 @@ public final class ServerGuardianEngine {
             Threat cur = prev == null ? t : prev.merge(t);
             threats.put(cur.marchId, cur);
             Decision d = decide(cur, cfg, nowMs);
-            if (!d.hit) continue;
+            if (!d.hit) {
+                noteThresholdReject(cur, d, cfg);
+                continue;
+            }
             if (!submitted.add(cur.marchId)) continue;
             final long marchId = cur.marchId;
             try {
@@ -382,12 +464,29 @@ public final class ServerGuardianEngine {
         }
     }
 
+    /**
+     * 兵力阈值拒绝留痕（账本 {@code skip_troops}）：只对 {@code troops_min>0} 引起的兵力类拒绝
+     * 记一次；同一威胁同一判定值不重复记账（防 update 推送刷屏，兵力后续变化时允许再记）。
+     */
+    void noteThresholdReject(Threat t, Decision d, Config cfg) {
+        try {
+            if (t == null || d == null || cfg == null || cfg.troopsMin <= 0) return;
+            if (d.reason == null || !d.reason.startsWith("troops_")) return;
+            String note = (t.troopsKnown ? "troops=" + t.troops : "troops=unknown") + "；" + d.reason;
+            String prev = thresholdNotes.put(t.marchId, note);
+            if (note.equals(prev)) return;
+            ledger("skip_troops", t, null, "兵力阈值未过：" + note + "（troops_min=" + cfg.troopsMin + "）");
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 威胁消失处理（召回/到达；钩子线程 → 只入队撤防）。 */
     private void handleThreatGone(WjdrEngine engine, long marchId) {
         Threat t = threats.remove(marchId);
         if (t == null) return;
         attempted.remove(marchId);
         submitted.remove(marchId);
+        thresholdNotes.remove(marchId);
         long nowS = nowSec(engine);
         boolean recalled = t.endEpochSec - nowS > RECALL_THRESHOLD_SEC;
         if (!recalled) {
@@ -445,6 +544,8 @@ public final class ServerGuardianEngine {
             if (cfg.dryRun) {
                 long eta = t.endEpochSec - nowSec(engine);
                 String text = "命中威胁 " + t.kind() + " march=" + t.marchId + " owner=" + t.ownerUid
+                        + " 敌方兵力=" + t.troopsText()
+                        + (t.power > 0 ? " 战力=" + t.power : "")
                         + " → 目标" + (t.targetUid > 0 ? " uid" + t.targetUid : "")
                         + (t.hasXY ? "(" + t.x + "," + t.y + ")" : "")
                         + " ETA " + Math.max(0, eta) + "s，D=" + cfg.dSec + "s，warYield="
@@ -557,11 +658,20 @@ public final class ServerGuardianEngine {
         try {
             JSONObject sub = p.optJSONObject("sub");
             JSONObject st = p.optJSONObject("strategy");
-            c.enabled = bool(sub, st, p, "enabled", false)
-                    || bool(sub, st, p, "intercept", false);   // 兼容 App FnDetail 既有 intercept 开关
+            // 总开关（2026-10-24）：显式 enabled 键为权威值（App 配置卡「总开关」）；仅在旧数据
+            // 没有 enabled 键时才把 FnDetail 既有 intercept 开关当作启用标志（向后兼容）。
+            // 否则「总开关关 + 旧 intercept=true」会把模块重新打开，违背总开关语义。
+            c.enabled = has(sub, st, p, "enabled")
+                    ? bool(sub, st, p, "enabled", false)
+                    : bool(sub, st, p, "intercept", false);
             c.dryRun = bool(sub, st, p, "dry_run", true);
             c.recall = bool(sub, st, p, "recall", true);
             c.speedupEnabled = bool(sub, st, p, "speedup_enabled", false);   // P1 预留
+            // 批次11：强制上线查询开关 + 敌方兵力下限（0=不限；兼容别名 min_enemy_troops）
+            c.forceOnline = bool(sub, st, p, "force_online", false);
+            long troopsMin = num(sub, st, p, "troops_min", -1L);
+            if (troopsMin < 0) troopsMin = num(sub, st, p, "min_enemy_troops", 0L);
+            c.troopsMin = Math.max(0L, troopsMin);
             c.allyUid = Math.max(0L, num(sub, st, p, "ally_uid", 0L));
             c.targetUid = Math.max(0L, num(sub, st, p, "target_uid", 0L));
             Object tp = first(sub, st, p, "target_point");
@@ -628,6 +738,13 @@ public final class ServerGuardianEngine {
         return top == null ? null : top.opt(key);
     }
 
+    /** 键是否显式存在（三处任一）——用于区分「显式 false」与「旧数据缺键」。 */
+    private static boolean has(JSONObject sub, JSONObject st, JSONObject top, String key) {
+        if (sub != null && sub.has(key)) return true;
+        if (st != null && st.has(key)) return true;
+        return top != null && top.has(key);
+    }
+
     private static boolean bool(JSONObject sub, JSONObject st, JSONObject top, String key, boolean def) {
         Object v = first(sub, st, top, key);
         if (v instanceof Boolean) return (Boolean) v;
@@ -669,8 +786,11 @@ public final class ServerGuardianEngine {
             long end = firstLong(m, "endtime", "end_time", "endTime");
             long targetUid = targetUidOf(m);
             int[] xy = endpointOf(m);
+            long[] troops = troopsOf(m);
+            long power = firstLong(m, "power");
             Threat t = new Threat(id, owner, type, targetUid,
-                    xy == null ? 0 : xy[0], xy == null ? 0 : xy[1], xy != null, end, nowMs);
+                    xy == null ? 0 : xy[0], xy == null ? 0 : xy[1], xy != null, end, nowMs,
+                    troops[0], troops[1] > 0, power);
             Threat prev = merged.get(id);
             merged.put(id, prev == null ? t : prev.merge(t));
             if (merged.size() >= MAX_CANDIDATES) break;
@@ -769,6 +889,15 @@ public final class ServerGuardianEngine {
                 if (e == null) continue;
                 Map<String, Object> inner = Exec.mapOf(e.get("march"));
                 Map<String, Object> cand = inner != null ? inner : e;
+                if (inner != null && !inner.containsKey("power")) {
+                    // 观察哨外层 power（slot.power）：挂到行军候选上，供兵力阈值/诊断消费
+                    long outerPower = Exec.longOf(e.get("power"));
+                    if (outerPower > 0) {
+                        Map<String, Object> withPower = new LinkedHashMap<>(inner);
+                        withPower.put("power", outerPower);
+                        cand = withPower;
+                    }
+                }
                 if (isMarchLike(cand)) out.add(cand);
             }
         } else if (marches instanceof List) {
@@ -799,6 +928,53 @@ public final class ServerGuardianEngine {
             }
         }
         return 0L;
+    }
+
+    /**
+     * 敌方兵力汇总（{@code march.squad_list.soldier}，与 {@code WarNotify.troopsOf} 同口径）：
+     * map 键=兵种id 值=数量 / 值={count:n} / list 元素={id,count}；士兵 id=兵种*10000+等级*100。
+     *
+     * @return {@code [合计兵力, 1=已知/0=未知]}；无可算兵力（如观察哨只有 power 无 squad）视为未知
+     */
+    static long[] troopsOf(Map<String, Object> m) {
+        long total = 0L;
+        boolean known = false;
+        if (m != null) {
+            Map<String, Object> squad = Exec.mapOf(m.get("squad_list"));
+            Object soldier = squad == null ? null : squad.get("soldier");
+            if (soldier instanceof Map) {
+                for (Map.Entry<?, ?> en : ((Map<?, ?>) soldier).entrySet()) {
+                    long id = Exec.longOf(en.getKey());
+                    Object v = en.getValue();
+                    long cnt = 0L;
+                    if (v instanceof Number) {
+                        cnt = ((Number) v).longValue();
+                    } else {
+                        Map<String, Object> vm = Exec.mapOf(v);
+                        if (vm != null) {
+                            cnt = Exec.longOf(vm.get("count"));
+                            if (id <= 0) id = Exec.longOf(vm.get("id"));
+                        }
+                    }
+                    if (id > 0 && cnt > 0) {
+                        total += cnt;
+                        known = true;
+                    }
+                }
+            } else if (soldier instanceof List) {
+                for (Object o : (List<?>) soldier) {
+                    Map<String, Object> vm = Exec.mapOf(o);
+                    if (vm == null) continue;
+                    long id = Exec.longOf(vm.get("id"));
+                    long cnt = Exec.longOf(vm.get("count"));
+                    if (id > 0 && cnt > 0) {
+                        total += cnt;
+                        known = true;
+                    }
+                }
+            }
+        }
+        return new long[]{total, known ? 1L : 0L};
     }
 
     /** 守方/目标 uid：atk_city.targetid 优先，退化 target.map_city.uid / target_uid（ServerShieldResponder 同口径）。 */
@@ -877,6 +1053,18 @@ public final class ServerGuardianEngine {
             if (!t.hasXY) return Decision.no("target_point 已配置但推送无坐标");
             if (t.x != cfg.targetX || t.y != cfg.targetY) {
                 return Decision.no("endpoint 不匹配 target_point（" + t.x + "," + t.y + "）");
+            }
+        }
+        // 兵力下限阈值（批次11；默认 0=不限，与旧行为一致）：
+        // 已知且低于阈值 → 不派兵；未知 → 守护侧保守不发射（宁可少驻防，不把兵送入劣势战）
+        if (cfg.troopsMin > 0) {
+            if (!t.troopsKnown) {
+                return Decision.no("troops_unknown（敌方兵力未知 < troops_min=" + cfg.troopsMin
+                        + "，守护侧保守不发射）");
+            }
+            if (t.troops < cfg.troopsMin) {
+                return Decision.no("troops_low（敌方兵力 " + t.troops + " < troops_min="
+                        + cfg.troopsMin + "，不派兵）");
             }
         }
         return Decision.hit();

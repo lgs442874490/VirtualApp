@@ -8,6 +8,9 @@ import static org.junit.Assert.assertTrue;
 
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
+import com.carlos.vaultserver.task.ServerTasks;
+import com.carlos.vaultserver.task.TaskContext;
+import com.carlos.vaultserver.task.TaskOutcome;
 
 import org.json.JSONObject;
 import org.junit.Before;
@@ -21,6 +24,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * 反应式开盾（P1-2）单测：WAR/RECON 推送 → 门控 → 幂等 → 让位保护 → 状态留痕。
@@ -111,6 +115,11 @@ public class ServerShieldResponderTest {
         return new ServerShieldResponder("111", SID, state, vault);
     }
 
+    /** 可注入时间源的 responder（卡秒 ETA 单测：本机毫秒与服务器秒同步推进）。 */
+    private ServerShieldResponder responder(AtomicLong nowMs, AtomicLong serverSec) {
+        return new ServerShieldResponder("111", SID, state, vault, nowMs::get, serverSec::get);
+    }
+
     /** 目标系列推送（实证形状：to_marchs[].atk_city.targetid / target.map_city.uid）。 */
     private static Map<String, Object> alliancePush(long marchId, long type, long targetUid,
                                                     long targetType) {
@@ -146,6 +155,33 @@ public class ServerShieldResponderTest {
         Map<String, Object> c = new LinkedHashMap<>();
         c.put("marches", Map.of("9.0", slot));
         return c;
+    }
+
+    /** 目标系列推送补 squad_list.soldier（兵力阈值单测；与 WarNotify.troopsOf 同口径）。 */
+    private static Map<String, Object> withTroops(Map<String, Object> content, long troops) {
+        Map<String, Object> march = firstMarch(content);
+        if (march != null) {
+            Map<String, Object> soldier = new LinkedHashMap<>();
+            soldier.put("10100", troops);   // 盾T1
+            Map<String, Object> squad = new LinkedHashMap<>();
+            squad.put("soldier", soldier);
+            march.put("squad_list", squad);
+        }
+        return content;
+    }
+
+    /** 目标系列推送补 endtime（服务器秒，卡秒 ETA 单测）。 */
+    private static Map<String, Object> withEndtime(Map<String, Object> content, long endSec) {
+        Map<String, Object> march = firstMarch(content);
+        if (march != null) march.put("endtime", endSec);
+        return content;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Map<String, Object> firstMarch(Map<String, Object> content) {
+        Object list = content.get("to_marchs");
+        if (!(list instanceof List) || ((List<?>) list).isEmpty()) return null;
+        return (Map<String, Object>) ((List<?>) list).get(0);
     }
 
     private static void presetCityItem(TestEngine e, long freeId) {
@@ -401,6 +437,192 @@ public class ServerShieldResponderTest {
         both.put("to_marchs", Arrays.asList(
                 marchOf(1L, 1, OWN_UID), marchOf(2L, 2, OWN_UID)));
         assertEquals("WAR", ServerShieldResponder.classify(both, OWN_UID));
+    }
+
+    // ---------- 总开关 / 兵力阈值 / 卡秒 ETA / force_online（2026-10-24 策略扩展） ----------
+
+    @Test
+    public void totalSwitchOff_noShield_noRequest() {
+        account(true, "{\"sub\":{\"enabled\":false}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));   // 有动作（留痕），但零请求
+
+        assertTrue(e.requested.isEmpty());
+        assertTrue(new JSONObject(modText()).getString("reactive").contains("总开关"));
+    }
+
+    @Test
+    public void freeShield_totalSwitchOff_skipped_noRequest() throws Exception {
+        // freeShield 自身也门控总开关（定时免费盾整轮路径：缺省 true 保持旧行为）
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        Map<String, JSONObject> params = new HashMap<>();
+        params.put("battle_shield", new JSONObject("{\"sub\":{\"enabled\":false}}"));
+        TaskContext tc = new TaskContext(e, "111", SID, state, params, "测试");
+
+        TaskOutcome out = ServerTasks.freeShield(tc);
+
+        assertEquals(TaskOutcome.Category.SKIPPED, out.category);
+        assertTrue(out.message.contains("总开关"));
+        assertTrue(e.requested.isEmpty());
+    }
+
+    @Test
+    public void troopsBelowMin_skipped() {
+        account(true, "{\"strategy\":{\"troops_min\":\"100000\"}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+
+        r.onPush(withTroops(alliancePush(13080L, 2, OWN_UID, 1), 5000L), OWN_UID);
+        assertTrue(r.tick(e));
+
+        assertTrue(e.requested.isEmpty());
+        String text = new JSONObject(modText()).getString("reactive");
+        assertTrue(text.contains("兵力"));
+        assertTrue(text.contains("阈值"));
+    }
+
+    @Test
+    public void troopsUnknown_withMin_triggersProtectionFirst() {
+        account(true, "{\"strategy\":{\"troops_min\":\"100000\"}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+
+        // 推送无 squad_list → 兵力未知：保护优先照常开盾（不因阈值漏防）
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+        assertTrue(new JSONObject(modText()).getString("reactive").contains("8小时免费护盾已开启"));
+    }
+
+    @Test
+    public void troopsOf_shapesAndUnknown() {
+        Map<String, Object> mapShape = new LinkedHashMap<>();
+        Map<String, Object> squad = new LinkedHashMap<>();
+        squad.put("soldier", new LinkedHashMap<>(Map.of("10100", 1200, "10200", 800)));
+        mapShape.put("squad_list", squad);
+        assertEquals(2000L, ServerShieldResponder.troopsOf(mapShape));
+
+        Map<String, Object> listShape = new LinkedHashMap<>();
+        Map<String, Object> squad2 = new LinkedHashMap<>();
+        squad2.put("soldier", List.of(
+                new LinkedHashMap<>(Map.of("id", 10100, "count", 300)),
+                new LinkedHashMap<>(Map.of("id", 20100, "count", 200))));
+        listShape.put("squad_list", squad2);
+        assertEquals(500L, ServerShieldResponder.troopsOf(listShape));
+
+        // 无 squad / 兵力 0 → 未知（-1）
+        assertEquals(-1L, ServerShieldResponder.troopsOf(new LinkedHashMap<>()));
+        Map<String, Object> zero = new LinkedHashMap<>();
+        Map<String, Object> squad3 = new LinkedHashMap<>();
+        squad3.put("soldier", new LinkedHashMap<>(Map.of("10100", 0)));
+        zero.put("squad_list", squad3);
+        assertEquals(-1L, ServerShieldResponder.troopsOf(zero));
+    }
+
+    @Test
+    public void etaNotDue_keptPending_thenOpensAtDue() {
+        account(true, "{\"strategy\":{\"eta_sec\":\"60\"}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong serverSec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, serverSec);
+
+        // 敌方 300 秒后到达，卡秒 60 秒 → 挂起（本拍不发请求，返回 false 表示无动作）
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), 1_000_300L), OWN_UID);
+        assertFalse(r.tick(e));
+        assertTrue(e.requested.isEmpty());
+        assertTrue(new JSONObject(modText()).getString("reactive").contains("等待卡秒"));
+
+        // 挂起期间本机时间推进超过旧 10 分钟保鲜窗：不得被判死丢弃（仍挂起等待）
+        nowMs.addAndGet(ServerShieldResponder.EVENT_TTL_MILLIS + 60_000L);
+        assertFalse(r.tick(e));
+        assertTrue(e.requested.isEmpty());
+
+        // 到点（剩余 60 秒）→ 开盾
+        serverSec.set(1_000_240L);    // 剩余 = 1000300-1000240 = 60 秒
+        nowMs.addAndGet(5 * 60_000L); // 越过挂起判定时刻
+        assertTrue(r.tick(e));
+
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+        assertTrue(new JSONObject(modText()).getString("reactive").contains("被进攻"));
+    }
+
+    @Test
+    public void etaZero_opensImmediately_evenWithFutureEndtime() {
+        account(true, "{\"strategy\":{\"eta_sec\":\"0\"}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+
+        // eta_sec=0 保持旧行为：即使推送带很远的 endtime 也收到即开
+        long endSec = System.currentTimeMillis() / 1000L + 300L;
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), endSec), OWN_UID);
+        assertTrue(r.tick(e));
+
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+    }
+
+    @Test
+    public void forceOnlineWanted_switchSemantics() {
+        // 无风险 → false（即使开关都开）
+        account(true, "{\"sub\":{\"force_online\":true}}");
+        assertFalse(responder().forceOnlineWanted());
+
+        // 有新鲜风险但 force_online 默认 false → false
+        account(true, null);
+        ServerShieldResponder r1 = responder();
+        r1.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertFalse(r1.forceOnlineWanted());
+
+        // force_online=true + 新鲜风险 → true；不要求会话 online（推送到达后被顶号场景）
+        account(true, "{\"sub\":{\"force_online\":true}}");
+        ServerShieldResponder r2 = responder();
+        TestEngine offline = new TestEngine();
+        offline.online = false;
+        assertEquals(WjdrEngine.STATE_TAKEOVER, offline.sessionState());
+        r2.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r2.forceOnlineWanted());
+
+        // 总开关关闭 → false
+        account(true, "{\"sub\":{\"enabled\":false,\"force_online\":true}}");
+        ServerShieldResponder r3 = responder();
+        r3.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertFalse(r3.forceOnlineWanted());
+
+        // reactive 关闭 → false
+        account(true, "{\"sub\":{\"reactive\":false,\"force_online\":true}}");
+        ServerShieldResponder r4 = responder();
+        r4.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertFalse(r4.forceOnlineWanted());
+
+        // 陈旧风险（超过 10 分钟保鲜窗）→ false
+        account(true, "{\"sub\":{\"force_online\":true}}");
+        ServerShieldResponder r5 = responder();
+        r5.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        r5.lastEventAt -= ServerShieldResponder.EVENT_TTL_MILLIS + 60_000L;
+        assertFalse(r5.forceOnlineWanted());
+
+        // 卡秒挂起中（尚未到达）→ 仍算新鲜 → true
+        account(true, "{\"sub\":{\"force_online\":true},\"strategy\":{\"eta_sec\":\"60\"}}");
+        ServerShieldResponder r6 = responder();
+        long nowSec = System.currentTimeMillis() / 1000L;
+        r6.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), nowSec + 300L), OWN_UID);
+        assertTrue(r6.forceOnlineWanted());
     }
 
     private static Map<String, Object> marchOf(long id, long type, long targetUid) {

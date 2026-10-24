@@ -162,6 +162,22 @@ public class ServerGuardianEngineTest {
         return c;
     }
 
+    /** 取 attackPush 里的行军 map（可变，便于追加 squad_list / power 字段）。 */
+    private static Map<String, Object> marchOf(Map<String, Object> push) {
+        Object arr = push.get("to_marchs");
+        assertTrue(arr instanceof List);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> m = (Map<String, Object>) ((List<?>) arr).get(0);
+        return m;
+    }
+
+    /** squad_list{soldier:...} 包装（WarNotify.troopsOf 口径）。 */
+    private static Map<String, Object> squadList(Object soldier) {
+        Map<String, Object> squad = new LinkedHashMap<>();
+        squad.put("soldier", soldier);
+        return squad;
+    }
+
     private static Map<String, Object> delPush(long marchId) {
         Map<String, Object> march = new LinkedHashMap<>();
         march.put("id", marchId);
@@ -287,6 +303,67 @@ public class ServerGuardianEngineTest {
         assertEquals(ServerGuardianEngine.DEFAULT_D_SEC, badD.dSec);
     }
 
+    @Test
+    public void parseConfig_explicitEnabledIsAuthoritativeOverLegacyIntercept() {
+        // 2026-10-24 总开关语义修复：App 配置卡总开关（显式 enabled）为权威值；
+        // 即使旧 FnDetail 的 sub.intercept 仍为 true，也不能把「总开关关」重新打开。
+        ServerGuardianEngine.Config off = ServerGuardianEngine.parseConfig(new JSONObject(
+                "{\"enabled\":false,\"sub\":{\"intercept\":true,\"watch\":true}}"));
+        assertFalse("显式 enabled=false 必须压过 intercept=true", off.enabled);
+
+        ServerGuardianEngine.Config on = ServerGuardianEngine.parseConfig(new JSONObject(
+                "{\"enabled\":true,\"sub\":{\"intercept\":false}}"));
+        assertTrue("显式 enabled=true 不要求 intercept", on.enabled);
+
+        // 旧数据无 enabled 键：保留 intercept 兼容语义（升级不丢启用状态）
+        ServerGuardianEngine.Config legacy = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"sub\":{\"intercept\":true}}"));
+        assertTrue(legacy.enabled);
+        ServerGuardianEngine.Config legacyOff = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"sub\":{\"intercept\":false}}"));
+        assertFalse(legacyOff.enabled);
+    }
+
+    @Test
+    public void parseConfig_forceOnlineAndTroopsMin() {
+        // 默认值：强制上线关、兵力下限 0（未配置新参数 → 旧行为零变化）
+        ServerGuardianEngine.Config def = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"sub\":{\"enabled\":true}}"));
+        assertFalse("force_online 默认 false（不强制回连）", def.forceOnline);
+        assertEquals("troops_min 默认 0=不限", 0L, def.troopsMin);
+        assertTrue("describe 回显 force_online", def.describe().contains("force_online=false"));
+        assertTrue("describe 回显 troops_min", def.describe().contains("troops_min=0"));
+
+        // sub / strategy / top 兼容（first(sub,strategy,top)；sub 优先）
+        ServerGuardianEngine.Config c = ServerGuardianEngine.parseConfig(new JSONObject(
+                "{\"sub\":{\"force_online\":true},\"strategy\":{\"troops_min\":\"10000\"},"
+                        + "\"force_online\":false,\"troops_min\":50}"));
+        assertTrue("sub.force_online 优先于 top", c.forceOnline);
+        assertEquals("strategy.troops_min 字符串数字兼容", 10000L, c.troopsMin);
+        assertTrue(c.describe().contains("force_online=true"));
+        assertTrue(c.describe().contains("troops_min=10000"));
+
+        // 兼容别名 min_enemy_troops（仅在 troops_min 缺省时生效）
+        ServerGuardianEngine.Config alias = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"strategy\":{\"min_enemy_troops\":5000}}"));
+        assertEquals(5000L, alias.troopsMin);
+        ServerGuardianEngine.Config both = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"strategy\":{\"troops_min\":300,\"min_enemy_troops\":5000}}"));
+        assertEquals("troops_min 优先于别名", 300L, both.troopsMin);
+
+        // 顶层扁平键（App 旧版只回显顶层）
+        ServerGuardianEngine.Config top = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"force_online\":true,\"troops_min\":300}"));
+        assertTrue(top.forceOnline);
+        assertEquals(300L, top.troopsMin);
+
+        // 负值/非法值 → 0（不限；不得回退成负阈值把威胁全拒）
+        assertEquals(0L, ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"strategy\":{\"troops_min\":-5}}")).troopsMin);
+        assertEquals(0L, ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"strategy\":{\"troops_min\":\"abc\"}}")).troopsMin);
+    }
+
     // ======================= 2. 推送解析（防御式） =======================
 
     @Test
@@ -325,6 +402,69 @@ public class ServerGuardianEngineTest {
         Map<String, Object> wrapped = new LinkedHashMap<>();
         wrapped.put("data", attackPush(13081L, ENEMY_UID, 1002L, end + 9, 674, 684));
         assertEquals(1, ServerGuardianEngine.parseThreats(wrapped).size());
+    }
+
+    @Test
+    public void parseThreats_troopsAndPower() {
+        long end = System.currentTimeMillis() / 1000L + 300L;
+
+        // 目标系列：squad_list.soldier map 值=数量（WarNotify.troopsOf 口径）
+        Map<String, Object> c1 = attackPush(13080L, ENEMY_UID, 1001L, end, 679, 686);
+        marchOf(c1).put("squad_list", squadList(Map.of("11000", 1200L, "21000", 800L)));
+        ServerGuardianEngine.Threat t1 = ServerGuardianEngine.parseThreats(c1).get(0);
+        assertTrue("map 值=数量 → 兵力已知", t1.troopsKnown);
+        assertEquals("1200+800=2000", 2000L, t1.troops);
+        assertEquals("无 power 字段 → 0=未知", 0L, t1.power);
+
+        // map 值={count:n}
+        Map<String, Object> c2 = attackPush(13081L, ENEMY_UID, 1001L, end, 679, 686);
+        marchOf(c2).put("squad_list", squadList(Map.of("11000", Map.of("count", 500L))));
+        ServerGuardianEngine.Threat t2 = ServerGuardianEngine.parseThreats(c2).get(0);
+        assertTrue(t2.troopsKnown);
+        assertEquals(500L, t2.troops);
+
+        // list 元素={id,count}
+        Map<String, Object> c3 = attackPush(13082L, ENEMY_UID, 1001L, end, 679, 686);
+        marchOf(c3).put("squad_list", squadList(List.of(
+                Map.of("id", 11000L, "count", 700L),
+                Map.of("id", 31000L, "count", 300L))));
+        ServerGuardianEngine.Threat t3 = ServerGuardianEngine.parseThreats(c3).get(0);
+        assertTrue(t3.troopsKnown);
+        assertEquals(1000L, t3.troops);
+
+        // march.power 直接可读
+        Map<String, Object> c4 = attackPush(13083L, ENEMY_UID, 1001L, end, 679, 686);
+        marchOf(c4).put("power", 8888L);
+        ServerGuardianEngine.Threat t4 = ServerGuardianEngine.parseThreats(c4).get(0);
+        assertEquals("march.power 解析", 8888L, t4.power);
+        assertFalse("无 squad_list → 兵力未知", t4.troopsKnown);
+
+        // 观察哨外层 power：{"marches":{"9.0":{"march":{...},"power":n}}}，无 squad → 兵力未知
+        Map<String, Object> march = new LinkedHashMap<>();
+        march.put("id", 13079L);
+        march.put("owner", ENEMY_UID);
+        march.put("type", 2L);
+        march.put("endtime", end);
+        Map<String, Object> slot = new LinkedHashMap<>();
+        slot.put("march", march);
+        slot.put("power", 12345L);
+        Map<String, Object> c5 = new LinkedHashMap<>();
+        c5.put("marches", Map.of("9.0", slot));
+        ServerGuardianEngine.Threat t5 = ServerGuardianEngine.parseThreats(c5).get(0);
+        assertEquals("观察哨外层 power 必须拿到", 12345L, t5.power);
+        assertFalse("只有 power 无 squad_list → 兵力未知（保守侧关键）", t5.troopsKnown);
+        assertEquals(0L, t5.troops);
+
+        // 同一行军 add（含 squad）+ update（缺 squad，endtime 前移）合并：不丢已知兵力
+        Map<String, Object> known = attackPush(13084L, ENEMY_UID, 1001L, end, 679, 686);
+        marchOf(known).put("squad_list", squadList(Map.of("11000", 2000L)));
+        Map<String, Object> update = attackPush(13084L, ENEMY_UID, 1001L, end - 10, 679, 686);
+        Map<String, Object> both = new LinkedHashMap<>();
+        both.put("to_marchs", List.of(marchOf(known), marchOf(update)));
+        ServerGuardianEngine.Threat merged = ServerGuardianEngine.parseThreats(both).get(0);
+        assertTrue("update 缺 squad 不丢已解析兵力", merged.troopsKnown);
+        assertEquals(2000L, merged.troops);
+        assertEquals(end - 10, merged.endEpochSec);
     }
 
     @Test
@@ -437,6 +577,54 @@ public class ServerGuardianEngineTest {
                 ServerGuardianEngine.decide(threat(4L, 2L, 1001L, end, 674, 684), byUid, now).hit);
         assertTrue("target_uid 匹配放行",
                 ServerGuardianEngine.decide(threat(5L, 2L, 1002L, end, 674, 684), byUid, now).hit);
+    }
+
+    @Test
+    public void decide_troopsThreshold() {
+        ServerGuardianEngine.Config cfg = new ServerGuardianEngine.Config();
+        cfg.enabled = true;
+        cfg.allyUid = 1001L;
+        cfg.troopsMin = 5000L;
+        long now = System.currentTimeMillis();
+        long end = now / 1000L + 120L;
+
+        ServerGuardianEngine.Decision low = ServerGuardianEngine.decide(
+                threatTroops(1L, 2L, 1001L, end, 1200L, true, 0L), cfg, now);
+        assertFalse("已知兵力 < 阈值 → 不派兵", low.hit);
+        assertTrue("拒绝原因留痕 troops_low：" + low.reason, low.reason.contains("troops_low"));
+
+        ServerGuardianEngine.Decision high = ServerGuardianEngine.decide(
+                threatTroops(2L, 2L, 1001L, end, 8000L, true, 0L), cfg, now);
+        assertTrue("已知兵力 ≥ 阈值 → 放行", high.hit);
+
+        ServerGuardianEngine.Decision unknown = ServerGuardianEngine.decide(
+                threatTroops(3L, 2L, 1001L, end, 0L, false, 0L), cfg, now);
+        assertFalse("兵力未知 → 守护侧保守不发射", unknown.hit);
+        assertTrue("拒绝原因留痕 troops_unknown：" + unknown.reason,
+                unknown.reason.contains("troops_unknown"));
+
+        // troops_min=0（默认）：兵力未知/偏低都按旧行为放行（未配置新参数 → 零变化）
+        ServerGuardianEngine.Config off = new ServerGuardianEngine.Config();
+        off.enabled = true;
+        off.allyUid = 1001L;
+        assertEquals(0L, off.troopsMin);
+        assertTrue("旧行为：兵力低于任意值仍放行",
+                ServerGuardianEngine.decide(threatTroops(4L, 2L, 1001L, end, 1L, true, 0L), off, now).hit);
+        assertTrue("旧行为：兵力未知仍放行",
+                ServerGuardianEngine.decide(threatTroops(5L, 2L, 1001L, end, 0L, false, 0L), off, now).hit);
+
+        // 阈值不改变既有过滤顺序：非盟友仍按 not_ally 拒绝（不因兵力足够而放行）
+        ServerGuardianEngine.Decision notAlly = ServerGuardianEngine.decide(
+                threatTroops(6L, 2L, 2002L, end, 9000L, true, 0L), cfg, now);
+        assertFalse(notAlly.hit);
+        assertTrue(notAlly.reason.contains("not_ally"));
+    }
+
+    private static ServerGuardianEngine.Threat threatTroops(long marchId, long type, long targetUid,
+                                                            long endSec, long troops,
+                                                            boolean known, long power) {
+        return new ServerGuardianEngine.Threat(marchId, ENEMY_UID, type, targetUid,
+                674, 684, true, endSec, System.currentTimeMillis(), troops, known, power);
     }
 
     private static ServerGuardianEngine.Threat threat(long marchId, long type, long targetUid,
@@ -600,9 +788,166 @@ public class ServerGuardianEngineTest {
         engine.shutdown();
     }
 
+    // ======================= 5. 触发策略：force_online 查询 / 兵力阈值留痕 =======================
+
+    @Test
+    public void forceOnlineWanted_defaultOffAndQueryOnly() {
+        // 默认关：未 attach 的引擎 → 不强制回连
+        ServerGuardianEngine bare = engine();
+        assertFalse("默认关不强制回连", bare.forceOnlineWanted());
+        bare.shutdown();
+
+        // enabled=true 但 force_online=false → 有威胁也不强制回连
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":true}}");
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine g = engine();
+        g.attach(e);
+        long end = System.currentTimeMillis() / 1000L + 120L;
+        g.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                attackPush(13080L, ENEMY_UID, 1001L, end, 679, 686));
+        g.awaitIdleForTest(2_000L);
+        assertEquals("威胁已入账", 1, g.threatCount());
+        assertFalse("force_online=false 不强制回连", g.forceOnlineWanted());
+        assertTrue("查询本身零请求", e.requested.isEmpty());
+        g.shutdown();
+    }
+
+    @Test
+    public void forceOnlineWanted_enabledForceOnlineAndHit() {
+        // dry_run=true：只记录不派兵 → 即使 force_online=true 也不抢登（用户预期：强制上线是为派兵）
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":true,\"force_online\":true}}");
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine g = engine();
+        g.attach(e);
+        long nowS = System.currentTimeMillis() / 1000L;
+
+        // 无威胁 → false
+        assertFalse("无威胁不回连", g.forceOnlineWanted());
+
+        g.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 120L, 679, 686));
+        g.awaitIdleForTest(2_000L);
+        assertFalse("dry_run 不派兵 → 不强制回连", g.forceOnlineWanted());
+        assertTrue("查询本身零请求", e.requested.isEmpty());
+        g.shutdown();
+
+        // dry_run=false（实发）：enabled ∧ force_online ∧ 命中 → true
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"force_online\":true}}");
+        TestEngine e2 = new TestEngine();
+        e2.online = false;   // 只验证查询语义；实发路径由既有用例覆盖
+        ServerGuardianEngine g2 = engine();
+        g2.attach(e2);
+        g2.onPush(e2, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                attackPush(13081L, ENEMY_UID, 1001L, nowS + 120L, 679, 686));
+        g2.awaitIdleForTest(2_000L);
+        assertTrue("实发 ∧ enabled ∧ force_online ∧ 命中 → 强制回连", g2.forceOnlineWanted());
+        assertTrue("查询本身零请求", e2.requested.isEmpty());
+        g2.shutdown();
+
+        // 仅有已过期威胁（endtime 早已过去 → decide ETA 拒绝）→ false
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"force_online\":true}}");
+        TestEngine e3 = new TestEngine();
+        e3.online = false;
+        ServerGuardianEngine g3 = engine();
+        g3.attach(e3);
+        g3.onPush(e3, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                attackPush(13082L, ENEMY_UID, 1001L, nowS - 300L, 679, 686));
+        g3.awaitIdleForTest(2_000L);
+        assertEquals("过期威胁仍入账（供诊断）", 1, g3.threatCount());
+        assertFalse("仅剩过期威胁不回连", g3.forceOnlineWanted());
+        g3.shutdown();
+    }
+
+    @Test
+    public void forceOnlineWanted_respectsTroopsThreshold() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"force_online\":true},"
+                + "\"strategy\":{\"troops_min\":5000}}");
+        TestEngine e = new TestEngine();
+        e.online = false;   // 阈值/查询语义从 decide 层验证，不触发实发路径
+        ServerGuardianEngine g = engine();
+        g.attach(e);
+        long end = System.currentTimeMillis() / 1000L + 120L;
+
+        // 兵力未知 → decide 拒绝 → 不强制回连（保守）
+        g.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                attackPush(13080L, ENEMY_UID, 1001L, end, 679, 686));
+        g.awaitIdleForTest(2_000L);
+        assertFalse("兵力未知被阈值拒绝 → 不回连", g.forceOnlineWanted());
+
+        // 兵力低于阈值 → 不强制回连
+        Map<String, Object> low = attackPush(13081L, ENEMY_UID, 1001L, end, 679, 686);
+        marchOf(low).put("squad_list", squadList(Map.of("11000", 1000L)));
+        g.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD, low);
+        g.awaitIdleForTest(2_000L);
+        assertFalse("兵力低于阈值 → 不回连", g.forceOnlineWanted());
+
+        // 兵力达到阈值 → 强制回连
+        Map<String, Object> high = attackPush(13082L, ENEMY_UID, 1001L, end, 679, 686);
+        marchOf(high).put("squad_list", squadList(Map.of("11000", 8000L)));
+        g.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD, high);
+        g.awaitIdleForTest(2_000L);
+        assertTrue("兵力达标 → 强制回连", g.forceOnlineWanted());
+        assertTrue(e.requested.isEmpty());
+        g.shutdown();
+    }
+
+    @Test
+    public void troopsThreshold_ledgersSkipOnceAndNoRequest() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":true},"
+                + "\"strategy\":{\"troops_min\":5000}}");
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine g = engine();
+        g.attach(e);
+        long end = System.currentTimeMillis() / 1000L + 120L;
+        Map<String, Object> push = attackPush(13080L, ENEMY_UID, 1001L, end, 679, 686);
+        marchOf(push).put("squad_list", squadList(Map.of("11000", 1200L)));
+
+        g.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD, push);
+        g.awaitIdleForTest(2_000L);
+        assertTrue("阈值拒绝不发请求", e.requested.isEmpty());
+        JSONObject last = lastLedger();
+        assertEquals("阈值拒绝留痕", "skip_troops", last.getString("ev"));
+        assertTrue("原因写明 troops_low：" + last.getString("note"),
+                last.getString("note").contains("troops_low"));
+
+        // 同一判定值的 update 推送不重复记账（防刷屏）
+        Map<String, Object> update = attackPush(13080L, ENEMY_UID, 1001L, end - 30, 679, 686);
+        marchOf(update).put("squad_list", squadList(Map.of("11000", 1200L)));
+        g.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE, update);
+        g.awaitIdleForTest(2_000L);
+        JSONArray arr = new JSONArray(ledgerRaw());
+        assertEquals("同一判定值只留痕一次", 1, arr.length());
+
+        // 兵力未知（只有 power）→ 另起引擎验证 troops_unknown 留痕
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":true},"
+                + "\"strategy\":{\"troops_min\":5000}}");
+        TestEngine e2 = new TestEngine();
+        ServerGuardianEngine g2 = engine();
+        g2.attach(e2);
+        Map<String, Object> march = new LinkedHashMap<>();
+        march.put("id", 13090L);
+        march.put("owner", ENEMY_UID);
+        march.put("type", 2L);
+        march.put("endtime", end);
+        Map<String, Object> slot = new LinkedHashMap<>();
+        slot.put("march", march);
+        slot.put("power", 7777L);
+        Map<String, Object> obs = new LinkedHashMap<>();
+        obs.put("marches", Map.of("9.0", slot));
+        g2.onPush(e2, ServerGuardianEngine.PROTO_ALLIANCE_ADD, obs);
+        g2.awaitIdleForTest(2_000L);
+        assertTrue("兵力未知不发请求", e2.requested.isEmpty());
+        assertEquals("skip_troops", lastLedger().getString("ev"));
+        assertTrue("原因写明 troops_unknown：" + lastLedger().getString("note"),
+                lastLedger().getString("note").contains("troops_unknown"));
+        g2.shutdown();
+        g.shutdown();
+    }
+
     @Test
     public void describe_isDiagnostic() {
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":true},\"strategy\":{\"ally_uid\":1001}}");
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"force_online\":true,\"troops_min\":5000}}");
         TestEngine e = new TestEngine();
         ServerGuardianEngine engine = engine();
         engine.attach(e);
@@ -612,6 +957,8 @@ public class ServerGuardianEngineTest {
         assertTrue(d.contains("enabled=true"));
         assertTrue(d.contains("dry_run=true"));
         assertTrue(d.contains("ally_uid=1001"));
+        assertTrue("describe 回显 force_online", d.contains("force_online=true"));
+        assertTrue("describe 回显 troops_min", d.contains("troops_min=5000"));
         assertTrue(d.contains("threats=0"));
         engine.shutdown();
     }

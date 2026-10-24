@@ -209,6 +209,13 @@ public final class FnParams {
         /** 演练模式：只记录不派兵（默认 true，服务器同口径）。 */
         public boolean dryRun = true;
         public boolean recall = true;
+        /**
+         * 强制上线（2026-10-24）：盟友存在被攻击风险且来袭兵力≥预警阈值时，
+         * 允许服务端在暂停/被顶号/掉线状态抢登回连后派兵驻防（默认关）。
+         */
+        public boolean forceOnline = false;
+        /** 来袭兵力预警下限（敌方 squad_list.soldier 合计；0=不限；兵力未知时守护侧保守不派）。 */
+        public long troopsMin = 0L;
         public long allyUid = 0L;
         public long targetUid = 0L;
         public int targetX = 0;
@@ -236,10 +243,15 @@ public final class FnParams {
         try {
             JSONObject sub = p.optJSONObject("sub");
             JSONObject st = p.optJSONObject("strategy");
-            c.enabled = gBool(sub, st, p, "enabled", false)
-                    || gBool(sub, st, p, "intercept", false);   // 兼容旧 intercept 开关
+            // 总开关语义（2026-10-24，与服务器 ServerGuardianEngine.parseConfig 同口径）：
+            // 显式 enabled 键为权威值；仅旧数据缺 enabled 键时才用 intercept 兼容启用。
+            c.enabled = gHas(sub, st, p, "enabled")
+                    ? gBool(sub, st, p, "enabled", false)
+                    : gBool(sub, st, p, "intercept", false);
             c.dryRun = gBool(sub, st, p, "dry_run", true);
             c.recall = gBool(sub, st, p, "recall", true);
+            c.forceOnline = gBool(sub, st, p, "force_online", false);
+            c.troopsMin = Math.max(0L, gNum(sub, st, p, "troops_min", 0L));
             c.allyUid = Math.max(0L, gNum(sub, st, p, "ally_uid", 0L));
             c.targetUid = Math.max(0L, gNum(sub, st, p, "target_uid", 0L));
             Object tp = gFirst(sub, st, p, "target_point");
@@ -280,6 +292,8 @@ public final class FnParams {
             out.put("enabled", cfg.enabled);
             out.put("dry_run", cfg.dryRun);
             out.put("recall", cfg.recall);
+            out.put("force_online", cfg.forceOnline);
+            out.put("troops_min", Math.max(0, cfg.troopsMin));
             out.put("ally_uid", Math.max(0, cfg.allyUid));
             out.put("target_uid", Math.max(0, cfg.targetUid));
             out.put("d_sec", Math.max(10, Math.min(600, cfg.dSec)));
@@ -430,6 +444,13 @@ public final class FnParams {
         if (sub != null && sub.has(key)) return sub.opt(key);
         if (st != null && st.has(key)) return st.opt(key);
         return top == null ? null : top.opt(key);
+    }
+
+    /** 键是否显式存在（三处任一）——区分「显式 false」与「旧数据缺键」。 */
+    private static boolean gHas(JSONObject sub, JSONObject st, JSONObject top, String key) {
+        if (sub != null && sub.has(key)) return true;
+        if (st != null && st.has(key)) return true;
+        return top != null && top.has(key);
     }
 
     private static long gNum(JSONObject sub, JSONObject st, JSONObject top, String key, long def) {

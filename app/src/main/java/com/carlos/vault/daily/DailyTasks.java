@@ -1109,10 +1109,16 @@ public final class DailyTasks {
 
     static DailyResult freeShield(WjdrEngine engine) throws Exception {
         try {
-            // 子开关门控：free=每日定时开盾，reactive=被袭击反应式开盾（同一协议的两个触发源，
-            // 任一开启即允许执行；DailySchedulerService.onGameEvent 另有 reactive 单独门控）
             boolean fpidEmpty = engine.lastFpid() == null;
             String fp = fpidEmpty ? "" : engine.lastFpid();
+            // 总开关（2026-10-24）：关闭后整个护盾模块（定时免费盾 + 反应式）停止；默认开=兼容旧行为
+            if (!FnParams.subOn(engine.appContext(), fp,
+                    engine.lastServerId(), "battle_shield", "enabled", true)) {
+                return new DailyResult("battle_shield", "战斗护盾", DailyResult.Category.SKIPPED,
+                        "总开关已关闭");
+            }
+            // 子开关门控：free=每日定时开盾，reactive=被袭击反应式开盾（同一协议的两个触发源，
+            // 任一开启即允许执行；DailySchedulerService.onGameEvent 另有 reactive 单独门控）
             boolean shieldOn = FnParams.subOn(engine.appContext(), fp,
                     engine.lastServerId(), "battle_shield", "free", true)
                     || FnParams.subOn(engine.appContext(), fp,
