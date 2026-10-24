@@ -209,4 +209,35 @@ public class FormationCatalogTest {
         assertEquals(45L, heroes.get(0).level);
         assertEquals(18L, heroes.get(0).star);
     }
+
+    @Test
+    public void soldierUpdate_incrementallyAdjustsStock() {
+        Map<String, Object> soldier = new LinkedHashMap<>();
+        soldier.put("soldier", mapOf(
+                "11100.0", mapOf("id", 11100L, "count", 1000L),
+                "21100.0", mapOf("id", 21100L, "count", 800L),
+                "31100.0", mapOf("id", 31100L, "count", 600L)));
+        engine.notifies.put("notify_soldier_init", soldier);
+        FormationCatalog.reset(engine);
+        FormationCatalog.capture(engine);
+        assertEquals(1000L, FormationCatalog.soldierStock(engine)[0]);
+
+        // 出征带走 400 盾兵（notify_soldier_update type=del）
+        FormationCatalog.onNotify(engine, "notify_soldier_update", mapOf(
+                "type", "del",
+                "data", List.of(mapOf("id", 11100L, "count", 400L))));
+        assertEquals("del 后盾兵库存递减", 600L, FormationCatalog.soldierStock(engine)[0]);
+
+        // 回城归还 100（type=add）
+        FormationCatalog.onNotify(engine, "notify_soldier_update", mapOf(
+                "type", "add",
+                "data", List.of(mapOf("id", 11100L, "count", 100L))));
+        assertEquals("add 后盾兵库存递增", 700L, FormationCatalog.soldierStock(engine)[0]);
+    }
+
+    private static Map<String, Object> mapOf(Object... kv) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) m.put(String.valueOf(kv[i]), kv[i + 1]);
+        return m;
+    }
 }

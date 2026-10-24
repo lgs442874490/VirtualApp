@@ -32,8 +32,12 @@ public final class HeroAvailability {
     private static final Map<WjdrEngine, Integer> HERO_LIMIT_HINT =
             Collections.synchronizedMap(new WeakHashMap<WjdrEngine, Integer>());
 
-    /** 默认自动编队英雄上限（网页版 MAX_AUTO_HEROES=5）。 */
-    public static final int DEFAULT_AUTO_HEROES = 5;
+    /** 默认自动编队英雄上限（游戏规则每队列 3 英雄：盾/矛/弓各一）。 */
+    public static final int DEFAULT_AUTO_HEROES = 3;
+
+    /** 406（编队士兵数量超上限）后的兵力缩放百分比（默认 100；被拒后 75→50→25 收敛）。 */
+    private static final Map<WjdrEngine, Integer> SOLDIER_SCALE_PCT =
+            Collections.synchronizedMap(new WeakHashMap<WjdrEngine, Integer>());
 
     private HeroAvailability() {
     }
@@ -114,11 +118,27 @@ public final class HeroAvailability {
         if (engine != null) HERO_LIMIT_HINT.remove(engine);
     }
 
+    /** 406 后的兵力缩放百分比（100=不缩放）。 */
+    public static int soldierScalePercent(WjdrEngine engine) {
+        if (engine == null) return 100;
+        Integer v = SOLDIER_SCALE_PCT.get(engine);
+        return v == null ? 100 : Math.max(25, Math.min(100, v));
+    }
+
+    /** 406 拒绝：兵力缩放 -25%（最低 25%），返回新百分比。 */
+    public static int noteSoldierLimitRejected(WjdrEngine engine) {
+        if (engine == null) return 100;
+        int next = Math.max(25, soldierScalePercent(engine) - 25);
+        SOLDIER_SCALE_PCT.put(engine, next);
+        return next;
+    }
+
     /** 会话关闭/测试清理。 */
     public static void clear(WjdrEngine engine) {
         if (engine == null) return;
         BLOCKED.remove(engine);
         HERO_LIMIT_HINT.remove(engine);
+        SOLDIER_SCALE_PCT.remove(engine);
     }
 
     /** 从 formation payload（{@code {"hero_id":[{"k":id,"v":1}]}}）提取英雄 id。 */

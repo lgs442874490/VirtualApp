@@ -143,10 +143,9 @@ public final class FormationResolver {
     /** 自动编队（带原因）。 */
     public static ResolveOutcome autoOutcome(WjdrEngine engine, Map<String, Long> ratio, long total) {
         if (engine == null) return ResolveOutcome.skip("engine 为空");
-        List<Long> heroIds = strongestHeroes(engine,
-                Math.min(MAX_AUTO_HEROES, HeroAvailability.autoHeroLimit(engine)));
+        List<Long> heroIds = autoProfessionHeroes(engine);
         if (heroIds.isEmpty()) {
-            return ResolveOutcome.skip("英雄目录未同步（notify_hero_init 缺失或无英雄）");
+            return ResolveOutcome.skip("英雄目录未同步（notify_hero_init 缺失或无可用英雄）");
         }
         long[] stock = FormationCatalog.soldierStock(engine);
         long stockSum = stock[0] + stock[1] + stock[2];
@@ -157,6 +156,8 @@ public final class FormationResolver {
         // 406 修复：按“本队英雄容量”精确夹取总兵力（网页版 MarchCapacityState 公式）
         long capacity = MarchCapacityCalculator.capacityFor(engine, heroIds);
         if (capacity > 0L) target = Math.min(target, capacity);
+        int scalePct = HeroAvailability.soldierScalePercent(engine);
+        if (scalePct < 100) target = Math.max(1L, target * scalePct / 100L);
         long[] weights = ratioArray(ratio, DEFAULT_RATIO);
         long[] soldiers = allocate(target, weights, stock);
         if (soldiers[0] + soldiers[1] + soldiers[2] <= 0) {
@@ -336,6 +337,31 @@ public final class FormationResolver {
             if (busy.contains(h.id)) continue;
             if (out.size() >= cap) break;
             out.add(h.id);
+        }
+        return out;
+    }
+
+    /**
+     * 自动编队英雄：游戏规则每队列最多 3 名英雄且<b>盾/矛/弓各一名</b>（用户实证：
+     * 上阵位只能上三个英雄、兵种一一对应）。按职业各选“最强且在城/未拉黑”的一名；
+     * 某职业无可用英雄时返回已凑齐的部分（调用方按空/不足 SKIP 或降级）。
+     */
+    public static List<Long> autoProfessionHeroes(WjdrEngine engine) {
+        List<Long> out = new ArrayList<>();
+        if (engine == null) return out;
+        java.util.Set<Long> busy = FormationCatalog.busyHeroIds(engine);
+        long[] picked = new long[4];   // index 1/2/3 = 盾/矛/弓
+        for (FormationCatalog.Hero h : FormationCatalog.heroes(engine)) {
+            int p = h.profession;
+            if (p < 1 || p > 3) continue;
+            if (picked[p] > 0L) continue;
+            if (HeroAvailability.isBlocked(engine, h.id)) continue;
+            if (busy.contains(h.id)) continue;
+            picked[p] = h.id;
+            if (picked[1] > 0L && picked[2] > 0L && picked[3] > 0L) break;
+        }
+        for (int p = 1; p <= 3; p++) {
+            if (picked[p] > 0L) out.add(picked[p]);
         }
         return out;
     }

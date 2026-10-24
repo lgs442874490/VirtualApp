@@ -180,7 +180,18 @@ public final class MarchCapacityCalculator {
         Map<Long, Long> out = new LinkedHashMap<>();
         Map<String, Object> hi = engine.notifyData("notify_hero_init");
         if (hi == null) return out;
-        for (Map<String, Object> m : mapsOf(hi.get("data"))) {
+        Object data = hi.get("data");
+        if (data == null) data = hi.get("heros");
+        // notifyData 已把 data 解包时 hi 本身就是 {"50006.0":{...}}；否则从 data 取
+        List<Map<String, Object>> rows = data == null
+                ? mapsOf(hi) : mapsOf(data);
+        if (rows.isEmpty() && data == null) {
+            for (Object o : hi.values()) {
+                Map<String, Object> m = mapOf(o);
+                if (m != null) rows.add(m);
+            }
+        }
+        for (Map<String, Object> m : rows) {
             long id = num(m.get("id"));
             long lev = Math.max(num(m.get("lev")), num(m.get("training_lev")));
             if (id > 0 && lev > 0) out.put(id, lev);

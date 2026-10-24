@@ -29,7 +29,7 @@ import java.util.List;
  *       摘要行（英雄 N 名 · 盾x 矛y 弓z · 来源=指定#1/自动）、自动比例、管理编队入口；</li>
  *   <li>{@link #buildBearJoinCard}：巨熊「上车编队 1-6」（每支可独立自动/指定）；</li>
  *   <li>{@link #showLibrary}：编队库列表（新增/编辑/复制/删除）；</li>
- *   <li>{@link #showEditor}：编队编辑（名称、英雄≤5、兵种数量或比例+总量）。</li>
+ *   <li>{@link #showEditor}：编队编辑（名称、英雄≤3、兵种数量或比例+总量）。</li>
  * </ul>
  *
  * <p>英雄列表来自服务器 state 键 {@code srv:formation:catalog:{fpid}:{sid}}（由
@@ -148,7 +148,7 @@ public final class FormationPicker {
                     ratio[0] + ":" + ratio[1] + ":" + ratio[2]
                             + " · 总量" + (ratio[3] <= 0 ? "按容量" : String.valueOf(ratio[3])),
                     () -> showAutoRatioDialog(act, fpid, sid, fnId, () -> refresh.run())));
-            TextView sum = text(act, "来源=自动 · 服务器按空闲英雄+库存分配（英雄≤5）",
+            TextView sum = text(act, "来源=自动 · 服务器按空闲英雄+库存分配（英雄≤3）",
                     11.5f, UiStyle.INK2, false);
             sum.setPadding(0, dp(act, 6), 0, 0);
             card.addView(sum);
@@ -550,7 +550,7 @@ public final class FormationPicker {
         dlg.show();
     }
 
-    // ==================== 编队编辑（名称/英雄≤5/数量或比例+总量） ====================
+    // ==================== 编队编辑（名称/英雄≤3/数量或比例+总量） ====================
 
     /** 新建（existing=null）或编辑编队。 */
     public static void showEditor(final Activity act, final String fpid, final long sid,

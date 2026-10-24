@@ -158,18 +158,18 @@ public class FormationStoreTest {
     }
 
     @Test
-    public void validate_heroCountOneToFive() {
+    public void validate_heroCountOneToThree() {
         FormationStore.Formation none = withTroops();
         none.heroIds.clear();
         assertTrue("0 英雄非法", FormationStore.validate(none).contains("英雄"));
-        FormationStore.Formation six = withTroops();
-        six.heroIds.clear();
-        for (long i = 1; i <= 6; i++) six.heroIds.add(50000 + i);
-        assertTrue("6 英雄非法", FormationStore.validate(six).contains("最多"));
-        FormationStore.Formation five = withTroops();
-        five.heroIds.clear();
-        for (long i = 1; i <= 5; i++) five.heroIds.add(50000 + i);
-        assertNull("5 英雄合法", FormationStore.validate(five));
+        FormationStore.Formation four = withTroops();
+        four.heroIds.clear();
+        for (long i = 1; i <= 4; i++) four.heroIds.add(50000 + i);
+        assertTrue("4 英雄非法（游戏每队列最多 3）", FormationStore.validate(four).contains("最多"));
+        FormationStore.Formation three = withTroops();
+        three.heroIds.clear();
+        for (long i = 1; i <= 3; i++) three.heroIds.add(50000 + i);
+        assertNull("3 英雄合法", FormationStore.validate(three));
         FormationStore.Formation dup = withTroops();
         dup.heroIds.clear();
         dup.heroIds.add(50041L);

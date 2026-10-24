@@ -444,6 +444,12 @@ public final class SessionKeeper implements SessionControl,
                 final AssetProjectionPublisher pub = new AssetProjectionPublisher(this, lib);
                 engine.addMessageHook((proto, content) -> {
                     lib.accept(proto, content);   // 第一行：先入资产库（异常由库/引擎各自兜住）
+                    // 编队目录增量：兵力带走/回城（notify_soldier_update），避免编队库存用登录旧值（401）
+                    try {
+                        com.carlos.vaultserver.formation.FormationCatalog
+                                .onNotify(engine, proto, content);
+                    } catch (Throwable ignored) {
+                    }
                 });
                 lib.addListener(pub);
                 assetLib = lib;

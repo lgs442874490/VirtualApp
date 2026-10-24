@@ -38,9 +38,9 @@ public final class FormationStore {
     /** 角色 params 保留键（服务器 FormationLibrary.parse 读取；值=字符串 JSON）。 */
     public static final String KEY_LIBRARY = "formation_library";
 
-    /** 编队英雄数量范围（网页版 RoleFormationPatrolMatrix / 编队上限 5）。 */
+    /** 编队英雄数量上限：游戏规则每队列最多 3 名英雄（盾/矛/弓各一，用户实证）。 */
     public static final int HERO_MIN = 1;
-    public static final int HERO_MAX = 5;
+    public static final int HERO_MAX = 3;
 
     /** 单角色编队库上限（防 params 膨胀；正常用户 ≤10）。 */
     public static final int MAX_FORMATIONS = 20;
@@ -334,6 +334,7 @@ public final class FormationStore {
             h.id = o.optLong("id", 0);
             if (h.id <= 0) continue;
             h.name = o.optString("name", "");
+            if (h.name.isEmpty()) h.name = com.carlos.vault.wjdr.asset.HeroCatalog.name(h.id);
             h.level = o.optInt("level", 0);
             h.star = o.optInt("star", 0);
             h.power = o.optLong("power", 0);

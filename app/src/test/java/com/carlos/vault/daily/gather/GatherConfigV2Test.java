@@ -543,4 +543,32 @@ public class GatherConfigV2Test {
         Collections.sort(keys);
         return keys;
     }
+
+    @Test
+    public void speedup_roundTripAndHelpers() {
+        GatherConfigV2 c = GatherConfigV2.parse(new JSONObject());
+        c.speedupEnabled = true;
+        c.speedupHours = 24;
+        c.speedupDiamondPurchaseEnabled = true;
+        c.speedupDiamondDailyLimit = 1000L;
+        JSONObject params = c.applyTo(new JSONObject());
+        JSONObject v2 = params.optJSONObject("v2");
+        assertEquals(true, v2.optBoolean("gatherSpeedupEnabled"));
+        assertEquals("HOURS_24", v2.optString("gatherSpeedupLevel"));
+        assertEquals(true, v2.optBoolean("gatherSpeedupDiamondPurchaseEnabled"));
+        assertEquals(1000L, v2.optLong("gatherSpeedupDiamondDailyLimit"));
+        GatherConfigV2 back = GatherConfigV2.parse(params);
+        assertTrue(back.speedupEnabled);
+        assertEquals(24, back.speedupHours);
+        assertTrue(back.speedupDiamondPurchaseEnabled);
+        assertEquals(1000L, back.speedupDiamondDailyLimit);
+        assertEquals(302000L, GatherConfigV2.speedupItemId(8));
+        assertEquals(302001L, GatherConfigV2.speedupItemId(24));
+        assertEquals(28_800L, GatherConfigV2.speedupDurationSec(8));
+        assertEquals(250L, GatherConfigV2.speedupDiamondPrice(8));
+        assertEquals(600L, GatherConfigV2.speedupDiamondPrice(24));
+        long now = 1_900_000_000_000L;
+        assertTrue(GatherConfigV2.speedupActive(now, 8, now + 3600_000L));
+        assertFalse(GatherConfigV2.speedupActive(now, 8, now + 8 * 3600_000L - 60_000L));
+    }
 }
