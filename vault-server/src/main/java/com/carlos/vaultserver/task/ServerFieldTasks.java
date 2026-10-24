@@ -339,6 +339,17 @@ public final class ServerFieldTasks {
      * 协议实证见旧注释：owner=玩家uid、kid=区号，行军列表在响应 detail 字段。
      */
     static MarchSnapshot snapshotMarches(WjdrEngine engine) {
+        // 资产库优先（登录 world_player_init + player/mass_march 推送维护；type 计数与最早结束时刻）；
+        // 生产旧 detail 查询恒 code=2，仅作未接线/回滚兜底。
+        if (assetReadsEnabled()) {
+            try {
+                CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+                if (lib != null && lib.ready() && lib.queue().known()) {
+                    return marchSnapshotFromAsset(lib.queue());
+                }
+            } catch (Throwable ignored) {
+            }
+        }
         try {
             Map<String, Object> args = new LinkedHashMap<>();
             args.put("owner", engine.lastUid());
@@ -1526,6 +1537,14 @@ public final class ServerFieldTasks {
         return null;
     }
 
+    /** 巨熊活动窗口暂停（狩猎/巨兽用）：lib 未就绪或无窗口 → null。 */
+    static String bearWindowPauseReason(CoreAssetLibrary lib, long nowSec) {
+        if (lib == null || !lib.ready()) return null;
+        AssetSnapshot.Bear bear = lib.bear();
+        if (bear == null) return null;
+        return gatherPauseReason(bear.reserveTime, bear.massStartTime, bear.massEndTime, 0, nowSec);
+    }
+
     /** 特殊队列条数（仅展示；不参与普通队列空闲计算）。 */
     static int specialQueueCount(AssetSnapshot.Queue queue) {
         if (queue == null || queue.specialByType == null) return 0;
@@ -2238,6 +2257,17 @@ public final class ServerFieldTasks {
         Exec.Multi m = new Exec.Multi();
         try {
             tc.engine.collectNotifies(2500);
+            // B3-T1：巨熊活动窗口让位（1:1 网页版 HuntTaskModule/DailyHuntService 暂停协调；
+            // 只判巨熊窗口，不把情报优先用于狩猎，避免狩猎长期饥饿）。
+            CoreAssetLibrary huntLib = assetReadsEnabled()
+                    ? CoreAssetRegistry.global().get(tc.engine) : null;
+            String huntPause = bearWindowPauseReason(huntLib,
+                    huntLib == null ? 0L : huntLib.clock().serverNowSec());
+            if (huntPause != null) {
+                m.skip(huntPause);
+                tc.saveModText("hunt", "hunt", huntPause);
+                return Exec.result(m, "hunt", "自动狩猎");
+            }
             JSONObject hp = tc.params("hunt");
             int lvMin = Math.max(1, Math.min(10, hp.optInt("level_min", 4)));
             int lvMax = Math.max(lvMin, Math.min(10, hp.optInt("level_max", 6)));

@@ -18,6 +18,7 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -113,6 +114,33 @@ public class IntelAssetReadTest {
     public void intelEventsFromAssets_emptySafe() {
         assertTrue(ServerFieldTasks.intelEventsFromAssets(null).isEmpty());
         assertTrue(ServerFieldTasks.intelEventsFromAssets(AssetSnapshot.Intel.empty()).isEmpty());
+    }
+
+    @Test
+    public void legacyMarchState_assetFirst() {
+        WjdrEngine engine = new FakeEngine();
+        CoreAssetLibrary lib = CoreAssetRegistry.global().attach(engine, "test", 888L, 1L, 1L);
+        ready(lib, 0L);
+        lib.accept("notify_world_player_init", mapOf("march_info", Arrays.asList(
+                        mapOf("id", 1L, "type", 4L, "state", 3L, "endtime", 1234567890L),
+                        mapOf("id", 2L, "type", 4L, "state", 3L, "endtime", 1234567900L),
+                        mapOf("id", 3L, "type", 411L, "state", 3L, "endtime", 1234567910L)),
+                "world_extra_march", mapOf("value", 0L)));
+        ServerFieldTasks.MarchSnapshot snap = ServerFieldTasks.snapshotMarches(engine);
+        assertTrue("资产库就绪后行军快照应 known", snap.known());
+        assertEquals(2, snap.count(4L));
+        assertEquals(1, snap.count(411L));
+    }
+
+    @Test
+    public void bearWindowPauseReason_asset() {
+        WjdrEngine engine = new FakeEngine();
+        CoreAssetLibrary lib = CoreAssetRegistry.global().attach(engine, "test", 888L, 1L, 1L);
+        ready(lib, 0L);
+        long now = lib.clock().serverNowSec();
+        lib.accept("req_alliance_trap_info", mapOf("reserve_time", now + 100L));
+        assertNotNull(ServerFieldTasks.bearWindowPauseReason(lib, now));
+        assertNull(ServerFieldTasks.bearWindowPauseReason(null, now));
     }
 
     // ---------- fixtures ----------
