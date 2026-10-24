@@ -1,6 +1,7 @@
 package com.carlos.vaultserver.formation;
 
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.MarchCapacityCalculator;
 import com.carlos.vaultserver.task.Exec;
 import com.carlos.vaultserver.task.TaskContext;
 
@@ -153,6 +154,9 @@ public final class FormationResolver {
             return ResolveOutcome.skip("兵种库存未同步（notify_soldier_init 缺失）");
         }
         long target = total > 0 ? total : Math.min(stockSum, MAX_SOLDIERS_PER_MARCH);
+        // 406 修复：按“本队英雄容量”精确夹取总兵力（网页版 MarchCapacityState 公式）
+        long capacity = MarchCapacityCalculator.capacityFor(engine, heroIds);
+        if (capacity > 0L) target = Math.min(target, capacity);
         long[] weights = ratioArray(ratio, DEFAULT_RATIO);
         long[] soldiers = allocate(target, weights, stock);
         if (soldiers[0] + soldiers[1] + soldiers[2] <= 0) {
@@ -230,6 +234,7 @@ public final class FormationResolver {
             }
         }
         boolean libraryAny = merged[0] > 0 || merged[1] > 0 || merged[2] > 0;
+        long capacity = MarchCapacityCalculator.capacityFor(engine, new ArrayList<>(spec.heroIds));
         long[] soldiers;
         String sourceNote;
         if (libraryAny) {
@@ -238,6 +243,13 @@ public final class FormationResolver {
             if (shortLine != null) {
                 return ResolveOutcome.skip("编队 #" + formationId + " 兵量超出库存：" + shortLine
                         + "（库存 盾" + stock[0] + "/矛" + stock[1] + "/弓" + stock[2] + "）");
+            }
+            if (capacity > 0L) {
+                long sum = soldiers[0] + soldiers[1] + soldiers[2];
+                if (sum > capacity) {
+                    return ResolveOutcome.skip("编队 #" + formationId + " 兵量(" + sum
+                            + ")超出出征容量(" + capacity + ")，请下调兵量或增加英雄");
+                }
             }
             sourceNote = overrideAny ? "功能级 soldiers 覆盖" : "编队库兵量";
         } else {
@@ -250,6 +262,7 @@ public final class FormationResolver {
             }
             // ③ total>0 或显式 ratio：按 total/ratio + 库存分配（网页版 AUTOMATIC 分配语义）
             if (total <= 0) total = Math.min(stockSum, MAX_SOLDIERS_PER_MARCH);
+            if (capacity > 0L) total = Math.min(total, capacity);   // 406 修复：按英雄容量夹取
             long[] weights = ratioArray(ratioOf(p, spec.ratio), DEFAULT_RATIO);
             soldiers = allocate(total, weights, stock);
             if (soldiers[0] + soldiers[1] + soldiers[2] <= 0) {
@@ -315,9 +328,12 @@ public final class FormationResolver {
     public static List<Long> strongestHeroes(WjdrEngine engine, int max) {
         int cap = Math.max(1, Math.min(MAX_AUTO_HEROES, max));
         List<Long> out = new ArrayList<>();
+        java.util.Set<Long> busy = FormationCatalog.busyHeroIds(engine);
         for (FormationCatalog.Hero h : FormationCatalog.heroes(engine)) {
             // 301 拉黑窗内英雄跳过（换下一批候选；全部拉黑由调用方 SKIP）
             if (HeroAvailability.isBlocked(engine, h.id)) continue;
+            // 403 修复：已在途行军中的英雄跳过（多队列并发时不重复选人）
+            if (busy.contains(h.id)) continue;
             if (out.size() >= cap) break;
             out.add(h.id);
         }

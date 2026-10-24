@@ -1,6 +1,9 @@
 package com.carlos.vaultserver.formation;
 
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.AssetSnapshot;
+import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
+import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vaultserver.task.Exec;
 
 import java.util.ArrayList;
@@ -175,6 +178,27 @@ public final class FormationCatalog {
     /** 三兵种最高档 id [盾,矛,弓]（同 Exec.bestSoldierIds）。 */
     public static long[] bestSoldierIds(WjdrEngine engine) {
         return catalog(engine).bestSoldierIds.clone();
+    }
+
+    /**
+     * 当前在途行军的英雄 id（资产库 queue 域；供自动编队排除，防 403 重复选人）。
+     * 资产库未接线/未 READY 返回空集合（不阻塞旧行为）。
+     */
+    public static java.util.Set<Long> busyHeroIds(WjdrEngine engine) {
+        java.util.Set<Long> out = new java.util.LinkedHashSet<Long>();
+        if (engine == null) return out;
+        try {
+            CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+            if (lib == null || !lib.ready() || lib.queue() == null) return out;
+            for (AssetSnapshot.QueueMarch march : lib.queue().marches) {
+                if (march == null || march.heroIds == null) continue;
+                for (Long id : march.heroIds) {
+                    if (id != null && id > 0L) out.add(id);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
     }
 
     /** 世界出征队列容量（取不到=0，调用方按"未知"保守处理）。 */
