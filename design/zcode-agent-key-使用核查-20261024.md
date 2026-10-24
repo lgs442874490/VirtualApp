@@ -186,8 +186,8 @@ GLM_API_KEY="$(cat "$HOME/.dsh-secrets/zhipu-coding.key")" GLM_MODEL='glm-5.3-fl
 ~/.dsh-secrets/zcode-test --prompt "..." --model zhipu-coding/glm-5.3  --cwd "$PWD"
 ```
 
-> 注意：`/tmp/glm_agent/agent.py` 位于 `/tmp`，**不随仓库持久化**；若长期复用建议归档到仓库工具目录
-> （需用户批准，属代码改动流程，本次不做）。
+> 注意：`/tmp/glm_agent/agent.py` 位于 `/tmp`，**不随仓库持久化**；2026-10-24 用户批准后已归档到
+> `tools/zcode/glm_agent.py`（配套 `tools/zcode/README.md`，不含 key），后续按 README 调用即可。
 
 ---
 

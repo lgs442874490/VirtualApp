@@ -625,6 +625,120 @@ public class ServerShieldResponderTest {
         assertTrue(r6.forceOnlineWanted());
     }
 
+    // ---------- 采集点遭袭（2026-10-24：对齐网页版 GATHERING_ATTACK） ----------
+
+    /** 采集点遭袭推送（target.type=2 + map_resource.uid，endpoint 指向资源点）。 */
+    private static Map<String, Object> gatherPush(long marchId, long type, long ownUid,
+                                                  int x, int y, boolean withResourceUid) {
+        Map<String, Object> target = new LinkedHashMap<>();
+        target.put("type", 2);
+        if (withResourceUid) {
+            Map<String, Object> resource = new LinkedHashMap<>();
+            resource.put("uid", ownUid);
+            target.put("map_resource", resource);
+        }
+        Map<String, Object> endpoint = new LinkedHashMap<>();
+        endpoint.put("x", x);
+        endpoint.put("y", y);
+        Map<String, Object> march = new LinkedHashMap<>();
+        march.put("id", marchId);
+        march.put("owner", 49422287L);
+        march.put("type", type);
+        march.put("endtime", System.currentTimeMillis() / 1000L + 600L);
+        march.put("endpoint", endpoint);
+        march.put("target", target);
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("to_marchs", List.of(march));
+        return c;
+    }
+
+    private static List<ServerShieldResponder.GatherMarch> gatherAt(long marchId, int x, int y) {
+        return List.of(new ServerShieldResponder.GatherMarch(marchId, x, y));
+    }
+
+    @Test
+    public void gatherAttack_notifiesAndRecallsOwnGatheringMarch_whenEnabled() {
+        account(true, "{\"sub\":{\"gather_attack\":true,\"gather_recall\":true}}");
+        TestEngine e = new TestEngine();
+        e.responses.put("req_world_march_off_work", msg(0));
+        ServerShieldResponder r = responder();
+        r.setMarchSourceForTest(engine -> gatherAt(7001L, 120, 340));
+
+        r.onPush(gatherPush(14001L, 4, OWN_UID, 120, 340, true), OWN_UID, e);
+        assertTrue("采集告警应产生动作（提醒/撤矿）", r.tick(e));
+
+        assertEquals(List.of("req_world_march_off_work"), e.requested);
+        assertEquals(7001L, com.carlos.vaultserver.task.Exec.longOf(e.argLog.get(0).get("id")));
+        JSONObject mod = new JSONObject(modText());
+        String text = mod.getString("gather");
+        assertTrue("状态行应含采集点遭袭文案：" + text, text.contains("采集点遭袭"));
+        assertTrue("状态行应含撤矿结果：" + text, text.contains("已撤"));
+        // 同 marchId 冷却内重复推送不再发请求
+        r.onPush(gatherPush(14002L, 4, OWN_UID, 120, 340, true), OWN_UID, e);
+        r.tick(e);
+        assertEquals("同队伍 10 分钟冷却内不得重复撤矿", 1, e.requested.size());
+    }
+
+    @Test
+    public void gatherAttack_notifyOnlyByDefault_noRequest() {
+        account(true, null);   // gather_attack 默认 true、gather_recall 默认 false
+        TestEngine e = new TestEngine();
+        ServerShieldResponder r = responder();
+        r.setMarchSourceForTest(engine -> gatherAt(7001L, 120, 340));
+
+        r.onPush(gatherPush(14001L, 4, OWN_UID, 120, 340, true), OWN_UID, e);
+        assertTrue(r.tick(e));
+
+        assertTrue("默认只提醒不撤矿", e.requested.isEmpty());
+        assertTrue(new JSONObject(modText()).getString("gather").contains("采集点遭袭"));
+    }
+
+    @Test
+    public void gatherAttack_switchOff_noAction() {
+        account(true, "{\"sub\":{\"gather_attack\":false}}");
+        TestEngine e = new TestEngine();
+        ServerShieldResponder r = responder();
+        r.setMarchSourceForTest(engine -> gatherAt(7001L, 120, 340));
+
+        r.onPush(gatherPush(14001L, 4, OWN_UID, 120, 340, true), OWN_UID, e);
+        assertTrue(r.tick(e));
+
+        assertTrue(e.requested.isEmpty());
+        String text = new JSONObject(modText()).getString("gather");
+        assertTrue("关闭时应留痕：" + text, text.contains("已关闭"));
+    }
+
+    @Test
+    public void gatherAttack_endpointFallback_whenResourceUidMissing() {
+        account(true, null);
+        TestEngine e = new TestEngine();
+        ServerShieldResponder r = responder();
+        r.setMarchSourceForTest(engine -> gatherAt(7001L, 120, 340));
+
+        // 推送不含 map_resource.uid，但 endpoint 与自己采集行军坐标一致 → 仍识别
+        r.onPush(gatherPush(14001L, 110, OWN_UID, 120, 340, false), OWN_UID, e);
+        assertTrue(r.tick(e));
+
+        String text = new JSONObject(modText()).getString("gather");
+        assertTrue("坐标兜底应识别并带出在采队伍：" + text, text.contains("#7001"));
+    }
+
+    @Test
+    public void rallyAttack_type100_triggersShieldLikeWar() {
+        account(true, "{\"sub\":{\"reactive\":true}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+
+        // type=100 集结进攻自己城 → 按 WAR 触发护盾（网页版 RALLY_CITY_ATTACK 同口径）
+        r.onPush(alliancePush(15001L, 100, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+        assertTrue(new JSONObject(modText()).getString("reactive").contains("被进攻"));
+    }
+
     private static Map<String, Object> marchOf(long id, long type, long targetUid) {
         Map<String, Object> atk = new LinkedHashMap<>();
         atk.put("targetid", targetUid);

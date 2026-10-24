@@ -24,6 +24,11 @@ public class GameNotifyListenerService extends NotificationListenerService {
     private static final String[][] RULES = {
             {"WAR", "被袭击", "敌军来袭", "烽火", "城市遭到攻击", "战争警报"},
             {"RECON", "侦查报告", "侦察报告", "敌情"},
+            // 采集点遭袭：与主城被攻击同属 situation 推送（目标为资源点），游戏侧同样弹通知；
+            // 关键词必须先于 RESOURCE「采集完成」匹配，避免被资源类规则吞掉（2026-10-24 用户实证）。
+            {"GATHER_ATTACK", "采集点遭到攻击", "采集点被攻击", "采集点正在被攻击",
+                    "采集队伍遭到攻击", "采集队遭到攻击",
+                    "资源点遭到攻击", "资源点被攻击", "矿点遭到攻击", "矿点被攻击"},
             {"MARCH_RETURN", "部队返回", "行军结束", "出征返回", "部队抵达", "集结结束"},
             {"HEAL_DONE", "治疗完成", "伤兵治愈", "治疗结束"},
             {"RESOURCE", "采集完成", "资源生产", "生产完成", "资源已满"},
