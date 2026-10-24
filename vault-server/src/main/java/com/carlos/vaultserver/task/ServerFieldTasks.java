@@ -1751,7 +1751,16 @@ public final class ServerFieldTasks {
                 tc.saveModText("gather", "heavy", "最高级矿暂未找到，稍后重试");
                 return;
             }
-            // 先激活宠物技能（技能未拥有/冷却 → 15 分钟内不再尝试）
+            // 本地判定技能是否解锁：未解锁/未拥有不触发请求（避免每 15 分钟 11542），6 小时后再查
+            if (!com.carlos.vaultserver.formation.PetSkillSupport.heavyLiftingUnlocked(tc.engine)) {
+                String why = com.carlos.vaultserver.formation.PetSkillSupport
+                        .heavyLiftingLockReason(tc.engine);
+                st.put("cooldownUntil", now + 6L * 3600_000L);
+                saveHeavyLiftingState(tc, st);
+                tc.saveModText("gather", "heavy", "重物搬运暂不可用：" + why);
+                return;
+            }
+            // 先激活宠物技能（技能冷却/服务器拒绝 → 15 分钟内不再尝试）
             GameMessage skill = tc.engine.request("req_pet_use_skill", Exec.args(
                     "skill_id_lst", java.util.Collections.singletonList(HEAVY_LIFTING_SKILL_ID)));
             if (!Exec.ok(skill)) {

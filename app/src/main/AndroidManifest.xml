@@ -124,6 +124,11 @@
             android:name="com.carlos.vault.daily.GatherConfigActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
+        <!-- 资产中心（W9）：核心资产库 9 大域只读展示，从今日页「资产」快捷入口进入 -->
+        <activity
+            android:name="com.carlos.vault.AssetCenterActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
         <activity
             android:name="com.carlos.vault.ToolBoxActivity"
             android:exported="false"

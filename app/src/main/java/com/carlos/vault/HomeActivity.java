@@ -1,6 +1,7 @@
 package com.carlos.vault;
 
 import android.app.Activity;
+import android.content.Intent;
 import android.app.AlertDialog;
 import android.app.ProgressDialog;
 import android.graphics.Typeface;
@@ -775,10 +776,10 @@ public class HomeActivity extends AccountVaultActivity {
         box.addView(quickHead);
         LinearLayout quick = new LinearLayout(this);
         quick.setOrientation(LinearLayout.HORIZONTAL);
-        int[] qIcons = {UiStyle.Icon.GIFT, UiStyle.Icon.USERS,
+        int[] qIcons = {UiStyle.Icon.CLOUD, UiStyle.Icon.GIFT, UiStyle.Icon.USERS,
                 UiStyle.Icon.DOC, UiStyle.Icon.GRID};
-        String[] qLabels = {"补领", "切号", "日志", "工具箱"};
-        String[] qActs = {"daily", "switch", "log", "tools"};
+        String[] qLabels = {"资产", "补领", "切号", "日志", "工具箱"};
+        String[] qActs = {"assets", "daily", "switch", "log", "tools"};
         for (int qi = 0; qi < qLabels.length; qi++) {
             final String act = qActs[qi];
             // 批次7：工具箱含 T3 高阶（敌情监控）与调试工具 → 无权限/无可用工具时不渲染
@@ -801,6 +802,7 @@ public class HomeActivity extends AccountVaultActivity {
             UiStyle.press(cell);
             cell.setOnClickListener(v -> {
                 if ("switch".equals(act)) showAccountSwitcher();
+                else if ("assets".equals(act)) openAssetCenter();
                 else quickAction(act);
             });
             LinearLayout.LayoutParams q2 = new LinearLayout.LayoutParams(0,
@@ -809,6 +811,23 @@ public class HomeActivity extends AccountVaultActivity {
             quick.addView(cell, q2);
         }
         box.addView(quick);
+    }
+
+    /** 资产中心（W9）：带当前角色 fpid/sid 进入只读资产页。 */
+    private void openAssetCenter() {
+        try {
+            AccountStore.Account a = currentRoleAccount();
+            long sid = currentRoleSid();
+            if (a == null || a.fpid == null || a.fpid.trim().isEmpty() || sid <= 0L) {
+                toast("请先选择角色");
+                return;
+            }
+            startActivity(new Intent(this, AssetCenterActivity.class)
+                    .putExtra("fpid", a.fpid)
+                    .putExtra("sid", sid));
+        } catch (Throwable t) {
+            toast("打开资产中心失败：" + t.getMessage());
+        }
     }
 
     /** 账号切换（主按钮）：任务页/限时/联盟大厅联动当前账号。 */
