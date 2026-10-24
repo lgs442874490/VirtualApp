@@ -568,8 +568,17 @@ public final class SessionKeeper implements SessionControl,
                 try {
                     long sid = session.resolveSid();
                     if (sid <= 0L) return;   // 登录未落地（默认角色会话）：不写 srv:asset:fpid:0 垃圾键
-                    stateStore.putString(AssetStateProjector.stateKey(session.fpid, sid),
-                            AssetStateProjector.toJson(s, session.fpid, sid));
+                    long uid = s.key == null ? 0L : s.key.uid;
+                    // 新契约：按 uid 分键，同服多角色互不覆盖（App 资产中心按当前角色 uid 读取）
+                    if (uid > 0L) {
+                        stateStore.putString(AssetStateProjector.stateKey(session.fpid, sid, uid),
+                                AssetStateProjector.toJson(s, session.fpid, sid));
+                    }
+                    // 旧契约 srv:asset:{fpid}:{sid}：仅活跃角色写入，供旧 App/采集设置页兼容
+                    if (session.isActiveRoleWriter()) {
+                        stateStore.putString(AssetStateProjector.stateKey(session.fpid, sid),
+                                AssetStateProjector.toJson(s, session.fpid, sid));
+                    }
                     lastWriteAtMs = System.currentTimeMillis();
                 } catch (Throwable ignored) {
                 }

@@ -56,9 +56,14 @@ public final class AssetStateProjector {
         }
     }
 
-    /** 投影 StateStore 键。 */
+    /** 投影 StateStore 键（旧契约：fpid:sid，仅活跃角色写入；同服多角色会互相覆盖，新读侧用 uid 键）。 */
     public static String stateKey(String fpid, long sid) {
         return STATE_KEY_PREFIX + (fpid == null ? "" : fpid) + ":" + sid;
+    }
+
+    /** 投影 StateStore 键（按角色 uid 区分，同服多角色各自独立）。 */
+    public static String stateKey(String fpid, long sid, long uid) {
+        return STATE_KEY_PREFIX + (fpid == null ? "" : fpid) + ":" + sid + ":" + uid;
     }
 
     /** 纯函数：快照 → JSON 文本（永不返回 null；异常时返回最小可用对象）。 */
