@@ -348,10 +348,21 @@ public final class AssetSnapshot {
         public final long endY;
         public final long masterMarchId;
         public final long refreshId;     // collect_resource.refresh_id（采集资源点）
+        /** 编队英雄 id（squad_list.hero_id 的 v 值；供自动编队排除在途英雄，防 403）。 */
+        public final List<Long> heroIds;
 
         public QueueMarch(long id, long owner, long type, long state, long startTime, long endTime,
                           long targetType, long targetId, long aid, long startX, long startY,
                           long endX, long endY, long masterMarchId, long refreshId) {
+            this(id, owner, type, state, startTime, endTime, targetType, targetId, aid,
+                    startX, startY, endX, endY, masterMarchId, refreshId,
+                    java.util.Collections.<Long>emptyList());
+        }
+
+        public QueueMarch(long id, long owner, long type, long state, long startTime, long endTime,
+                          long targetType, long targetId, long aid, long startX, long startY,
+                          long endX, long endY, long masterMarchId, long refreshId,
+                          List<Long> heroIds) {
             this.id = id;
             this.owner = owner;
             this.type = type;
@@ -367,6 +378,8 @@ public final class AssetSnapshot {
             this.endY = endY;
             this.masterMarchId = masterMarchId;
             this.refreshId = refreshId;
+            this.heroIds = heroIds == null ? java.util.Collections.<Long>emptyList()
+                    : java.util.Collections.unmodifiableList(new ArrayList<Long>(heroIds));
         }
 
         public boolean specialQueue() {

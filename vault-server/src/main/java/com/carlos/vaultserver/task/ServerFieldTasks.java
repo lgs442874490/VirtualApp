@@ -1157,7 +1157,8 @@ public final class ServerFieldTasks {
             int code = Exec.codeOf(march);
             String levelNote = found.level < q.level ? "→L" + found.level : "";
             if (marchId > 0L) {
-                HeroAvailability.clearHeroLimitHint(tc.engine);
+                // 415 上限是账号属性（上阵位），成功后保持已探明上限（避免下一队列又从 5 英雄重试振荡）；
+                // 账号解锁更多上阵位后，会话重启会重新探索。
                 mapping.map.put(String.valueOf(q.id), marchId);
                 mapping.nextQueueId = nextQueueIdAfter(q.id);
                 applyGatherResponse(lib, march);

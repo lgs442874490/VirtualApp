@@ -105,12 +105,37 @@ final class AssetParseSupport {
                 num(sp, "x"), num(sp, "y"),
                 num(ep, "x"), num(ep, "y"),
                 num(ms, "master_marchid", "master_march_id"),
-                num(cr, "refresh_id"));
+                num(cr, "refresh_id"),
+                squadHeroIds(child(m, "squad_list")));
+    }
+
+    /** squad_list.hero_id 里的英雄 id（map "1.0"→{k:位次,v:heroId} 或 list）。 */
+    static List<Long> squadHeroIds(Map<String, Object> squad) {
+        List<Long> out = new ArrayList<Long>();
+        if (squad == null) return out;
+        Object raw = squad.get("hero_id");
+        if (raw == null) raw = squad.get("hero_ids");
+        if (raw instanceof Map) {
+            for (Object v : ((Map<?, ?>) raw).values()) {
+                Map<String, Object> pair = AssetState.mapOf(v);
+                long id = pair.isEmpty() ? 0L : num(pair, "v", "hero_id", "id");
+                if (id <= 0L && !pair.isEmpty()) id = num(pair, "k");
+                if (id > 0L) out.add(id);
+            }
+        } else if (raw instanceof List) {
+            for (Object v : (List<?>) raw) {
+                Map<String, Object> pair = AssetState.mapOf(v);
+                long id = pair.isEmpty() ? AssetState.valueOf(v) : num(pair, "v", "hero_id", "id");
+                if (id > 0L) out.add(id);
+            }
+        }
+        return out;
     }
 
     static boolean sameMarch(AssetSnapshot.QueueMarch a, AssetSnapshot.QueueMarch b) {
         if (a == b) return true;
         if (a == null || b == null) return false;
+        if (a.heroIds == null ? b.heroIds != null : !a.heroIds.equals(b.heroIds)) return false;
         return a.id == b.id && a.owner == b.owner && a.type == b.type && a.state == b.state
                 && a.startTime == b.startTime && a.endTime == b.endTime
                 && a.targetType == b.targetType && a.targetId == b.targetId && a.aid == b.aid
