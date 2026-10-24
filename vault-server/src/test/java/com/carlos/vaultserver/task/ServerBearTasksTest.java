@@ -628,7 +628,7 @@ public class ServerBearTasksTest {
 
     private static Map<String, Object> formation() {
         Map<String, Object> f = new LinkedHashMap<>();
-        f.put("hero_id", Arrays.asList(Exec.kv(11L, 1L), Exec.kv(12L, 1L), Exec.kv(13L, 1L)));
+        f.put("hero_id", Exec.heroPairs(Arrays.asList(11L, 12L, 13L)));
         f.put("soldier", Arrays.asList(Exec.kv(11000L, 1000L), Exec.kv(21000L, 500L)));
         return f;
     }

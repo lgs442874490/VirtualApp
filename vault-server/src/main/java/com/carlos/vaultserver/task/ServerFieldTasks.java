@@ -44,6 +44,12 @@ public final class ServerFieldTasks {
             gatherParams = tc.params("gather");
         } catch (Throwable ignored) {
         }
+        // 诊断开关：VAULT_LEGACY_GATHER=on 时强制走旧路径（用于 301/编队对照排查）
+        String legacyForce = System.getenv("VAULT_LEGACY_GATHER");
+        if (legacyForce != null && ("on".equalsIgnoreCase(legacyForce.trim())
+                || "1".equals(legacyForce.trim()) || "true".equalsIgnoreCase(legacyForce.trim()))) {
+            return gatherLegacy(tc);
+        }
         if (!GatherConfigV2.hasV2(gatherParams)) return gatherLegacy(tc);
         return gatherV2(tc, gatherParams);
     }
@@ -222,11 +228,12 @@ public final class ServerFieldTasks {
         if (heroArr == null || heroArr.length() == 0) {
             return Exec.formation(tc.engine, fallbackSquad);
         }
-        List<Map<String, Object>> heroPairs = new ArrayList<>();
+        List<Long> heroIds = new ArrayList<>();
         for (int i = 0; i < heroArr.length(); i++) {
             long hid = heroArr.optLong(i, 0);
-            if (hid > 0) heroPairs.add(Exec.kv(hid, 1));
+            if (hid > 0) heroIds.add(hid);
         }
+        List<Map<String, Object>> heroPairs = Exec.heroPairs(heroIds);
         if (heroPairs.isEmpty()) return Exec.formation(tc.engine, fallbackSquad);
 
         long[] base = Exec.baseSoldiers(tc.engine); // 盾/矛/弓 tier1 可用量
@@ -257,7 +264,7 @@ public final class ServerFieldTasks {
         // 兵种*10000 + 等级*100；用账号当前最高档，不能写死 10001/20001/30001。
         long[] ids = Exec.bestSoldierIds(Exec.soldiers(tc.engine));
         for (int i = 0; i < 3; i++) {
-            if (want[i] > 0) soldierPairs.add(Exec.kv(ids[i], want[i]));
+            if (want[i] > 0) soldierPairs.add(Exec.soldierPair(ids[i], want[i]));
         }
         if (soldierPairs.isEmpty()) return null;
         Map<String, Object> f = new LinkedHashMap<>();
@@ -908,6 +915,8 @@ public final class ServerFieldTasks {
 
     /** 301=英雄不在城（换编队候选；与守护盟友/巨熊同码表语义）。 */
     static final int GATHER_ERR_HERO_AWAY = 301;
+    /** 415=编队人数/配置超限（新号英雄上阵位不足等；下调自动编队英雄数重试）。 */
+    static final int GATHER_ERR_FORMATION_LIMIT = 415;
 
     /** v2 单队列执行计划（纯函数产物：资源 res_id、等级递减序列、每队列编队参数）。 */
     static final class QueuePlan {
@@ -1148,6 +1157,7 @@ public final class ServerFieldTasks {
             int code = Exec.codeOf(march);
             String levelNote = found.level < q.level ? "→L" + found.level : "";
             if (marchId > 0L) {
+                HeroAvailability.clearHeroLimitHint(tc.engine);
                 mapping.map.put(String.valueOf(q.id), marchId);
                 mapping.nextQueueId = nextQueueIdAfter(q.id);
                 applyGatherResponse(lib, march);
@@ -1171,8 +1181,16 @@ public final class ServerFieldTasks {
                 statuses.add(label + " 士兵不足(401)");
                 m.subSkip("queue" + q.id, "士兵不足(401)");
             } else if (code == GATHER_ERR_HERO_BUSY) {
-                statuses.add(label + " 英雄占用(403)");
+                // 403=英雄已在其他编队/行军：拉黑本轮编队英雄，下一队列/下一轮换候选
+                blockHeroesOn301(tc.engine, formation);
+                statuses.add(label + " 英雄占用(403)，已轮换候选");
                 m.subSkip("queue" + q.id, "英雄占用(403)");
+            } else if (code == GATHER_ERR_FORMATION_LIMIT) {
+                // 415=编队人数/配置超限（新号英雄上阵位不足等）：下调自动编队英雄数，下轮重试
+                int used = HeroAvailability.heroIdsOf(formation).size();
+                int next = HeroAvailability.noteHeroCountRejected(tc.engine, used);
+                statuses.add(label + " 编队人数超限(415)，下轮改 " + next + " 英雄");
+                m.subSkip("queue" + q.id, "编队人数超限(415)");
             } else if (code == GATHER_ERR_HERO_AWAY) {
                 // 301=英雄不在城：拉黑本轮编队英雄，下一队列/下一轮换候选
                 blockHeroesOn301(tc.engine, formation);
@@ -1303,7 +1321,7 @@ public final class ServerFieldTasks {
         }
     }
 
-    /** 301=英雄不在城：把本次编队英雄拉黑 10 分钟，下一轮自动编队换候选（对齐守护盟友策略）。 */
+    /** 301=英雄不在城 / 403=英雄已被占用：拉黑本轮编队英雄 10 分钟，下轮自动编队换候选。 */
     static void blockHeroesOn301(WjdrEngine engine, Map<String, Object> formation) {
         try {
             List<Long> heroIds = HeroAvailability.heroIdsOf(formation);
@@ -1902,6 +1920,10 @@ public final class ServerFieldTasks {
                             int mc = Exec.codeOf(march);
                             waiting++;
                             if (mc == GATHER_ERR_HERO_AWAY) blockHeroesOn301(tc.engine, formation);
+                            if (mc == GATHER_ERR_FORMATION_LIMIT) {
+                                HeroAvailability.noteHeroCountRejected(tc.engine,
+                                        HeroAvailability.heroIdsOf(formation).size());
+                            }
                             if (mc != 51) markIntelDispatched(tc, id, now);   // 非体力失败：计入去重窗（修采集饿死）
                             appendWait(waits, "派队码" + mc);
                             if (mc == 51) break;   // 体力不足：本轮停止，等恢复（避免连续失败刷请求）

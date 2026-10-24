@@ -142,7 +142,8 @@ public final class FormationResolver {
     /** 自动编队（带原因）。 */
     public static ResolveOutcome autoOutcome(WjdrEngine engine, Map<String, Long> ratio, long total) {
         if (engine == null) return ResolveOutcome.skip("engine 为空");
-        List<Long> heroIds = strongestHeroes(engine, MAX_AUTO_HEROES);
+        List<Long> heroIds = strongestHeroes(engine,
+                Math.min(MAX_AUTO_HEROES, HeroAvailability.autoHeroLimit(engine)));
         if (heroIds.isEmpty()) {
             return ResolveOutcome.skip("英雄目录未同步（notify_hero_init 缺失或无英雄）");
         }
@@ -289,16 +290,13 @@ public final class FormationResolver {
 
     private static ResolvedFormation build(WjdrEngine engine, String source, long formationId,
                                            String label, List<Long> heroIds, long[] soldiers) {
-        List<Map<String, Object>> heroPairs = new ArrayList<>();
-        for (Long h : heroIds) {
-            if (h != null && h > 0) heroPairs.add(Exec.kv(h, 1L));
-        }
+        List<Map<String, Object>> heroPairs = Exec.heroPairs(heroIds);
         long[] bestIds = FormationCatalog.bestSoldierIds(engine);
         List<Map<String, Object>> soldierPairs = new ArrayList<>();
         for (int i = 0; i < 3; i++) {
             if (soldiers[i] > 0) {
                 long sid = bestIds[i] > 0 ? bestIds[i] : defaultSoldierId(i);
-                soldierPairs.add(Exec.kv(sid, soldiers[i]));
+                soldierPairs.add(Exec.soldierPair(sid, soldiers[i]));
             }
         }
         return ResolvedFormation.of(source, formationId, label, heroIds,

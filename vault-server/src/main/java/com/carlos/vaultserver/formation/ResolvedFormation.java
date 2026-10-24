@@ -44,9 +44,9 @@ public final class ResolvedFormation {
     /** 来源：{@link #SRC_ROLE}/{@link #SRC_AUTO}/{@link #SRC_FALLBACK}。 */
     public String source = SRC_AUTO;
 
-    /** {@code hero_id} 参数对（[{k,v}]，即 {@code Exec.kv} 形状）。 */
+    /** {@code hero_id} 参数对（[{k:位次1..n, v:英雄id}]，实证与网页版一致）。 */
     public List<Map<String, Object>> heroPairs = new ArrayList<>();
-    /** {@code soldier} 参数对（[{k,v}]，即 {@code Exec.kv} 形状；k=最高档兵种 id）。 */
+    /** {@code soldier} 参数对（[{k:最高档兵种id, v:数量}]，c2s 请求侧 pair_int_int 语义）。 */
     public List<Map<String, Object>> soldierPairs = new ArrayList<>();
 
     /** FALLBACK 专用：直接回退既有 payload（不重建，保证旧行为逐字节一致）。 */

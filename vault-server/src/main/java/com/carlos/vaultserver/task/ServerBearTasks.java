@@ -1152,7 +1152,9 @@ public final class ServerBearTasks {
         if (heroes == null) return out;
         for (Object raw : heroes) {
             Map<String, Object> pair = Exec.mapOf(raw);
-            long id = pair == null ? Exec.longOf(raw) : Exec.longOf(pair.get("k"));
+            long id = pair == null ? Exec.longOf(raw)
+                    : (Exec.longOf(pair.get("v")) > 0L ? Exec.longOf(pair.get("v"))
+                    : Exec.longOf(pair.get("k")));
             if (id > 0) out.add(id);
         }
         return out;

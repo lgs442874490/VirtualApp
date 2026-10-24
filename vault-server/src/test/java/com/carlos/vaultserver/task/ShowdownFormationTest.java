@@ -216,8 +216,8 @@ public class ShowdownFormationTest {
         assertEquals(5, heroPairs.size());
         assertEquals(3, soldierPairs.size());
         Map<?, ?> firstHero = (Map<?, ?>) heroPairs.get(0);
-        assertEquals(11L, Exec.longOf(firstHero.get("k")));
-        assertEquals(1L, Exec.longOf(firstHero.get("v")));
+        assertEquals("k=上阵位次", 1L, Exec.longOf(firstHero.get("k")));
+        assertEquals("v=英雄id", 11L, Exec.longOf(firstHero.get("v")));
         Map<?, ?> firstSoldier = (Map<?, ?>) soldierPairs.get(0);
         assertEquals(11100L, Exec.longOf(firstSoldier.get("k")));
         assertEquals(25_000L, Exec.longOf(firstSoldier.get("v")));

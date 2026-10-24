@@ -28,6 +28,13 @@ public final class HeroAvailability {
     private static final Map<WjdrEngine, Map<Long, Long>> BLOCKED =
             Collections.synchronizedMap(new WeakHashMap<WjdrEngine, Map<Long, Long>>());
 
+    /** 415（编队人数/配置超限）后的自动编队英雄数上限（默认 5；被拒后逐步下调，直到成功）。 */
+    private static final Map<WjdrEngine, Integer> HERO_LIMIT_HINT =
+            Collections.synchronizedMap(new WeakHashMap<WjdrEngine, Integer>());
+
+    /** 默认自动编队英雄上限（网页版 MAX_AUTO_HEROES=5）。 */
+    public static final int DEFAULT_AUTO_HEROES = 5;
+
     private HeroAvailability() {
     }
 
@@ -85,10 +92,33 @@ public final class HeroAvailability {
         return out;
     }
 
+    /** 当前自动编队英雄数上限（415 后自适应下调；默认 5）。 */
+    public static int autoHeroLimit(WjdrEngine engine) {
+        if (engine == null) return DEFAULT_AUTO_HEROES;
+        Integer hint = HERO_LIMIT_HINT.get(engine);
+        if (hint == null || hint < 1) return DEFAULT_AUTO_HEROES;
+        return Math.min(DEFAULT_AUTO_HEROES, hint);
+    }
+
+    /** 415 拒绝：把自动编队英雄数下调到 used-1（最低 1）；返回新的上限。 */
+    public static int noteHeroCountRejected(WjdrEngine engine, int usedHeroCount) {
+        if (engine == null) return DEFAULT_AUTO_HEROES;
+        int next = Math.max(1, Math.min(DEFAULT_AUTO_HEROES - 1,
+                usedHeroCount > 0 ? usedHeroCount - 1 : DEFAULT_AUTO_HEROES - 1));
+        HERO_LIMIT_HINT.put(engine, next);
+        return next;
+    }
+
+    /** 编队成功后清除 415 下调（下次按完整上限尝试）。 */
+    public static void clearHeroLimitHint(WjdrEngine engine) {
+        if (engine != null) HERO_LIMIT_HINT.remove(engine);
+    }
+
     /** 会话关闭/测试清理。 */
     public static void clear(WjdrEngine engine) {
         if (engine == null) return;
         BLOCKED.remove(engine);
+        HERO_LIMIT_HINT.remove(engine);
     }
 
     /** 从 formation payload（{@code {"hero_id":[{"k":id,"v":1}]}}）提取英雄 id。 */
@@ -101,7 +131,9 @@ public final class HeroAvailability {
         for (Object o : (List<Object>) raw) {
             if (!(o instanceof Map)) continue;
             Map<String, Object> pair = (Map<String, Object>) o;
-            Object k = pair.containsKey("k") ? pair.get("k") : pair.get("id");
+            // 新 payload：v=英雄 id；兼容旧脏数据：id / k
+            Object k = pair.containsKey("v") ? pair.get("v")
+                    : (pair.containsKey("id") ? pair.get("id") : pair.get("k"));
             long id = 0L;
             if (k instanceof Number) id = ((Number) k).longValue();
             else if (k != null) {

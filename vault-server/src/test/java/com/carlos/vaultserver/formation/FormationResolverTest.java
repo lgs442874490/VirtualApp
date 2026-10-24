@@ -260,8 +260,8 @@ public class FormationResolverTest {
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> heroes = (List<Map<String, Object>>) payload.get("hero_id");
         assertEquals(3, heroes.size());
-        assertEquals(50041L, ((Number) heroes.get(0).get("k")).longValue());
-        assertEquals(1L, ((Number) heroes.get(0).get("v")).longValue());
+        assertEquals("k=上阵位次(1)", 1L, ((Number) heroes.get(0).get("k")).longValue());
+        assertEquals("v=英雄id", 50041L, ((Number) heroes.get(0).get("v")).longValue());
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> soldiers = (List<Map<String, Object>>) payload.get("soldier");
         assertEquals("三兵种各一条（最高档 id）", 3, soldiers.size());
