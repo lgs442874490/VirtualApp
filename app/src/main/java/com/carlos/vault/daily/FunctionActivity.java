@@ -390,40 +390,8 @@ public class FunctionActivity extends Activity {
             root.addView(pick);
         }
 
-        // 高级参数（商店刷新/宠物技能/军医所/野外方案）：统一 JSON 编辑，
-        // 保存到 FnParams 后立刻上传服务器，避免“界面能改、服务器收不到”。
-        if (supportsAdvancedConfig(fn.id)) {
-            LinearLayout adv = UiStyle.outlineCard(this);
-            adv.setOrientation(LinearLayout.HORIZONTAL);
-            adv.setGravity(Gravity.CENTER_VERTICAL);
-            adv.setPadding(dp(14), dp(14), dp(14), dp(14));
-            LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            alp.setMargins(dp(18), dp(10), dp(18), 0);
-            adv.setLayoutParams(alp);
-            adv.addView(UiStyle.iconTile(this, UiStyle.Icon.DOC, UiStyle.BRAND_TEXT,
-                    UiStyle.BRAND_50, 40, 20, 12),
-                    new LinearLayout.LayoutParams(dp(40), dp(40)));
-            LinearLayout mid = new LinearLayout(this);
-            mid.setOrientation(LinearLayout.VERTICAL);
-            mid.setPadding(dp(12), 0, dp(8), 0);
-            TextView t = new TextView(this);
-            t.setText("高级参数（JSON）");
-            t.setTextSize(15);
-            t.setTypeface(Typeface.DEFAULT_BOLD);
-            t.setTextColor(UiStyle.INK);
-            mid.addView(t);
-            TextView s = new TextView(this);
-            s.setText("编队/刷新/技能/治疗/野外方案 · 保存即同步服务器");
-            s.setTextSize(11.5f);
-            s.setTextColor(UiStyle.INK2);
-            mid.addView(s);
-            adv.addView(mid, new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            UiStyle.press(adv);
-            adv.setOnClickListener(v -> showAdvancedConfig());
-            root.addView(adv);
-        }
+        // 用户侧不再提供任何 JSON 参数输入：参数一律由功能专属卡片的开关/下拉完成
+        // （采集→采集设置页；狩猎→下方「狩猎设置」卡；其余功能用子项开关/策略选项）。
 
         // 整页滚动区：子项实时状态与配置 → 领取内容 → 运行记录
         ScrollView scroll = new ScrollView(this);
@@ -517,6 +485,13 @@ public class FunctionActivity extends Activity {
         // 打开页面即刷新：借常驻会话收取该功能最新状态（只读，不执行任务动作），
         // 完成后原位重建子项卡（旧快照常停留在上次成功执行的时刻）。
         refreshOnOpen(subCard);
+
+        // 狩猎专属参数卡（子项卡片之后）：等级区间 + 出击次数，纯下拉/选项，无 JSON 输入。
+        // 键与执行侧 FieldTasks.hunt 及服务器狩猎引擎一致（level_min/level_max/max_times），
+        // 保存即写 FnParams 并同步服务器。
+        if (HuntConfig.FN_ID.equals(fn.id)) {
+            scrollBox.addView(buildHuntConfigCard());
+        }
 
         // ② 领取内容（从运行记录提取成功领取条目）
         TextView claimTitle = new TextView(this);
@@ -1700,51 +1675,116 @@ public class FunctionActivity extends Activity {
         }
     }
 
-    /** 需要新参数模型的功能：统一用 JSON 高级参数，避免为每个功能单做一套面板。 */
-    private static boolean supportsAdvancedConfig(String fnId) {
-        return "hunt".equals(fnId) || "shop".equals(fnId)
-                || "alliance_shop".equals(fnId) || "pet".equals(fnId) || "medic".equals(fnId)
-                || "intel".equals(fnId) || "behemoth".equals(fnId)
-                // battle_shield：兵力/ETA 阈值预设之外的自定义数值走高级 JSON（strategy 内）
-                || "battle_shield".equals(fnId)
-                // gather：设置页为主入口，JSON 仅兜底排障（保存时保留 v2，见 showAdvancedConfig）
-                || "gather".equals(fnId)
-                || "activity_rewards".equals(fnId);
+    // ================= 狩猎设置（hunt）：等级区间 + 出击次数 =================
+    //
+    // 历史遗留的「高级参数（JSON）」编辑入口已整体移除：参数一律由功能专属卡片的
+    // 开关/下拉完成（采集→采集设置页；狩猎→本卡；其它功能→子项开关/策略选项）。
+    // 狩猎是唯一被执行侧消费的数值参数（FieldTasks.hunt 读 level_min/level_max/max_times），
+    // 解析/夹取/写回全部放到纯函数 HuntConfig（JVM 单测覆盖），本页只做 UI；
+    // 保存仍走 FnParams + VaultSync.onAccountsChanged 的既有链路，存储格式不变。
+
+    /** 狩猎设置卡：创建后由 {@link #fillHuntCard} 填充，选择变更时就地重绘。 */
+    private LinearLayout buildHuntConfigCard() {
+        LinearLayout card = UiStyle.card(this);
+        fillHuntCard(card);
+        return card;
     }
 
-    private void showAdvancedConfig() {
-        if (account == null) return;
-        JSONObject current = FnParams.params(this, account.fpid, serverid, fn.id);
-        String prefill;
-        try {
-            prefill = current.toString(2);
-        } catch (Throwable t) {
-            prefill = current.toString();
+    /** 重绘狩猎设置卡：标题 + 当前值摘要 + 三条下拉（等级下限/上限、出击次数）+ 说明。 */
+    private void fillHuntCard(LinearLayout card) {
+        if (card == null || account == null) return;
+        card.removeAllViews();
+        final HuntConfig.Cfg cfg = HuntConfig.parse(
+                FnParams.params(this, account.fpid, serverid, HuntConfig.FN_ID));
+
+        TextView title = new TextView(this);
+        title.setText("狩猎设置");
+        title.setTextSize(14);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.INK);
+        card.addView(title);
+
+        TextView cur = new TextView(this);
+        cur.setText("当前：" + cfg.summary());
+        cur.setTextSize(12);
+        cur.setTypeface(Typeface.DEFAULT_BOLD);
+        cur.setTextColor(UiStyle.BRAND_TEXT);
+        cur.setPadding(0, dp(4), 0, dp(2));
+        card.addView(cur);
+
+        TextView tip = new TextView(this);
+        tip.setText("只搜索该等级区间的野怪；下限高于上限时自动夹取（上限至少等于下限）。"
+                + "出击次数用满、无目标或体力不足即停。");
+        tip.setTextSize(10.5f);
+        tip.setTextColor(UiStyle.INK2);
+        tip.setPadding(0, 0, 0, dp(6));
+        card.addView(tip);
+
+        card.addView(UiStyle.dropdownRow(this, "等级下限", "Lv" + cfg.levelMin,
+                () -> chooseHuntLevel(card, cfg.levelMin, true)));
+        card.addView(UiStyle.dropdownRow(this, "等级上限", "Lv" + cfg.levelMax,
+                () -> chooseHuntLevel(card, cfg.levelMax, false)));
+        card.addView(UiStyle.dropdownRow(this, "出击次数", cfg.maxTimes + " 次",
+                () -> chooseHuntTimes(card, cfg.maxTimes)));
+    }
+
+    /** 选等级（只列 1-10，无自由输入）；lower=true 改下限，false 改上限。 */
+    private void chooseHuntLevel(LinearLayout card, int current, boolean lower) {
+        final int[] values = HuntConfig.levelOptions();
+        String[] labels = new String[values.length];
+        int selected = 0;
+        for (int i = 0; i < values.length; i++) {
+            labels[i] = "Lv" + values[i];
+            if (values[i] == current) selected = i;
         }
-        UiStyle.showInputDialog(this, "高级参数 · " + fn.name,
-                "JSON（例：{\"hero_ids\":[10001,10002,10003],\"troop_count\":50000}）",
-                prefill, true, text -> {
-                    try {
-                        String raw = text == null ? "" : text.trim();
-                        JSONObject next = raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
-                        // 批次10：高级 JSON 编辑整对象替换，不应意外清掉「统一编队」配置
-                        // （未在新 JSON 里出现的编队字段从旧参数保留）。
-                        // 批次12：同理保留采集 v2（否则高级 JSON 保存会清掉 6 队列采集配置）。
-                        JSONObject prev = FnParams.params(FunctionActivity.this,
-                                account.fpid, serverid, fn.id);
-                        for (String k : new String[]{"formation_mode", "formation_id",
-                                "soldiers", "ratio", "total", "join_formations",
-                                GatherConfigV2.KEY}) {
-                            if (!next.has(k) && prev.has(k)) next.put(k, prev.opt(k));
-                        }
-                        FnParams.saveParams(FunctionActivity.this, account.fpid, serverid,
-                                fn.id, next);
-                        VaultSync.onAccountsChanged(FunctionActivity.this);
-                        toast("已保存并同步服务器");
-                    } catch (Throwable t) {
-                        toast("JSON 格式错误：" + t.getMessage());
-                    }
-                });
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle(lower ? "等级下限（1-10）" : "等级上限（1-10）")
+                .setSingleChoiceItems(labels, selected, (d, which) -> {
+                    HuntConfig.Cfg next = HuntConfig.parse(
+                            FnParams.params(this, account.fpid, serverid, HuntConfig.FN_ID));
+                    if (lower) next.setLevelMin(values[which]);
+                    else next.setLevelMax(values[which]);
+                    saveHuntConfig(card, next);
+                    d.dismiss();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 选出击次数（只列 1-20，无自由输入）。 */
+    private void chooseHuntTimes(LinearLayout card, int current) {
+        final int[] values = HuntConfig.timesOptions();
+        String[] labels = new String[values.length];
+        int selected = 0;
+        for (int i = 0; i < values.length; i++) {
+            labels[i] = values[i] + " 次";
+            if (values[i] == current) selected = i;
+        }
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("出击次数（1-20）")
+                .setSingleChoiceItems(labels, selected, (d, which) -> {
+                    HuntConfig.Cfg next = HuntConfig.parse(
+                            FnParams.params(this, account.fpid, serverid, HuntConfig.FN_ID));
+                    next.setMaxTimes(values[which]);
+                    saveHuntConfig(card, next);
+                    d.dismiss();
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    /** 写回 hunt params（只覆盖三个参数键，其它键保留）→ 同步服务器 → 就地重绘。 */
+    private void saveHuntConfig(LinearLayout card, HuntConfig.Cfg cfg) {
+        try {
+            JSONObject next = HuntConfig.apply(
+                    FnParams.params(this, account.fpid, serverid, HuntConfig.FN_ID), cfg);
+            FnParams.saveParams(this, account.fpid, serverid, HuntConfig.FN_ID, next);
+            VaultSync.onAccountsChanged(this);
+            fillHuntCard(card);
+            toast("狩猎设置已保存并同步服务器（" + cfg.summary() + "）");
+        } catch (Throwable t) {
+            toast("保存失败：" + t.getMessage());
+        }
     }
 
     private void toast(String s) {

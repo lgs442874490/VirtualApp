@@ -5275,11 +5275,11 @@ public class HomeActivity extends AccountVaultActivity {
 
     private String hotSubText() {
         long v = com.carlos.vault.daily.HotConfig.version();
-        String url = getSharedPreferences("hotconfig", MODE_PRIVATE).getString("hot_url", "");
-        boolean hasUrl = url != null && !url.isEmpty();
         String local = v > 0 ? ("热更 v" + v) : "无热更包";
-        return "本机 v" + appVersionName() + " · " + local
-                + (hasUrl ? " · 点击检查更新" : " · 未配置更新源");
+        // 默认更新源自托管在 vault-server（HotConfig.hotUrl 兜底），无需用户配置
+        String source = com.carlos.vault.daily.HotConfig.hotUrl(this);
+        String hint = source != null && !source.isEmpty() ? " · 点击检查更新" : " · 更新源不可用";
+        return "本机 v" + appVersionName() + " · " + local + hint;
     }
 
     /** 本机 versionName（读取失败兜底「—」）。 */
@@ -5339,7 +5339,7 @@ public class HomeActivity extends AccountVaultActivity {
                         msg = r.serverVersion > 0 ? "已是最新 v" + r.serverVersion : "已是最新";
                         break;
                     case 2:
-                        msg = "未配置更新源（prefs hot_url / adb 广播 --es url 均可设置）";
+                        msg = "更新源不可用（默认端点不可用，可 adb 广播 --es url 指定）";
                         break;
                     default:
                         msg = "拉取失败，请检查网络后重试";

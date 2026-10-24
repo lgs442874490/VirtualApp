@@ -28,6 +28,8 @@ import java.util.concurrent.Executors;
  * POST /v1/vault/global-action   全局 login-all/stop-all（M1）
  * POST /v1/vault/watch   战争通知：监视名单增删改查/通知配置/测试通知（2026-10-22）
  * POST /v1/vault/events  战争通知事件游标同步（cursor 之后的新事件 + ackCursor）
+ * GET  /v1/vault/hotconfig      热更配置（dataDir/hotconfig.json，{base} 替换为 scheme://Host）
+ * GET  /v1/vault/app-latest.apk 整包下载（dataDir/download/app-latest.apk 流式返回）
  * GET  /healthz          探活
  * </pre>
  *
@@ -93,6 +95,11 @@ public final class VaultHttpApi {
         // 战争通知（2026-10-22）：监视名单/通知配置/测试通知 + 事件游标同步
         server.createContext("/v1/vault/watch", ex -> guard(ex, "POST", "vaultWatch", this::handleWatch));
         server.createContext("/v1/vault/events", ex -> guard(ex, "POST", "vaultEvents", this::handleEvents));
+        // 热更新自托管（2026-10-25）：App 默认更新源，无签名；详见 HotConfigRoutes
+        server.createContext("/v1/vault/hotconfig",
+                ex -> HotConfigRoutes.serveHotConfig(ex, config.dataDir));
+        server.createContext("/v1/vault/app-latest.apk",
+                ex -> HotConfigRoutes.serveApk(ex, config.dataDir));
         server.createContext("/healthz", ex -> {
             writeJson(ex, 200, envelope(0, "ok", new JSONObject()));
         });

@@ -3,6 +3,7 @@ package com.carlos.vault.daily;
 import android.content.Context;
 import android.util.Log;
 
+import com.carlos.vault.VaultSync;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 
@@ -14,17 +15,14 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.util.Map;
 
-import okhttp3.OkHttpClient;
-import okhttp3.Request;
-import okhttp3.Response;
-
 /**
  * 热更新管理器（Tier 1 配置/目录 + Tier 2 声明式领取任务）：
  * 解决"改个字段名/阈值/目录就要重出包+过 vivo 确认"的发版循环。
  *
  * <p><b>数据来源优先级</b>：① filesDir/hotconfig/config.json（adb push / run-as 放置，
- * 离线可用）；② 远端 URL（prefs hot_url 可配，启动/每 6 小时刷新）；③ 兜底走 APK
- * 内置 assets——热更失败时行为与旧版完全一致。
+ * 离线可用）；② 远端 URL（prefs hot_url 可配，默认自托管在 vault-server：
+ * {@code VaultSync.baseUrl(ctx) + "/v1/vault/hotconfig"}，启动/每 6 小时刷新）；
+ * ③ 兜底走 APK 内置 assets——热更失败时行为与旧版完全一致。
  *
  * <p><b>热更包格式</b>（JSON）：
  * <pre>{ "version": 2026101101,
@@ -54,6 +52,10 @@ public final class HotConfig {
 
     public static final String TAG = "HotConfig";
     private static final long REFRESH_INTERVAL_MILLIS = 6 * 3600_000L;
+    private static final String PREFS = "hotconfig";
+    private static final String PREF_HOT_URL = "hot_url";
+    /** 默认热更源路径（vault-server 自托管；nginx 反代 /v1/vault/ 前缀）。 */
+    private static final String DEFAULT_HOT_PATH = "/v1/vault/hotconfig";
 
     private static volatile JSONObject config;      // 热更包全文（null=无热更）
     private static volatile long version;
@@ -75,6 +77,46 @@ public final class HotConfig {
         File dir = new File(ctx.getFilesDir(), "hotconfig");
         if (!dir.exists()) dir.mkdirs();
         return new File(dir, "config.json");
+    }
+
+    /**
+     * 热更源 URL 解析（纯函数，便于 JVM 单测）：prefs hot_url 非空优先；
+     * 否则回落服务器默认自托管端点 {@code baseUrl + "/v1/vault/hotconfig"}。
+     *
+     * @param prefUrl prefs 里显式配置的 hot_url（可 null/空白）
+     * @param baseUrl 服务器基址（{@link VaultSync#baseUrl}，末尾斜杠会被归一）
+     * @return 生效的更新源 URL；两边都为空时返回 ""（防御式，正常不会发生）
+     */
+    static String resolveHotUrl(String prefUrl, String baseUrl) {
+        if (prefUrl != null) {
+            String u = prefUrl.trim();
+            if (!u.isEmpty()) return u;
+        }
+        if (baseUrl == null) return "";
+        String b = baseUrl.trim();
+        while (b.endsWith("/")) b = b.substring(0, b.length() - 1);
+        return b.isEmpty() ? "" : b + DEFAULT_HOT_PATH;
+    }
+
+    /**
+     * 当前生效的热更源：prefs hot_url（adb 广播 --es url 可设置，联调/回退用）优先，
+     * 否则默认走 vault-server 自托管端点——App 无需配置即可检查更新。
+     */
+    public static String hotUrl(Context ctx) {
+        String pref = "";
+        try {
+            pref = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+                    .getString(PREF_HOT_URL, "");
+        } catch (Throwable ignored) {
+            // prefs 不可用时仍回落默认端点
+        }
+        String base;
+        try {
+            base = VaultSync.baseUrl(ctx);
+        } catch (Throwable t) {
+            base = null;
+        }
+        return resolveHotUrl(pref, base);
     }
 
     private static void loadLocal(Context ctx) {
@@ -99,12 +141,11 @@ public final class HotConfig {
         }
     }
 
-    /** 远端刷新（prefs hot_url 配置了才生效；成功写回本地文件）。限频 6 小时。 */
+    /** 远端刷新（默认服务器自托管端点，prefs hot_url 显式配置时优先；成功写回本地文件）。限频 6 小时。 */
     public static synchronized void maybeRefreshRemote(Context ctx) {
         try {
-            String url = ctx.getSharedPreferences("hotconfig", Context.MODE_PRIVATE)
-                    .getString("hot_url", "");
-            if (url == null || url.isEmpty()) return;
+            String url = hotUrl(ctx);
+            if (url.isEmpty()) return;
             if (System.currentTimeMillis() - lastFetchAt < REFRESH_INTERVAL_MILLIS) return;
             fetchAndApply(ctx, url);
         } catch (Throwable t) {
@@ -115,15 +156,14 @@ public final class HotConfig {
     /**
      * 手动检查更新接口（绕过 6 小时限频立即拉取）。
      *
-     * @return 生效的热更包版本号；未配置 hot_url 返回 -1
+     * @return 生效的热更包版本号；更新源不可用（base/prefs 均为空）返回 -1
      */
     public static synchronized long forceRefresh(Context ctx) {
         lastFetchAt = System.currentTimeMillis();
         try {
-            String url = ctx.getSharedPreferences("hotconfig", Context.MODE_PRIVATE)
-                    .getString("hot_url", "");
-            if (url == null || url.isEmpty()) {
-                Log.i(TAG, "手动检查：未配置 hot_url（adb 广播 --es url 可设置）");
+            String url = hotUrl(ctx);
+            if (url.isEmpty()) {
+                Log.i(TAG, "手动检查：更新源为空（默认端点不可用且未配置 hot_url）");
                 return -1;
             }
             long before = version;
@@ -137,26 +177,23 @@ public final class HotConfig {
     }
 
     private static void fetchAndApply(Context ctx, String url) throws Exception {
-        OkHttpClient client = new OkHttpClient.Builder().build();
-        Request request = new Request.Builder().url(url).build();
-        try (Response response = client.newCall(request).execute()) {
-            String text = response.body() == null ? "" : response.body().string();
-            if (text.isEmpty() || text.length() > 2_000_000L) return;
-            JSONObject o = new JSONObject(text);
-            long remote = o.optLong("version", 0);
-            if (remote > version) {
-                FileOutputStream out = new FileOutputStream(file(ctx));
-                out.write(text.getBytes("UTF-8"));
-                out.close();
-                apply(o);
-                Log.i(TAG, "远端热更包已更新 version=" + remote);
-            }
+        // 复用 VaultSync 客户端选择：生产 https 自签端点走 pin 客户端，其它走系统 CA
+        String text = VaultSync.fetchText(ctx, url);
+        if (text == null || text.isEmpty() || text.length() > 2_000_000L) return;
+        JSONObject o = new JSONObject(text);
+        long remote = o.optLong("version", 0);
+        if (remote > version) {
+            FileOutputStream out = new FileOutputStream(file(ctx));
+            out.write(text.getBytes("UTF-8"));
+            out.close();
+            apply(o);
+            Log.i(TAG, "远端热更包已更新 version=" + remote);
         }
     }
 
     /** 服务器版本比对结果。 */
     public static final class CheckResult {
-        public final int code;        // 0=已更新到服务器版 1=已是最新 2=未配置热更源 3=拉取失败
+        public final int code;        // 0=已更新到服务器版 1=已是最新 2=更新源不可用（防御式，默认源恒非空） 3=拉取失败
         public final long serverVersion;
         public final long localVersion;
         // 整包（大版本）信息：服务端 JSON 未带 apk 块时 versionCode=0 / 其余为空
@@ -188,19 +225,14 @@ public final class HotConfig {
     public static synchronized CheckResult checkServer(Context ctx) {
         long local = version;
         try {
-            String url = ctx.getSharedPreferences("hotconfig", Context.MODE_PRIVATE)
-                    .getString("hot_url", "");
-            if (url == null || url.isEmpty()) {
+            String url = hotUrl(ctx);
+            if (url.isEmpty()) {
                 return new CheckResult(2, -1, local);
             }
             lastFetchAt = System.currentTimeMillis();
-            OkHttpClient client = new OkHttpClient.Builder().build();
-            Request request = new Request.Builder().url(url).build();
-            String text;
-            try (Response response = client.newCall(request).execute()) {
-                text = response.body() == null ? "" : response.body().string();
-            }
-            if (text.isEmpty() || text.length() > 2_000_000L) {
+            // 与 fetchAndApply 同一条取数路径：生产 https 自签端点走 VaultSync 的 pin 客户端
+            String text = VaultSync.fetchText(ctx, url);
+            if (text == null || text.isEmpty() || text.length() > 2_000_000L) {
                 return new CheckResult(3, -1, local);
             }
             JSONObject o = new JSONObject(text);
