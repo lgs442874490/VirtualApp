@@ -44,6 +44,11 @@ public final class FormationPicker {
         void onChanged();
     }
 
+    /** 公共选编队回调（采集设置页每队列复用；formationId<=0 表示未选择/已取消）。 */
+    public interface OnFormationPicked {
+        void onPicked(long formationId, FormationStore.Formation formation);
+    }
+
     private FormationPicker() {
     }
 
@@ -238,6 +243,60 @@ public final class FormationPicker {
     }
 
     // ==================== 编队选择（功能页用） ====================
+
+    /**
+     * 公共选编队入口（采集设置页每队列复用）：从编队库选择，或新建后自动回传新编队。
+     * 只回调编队 id，不写任何功能级 params —— 保存到何处由调用方决定。
+     *
+     * @param cb 选中回调（取消/未选择时可能不回调；formationId>0 表示选中）
+     */
+    public static void pickFormationFor(final Activity act, final String fpid, final long sid,
+                                        final OnFormationPicked cb) {
+        final List<FormationStore.Formation> list = FormationStore.list(act, fpid, sid);
+        final List<String> names = new ArrayList<>();
+        for (FormationStore.Formation f : list) {
+            names.add("#" + f.id + " " + f.name + " · " + FormationStore.summary(f));
+        }
+        names.add("＋ 新建编队");
+        new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("选择编队")
+                .setItems(names.toArray(new String[0]), (d, which) -> {
+                    if (which >= list.size()) {
+                        // 新建：保存后按「新增的更大 id」回传，避免让用户再选一次
+                        final long maxBefore = maxFormationId(list);
+                        showEditor(act, fpid, sid, null, () -> {
+                            sync(act);
+                            FormationStore.Formation created = newestAfter(act, fpid, sid, maxBefore);
+                            if (cb != null) {
+                                if (created != null) cb.onPicked(created.id, created);
+                                else cb.onPicked(0L, null);
+                            }
+                        });
+                        return;
+                    }
+                    FormationStore.Formation f = list.get(which);
+                    if (cb != null) cb.onPicked(f.id, f);
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private static long maxFormationId(List<FormationStore.Formation> list) {
+        long max = 0L;
+        for (FormationStore.Formation f : list) {
+            if (f != null && f.id > max) max = f.id;
+        }
+        return max;
+    }
+
+    private static FormationStore.Formation newestAfter(Activity act, String fpid, long sid,
+                                                        long maxBefore) {
+        FormationStore.Formation best = null;
+        for (FormationStore.Formation f : FormationStore.list(act, fpid, sid)) {
+            if (f != null && f.id > maxBefore && (best == null || f.id > best.id)) best = f;
+        }
+        return best;
+    }
 
     private static void pickFormation(final Activity act, final String fpid, final long sid,
                                       final String fnId, final Runnable onPicked) {

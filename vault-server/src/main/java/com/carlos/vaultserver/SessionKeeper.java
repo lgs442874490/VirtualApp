@@ -2,6 +2,11 @@ package com.carlos.vaultserver;
 
 import com.carlos.vault.wjdr.AssetSource;
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.AssetDomain;
+import com.carlos.vault.wjdr.asset.AssetSnapshot;
+import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
+import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
+import com.carlos.vaultserver.task.AssetStateProjector;
 import com.carlos.vaultserver.task.ServerNotifyHistory;
 import com.carlos.vaultserver.task.TaskWakeRouter;
 
@@ -11,10 +16,12 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 常驻会话管理器（账号池 M1d 2026-10-21 多角色并行）：每角色一条会话。
@@ -52,6 +59,20 @@ public final class SessionKeeper implements SessionControl,
     }
 
     private static final long TAKEOVER_PROBE_DEFAULT_MILLIS = 30 * 60_000L; // 对齐 WjdrEngine.TAKEOVER_PROBE_MILLIS
+
+    /** 资产库 state 投影最小写间隔（≤1 次/秒；节流器只写最后一帧）。 */
+    private static final long ASSET_PROJECTION_MIN_INTERVAL_MS = 1000L;
+
+    /**
+     * 资产库 state 投影调度器（全进程单线程 daemon）：监听回调在 engine inbound 线程上，
+     * 不阻塞也不做 IO；节流到期后由本线程把「最新快照」写入 StateStore。
+     */
+    private static final ScheduledExecutorService ASSET_PROJECTOR =
+            Executors.newSingleThreadScheduledExecutor(r -> {
+                Thread t = new Thread(r, "asset-projector");
+                t.setDaemon(true);
+                return t;
+            });
 
     private final VaultStore store;
     private final VaultConfig config;
@@ -260,6 +281,13 @@ public final class SessionKeeper implements SessionControl,
          * 默认关（roleParams `guardian` 未配置时 enabled=false/dry_run=true，零请求零状态写入）。
          */
         volatile com.carlos.vaultserver.guardian.ServerGuardianEngine guardian;
+        /**
+         * 核心资产库（W1）：engine 创建后、login 前 attach，inbound 钩子第一行回灌；
+         * 会话断开/关闭时 invalidate + detach。任务侧经 {@link CoreAssetRegistry#get(WjdrEngine)} 读。
+         */
+        volatile CoreAssetLibrary assetLib;
+        /** 资产库变更 → srv:asset 投影守听器（节流 ≤1 次/秒）。 */
+        private volatile AssetProjectionPublisher assetPublisher;
         /** 下次热载 p:war.* 参数时刻（60s 一次；配置来自 App 同步的 roleParams）。 */
         volatile long nextWarCfgAt;
         /** 下次全量采集时刻（登录后 3s 首采，之后每 10 分钟）。 */
@@ -311,6 +339,8 @@ public final class SessionKeeper implements SessionControl,
                 t.setDaemon(true);
                 return t;
             });
+            // W1 资产库：engine 创建后、login 前 attach（登录过程中就会推送 init 帧）
+            attachAssetLibrary();
             engine.setStateListener(s -> {
                 long nowMs = System.currentTimeMillis();
                 state = s;
@@ -320,6 +350,9 @@ public final class SessionKeeper implements SessionControl,
                     if (onlineSince <= 0L) onlineSince = nowMs;
                 } else {
                     onlineSince = 0L;
+                    // W1：离开 ONLINE（登录中/断线/被顶号/停机）→ 资产置 stale 并投影 ready=false；
+                    // 重连后 init 重放会重新 READY（hook 常驻，无需重新 attach）。
+                    invalidateAssetLibrary("state=" + s);
                 }
                 // 引擎自发顶号（code=5）无外部指令时刻可读：按默认探测间隔给 App 倒计时
                 if (WjdrEngine.STATE_TAKEOVER.equals(s) && yieldProbeAt == 0) {
@@ -390,6 +423,149 @@ public final class SessionKeeper implements SessionControl,
                 ServerNotifyHistory.record(fp, proto, content);
             });
             FileLog.info("通知历史钩子已挂载 {}", key);
+        }
+
+        // ---------- W1 核心资产库（attach / inbound 回灌 / state 投影 / detach） ----------
+
+        /**
+         * 资产库挂载：engine 创建后、login 前 attach 并挂 inbound 钩子。
+         *
+         * <p>attach 早于 login 的原因：服务器在登录过程中就推送
+         * {@code notify_game_init/world_player_init/resource_init/recover_resource_init} 等
+         * init 帧（见 {@link WjdrEngine#initialize()} 的 hookNotifies 注释）；晚 attach 会
+         * 丢掉 READY 所需的登录批推送。sid 未定时（账号库无 activeSid，默认角色）先用 0
+         * attach，投影键用 {@link #resolveSid()} 的实时值（登录落地后即真实 sid）。
+         */
+        private void attachAssetLibrary() {
+            try {
+                final CoreAssetLibrary lib = CoreAssetRegistry.global().attach(engine, fpid,
+                        resolveSid(), roleUid > 0 ? roleUid : wantUid, System.currentTimeMillis());
+                if (lib == null) return;
+                final AssetProjectionPublisher pub = new AssetProjectionPublisher(this, lib);
+                engine.addMessageHook((proto, content) -> {
+                    lib.accept(proto, content);   // 第一行：先入资产库（异常由库/引擎各自兜住）
+                });
+                lib.addListener(pub);
+                assetLib = lib;
+                assetPublisher = pub;
+                FileLog.info("资产库已挂载 {} 库={}", key, lib.key());
+            } catch (Throwable t) {
+                FileLog.warn("资产库挂载失败 {}：{}", key, String.valueOf(t));
+            }
+        }
+
+        /** 离开 ONLINE：数据置 stale（保留最近数据供诊断），投影立即反映 ready=false。 */
+        private void invalidateAssetLibrary(String reason) {
+            CoreAssetLibrary lib = assetLib;
+            if (lib == null) return;
+            try {
+                lib.invalidate(reason);
+                AssetProjectionPublisher pub = assetPublisher;
+                if (pub != null) pub.onInvalidated(lib.snapshot(), reason);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        /** 会话关闭/销毁：移除监听 → invalidate → 投影末帧 → 从注册表 detach。 */
+        private void detachAssetLibrary(String reason) {
+            CoreAssetLibrary lib = assetLib;
+            AssetProjectionPublisher pub = assetPublisher;
+            assetLib = null;
+            assetPublisher = null;
+            if (lib == null) return;
+            try {
+                if (pub != null) {
+                    lib.removeListener(pub);
+                    pub.stop();
+                }
+                lib.invalidate(reason);
+                if (pub != null) pub.publish(lib.snapshot());
+                CoreAssetRegistry.global().detach(engine);
+                FileLog.info("资产库已卸载 {}：{}", key, reason);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        /**
+         * 资产库变更 → StateStore 投影（{@code srv:asset:{fpid}:{sid}}，W1/W4）。
+         *
+         * <p>线程模型：{@link #onChanged} 在 engine inbound 线程触发；这里只记录最新快照
+         * 与 ready 日志，真正写 StateStore 交给静态单线程 {@link #ASSET_PROJECTOR}，
+         * 节流 ≤1 次/秒且只写最后一帧（inbound 线程不做 IO、不阻塞协议处理）。
+         */
+        private final class AssetProjectionPublisher implements CoreAssetLibrary.Listener {
+            private final LiveSession session;
+            private final CoreAssetLibrary lib;
+            private final AtomicBoolean scheduled = new AtomicBoolean(false);
+            private volatile AssetSnapshot latest;
+            private volatile long lastWriteAtMs;
+            private volatile boolean lastReady;
+            private volatile boolean stopped;
+
+            AssetProjectionPublisher(LiveSession session, CoreAssetLibrary lib) {
+                this.session = session;
+                this.lib = lib;
+            }
+
+            @Override
+            public void onChanged(AssetSnapshot snapshot, Set<AssetDomain> dirtyDomains) {
+                if (stopped || snapshot == null) return;
+                latest = snapshot;
+                if (snapshot.ready && !lastReady) {
+                    lastReady = true;
+                    FileLog.info("asset_ready fpid={} sid={} version={} missing={}",
+                            session.fpid, String.valueOf(session.resolveSid()),
+                            String.valueOf(snapshot.version),
+                            String.valueOf(snapshot.missingProtocols));
+                } else if (!snapshot.ready) {
+                    lastReady = false;
+                }
+                publishThrottled(false);
+            }
+
+            /** 离开 ONLINE：立即用 invalidate 后快照覆盖投影（ready=false）。 */
+            void onInvalidated(AssetSnapshot snapshot, String reason) {
+                if (stopped) return;
+                lastReady = false;
+                if (snapshot != null) latest = snapshot;
+                publishThrottled(true);
+            }
+
+            void publishThrottled(boolean force) {
+                long now = System.currentTimeMillis();
+                if (force || now - lastWriteAtMs >= ASSET_PROJECTION_MIN_INTERVAL_MS) {
+                    publish(latest);
+                    return;
+                }
+                if (!scheduled.compareAndSet(false, true)) return;
+                long delay = Math.max(1L, ASSET_PROJECTION_MIN_INTERVAL_MS - (now - lastWriteAtMs));
+                try {
+                    ASSET_PROJECTOR.schedule(() -> {
+                        scheduled.set(false);
+                        if (!stopped) publishThrottled(true);
+                    }, delay, TimeUnit.MILLISECONDS);
+                } catch (Throwable t) {
+                    scheduled.set(false);
+                }
+            }
+
+            /** 立即写一帧（detach 路径的末帧也走这里；StateStore 写入为轻量内存操作）。 */
+            void publish(AssetSnapshot snapshot) {
+                AssetSnapshot s = snapshot != null ? snapshot : latest;
+                if (s == null) return;
+                try {
+                    long sid = session.resolveSid();
+                    if (sid <= 0L) return;   // 登录未落地（默认角色会话）：不写 srv:asset:fpid:0 垃圾键
+                    stateStore.putString(AssetStateProjector.stateKey(session.fpid, sid),
+                            AssetStateProjector.toJson(s, session.fpid, sid));
+                    lastWriteAtMs = System.currentTimeMillis();
+                } catch (Throwable ignored) {
+                }
+            }
+
+            void stop() {
+                stopped = true;
+            }
         }
 
         void start() {
@@ -746,6 +922,8 @@ public final class SessionKeeper implements SessionControl,
                 } catch (Throwable ignored) {
                 }
             }
+            // W1：会话关闭 → 资产库 invalidate + 投影末帧 + 从注册表 detach（先于 engine.close）
+            detachAssetLibrary("session-closed");
             try {
                 engine.close();
             } catch (Throwable ignored) {

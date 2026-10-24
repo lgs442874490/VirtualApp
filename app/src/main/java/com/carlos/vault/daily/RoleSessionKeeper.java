@@ -4,6 +4,8 @@ import android.content.Context;
 
 import com.carlos.vault.AccountStore;
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
+import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -78,6 +80,9 @@ public final class RoleSessionKeeper {
 
         // ---- 协议监听（ProtoLogger 诊断；每会话一次） ----
         final AtomicBoolean protoLogAttached = new AtomicBoolean();
+
+        // ---- 核心资产库（W1 App 原生模式；engine 创建后、login 前 attach） ----
+        volatile CoreAssetLibrary assetLib;
 
         LiveSession(WjdrEngine engine, String fpid, long sid, String label) {
             this.engine = engine;
@@ -254,10 +259,16 @@ public final class RoleSessionKeeper {
         ls = new LiveSession(WjdrAndroid.newEngine(ctx), acc.fpid, sid, acc.label);
         // 状态变化日志（灰度观察用：logcat 过滤 SessionKeeper）
         final LiveSession flsLog = ls;
-        ls.engine.setStateListener(s -> android.util.Log.i("SessionKeeper",
-                flsLog.label + " " + flsLog.fpid + ":" + flsLog.sid + " → " + s
-                        + (flsLog.engine.lastFailure() == null ? "" : " · " + flsLog.engine.lastFailure())));
+        ls.engine.setStateListener(s -> {
+            android.util.Log.i("SessionKeeper",
+                    flsLog.label + " " + flsLog.fpid + ":" + flsLog.sid + " → " + s
+                            + (flsLog.engine.lastFailure() == null ? "" : " · " + flsLog.engine.lastFailure()));
+            // W1：离开 ONLINE → 资产置 stale（重连后 init 重放会重新 READY）
+            if (!WjdrEngine.STATE_ONLINE.equals(s)) invalidateAssetLibrary(flsLog, "state=" + s);
+        });
         sessions.put(k, ls);
+        // W1 资产库：engine 创建后、login 前 attach（登录过程中就会推送 init 帧）
+        attachAssetLibrary(ls);
         start();
         final LiveSession fls = ls;
         final AccountStore.Account facc = acc;
@@ -464,10 +475,16 @@ public final class RoleSessionKeeper {
             final long sid = sids.get(i);
             final LiveSession ls = new LiveSession(WjdrAndroid.newEngine(ctx), fpid, sid, acc.label);
             final LiveSession fls = ls;
-            ls.engine.setStateListener(s -> android.util.Log.i("SessionKeeper",
-                    fls.label + " " + fls.fpid + ":" + fls.sid + " → " + s
-                            + (fls.engine.lastFailure() == null ? "" : " · " + fls.engine.lastFailure())));
+            ls.engine.setStateListener(s -> {
+                android.util.Log.i("SessionKeeper",
+                        fls.label + " " + fls.fpid + ":" + fls.sid + " → " + s
+                                + (fls.engine.lastFailure() == null ? "" : " · " + fls.engine.lastFailure()));
+                // W1：离开 ONLINE → 资产置 stale（重连后 init 重放会重新 READY）
+                if (!WjdrEngine.STATE_ONLINE.equals(s)) invalidateAssetLibrary(fls, "state=" + s);
+            });
             sessions.put(key(fpid, sid), ls);
+            // W1 资产库：engine 创建后、login 前 attach（竞速线程稍后才 initialize/login）
+            attachAssetLibrary(ls);
             Thread t = new Thread(() -> {
                 try {
                     fls.engine.initialize();
@@ -569,9 +586,55 @@ public final class RoleSessionKeeper {
         return new ArrayList<>(sessions.values());
     }
 
+    // ---------- W1 核心资产库（App 原生模式接线） ----------
+
+    /**
+     * 资产库挂载（App 原生模式）：engine 创建后、login 前 attach 并挂 inbound 回灌钩子。
+     *
+     * <p>服务器模式下 App 不建本地会话（{@link #syncOnline()} 早退），资产摘要改由
+     * {@code /v1/vault/state} 的 {@code srv:asset:*} 投影读取（服务端 SessionKeeper 写入）。
+     */
+    private void attachAssetLibrary(LiveSession ls) {
+        if (ls == null || ls.engine == null || ls.assetLib != null) return;
+        try {
+            CoreAssetLibrary lib = CoreAssetRegistry.global().attach(ls.engine, ls.fpid, ls.sid,
+                    ls.engine.lastUid(), System.currentTimeMillis());
+            if (lib == null) return;
+            ls.assetLib = lib;
+            ls.engine.addMessageHook((proto, content) -> {
+                CoreAssetLibrary mine = ls.assetLib;
+                if (mine != null) mine.accept(proto, content);   // 第一行：先入资产库
+            });
+            android.util.Log.i("SessionKeeper", "资产库已挂载 " + ls.fpid + ":" + ls.sid);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 离开 ONLINE：数据置 stale（保留最近数据供诊断；重连后 init 重放会重新 READY）。 */
+    private static void invalidateAssetLibrary(LiveSession ls, String reason) {
+        try {
+            CoreAssetLibrary lib = ls == null ? null : ls.assetLib;
+            if (lib != null) lib.invalidate(reason);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 会话关闭：invalidate + 从注册表 detach（先于 engine.close，避免 close 后还有迟到的钩子回调）。 */
+    private static void detachAssetLibrary(LiveSession ls) {
+        try {
+            CoreAssetLibrary lib = ls == null ? null : ls.assetLib;
+            ls.assetLib = null;
+            if (lib == null) return;
+            lib.invalidate("session-closed");
+            CoreAssetRegistry.global().detach(lib);
+        } catch (Throwable ignored) {
+        }
+    }
+
     public void closeSession(String k) {
         LiveSession ls = sessions.remove(k);
         if (ls != null) {
+            detachAssetLibrary(ls);
             try {
                 ls.engine.close();
             } catch (Throwable ignored) {

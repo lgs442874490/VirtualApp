@@ -1,6 +1,10 @@
 package com.carlos.vaultserver.task;
 
+import com.carlos.vault.daily.gather.GatherConfigV2;
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.AssetSnapshot;
+import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
+import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.formation.FormationLibrary;
@@ -26,7 +30,25 @@ public final class ServerFieldTasks {
 
     // ---------- 野外采集 ----------
 
+    /**
+     * 野外采集入口（I2，2026-10-24）：
+     * <ul>
+     *   <li>{@code tc.params("gather").v2} 存在 → 队列化执行 {@link #gatherV2}（6 队列 × 资源/等级/编队）；</li>
+     *   <li>无 v2（旧 App / 存量账号）→ {@link #gatherLegacy}，与改造前逐字节一致（零行为变化）。</li>
+     * </ul>
+     */
     public static TaskOutcome gather(TaskContext tc) {
+        JSONObject gatherParams = null;
+        try {
+            gatherParams = tc.params("gather");
+        } catch (Throwable ignored) {
+        }
+        if (!GatherConfigV2.hasV2(gatherParams)) return gatherLegacy(tc);
+        return gatherV2(tc, gatherParams);
+    }
+
+    /** 旧采集分支（无 v2 时逐字节保留；v2 队列化见 {@link #gatherV2}）。 */
+    static TaskOutcome gatherLegacy(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         MarchSnapshot marchSnapshot = null;   // G2：catch 兜底出口也要写续派唤醒
         try {
@@ -603,6 +625,706 @@ public final class ServerFieldTasks {
         Map<String, Object> world = Exec.mapOf(wp.get("world"));
         long cap = world == null ? 0 : Exec.longOf(world.get("capacity"));
         return cap > 0 ? (int) cap : 3;
+    }
+
+    // ---------- 野外采集 v2：队列化执行（I2，2026-10-24） ----------
+
+    /**
+     * v2 队列化采集（1:1 参考网页版 DailyGatherService）：
+     * <pre>
+     * 配置（roleParams.gather.v2，GatherConfigV2）→ 6 队列 × {资源/等级1-9/编队/兵量}
+     * 资产库（CoreAssetRegistry/CoreAssetLibrary.Queue）→ capacity/occupied/idle/limitReached/marches
+     * 每轮：对账队列↔行军映射 → 算空闲槽位 → 按 nextQueueId 环状找未绑定队列 →
+     *       逐级搜索（L→1，2872 降级）→ 每队列编队 → req_world_march type=4 →
+     *       绑定 marchId + 资产库回灌 → 续派唤醒（最早在途采集行军 endTime+250ms）
+     * </pre>
+     * v2 缺失时走 {@link #gatherLegacy}（逐字节旧行为）。联盟矿本期不接入队列化（旧路径保留）。
+     */
+    static final long GATHER_MARCH_TYPE = 4L;
+
+    /** 采集搜索/派队错误码（1:1 网页版 DailyGatherService:91-100，真实日志实证）。 */
+    static final int GATHER_ERR_MARCH_LIMIT = 2878;        // 世界出征队列已满
+    static final int GATHER_ERR_SOLDIERS = 401;            // 可用士兵不足
+    static final int GATHER_ERR_HERO_BUSY = 403;           // 编队英雄已被占用
+    static final int GATHER_ERR_TARGET_GONE = 2816;        // 资源点不存在
+    static final int GATHER_ERR_TARGET_REFRESHED = 2822;   // 资源点已刷新
+    static final int GATHER_ERR_ARSENAL_WAR = 8619;        // 兵工厂战争锁（退避 300s）
+    static final int GATHER_ERR_FROSTFIRE_WAR = 8637;      // 燃霜矿区战锁（退避 60s）
+    /** 搜索无矿（正常业务状态：逐级降级，不报错）。 */
+    static final int GATHER_SEARCH_EMPTY = 2872;
+
+    /** v2 续派：最早在途采集行军 endTime + 250ms 唤醒（网页版 nextMarchTransitionAt:1060-1074）。 */
+    static final long GATHER_WAKE_AFTER_END_MILLIS = 250L;
+    /** v2 续派：没有在途采集行军时 now+3s 复查（同网页版“无 march 则 +3s”）。 */
+    static final long GATHER_V2_WAKE_FALLBACK_MILLIS = 3_000L;
+    /** 兵工厂战争锁退避（网页版 WAITING_ARSENAL_WAR 300s）。 */
+    static final long GATHER_V2_ARSENAL_BACKOFF_MILLIS = 300_000L;
+    /** 燃霜矿区战锁退避（网页版 WAITING_FROSTFIRE 60s）。 */
+    static final long GATHER_V2_FROSTFIRE_BACKOFF_MILLIS = 60_000L;
+    /** 2878 本地“队列满”短标记（资产库无 mark API 时的本地兜底；成功派队即清除）。 */
+    static final long GATHER_V2_LIMIT_BACKOFF_MILLIS = 30_000L;
+    /** 资产库 READY 等待上限（超时按 SKIP 处理，不阻塞任务线程超过该值）。 */
+    static final long GATHER_ASSET_READY_TIMEOUT_MILLIS = 15_000L;
+    /** 王国可采资源等级未知时的保守上限（未满 701 天 = 8 级，1:1 GatherConfigV2.maxLevelForKingdomDay）。 */
+    static final int GATHER_DEFAULT_MAX_RESOURCE_LEVEL = 8;
+    /** 单队列每轮搜索次数上限（等级 1-9 递减，防请求风暴）。 */
+    static final int GATHER_MAX_SEARCHES_PER_QUEUE = GatherConfigV2.MAX_RESOURCE_LEVEL;
+
+    /** v2 单队列执行计划（纯函数产物：资源 res_id、等级递减序列、每队列编队参数）。 */
+    static final class QueuePlan {
+        final int queueId;
+        final String resourceType;
+        final int resId;
+        /** 从配置等级递减到 1（已按王国可采上限夹取；长度 ≤ 9）。 */
+        final List<Integer> levels;
+        final boolean fullResourceOnly;
+        /** 传给 {@code FormationResolver.resolveOutcome} 的每队列编队参数。 */
+        final JSONObject formationParams;
+
+        QueuePlan(int queueId, String resourceType, int resId, List<Integer> levels,
+                  boolean fullResourceOnly, JSONObject formationParams) {
+            this.queueId = queueId;
+            this.resourceType = resourceType == null ? GatherConfigV2.RES_MEAT : resourceType;
+            this.resId = resId;
+            this.levels = levels == null ? new ArrayList<Integer>() : new ArrayList<Integer>(levels);
+            this.fullResourceOnly = fullResourceOnly;
+            this.formationParams = formationParams == null ? new JSONObject() : formationParams;
+        }
+
+        int topLevel() {
+            return levels.isEmpty() ? 0 : levels.get(0).intValue();
+        }
+    }
+
+    /** 队列↔行军映射（状态键 {@code srv:gather:queues:{fpid}:{sid}}）。 */
+    static final class QueueMapping {
+        int nextQueueId = 1;
+        final LinkedHashMap<String, Long> map = new LinkedHashMap<String, Long>();
+
+        QueueMapping copy() {
+            QueueMapping c = new QueueMapping();
+            c.nextQueueId = nextQueueId;
+            c.map.putAll(map);
+            return c;
+        }
+
+        boolean bound(int queueId) {
+            return map.containsKey(String.valueOf(queueId));
+        }
+
+        long marchIdOf(int queueId) {
+            Long v = map.get(String.valueOf(queueId));
+            return v == null ? 0L : v.longValue();
+        }
+    }
+
+    /** 单次搜索结果（code=0 且 point 非空 = 命中；2872 = 该级无空矿）。 */
+    static final class SearchOutcome {
+        final int code;
+        final int level;
+        final Map<String, Object> point;
+
+        SearchOutcome(int code, int level, Map<String, Object> point) {
+            this.code = code;
+            this.level = level;
+            this.point = point;
+        }
+
+        boolean found() {
+            return code == 0 && point != null;
+        }
+
+        boolean empty() {
+            return code == GATHER_SEARCH_EMPTY;
+        }
+    }
+
+    /**
+     * v2 队列化采集入口：资产库就绪判定 → 队列游标派队 → 续派唤醒。
+     * 资产库未接线/未 READY 只记 SKIP（原因含 missing），绝不抛异常。
+     */
+    static TaskOutcome gatherV2(TaskContext tc, JSONObject gatherParams) {
+        Exec.Multi m = new Exec.Multi();
+        CoreAssetLibrary lib = null;
+        try {
+            lib = CoreAssetRegistry.global().get(tc.engine);
+            if (lib == null) return gatherV2AssetNotReady(tc, m, missingProtocolsText(lib));
+            if (!lib.awaitReady(GATHER_ASSET_READY_TIMEOUT_MILLIS)) {
+                return gatherV2AssetNotReady(tc, m, missingProtocolsText(lib));
+            }
+            gatherV2Dispatch(tc, gatherParams, lib, m);
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "野外采集");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return finishGatherV2(tc, m, lib);
+    }
+
+    /** 资产库未就绪：SKIP（reason 含 missing）+ 写续派唤醒 + mod 状态。 */
+    private static TaskOutcome gatherV2AssetNotReady(TaskContext tc, Exec.Multi m, String reason) {
+        String text = "资产库未就绪(" + reason + ")";
+        m.skip(text);
+        try {
+            tc.saveModText("gather", "send", text);
+        } catch (Throwable ignored) {
+        }
+        FileLog.warn("gather v2 跳过 fpid={}：{}", tc.fpid, text);
+        return finishGatherV2(tc, m, null);
+    }
+
+    /** 资产库缺协议诊断文案（READY 超时用；含 missing 关键字）。 */
+    static String missingProtocolsText(CoreAssetLibrary lib) {
+        if (lib == null) return "missing: registry";
+        try {
+            List<String> missing = lib.missingProtocols();
+            if (missing == null || missing.isEmpty()) return "missing: (推荐协议已齐但 READY 超时)";
+            return "missing: " + String.join(",", missing);
+        } catch (Throwable t) {
+            return "missing: (诊断异常 " + ServerTasks.brief(String.valueOf(t.getMessage())) + ")";
+        }
+    }
+
+    /** v2 主流程：队列↔行军对账 → 槽位 → 游标派队（每队列独立资源/等级/编队）。 */
+    private static void gatherV2Dispatch(TaskContext tc, JSONObject gatherParams, CoreAssetLibrary lib,
+                                         Exec.Multi m) throws Exception {
+        GatherConfigV2 cfg = GatherConfigV2.parse(gatherParams);
+        AssetSnapshot.Queue queue = lib.queue() == null ? AssetSnapshot.Queue.empty() : lib.queue();
+        FileLog.info("gather queue: capacity={} occupied={} idle={} special={} limit={}",
+                queue.capacity, queue.occupied, queue.idle, specialQueueCount(queue), queue.limitReached);
+
+        long now = System.currentTimeMillis();
+        long backoffUntil = stateLongOf(tc, gatherBackoffKey(tc));
+        if (backoffUntil > now) {
+            String text = "采集退避中(" + secondsLeft(now, backoffUntil) + "s)";
+            m.skip(text);
+            tc.saveModText("gather", "send", text);
+            return;
+        }
+        long limitUntil = stateLongOf(tc, gatherLimitKey(tc));
+        if (limitUntil > now) {
+            String text = "世界出征队列已满(本地限制 " + secondsLeft(now, limitUntil) + "s)";
+            m.skip(text);
+            tc.saveModText("gather", "send", text);
+            return;
+        }
+
+        int maxLevel = gatherMaxResourceLevel(lib.clock());
+        QueueMapping mapping = reconcileMapping(
+                parseQueueMapping(tc.store.getString(gatherQueueKey(tc))), queue.marches);
+        int unbound = unboundEnabledCount(cfg, mapping);
+        if (cfg.enabledQueues().isEmpty()) {
+            String text = "采集配置未启用任何队列";
+            m.skip(text);
+            tc.saveModText("gather", "send", text);
+            writeQueueMapping(tc, mapping);
+            return;
+        }
+        int slots = slotCount(cfg, queue.idle, unbound, queue.capacity, queue.limitReached);
+        if (queue.limitReached || slots <= 0) {
+            String text = "采集队列已满(capacity=" + queue.capacity + " occupied=" + queue.occupied
+                    + " idle=" + queue.idle + " unbound=" + unbound + ")";
+            m.skip(text);
+            tc.saveModText("gather", "send", text);
+            writeQueueMapping(tc, mapping);
+            return;
+        }
+        // 联盟矿本期不接入 v2 队列化（用户决策：核心三项；旧 alliance_mine 路径仅保留在 legacy 分支）。
+        if (cfg.allianceMineEnabled) {
+            String note = "联盟矿本期未接入队列化执行，跳过";
+            m.subSkip("alliance_mine", note);
+            tc.saveModText("gather", "alliance_mine", note);
+        }
+
+        List<QueuePlan> plans = planQueues(cfg, maxLevel);
+        Map<Integer, QueuePlan> planById = new LinkedHashMap<Integer, QueuePlan>();
+        for (QueuePlan plan : plans) planById.put(plan.queueId, plan);
+
+        List<String> statuses = new ArrayList<String>();
+        int sent = 0;
+        int cursor = GatherConfigV2.clampInt(mapping.nextQueueId, 1, GatherConfigV2.QUEUE_COUNT);
+        HashSet<Integer> attempted = new HashSet<Integer>();
+        boolean stopRound = false;
+        while (!stopRound && sent < slots && attempted.size() < plans.size()) {
+            GatherConfigV2.QueueCfg q = nextUnboundQueue(cfg, mapping, cursor);
+            if (q == null) break;
+            cursor = nextQueueIdAfter(q.id);
+            if (!attempted.add(q.id)) break;      // 单轮内不重复派同一队列
+            QueuePlan plan = planById.get(q.id);
+            if (plan == null) continue;
+            String label = "队列" + q.id + " " + GatherConfigV2.resourceLabel(q.resourceType) + q.level;
+
+            SearchOutcome found = searchQueueResource(tc.engine, plan);
+            if (!found.found()) {
+                String why = found.empty() ? "无矿" : "搜索失败(码" + found.code + ")";
+                statuses.add(label + " " + why);
+                FileLog.info("gather queue#{} res={}({}) lv={} formation={} -> {}",
+                        q.id, plan.resourceType, plan.resId, plan.topLevel(), "-", why);
+                if (!found.empty()) m.subSkip("queue" + q.id, why);
+                continue;
+            }
+
+            StringBuilder fWhy = new StringBuilder();
+            Map<String, Object> formation = gatherV2Formation(tc, plan, fWhy);
+            if (formation == null) {
+                String why = "编队跳过：" + (fWhy.length() == 0 ? "无可用编队" : fWhy.toString());
+                statuses.add(label + " " + why);
+                m.subSkip("queue" + q.id, why);
+                continue;
+            }
+
+            GameMessage march = tc.engine.request("req_world_march", Exec.args(
+                    "type", GATHER_MARCH_TYPE,
+                    "endpoint", found.point,
+                    "formation", formation,
+                    "extra", new LinkedHashMap<String, Object>()));
+            long marchId = Exec.marchId(march);
+            int code = Exec.codeOf(march);
+            String levelNote = found.level < q.level ? "→L" + found.level : "";
+            if (marchId > 0L) {
+                mapping.map.put(String.valueOf(q.id), marchId);
+                mapping.nextQueueId = nextQueueIdAfter(q.id);
+                applyGatherResponse(lib, march);
+                tc.store.putLong(gatherLimitKey(tc), 0L);
+                sent++;
+                statuses.add(label + levelNote + " 已派出");
+                m.subOk("queue" + q.id, "已派出 march=" + marchId);
+                FileLog.info("gather queue#{} res={}({}) lv={} formation={} -> {}", q.id,
+                        plan.resourceType, plan.resId, found.level, formationDesc(plan),
+                        "march#" + marchId);
+            } else if (code == GATHER_ERR_MARCH_LIMIT) {
+                // 2878：停止本轮 + 本地 limit 标记（同时回灌资产库，若其解析器支持则置 limitReached）
+                applyGatherResponse(lib, march);
+                tc.store.putLong(gatherLimitKey(tc),
+                        System.currentTimeMillis() + GATHER_V2_LIMIT_BACKOFF_MILLIS);
+                statuses.add(label + " 世界队列已满(2878)");
+                m.skip("世界出征队列已满(码2878)");
+                FileLog.warn("gather queue#{} 派队受阻：世界出征队列已满(2878)", q.id);
+                stopRound = true;
+            } else if (code == GATHER_ERR_SOLDIERS) {
+                statuses.add(label + " 士兵不足(401)");
+                m.subSkip("queue" + q.id, "士兵不足(401)");
+            } else if (code == GATHER_ERR_HERO_BUSY) {
+                statuses.add(label + " 英雄占用(403)");
+                m.subSkip("queue" + q.id, "英雄占用(403)");
+            } else if (code == GATHER_ERR_TARGET_GONE || code == GATHER_ERR_TARGET_REFRESHED) {
+                statuses.add(label + " 矿点变化(" + code + ")，下轮重搜");
+                m.subSkip("queue" + q.id, "矿点变化(" + code + ")");
+            } else if (code == GATHER_ERR_ARSENAL_WAR) {
+                tc.store.putLong(gatherBackoffKey(tc),
+                        System.currentTimeMillis() + GATHER_V2_ARSENAL_BACKOFF_MILLIS);
+                statuses.add(label + " 兵工厂战锁(8619)，退避300s");
+                m.skip("兵工厂战争锁(8619)，退避300s");
+                stopRound = true;
+            } else if (code == GATHER_ERR_FROSTFIRE_WAR) {
+                tc.store.putLong(gatherBackoffKey(tc),
+                        System.currentTimeMillis() + GATHER_V2_FROSTFIRE_BACKOFF_MILLIS);
+                statuses.add(label + " 燃霜战锁(8637)，退避60s");
+                m.skip("燃霜矿区战锁(8637)，退避60s");
+                stopRound = true;
+            } else {
+                statuses.add(label + " 出征失败(码" + code + ")");
+                m.subSkip("queue" + q.id, "出征码" + code);
+                FileLog.warn("gather queue#{} 出征失败 code={}", q.id, code);
+            }
+        }
+        writeQueueMapping(tc, mapping);
+        if (sent > 0) {
+            m.claimed("派出采集×" + sent);
+        } else {
+            m.skip("本轮未派出采集队");
+        }
+        String text = statuses.isEmpty() ? "无可派采集队列" : String.join("；", statuses);
+        tc.saveModText("gather", "send", text);
+    }
+
+    /**
+     * 每队列计划（纯函数）：仅启用队列；资源名 → res_id 102-105；等级从配置等级递减到 1
+     * （先夹到王国可采上限 maxLevel）；每队列编队参数 = ROLE(指定编队+兵量) 或 AUTOMATIC(比例权重+总量)。
+     */
+    static List<QueuePlan> planQueues(GatherConfigV2 cfg, int maxLevel) {
+        List<QueuePlan> out = new ArrayList<QueuePlan>();
+        if (cfg == null) return out;
+        for (GatherConfigV2.QueueCfg q : cfg.enabledQueues()) {
+            out.add(planQueue(q, maxLevel, cfg.fullResourceOnly));
+        }
+        return out;
+    }
+
+    /** JSON 重载（服务端读配置后直接生成计划；测试友好）。 */
+    static List<QueuePlan> planQueues(JSONObject gatherParams, int maxLevel) {
+        return planQueues(GatherConfigV2.parse(gatherParams), maxLevel);
+    }
+
+    static QueuePlan planQueue(GatherConfigV2.QueueCfg q, int maxLevel, boolean fullResourceOnly) {
+        if (q == null) return null;
+        return new QueuePlan(q.id, q.resourceType, GatherConfigV2.resId(q.resourceType),
+                searchLevelsForQueue(q, maxLevel), fullResourceOnly, queueFormationParams(q));
+    }
+
+    /** 队列等级递减序列（9→1；maxLevel=8 时 9 被夹到 8）。 */
+    static List<Integer> searchLevelsForQueue(GatherConfigV2.QueueCfg q, int maxLevel) {
+        if (q == null) return new ArrayList<Integer>();
+        return GatherConfigV2.searchLevels(q.level, maxLevel);
+    }
+
+    /**
+     * 每队列编队参数（FormationResolver 契约）：
+     * <ul>
+     *   <li>ROLE：{@code {formation_mode:ROLE, formation_id, soldiers:{infantry,lancer,marksman}}}；</li>
+     *   <li>AUTOMATIC：{@code {formation_mode:AUTOMATIC, ratio:{...每队列兵量作权重/默认40:30:30}, total:sum}}。</li>
+     * </ul>
+     */
+    static JSONObject queueFormationParams(GatherConfigV2.QueueCfg q) {
+        JSONObject f = new JSONObject();
+        if (q == null) return f;
+        long total = q.totalSoldiers();
+        if (q.isRole()) {
+            f.put("formation_mode", GatherConfigV2.MODE_ROLE);
+            f.put("formation_id", q.formationId);
+            JSONObject soldiers = new JSONObject();
+            soldiers.put("infantry", Math.max(0L, q.infantry));
+            soldiers.put("lancer", Math.max(0L, q.lancer));
+            soldiers.put("marksman", Math.max(0L, q.marksman));
+            f.put("soldiers", soldiers);
+            return f;
+        }
+        f.put("formation_mode", GatherConfigV2.MODE_AUTOMATIC);
+        JSONObject ratio = new JSONObject();
+        if (total > 0L) {
+            ratio.put("infantry", Math.max(0L, q.infantry));
+            ratio.put("lancer", Math.max(0L, q.lancer));
+            ratio.put("marksman", Math.max(0L, q.marksman));
+        } else {
+            ratio.put("infantry", 40L);
+            ratio.put("lancer", 30L);
+            ratio.put("marksman", 30L);
+        }
+        f.put("ratio", ratio);
+        f.put("total", total > 0L ? total : 0L);
+        return f;
+    }
+
+    /** 每队列编队解析（ROLE/AUTOMATIC；失败返回 null 并回填原因，绝不静默换编队）。 */
+    private static Map<String, Object> gatherV2Formation(TaskContext tc, QueuePlan plan,
+                                                         StringBuilder reasonOut) {
+        try {
+            FormationLibrary lib = FormationResolver.libraryFor(tc, "gather");
+            FormationResolver.ResolveOutcome ro =
+                    FormationResolver.resolveOutcome(tc.engine, lib, plan.formationParams);
+            if (!ro.ready()) {
+                if (reasonOut != null) reasonOut.append(ro.reason);
+                FileLog.info("gather 编队跳过 fpid={} queue#{}：{}", tc.fpid, plan.queueId, ro.reason);
+                return null;
+            }
+            Map<String, Object> payload = ro.formation.toFormationPayload();
+            if (payload == null || payload.isEmpty()) {
+                if (reasonOut != null) reasonOut.append("编队无可出征内容");
+                return null;
+            }
+            return payload;
+        } catch (Throwable t) {
+            if (reasonOut != null) {
+                reasonOut.append("编队异常：").append(ServerTasks.brief(String.valueOf(t.getMessage())));
+            }
+            FileLog.warn("gather 编队异常 fpid={} queue#{}：{}", tc.fpid, plan.queueId, String.valueOf(t));
+            return null;
+        }
+    }
+
+    /** 编队日志文案（ROLE#id / AUTOMATIC(40/30/30)）。 */
+    static String formationDesc(QueuePlan plan) {
+        if (plan == null || plan.formationParams == null) return "-";
+        String mode = plan.formationParams.optString("formation_mode", "");
+        if (GatherConfigV2.MODE_ROLE.equals(mode)) {
+            return "ROLE#" + plan.formationParams.optLong("formation_id", 0L);
+        }
+        JSONObject ratio = plan.formationParams.optJSONObject("ratio");
+        if (ratio == null) return mode.isEmpty() ? "AUTOMATIC" : mode;
+        return "AUTOMATIC(" + ratio.optLong("infantry", 0L) + "/"
+                + ratio.optLong("lancer", 0L) + "/" + ratio.optLong("marksman", 0L) + ")";
+    }
+
+    /**
+     * 单队列逐级搜索：从配置等级（已夹 maxLevel）递减到 1；2872/空 point 降级；
+     * 其它非 0 code 立即返回（调用方记录并跳过该队列）。每队列最多
+     * {@link #GATHER_MAX_SEARCHES_PER_QUEUE} 次请求。
+     */
+    static SearchOutcome searchQueueResource(WjdrEngine engine, QueuePlan plan) {
+        if (plan == null || plan.levels.isEmpty() || plan.resId <= 0) {
+            return new SearchOutcome(GATHER_SEARCH_EMPTY, 0, null);
+        }
+        int searches = Math.min(plan.levels.size(), GATHER_MAX_SEARCHES_PER_QUEUE);
+        SearchOutcome last = new SearchOutcome(GATHER_SEARCH_EMPTY, plan.topLevel(), null);
+        for (int i = 0; i < searches; i++) {
+            int level = plan.levels.get(i).intValue();
+            SearchOutcome so = searchGatherResource(engine, plan.resId, level, plan.fullResourceOnly);
+            if (so.found()) return so;
+            last = so;
+            // 2872=该级无矿；code=0 但无坐标=协议异常，均按“继续降级”处理；其它 code 记录并跳过该队列。
+            if (so.empty() || so.code == 0) continue;
+            return so;
+        }
+        return last;
+    }
+
+    /** 单级搜索（req_world_map_search；响应只有 code/point）。 */
+    static SearchOutcome searchGatherResource(WjdrEngine engine, int resId, int level,
+                                              boolean fullOnly) {
+        try {
+            GameMessage rsp = engine.request("req_world_map_search", Exec.args(
+                    "mapobj_type", 2L,
+                    "level_min", level,
+                    "level_max", level,
+                    "res_id", resId,
+                    "is_full", fullOnly));
+            if (rsp == null || rsp.getContent() == null) return new SearchOutcome(-1, level, null);
+            int code = Exec.codeOf(rsp);
+            if (code != 0) return new SearchOutcome(code, level, null);
+            return new SearchOutcome(0, level, searchPointOf(rsp.getContent()));
+        } catch (Throwable t) {
+            return new SearchOutcome(-1, level, null);
+        }
+    }
+
+    /** 搜索响应坐标（协议单对象 point；兼容 points/data/list 旧形状）。 */
+    static Map<String, Object> searchPointOf(Map<String, Object> content) {
+        if (content == null) return null;
+        Map<String, Object> point = Exec.mapOf(content.get("point"));
+        if (point != null && point.containsKey("x") && point.containsKey("y")) return point;
+        for (String k : new String[]{"points", "data", "list"}) {
+            for (Map<String, Object> p : Exec.mapsOf(content.get(k))) {
+                if (p.containsKey("x") && p.containsKey("y")) return p;
+            }
+        }
+        return null;
+    }
+
+    // ---------- v2 队列↔行军映射 / 槽位（纯函数） ----------
+
+    /** 状态键：队列↔行军映射（JSON {"nextQueueId":n,"map":{"1":marchId,...}}）。 */
+    static String gatherQueueKey(TaskContext tc) {
+        return "srv:gather:queues:" + tc.fpid + ":" + tc.sid;
+    }
+
+    /** 状态键：8619/8637 战锁退避截止（毫秒）。 */
+    static String gatherBackoffKey(TaskContext tc) {
+        return "srv:gather:backoff:" + tc.fpid + ":" + tc.sid;
+    }
+
+    /** 状态键：2878 本地队列满标记截止（毫秒）。 */
+    static String gatherLimitKey(TaskContext tc) {
+        return "srv:gather:limit:" + tc.fpid + ":" + tc.sid;
+    }
+
+    static QueueMapping parseQueueMapping(String raw) {
+        QueueMapping out = new QueueMapping();
+        if (raw == null || raw.trim().isEmpty()) return out;
+        try {
+            JSONObject o = new JSONObject(raw);
+            out.nextQueueId = GatherConfigV2.clampInt(
+                    o.optInt("nextQueueId", o.optInt("next_queue_id", 1)),
+                    1, GatherConfigV2.QUEUE_COUNT);
+            JSONObject map = o.optJSONObject("map");
+            if (map != null) {
+                List<Integer> ids = new ArrayList<Integer>();
+                for (String k : map.keySet()) {
+                    int id = parseInt(k);
+                    if (id >= 1 && id <= GatherConfigV2.QUEUE_COUNT) ids.add(id);
+                }
+                ids.sort(null);
+                for (Integer id : ids) {
+                    long marchId = map.optLong(String.valueOf(id), 0L);
+                    if (marchId > 0L) out.map.put(String.valueOf(id), Long.valueOf(marchId));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    static String encodeQueueMapping(QueueMapping mapping) {
+        QueueMapping m = mapping == null ? new QueueMapping() : mapping;
+        JSONObject map = new JSONObject();
+        List<Integer> ids = new ArrayList<Integer>();
+        for (String k : m.map.keySet()) {
+            int id = parseInt(k);
+            if (id >= 1 && id <= GatherConfigV2.QUEUE_COUNT) ids.add(id);
+        }
+        ids.sort(null);
+        for (Integer id : ids) {
+            Long marchId = m.map.get(String.valueOf(id));
+            if (marchId != null && marchId.longValue() > 0L) {
+                map.put(String.valueOf(id), marchId.longValue());
+            }
+        }
+        JSONObject o = new JSONObject();
+        o.put("nextQueueId", GatherConfigV2.clampInt(m.nextQueueId, 1, GatherConfigV2.QUEUE_COUNT));
+        o.put("map", map);
+        return o.toString();
+    }
+
+    /**
+     * 对账：只保留 type∈{4 普通采集,110 联盟矿} 且该 marchId 仍在资产库在途行军中（id 命中）
+     * 的映射；已结束的移除（1:1 网页版 activeMarches 重建 :621-625）。
+     */
+    static QueueMapping reconcileMapping(QueueMapping mapping,
+                                         List<AssetSnapshot.QueueMarch> marches) {
+        QueueMapping out = mapping == null ? new QueueMapping() : mapping.copy();
+        out.nextQueueId = GatherConfigV2.clampInt(out.nextQueueId, 1, GatherConfigV2.QUEUE_COUNT);
+        HashSet<Long> live = new HashSet<Long>();
+        if (marches != null) {
+            for (AssetSnapshot.QueueMarch march : marches) {
+                if (march == null) continue;
+                if (march.type == GATHER_MARCH_TYPE || march.type == GATHER_MINE_MARCH_TYPE) {
+                    live.add(Long.valueOf(march.id));
+                }
+            }
+        }
+        out.map.entrySet().removeIf(e -> !live.contains(e.getValue()));
+        return out;
+    }
+
+    /** 未绑定启用队列数（=下一步可派的新队列）。 */
+    static int unboundEnabledCount(GatherConfigV2 cfg, QueueMapping mapping) {
+        if (cfg == null) return 0;
+        int n = 0;
+        for (GatherConfigV2.QueueCfg q : cfg.enabledQueues()) {
+            if (mapping == null || !mapping.bound(q.id)) n++;
+        }
+        return n;
+    }
+
+    /**
+     * 本轮派队数：{@code min(idle, 未绑定启用队列数, effectiveQueueLimit(capacity, 0))}；
+     * limitReached → 0（1:1 网页版 normalQueueIdle）。
+     */
+    static int slotCount(GatherConfigV2 cfg, int idle, int unboundEnabledQueues,
+                         int worldCapacity, boolean limitReached) {
+        if (cfg == null || limitReached) return 0;
+        int effective = cfg.effectiveQueueLimit(worldCapacity, 0);
+        int slots = Math.min(Math.max(0, idle), Math.max(0, unboundEnabledQueues));
+        return Math.max(0, Math.min(slots, effective));
+    }
+
+    /** 环状找下一个未绑定启用队列（从 fromQueueId 起，含）；无则 null。 */
+    static GatherConfigV2.QueueCfg nextUnboundQueue(GatherConfigV2 cfg, QueueMapping mapping,
+                                                    int fromQueueId) {
+        if (cfg == null) return null;
+        QueueMapping m = mapping == null ? new QueueMapping() : mapping;
+        int start = GatherConfigV2.clampInt(fromQueueId, 1, GatherConfigV2.QUEUE_COUNT);
+        for (int i = 0; i < GatherConfigV2.QUEUE_COUNT; i++) {
+            int id = ((start - 1 + i) % GatherConfigV2.QUEUE_COUNT) + 1;
+            GatherConfigV2.QueueCfg q = cfg.queue(id);
+            if (q != null && q.enabled && !m.bound(id)) return q;
+        }
+        return null;
+    }
+
+    /** 队列游标 +1（6 → 1）＝网页版 queueAfter。 */
+    static int nextQueueIdAfter(int queueId) {
+        if (queueId < 1 || queueId > GatherConfigV2.QUEUE_COUNT) return 1;
+        return queueId >= GatherConfigV2.QUEUE_COUNT ? 1 : queueId + 1;
+    }
+
+    static void writeQueueMapping(TaskContext tc, QueueMapping mapping) {
+        try {
+            tc.store.putString(gatherQueueKey(tc), encodeQueueMapping(mapping));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 王国可采资源等级上限：资产库 clock.maxResourceLevel 优先，其次 kingdomDay 推导，未知=8。 */
+    static int gatherMaxResourceLevel(AssetSnapshot.Clock clock) {
+        if (clock != null) {
+            if (clock.maxResourceLevel > 0) {
+                return GatherConfigV2.clampInt(clock.maxResourceLevel, GatherConfigV2.MIN_LEVEL,
+                        GatherConfigV2.MAX_RESOURCE_LEVEL);
+            }
+            if (clock.kingdomDay > 0) {
+                return GatherConfigV2.maxLevelForKingdomDay(clock.kingdomDay);
+            }
+        }
+        return GATHER_DEFAULT_MAX_RESOURCE_LEVEL;
+    }
+
+    /** 特殊队列条数（仅展示；不参与普通队列空闲计算）。 */
+    static int specialQueueCount(AssetSnapshot.Queue queue) {
+        if (queue == null || queue.specialByType == null) return 0;
+        int n = 0;
+        for (Integer v : queue.specialByType.values()) {
+            if (v != null) n += v.intValue();
+        }
+        return n;
+    }
+
+    /** v2 续派唤醒：最早在途采集行军 endTime+250ms；无 → now+3s；封顶 now+180s。 */
+    static long gatherV2WakeMillis(long nowMillis, long earliestMarchEndMillis) {
+        if (earliestMarchEndMillis <= 0L) return nowMillis + GATHER_V2_WAKE_FALLBACK_MILLIS;
+        long wake = earliestMarchEndMillis + GATHER_WAKE_AFTER_END_MILLIS;
+        if (wake <= nowMillis) wake = nowMillis + GATHER_WAKE_AFTER_END_MILLIS;
+        return Math.min(nowMillis + GATHER_WAKE_CAP_MILLIS, wake);
+    }
+
+    /** 采集行军结束毫秒（秒/毫秒兼容，同 {@link #gatherMarchEndMillis} 口径）。 */
+    static long queueMarchEndMillis(AssetSnapshot.QueueMarch march) {
+        if (march == null || march.endTime <= 0L) return 0L;
+        return march.endTime >= 100_000_000_000L ? march.endTime : march.endTime * 1000L;
+    }
+
+    /** type=4/110 在途采集行军的最早结束毫秒（0=无）。 */
+    static long gatherV2EarliestMarchEndMillis(List<AssetSnapshot.QueueMarch> marches) {
+        long earliest = 0L;
+        if (marches == null) return 0L;
+        for (AssetSnapshot.QueueMarch march : marches) {
+            if (march == null) continue;
+            if (march.type != GATHER_MARCH_TYPE && march.type != GATHER_MINE_MARCH_TYPE) continue;
+            long end = queueMarchEndMillis(march);
+            if (end <= 0L) continue;
+            if (earliest == 0L || end < earliest) earliest = end;
+        }
+        return earliest;
+    }
+
+    /** 回灌 req_world_march 响应到资产库（可选：未接线/异常都不影响派队结果）。 */
+    private static void applyGatherResponse(CoreAssetLibrary lib, GameMessage march) {
+        if (lib == null || march == null || march.getContent() == null) return;
+        try {
+            lib.applyResponse("req_world_march", march.getContent());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** v2 任何出口都写续派唤醒（战锁退避时唤醒不早于退避截止，且仍受 180s 上限约束）。 */
+    private static TaskOutcome finishGatherV2(TaskContext tc, Exec.Multi m, CoreAssetLibrary lib) {
+        long now = System.currentTimeMillis();
+        long earliest = 0L;
+        try {
+            AssetSnapshot.Queue queue = lib == null ? null : lib.queue();
+            earliest = gatherV2EarliestMarchEndMillis(queue == null ? null : queue.marches);
+        } catch (Throwable ignored) {
+        }
+        long wake = gatherV2WakeMillis(now, earliest);
+        long backoffUntil = stateLongOf(tc, gatherBackoffKey(tc));
+        if (backoffUntil > now) {
+            wake = Math.min(now + GATHER_WAKE_CAP_MILLIS, Math.max(wake, backoffUntil));
+            if (wake <= now) wake = now + GATHER_V2_WAKE_FALLBACK_MILLIS;
+        }
+        writeGatherWake(tc, wake);
+        return Exec.result(m, "gather", "野外采集");
+    }
+
+    private static long secondsLeft(long nowMillis, long untilMillis) {
+        long remain = untilMillis - nowMillis;
+        return remain <= 0L ? 0L : (remain + 999L) / 1000L;
+    }
+
+    private static int parseInt(String raw) {
+        if (raw == null) return 0;
+        try {
+            return Integer.parseInt(raw.trim());
+        } catch (Throwable ignored) {
+            return 0;
+        }
     }
 
     // ---------- 情报任务 ----------

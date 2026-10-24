@@ -161,9 +161,10 @@ public final class FnDetail {
                 new Sub("redeposit", "原额续存", "取款后按原柜型原额续存（不新增钻石）", true, null));
 
         // ===== 野外 =====
+        // 批次12：采集改为独立「采集设置」页（GatherConfigV2 单一事实源：6 队列 × 资源/等级/编队/兵量），
+        // 原 any/full 策略 chips 已移除（旧 server 仍靠 v2 双写的 strategy.send 兼容，不再由本页写）。
         fn("gather",
-                new Sub("send", "自动采集", "搜索资源点并派出空闲队列（资源/等级/队列数见下方策略）", true,
-                        new String[][]{{"any", "任意存量"}, {"full", "只采满矿"}}));
+                new Sub("send", "自动采集", "按「采集设置」页的 6 队列配置搜索资源点并派出空闲队列", true, null));
         fn("adventure_sweep",
                 new Sub("sweep", "速刷关数", "已通关卡用快速战斗逐关推进；新关卡需手动战斗解锁一次", true,
                         new String[][]{{"5", "最多5关"}, {"10", "最多10关"}, {"20", "最多20关"}, {"50", "最多50关"}}));
