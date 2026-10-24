@@ -1002,12 +1002,50 @@ public final class VaultSync {
         void onResult(int code, String message, JSONObject data);
     }
 
+    /**
+     * 按 URL 选 OkHttp 客户端：生产端点（https://{@link #PROD_HOST}）走自签 pin 的
+     * {@link #HTTP_PINNED}，其它端点走系统 CA 校验的 {@link #HTTP}。
+     *
+     * <p>热更新等非签名 GET 端点复用本选择（HotConfig 默认更新源即生产 https 端点，
+     * 裸 OkHttpClient 会因自签证书握手失败）。
+     */
+    public static OkHttpClient clientFor(String url) {
+        return url != null && url.startsWith("https://" + PROD_HOST) ? HTTP_PINNED : HTTP;
+    }
+
+    /**
+     * GET 指定 URL 取文本（非签名端点用，如热更 hotconfig / 其它静态 JSON）。
+     *
+     * <p>与 {@link #post} 一致：网络异常返回 null（已落日志）；HTTP 非 2xx 仍返回响应体
+     * （保持旧 HotConfig 语义——服务端 404 信封由调用方按 JSON 判断），仅记告警。
+     *
+     * @param ctx 仅用于语义占位（端点解析与客户端选择都在内部完成）
+     * @param url 绝对 URL
+     * @return 响应体文本；网络/解析异常返回 null
+     */
+    public static String fetchText(Context ctx, String url) {
+        if (url == null || url.isEmpty()) return null;
+        try {
+            Request request = new Request.Builder().url(url).build();
+            try (Response response = clientFor(url).newCall(request).execute()) {
+                String text = response.body() == null ? "" : response.body().string();
+                if (!response.isSuccessful()) {
+                    Log.w(TAG, "fetchText 非 2xx http=" + response.code() + " url=" + url);
+                }
+                return text;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "fetchText 失败 url=" + url + ": " + t.getMessage());
+            return null;
+        }
+    }
+
     private static void post(Context app, String path, String op, Map<String, Object> fields,
                              Callback cb) {
         try {
             String body = buildSignedBody(op, fields);
-            String base = resolveBaseUrl(app);
-            OkHttpClient client = base.startsWith("https://" + PROD_HOST) ? HTTP_PINNED : HTTP;
+            String base = baseUrl(app);
+            OkHttpClient client = clientFor(base);
             Request request = new Request.Builder()
                     .url(base + path)
                     .post(RequestBody.create(JSON, body))
@@ -1068,9 +1106,12 @@ public final class VaultSync {
     }
 
     /**
-     * 端点解析：filesDir/vault_endpoint.txt 覆盖（adb run-as 写入，联调用）→ 默认同授权域。
+     * 端点解析（公开：热更等其它端点复用）：filesDir/vault_endpoint.txt 覆盖
+     * （adb run-as 写入，联调用）→ 默认 {@link #DEFAULT_BASE_URL}（生产 https 自签端点）。
+     *
+     * <p>返回值不含结尾斜杠，调用方直接拼 {@code /v1/vault/...}。
      */
-    static String resolveBaseUrl(Context ctx) {
+    public static String baseUrl(Context ctx) {
         try {
             File f = new File(ctx.getFilesDir(), "vault_endpoint.txt");
             if (f.exists() && f.isFile() && f.length() > 0 && f.length() < 512) {
