@@ -29,6 +29,7 @@ import java.util.concurrent.Executors;
  * POST /v1/vault/global-action   全局 login-all/stop-all（M1）
  * POST /v1/vault/watch   战争通知：监视名单增删改查/通知配置/测试通知（2026-10-22）
  * POST /v1/vault/events  战争通知事件游标同步（cursor 之后的新事件 + ackCursor）
+ * POST /v1/vault/monitor 真机监控：任务/协议/会话事件游标拉取 + 用户打点（2026-10-25）
  * GET  /v1/vault/hotconfig      热更配置（dataDir/hotconfig.json，{base} 替换为 scheme://Host）
  * GET  /v1/vault/app-latest.apk 整包下载（dataDir/download/app-latest.apk 流式返回）
  * GET  /healthz          探活
@@ -101,6 +102,8 @@ public final class VaultHttpApi {
         // 战争通知（2026-10-22）：监视名单/通知配置/测试通知 + 事件游标同步
         server.createContext("/v1/vault/watch", ex -> guard(ex, "POST", "vaultWatch", this::handleWatch));
         server.createContext("/v1/vault/events", ex -> guard(ex, "POST", "vaultEvents", this::handleEvents));
+        // 真机监控（2026-10-25）：后台任务级协议监控事件游标拉取 + 用户打点；默认 off（VAULT_MONITOR=on 才开）
+        server.createContext("/v1/vault/monitor", ex -> guard(ex, "POST", "vaultMonitor", this::handleMonitor));
         // 热更新自托管（2026-10-25）：App 默认更新源，无签名；详见 HotConfigRoutes
         server.createContext("/v1/vault/hotconfig",
                 ex -> HotConfigRoutes.serveHotConfig(ex, config.dataDir));
@@ -925,6 +928,16 @@ public final class VaultHttpApi {
         data.put("ackCursor", latest);
         data.put("serverTime", System.currentTimeMillis());
         return data;
+    }
+
+    /**
+     * POST /v1/vault/monitor：真机监控事件查询/打点/状态。
+     *
+     * <p>承载 {@link com.carlos.vaultserver.monitor.MonitorApi}；监控未启用时返回
+     * {@code {enabled:false}}，不抛异常（旧服务端 App 提示“不支持/未启用”）。
+     */
+    private JSONObject handleMonitor(Map<String, Object> fields) {
+        return com.carlos.vaultserver.monitor.MonitorApi.handle(fields);
     }
 
     private String sessionStateOf(String fpid) {

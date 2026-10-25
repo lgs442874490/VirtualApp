@@ -1,6 +1,8 @@
 package com.carlos.vaultserver.automation;
 
+import com.carlos.vaultserver.monitor.TaskTrace;
 import com.carlos.vaultserver.task.ServerTasks;
+import com.carlos.vaultserver.task.TaskContext;
 import com.carlos.vaultserver.task.TaskOutcome;
 
 import java.util.ArrayList;
@@ -139,16 +141,25 @@ public final class ModuleRegistry {
                 return r;
             }
             long t0 = System.currentTimeMillis();
+            // 真机监控（2026-10-25）：动作前后 task.start/task.end，只观测不改变结果/控制流
+            TaskContext traceTask = base == null ? null : base.task();
+            TaskTrace.Context trace = TaskTrace.begin(
+                    traceTask == null ? "" : traceTask.fpid,
+                    traceTask == null ? 0L : traceTask.sid,
+                    a.id, a.name, traceTask == null ? "" : traceTask.trigger);
+            TaskOutcome outcome = null;
             try {
-                TaskOutcome outcome = a.execute(base.task());
+                try {
+                    outcome = a.execute(base.task());
+                } catch (Throwable t) {
+                    // 与整轮一致：会话中断/异常保留 classifyException 分类。
+                    outcome = ServerTasks.classifyException(t, a.name);
+                }
                 outcome.durationMs = Math.max(0L, System.currentTimeMillis() - t0);
-                r.add(a.id, outcome);
-            } catch (Throwable t) {
-                // 与整轮一致：会话中断/异常保留 classifyException 分类。
-                TaskOutcome outcome = ServerTasks.classifyException(t, a.name);
-                outcome.durationMs = Math.max(0L, System.currentTimeMillis() - t0);
-                r.add(a.id, outcome);
+            } finally {
+                trace.end(outcome);
             }
+            r.add(a.id, outcome);
             return r;
         }
         r.add(actionId, new TaskOutcome(

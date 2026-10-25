@@ -900,9 +900,29 @@ public class WjdrEngine {
             } catch (Throwable ignored) {
             }
         }
-        GameMessage rsp = client.request(proto, args, timeout);
+        // 监控/诊断 IO 监听（真机监控 P0）：未注册监听器时零额外开销，且绝不改变请求语义
+        final boolean watch = !IO_LISTENERS.isEmpty();
+        final long t0 = watch ? System.nanoTime() : 0L;
+        if (watch) notifyIo(this, "req", proto, args, 0L, null);
+        GameMessage rsp;
+        try {
+            rsp = client.request(proto, args, timeout);
+        } catch (Throwable t) {
+            if (watch) {
+                notifyIo(this, "err", proto, null, elapsedMs(t0), t);
+            }
+            throw t;   // 原样抛出：不改变现有请求/恢复语义
+        }
         this.lastActivityAt = System.currentTimeMillis();
+        if (watch) {
+            notifyIo(this, "rsp", proto, rsp == null ? null : rsp.getContent(), elapsedMs(t0), null);
+        }
         return rsp;
+    }
+
+    /** 监听耗时（毫秒，非负）。 */
+    private static long elapsedMs(long startNanos) {
+        return Math.max(0L, (System.nanoTime() - startNanos) / 1_000_000L);
     }
 
     /**
@@ -970,6 +990,55 @@ public class WjdrEngine {
     /** 原样消息钩子：互助响应等常驻监听（与 notifies 收集并行，不替换）。 */
     public void addMessageHook(java.util.function.BiConsumer<String, Map<String, Object>> hook) {
         if (hook != null) messageHooks.add(hook);
+    }
+
+    // ================= 协议 IO 监听（真机监控 P0 2026-10-25） =================
+
+    /**
+     * 协议 IO 监听器：每次 {@code lockedRequest} 发出前（{@code req}）、成功后（{@code rsp}）、
+     * 异常时（{@code err}）回调，供服务端任务级监控（TaskTrace）/真机诊断使用。
+     *
+     * <p>约定：{@code direction} ∈ {@code "req"} / {@code "rsp"} / {@code "err"}；
+     * {@code body} 对 req 为出站参数、对 rsp 为响应 content、对 err 为 {@code null}；
+     * {@code durMs} 为本次请求耗时（req 固定 0）；{@code error} 仅 err 非空。
+     *
+     * <p><b>实现约束</b>：监听器自身必须快、必须自行吞异常；引擎分发侧也会兜底，
+     * 任何监听器异常都不得影响请求本身。未注册监听器时请求路径零额外开销。
+     */
+    public interface IoListener {
+        void onIo(WjdrEngine engine, String direction, String proto,
+                  Map<String, Object> body, long durMs, Throwable error);
+    }
+
+    /** IO 监听注册表（进程级；App 与服务端共用）。 */
+    private static final java.util.concurrent.CopyOnWriteArrayList<IoListener> IO_LISTENERS =
+            new java.util.concurrent.CopyOnWriteArrayList<>();
+
+    /** 注册 IO 监听（重复注册同一实例会收到多次回调，调用方自行去重）。 */
+    public static void addIoListener(IoListener listener) {
+        if (listener != null) IO_LISTENERS.add(listener);
+    }
+
+    /** 注销 IO 监听。 */
+    public static void removeIoListener(IoListener listener) {
+        if (listener != null) IO_LISTENERS.remove(listener);
+    }
+
+    /** 是否注册了 IO 监听（监控层/单测可用；未注册时请求走零开销分支）。 */
+    public static boolean hasIoListeners() {
+        return !IO_LISTENERS.isEmpty();
+    }
+
+    /** 分发一次 IO 事件：逐监听器 try/catch，异常绝不外溢到请求/任务线程。 */
+    public static void notifyIo(WjdrEngine engine, String direction, String proto,
+                                Map<String, Object> body, long durMs, Throwable error) {
+        for (IoListener listener : IO_LISTENERS) {
+            try {
+                listener.onIo(engine, direction, proto, body, durMs, error);
+            } catch (Throwable ignored) {
+                // 监听器（监控）异常绝不影响请求本身
+            }
+        }
     }
 
     /** 上次登录得到的 uid（未登录为 0） */

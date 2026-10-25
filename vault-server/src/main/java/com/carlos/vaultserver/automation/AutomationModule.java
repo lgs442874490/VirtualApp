@@ -1,5 +1,6 @@
 package com.carlos.vaultserver.automation;
 
+import com.carlos.vaultserver.monitor.TaskTrace;
 import com.carlos.vaultserver.task.ServerTasks;
 import com.carlos.vaultserver.task.TaskContext;
 import com.carlos.vaultserver.task.TaskOutcome;
@@ -43,16 +44,24 @@ public interface AutomationModule {
                         TaskOutcome.Category.SKIPPED, "配置未启用"));
                 continue;
             }
-            TaskOutcome outcome;
+            TaskOutcome outcome = null;
             long t0 = System.currentTimeMillis();
+            // 真机监控（2026-10-25）：每个 action 前后 task.start/task.end，只观测不改变结果/控制流
+            TaskContext traceTask = ctx.task();
+            TaskTrace.Context trace = TaskTrace.begin(traceTask.fpid, traceTask.sid,
+                    action.id, action.name, traceTask.trigger);
             try {
-                outcome = action.execute(ctx.task());
-            } catch (Throwable t) {
-                // 保留旧 RoundRunner 的分类口径：会话中断不能被吞成普通 ERROR，
-                // 否则整轮无法按“断线可重试”的 SESSION_CLOSED 语义截断并落 st=1。
-                outcome = ServerTasks.classifyException(t, action.name);
+                try {
+                    outcome = action.execute(traceTask);
+                } catch (Throwable t) {
+                    // 保留旧 RoundRunner 的分类口径：会话中断不能被吞成普通 ERROR，
+                    // 否则整轮无法按“断线可重试”的 SESSION_CLOSED 语义截断并落 st=1。
+                    outcome = ServerTasks.classifyException(t, action.name);
+                }
+                outcome.durationMs = Math.max(0L, System.currentTimeMillis() - t0);
+            } finally {
+                trace.end(outcome);
             }
-            outcome.durationMs = Math.max(0L, System.currentTimeMillis() - t0);
             result.add(action.id, outcome);
             if (outcome.category == TaskOutcome.Category.SESSION_CLOSED) break;
         }

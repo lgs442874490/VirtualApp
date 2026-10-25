@@ -935,6 +935,10 @@ public final class ServerTasks {
     static TaskOutcome supplyRewards(TaskContext tc) throws Exception {
         StringBuilder sb = new StringBuilder();
         boolean anyDegraded = false;
+        // 2026-10-25 P1 修复：是否“真领到”必须由各子项成功分支显式置位，不能用文案里是否出现
+        // “已领取”做判定——6158 的跳过文案本身就是“本窗口已领取”，会把“没领到”误判成 CLAIMED
+        // （生产实证：12/12 次 CLAIMED 中 10 次两子项全是 6158、rewards 为空）。
+        boolean anyClaimed = false;
         boolean onOnline = tc.subOn("supply", "online", true);
         boolean onSpec = tc.subOn("supply", "spec", true);
         String strat = tc.strategy("supply", "spec", "now");
@@ -956,6 +960,7 @@ public final class ServerTasks {
                             String d = descRewards(online.getContent().get("online_reward"));
                             sb.append("普通补给已领取").append(d).append("; ");
                             subs.put("online", "ok:已领" + d);
+                            anyClaimed = true;
                             if (!d.isEmpty()) rewardParts.append("普通补给：").append(d).append("；");
                         } else {
                             sb.append("普通补给暂不可领; ");
@@ -994,6 +999,7 @@ public final class ServerTasks {
                                 String d = descRewards(spec.getContent().get("spec_reward"));
                                 sb.append("体力补给已领取").append(d).append("; ");
                                 subs.put("spec", "ok:已领" + d);
+                                anyClaimed = true;
                                 if (!d.isEmpty()) rewardParts.append("体力补给：").append(d).append("；");
                             } else {
                                 sb.append("体力补给暂不可领; ");
@@ -1025,7 +1031,7 @@ public final class ServerTasks {
             long supplyWakeAt = safeNextWakeAtMillis(System.currentTimeMillis(),
                     supplyNextWakeAtMillis(tc.modState("supply")));
             String msg = sb.length() == 0 ? "无结果" : sb.substring(0, sb.length() - 2);
-            boolean claimed = msg.contains("已领取");
+            boolean claimed = anyClaimed;
             TaskOutcome sr = new TaskOutcome("supply", "仓库补给",
                     anyDegraded ? TaskOutcome.Category.DEGRADED
                             : (claimed ? TaskOutcome.Category.CLAIMED : TaskOutcome.Category.SKIPPED),
@@ -2977,6 +2983,8 @@ public final class ServerTasks {
             int claimed = 0, skipped = 0, failed = 0;
             boolean trophyLimitHit = false;
             StringBuilder detail = new StringBuilder();
+            // 2026-10-25：失败码入文案（生产 7 次 ERROR 只写“宝箱失败×1”，无法定位是 1540 还是别的）
+            java.util.TreeSet<Integer> failCodes = new java.util.TreeSet<>();
             for (Map<String, Object> chest : chests.values()) {
                 if (truthy(chest.get("receive"))) {
                     skipped++;
@@ -3013,6 +3021,7 @@ public final class ServerTasks {
                     skipped++;
                 } else {
                     failed++;
+                    failCodes.add(code);
                 }
             }
             TaskOutcome r;
@@ -3021,7 +3030,8 @@ public final class ServerTasks {
                         TaskOutcome.Category.CLAIMED, "联盟宝箱领取×" + claimed + " " + detail);
             } else if (failed > 0) {
                 r = new TaskOutcome("alliance_chest", "联盟宝箱",
-                        TaskOutcome.Category.ERROR, "宝箱失败×" + failed);
+                        TaskOutcome.Category.ERROR,
+                        "宝箱失败×" + failed + (failCodes.isEmpty() ? "" : "（码" + failCodes + "）"));
             } else {
                 String why = trophyLimitHit ? "战利品宝箱已达 500/日上限" : "暂无可领取的宝箱";
                 r = new TaskOutcome("alliance_chest", "联盟宝箱",
@@ -3743,7 +3753,9 @@ public final class ServerTasks {
 
             // ---------- 1) 原生自动上车（既有行为保留；失败只记录，不阻断每日发起/手工上车兜底） ----------
             BehemothAutoJoin autoJoin = behemothAutoJoin(tc, cfg);
-            if (autoJoin.on) m.claimed(autoJoin.text);
+            // 资产库已知“已开启”=无任何动作，按 SKIPPED 记录（不制造假领取）；
+            // 真正发过开启请求并 code=0 才计 CLAIMED。
+            if (autoJoin.on && !autoJoin.noop) m.claimed(autoJoin.text);
             else m.skip(autoJoin.text);
 
             // ---------- 2) 体力（只读推送 notify_recover_resource_*；未知一律 SKIP） ----------
@@ -3789,6 +3801,11 @@ public final class ServerTasks {
 
     static final class BehemothAutoJoin {
         boolean on;
+        /**
+         * 仅“资产库判定已开启”而无任何实际动作（2026-10-25 P2 修复）：这种情况不产生游戏效果，
+         * 不能算领取（生产实证 17/17 次 CLAIMED 但窗口内 0 个请求）。
+         */
+        boolean noop;
         String text = "";
     }
 
@@ -3807,7 +3824,8 @@ public final class ServerTasks {
                 long nowSec = lib.clock().serverNowSec();
                 if (autoJoinActive(aj, cfg.autoJoinIds, nowSec)) {
                     out.on = true;
-                    out.text = "自动上车已开启(巨兽/死神/巨熊)（资产库）";
+                    out.noop = true;
+                    out.text = "自动上车已开启(巨兽/死神/巨熊)（资产库，无需操作）";
                     tc.saveModText("behemoth", "auto_join", "原生自动上车：已开启（资产库）");
                     return out;
                 }
