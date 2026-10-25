@@ -21,6 +21,7 @@ import java.util.Map;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -268,6 +269,33 @@ public class ServerGuardianEngineTest {
         assertEquals(1, c.squadIndex);
         assertFalse(c.hasTargetPoint());
         assertEquals(ServerGuardianEngine.DEFAULT_D_SEC, c.dSec);
+    }
+
+    @Test
+    public void parseConfig_envGrayOverrides() {
+        try {
+            System.clearProperty("VAULT_GUARDIAN_SPEEDUP");
+            System.clearProperty("VAULT_GUARDIAN_DIAMOND");
+            JSONObject p = new JSONObject("{\"sub\":{\"enabled\":true,\"dry_run\":false}}");
+            ServerGuardianEngine.Config base = ServerGuardianEngine.parseConfig(p);
+            assertFalse("env 未设置：以 roleParams 为准（默认关）", base.speedupEnabled);
+            assertFalse(base.diamondSpeedupEnabled);
+
+            System.setProperty("VAULT_GUARDIAN_SPEEDUP", "1");
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "on");
+            ServerGuardianEngine.Config gray = ServerGuardianEngine.parseConfig(p);
+            assertTrue("env 灰度开启对等加速", gray.speedupEnabled);
+            assertTrue("env 灰度开启钻石（慎用）", gray.diamondSpeedupEnabled);
+
+            System.setProperty("VAULT_GUARDIAN_SPEEDUP", "maybe");
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "0");
+            ServerGuardianEngine.Config bad = ServerGuardianEngine.parseConfig(p);
+            assertFalse("非法 env 忽略 → 沿用 roleParams", bad.speedupEnabled);
+            assertFalse("显式 0 可强制关闭钻石", bad.diamondSpeedupEnabled);
+        } finally {
+            System.clearProperty("VAULT_GUARDIAN_SPEEDUP");
+            System.clearProperty("VAULT_GUARDIAN_DIAMOND");
+        }
     }
 
     @Test
@@ -960,6 +988,417 @@ public class ServerGuardianEngineTest {
         assertTrue("describe 回显 force_online", d.contains("force_online=true"));
         assertTrue("describe 回显 troops_min", d.contains("troops_min=5000"));
         assertTrue(d.contains("threats=0"));
+        engine.shutdown();
+    }
+
+    // ======================= 6. P1：对等加速接线 =======================
+
+    /** 背包道具推送（notify_backpack_init data=[{id,count}]；生产形状实证）。 */
+    private static void presetSpeedupStock(TestEngine e, long n25, long n50) {
+        List<Map<String, Object>> data = new ArrayList<>();
+        if (n25 > 0) data.add(new LinkedHashMap<>(Map.of("id", 301900L, "count", n25)));
+        if (n50 > 0) data.add(new LinkedHashMap<>(Map.of("id", 301901L, "count", n50)));
+        Map<String, Object> bp = new LinkedHashMap<>();
+        bp.put("data", data);
+        e.notifies.put("notify_backpack_init", bp);
+    }
+
+    /** 加速响应：{code:0, endtime:新到达服务器秒}（A-15 实证形状）。 */
+    private static GameMessage speedupOk(long endtimeSec) {
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("code", 0);
+        c.put("endtime", endtimeSec);
+        GameMessage m = new GameMessage();
+        m.setContent(c);
+        return m;
+    }
+
+    private static int requestCount(TestEngine e, String proto) {
+        int n = 0;
+        for (String p : e.requested) {
+            if (proto.equals(p)) n++;
+        }
+        return n;
+    }
+
+    /** 清空请求留痕（只看某事件之后的请求序列）。 */
+    private static void clearRequests(TestEngine e) {
+        e.requested.clear();
+        e.argLog.clear();
+    }
+
+    private static Map<String, Object> lastArgsOf(TestEngine e, String proto) {
+        for (int i = e.requested.size() - 1; i >= 0; i--) {
+            if (proto.equals(e.requested.get(i))) return e.argLog.get(i);
+        }
+        return null;
+    }
+
+    private JSONObject ledgerEvent(String ev) {
+        String raw = ledgerRaw();
+        if (raw == null) return null;
+        JSONArray arr = new JSONArray(raw);
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.getJSONObject(i);
+            if (ev.equals(o.optString("ev"))) return o;
+        }
+        return null;
+    }
+
+    private static final String SPEEDUP_CFG =
+            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true},"
+                    + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}";
+
+    /** 发射一单 type=5 驻防（enemyEnd 已入威胁表、mission 已在册）。 */
+    private ServerGuardianEngine launchForSpeedup(TestEngine e, long enemyEndSec, long ourEndSec) {
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, ourEndSec));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                attackPush(13080L, ENEMY_UID, 1001L, enemyEndSec, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+        return engine;
+    }
+
+    @Test
+    public void parseConfig_speedupKeys_defaultsOff() {
+        ServerGuardianEngine.Config def = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"sub\":{\"enabled\":true}}"));
+        assertFalse("speedup_enabled 默认关（关闭时零请求零行为变化）", def.speedupEnabled);
+        assertFalse("diamond_speedup_enabled 默认关（默认零钻石硬约束）", def.diamondSpeedupEnabled);
+        assertEquals("speedup_margin_s 默认 2s", 2L, def.speedupMarginS);
+        assertEquals("max_speedups_per_march 默认 0=不限", 0, def.maxSpeedupsPerMarch);
+        assertEquals("diamond_max_per_march 默认 3", 3, def.diamondMaxPerMarch);
+        assertTrue(def.describe().contains("speedup=false"));
+        assertTrue(def.describe().contains("diamond_speedup=false"));
+        assertTrue(def.describe().contains("diamond_max=3"));
+
+        ServerGuardianEngine.Config on = ServerGuardianEngine.parseConfig(new JSONObject(
+                "{\"sub\":{\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                        + "\"strategy\":{\"speedup_margin_s\":3,\"max_speedups_per_march\":4,"
+                        + "\"diamond_max_per_march\":5}}"));
+        assertTrue(on.speedupEnabled);
+        assertTrue(on.diamondSpeedupEnabled);
+        assertEquals(3L, on.speedupMarginS);
+        assertEquals(4, on.maxSpeedupsPerMarch);
+        assertEquals(5, on.diamondMaxPerMarch);
+        assertTrue(on.describe().contains("speedup=true"));
+        assertTrue(on.describe().contains("max_speedups=4"));
+        assertTrue(on.describe().contains("diamond_max=5"));
+
+        // diamond_max_per_march：0=不限；负数=非法回落默认 3
+        assertEquals("0=不限", 0, ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"strategy\":{\"diamond_max_per_march\":0}}")).diamondMaxPerMarch);
+        assertEquals("负数非法回落默认 3", 3, ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"strategy\":{\"diamond_max_per_march\":-1}}")).diamondMaxPerMarch);
+
+        // 界外/非法值回落默认（防配置错误把 margin 当负/无限）
+        ServerGuardianEngine.Config bad = ServerGuardianEngine.parseConfig(new JSONObject(
+                "{\"strategy\":{\"speedup_margin_s\":999,\"max_speedups_per_march\":-3}}"));
+        assertEquals(2L, bad.speedupMarginS);
+        assertEquals(0, bad.maxSpeedupsPerMarch);
+
+        // 顶层扁平/字符串数字兼容（roleParams 三处 first(sub,strategy,top) 同口径）
+        ServerGuardianEngine.Config flat = ServerGuardianEngine.parseConfig(new JSONObject(
+                "{\"speedup_enabled\":\"true\",\"speedup_margin_s\":\"5\"}"));
+        assertTrue(flat.speedupEnabled);
+        assertEquals(5L, flat.speedupMarginS);
+    }
+
+    @Test
+    public void speedupDisabled_compressionNoSpeedupRequest() {
+        // 默认 speedup_enabled=false：即使敌加速、道具充足，也必须零加速请求（零行为变化）
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 10);
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 120L);
+        assertEquals("驻防已在册", 1, engine.missionCount());
+
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 95L, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("speedup_enabled=false → 零加速请求", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        assertEquals("默认零钻石", 0, requestCount(e, "req_shop_quick_buy"));
+        assertEquals("威胁仍在", 1, engine.threatCount());
+        engine.shutdown();
+    }
+
+    @Test
+    public void speedupEnabled_compressionSends25Percent() {
+        accountWithParams(SPEEDUP_CFG);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 5);
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 120L);
+
+        // 敌方压缩 120→95：我方 25% 后 ~90s，敌剩 ~95s → 领先 ≥2s，一发一阶足够
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 88L));
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 95L, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("应发 1 次加速（25% 够用不升 50%）", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        Map<String, Object> args = lastArgsOf(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP);
+        assertNotNull(args);
+        assertEquals("加速目标=我方驻防 marchId", 555L, ((Number) args.get("id")).longValue());
+        assertEquals("一阶 25% itemid", 301900L, ((Number) args.get("itemid")).longValue());
+        assertEquals("owner 必须是字符串 uid（A-15 实证）", "1001", args.get("owner"));
+
+        JSONObject ev = ledgerEvent("speedup");
+        assertNotNull("加速必须有账本", ev);
+        assertEquals(301900L, ev.getLong("itemid"));
+        assertEquals("成功后本地库存递减", 9L, ev.getLong("stock25"));
+        assertEquals(5L, ev.getLong("stock50"));
+        assertEquals(nowS + 88L, ev.getLong("ownEndSec"));
+
+        // 同一压缩态重复推送：不重复发（幂等，防请求风暴）
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 95L, 679, 686));
+        engine.awaitIdleForTest(2_000L);
+        assertEquals("重复压缩态不重复发", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        engine.shutdown();
+    }
+
+    @Test
+    public void speedupEnabled_no25StockSends50Percent() {
+        accountWithParams(SPEEDUP_CFG);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 0, 5);   // 25% 库存 0 → 按规则升 50%
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 120L);
+
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 60L));
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 95L, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals(1, requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        Map<String, Object> args = lastArgsOf(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP);
+        assertNotNull(args);
+        assertEquals("25% 无库存 → 二阶 50% itemid", 301901L, ((Number) args.get("itemid")).longValue());
+        JSONObject ev = ledgerEvent("speedup");
+        assertNotNull(ev);
+        assertEquals(4L, ev.getLong("stock50"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void diamondSwitchOff_zeroQuickBuyEvenWhenNoItems() {
+        // 默认 diamond_speedup_enabled=false：即使道具为 0，也不得有任何 quick_buy（硬约束零钻石）
+        accountWithParams(SPEEDUP_CFG);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 0, 0);   // 道具耗尽
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 120L);
+        clearRequests(e);   // 只看压缩事件之后的请求序列
+
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 95L, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+
+        assertTrue("开关关闭：请求序列必须为空（无 quick_buy/无 speedup）；实际=" + e.requested,
+                e.requested.isEmpty());
+        assertEquals("默认零钻石：绝不发 quick_buy", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+        JSONObject skip = ledgerEvent("speedup_skip");
+        assertNotNull("诚实止损必须记账", skip);
+        assertEquals("stock_insufficient", skip.getString("reason"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void diamondSwitchOn_buysThenUses50Percent() {
+        // 开关打开 + 道具 0 + 购买成功：请求序列必须是 quick_buy(301901,count=1) → speedup(301901)
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 0, 0);
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 120L);
+        clearRequests(e);
+        e.responses.put(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, msg(0));
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 60L));
+
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 80L, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+
+        // 请求序列：先买后加速（与 App「买完同一轮 speedup」同序）
+        List<String> seq = new ArrayList<>(e.requested);
+        assertEquals("请求序列=quick_buy → speedup；实际=" + seq, 2, seq.size());
+        assertEquals(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, seq.get(0));
+        assertEquals(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, seq.get(1));
+        Map<String, Object> buyArgs = e.argLog.get(0);
+        assertEquals("App 实证 use=false", Boolean.FALSE, buyArgs.get("use"));
+        assertEquals("买二阶 50%", 301901L, ((Number) buyArgs.get("id")).longValue());
+        assertEquals("一次买 1 颗", 1L, ((Number) buyArgs.get("count")).longValue());
+        Map<String, Object> spArgs = e.argLog.get(1);
+        assertEquals("买到的 301901 立即用于加速", 301901L, ((Number) spArgs.get("itemid")).longValue());
+
+        JSONObject buy = ledgerEvent("speedup_diamond_buy");
+        assertNotNull("购买成功必须记账", buy);
+        assertEquals(301901L, buy.getLong("itemid"));
+        assertEquals("花费 1 颗", 1L, buy.getLong("buyCount"));
+        assertEquals("本行军累计购买 1", 1, buy.getInt("diamondBought"));
+        assertEquals("购买后库存记账 +1", 1L, buy.getLong("stock50"));
+        JSONObject sp = ledgerEvent("speedup");
+        assertNotNull(sp);
+        assertEquals("用掉后库存回 0", 0L, sp.getLong("stock50"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void diamondBuyFailure_terminatesChainWithoutSpeedup() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 0, 0);
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 120L);
+        clearRequests(e);
+        e.responses.put(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, msg(1002));   // 购买失败码
+
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 95L, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("失败不做第二次购买（单发不重试）", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+        assertEquals("购买失败不发加速", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        JSONObject fail = ledgerEvent("speedup_diamond_buy_failed");
+        assertNotNull("失败必须记账", fail);
+        assertEquals(1002, fail.getInt("code"));
+        assertEquals("失败不扣库存", 0L, fail.getLong("stock50"));
+        assertEquals(0, fail.getInt("diamondBought"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void diamondMaxPerMarch_one_stopsBeforeSecondBuy() {
+        // 一颗 50% 不足以先到（我方 120s vs 敌 10s）：第一次购买后使用，第二次需要购买时止损不超买
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]},"
+                + "\"diamond_max_per_march\":1}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 0, 0);
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 120L);
+        clearRequests(e);
+        e.responses.put(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, msg(0));
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 60L));
+
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 10L, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("diamond_max_per_march=1 → 只买 1 颗", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+        assertEquals("第一颗立即使用 1 次", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        JSONObject stop = ledgerEvent("speedup_diamond_skip");
+        assertNotNull("超限必须记账", stop);
+        assertEquals("diamond_limit", stop.getString("reason"));
+        assertEquals(1, stop.getInt("diamondBought"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void diamondSwitchOn_25PercentPreferred_noBuy() {
+        // 有 25% 道具时优先 25%（成本优先），绝不触发钻石购买
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 0);
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 120L);
+        clearRequests(e);
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 88L));
+
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 95L, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("有 25% 道具 → 零 quick_buy", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+        assertEquals(1, requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        Map<String, Object> args = lastArgsOf(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP);
+        assertNotNull(args);
+        assertEquals("成本优先：用一阶 25%", 301900L, ((Number) args.get("itemid")).longValue());
+        engine.shutdown();
+    }
+
+    @Test
+    public void speedupMaxPerMarch_capsRequests() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]},"
+                + "\"max_speedups_per_march\":1}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 0);   // 纯 25% 需 2 发，但上限 1 → 无法保证先到 → 诚实止损不发
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 120L);
+
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 90L));
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 80L, 679, 686));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("上限 1 发不足以保证先到 → 不浪费道具", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        JSONObject skip = ledgerEvent("speedup_skip");
+        assertNotNull(skip);
+        assertEquals("limit_prevents_ahead", skip.getString("reason"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void speedupWithoutMission_noRequest() {
+        // dry_run=true → 不发射 → 无我方驻防在途；敌加速时不得发加速请求
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":true,\"speedup_enabled\":true},"
+                + "\"strategy\":{\"ally_uid\":1001}}");
+        TestEngine e = new TestEngine();
+        presetSpeedupStock(e, 10, 10);
+        long nowS = System.currentTimeMillis() / 1000L;
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 120L, 679, 686));
+        engine.awaitIdleForTest(2_000L);
+        assertEquals("dry_run 无在途驻防任务", 0, engine.missionCount());
+
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 95L, 679, 686));
+        engine.awaitIdleForTest(2_000L);
+        assertTrue("无我方在途驻防 → 零请求", e.requested.isEmpty());
+        assertNull(ledgerEvent("speedup_dry"));
         engine.shutdown();
     }
 }

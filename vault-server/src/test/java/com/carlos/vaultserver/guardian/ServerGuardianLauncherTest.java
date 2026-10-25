@@ -31,6 +31,10 @@ public class ServerGuardianLauncherTest {
         final Deque<GameMessage> marchResponses = new ArrayDeque<>();
         final List<String> requested = new ArrayList<>();
         final List<Map<String, Object>> argLog = new ArrayList<>();
+        /** P1：加速响应（{code,endtime}）。 */
+        GameMessage speedupResponse;
+        /** P1：钻石购买响应（{code}）。 */
+        GameMessage quickBuyResponse;
 
         TestEngine() {
             super(null);
@@ -43,6 +47,19 @@ public class ServerGuardianLauncherTest {
             if (ServerGuardianLauncher.PROTO_WORLD_MARCH.equals(proto)) {
                 GameMessage m = marchResponses.pollFirst();
                 return m;
+            }
+            return null;
+        }
+
+        @Override
+        public GameMessage request(String proto, Map<String, Object> args, int timeoutSec) {
+            requested.add(proto);
+            argLog.add(args);
+            if (ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP.equals(proto)) {
+                return speedupResponse;
+            }
+            if (ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY.equals(proto)) {
+                return quickBuyResponse;
             }
             return null;
         }
@@ -252,7 +269,134 @@ public class ServerGuardianLauncherTest {
         assertEquals("目标不同盟", ServerGuardianLauncher.classifyCodeText(1510));
         assertEquals("同城已有我方援助", ServerGuardianLauncher.classifyCodeText(2814));
         assertEquals("行军不存在", ServerGuardianLauncher.classifyCodeText(2806));
+        assertEquals("加速道具不足", ServerGuardianLauncher.classifyCodeText(2827));
         assertNotNull(ServerGuardianLauncher.classifyCodeText(9999));
         assertTrue(ServerGuardianLauncher.classifyCodeText(9999).contains("9999"));
+    }
+
+    // ---------------- P1：对等加速（req_world_march_speedup） ----------------
+
+    @Test
+    public void speedupArgs_shapeMatchesAppEvidence() {
+        Map<String, Object> args = ServerGuardianLauncher.buildSpeedupArgs(555L, 301900L, 1001L);
+        assertEquals("id = 我方行军号", 555L, ((Number) args.get("id")).longValue());
+        assertEquals("itemid = 301900/301901", 301900L, ((Number) args.get("itemid")).longValue());
+        Object owner = args.get("owner");
+        assertTrue("owner 必须是字符串 uid（A-15 实证）", owner instanceof String);
+        assertEquals("1001", owner);
+        assertTrue("marchId 非法不猜", !ServerGuardianLauncher.buildSpeedupArgs(0L, 0L, 1L).containsKey("id"));
+    }
+
+    @Test
+    public void speedup_successParsesEndtime() {
+        long end = 1_792_760_400L;
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("code", 0);
+        c.put("endtime", end);
+        engine.speedupResponse = content(c);
+
+        ServerGuardianLauncher.SpeedupResult r = new ServerGuardianLauncher()
+                .speedup(engine, 555L, 301900L);
+
+        assertTrue("code=0 即受理", r.ok);
+        assertEquals(0, r.code);
+        assertEquals("响应 endtime 是加速后权威到达时刻", end, r.endtimeSec);
+        assertEquals("只发一次（不重试）", 1, engine.requested.size());
+        assertEquals(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, engine.requested.get(0));
+        Map<String, Object> args = engine.argLog.get(0);
+        assertEquals(555L, ((Number) args.get("id")).longValue());
+        assertEquals(301900L, ((Number) args.get("itemid")).longValue());
+        assertTrue(args.get("owner") instanceof String);
+    }
+
+    @Test
+    public void speedup_itemShortageKeepsRawCode() {
+        engine.speedupResponse = msg(ServerGuardianLauncher.CODE_ITEM_SHORTAGE);
+        ServerGuardianLauncher.SpeedupResult r = new ServerGuardianLauncher()
+                .speedup(engine, 555L, 301901L);
+        assertFalse("2827=道具不足，不算成功", r.ok);
+        assertEquals(ServerGuardianLauncher.CODE_ITEM_SHORTAGE, r.code);
+        assertTrue("分类文案可读", r.text.contains("加速道具不足"));
+    }
+
+    @Test
+    public void speedup_invalidArgs_noRequest() {
+        ServerGuardianLauncher launcher = new ServerGuardianLauncher();
+        assertFalse(launcher.speedup(engine, 0L, 301900L).ok);
+        assertFalse(launcher.speedup(engine, 555L, 0L).ok);
+        assertFalse(launcher.speedup(null, 555L, 301900L).ok);
+        assertTrue("参数不完整时不发任何请求", engine.requested.isEmpty());
+    }
+
+    @Test
+    public void speedup_requestException_noCrash() {
+        TestEngine bad = new TestEngine() {
+            @Override
+            public GameMessage request(String proto, Map<String, Object> args, int timeoutSec) {
+                throw new IllegalStateException("连接已关闭");
+            }
+        };
+        ServerGuardianLauncher.SpeedupResult r = new ServerGuardianLauncher()
+                .speedup(bad, 555L, 301900L);
+        assertFalse(r.ok);
+        assertEquals(ServerGuardianLauncher.CODE_LOCAL_ERROR, r.code);
+    }
+
+    // ---------------- P1：钻石快捷购买（req_shop_quick_buy） ----------------
+
+    @Test
+    public void quickBuyArgs_shapeMatchesAppEvidence() {
+        Map<String, Object> args = ServerGuardianLauncher.buildQuickBuyArgs(301901L, 1L);
+        assertEquals("App 实证 use=false（只买不用）", Boolean.FALSE, args.get("use"));
+        assertEquals(301901L, ((Number) args.get("id")).longValue());
+        assertEquals(1L, ((Number) args.get("count")).longValue());
+        assertEquals("App 实证 8s 超时", 8, ServerGuardianLauncher.QUICK_BUY_TIMEOUT_SEC);
+        assertEquals(301901L, ServerGuardianLauncher.DIAMOND_BUY_ITEM_ID);
+    }
+
+    @Test
+    public void quickBuy_successAndFailureKeepRawCode() {
+        engine.quickBuyResponse = msg(0);
+        ServerGuardianLauncher.QuickBuyResult ok = new ServerGuardianLauncher()
+                .quickBuy(engine, 301901L, 1L);
+        assertTrue("code=0 视为购买成功（301901 入背包）", ok.ok);
+        assertEquals(0, ok.code);
+        assertEquals(301901L, ok.itemId);
+        assertEquals("单发不重试", 1, engine.requested.size());
+        assertEquals(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, engine.requested.get(0));
+        Map<String, Object> args = engine.argLog.get(0);
+        assertEquals(Boolean.FALSE, args.get("use"));
+        assertEquals(301901L, ((Number) args.get("id")).longValue());
+        assertEquals(1L, ((Number) args.get("count")).longValue());
+
+        // 失败码原样透传（不发第二次）
+        engine.requested.clear();
+        engine.argLog.clear();
+        engine.quickBuyResponse = msg(1002);
+        ServerGuardianLauncher.QuickBuyResult bad = new ServerGuardianLauncher()
+                .quickBuy(engine, 301901L, 1L);
+        assertFalse(bad.ok);
+        assertEquals(1002, bad.code);
+        assertTrue("日志文案不含成功字样", bad.text.contains("失败"));
+        assertEquals(1, engine.requested.size());
+    }
+
+    @Test
+    public void quickBuy_invalidArgsOrException_noCrash() {
+        ServerGuardianLauncher launcher = new ServerGuardianLauncher();
+        assertFalse(launcher.quickBuy(engine, 0L, 1L).ok);
+        assertFalse(launcher.quickBuy(engine, 301901L, 0L).ok);
+        assertFalse(launcher.quickBuy(null, 301901L, 1L).ok);
+        assertTrue("参数不完整时不发任何请求", engine.requested.isEmpty());
+
+        TestEngine bad = new TestEngine() {
+            @Override
+            public GameMessage request(String proto, Map<String, Object> args, int timeoutSec) {
+                throw new IllegalStateException("连接已关闭");
+            }
+        };
+        ServerGuardianLauncher.QuickBuyResult r = launcher.quickBuy(bad, 301901L, 1L);
+        assertFalse(r.ok);
+        assertEquals(ServerGuardianLauncher.CODE_LOCAL_ERROR, r.code);
     }
 }

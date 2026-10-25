@@ -41,6 +41,25 @@ public final class ServerGuardianLauncher {
     static final String PROTO_MARCH_RECALL = "req_world_march_recall";
     /** 已驻扎行军撤回（A-11 撤防：state=3 驻扎，4/4 实测 code=0）。 */
     static final String PROTO_MARCH_OFF_WORK = "req_world_march_off_work";
+    /**
+     * 行军加速（P1 对等加速；A-3/A-15 实证）：{@code {id, itemid, owner(字符串uid)}}，
+     * 响应 {@code {code, endtime}}；对在途 type=5 驻防完全有效、严格乘法压缩、可背靠背连发
+     * （{@code design/守护盟友-会话交接-20261015.md} ③⑤、App {@code GuardianLaunch.java:913-1062}）。
+     */
+    static final String PROTO_WORLD_MARCH_SPEEDUP = "req_world_march_speedup";
+    /** 加速请求超时（App 实证 4s 短超时；超时不重试，由上层链按新事件再触发）。 */
+    static final int SPEEDUP_TIMEOUT_SEC = 4;
+    /**
+     * 钻石快捷购买（P1 钻石路径；App 实证 {@code GuardianLaunch.java:996-1010}）：
+     * {@code req_shop_quick_buy {use:false, id:301901, count:1}}，响应 {@code code==0} 视为购买成功
+     * （301901 入背包，随后用 {@code req_world_march_speedup} 消耗）。
+     * <p><b>只有 {@code diamond_speedup_enabled=true} 时上层才允许调用</b>（默认零钻石硬约束）。
+     */
+    static final String PROTO_SHOP_QUICK_BUY = "req_shop_quick_buy";
+    /** 购买请求超时（App 实证 8s；单发不重试）。 */
+    static final int QUICK_BUY_TIMEOUT_SEC = 8;
+    /** 钻石购买目标道具：二阶 50%（App 同款：无道具时买 301901 再加速）。 */
+    static final long DIAMOND_BUY_ITEM_ID = 301901L;
 
     /** A-2 变体：extra 为空。 */
     static final int VARIANT_EMPTY = 0;
@@ -66,6 +85,8 @@ public final class ServerGuardianLauncher {
     static final int CODE_WEAK_GARRISON = 2814;
     /** 行军不存在（加速/召回时目标已消失）。 */
     static final int CODE_MARCH_NOT_FOUND = 2806;
+    /** 道具不足（App 2026-10-15 19:15 实证 2827 → 清零该档库存记账、换档重试）。 */
+    static final int CODE_ITEM_SHORTAGE = 2827;
     /** 请求异常/无响应（本地标记，非游戏码）。 */
     static final int CODE_LOCAL_ERROR = -1;
 
@@ -176,6 +197,148 @@ public final class ServerGuardianLauncher {
         return args;
     }
 
+    // =====================================================================
+    // P1：对等加速（req_world_march_speedup；A-3/A-15 实证形状）
+    // =====================================================================
+
+    /** 一次加速尝试的结果（道具已扣/未扣以 code 为准；不重试、不循环）。 */
+    public static final class SpeedupResult {
+        /** 业务码==0（请求被接受；是否真的前移要看 endtime 与调用方旧 endtime 比较）。 */
+        public final boolean ok;
+        /** 原始业务码（异常=-1）。 */
+        public final int code;
+        /** 响应 endtime（服务器秒；取不到=0）。 */
+        public final long endtimeSec;
+        /** 结果分类文案（日志/账本）。 */
+        public final String text;
+
+        SpeedupResult(boolean ok, int code, long endtimeSec, String text) {
+            this.ok = ok;
+            this.code = code;
+            this.endtimeSec = endtimeSec;
+            this.text = text == null ? "" : text;
+        }
+    }
+
+    /**
+     * 对一条在途行军发一次加速（单次尝试；不重试、不消耗钻石）。
+     *
+     * <p>协议形状（{@code design/守护盟友-会话交接-20261015.md} ③⑤ + App
+     * {@code GuardianLaunch.java:1000-1005}）：
+     * <pre>
+     *   req_world_march_speedup { id: &lt;marchId&gt;, itemid: 301900|301901, owner: "&lt;uid&gt;" }
+     *   → { code: 0, endtime: &lt;新到达服务器秒&gt; }
+     * </pre>
+     * 严格乘法：25% → 剩余 ×0.75；50% → 剩余 ×0.50。
+     *
+     * @param engine  引擎（在线时调用；本方法不校验会话状态，由上层门控）
+     * @param marchId 我方在途行军 id
+     * @param itemId  {@link GuardianSpeedupPlanner#ITEM_SPEEDUP_25} / {@code _50}
+     */
+    public SpeedupResult speedup(WjdrEngine engine, long marchId, long itemId) {
+        if (engine == null || marchId <= 0 || itemId <= 0) {
+            return new SpeedupResult(false, CODE_LOCAL_ERROR, 0L, "参数不完整（marchId/itemId 缺失）");
+        }
+        try {
+            Map<String, Object> args = buildSpeedupArgs(marchId, itemId, engine.lastUid());
+            GameMessage rsp = engine.request(PROTO_WORLD_MARCH_SPEEDUP, args, SPEEDUP_TIMEOUT_SEC);
+            int code = Exec.codeOf(rsp);
+            long end = endtimeOf(rsp);
+            boolean ok = code == CODE_OK;
+            String text = ok
+                    ? "加速已受理 itemid=" + itemId + " → endtime=" + end
+                    : "加速失败 code=" + code + "（" + classifyCodeText(code) + "）";
+            return new SpeedupResult(ok, code, end, text);
+        } catch (Throwable t) {
+            return new SpeedupResult(false, CODE_LOCAL_ERROR, 0L, "请求异常：" + brief(t.getMessage()));
+        }
+    }
+
+    /**
+     * 构造加速请求参数（纯函数便于单测）：
+     * {@code {id: long, itemid: long, owner: "uid 字符串"}}——owner 必须是<b>字符串</b>（A-15 实证）。
+     */
+    static Map<String, Object> buildSpeedupArgs(long marchId, long itemId, long ownerUid) {
+        Map<String, Object> args = new LinkedHashMap<>();
+        if (marchId > 0) args.put("id", marchId);
+        if (itemId > 0) args.put("itemid", itemId);
+        args.put("owner", String.valueOf(ownerUid));
+        return args;
+    }
+
+    // =====================================================================
+    // P1：钻石快捷购买（req_shop_quick_buy；App 996-1010 实证形状）
+    // 只在 diamond_speedup_enabled=true 时由上层调用；默认零钻石。
+    // =====================================================================
+
+    /** 一次钻石购买尝试的结果（成功=code==0，道具入背包；不重试、不循环）。 */
+    public static final class QuickBuyResult {
+        /** 业务码==0 视为购买成功（App 实证口径）。 */
+        public final boolean ok;
+        /** 原始业务码（异常=-1）。 */
+        public final int code;
+        /** 购买的道具 id（失败也回显，便于记账）。 */
+        public final long itemId;
+        /** 购买数量。 */
+        public final long count;
+        /** 结果分类文案（日志/账本；不含任何敏感信息）。 */
+        public final String text;
+
+        QuickBuyResult(boolean ok, int code, long itemId, long count, String text) {
+            this.ok = ok;
+            this.code = code;
+            this.itemId = itemId;
+            this.count = count;
+            this.text = text == null ? "" : text;
+        }
+    }
+
+    /**
+     * 钻石快捷购买一次道具（单次尝试；不重试、不循环；异常吞掉转结果）。
+     *
+     * <p>协议形状（App {@code GuardianLaunch.java:996-1010} 实证）：
+     * <pre>
+     *   req_shop_quick_buy { use: false, id: 301901, count: 1 }   // 8s 超时
+     *   → { code: 0 }                                              // 成功即 301901 入背包
+     * </pre>
+     * 购买成功后由上层用 {@link #speedup} 消耗该道具（与 App「买完同一轮发 speedup」同序）。
+     *
+     * <p><b>安全</b>：本方法不判断开关/预算（由上层 {@code diamond_speedup_enabled} +
+     * {@code diamond_max_per_march} 门控）；日志只记 itemid/count/code，不打印钻石余额等敏感信息。
+     *
+     * @param engine 引擎（在线时调用）
+     * @param itemId 购买道具 id（服务器侧固定 {@link #DIAMOND_BUY_ITEM_ID}=301901）
+     * @param count  购买数量（服务器侧固定 1）
+     */
+    public QuickBuyResult quickBuy(WjdrEngine engine, long itemId, long count) {
+        if (engine == null || itemId <= 0 || count <= 0) {
+            return new QuickBuyResult(false, CODE_LOCAL_ERROR, itemId, count,
+                    "参数不完整（itemId/count 缺失）");
+        }
+        try {
+            Map<String, Object> args = buildQuickBuyArgs(itemId, count);
+            GameMessage rsp = engine.request(PROTO_SHOP_QUICK_BUY, args, QUICK_BUY_TIMEOUT_SEC);
+            int code = Exec.codeOf(rsp);
+            boolean ok = code == CODE_OK;
+            String text = ok
+                    ? "钻石快捷购买成功 itemid=" + itemId + " count=" + count
+                    : "钻石快捷购买失败 itemid=" + itemId + " count=" + count + " code=" + code;
+            return new QuickBuyResult(ok, code, itemId, count, text);
+        } catch (Throwable t) {
+            return new QuickBuyResult(false, CODE_LOCAL_ERROR, itemId, count,
+                    "钻石快捷购买异常：" + brief(t.getMessage()));
+        }
+    }
+
+    /** 构造购买请求参数（纯函数便于单测）：{@code {use:false, id, count}}（App 实证）。 */
+    static Map<String, Object> buildQuickBuyArgs(long itemId, long count) {
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("use", false);
+        args.put("id", itemId);
+        args.put("count", count);
+        return args;
+    }
+
     /**
      * 撤防协议选择（纯函数）：我方行军仍在途（服务器时间早于 endtime）→ 召回；否则已驻扎 → off_work。
      * 依据 {@code design/守护盟友-会话交接-20261017.md:29-40}（off_work 对 state=3 实测 code=0）。
@@ -241,6 +404,8 @@ public final class ServerGuardianLauncher {
                 return "同城已有我方援助";
             case CODE_MARCH_NOT_FOUND:
                 return "行军不存在";
+            case CODE_ITEM_SHORTAGE:
+                return "加速道具不足";
             case CODE_LOCAL_ERROR:
                 return "本地/请求异常";
             default:

@@ -26,7 +26,21 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * 守护盟友 P0（服务端化，批次9 2026-10-23）：盟友主城被敌方进攻时，由服务器会话自动发起
  * type=5 驻防（设计依据 {@code design/守护盟友-服务端化设计与分期-20261023.md}）。
  *
- * <p><b>P0 范围（本批）</b>：
+ * <p><b>P1（2026-10-25）对等加速 + 钻石路径</b>：敌方在途加速（{@code situation_update} endtime 前移/压缩）
+ * 且我方驻防已发射仍在途时，由 {@code guardExec} 单线程异步调用纯函数
+ * {@link GuardianSpeedupPlanner} 选档，发 {@code req_world_march_speedup{id,itemid,owner}}：
+ * <ul>
+ *   <li>25% 道具（301900）优先，一次不够循环叠加，仍不够才升 50%（301901）；</li>
+ *   <li>无 16s floor，只有末端 {@link GuardianSpeedupPlanner#MIN_REMAIN_MS} 安全余量；</li>
+ *   <li>道具不设预算 cap（受库存 + {@code max_speedups_per_march} 约束），每场/每发记账；</li>
+ *   <li>同一敌方压缩态只响应一次（幂等），单轮链上限 6 发；敌方再压缩 → 新一轮最小响应；</li>
+ *   <li>{@code speedup_enabled=false}（默认）→ 零请求零行为变化；</li>
+ *   <li>钻石路径（{@code diamond_speedup_enabled=true} 才启用）：道具耗尽时
+ *       {@code req_shop_quick_buy{use:false,id:301901,count:1}} 真实购买 → 立即用该 50% 加速；
+ *       受 {@code diamond_max_per_march}（默认 3）约束，失败/超限诚实止损。</li>
+ * </ul>
+ *
+ * <p><b>P0 范围</b>：
  * <ul>
  *   <li>推送解析：{@code notify_world_alliance_situation_add/_update/_init/_del}（主检测源，
  *       生产实测 22/102/11/… 条/日到达服务器会话）+ {@code notify_alliance_member_pos_info/_update}
@@ -34,15 +48,16 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *   <li>威胁表 + 单盟友规则（{@code ally_uid}/{@code target_uid}/{@code target_point} 过滤）；</li>
  *   <li>命中后：{@code dry_run=true} 只记录；否则 type=5 驻防发射（{@link ServerGuardianLauncher}），
  *       发射响应 endtime 为权威；敌召回（A-11: remain>2s）→ off_work/recall 撤防；</li>
- *   <li>P0 **立即发射**（不做 waitUntil/EWMA/加速，全部留 P1）。</li>
+ *   <li>P0 **立即发射**（不做 waitUntil/EWMA；加速链为 P1 增量）。</li>
  * </ul>
  *
  * <p><b>硬安全约束（宁可不发）</b>：
  * <ol>
  *   <li><b>默认关闭</b>：{@link Config#enabled}={@code false}、{@link Config#dryRun}={@code true}
  *       （roleParams 未配置时什么都不做，零状态写入、零请求）；</li>
- *   <li><b>零钻石</b>：本类与 Launcher 均不含任何 quick_buy/钻石协议；{@code speedup_enabled}
- *       字段仅为 P1 预留，P0 不解析不执行；</li>
+ *   <li><b>默认零钻石</b>：{@code diamond_speedup_enabled=false}（默认）→ <b>零
+ *       {@code req_shop_quick_buy} 请求</b>；只有开关显式打开才允许真实购买，且单发不重试、
+ *       受 {@code diamond_max_per_march}（默认 3，0=不限）约束；库存未知（背包快照未同步）时绝不花钻石；</li>
  *   <li><b>不重试风暴</b>：每个威胁最多 1 次动作（A-2 三变体最多 3 个请求）；失败只记原始码；</li>
  *   <li><b>并发 ≤1</b>：同角色同时只允许 1 个在途驻防任务；同目标不重复；</li>
  *   <li><b>会话在线才动作</b>：推送只入账；请求只在 {@code STATE_ONLINE} 时发出；</li>
@@ -60,15 +75,25 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * <pre>
  * enabled(默认false) dry_run(默认true) ally_uid target_uid target_point{x,y}
  * force_online(默认false) troops_min(默认0=不限，兼容别名 min_enemy_troops)
- * formation{hero_ids:[],squad_index:1} recall(默认true) recall_distance(预留) speedup_enabled(默认false)
+ * formation{hero_ids:[],squad_index:1} recall(默认true) recall_distance(预留)
  * d_sec(默认38)  // P0 仅用于日志/D 展示，不参与排程（立即发射）
+ * speedup_enabled(默认false) diamond_speedup_enabled(默认false)
+ * speedup_margin_s(默认2) max_speedups_per_march(默认0=不限) diamond_max_per_march(默认3，0=不限)
  * </pre>
+ *
+ * <p>威胁档位：复用批次11 的 {@code troops_min}（敌方兵力下限，已接线 {@link #decide}；App 的
+ * {@code power_min} 是战力口径，服务器侧无战力阈值语义，本批不新增；单盟友过滤用
+ * {@code ally_uid}/{@code target_uid}/{@code target_point}）。
  *
  * <p><b>观测键型（稳定契约，供 App/日报/看板消费）</b>：
  * <ul>
  *   <li>{@code mod:{fpid}:{sid}:guardian}：JSON，子项 {@code last}/{@code last_ts}/{@code last_trg="守护"}；</li>
  *   <li>{@code srv:guardian:{fpid}:{sid}:ledger}：JSON 数组（最新在前、上限 50），元素
- *       {ts, ev, marchId, owner, type, endSec, targetUid, x, y, ownMarchId, ownEndSec, code, variant, note}；</li>
+ *       {ts, ev, marchId, owner, type, endSec, targetUid, x, y, ownMarchId, ownEndSec, code, variant, note}；
+ *       P1 加速事件额外带 {itemid, beforeSec, stock25, stock50, reason, latencyMs}（ev=speedup/
+ *       speedup_no_move/speedup_skip/speedup_failed/speedup_no_item）；
+ *       P1 钻石事件额外带 {itemid, buyCount, diamondBought, stock25, stock50, code, reason, latencyMs}
+ *       （ev=speedup_diamond_buy/speedup_diamond_buy_failed/speedup_diamond_skip）；</li>
  *   <li>{@code describe()}：诊断一行（配置/威胁/任务/盟友/最近推送）。</li>
  * </ul>
  */
@@ -116,6 +141,8 @@ public final class ServerGuardianEngine {
     /** 解析深度/候选上限（防异常 payload）。 */
     private static final int MAX_DEPTH = 5;
     private static final int MAX_CANDIDATES = 48;
+    /** P1：道具库存本地记账的重读间隔（背包快照兜底；成功一次即本地递减，不信过期快照）。 */
+    static final long STOCK_REFRESH_MILLIS = 10 * 60_000L;
 
     // ---------------- 配置 ----------------
 
@@ -124,7 +151,16 @@ public final class ServerGuardianEngine {
         boolean enabled = false;
         boolean dryRun = true;
         boolean recall = true;
-        boolean speedupEnabled = false;      // P1 预留，P0 忽略
+        boolean speedupEnabled = false;      // P1：敌方加速 → 我方对等加速（默认关）
+        // ---- P1 对等加速（2026-10-25；缺省=旧行为零变化） ----
+        /** 道具不足时是否允许钻石加速（默认 false=硬约束零钻石；打开后走 req_shop_quick_buy 真实购买）。 */
+        boolean diamondSpeedupEnabled = false;
+        /** 本行军最多购买几颗钻石道具（默认 3；0=不限；超限止损，防钻石风暴）。 */
+        int diamondMaxPerMarch = 3;
+        /** 先至余量（秒；默认 2，对齐 P1 验收「我方 endtime ≤ 敌 endtime −1s」）。 */
+        long speedupMarginS = 2L;
+        /** 本行军加速发数上限（0=不限；道具不设预算 cap 的用户口径）。 */
+        int maxSpeedupsPerMarch = 0;
         // ---- 批次11 触发策略（2026-10-24；缺省=旧行为零变化） ----
         /** 盟友受攻击风险时允许强制上线（默认 false；仅查询，不改变发送门控）。 */
         boolean forceOnline = false;
@@ -159,7 +195,12 @@ public final class ServerGuardianEngine {
                     + " squad=" + squadIndex
                     + (heroIds.isEmpty() ? "" : " heroes=" + heroIds)
                     + " recall=" + recall + " d=" + dSec + "s"
-                    + " force_online=" + forceOnline + " troops_min=" + troopsMin;
+                    + " force_online=" + forceOnline + " troops_min=" + troopsMin
+                    + " speedup=" + speedupEnabled
+                    + " diamond_speedup=" + diamondSpeedupEnabled
+                    + " diamond_max=" + (diamondMaxPerMarch <= 0 ? "unlimited" : String.valueOf(diamondMaxPerMarch))
+                    + " speedup_margin=" + speedupMarginS + "s"
+                    + " max_speedups=" + (maxSpeedupsPerMarch <= 0 ? "unlimited" : String.valueOf(maxSpeedupsPerMarch));
         }
     }
 
@@ -240,7 +281,8 @@ public final class ServerGuardianEngine {
     static final class Mission {
         final long enemyMarchId;
         final long marchId;
-        final long endtimeSec;
+        /** 我方到达时刻（服务器秒）；P1 加速成功后随响应 endtime 更新（volatile 供推送/执行线程读）。 */
+        volatile long endtimeSec;
         final long launchedAtMs;
 
         Mission(long enemyMarchId, long marchId, long endtimeSec, long launchedAtMs) {
@@ -290,6 +332,20 @@ public final class ServerGuardianEngine {
     private final Map<Long, String> thresholdNotes = new ConcurrentHashMap<>();
     /** 目标级进行中标记（"t:{uid}" / "p:{x},{y}"）。 */
     private final Set<String> activeTargets = ConcurrentHashMap.newKeySet();
+    /**
+     * P1：每个敌方行军已处理的「压缩态」endtime（敌方 marchId → 最近一次触发加速的敌 endSec）。
+     * 同一压缩态重复推送只处理一次（幂等，防请求风暴）；敌方再次压缩（endSec 更小）→ 新一轮最小响应。
+     */
+    private final Map<Long, Long> speedupRounds = new ConcurrentHashMap<>();
+    /** P1：每个我方驻防行军已用加速发数（我方 marchId → 发数；max_speedups_per_march 记账）。 */
+    private final Map<Long, Integer> speedupUsedByMarch = new ConcurrentHashMap<>();
+    /** P1 钻石路径：每个我方驻防行军已购买钻石道具数（我方 marchId → 次数；diamond_max_per_march 记账）。 */
+    private final Map<Long, Integer> diamondBoughtByMarch = new ConcurrentHashMap<>();
+    /** P1：道具库存本地记账（-1=未知 → 从背包快照初始化；成功后递减；2827 清零该档）。 */
+    private volatile long stock25 = -1L;
+    private volatile long stock50 = -1L;
+    /** P1：库存记账最近一次从背包/资产库读取的时刻。 */
+    private volatile long stockLoadedAtMs;
 
     private final ExecutorService guardExec;
     private final AtomicBoolean attached = new AtomicBoolean(false);
@@ -365,6 +421,20 @@ public final class ServerGuardianEngine {
                 return m.endtimeSec > 0 && nowS - m.endtimeSec > MISSION_KEEP_AFTER_END_SEC;
             });
             thresholdNotes.keySet().removeIf(id -> !threats.containsKey(id));
+            // P1：清理已消失行军的加速幂等/记账（防长期累积）
+            speedupRounds.keySet().removeIf(id -> !threats.containsKey(id));
+            speedupUsedByMarch.keySet().removeIf(id -> {
+                for (Mission m : missions.values()) {
+                    if (m.marchId == id) return false;
+                }
+                return true;
+            });
+            diamondBoughtByMarch.keySet().removeIf(id -> {
+                for (Mission m : missions.values()) {
+                    if (m.marchId == id) return false;
+                }
+                return true;
+            });
         } catch (Throwable ignored) {
         }
     }
@@ -446,6 +516,8 @@ public final class ServerGuardianEngine {
             Threat prev = threats.get(t.marchId);
             Threat cur = prev == null ? t : prev.merge(t);
             threats.put(cur.marchId, cur);
+            // P1：敌方加速（endtime 前移/压缩）→ 若我方驻防已发射且在途 → 异步对等加速
+            if (prev != null) maybeSubmitSpeedup(engine, prev, cur, cfg, nowMs);
             Decision d = decide(cur, cfg, nowMs);
             if (!d.hit) {
                 noteThresholdReject(cur, d, cfg);
@@ -622,6 +694,339 @@ public final class ServerGuardianEngine {
     }
 
     // =====================================================================
+    // P1：对等加速（敌方 endtime 前移/压缩 → 我方在途驻防同步加速）
+    // 触发：situation 推送里同一敌方 marchId 的 endtime 前移（=敌方加速）；
+    // 条件：该威胁对应我方驻防 Mission 已发射且仍在途；动作在 guardExec 单线程串行执行。
+    // 关闭（speedup_enabled=false，默认）：本段零请求、零行为变化。
+    // =====================================================================
+
+    /**
+     * 敌方加速事件入口（推送线程调用；只做判定 + 入队，不发请求）。
+     *
+     * <p>幂等：按（敌方 marchId, 压缩后 endtime）去重——同一压缩态重复推送只处理一次；
+     * 敌方再次压缩（endtime 更小）才是新一轮最小响应（App 19:05「精准止损，不囤积领先」同口径）。
+     *
+     * @param prev 该行军上一条已知状态（压缩前）
+     * @param cur  合并后的最新状态（压缩后）
+     */
+    void maybeSubmitSpeedup(WjdrEngine engine, Threat prev, Threat cur, Config cfg, long nowMs) {
+        try {
+            if (prev == null || cur == null || cfg == null) return;
+            if (!cfg.speedupEnabled) return;                          // 默认关：零行为变化
+            if (prev.endEpochSec <= 0 || cur.endEpochSec <= 0) return;
+            if (cur.endEpochSec >= prev.endEpochSec) return;           // 只处理 endtime 前移（敌方加速）
+            Mission m = missions.get(targetKey(cur));
+            if (m == null || m.enemyMarchId != cur.marchId) return;    // 无我方在途驻防 → 不加速
+            Long handled = speedupRounds.get(cur.marchId);
+            if (handled != null && handled.longValue() == cur.endEpochSec) return;   // 同一压缩态幂等
+            speedupRounds.put(cur.marchId, cur.endEpochSec);
+            long delta = prev.endEpochSec - cur.endEpochSec;
+            if (cfg.dryRun) {
+                String note = "敌加速 " + delta + "s（endtime " + prev.endEpochSec + "→" + cur.endEpochSec
+                        + "）→ [DRY] 将对在途驻防 marchId=" + m.marchId
+                        + " 对等加速（dry_run 不发请求）";
+                FileLog.info("守护盟友加速[DRY] {}:{} {}", fpid, String.valueOf(sid), note);
+                ledger("speedup_dry", cur, null, note);
+                return;
+            }
+            final long enemyMarchId = cur.marchId;
+            final long enemyEndSec = cur.endEpochSec;
+            final long compressAtMs = nowMs;
+            try {
+                guardExec.execute(() -> {
+                    try {
+                        executeSpeedupRound(engine, enemyMarchId, enemyEndSec, compressAtMs);
+                    } catch (Throwable t) {
+                        FileLog.warn("守护盟友加速异常 {}:{} {}", fpid, String.valueOf(sid),
+                                brief(String.valueOf(t)));
+                        ledger("speedup_error", null, null, "加速异常：" + brief(t.getMessage()));
+                    }
+                });
+            } catch (Throwable ignored) {
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 加速链执行（guardExec 单线程；一串行请求，不重试风暴）。
+     *
+     * <p>每发：重估我方/敌方 ETA + 库存 → {@link GuardianSpeedupPlanner#next} 选档 →
+     * {@link ServerGuardianLauncher#speedup} 发 {@code req_world_march_speedup} →
+     * 用响应新 endtime 更新 Mission → 循环，直到 planner 返回 NONE（先到/不可为/库存不足）或响应无前移。
+     *
+     * <p>记账：成功发一次扣本地库存；2827（道具不足）清零该档并重选；非 0 码终止（不重试）。
+     * 钻石路径（planner 返回 NEED_DIAMOND 且 {@code diamond_speedup_enabled=true}）：
+     * 先 {@code req_shop_quick_buy{use:false,id:301901,count:1}} 购买（8s、单发不重试、受
+     * {@code diamond_max_per_march} 约束），成功则库存 +1 并立即用 301901 加速（购买+使用算 1 次链动作），
+     * 失败则记账终止（不冷却，下次压缩事件可再试）。
+     * 所有分支都写 FileLog + 账本（ev=speedup/speedup_skip/speedup_failed/speedup_no_item/speedup_no_move/
+     * speedup_diamond_buy/speedup_diamond_buy_failed/speedup_diamond_skip）。
+     *
+     * @param enemyMarchId 敌方行军 id（威胁表键）
+     * @param enemyEndSec  触发本次加速的敌方 endtime（服务器秒；执行时以威胁表最新值为准）
+     * @param compressAtMs 收到压缩推送的本机毫秒时刻（G2 p95 观测：推送→请求发出）
+     */
+    void executeSpeedupRound(WjdrEngine engine, long enemyMarchId, long enemyEndSec, long compressAtMs) {
+        if (stopped) return;
+        Config cfg = config;
+        if (cfg == null || !cfg.speedupEnabled) return;
+        Threat t = threats.get(enemyMarchId);
+        if (t == null) return;                                        // 敌已消失（召回/落地）
+        Mission m = missions.get(targetKey(t));
+        if (m == null || m.enemyMarchId != enemyMarchId) return;
+        if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) {
+            ledger("speedup_skip", t, null, "会话不在线，跳过加速（不补发旧情）");
+            return;
+        }
+        long marginMs = Math.max(0L, cfg.speedupMarginS) * 1000L;
+        int usedRound = 0;
+        int usedMarch = speedupUsedByMarch.getOrDefault(m.marchId, 0);
+        for (int guard = 0; guard <= GuardianSpeedupPlanner.MAX_SHOTS_PER_ROUND; guard++) {
+            if (stopped) return;
+            Threat latest = threats.get(enemyMarchId);
+            if (latest == null) return;
+            long enemyEnd = latest.endEpochSec > 0 ? latest.endEpochSec : enemyEndSec;
+            long nowMs = serverNowMs(engine);
+            long ourRemain = m.endtimeSec * 1000L - nowMs;
+            long enemyRemain = enemyEnd * 1000L - nowMs;
+            refreshStock(engine);
+            GuardianSpeedupPlanner.Step step = GuardianSpeedupPlanner.next(
+                    new GuardianSpeedupPlanner.Input(ourRemain, enemyRemain, marginMs,
+                            stock25, stock50, usedMarch, cfg.maxSpeedupsPerMarch, usedRound,
+                            cfg.diamondSpeedupEnabled));
+            long itemId;
+            if (step.action == GuardianSpeedupPlanner.Action.NEED_DIAMOND) {
+                // ---- P1 钻石路径（只有 diamond_speedup_enabled=true 才可能到这里）----
+                // 安全闸 1：开关双保险（planner 已按开关返回，这里防配置热载竞态）
+                if (!cfg.diamondSpeedupEnabled) {
+                    FileLog.info("守护盟友加速决策 {}:{} R3 未出手 enemyMarchId={} ownMarchId={} "
+                                    + "action={} reason=diamond_disabled（planner 意图但开关已关，不发）",
+                            fpid, String.valueOf(sid), enemyMarchId, m.marchId, step.action);
+                    ledgerSpeedup("speedup_skip", t, m, 0L, m.endtimeSec, m.endtimeSec,
+                            stock25, stock50, "diamond_disabled", step.reason, -1, -1L);
+                    return;
+                }
+                // 安全闸 2：库存未知（背包快照未同步）不花钻石，避免「以为 0 实际有道具」
+                if (stock25 < 0L || stock50 < 0L) {
+                    FileLog.warn("守护盟友钻石购买跳过 {}:{} ownMarchId={} 库存未知（背包快照未同步），不花钻石",
+                            fpid, String.valueOf(sid), m.marchId);
+                    ledgerDiamond("speedup_diamond_skip", t, m, 0L, 0L, 0,
+                            stock25, stock50, "stock_unknown",
+                            "背包快照未同步（库存未知），不花钻石，止损", -1, -1L);
+                    return;
+                }
+                // 安全闸 3：本行军购买上限（diamond_max_per_march；0=不限）
+                int bought = diamondBoughtByMarch.getOrDefault(m.marchId, 0);
+                if (cfg.diamondMaxPerMarch > 0 && bought >= cfg.diamondMaxPerMarch) {
+                    FileLog.warn("守护盟友钻石购买止损 {}:{} ownMarchId={} 已达 diamond_max_per_march={}（已购 {}），不超买",
+                            fpid, String.valueOf(sid), m.marchId, cfg.diamondMaxPerMarch, bought);
+                    ledgerDiamond("speedup_diamond_skip", t, m,
+                            GuardianSpeedupPlanner.ITEM_SPEEDUP_50, 0L, bought,
+                            stock25, stock50, "diamond_limit",
+                            "已达 diamond_max_per_march=" + cfg.diamondMaxPerMarch
+                                    + "（本行军已购 " + bought + "），止损不超买", -1, -1L);
+                    return;
+                }
+                long buyAtMs = serverNowMs(engine);
+                ServerGuardianLauncher.QuickBuyResult br = launcher.quickBuy(
+                        engine, GuardianSpeedupPlanner.ITEM_SPEEDUP_50, 1L);
+                long buyLatencyMs = buyAtMs - compressAtMs;
+                if (!br.ok) {
+                    // 单发不重试；不设冷却（供应链/余额问题，下次压缩事件可再尝试）
+                    FileLog.warn("守护盟友钻石购买失败 {}:{} ownMarchId={} code={}（{}），链终止不重试",
+                            fpid, String.valueOf(sid), m.marchId, br.code, br.text);
+                    ledgerDiamond("speedup_diamond_buy_failed", t, m, br.itemId, 0L, bought,
+                            stock25, stock50, "code_" + br.code, br.text, br.code, buyLatencyMs);
+                    return;
+                }
+                diamondBoughtByMarch.put(m.marchId, bought + 1);
+                stock50 = Math.max(0L, stock50) + 1L;   // 301901 已入背包 → 本地库存记账 +1
+                FileLog.info("守护盟友钻石购买 {}:{} 成功 ownMarchId={} itemid={} count=1 "
+                                + "diamondBought={} stock50={} latencyMs={}",
+                        fpid, String.valueOf(sid), m.marchId, br.itemId,
+                        bought + 1, stock50, buyLatencyMs);
+                ledgerDiamond("speedup_diamond_buy", t, m, br.itemId, 1L, bought + 1,
+                        stock25, stock50, "need_diamond", br.text, br.code, buyLatencyMs);
+                // 与 App 同序（GuardianLaunch.java:996-1010）：买完立即在同一轮用 301901 发加速；
+                // 「购买+使用」算本次链动作 1 次（与直接用道具同口径，不放宽单轮 6 发上限）。
+                itemId = GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
+            } else if (!step.usesItem()) {
+                FileLog.info("守护盟友加速决策 {}:{} R3 未出手 enemyMarchId={} ownMarchId={} "
+                                + "ourEnd={} enemyEnd={} ourRemain={}ms enemyRemain={}ms ahead={}ms "
+                                + "margin={}ms stock25={} stock50={} action={} reason={} detail={}",
+                        fpid, String.valueOf(sid), enemyMarchId, m.marchId,
+                        m.endtimeSec, enemyEnd, ourRemain, enemyRemain, step.aheadBeforeMs,
+                        marginMs, stock25, stock50, step.action, step.reasonCode, step.reason);
+                ledgerSpeedup("speedup_skip", t, m, 0L, m.endtimeSec, m.endtimeSec,
+                        stock25, stock50, step.reasonCode, step.reason, -1, -1L);
+                return;
+            } else {
+                itemId = step.itemId;
+            }
+            long beforeEnd = m.endtimeSec;
+            ServerGuardianLauncher.SpeedupResult r = launcher.speedup(engine, m.marchId, itemId);
+            usedRound++;
+            usedMarch++;
+            speedupUsedByMarch.put(m.marchId, usedMarch);
+            long latencyMs = nowMs - compressAtMs;
+            if (r.code == ServerGuardianLauncher.CODE_ITEM_SHORTAGE) {
+                // 2827=道具不足：清零该档本地记账 → 下一轮按 planner 重选/止损（不冷却：供应链问题不是行军问题）
+                if (itemId == GuardianSpeedupPlanner.ITEM_SPEEDUP_50) stock50 = 0L;
+                else stock25 = 0L;
+                stockLoadedAtMs = System.currentTimeMillis();
+                FileLog.warn("守护盟友加速道具不足 {}:{} itemid={}（2827），清零该档库存记账后重选档位",
+                        fpid, String.valueOf(sid), itemId);
+                ledgerSpeedup("speedup_no_item", t, m, itemId, beforeEnd, m.endtimeSec,
+                        stock25, stock50, "item_shortage_2827", r.text, r.code, latencyMs);
+                continue;
+            }
+            if (!r.ok) {
+                FileLog.warn("守护盟友加速失败 {}:{} ownMarchId={} itemid={} code={}（{}）",
+                        fpid, String.valueOf(sid), m.marchId, itemId, r.code, r.text);
+                ledgerSpeedup("speedup_failed", t, m, itemId, beforeEnd, m.endtimeSec,
+                        stock25, stock50, "code_" + r.code, r.text, r.code, latencyMs);
+                return;
+            }
+            // code=0：道具已消耗，扣本地库存（不信过期快照）
+            if (itemId == GuardianSpeedupPlanner.ITEM_SPEEDUP_50) {
+                stock50 = Math.max(0L, stock50 - 1L);
+            } else {
+                stock25 = Math.max(0L, stock25 - 1L);
+            }
+            long afterEnd = r.endtimeSec;
+            boolean moved = afterEnd > 0 && afterEnd < beforeEnd;
+            if (moved) m.endtimeSec = afterEnd;
+            long now2 = serverNowMs(engine);
+            long afterRemain = moved ? m.endtimeSec * 1000L - now2 : ourRemain;
+            long aheadAfter = enemyRemain - afterRemain;
+            String tier = itemId == GuardianSpeedupPlanner.ITEM_SPEEDUP_25 ? "一阶25%" : "二阶50%";
+            FileLog.info("守护盟友加速 {}:{} R3 第{}发[{}]{} ownMarchId={} enemyMarchId={} "
+                            + "ourEnd={}→{} enemyEnd={} ourRemain={}ms→{}ms ahead={}ms→{}ms "
+                            + "itemid={} stock25={} stock50={} latencyMs={} reason={}",
+                    fpid, String.valueOf(sid), usedRound, tier, moved ? "生效✅" : "无前移",
+                    m.marchId, enemyMarchId, beforeEnd, moved ? String.valueOf(afterEnd) : "?",
+                    enemyEnd, ourRemain, afterRemain, step.aheadBeforeMs, aheadAfter,
+                    itemId, stock25, stock50, latencyMs, step.reasonCode);
+            ledgerSpeedup(moved ? "speedup" : "speedup_no_move", t, m, itemId, beforeEnd,
+                    m.endtimeSec, stock25, stock50, step.reasonCode, step.reason, r.code, latencyMs);
+            if (!moved) return;   // 无前移=触底/单发上限实证，链终止（保留已扣道具记账）
+        }
+    }
+
+    // ---------------- P1：道具库存记账 ----------------
+
+    /**
+     * 道具库存（本地记账，App 19:15/19:20 教训「不再信过期快照」同口径）：
+     * <ul>
+     *   <li>未知（-1）→ 先读核心资产库背包，回退 {@code notify_backpack_init/update} 推送；</li>
+     *   <li>已知 → 每次成功加速本地递减；2827 清零该档；</li>
+     *   <li>两档都为 0 且超过 {@link #STOCK_REFRESH_MILLIS} 才重新读快照（发现活动补给）。</li>
+     * </ul>
+     * 背包快照未同步时保持未知（不误判为 0 永久止损），本次不发请求。
+     */
+    void refreshStock(WjdrEngine engine) {
+        try {
+            long now = System.currentTimeMillis();
+            boolean unknown = stock25 < 0L || stock50 < 0L;
+            boolean emptyLately = stock25 == 0L && stock50 == 0L
+                    && now - stockLoadedAtMs > STOCK_REFRESH_MILLIS;
+            if (!unknown && !emptyLately) return;
+            long n25 = -1L;
+            long n50 = -1L;
+            try {
+                com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                        com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(engine);
+                if (lib != null && lib.ready()) {
+                    n25 = lib.backpack().get(GuardianSpeedupPlanner.ITEM_SPEEDUP_25);
+                    n50 = lib.backpack().get(GuardianSpeedupPlanner.ITEM_SPEEDUP_50);
+                }
+            } catch (Throwable ignored) {
+            }
+            if (n25 < 0L || n50 < 0L) {
+                long[] counts = backpackSpeedupCounts(engine);
+                if (counts != null) {
+                    n25 = counts[0];
+                    n50 = counts[1];
+                }
+            }
+            if (n25 < 0L && n50 < 0L) return;   // 背包快照未到：保持未知，下次再试
+            stock25 = Math.max(0L, n25 < 0L ? 0L : n25);
+            stock50 = Math.max(0L, n50 < 0L ? 0L : n50);
+            stockLoadedAtMs = now;
+            FileLog.info("守护盟友加速库存 {}:{} 25%={} 50%={}（来源：资产库/背包推送）",
+                    fpid, String.valueOf(sid), stock25, stock50);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 背包推送 → {25% 库存, 50% 库存}；未同步（无 notify_backpack_init/update）返回 null。 */
+    static long[] backpackSpeedupCounts(WjdrEngine engine) {
+        if (engine == null) return null;
+        try {
+            Map<String, Object> bp = engine.notifyData("notify_backpack_init");
+            if (bp == null) bp = engine.notifyData("notify_backpack_update");
+            return backpackCounts(bp);
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 背包 map（{@code data} Map/List；元素 {@code {id,count}} 或 map 形 "301900.0"）→ {25%,50%}。
+     * 背包已同步但无这两种道具 → 视为 0；未同步（null/空）→ null。
+     */
+    static long[] backpackCounts(Map<String, Object> backpack) {
+        if (backpack == null) return null;
+        long n25 = -1L;
+        long n50 = -1L;
+        Object data = backpack.get("data");
+        if (data == null) data = backpack;
+        try {
+            if (data instanceof Map) {
+                for (Map.Entry<?, ?> en : ((Map<?, ?>) data).entrySet()) {
+                    long id = Exec.longOf(en.getKey());
+                    Object v = en.getValue();
+                    long cnt;
+                    if (v instanceof Map) {
+                        Map<String, Object> vm = Exec.mapOf(v);
+                        if (id <= 0L) id = Exec.longOf(vm.get("id"));
+                        cnt = Exec.longOf(vm.get("count"));
+                    } else {
+                        cnt = Exec.longOf(v);
+                    }
+                    if (id == GuardianSpeedupPlanner.ITEM_SPEEDUP_25) n25 = cnt;
+                    else if (id == GuardianSpeedupPlanner.ITEM_SPEEDUP_50) n50 = cnt;
+                }
+            } else {
+                for (Map<String, Object> m : Exec.mapsOf(data)) {
+                    long id = Exec.longOf(m.get("id"));
+                    if (id == GuardianSpeedupPlanner.ITEM_SPEEDUP_25) n25 = Exec.longOf(m.get("count"));
+                    else if (id == GuardianSpeedupPlanner.ITEM_SPEEDUP_50) n50 = Exec.longOf(m.get("count"));
+                }
+            }
+        } catch (Throwable ignored) {
+            return null;
+        }
+        if (n25 < 0L && n50 < 0L) {
+            // data 为空/无相关道具：背包已同步即视为 0；完全空 map 也当 0（保守不发）
+            return new long[]{0L, 0L};
+        }
+        return new long[]{Math.max(0L, n25), Math.max(0L, n50)};
+    }
+
+    /** 服务器毫秒时钟（已校准时用 GameServerClock；否则本机时钟）。 */
+    private long serverNowMs(WjdrEngine engine) {
+        try {
+            if (engine != null && engine.serverClock() != null && engine.serverClock().locked()) {
+                return engine.serverClock().nowServerMs();
+            }
+        } catch (Throwable ignored) {
+        }
+        return System.currentTimeMillis();
+    }
+
+    // =====================================================================
     // 配置读取（roleParams `guardian`，默认关）
     // =====================================================================
 
@@ -666,7 +1071,16 @@ public final class ServerGuardianEngine {
                     : bool(sub, st, p, "intercept", false);
             c.dryRun = bool(sub, st, p, "dry_run", true);
             c.recall = bool(sub, st, p, "recall", true);
-            c.speedupEnabled = bool(sub, st, p, "speedup_enabled", false);   // P1 预留
+            c.speedupEnabled = bool(sub, st, p, "speedup_enabled", false);   // P1 对等加速总开关
+            // P1 对等加速参数（默认全关/安全值；缺键=旧行为）
+            c.diamondSpeedupEnabled = bool(sub, st, p, "diamond_speedup_enabled", false);
+            long diamondMax = num(sub, st, p, "diamond_max_per_march", 3L);
+            c.diamondMaxPerMarch = diamondMax < 0L ? 3 : (int) Math.min(Integer.MAX_VALUE, diamondMax);
+            long marginS = num(sub, st, p, "speedup_margin_s", 2L);
+            if (marginS < 0L || marginS > 60L) marginS = 2L;   // 界外值忽略（防配置错误把 margin 当负/无限）
+            c.speedupMarginS = marginS;
+            long maxSpeedups = num(sub, st, p, "max_speedups_per_march", 0L);
+            c.maxSpeedupsPerMarch = maxSpeedups <= 0L ? 0 : (int) Math.min(Integer.MAX_VALUE, maxSpeedups);
             // 批次11：强制上线查询开关 + 敌方兵力下限（0=不限；兼容别名 min_enemy_troops）
             c.forceOnline = bool(sub, st, p, "force_online", false);
             long troopsMin = num(sub, st, p, "troops_min", -1L);
@@ -726,6 +1140,14 @@ public final class ServerGuardianEngine {
         } catch (Throwable ignored) {
             return Config.disabled();
         }
+        // P1 灰度开关（可选环境变量覆盖）：App 侧尚无 speedup_enabled/diamond_speedup_enabled 的
+        // 参数入口时，可用服务端 env 灰度开启；env 未设置/非法 → 完全以 roleParams 为准（默认零变化）。
+        //   VAULT_GUARDIAN_SPEEDUP=1|0   → 强制 speedup_enabled
+        //   VAULT_GUARDIAN_DIAMOND=1|0   → 强制 diamond_speedup_enabled（真实花钻石，慎用）
+        Boolean envSpeedup = envBool("VAULT_GUARDIAN_SPEEDUP");
+        if (envSpeedup != null) c.speedupEnabled = envSpeedup;
+        Boolean envDiamond = envBool("VAULT_GUARDIAN_DIAMOND");
+        if (envDiamond != null) c.diamondSpeedupEnabled = envDiamond;
         // 批次10：统一编队参数（无这些键 → isConfigured=false → 旧行为）
         c.rawParams = ServerGuardianLauncher.toParamMap(p);
         c.formationLibraryJson = p.optString("formation_library", "");
@@ -736,6 +1158,36 @@ public final class ServerGuardianEngine {
         if (sub != null && sub.has(key)) return sub.opt(key);
         if (st != null && st.has(key)) return st.opt(key);
         return top == null ? null : top.opt(key);
+    }
+
+    /**
+     * 灰度环境变量布尔覆盖：true/1/yes/on → TRUE；false/0/no/off → FALSE；
+     * 未设置/空/非法 → null（调用方保持 roleParams 原值，默认行为不变）。
+     * System 属性优先（单测注入），其次环境变量。
+     */
+    static Boolean envBool(String key) {
+        String v = setting(key);
+        if (v == null) return null;
+        String s = v.trim();
+        if (s.isEmpty()) return null;
+        if ("true".equalsIgnoreCase(s) || "1".equals(s)
+                || "yes".equalsIgnoreCase(s) || "on".equalsIgnoreCase(s)) return Boolean.TRUE;
+        if ("false".equalsIgnoreCase(s) || "0".equals(s)
+                || "no".equalsIgnoreCase(s) || "off".equalsIgnoreCase(s)) return Boolean.FALSE;
+        return null;
+    }
+
+    private static String setting(String key) {
+        try {
+            String p = System.getProperty(key);
+            if (p != null) return p;
+        } catch (Throwable ignored) {
+        }
+        try {
+            return System.getenv(key);
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     /** 键是否显式存在（三处任一）——用于区分「显式 false」与「旧数据缺键」。 */
@@ -1267,6 +1719,88 @@ public final class ServerGuardianEngine {
                 e.put("variant", r.variant);
             }
             e.put("note", clip(note, 400));
+            prependLedger(e);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * P1 加速账本（与 App {@code guardian_log} 同口径字段便于对拍）：
+     * 敌方 marchId / 我方 ownMarchId / 道具 itemid / 加速前后 ownEndSec(beforeSec→ownEndSec) /
+     * 敌方 endSec / 库存 stock25/stock50 / 原因 reason + note / 业务码 code / 推送→请求 latencyMs。
+     */
+    void ledgerSpeedup(String event, Threat t, Mission m, long itemId, long beforeEndSec,
+                       long afterEndSec, long stock25, long stock50, String reasonCode,
+                       String reason, int code, long latencyMs) {
+        try {
+            JSONObject e = new JSONObject();
+            e.put("ts", System.currentTimeMillis());
+            e.put("ev", event == null ? "" : event);
+            if (t != null) {
+                e.put("marchId", t.marchId);
+                e.put("owner", t.ownerUid);
+                e.put("type", t.type);
+                e.put("endSec", t.endEpochSec);
+                e.put("targetUid", t.targetUid);
+            }
+            if (m != null) {
+                e.put("ownMarchId", m.marchId);
+                e.put("ownEndSec", afterEndSec);
+                e.put("beforeSec", beforeEndSec);
+            }
+            if (itemId > 0L) e.put("itemid", itemId);
+            e.put("stock25", stock25);
+            e.put("stock50", stock50);
+            e.put("reason", reasonCode == null ? "" : reasonCode);
+            if (code != -1) e.put("code", code);
+            if (latencyMs >= 0L) e.put("latencyMs", latencyMs);
+            e.put("note", clip(reason, 400));
+            prependLedger(e);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * P1 钻石路径账本：{@code speedup_diamond_buy / speedup_diamond_buy_failed / speedup_diamond_skip}。
+     *
+     * <p>字段：itemid / buyCount（本次花费道具数）/ diamondBought（本行军累计购买数）/
+     * stock25/stock50（购买后库存）/ reason + note / code / latencyMs；不含任何敏感信息（钻石余额等）。
+     */
+    void ledgerDiamond(String event, Threat t, Mission m, long itemId, long buyCount,
+                       int diamondBought, long stock25, long stock50, String reasonCode,
+                       String reason, int code, long latencyMs) {
+        try {
+            JSONObject e = new JSONObject();
+            e.put("ts", System.currentTimeMillis());
+            e.put("ev", event == null ? "" : event);
+            if (t != null) {
+                e.put("marchId", t.marchId);
+                e.put("owner", t.ownerUid);
+                e.put("type", t.type);
+                e.put("endSec", t.endEpochSec);
+                e.put("targetUid", t.targetUid);
+            }
+            if (m != null) {
+                e.put("ownMarchId", m.marchId);
+                e.put("ownEndSec", m.endtimeSec);
+            }
+            if (itemId > 0L) e.put("itemid", itemId);
+            e.put("buyCount", buyCount);
+            e.put("diamondBought", diamondBought);
+            e.put("stock25", stock25);
+            e.put("stock50", stock50);
+            e.put("reason", reasonCode == null ? "" : reasonCode);
+            if (code != -1) e.put("code", code);
+            if (latencyMs >= 0L) e.put("latencyMs", latencyMs);
+            e.put("note", clip(reason, 400));
+            prependLedger(e);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 账本前置写入（最新在前、上限 {@link #LEDGER_CAP}；异常静默）。 */
+    private void prependLedger(JSONObject e) {
+        try {
             String key = ledgerKey(fpid, sid);
             JSONArray arr = new JSONArray();
             String raw = store == null ? null : store.getString(key);
