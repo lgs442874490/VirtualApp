@@ -6,9 +6,12 @@ import com.carlos.vault.wjdr.asset.AssetDomain;
 import com.carlos.vault.wjdr.asset.AssetSnapshot;
 import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
 import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
+import com.carlos.vaultserver.monitor.TaskTrace;
 import com.carlos.vaultserver.task.AssetStateProjector;
 import com.carlos.vaultserver.task.ServerNotifyHistory;
 import com.carlos.vaultserver.task.TaskWakeRouter;
+
+import org.json.JSONObject;
 
 import java.net.InetSocketAddress;
 import java.net.Proxy;
@@ -317,6 +320,13 @@ public final class SessionKeeper implements SessionControl,
         volatile long stateSince = System.currentTimeMillis();
         volatile String state = WjdrEngine.STATE_OFFLINE;
         /**
+         * 真机监控（2026-10-25）：最近一次已上报的引擎状态——同状态重复回调去重，
+         * 避免顶号/need_token 的重复 setState 把 session 事件刷屏。
+         */
+        private volatile String monitorState = "";
+        /** 真机监控：本次顶号周期是否已写过 takeover 明细事件（离开 TAKEOVER 后重置）。 */
+        private volatile boolean monitorTakeoverLogged;
+        /**
          * 本次在线周期开始时刻（C4）：引擎状态进入 {@link WjdrEngine#STATE_ONLINE} 时置 now，
          * 离开 ONLINE（含 recovering/offline/takeover）时清 0。节奏调度据此做登录初始化保护
          * ——刚上线的 20 秒内不派任务，等服务端 init 推送（活动/宝箱/补给/联盟科技等）到达，
@@ -382,6 +392,9 @@ public final class SessionKeeper implements SessionControl,
                     yieldProbeAt = nowMs + TAKEOVER_PROBE_DEFAULT_MILLIS;
                 }
                 if (WjdrEngine.STATE_ONLINE.equals(s)) yieldProbeAt = 0;
+                // 真机监控（2026-10-25）：状态变化落 session 事件（含 lastFailure/让位策略；
+                // 同状态重复回调由 reportStateEvent 去重，不会按 tick 刷屏）。
+                reportStateEvent(s);
             });
             // C2 推送唤醒：会话创建即挂载（登录期早到的 init 推送也不丢）
             attachWakeHook();
@@ -390,6 +403,8 @@ public final class SessionKeeper implements SessionControl,
             attachNotifyHistoryHook();
             // 编队目录 v2（契约 §3.1/§3.2）：hero/soldier/编队/pet 推送到达即增量刷新并落 state
             attachFormationHook();
+            // 真机监控（2026-10-25）：领取/任务域 notify 快照（用户手动登录原生游戏→顶号→重连时对照用）
+            attachMonitorNotifyHook();
         }
 
         // ---------- C2 推送唤醒（notify → 任务 cadence 立即到期） ----------
@@ -502,6 +517,157 @@ public final class SessionKeeper implements SessionControl,
                     // 容量来源（MarchCapacityCalculator）：到达即刷新，App 不必等 10 分钟周期采集
                     || "notify_shelter_info".equals(proto) || "notify_all_research".equals(proto)
                     || "notify_homeland_info".equals(proto) || "notify_buff_show".equals(proto);
+        }
+
+        // ---------- 真机监控（2026-10-25）：会话事件 / 推送快照 ----------
+
+        /**
+         * 挂载真机监控的推送快照钩子（TaskTrace 内部按「领取/任务域」白名单过滤、异常自吞、
+         * 未启用时零开销）。用户手动登录原生游戏顶号后重连，登录期 init 与领取/任务域
+         * notify 都会落到 App 监控页，便于对照「有在跑但游戏里没效果」。
+         */
+        private void attachMonitorNotifyHook() {
+            try {
+                TaskTrace.attachNotify(engine, fpid, this::resolveSid);
+                FileLog.info("监控推送钩子已挂载 {}", key);
+            } catch (Throwable t) {
+                FileLog.warn("监控推送钩子挂载失败 {}：{}", key, String.valueOf(t));
+            }
+        }
+
+        /**
+         * 会话事件埋点（真机监控）：sid 用登录落地的真实区服（未落地时回落绑定 sid）。
+         *
+         * <p>所有监控异常一律吞掉——会话线程（登录/心跳/重连/让位）不能因监控失败受影响。
+         *
+         * @param event login / login_fail / state / takeover / pause / resume / resume_fail / closed
+         */
+        private void monitorSession(String event, String msg, JSONObject data) {
+            try {
+                long sd = resolveSid();
+                String sidText = sd > 0L ? String.valueOf(sd) : norm(sid);
+                TaskTrace.session(fpid, sidText, event, msg, data);
+            } catch (Throwable ignored) {
+                // 监控失败不影响会话线程
+            }
+        }
+
+        /** 让位策略文本（取账号库全局策略，异常回落空串）。 */
+        private String safePolicy() {
+            try {
+                String p = store.policy();
+                return p == null ? "" : p;
+            } catch (Throwable t) {
+                return "";
+            }
+        }
+
+        /** 已收通知历史条数（登录快照统计；异常按 0）。 */
+        private int notifyEntryCount() {
+            try {
+                return ServerNotifyHistory.entryCount(fpid);
+            } catch (Throwable t) {
+                return 0;
+            }
+        }
+
+        /**
+         * 引擎状态变化 → session(event="state") 事件：state / engine.lastFailure() / 让位策略 /
+         * 探测倒计时。同状态重复回调去重（引擎顶号、need_token 会重复 set 同一状态）。
+         */
+        private void reportStateEvent(String s) {
+            try {
+                if (s == null || s.isEmpty() || s.equals(monitorState)) return;
+                monitorState = s;
+                if (!WjdrEngine.STATE_TAKEOVER.equals(s)) monitorTakeoverLogged = false;
+                String failure = orEmpty(engine.lastFailure());
+                String policy = safePolicy();
+                StringBuilder msg = new StringBuilder("状态→").append(s);
+                if (!failure.isEmpty()) msg.append("，原因：").append(failure);
+                if (!policy.isEmpty()) msg.append("，让位策略：").append(policy);
+                JSONObject data = new JSONObject();
+                data.put("state", s);
+                data.put("lastFailure", failure);
+                data.put("policy", policy);
+                data.put("yieldProbeAt", yieldProbeAt);
+                data.put("roleUid", roleUid);
+                monitorSession("state", msg.toString(), data);
+            } catch (Throwable ignored) {
+                // 监控失败不影响状态机
+            }
+        }
+
+        /** 顶号态明细（每次顶号周期只写一条）：让位策略、探测回连倒计时、风险强制回连预算。 */
+        private void reportTakeoverOnce() {
+            try {
+                if (monitorTakeoverLogged) return;
+                monitorTakeoverLogged = true;
+                String policy = safePolicy();
+                JSONObject data = new JSONObject();
+                data.put("policy", policy);
+                data.put("yieldProbeAt", yieldProbeAt);
+                data.put("forceLoginAttempts", forceLoginAttempts);
+                data.put("lastFailure", orEmpty(engine.lastFailure()));
+                long remainMin = yieldProbeAt > 0L
+                        ? Math.max(1L, (yieldProbeAt - System.currentTimeMillis()) / 60_000L) : 0L;
+                StringBuilder msg = new StringBuilder("检测到顶号/人工登录（code=5）：按 ")
+                        .append(policy.isEmpty() ? "human_first" : policy).append(" 让位");
+                msg.append(remainMin > 0L ? "，约 " + remainMin + " 分钟后探测回连" : "，让位探测待定");
+                if (forceLoginAttempts > 0) {
+                    msg.append("（风险强制回连已 ").append(forceLoginAttempts).append(" 次）");
+                }
+                monitorSession("takeover", msg.toString(), data);
+            } catch (Throwable ignored) {
+                // 监控失败不影响让位逻辑
+            }
+        }
+
+        /** 登录成功快照：昵称/uid/sid/resolveSid/让位策略 + 已收 notify 统计。 */
+        private void reportLoginSuccess(WjdrEngine.LoginResult r) {
+            try {
+                long uid = r == null ? 0L : r.uid;
+                long actualSid = r != null && r.serverId > 0 ? r.serverId : resolveSid();
+                int notifyCount = notifyEntryCount();
+                String policy = safePolicy();
+                String msg = "登录成功 昵称=" + orEmpty(roleName)
+                        + " uid=" + uid
+                        + " sid=" + actualSid
+                        + " resolveSid=" + resolveSid()
+                        + " 已收通知=" + notifyCount
+                        + (policy.isEmpty() ? "" : " 让位策略=" + policy);
+                JSONObject data = new JSONObject();
+                data.put("uid", uid);
+                data.put("sid", actualSid);
+                data.put("resolveSid", resolveSid());
+                data.put("name", orEmpty(roleName));
+                data.put("level", roleLevel);
+                data.put("power", rolePower);
+                data.put("alliance", orEmpty(roleAlliance));
+                data.put("policy", policy);
+                data.put("notifyEntries", notifyCount);
+                monitorSession("login", msg, data);
+            } catch (Throwable ignored) {
+                // 监控失败不影响登录
+            }
+        }
+
+        /** 登录失败快照：异常摘要 + 引擎分类状态/lastFailure（退避中/need_token 等）。 */
+        private void reportLoginFailure(Throwable t) {
+            try {
+                String err = t == null ? "未知异常"
+                        : (t.getMessage() == null ? String.valueOf(t) : t.getMessage());
+                String stateNow = orEmpty(engine.sessionState());
+                String failure = orEmpty(engine.lastFailure());
+                JSONObject data = new JSONObject();
+                data.put("state", stateNow);
+                data.put("lastFailure", failure);
+                data.put("policy", safePolicy());
+                monitorSession("login_fail",
+                        "登录失败：" + err + "（state=" + stateNow
+                                + (failure.isEmpty() ? "" : "，" + failure) + "）", data);
+            } catch (Throwable ignored) {
+                // 监控失败不影响登录失败处理
+            }
         }
 
         // ---------- W1 核心资产库（attach / inbound 回灌 / state 投影 / detach） ----------
@@ -761,6 +927,8 @@ public final class SessionKeeper implements SessionControl,
                     engine.tryReconnect();
                     break;
                 case WjdrEngine.STATE_TAKEOVER: {
+                    // 真机监控：顶号让位/探测说明（每次顶号周期只落一条，避免每秒刷事件）
+                    reportTakeoverOnce();
                     // 风险强制上线：被顶号后若仍有新鲜风险，允许按配置抢回连接（会顶掉其他设备）
                     if (forceReconnectForRisk("被顶号让位")) break;
                     if (engine.takeoverProbeDue(System.currentTimeMillis())) {
@@ -838,6 +1006,11 @@ public final class SessionKeeper implements SessionControl,
             store.clearRolePause(fpid, norm(sid), uidArg == null ? "" : uidArg);
             FileLog.info("风险强制上线：恢复暂停会话 {}（{}，第{}/{}次）", key, risk,
                     String.valueOf(forceLoginAttempts), String.valueOf(MAX_FORCE_LOGIN_ATTEMPTS));
+            // 真机监控：恢复事件（风险强制上线越过暂停）
+            JSONObject data = new JSONObject();
+            data.put("runState", VaultStore.RUN_RUNNING);
+            data.put("reason", risk);
+            monitorSession("resume", "风险强制上线恢复暂停会话（" + risk + "）", data);
         }
 
         /**
@@ -1025,6 +1198,11 @@ public final class SessionKeeper implements SessionControl,
                 statusMessage = "";
                 store.clearRolePause(fpid, norm(sid), uidArg == null ? "" : uidArg);
                 FileLog.info("暂停恢复成功 {}（RUNNING，清除恢复计划）", key);
+                // 真机监控：自动恢复成功
+                JSONObject data = new JSONObject();
+                data.put("runState", VaultStore.RUN_RUNNING);
+                data.put("pauseResumeAt", 0L);
+                monitorSession("resume", "暂停到期自动上线成功（RUNNING）", data);
                 return;
             }
             // 登录失败：凭证失效不再自动重试；其余按恢复策略排下次尝试
@@ -1053,6 +1231,13 @@ public final class SessionKeeper implements SessionControl,
                 }
                 FileLog.info("暂停恢复失败 {}：{}，下次尝试={}",
                         key, statusMessage, next == 0 ? "无" : String.valueOf(next));
+                // 真机监控：自动恢复失败（token 失效不再重试 / 按恢复策略排下次）
+                JSONObject data = new JSONObject();
+                data.put("state", orEmpty(st));
+                data.put("statusMessage", orEmpty(statusMessage));
+                data.put("nextResumeAt", next);
+                data.put("recoveryAttempts", recoveryAttempts);
+                monitorSession("resume_fail", "暂停恢复失败：" + orEmpty(statusMessage), data);
             }
             pauseResumeAt = next;
             store.applyRolePauseSchedule(fpid, norm(sid), uidArg == null ? "" : uidArg, next);
@@ -1094,15 +1279,29 @@ public final class SessionKeeper implements SessionControl,
                     if (r.serverId > 0) sid = String.valueOf(r.serverId);
                 }
                 nextCaptureAt = System.currentTimeMillis() + 3000;
+                // 真机监控（2026-10-25）：登录成功快照（昵称/uid/sid/让位策略 + 已收 notify 统计）
+                reportLoginSuccess(r);
             } catch (Throwable t) {
                 // 引擎状态机已分类（退避重试 / need_token），这里只留痕
                 FileLog.warn("登录失败 {}：{}", key,
                         t.getMessage() == null ? String.valueOf(t) : t.getMessage());
+                // 真机监控：登录失败（含 token 失效 / 顶号 / 网络异常）
+                reportLoginFailure(t);
             }
         }
 
         void shutdown() {
             wantOnline = false;
+            // 真机监控（2026-10-25）：会话关闭事件（CLOSED 语义；原因/最后状态留档）
+            try {
+                JSONObject data = new JSONObject();
+                data.put("state", orEmpty(engine.sessionState()));
+                data.put("lastFailure", orEmpty(engine.lastFailure()));
+                data.put("runState", orEmpty(runState));
+                monitorSession("closed", "会话关闭（runState=" + orEmpty(runState) + "）", data);
+            } catch (Throwable ignored) {
+                // 监控失败不影响会话销毁
+            }
             // 守护盟友 P0：停掉 guardian 单线程执行器（不挂起线程，不发请求）
             com.carlos.vaultserver.guardian.ServerGuardianEngine g = guardian;
             if (g != null) {
@@ -1432,6 +1631,15 @@ public final class SessionKeeper implements SessionControl,
         store.applyRolePauseSchedule(fpid, role.sid, role.uid, resumeAt);
         FileLog.info("角色暂停 {}（{} 分钟后自动上线，恢复计划已落库）",
                 ls.key, minutes);
+        // 真机监控：暂停事件（含自动恢复时刻）
+        try {
+            JSONObject data = new JSONObject();
+            data.put("runState", VaultStore.RUN_PAUSED);
+            data.put("pauseResumeAt", resumeAt);
+            ls.monitorSession("pause", "已暂停，将在 " + minutes + " 分钟后自动上线", data);
+        } catch (Throwable ignored) {
+            // 监控失败不影响暂停
+        }
         RoleOpResult ok = RoleOpResult.ok(VaultStore.RUN_PAUSED);
         ok.message = "账号已暂停，将在 " + minutes + " 分钟后自动上线";
         ok.pauseResumeAt = resumeAt;
@@ -1460,6 +1668,15 @@ public final class SessionKeeper implements SessionControl,
         ls.statusMessage = "";
         store.clearRolePause(fpid, sid, uid);
         FileLog.info("角色恢复 {}", ls.key);
+        // 真机监控：手动恢复事件
+        try {
+            JSONObject data = new JSONObject();
+            data.put("runState", VaultStore.RUN_RUNNING);
+            data.put("pauseResumeAt", 0L);
+            ls.monitorSession("resume", "手动恢复上线（RUNNING）", data);
+        } catch (Throwable ignored) {
+            // 监控失败不影响恢复
+        }
         return RoleOpResult.ok(VaultStore.RUN_RUNNING);
     }
 

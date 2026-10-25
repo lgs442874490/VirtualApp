@@ -44,6 +44,7 @@ public class FeatureGateTest {
         // T3 高阶：T1 更不可见
         assertFalse(FeatureGate.visible(FeatureGate.Feature.GUARDIAN, 1, RELEASE));
         assertFalse(FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, 1, RELEASE));
+        assertFalse(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 1, RELEASE));
         assertFalse(FeatureGate.visible(FeatureGate.Feature.TOOLBOX, 1, RELEASE));
     }
 
@@ -68,6 +69,7 @@ public class FeatureGateTest {
     public void tier2_hidesPremiumFeatures() {
         assertFalse(FeatureGate.visible(FeatureGate.Feature.GUARDIAN, 2, RELEASE));
         assertFalse(FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, 2, RELEASE));
+        assertFalse(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 2, RELEASE));
         assertFalse(FeatureGate.visible(FeatureGate.Feature.TOOLBOX, 2, RELEASE));
     }
 
@@ -77,6 +79,8 @@ public class FeatureGateTest {
     public void tier3_showsOnlyFullyImplementedPremiumFeatures() {
         // 批次11：T3 六项中敌情监控 + 守护盟友（服务端守护引擎/Launcher 已上线，默认演练）已实现
         assertTrue(FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, 3, RELEASE));
+        // 2026-10-25 真机监控：服务端 /v1/vault/monitor + App 监控页已实现，T3 正式包可见
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 3, RELEASE));
         assertTrue(FeatureGate.visible(FeatureGate.Feature.TOOLBOX, 3, RELEASE));
         assertTrue("守护盟友=已实现（默认 dry_run 演练）→ T3 可见",
                 FeatureGate.visible(FeatureGate.Feature.GUARDIAN, 3, RELEASE));
@@ -148,7 +152,7 @@ public class FeatureGateTest {
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
         assertFalse("release(T3) 不显示协议探针",
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_PROBE, 3, debug));
-        assertEquals("release(T3) 工具箱仅剩敌情监控", 1, FeatureGate.visibleToolCount(3, debug));
+        assertEquals("release(T3) 工具箱=敌情监控+真机监控", 2, FeatureGate.visibleToolCount(3, debug));
     }
 
     @Test
@@ -156,7 +160,8 @@ public class FeatureGateTest {
         boolean debug = FeatureGate.isDebugBuildType("debug");
         assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
         assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_PROBE, 3, debug));
-        assertEquals("debug(T3) 工具数=敌情监控+协议监听", 2, FeatureGate.visibleToolCount(3, debug));
+        assertEquals("debug(T3) 工具数=敌情监控+真机监控+协议监听", 3,
+                FeatureGate.visibleToolCount(3, debug));
         assertEquals("debug(T1) 仅协议监听（敌情监控需 T3）", 1, FeatureGate.visibleToolCount(1, debug));
     }
 
@@ -167,6 +172,29 @@ public class FeatureGateTest {
                 0, FeatureGate.visibleToolCount(2, false));
         assertEquals(0, FeatureGate.visibleToolCount(1, false));
         assertEquals(0, FeatureGate.visibleToolCount(0, false));
+    }
+
+    // ================= 真机监控（2026-10-25）=================
+
+    @Test
+    public void devMonitor_isT3ReleaseVisible_notDebugOnly() {
+        // T3 正式包可见（用户当前即 T3）；非 debugOnly，与协议监听区分
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 3, RELEASE));
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 3, DEBUG));
+        assertFalse(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 2, RELEASE));
+        assertFalse(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 1, RELEASE));
+        assertEquals("dev_monitor", FeatureGate.Feature.DEV_MONITOR.key);
+        assertEquals("真机监控", FeatureGate.Feature.DEV_MONITOR.label);
+        assertTrue(FeatureGate.Feature.DEV_MONITOR.implemented);
+        assertFalse(FeatureGate.Feature.DEV_MONITOR.debugOnly);
+    }
+
+    @Test
+    public void visibleToolCount_includesDevMonitorForT3() {
+        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 release 有 2 个工具（敌情监控 + 真机监控）
+        assertEquals(2, FeatureGate.visibleToolCount(3, false));
+        assertEquals(3, FeatureGate.visibleToolCount(3, true));
+        assertEquals("T2 仍无任何可用工具", 0, FeatureGate.visibleToolCount(2, false));
     }
 
     // ================= 未知功能 / 越界等级安全 =================
@@ -207,6 +235,7 @@ public class FeatureGateTest {
         assertEquals(FeatureGate.TIER_MEMBER, FeatureGate.requiredTier(FeatureGate.Feature.AUTOMATION_STATUS));
         assertEquals(FeatureGate.TIER_PREMIUM, FeatureGate.requiredTier(FeatureGate.Feature.GUARDIAN));
         assertEquals(FeatureGate.TIER_PREMIUM, FeatureGate.requiredTier(FeatureGate.Feature.ENEMY_WATCH));
+        assertEquals(FeatureGate.TIER_PREMIUM, FeatureGate.requiredTier(FeatureGate.Feature.DEV_MONITOR));
         assertEquals(FeatureGate.TIER_PREMIUM, FeatureGate.requiredTier(FeatureGate.Feature.TOOLBOX));
     }
 

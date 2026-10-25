@@ -1071,7 +1071,11 @@ public final class ServerFieldTasks {
 
         // B2-T4 暂停协调（1:1 网页版 DailyGatherService.pauseBeforeDispatch:694-712）：
         // 情报待办优先 / 巨熊活动窗口时让位，避免抢队列。
-        String pauseReason = gatherPauseReason(lib, System.currentTimeMillis() / 1000L, tc);
+        // 2026-10-25 P0 修复：仅当 intel 任务对本角色确实启用时才让位——intel 目录默认关闭，
+        // 若只开采集而未开情报，情报待办永远不会被处理，采集会被永久让位（生产实证 58/58 全跳过、
+        // 全天 0 队派出）。intel 未启用 → 待办事件不参与优先级判定。
+        final boolean intelEnabled = tc.taskEnabled("intel");
+        String pauseReason = gatherPauseReason(lib, System.currentTimeMillis() / 1000L, tc, intelEnabled);
         if (pauseReason != null) {
             m.skip(pauseReason);
             tc.saveModText("gather", "send", pauseReason);
@@ -1916,15 +1920,30 @@ public final class ServerFieldTasks {
 
     /** 同 {@link #gatherPauseReason(CoreAssetLibrary, long)}；tc 非空时排除“去重窗内不可派”的情报事件。 */
     static String gatherPauseReason(CoreAssetLibrary lib, long nowSec, TaskContext tc) {
+        return gatherPauseReason(lib, nowSec, tc, true);
+    }
+
+    /**
+     * 同 {@link #gatherPauseReason(CoreAssetLibrary, long, TaskContext)}，但显式指定 intel 任务是否启用。
+     *
+     * <p>2026-10-25 P0：intel 未启用时其待办事件永远无人处理，不能作为采集让位依据；
+     * 巨熊活动窗口仍按资产库事实让位（与 intel 开关无关）。
+     *
+     * @param intelEnabled 本角色 intel 任务是否启用；false → 情报待办不计入优先级
+     */
+    static String gatherPauseReason(CoreAssetLibrary lib, long nowSec, TaskContext tc,
+                                    boolean intelEnabled) {
         if (lib == null || !lib.ready()) return null;
         AssetSnapshot.Bear bear = lib.bear();
         long reserve = bear == null ? 0L : bear.reserveTime;
         long start = bear == null ? 0L : bear.massStartTime;
         long end = bear == null ? 0L : bear.massEndTime;
         int intel = 0;
-        try {
-            intel = intelGatherPriorityCount(lib.intel(), lib.stamina(), nowSec, tc);
-        } catch (Throwable ignored) {
+        if (intelEnabled) {
+            try {
+                intel = intelGatherPriorityCount(lib.intel(), lib.stamina(), nowSec, tc);
+            } catch (Throwable ignored) {
+            }
         }
         return gatherPauseReason(reserve, start, end, intel, nowSec);
     }

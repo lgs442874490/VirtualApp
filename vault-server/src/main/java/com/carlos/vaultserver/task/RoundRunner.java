@@ -5,6 +5,7 @@ import com.carlos.vaultserver.CaptureTasks;
 import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.StateStore;
 import com.carlos.vaultserver.VaultStore;
+import com.carlos.vaultserver.monitor.TaskTrace;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -31,7 +32,9 @@ public final class RoundRunner {
                                   String fnOnly, String trigger) {
         String fpid = acc.fpid;
         Map<String, Boolean> config = acc.roleConfig.get(String.valueOf(sid));
-        TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger);
+        // 2026-10-25 P0：启用任务集合带进上下文（采集×情报让位判定需要知道 intel 是否在跑）
+        TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger,
+                TaskContext.enabledPredicate(config));
         StringBuilder summary = new StringBuilder();
         int done = 0, claimed = 0, skipped = 0, abnormal = 0;
         List<ServerTasks.TaskDef> defs = ServerTasks.all();
@@ -39,7 +42,7 @@ public final class RoundRunner {
             if (fnOnly != null && !fnOnly.equals(def.id)) continue;
             Boolean enabled = config == null ? null : config.get(def.id);
             boolean on = enabled == null ? def.enabledByDefault : enabled;
-            TaskOutcome r;
+            TaskOutcome r = null;
             // P7 战时任务闸（E1 对等）：allowlist 外任务一律 SKIPPED（不消耗游戏内次数）
             String warNote = on ? com.carlos.vaultserver.ServerWarState.gateNote(fpid, sid, def.id) : null;
             if (!on) {
@@ -48,12 +51,18 @@ public final class RoundRunner {
                 r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED, warNote);
             } else {
                 long t0 = System.currentTimeMillis();
+                // 真机监控（2026-10-25）：legacy 整轮每个 def 前后 task.start/task.end，只观测不改控制流
+                TaskTrace.Context trace = TaskTrace.begin(fpid, sid, def.id, def.name, tc.trigger);
                 try {
-                    r = def.executor.run(tc);
-                } catch (Throwable t) {
-                    r = ServerTasks.classifyException(t, def.name);
+                    try {
+                        r = def.executor.run(tc);
+                    } catch (Throwable t) {
+                        r = ServerTasks.classifyException(t, def.name);
+                    }
+                    r.durationMs = System.currentTimeMillis() - t0;
+                } finally {
+                    trace.end(r);
                 }
-                r.durationMs = System.currentTimeMillis() - t0;
             }
             // 落键一律用目录 id（classify* 生成的 taskId 可能是协议名/任务名，仅展示用）
             applyResult(store, fpid, sid, def.id, r, trigger, fnOnly != null && !fnOnly.isEmpty());
