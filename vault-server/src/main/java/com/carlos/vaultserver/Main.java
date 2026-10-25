@@ -51,6 +51,11 @@ public final class Main {
                 new com.carlos.vaultserver.task.RoundScheduler(store, stateStore, keeper);
         scheduler.start();
 
+        // P7 战争态全局节拍（2026-10-25 修复）：对全部角色实例的 WARTIME 做退出判定，
+        // 不再只依赖 active 写入方角色的会话 tick（否则副角色卡死的战时态永不解除，
+        // 账号级战时让位会无限期拦截节奏派单）。战时上限：VAULT_WARTIME_MAX_MIN（默认 90，0=不限）。
+        ServerWarState.startTicker();
+
         // 任务节奏调度：网页版 1:1 语义（每任务独立间隔持续执行），修复“一天只跑一轮、
         // 大量奖励全天漏领”的长期缺陷。回滚：VAULT_TASK_CADENCE=off。
         com.carlos.vaultserver.task.TaskCadenceScheduler cadence =

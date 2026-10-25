@@ -79,6 +79,7 @@ public final class ServerWarState {
                 w = REGISTRY.get(k);
                 if (w == null) {
                     w = new ServerWarState(fpid, sid);
+                    w.core.setListener(loggingListener(fpid, sid));
                     REGISTRY.put(k, w);
                 }
             }
@@ -90,8 +91,156 @@ public final class ServerWarState {
         return forRole(fpid, sid);
     }
 
-    static void unregister(String fpid, long sid) {
+    /** 移除实例（会话关闭/角色切换时调用；避免旧角色战时态残留并继续拦截整账号）。 */
+    public static void unregister(String fpid, long sid) {
         REGISTRY.remove(key(fpid, sid));
+    }
+
+    // ---------------- 全局节拍 / 运维解卡 / 告警取数（2026-10-25 战时卡死修复） ----------------
+
+    /** 全局节拍线程是否已启动（幂等）。 */
+    private static volatile boolean tickerStarted;
+    /** 全局节拍周期：30s（只做退出判定/上限解除，开销可忽略）。 */
+    static final long TICKER_INTERVAL_MILLIS = 30_000L;
+    /**
+     * 服务器侧「战时上限」默认值（分钟）：<b>0=关闭（默认，按原有静默退出机制）</b>。
+     *
+     * <p>用户裁决 2026-10-25：战时状态按原有机制退出——**无侦查、无进攻满 30 分钟即退出战争态**
+     * （{@code war.quiet_exit} 默认 30，由 {@code ThreatBoard.allQuiet} 判定）。
+     * 本上限只是可选的运维兜底，需显式配置 {@code VAULT_WARTIME_MAX_MIN} 才生效，避免默认改变战斗语义。
+     */
+    static final long DEFAULT_MAX_WARTIME_MINUTES = 0L;
+
+    /**
+     * 启动战争态全局节拍：对 {@link #REGISTRY} 内<b>全部</b>角色实例驱动退出判定。
+     *
+     * <p>背景（2026-10-24 生产事故）：原实现只由「active 写入方角色会话」的 1s tick 驱动
+     * {@code war.tick}；同号多角色时，非活跃角色实例在切成副角色后不再被 tick，其推送钩子一旦
+     * 把状态推入 WARTIME 就永远无法退出；而 {@link #wartimeYield} 是账号级判定，于是整个账号的
+     * 节奏派单/整轮被无限期拦截（实测 2h33m，只有重启才恢复）。全局节拍保证任何实例都会被
+     * 判定退出（静默退出 / 开盾退出 / 战时上限）。
+     */
+    public static synchronized void startTicker() {
+        if (tickerStarted) return;
+        tickerStarted = true;
+        Thread t = new Thread(() -> {
+            long maxMin = maxWartimeMinutesByEnv();
+            FileLog.info("战争态全局节拍已启动：{}ms（对全部已注册角色实例判退出/上限，不再只依赖 active 角色会话），战时上限={}",
+                    String.valueOf(TICKER_INTERVAL_MILLIS),
+                    maxMin <= 0 ? "不限" : (maxMin + "min"));
+            while (!Thread.currentThread().isInterrupted()) {
+                try {
+                    tickAll(System.currentTimeMillis());
+                } catch (Throwable e) {
+                    FileLog.warn("战争态全局节拍异常：{}", String.valueOf(e));
+                }
+                try {
+                    Thread.sleep(TICKER_INTERVAL_MILLIS);
+                } catch (InterruptedException e) {
+                    return;
+                }
+            }
+        }, "war-state-ticker");
+        t.setDaemon(true);
+        t.start();
+    }
+
+    /** 单次节拍：tick 所有已注册实例（包可见供单测）。 */
+    static void tickAll(long now) {
+        for (Map.Entry<String, ServerWarState> e : REGISTRY.entrySet()) {
+            ServerWarState w = e.getValue();
+            if (w == null) continue;
+            try {
+                w.core.tick(now);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /**
+     * 运营解卡（不重启解除卡死的战时态）：清掉该账号所有角色的 WARTIME。
+     *
+     * @return 真正从 WARTIME 解除的实例数（0=本来就不在战时）
+     */
+    public static int resetWartime(String fpid) {
+        if (fpid == null || fpid.isEmpty()) return 0;
+        int n = 0;
+        long now = System.currentTimeMillis();
+        for (Map.Entry<String, ServerWarState> e : REGISTRY.entrySet()) {
+            if (!e.getKey().startsWith(fpid + "|")) continue;
+            ServerWarState w = e.getValue();
+            if (w == null) continue;
+            if (w.core.wartime()) n++;
+            w.core.forceWartime(false, "运营解卡（war-reset）", now);
+        }
+        return n;
+    }
+
+    /** 当前处于 WARTIME 的角色摘要（供告警/状态展示）："fpid|sid(152min) …"；无则空串。 */
+    public static String activeWartimeSummary(long now) {
+        StringBuilder sb = new StringBuilder();
+        for (Map.Entry<String, ServerWarState> e : REGISTRY.entrySet()) {
+            ServerWarState w = e.getValue();
+            if (w == null || !w.core.wartime()) continue;
+            if (sb.length() > 0) sb.append(' ');
+            sb.append(w.fpid).append('|').append(w.sid)
+                    .append('(').append(w.core.durationMs(now) / 60_000L).append("min)");
+        }
+        return sb.toString();
+    }
+
+    /** 服务器侧战时上限（分钟）：环境变量 {@code VAULT_WARTIME_MAX_MIN}（测试可设同名 System 属性）。 */
+    static long maxWartimeMinutesByEnv() {
+        return parseMaxWartimeMinutes(setting("VAULT_WARTIME_MAX_MIN"));
+    }
+
+    /** 解析战时上限：null/空/非法 → 默认 120；off/false/0/负数 → 0（不限）。 */
+    static long parseMaxWartimeMinutes(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return DEFAULT_MAX_WARTIME_MINUTES;
+        String v = raw.trim();
+        if ("off".equalsIgnoreCase(v) || "false".equalsIgnoreCase(v)) return 0L;
+        try {
+            long n = Long.parseLong(v);
+            return n <= 0L ? 0L : n;
+        } catch (NumberFormatException e) {
+            return DEFAULT_MAX_WARTIME_MINUTES;
+        }
+    }
+
+    /** 取值：System 属性优先（单测注入），其次环境变量。 */
+    private static String setting(String key) {
+        try {
+            String p = System.getProperty(key);
+            if (p != null) return p;
+        } catch (Throwable ignored) {
+        }
+        try {
+            return System.getenv(key);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** 进出日志监听：战争态进入/退出/提醒落 FileLog（原来无任何埋点，事故只能靠 skip 计数反推）。 */
+    private static WarState.Listener loggingListener(final String fpid, final long sid) {
+        return new WarState.ListenerAdapter() {
+            @Override
+            public void onWarEnter(WarState.Trigger trigger, String detail) {
+                FileLog.info("战争态进入 fpid={} sid={} 触发={} {}",
+                        fpid, String.valueOf(sid), trigger == null ? "?" : trigger.name(), detail);
+            }
+
+            @Override
+            public void onWarExit(String reason, String detail) {
+                FileLog.info("战争态退出 fpid={} sid={} 原因={} {}",
+                        fpid, String.valueOf(sid), reason, detail);
+            }
+
+            @Override
+            public void onNotice(String text) {
+                FileLog.info("战争态提醒 fpid={} sid={} {}", fpid, String.valueOf(sid), text);
+            }
+        };
     }
 
     /** p:war.* 参数热载（App 同步的 roleParams JSON；缺省=全默认）。 */
@@ -352,9 +501,22 @@ public final class ServerWarState {
 
     // ---------------- p:war.* 参数装配（与 App FnParams JSON 同形状） ----------------
 
-    /** roleParams 的 war JSON → 判定机 Config（sub/strategy 键与 App FnDetail war 条目一致）。 */
+    /**
+     * roleParams 的 war JSON → 判定机 Config（sub/strategy 键与 App FnDetail war 条目一致）。
+     *
+     * <p><b>H0「侦查即入」保持默认开启（用户裁决 2026-10-25）</b>：SLG 里侦查完成后约 2 秒即可
+     * 发起攻击，侦查=进攻前兆，必须立即进入 WARTIME 并触发驻防/开盾等战斗动作；配合「驻防盟友
+     * 对等加速」（敌方一加速即对等加速、可无限消耗加速道具，只要保证驻防到达即可），不能为了
+     * 少误报而砍掉 H0。因此本次应急修复<b>不降级</b> scout_hard，只修「战时态只进不出/
+     * 无日志/副角色实例不再 tick」这些导致卡死 2h33m 的结构性缺陷。
+     *
+     * <p><b>退出语义</b>：按原有机制——无侦查、无进攻满 {@code war.quiet_exit}（默认 30min，
+     * 由 {@code ThreatBoard.allQuiet} 判定）即退出；{@code maxWartimeMs} 默认 <b>0=关闭</b>，
+     * 仅当显式配置 {@code VAULT_WARTIME_MAX_MIN}（分钟）时作为运维兜底生效。</p>
+     */
     static WarState.Config configOf(VaultStore.Account acc, long sid) {
         WarState.Config c = new WarState.Config();
+        c.maxWartimeMs = maxWartimeMinutesByEnv() * 60_000L;             // 服务器侧兜底：战时上限
         try {
             if (acc == null) return c;
             Map<String, String> raw = acc.roleParams.get(String.valueOf(sid));
@@ -364,7 +526,7 @@ public final class ServerWarState {
             JSONObject sub = p.optJSONObject("sub");
             if (sub != null) {
                 c.auto = sub.optBoolean("auto", true);
-                c.scoutHard = sub.optBoolean("scout_hard", true);
+                c.scoutHard = sub.optBoolean("scout_hard", true);        // H0 默认开启；仅显式 false 才降级
                 c.shieldExit = sub.optBoolean("shield_exit", true);
             }
             JSONObject st = p.optJSONObject("strategy");

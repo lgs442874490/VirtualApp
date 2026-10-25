@@ -253,4 +253,118 @@ public class ServerWarStateTest {
         assertTrue(o.getLong("topEnemyUid") == OWNER);
         assertTrue(o.getString("explain").contains("战争态"));
     }
+
+    // -------------------------------------------------------------------
+    // 2026-10-25 修复：服务器侧默认 / 战时上限 / 全局节拍 / 注销 / 解卡
+    // -------------------------------------------------------------------
+
+    @Test
+    public void serverDefaults_keepScoutHard_maxWartimeOffByDefault() {
+        System.setProperty("VAULT_WARTIME_MAX_MIN", "120");
+        try {
+            WarState.Config c = ServerWarState.configOf(null, SID);
+            assertTrue("H0「侦查即入」保持默认开启（用户裁决：侦查后约 2s 即可攻击）", c.scoutHard);
+            assertEquals("显式配置 VAULT_WARTIME_MAX_MIN 时才装配上限", 120L * M, c.maxWartimeMs);
+        } finally {
+            System.clearProperty("VAULT_WARTIME_MAX_MIN");
+        }
+        // 默认 0=不限：退出按原有静默机制（无侦查/无进攻满 quiet_exit=30min）
+        assertEquals(0L, ServerWarState.configOf(null, SID).maxWartimeMs);
+        // 解析口径：未配置/非法 → 默认（0=关）；off/false/0/负数 → 0；正数 → 该值
+        assertEquals(0L, ServerWarState.parseMaxWartimeMinutes(null));
+        assertEquals(0L, ServerWarState.parseMaxWartimeMinutes(" "));
+        assertEquals(0L, ServerWarState.parseMaxWartimeMinutes("oops"));
+        assertEquals(0L, ServerWarState.parseMaxWartimeMinutes("off"));
+        assertEquals(0L, ServerWarState.parseMaxWartimeMinutes("false"));
+        assertEquals(0L, ServerWarState.parseMaxWartimeMinutes("0"));
+        assertEquals(0L, ServerWarState.parseMaxWartimeMinutes("-5"));
+        assertEquals(45L, ServerWarState.parseMaxWartimeMinutes(" 45 "));
+    }
+
+    @Test
+    public void roleParamsWithoutScoutFlag_stillH0() {
+        // 不显式下发 scout_hard（只有 quiet_exit）→ H0 仍默认开启
+        ServerWarState w = wsWithParams("fp-explicit", "{\"strategy\":{\"quiet_exit\":\"30\"}}");
+        w.onPush("notify_world_alliance_situation_add",
+                alliancePush(withTarget(march(111, 1, nowS() + 600, OWNER), 777L)), OWN_UID);
+        assertTrue("未显式关闭 → 侦查即入保持", w.core.wartime());
+    }
+
+    @Test
+    public void maxWartime_capAutoExitsStuckWartime() {
+        ServerWarState w = ws("fp-cap");
+        WarState.Config c = new WarState.Config();
+        c.scoutHard = true;
+        c.quietExitMs = 24 * 60 * M;   // 静默退出口设为 24h，确保本用例只验证「战时上限」
+        c.maxWartimeMs = 90 * M;
+        w.core.configure(c);
+        long t0 = System.currentTimeMillis();
+        w.onPush("notify_world_alliance_situation_add",
+                alliancePush(withTarget(march(121, 1, t0 / 1000 + 600, OWNER), 777L)), OWN_UID);
+        assertTrue(w.core.wartime());
+        w.tick(t0 + 89 * M);
+        assertTrue("未到上限不自动退", w.core.wartime());
+        w.tick(t0 + 91 * M);
+        assertFalse("到上限自动解除（静默退出不可达时的兜底）", w.core.wartime());
+        assertFalse("解除后账号级让位消失", ServerWarState.wartimeYield("fp-cap"));
+    }
+
+    @Test
+    public void tickAll_exitsSecondaryInstanceQuietWartime() {
+        ServerWarState w = ws("fp-global");
+        long t0 = System.currentTimeMillis();
+        w.onPush("notify_world_alliance_situation_add",
+                alliancePush(withTarget(march(131, 1, t0 / 1000 + 600, OWNER), 777L)), OWN_UID);
+        assertTrue("进入战时 → 账号级让位", ServerWarState.wartimeYield("fp-global"));
+        ServerWarState.tickAll(t0 + 31 * M);
+        assertFalse("全局节拍驱动非活跃实例退出（原来只 tick active 角色）", w.core.wartime());
+        assertFalse(ServerWarState.wartimeYield("fp-global"));
+    }
+
+    @Test
+    public void resetWartime_clearsAndUnregisterStopsYield() {
+        ServerWarState w = ws("fp-reset");
+        long t0 = System.currentTimeMillis();
+        w.onPush("notify_world_alliance_situation_add",
+                alliancePush(withTarget(march(141, 1, t0 / 1000 + 600, OWNER), 777L)), OWN_UID);
+        assertTrue(w.core.wartime());
+        assertEquals("运营解卡清除 1 个实例", 1, ServerWarState.resetWartime("fp-reset"));
+        assertFalse(w.core.wartime());
+        assertEquals("已在平时再解卡为 0", 0, ServerWarState.resetWartime("fp-reset"));
+        // 注销（会话关闭/角色切换）后不再参与账号级让位
+        w.onPush("notify_world_alliance_situation_add",
+                alliancePush(withTarget(march(142, 1, t0 / 1000 + 600, OWNER), 777L)), OWN_UID);
+        assertTrue(w.core.wartime());
+        assertTrue(ServerWarState.wartimeYield("fp-reset"));
+        ServerWarState.unregister("fp-reset", SID);
+        assertFalse("注销后不再命中账号级让位", ServerWarState.wartimeYield("fp-reset"));
+    }
+
+    @Test
+    public void activeWartimeSummary_listsRole() {
+        ServerWarState w = ws("fp-sum2");
+        long t0 = System.currentTimeMillis();
+        w.onPush("notify_world_alliance_situation_add",
+                alliancePush(withTarget(march(151, 1, t0 / 1000 + 600, OWNER), 777L)), OWN_UID);
+        String s = ServerWarState.activeWartimeSummary(t0 + 5 * M);
+        assertTrue("摘要含 fpid|sid", s.contains("fp-sum2|" + SID));
+        assertTrue("摘要含持续时长", s.contains("min)"));
+        ServerWarState.resetWartime("fp-sum2");
+        assertTrue("解卡后摘要为空", ServerWarState.activeWartimeSummary(t0 + 5 * M).isEmpty());
+    }
+
+    @Test
+    public void cadenceStallAlert_includesWartimeSummary() {
+        ServerWarState w = ws("fp-alert2");
+        long t0 = System.currentTimeMillis();
+        w.onPush("notify_world_alliance_situation_add",
+                alliancePush(withTarget(march(161, 1, t0 / 1000 + 600, OWNER), 777L)), OWN_UID);
+        String war = ServerWarState.activeWartimeSummary(t0 + 5 * M);
+        com.carlos.vaultserver.task.HealthMonitor.Alert a =
+                com.carlos.vaultserver.task.HealthMonitor.cadenceStallAlert(12351L,
+                        "跳过 Top: auto_off 43150 / min_gap 21141 / wartime 4578；当前战时让位: " + war, t0);
+        assertTrue(a.metric.contains("当日累计 12351"));
+        assertTrue("告警自带战时让位角色", a.metric.contains("fp-alert2|" + SID));
+        assertTrue("建议含不重启解卡路径", a.advice.contains("war-reset"));
+    }
 }

@@ -442,6 +442,44 @@ public class DigestStatsTest {
     }
 
     @Test
+    public void parseCadenceStat_readsSkip_andTopSkipSummary() {
+        long now = bj(2026, 10, 24, 21, 55);
+        StateStore store = store();
+        store.putString("srv:cad:stats:" + day(now),
+                cadenceStatsJson(12351L, map(FPID, 12351L),
+                        map("wartime", 4578L, "min_gap", 21141L, "auto_off", 43150L, "busy", 3608L),
+                        20, 9, now - 2 * 3600_000L));
+        HealthMonitor.CadenceStat stat = HealthMonitor.readCadenceStat(store, now);
+        assertNotNull(stat);
+        assertEquals("skip 计数解析", 4, stat.skip.size());
+        assertEquals(Long.valueOf(4578L), stat.skip.get("wartime"));
+        // Top3：次数降序（auto_off > min_gap > wartime），第 4 名不展示
+        assertEquals("auto_off 43150 / min_gap 21141 / wartime 4578",
+                HealthMonitor.topSkipSummary(stat.skip, 3));
+        assertTrue("空/全 0 不产出文案",
+                HealthMonitor.topSkipSummary(null, 3).isEmpty()
+                        && HealthMonitor.topSkipSummary(new LinkedHashMap<>(), 3).isEmpty());
+        // 同次数按原因名升序（输出确定性）
+        Map<String, Long> tie = new LinkedHashMap<>();
+        tie.put("wartime", 5L);
+        tie.put("offline", 5L);
+        assertEquals("offline 5 / wartime 5", HealthMonitor.topSkipSummary(tie, 3));
+    }
+
+    @Test
+    public void cadenceStallAlert_withDetail_includesSkipWarAndAdvice() {
+        long now = bj(2026, 10, 24, 21, 55);
+        HealthMonitor.Alert a = HealthMonitor.cadenceStallAlert(12351L,
+                "跳过 Top: auto_off 43150 / min_gap 21141 / wartime 4578"
+                        + "；当前战时让位: 48460403|531(152min)", now);
+        assertTrue(a.metric.contains("当日累计 12351"));
+        assertTrue("告警自解释：带 skip Top", a.metric.contains("wartime 4578"));
+        assertTrue("告警自解释：带当前战时让位", a.metric.contains("当前战时让位: 48460403|531(152min)"));
+        assertTrue("建议含不重启解卡路径", a.advice.contains("war-reset"));
+        assertTrue(HealthMonitor.format(a).contains("派单停滞"));
+    }
+
+    @Test
     public void cadenceStallAlert_shapeAndThrottleKind() {
         long now = bj(2026, 10, 23, 12, 0);
         HealthMonitor.Alert a = HealthMonitor.cadenceStallAlert(0L, now);

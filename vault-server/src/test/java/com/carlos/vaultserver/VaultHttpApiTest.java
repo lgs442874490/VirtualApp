@@ -34,6 +34,7 @@ public class VaultHttpApiTest {
     private VaultHttpApi api;
     private FakeKeeper keeper;
     private StateStore stateStore;
+    private VaultStore store;
     private String base;
 
     static final class FakeKeeper implements SessionControl {
@@ -68,7 +69,7 @@ public class VaultHttpApiTest {
     @Before
     public void setUp() throws Exception {
         Path dataDir = tmp.getRoot().toPath();
-        VaultStore store = new VaultStore(dataDir);
+        store = new VaultStore(dataDir);
         store.load();
         stateStore = new StateStore(dataDir);
         stateStore.load();
@@ -189,6 +190,63 @@ public class VaultHttpApiTest {
         assertEquals(0, rsp.getInt("code"));
         assertEquals("80971192", keeper.yieldedFpid);
         assertEquals(45 * 60_000L, keeper.yieldedMillis);
+    }
+
+    @Test
+    public void policy_warReset_clearsStuckWartime() throws Exception {
+        ServerWarState w = ServerWarState.forRole("80971192", 913L);
+        long now = System.currentTimeMillis();
+        w.core.forceWartime(true, "测试卡死", now);
+        assertTrue(w.core.wartime());
+
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("action", "war-reset");
+        f.put("fpid", "80971192");
+        JSONObject rsp = post("/v1/vault/policy", "vaultPolicy", f);
+        assertEquals(0, rsp.getInt("code"));
+        assertEquals("清除 1 个战时实例", 1, rsp.getJSONObject("data").getInt("cleared"));
+        assertFalse("解卡后不再拦截", w.core.wartime());
+        assertEquals(0, ServerWarState.resetWartime("80971192"));
+        ServerWarState.unregister("80971192", 913L);
+    }
+
+    @Test
+    public void sync_emptyListRejectedUnlessAllowEmpty() throws Exception {
+        // 1) 先同步 1 个账号，建立服务端身份库
+        JSONArray accounts = new JSONArray();
+        JSONObject a1 = new JSONObject();
+        a1.put("fpid", "80971192");
+        a1.put("token", "tk-A");
+        a1.put("label", "开发号");
+        accounts.put(a1);
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("pkg", "com.carlos.vault");
+        f.put("accountsJson", accounts.toString());
+        assertEquals(0, post("/v1/vault/sync", "vaultSync", f).getInt("code"));
+        assertEquals(1, store.snapshot().size());
+
+        // 2) 空列表（模拟卸载重装/换机后 App 首次全量同步）：拒绝覆盖，账号保留
+        Map<String, Object> empty = new LinkedHashMap<>();
+        empty.put("pkg", "com.carlos.vault");
+        empty.put("accountsJson", "[]");
+        JSONObject rejected = post("/v1/vault/sync", "vaultSync", empty);
+        assertEquals(0, rejected.getInt("code"));
+        JSONObject d = rejected.getJSONObject("data");
+        assertEquals(0, d.getInt("accepted"));
+        assertTrue("空同步被识别并拒绝", d.getBoolean("emptyRejected"));
+        assertEquals(1, d.getInt("serverAccounts"));
+        assertEquals("服务端账号不被清空", 1, store.snapshot().size());
+        assertEquals("80971192", store.snapshot().get(0).fpid);
+
+        // 3) 显式 allowEmpty=true（App「删除全部账号」）→ 正常清空
+        Map<String, Object> forced = new LinkedHashMap<>();
+        forced.put("pkg", "com.carlos.vault");
+        forced.put("accountsJson", "[]");
+        forced.put("allowEmpty", true);
+        JSONObject cleared = post("/v1/vault/sync", "vaultSync", forced);
+        assertEquals(0, cleared.getInt("code"));
+        assertEquals(0, cleared.getJSONObject("data").getInt("accepted"));
+        assertEquals(0, store.snapshot().size());
     }
 
     @Test
