@@ -6,6 +6,8 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import com.carlos.vault.daily.formation.FormationModel;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Test;
@@ -569,5 +571,126 @@ public class FormationStoreTest {
         JSONObject o = new JSONObject(json);
         assertEquals(0, o.getJSONArray("formations").length());
         assertTrue(FormationStore.parseLibrary(json).isEmpty());
+    }
+
+    // ==================== T1（2026-10-25）：目录 Hero v2 字段 / 模型兼容桥 ====================
+
+    @Test
+    public void parseHeroes_serverStateV2Fields() throws Exception {
+        // 服务端 state v2（契约 §3.2）：profession 数值 + professionName；名字带引号脏数据兜底
+        JSONObject catalog = new JSONObject("{\"heroes\":["
+                + "{\"id\":50006,\"name\":\"\\\"巴希提\\\"\",\"profession\":3,"
+                + "\"professionType\":3,\"professionName\":\"射手\",\"level\":6,"
+                + "\"star\":26,\"starDisplay\":4,\"power\":13977857,\"generation\":10,"
+                + "\"troopCapacity\":13470,\"available\":false,"
+                + "\"availabilityState\":\"HERO_AWAY\",\"availabilityReason\":\"英雄未归队\"}]}");
+        List<FormationStore.Hero> heroes = FormationStore.parseHeroes(catalog);
+        assertEquals(1, heroes.size());
+        FormationStore.Hero h = heroes.get(0);
+        assertEquals("引号清洗（App 审计 B1）", "巴希提", h.name);
+        assertEquals(3, h.professionType);
+        assertEquals("射手", h.profession);
+        assertEquals(6, h.level);
+        assertEquals(26, h.star);
+        assertEquals(4, h.starDisplay);
+        assertEquals(10, h.generation);
+        assertEquals(13977857L, h.power);
+        assertEquals(13470L, h.troopCapacity);
+        assertFalse(h.available);
+        assertEquals("HERO_AWAY", h.availabilityState);
+        assertEquals("英雄未归队", h.availabilityText());
+    }
+
+    @Test
+    public void parseHeroes_webHeroOptionsShape() throws Exception {
+        // 网页 collection heroOptions[]：profession 中文、effectiveLevel、starDisplay、available
+        JSONObject catalog = new JSONObject("{\"heroOptions\":["
+                + "{\"id\":50043,\"name\":\"布兰琪\",\"professionType\":3,"
+                + "\"profession\":\"射手\",\"generation\":10,\"power\":13977857,"
+                + "\"star\":26,\"starDisplay\":4,\"effectiveLevel\":80,"
+                + "\"troopCapacity\":13470,\"available\":false,"
+                + "\"availabilityState\":\"SYNC_PENDING\",\"availabilityReason\":\"等待同步\"},"
+                + "{\"id\":50036,\"name\":\"亨德里克\",\"professionType\":3,"
+                + "\"profession\":\"射手\",\"effectiveLevel\":56,\"available\":true,"
+                + "\"availabilityState\":\"AVAILABLE\",\"availabilityReason\":\"英雄在家\"}]}");
+        List<FormationStore.Hero> heroes = FormationStore.parseHeroes(catalog);
+        assertEquals(2, heroes.size());
+        assertEquals(80, heroes.get(0).level);
+        assertEquals(4, heroes.get(0).starDisplay);
+        assertFalse(heroes.get(0).available);
+        assertEquals("等待同步", heroes.get(0).availabilityText());
+        assertEquals(56, heroes.get(1).level);
+        assertTrue(heroes.get(1).available);
+        assertEquals("英雄在家", heroes.get(1).availabilityText());
+        assertEquals(3, heroes.get(1).professionType);
+        assertTrue(FormationStore.parseHeroes(null).isEmpty());
+    }
+
+    @Test
+    public void parseHeroes_unknownProfessionFallsBackToChineseName() throws Exception {
+        JSONObject catalog = new JSONObject("{\"heroes\":["
+                + "{\"id\":50002,\"name\":\"查理\",\"profession\":\"矛兵\"},"
+                + "{\"id\":50007,\"name\":\"杰西\"}]}");
+        List<FormationStore.Hero> heroes = FormationStore.parseHeroes(catalog);
+        assertEquals(2, heroes.get(0).professionType);
+        assertEquals(0, heroes.get(1).professionType);
+        assertEquals("", heroes.get(1).profession);
+        assertTrue(heroes.get(1).available);
+    }
+
+    @Test
+    public void modelBridge_legacyToModelAndBack() {
+        FormationStore.Formation legacy = formation(3, "采集队");
+        legacy.infantry = 20000;
+        legacy.lancer = 15000;
+        legacy.marksman = 15000;
+        legacy.total = 50000;
+        FormationModel m = FormationStore.toModel(legacy);
+        assertEquals(3, m.id);
+        assertEquals("采集队", m.name);
+        assertEquals(2, m.heroIds.size());
+        assertEquals(FormationModel.MODE_MANUAL, m.allocationMode);
+        assertEquals(50000L, m.soldiersTotal());
+        assertEquals(Long.valueOf(50041L), m.captainHeroId);
+        // 比例模式（旧 ratioMode=true）→ PERCENTAGE 且兵量归 0（运行时按容量换算）
+        FormationStore.Formation ratio = new FormationStore.Formation("比例队", List.of(50041L));
+        ratio.id = 4;
+        ratio.ratioMode = true;
+        ratio.ratioInfantry = 40;
+        ratio.ratioLancer = 30;
+        ratio.ratioMarksman = 30;
+        FormationModel r = FormationStore.toModel(ratio);
+        assertEquals(FormationModel.MODE_PERCENTAGE, r.allocationMode);
+        assertEquals(0L, r.soldiersTotal());
+        // v2 → 旧模型
+        FormationStore.Formation back = FormationStore.fromModel(r);
+        assertNotNull(back);
+        assertEquals(4, back.id);
+        assertTrue(back.ratioMode);
+        assertEquals(40, back.ratioInfantry);
+        // 内置大 id 无法用旧 int 表示 → null（旧 API 过滤）
+        FormationModel big = new FormationModel("基础编队·一盾兵（无英雄）", null);
+        big.id = 9000000001L;
+        assertNull(FormationStore.fromModel(big));
+        assertNull(FormationStore.toModel(null));
+        assertNull(FormationStore.fromModel(null));
+        // 实例桥
+        assertEquals(3, legacy.toModel().id);
+    }
+
+    @Test
+    public void newLibraryJson_containsV2Fields() {
+        FormationModel m = new FormationModel("采集木", List.of(50000L));
+        m.id = 7;
+        m.allocationMode = FormationModel.MODE_PERCENTAGE;
+        m.infantryRatio = 10;
+        m.lancerRatio = 10;
+        m.marksmanRatio = 80;
+        m.version = 2;
+        String json = m.toJson(false).toString();
+        List<FormationModel> back = FormationModel.parseLibrary("{\"formations\":[" + json + "]}");
+        assertEquals(1, back.size());
+        assertEquals("采集木", back.get(0).name);
+        assertEquals(FormationModel.MODE_PERCENTAGE, back.get(0).allocationMode);
     }
 }

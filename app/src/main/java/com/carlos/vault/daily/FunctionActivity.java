@@ -151,6 +151,20 @@ public class FunctionActivity extends Activity {
         return "";
     }
 
+    /**
+     * 编队卡使用的角色 sid：优先本页 serverid；为 0 时回退当前激活角色
+     * （账号页深链/旧入口不带 EXTRA_SERVERID），仍为 0 返回 0（卡片降级"等待角色同步"）。
+     */
+    private long formationSid() {
+        if (serverid > 0) return serverid;
+        try {
+            long active = RoleStore.activeRole(this, account == null ? "" : account.fpid);
+            if (active > 0) return active;
+        } catch (Throwable ignored) {
+        }
+        return 0L;
+    }
+
     /** 打开页面时的状态刷新节流（同功能 60 秒内不重复拉）。 */
     private static final java.util.Map<String, Long> LAST_FN_REFRESH = new java.util.concurrent.ConcurrentHashMap<>();
 
@@ -402,10 +416,17 @@ public class FunctionActivity extends Activity {
 
         // ⓪ 批次10（2026-10-23）：队列类功能统一编队（英雄/兵种/比例，随角色 params 同步服务器）。
         // 采集/情报/狩猎/巨兽/巨熊/守护盟友按此编队出征（服务器 FormationResolver 消费）。
+        // T5（2026-10-25）：改为「编队摘要卡 + 编队管理入口」；sid≤0（账号页深链未传 serverid /
+        // 角色未同步）先回退当前角色 sid，仍为 0 时卡片显示「等待角色同步」并禁用入口，
+        // 避免用 sid=0 去读 srv:formation:catalog:{fpid}:0 导致目录恒空。
         if (fn.formation) {
+            long fnSid = formationSid();
+            if (fnSid > 0 && fnSid != serverid) {
+                serverid = fnSid;   // 回填本页角色 sid：后续卡片/保存与编队卡同源
+            }
             scrollBox.addView(FormationPicker.buildCard(this, account.fpid, serverid, fn.id, null));
             if ("bear".equals(fn.id)) {
-                // 巨熊另需「发起编队（上方通用卡片）」+「上车编队 1-6」（每支可独立自动/指定）
+                // 巨熊另需「发起队 + 上车编队 1-6」（每支可独立自动/指定）
                 scrollBox.addView(FormationPicker.buildBearJoinCard(
                         this, account.fpid, serverid, null));
             }

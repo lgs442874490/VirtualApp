@@ -309,6 +309,7 @@ public class GatherConfigActivity extends Activity {
         box.removeAllViews();
         box.addView(explainCard());
         box.addView(assetCard());
+        box.addView(formationEntryCard());
         box.addView(globalCard());
 
         box.addView(UiStyle.sectionTitle(this, "采集队列"));
@@ -375,6 +376,73 @@ public class GatherConfigActivity extends Activity {
         card.addView(col, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         return card;
+    }
+
+    /**
+     * 顶部「编队管理 / ＋新建编队」入口卡。
+     *
+     * <p>用户反馈：采集设置页每队列只有「选择编队」，找不到“新增编队”的功能与入口；
+     * 这里给出页面级显式入口（新建直达编辑器，管理进入编队管理页）。
+     */
+    private View formationEntryCard() {
+        final LinearLayout card = shellCard();
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout textBox = new LinearLayout(this);
+        textBox.setOrientation(LinearLayout.VERTICAL);
+        textBox.addView(titleText("编队管理", 15));
+        int libCount = 0;
+        int gameCount = 0;
+        String capText = "等待登录容量同步";
+        try {
+            java.util.List<com.carlos.vault.daily.formation.FormationModel> lib =
+                    FormationStore.formations(this, fpid, serverid);
+            libCount = lib == null ? 0 : lib.size();
+            com.carlos.vault.daily.formation.FormationCatalogStore cat =
+                    FormationStore.catalogOf(this, fpid, serverid, formationUid());
+            if (cat != null) {
+                gameCount = cat.gameFormations().size();
+                long cap = cat.capacity();
+                if (cap > 0) {
+                    capText = "出征容量 "
+                            + com.carlos.vault.daily.formation.FormationRules.fmt(cap);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        TextView sum = hintText(libCount + " 支编队 · " + gameCount + " 支游戏编队 · " + capText);
+        sum.setPadding(0, dp(2), 0, 0);
+        textBox.addView(sum);
+        row.addView(textBox, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        row.addView(smallAction("＋ 新建编队",
+                () -> com.carlos.vault.daily.FormationManagerActivity
+                        .launchNew(this, fpid, serverid, formationUid(), null)));
+        row.addView(smallAction("管理 ›",
+                () -> com.carlos.vault.daily.FormationManagerActivity
+                        .launch(this, fpid, serverid, formationUid(), "mine")));
+        card.addView(row);
+        return card;
+    }
+
+    /** 小号主色按钮（入口卡右侧）。 */
+    private TextView smallAction(String label, final Runnable onClick) {
+        TextView btn = new TextView(this);
+        btn.setText(label);
+        btn.setTextSize(12);
+        btn.setTypeface(Typeface.DEFAULT_BOLD);
+        btn.setTextColor(UiStyle.BRAND_TEXT);
+        btn.setGravity(Gravity.CENTER);
+        btn.setPadding(dp(10), dp(7), dp(10), dp(7));
+        btn.setBackground(UiStyle.roundRectStroke(this, UiStyle.SURFACE_2, 10, UiStyle.LINE));
+        UiStyle.press(btn);
+        btn.setOnClickListener(v -> onClick.run());
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        lp.leftMargin = dp(6);
+        btn.setLayoutParams(lp);
+        return btn;
     }
 
     private View globalCard() {
@@ -644,21 +712,24 @@ public class GatherConfigActivity extends Activity {
                         pickFormationForQueue(q, refresh);
                     }
                 }));
-        if (q.isRole()) {
-            card.addView(UiStyle.dropdownRow(this, "使用编队",
-                    formationText(q.formationId), () -> pickFormationForQueue(q, refresh)));
-            if (FormationStore.list(this, fpid, serverid).isEmpty()) {
-                TextView go = new TextView(this);
-                go.setText("暂无编队：请先在功能页「管理编队」新建 ›");
-                go.setTextSize(11.5f);
-                go.setTypeface(Typeface.DEFAULT_BOLD);
-                go.setTextColor(UiStyle.BRAND_TEXT);
-                go.setPadding(0, dp(6), 0, dp(2));
-                UiStyle.press(go);
-                go.setOnClickListener(v -> FormationPicker.showLibrary(this, fpid, serverid,
-                        () -> refresh.run()));
-                card.addView(go);
-            }
+        // T5：编队触发器（1:1 网页版 role-picker-trigger：来源小字 + 编队名 + 选择编队 ›）
+        java.util.List<com.carlos.vault.daily.formation.FormationModel> queueLib =
+                FormationStore.formations(this, fpid, serverid);
+        card.addView(FormationPicker.buildTrigger(this, q.formationMode, queueLib,
+                new long[]{q.formationId},
+                FormationStore.automaticSettings(this, fpid, serverid, formationUid()),   // T7
+                () -> pickFormationForQueue(q, refresh)));
+        if (q.isRole() && queueLib.isEmpty()) {
+            TextView go = new TextView(this);
+            go.setText("暂无编队：点此新建 ›");
+            go.setTextSize(11.5f);
+            go.setTypeface(Typeface.DEFAULT_BOLD);
+            go.setTextColor(UiStyle.BRAND_TEXT);
+            go.setPadding(0, dp(6), 0, dp(2));
+            UiStyle.press(go);
+            go.setOnClickListener(v -> com.carlos.vault.daily.FormationManagerActivity
+                    .launchNew(this, fpid, serverid, formationUid(), null));
+            card.addView(go);
         }
         // 兵量（0=默认，保存时回填默认 40000/30000/30000）
         card.addView(UiStyle.dropdownRow(this, "兵量", soldiersText(q),
@@ -757,20 +828,55 @@ public class GatherConfigActivity extends Activity {
                 .show();
     }
 
+    /**
+     * 队列编队选择（T5 1:1 §1.13）：来源 tab（自动/内置/巨熊/游戏）+ 只读编队板。
+     *
+     * <p>ROLE：写队列 formationId，并把编队兵量（>0 时）落到队列兵量；自动：写 AUTOMATIC 并清 id。
+     * 多队列互斥：其它队列已用的编队 id 作为 disabledIds 传入（选中后给出"已被占用"提示）。
+     */
     private void pickFormationForQueue(final GatherConfigV2.QueueCfg q, final Runnable refresh) {
-        FormationPicker.pickFormationFor(this, fpid, serverid,
-                (formationId, formation) -> {
-                    if (formationId > 0) {
+        final java.util.List<Long> disabled = new java.util.ArrayList<Long>();
+        try {
+            for (GatherConfigV2.QueueCfg other : cfg.queues) {
+                if (other == null || other.id == q.id) continue;
+                if (other.isRole() && other.formationId > 0) disabled.add(other.formationId);
+            }
+        } catch (Throwable ignored) {
+        }
+        FormationPicker.pickFormationFor(this, fpid, serverid, formationUid(), disabled,
+                (mode, ids, inf, lanc, mark, ratios) -> {
+                    if (FormationStore.MODE_ROLE.equals(mode) && ids.length > 0) {
                         q.formationMode = GatherConfigV2.MODE_ROLE;
-                        q.formationId = formationId;
-                        markDirty();
-                        if (formation != null) {
-                            UiStyle.toast(this, "队列" + q.id + " 使用编队 #"
-                                    + formation.id + " " + formation.name);
+                        q.formationId = ids[0];
+                        if (inf + lanc + mark > 0) {
+                            // 编队兵量（>0 才覆盖；0 表示沿用队列/全局兵量）
+                            q.infantry = inf;
+                            q.lancer = lanc;
+                            q.marksman = mark;
                         }
+                        markDirty();
+                        com.carlos.vault.daily.formation.FormationModel f =
+                                FormationStore.formation(this, fpid, serverid, ids[0]);
+                        UiStyle.toast(this, "队列" + q.id + " 使用编队 #" + ids[0]
+                                + (f == null || f.name == null ? "" : " " + f.name));
+                    } else {
+                        q.formationMode = GatherConfigV2.MODE_AUTOMATIC;
+                        q.formationId = 0L;
+                        markDirty();
+                        UiStyle.toast(this, "队列" + q.id + " 使用自动编队");
                     }
                     refresh.run();
                 });
+    }
+
+    /** 编队动作使用的角色 uid（同服多角色区分；未知返回空串，服务端按 sid 兜底）。 */
+    private String formationUid() {
+        try {
+            long uid = RoleStore.activeRoleUid(this, fpid);
+            return uid > 0 ? String.valueOf(uid) : "";
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     /** 兵量自定义：三输入弹窗（0/空 = 用默认 40000/30000/30000）。 */

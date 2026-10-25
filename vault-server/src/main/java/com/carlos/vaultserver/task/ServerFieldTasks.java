@@ -19,8 +19,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 野外类 + 城建类任务（App 端 daily/FieldTasks + TownDevTasks 逐行移植，改动须两侧同步）。
@@ -144,6 +146,8 @@ public final class ServerFieldTasks {
                                 "extra", new java.util.LinkedHashMap<>()));
                         if (Exec.marchId(march) > 0) {
                             sent++;
+                            // P0-5：成功出征复位 415 英雄上限/406 兵力缩放（自适应必须能恢复）
+                            HeroAvailability.markSuccess(tc.engine);
                         } else {
                             int code = Exec.codeOf(march);
                             if (code == 2878 || code == 401) {
@@ -1125,6 +1129,8 @@ public final class ServerFieldTasks {
         for (QueuePlan plan : plans) planById.put(plan.queueId, plan);
 
         List<String> statuses = new ArrayList<String>();
+        // P1-7：同轮多队列英雄预留（按序解析时把前序队列已用英雄传给 Resolver，防同轮 403）
+        Set<Long> usedHeroes = new LinkedHashSet<Long>();
         int sent = 0;
         int cursor = GatherConfigV2.clampInt(mapping.nextQueueId, 1, GatherConfigV2.QUEUE_COUNT);
         HashSet<Integer> attempted = new HashSet<Integer>();
@@ -1149,7 +1155,7 @@ public final class ServerFieldTasks {
             }
 
             StringBuilder fWhy = new StringBuilder();
-            Map<String, Object> formation = gatherV2Formation(tc, plan, fWhy);
+            Map<String, Object> formation = gatherV2Formation(tc, plan, fWhy, usedHeroes);
             if (formation == null) {
                 String why = "编队跳过：" + (fWhy.length() == 0 ? "无可用编队" : fWhy.toString());
                 statuses.add(label + " " + why);
@@ -1166,8 +1172,10 @@ public final class ServerFieldTasks {
             int code = Exec.codeOf(march);
             String levelNote = found.level < q.level ? "→L" + found.level : "";
             if (marchId > 0L) {
-                // 415 上限是账号属性（上阵位），成功后保持已探明上限（避免下一队列又从 5 英雄重试振荡）；
-                // 账号解锁更多上阵位后，会话重启会重新探索。
+                // 415 上限是账号属性（上阵位）：成功只说明本次英雄数可用；P0-5 契约要求成功后
+                // 复位 415/406 自适应（重试完整上限/兵量），否则 hint 永久生效导致缩水。
+                HeroAvailability.markSuccess(tc.engine);
+                usedHeroes.addAll(HeroAvailability.heroIdsOf(formation));
                 mapping.map.put(String.valueOf(q.id), marchId);
                 mapping.nextQueueId = nextQueueIdAfter(q.id);
                 applyGatherResponse(lib, march);
@@ -1203,10 +1211,10 @@ public final class ServerFieldTasks {
                 m.subSkip("queue" + q.id, "编队人数超限(415)");
             } else if (code == GATHER_ERR_SOLDIER_LIMIT) {
                 int scale = HeroAvailability.noteSoldierLimitRejected(tc.engine);
-                List<Long> usedHeroes = HeroAvailability.heroIdsOf(formation);
+                List<Long> rejectedHeroes = HeroAvailability.heroIdsOf(formation);
                 FileLog.warn("gather 406 fpid={} queue#{} heroes={} soldiers={} capacity={} scale→{}%",
-                        tc.fpid, q.id, usedHeroes, formation.get("soldier"),
-                        MarchCapacityCalculator.capacityFor(tc.engine, usedHeroes), scale);
+                        tc.fpid, q.id, rejectedHeroes, formation.get("soldier"),
+                        MarchCapacityCalculator.capacityFor(tc.engine, rejectedHeroes), scale);
                 statuses.add(label + " 士兵超上限(406)，兵力缩放至" + scale + "%");
                 m.subSkip("queue" + q.id, "士兵超上限(406)");
             } else if (code == GATHER_ERR_HERO_AWAY) {
@@ -1312,13 +1320,17 @@ public final class ServerFieldTasks {
         return f;
     }
 
-    /** 每队列编队解析（ROLE/AUTOMATIC；失败返回 null 并回填原因，绝不静默换编队）。 */
+    /** 每队列编队解析（ROLE/AUTOMATIC；失败返回 null 并回填原因，绝不静默换编队）。
+     *
+     * @param usedHeroes 本轮前序队列已用英雄（Resolver 候选/自动编队预留，防同轮 403）
+     */
     private static Map<String, Object> gatherV2Formation(TaskContext tc, QueuePlan plan,
-                                                         StringBuilder reasonOut) {
+                                                         StringBuilder reasonOut,
+                                                         Set<Long> usedHeroes) {
         try {
             FormationLibrary lib = FormationResolver.libraryFor(tc, "gather");
             FormationResolver.ResolveOutcome ro =
-                    FormationResolver.resolveOutcome(tc.engine, lib, plan.formationParams);
+                    FormationResolver.resolveOutcome(tc.engine, lib, plan.formationParams, usedHeroes);
             if (!ro.ready()) {
                 if (reasonOut != null) reasonOut.append(ro.reason);
                 FileLog.info("gather 编队跳过 fpid={} queue#{}：{}", tc.fpid, plan.queueId, ro.reason);
@@ -1345,7 +1357,9 @@ public final class ServerFieldTasks {
             List<Long> heroIds = HeroAvailability.heroIdsOf(formation);
             if (!heroIds.isEmpty()) {
                 HeroAvailability.block(engine, heroIds, HeroAvailability.DEFAULT_BLOCK_MILLIS);
-                FileLog.info("301 英雄拉黑 fpid-less engine={} heroes={}", String.valueOf(heroIds));
+                // P2-3：补足占位符参数（原日志 `heroes={}` 恒空，排障信息丢失）
+                FileLog.info("301/403 英雄拉黑 engine-heroes={}（拉黑 {} 分钟）",
+                        String.valueOf(heroIds), HeroAvailability.DEFAULT_BLOCK_MILLIS / 60_000L);
             }
         } catch (Throwable ignored) {
         }
@@ -2262,13 +2276,23 @@ public final class ServerFieldTasks {
                             freeSlots--;
                             markIntelDispatched(tc, id, now);
                             if (staminaKnown) usableStamina = Math.max(0L, usableStamina - staminaCost);
+                            // P0-5：成功出征复位 415 英雄上限/406 兵力缩放
+                            HeroAvailability.markSuccess(tc.engine);
                         } else {
                             int mc = Exec.codeOf(march);
                             waiting++;
-                            if (mc == GATHER_ERR_HERO_AWAY) blockHeroesOn301(tc.engine, formation);
+                            if (mc == GATHER_ERR_HERO_AWAY || mc == GATHER_ERR_HERO_BUSY) {
+                                blockHeroesOn301(tc.engine, formation);
+                            }
                             if (mc == GATHER_ERR_FORMATION_LIMIT) {
                                 HeroAvailability.noteHeroCountRejected(tc.engine,
                                         HeroAvailability.heroIdsOf(formation).size());
+                            }
+                            if (mc == GATHER_ERR_SOLDIER_LIMIT) {
+                                int scale = HeroAvailability.noteSoldierLimitRejected(tc.engine);
+                                FileLog.warn("intel 406 fpid={} heroes={} soldiers={} scale→{}%",
+                                        tc.fpid, HeroAvailability.heroIdsOf(formation),
+                                        formation.get("soldier"), scale);
                             }
                             if (mc != 51) markIntelDispatched(tc, id, now);   // 非体力失败：计入去重窗（修采集饿死）
                             appendWait(waits, "派队码" + mc);

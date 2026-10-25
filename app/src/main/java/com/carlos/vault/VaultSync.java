@@ -714,6 +714,45 @@ public final class VaultSync {
                 done, "vault-role-enabled");
     }
 
+    // ---------- 编队动作（契约《编队功能-1比1实施契约》§3.5/§3.6） ----------
+
+    /**
+     * 编队目录刷新（action {@code formation.catalog-refresh}）：服务端重采一次
+     * hero/soldier/capacity/gameFormations 并写 state，data {@code {ok,capturedAt}}。
+     * 回调在 OkHttp 线程；调用方回调后应再 {@link #fetchState} 拉最新目录。
+     */
+    public static void formationCatalogRefresh(Context ctx, String fpid, String sid, String uid,
+                                               Callback done) {
+        roleActionWithPayload(ctx, fpid, sid, uid, "formation.catalog-refresh", null,
+                done, "vault-formation-catalog");
+    }
+
+    /**
+     * 编队记忆保存（action {@code formation.memory-save}）：把当前游戏内编队快照存到
+     * 指定类型（DAILY/BATTLE）；已存在且 {@code overwrite=false} 时服务端返回 3002
+     * 「记忆已存在，请确认覆盖」。data {@code {kind,slotCount,savedAt,version}}。回调在 OkHttp 线程。
+     */
+    public static void formationMemorySave(Context ctx, String fpid, String sid, String uid,
+                                           String kind, boolean overwrite, Callback done) {
+        final String k = kind == null || kind.trim().isEmpty() ? "DAILY" : kind.trim();
+        roleActionWithPayload(ctx, fpid, sid, uid, "formation.memory-save", p -> {
+            p.put("kind", k);
+            p.put("overwrite", overwrite);
+        }, done, "vault-formation-memory-save");
+    }
+
+    /**
+     * 编队记忆恢复（action {@code formation.memory-restore}）：把记忆快照逐槽写回游戏
+     * （服务端 500ms 间隔发 req_soldier_set_prefab）；data
+     * {@code {total,restored,failures:[{id,code,message}]}}。回调在 OkHttp 线程。
+     */
+    public static void formationMemoryRestore(Context ctx, String fpid, String sid, String uid,
+                                              String kind, Callback done) {
+        final String k = kind == null || kind.trim().isEmpty() ? "DAILY" : kind.trim();
+        roleActionWithPayload(ctx, fpid, sid, uid, "formation.memory-restore",
+                p -> p.put("kind", k), done, "vault-formation-memory-restore");
+    }
+
     /**
      * 顶号恢复设置（P1 §二.6，account-action op {@code recovery-settings}）：
      * 账号级字段（作用于全部角色）；UI 端已按 {@link RecoverySettings#validate}

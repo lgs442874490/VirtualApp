@@ -331,12 +331,16 @@ public class FormationResolverTest {
         assertFalse(heroSkip.ready());
         assertTrue(heroSkip.reason.contains("英雄"));
 
-        // 显式兵量超出库存 → SKIP（不静默削减）
+        // v2（P0-3）：显式兵量超出库存 → 按库存缩放后下发（不再 SKIP 空转）
         Map<String, Object> over = params("formation_mode", "ROLE", "formation_id", "1",
                 "soldiers", Map.of("infantry", 999999));
-        FormationResolver.ResolveOutcome overSkip = FormationResolver.resolveOutcome(engine, lib, over);
-        assertFalse(overSkip.ready());
-        assertTrue(overSkip.reason.contains("超出库存"));
+        FormationResolver.ResolveOutcome overScaled = FormationResolver.resolveOutcome(engine, lib, over);
+        assertTrue(overScaled.reason, overScaled.ready());
+        assertEquals("超库存按库存缩放（盾）", 20000L, overScaled.formation.infantry);
+        assertEquals(1549L, overScaled.formation.lancer);
+        assertEquals(28451L, overScaled.formation.marksman);
+        assertTrue("原因可读（含库存说明）：" + overScaled.reason,
+                overScaled.reason.contains("库存"));
     }
 
     @Test
@@ -466,15 +470,18 @@ public class FormationResolverTest {
     }
 
     @Test
-    public void role_librarySoldiersOverStock_skipsWithReason() {
+    public void role_librarySoldiersOverStock_scalesToStock() {
         presetAll();
         FormationLibrary lib = libOne(9, "超量队", "[50041]",
                 "{\"infantry\":50000,\"lancer\":50000,\"marksman\":50000}", null, 0);
         FormationResolver.ResolveOutcome ro = FormationResolver.resolveOutcome(engine, lib,
                 params("formation_mode", "ROLE", "formation_id", "9"));
-        assertFalse("库兵量超库存 → SKIP（不静默削减）", ro.ready());
-        assertTrue(ro.reason.contains("超出库存"));
-        assertTrue("原因含具体缺口：" + ro.reason, ro.reason.contains("50000"));
+        // v2（P0-3）：旧版 fitFormation 口径——超库存按可用库存缩放后下发，不再 SKIP 空转
+        assertTrue(ro.reason, ro.ready());
+        assertEquals(20000L, ro.formation.infantry);
+        assertEquals(1549L, ro.formation.lancer);
+        assertEquals(28451L, ro.formation.marksman);
+        assertTrue("原因含库存缩放说明：" + ro.reason, ro.reason.contains("库存"));
     }
 
     @Test

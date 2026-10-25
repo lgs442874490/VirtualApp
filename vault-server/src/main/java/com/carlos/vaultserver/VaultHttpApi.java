@@ -23,7 +23,8 @@ import java.util.concurrent.Executors;
  * POST /v1/vault/status  会话状态查询
  * POST /v1/vault/policy  顶号策略设置 / 让位指令
  * POST /v1/vault/accounts        账号池列表+聚合计数+每角色运行态（M1）
- * POST /v1/vault/role-action     单角色 login/logout/pause/resume/stop（M1）
+ * POST /v1/vault/role-action     单角色 login/logout/pause/resume/stop（M1）；
+ *                                formation.catalog-refresh / memory-save / memory-restore / bear-binding（编队 v2）
  * POST /v1/vault/account-action  账号级 login-all/stop-all（M1）
  * POST /v1/vault/global-action   全局 login-all/stop-all（M1）
  * POST /v1/vault/watch   战争通知：监视名单增删改查/通知配置/测试通知（2026-10-22）
@@ -534,6 +535,11 @@ public final class VaultHttpApi {
         String action = str(fields, "action");
         if (fpid == null || fpid.isEmpty()) throw new BizError(3002, "缺少 fpid");
         if (action == null || action.isEmpty()) throw new BizError(3002, "缺少 action");
+        // 编队动作（契约 §3.5；T2 2026-10-25）：formation.catalog-refresh / memory-save /
+        // memory-restore / bear-binding。走 SessionKeeper 的编队动作入口（需要引擎/state 访问权）。
+        if (action.startsWith("formation.")) {
+            return handleFormationAction(fpid, sid, uid, action, fields);
+        }
         SessionControl.RoleOpResult r = keeper.roleAction(fpid, sid, uid, action, fields);
         if (r.code != 0) throw new BizError(r.code, r.message);
         JSONObject data = new JSONObject();
@@ -557,6 +563,25 @@ public final class VaultHttpApi {
             data.put("itemId", r.itemId);
         }
         return data;
+    }
+
+    /**
+     * 编队动作分发（契约 §3.5）：{@code formation.catalog-refresh} / {@code memory-save} /
+     * {@code memory-restore} / {@code bear-binding}。
+     *
+     * <p>返回 data 由动作决定：catalog-refresh={ok,capturedAt}；memory-save={kind,slotCount,savedAt,
+     * version}；memory-restore={total,restored,failures[]}；bear-binding=绑定 JSON。错误走既有
+     * {@link BizError}（HTTP 200 + 信封 code，中文文案）。
+     */
+    private JSONObject handleFormationAction(String fpid, String sid, String uid, String action,
+                                             Map<String, Object> fields) throws Exception {
+        if (!(keeper instanceof SessionKeeper)) {
+            throw new BizError(3002, "编队动作未启用（服务端未就绪）");
+        }
+        SessionKeeper.FormationActionResult r =
+                ((SessionKeeper) keeper).formationAction(fpid, sid, uid, action, fields);
+        if (r.code != 0) throw new BizError(r.code, r.message);
+        return r.data == null ? new JSONObject() : r.data;
     }
 
     /** POST /v1/vault/account-action：账号级 login-all/stop-all（契约 §3.3，允许部分失败）。 */

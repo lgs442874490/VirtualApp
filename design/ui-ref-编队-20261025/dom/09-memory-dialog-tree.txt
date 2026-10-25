@@ -1,0 +1,160 @@
+===== OVERLAY el-overlay el-modal-dialog  DIALOG el-dialog responsive-dialog role-formation-dialog formation-page-dialog
+div.el-dialog.responsive-dialog.role-formation-dialog.formation-page-dialog  {463x746 @489,24}
+  header.el-dialog__header  {461x40 @490,25}
+    div.formation-page-title  {461x39 @490,25}
+      span  «编队管理»  {60x23 @690,32}
+      button[aria-label="关闭编队管理" type="button"]  {30x30 @911,29}
+  div.el-dialog__body  {461x704 @490,65}
+    div.formation-manager-body  {461x704 @490,65}
+      div.formation-source-tabs[role="tablist" aria-label="编队管理分类"]  {461x51 @490,65}
+        button[role="tab" type="button" aria-selected="false"]  {146x38 @496,71}
+          span  «自动编队»  {56x22 @550,79}
+        button.is-active[role="tab" type="button" aria-selected="true"]  {146x38 @647,71}
+          span  «游戏编队»  {56x22 @702,79}
+        button[role="tab" type="button" aria-selected="false"]  {146x38 @799,71}
+          span  «我的编队»  {56x22 @854,79}
+      div.formation-manager-strip  {461x49 @490,116}
+        span.formation-manager-memory  {303x20 @498,130}
+          span  «日常：未保存 ｜ 战斗：未保存»  {176x20 @517,130}
+        div.formation-manager-strip-actions  {134x36 @809,122}
+          button.el-button.el-button--small[type="button" aria-disabled="false"]  {64x36 @809,122}
+            span  «记忆»  {30x15 @826,133}
+          button.el-button.el-button--primary.el-button--small.is-disabled.is-plain[type="button" disabled="" aria-disabled="true" title="还没有编队记忆"]  {64x36 @879,122}
+            span  «恢复»  {30x15 @896,133}
+      div.daily-formation-board  {461x604 @490,165}
+        div.formation-board-tabs[role="tablist" aria-label="游戏内编队"]  {461x68 @490,165}
+          button.formation-board-tab.active.is-active.is-checked[role="tab" type="button" title="G01" aria-selected="true"]  {80x56 @498,170}
+            span.formation-board-tab-icon  {25x23 @546,177}
+            span.formation-board-tab-name  «G01»  {63x15 @507,203}
+            span.formation-board-tab-badge  «赫克托»  {39x20 @507,177}
+          button.formation-board-tab[role="tab" type="button" title="G02" aria-selected="false"]  {80x56 @586,171}
+            span.formation-board-tab-icon  {25x23 @634,178}
+            span.formation-board-tab-name  «G02»  {63x15 @595,204}
+            span.formation-board-tab-badge  «玲奈»  {36x20 @595,178}
+          button.formation-board-tab[role="tab" type="button" title="G03" aria-selected="false"]  {80x56 @674,171}
+            span.formation-board-tab-icon  {25x23 @722,178}
+            span.formation-board-tab-name  «G03»  {63x15 @683,204}
+            span.formation-board-tab-badge  «书允»  {36x20 @683,178}
+          button.formation-board-tab[role="tab" type="button" title="G04" aria-selected="false"]  {80x56 @762,171}
+            span.formation-board-tab-icon  {25x23 @810,178}
+            span.formation-board-tab-name  «G04»  {63x15 @771,204}
+            span.formation-board-tab-badge  «杰西»  {36x20 @771,178}
+          button.formation-board-tab[role="tab" type="button" title="G05" aria-selected="false"]  {80x56 @850,171}
+            span.formation-board-tab-icon  {25x23 @898,178}
+            span.formation-board-tab-name  «G05»  {63x15 @859,204}
+            span.formation-board-tab-badge  «杰塞尔»  {39x20 @859,178}
+          button.formation-board-tab[role="tab" type="button" title="G06" aria-selected="false"]  {80x56 @938,171}
+            span.formation-board-tab-icon  {25x23 @986,178}
+            span.formation-board-tab-name  «G06»  {63x15 @947,204}
+            span.formation-board-tab-badge  «菲兰德»  {39x20 @947,178}
+          button.formation-board-tab[role="tab" type="button" title="G07" aria-selected="false"]  {80x56 @1026,171}
+            span.formation-board-tab-icon  {25x23 @1074,178}
+            span.formation-board-tab-name  «G07»  {63x15 @1035,204}
+            span.formation-board-tab-badge  «格温»  {36x20 @1035,178}
+          button.formation-board-tab[role="tab" type="button" title="G08" aria-selected="false"]  {80x56 @1114,171}
+            span.formation-board-tab-icon  {25x23 @1162,178}
+            span.formation-board-tab-name  «G08»  {63x15 @1123,204}
+            span.formation-board-tab-badge  «野怪»  {36x20 @1123,178}
+          button.formation-board-tab[role="tab" type="button" title="G09" aria-selected="false"]  {80x56 @1202,171}
+            span.formation-board-tab-icon  {25x23 @1250,178}
+            span.formation-board-tab-name  «G09»  {63x15 @1211,204}
+            span.formation-board-tab-badge  «主队»  {36x20 @1211,178}
+          button.formation-board-tab[role="tab" type="button" title="G10" aria-selected="false"]  {80x56 @1290,171}
+            span.formation-board-tab-icon  {25x23 @1338,178}
+            span.formation-board-tab-name  «G10»  {63x15 @1299,204}
+            span.formation-board-tab-badge  «副队»  {36x20 @1299,178}
+          button.formation-board-tab[role="tab" type="button" title="G11" aria-selected="false"]  {80x56 @1378,171}
+            span.formation-board-tab-icon  {25x23 @1426,178}
+            span.formation-board-tab-name  «G11»  {63x15 @1387,204}
+            span.formation-board-tab-badge  «厨子»  {36x20 @1387,178}
+          button.formation-board-tab[role="tab" type="button" title="G12" aria-selected="false"]  {80x56 @1466,171}
+            span.formation-board-tab-icon  {25x23 @1514,178}
+            span.formation-board-tab-name  «G12»  {63x15 @1475,204}
+            span.formation-board-tab-badge  «谢尔盖»  {39x20 @1475,178}
+          button.formation-manager-tab-action[aria-label="刷新游戏编队" type="button"]  {36x42 @1556,178}
+        div.formation-board-stats  {461x68 @490,233}
+          span.formation-board-stat.troops.is-warning  {158x22 @502,239}
+            b  «181,400»  {54x22 @526,239}
+          span.formation-board-stat.formation-name[title="赫克托"]  {437x21 @502,273}
+            b  «赫克托»  {39x16 @502,278}
+        div.formation-board-buffs  {461x41 @490,301}
+          span.formation-board-buffs-label  «战争增益»  {56x22 @502,310}
+          button.formation-board-buff[aria-label="出征容量详情" type="button"]  {32x32 @566,305}
+          button.formation-board-buff.is-pet[aria-label="宠物技能增益" type="button"]  {32x32 @606,305}
+        div.formation-board-heroes  {461x180 @490,342}
+          article.formation-board-hero.profession-2.is-captain[role="button" aria-label="诺拉，80级"]  {105x180 @545,342}
+            span.formation-board-hero-scrim  {103x75 @546,446}
+            span.formation-board-hero-profession  «矛»  {24x24 @551,348}
+            span.formation-board-hero-tier  «S5»  {15x20 @589,347}
+            span.formation-board-hero-level  «80级»  {31x20 @552,479}
+            span.formation-board-hero-captain.is-captain  {24x24 @552,457}
+            span.formation-board-hero-stars  {70x13 @552,504}
+              span.is-on  «★»  {13x13 @552,504}
+              span.is-on  «★»  {13x13 @566,504}
+              span.is-on  «★»  {13x13 @580,504}
+              span.is-on  «★»  {13x13 @594,504}
+              span  «★»  {13x13 @608,504}
+          article.formation-board-hero.profession-1[role="button" aria-label="无名，80级"]  {105x180 @668,342}
+            span.formation-board-hero-scrim  {103x75 @669,446}
+            span.formation-board-hero-profession  «盾»  {24x24 @674,348}
+            span.formation-board-hero-tier  «S6»  {15x20 @712,347}
+            span.formation-board-hero-level  «80级»  {31x20 @675,479}
+            span.formation-board-hero-stars  {70x13 @675,504}
+              span.is-on  «★»  {13x13 @675,504}
+              span.is-on  «★»  {13x13 @689,504}
+              span.is-on  «★»  {13x13 @703,504}
+              span  «★»  {13x13 @717,504}
+              span  «★»  {13x13 @731,504}
+          article.formation-board-hero.profession-3[role="button" aria-label="琳恩，80级"]  {105x180 @791,342}
+            span.formation-board-hero-scrim  {103x75 @792,446}
+            span.formation-board-hero-profession  «弓»  {24x24 @797,348}
+            span.formation-board-hero-tier  «S4»  {15x20 @835,347}
+            span.formation-board-hero-level  «80级»  {31x20 @798,479}
+            span.formation-board-hero-stars  {70x13 @798,504}
+              span.is-on  «★»  {13x13 @798,504}
+              span.is-on  «★»  {13x13 @812,504}
+              span.is-on  «★»  {13x13 @826,504}
+              span.is-on  «★»  {13x13 @840,504}
+              span  «★»  {13x13 @854,504}
+        p.formation-board-banner.is-warn  «有 3 名英雄未归队，出征前请确认»  {461x17 @490,522}
+        div.formation-board-troops  {461x200 @490,539}
+          div.formation-board-troop.is-locked.is-readonly  {457x58 @492,541}
+            span.formation-board-troop-badge  {52x52 @501,544}
+            span.formation-board-troop-name  «盾兵»  {262x23 @561,558}
+            span.formation-board-troop-count  {109x23 @831,558}
+              b  «88,885»  {49x23 @831,558}
+          div.formation-board-troop.is-locked.is-readonly  {457x58 @492,610}
+            span.formation-board-troop-badge  {52x52 @501,613}
+            span.formation-board-troop-name  «矛兵»  {271x23 @561,627}
+            span.formation-board-troop-count  {100x23 @839,627}
+              b  «3,629»  {41x23 @839,627}
+          div.formation-board-troop.is-locked.is-readonly  {457x58 @492,679}
+            span.formation-board-troop-badge  {52x52 @501,682}
+            span.formation-board-troop-name  «弓兵»  {262x23 @561,696}
+            span.formation-board-troop-count  {109x23 @831,696}
+              b  «88,886»  {49x23 @831,696}
+        div.formation-board-ratios  {461x30 @490,739}
+          span.formation-board-ratios-label  «士兵比例：»  {70x22 @502,743}
+          span.formation-board-ratio  {47x22 @582,743}
+            b  «49%»  {23x22 @606,743}
+          span.formation-board-ratio  {39x22 @639,743}
+            b  «2%»  {15x22 @663,743}
+          span.formation-board-ratio  {47x22 @688,743}
+            b  «49%»  {23x22 @712,743}
+===== OVERLAY el-overlay el-modal-dialog  DIALOG el-dialog responsive-dialog role-formation-memory-dialog
+div.el-dialog.responsive-dialog.role-formation-memory-dialog[aria-label="编队记忆"]  {430x365 @505,180}
+  header.el-dialog__header  {396x87 @522,197}
+    div.role-formation-memory-header  {356x56 @542,215}
+      div.role-formation-memory-heading  {120x56 @542,215}
+        span.role-formation-memory-kicker  «编队记忆»  {68x24 @542,216}
+        h3.role-formation-memory-title  «记忆当前编队»  {120x25 @542,246}
+      button.el-button.el-button--small.is-circle.role-formation-memory-close[aria-label="关闭编队记忆弹窗" type="button" aria-disabled="false" title="关闭"]  {34x34 @864,215}
+  div.el-dialog__body  {396x244 @522,284}
+    p.role-formation-memory-hint  «选择要把当前游戏编队保存到的记忆类型；已有记忆会先确认覆盖。»  {356x40 @542,300}
+    div.role-formation-memory-options  {356x156 @542,352}
+      button.role-formation-memory-option[type="button"]  {356x73 @542,352}
+        span.role-formation-memory-option-name  «日常»  {326x23 @557,365}
+        span.role-formation-memory-option-state  «还没有保存过»  {326x20 @557,393}
+      button.role-formation-memory-option[type="button"]  {356x73 @542,435}
+        span.role-formation-memory-option-name  «战斗»  {326x23 @557,448}
+        span.role-formation-memory-option-state  «还没有保存过»  {326x20 @557,475}

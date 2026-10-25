@@ -3,9 +3,18 @@ package com.carlos.vault.daily;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.carlos.vault.daily.formation.BearFormationTemplates;
+import com.carlos.vault.daily.formation.FormationBinding;
+import com.carlos.vault.daily.formation.FormationBuiltIns;
+import com.carlos.vault.daily.formation.FormationCatalogStore;
+import com.carlos.vault.daily.formation.FormationModel;
+import com.carlos.vault.daily.formation.FormationRules;
+
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -103,25 +112,61 @@ public final class FormationStore {
             f.ratioMode = ratioMode;
             return f;
         }
+
+        /** 旧模型 → v2 模型（v2 全量 API 用；契约 §2.2 兼容桥）。 */
+        public FormationModel toModel() {
+            return FormationStore.toModel(this);
+        }
     }
 
-    /** 编队目录里的英雄条目（服务器 state srv:formation:catalog 的 heroes[]）。 */
+    /** 编队目录里的英雄条目（服务端 state v2 {@code heroes[]} / 网页 {@code heroOptions[]}）。 */
     public static final class Hero {
         public long id;
         public String name = "";
         public int level;
+        /** 原始星级（0..30，网页实测 30=5 星）。 */
         public int star;
+        /** 展示星级（0..5，已 clamp）。 */
+        public int starDisplay;
+        /** 代数（0=基础）。 */
+        public int generation;
         public long power;
-        /** 空闲/出征中（服务器原样透传；未知为空）。 */
+        /** 该英雄为出征容量贡献的值（Σ 公式用）。 */
+        public long troopCapacity;
+        /** 是否在家可用（S2：available 只表示"在城可出征"）。 */
+        public boolean available = true;
+        /** 职业类型：1 盾 / 2 矛 / 3 弓 / 0 未知。 */
+        public int professionType;
+        /** 中文职业：盾兵 / 矛兵 / 射手（空=未知）。 */
+        public String profession = "";
+        /** 可用性枚举：AVAILABLE/HERO_AWAY/RESERVED/SYNC_PENDING/SYNC_ERROR。 */
+        public String availabilityState = "";
+        /** 中文可用性原因（如"英雄在家"）。 */
+        public String availabilityReason = "";
+        /** 旧版目录 status 原样（兼容保留）。 */
         public String status = "";
 
         public String label() {
             StringBuilder sb = new StringBuilder();
             sb.append(name == null || name.isEmpty() ? ("英雄" + id) : name);
             if (level > 0) sb.append(" Lv").append(level);
-            if (star > 0) sb.append(" · ").append(star).append('星');
+            if (starDisplay > 0) sb.append(" · ").append(starDisplay).append('星');
+            else if (star > 0) sb.append(" · ").append(star).append('星');
             if (status != null && !status.isEmpty()) sb.append(" · ").append(status);
             return sb.toString();
+        }
+
+        /** 可用性中文（在家/未归队/...）。 */
+        public String availabilityText() {
+            if (availabilityReason != null && !availabilityReason.isEmpty()) {
+                return availabilityReason;
+            }
+            if (available) return "英雄在家";
+            if ("HERO_AWAY".equals(availabilityState)) return "英雄未归队";
+            if ("RESERVED".equals(availabilityState)) return "前序占用";
+            if ("SYNC_PENDING".equals(availabilityState)) return "等待同步";
+            if ("SYNC_ERROR".equals(availabilityState)) return "同步异常";
+            return "未归队";
         }
     }
 
@@ -138,6 +183,20 @@ public final class FormationStore {
     /** 编队目录 state 键（服务器写 state → App 经 fetchState 回写 daily_state 同名键）。 */
     public static String catalogStateKey(String fpid, long sid) {
         return STATE_KEY_PREFIX + nz(fpid) + ":" + sid;
+    }
+
+    /**
+     * 编队目录 state 键（v2，uid 感知；T7 2026-10-25）。
+     *
+     * <p>同 fpid:sid 下可有多个角色（生产实证 888 区两个 uid），服务端 v2 目录键带 uid
+     * （{@code srv:formation:catalog:{fpid}:{sid}:{uid}}）并把旧键作一版过渡双写；
+     * 只读旧键会被后写角色覆盖 → 英雄目录串角色。uid 为空/{@code "0"} 时返回旧键
+     * （与旧行为逐字节一致）。
+     */
+    public static String catalogStateKey(String fpid, long sid, String uid) {
+        String u = nz(uid);
+        if (u.isEmpty() || "0".equals(u)) return catalogStateKey(fpid, sid);
+        return catalogStateKey(fpid, sid) + ":" + u;
     }
 
     /** 编队模式归一：NORMAL/CUSTOM→ROLE（网页版 DailyFormationMode.from 同口径），未知→AUTOMATIC。 */
@@ -321,11 +380,20 @@ public final class FormationStore {
         return sb.toString();
     }
 
-    /** 目录 JSON → 英雄列表（坏条目跳过）。 */
+    /**
+     * 目录 JSON → 英雄列表（坏条目跳过）。
+     *
+     * <p>兼容两种形状：服务端 state v2 {@code heroes[]}（契约 §3.2）与网页 collection
+     * {@code heroOptions[]}（线上 GET，含 professionType/profession/generation/starDisplay/
+     * troopCapacity/available/availabilityState/availabilityReason）。名称做去引号清洗
+     * （服务端历史脏数据 {@code "\"巴希提\""} 兜底，App 审计 B1）。
+     */
     public static List<Hero> parseHeroes(JSONObject catalog) {
         List<Hero> out = new ArrayList<>();
         if (catalog == null) return out;
         JSONArray arr = catalog.optJSONArray("heroes");
+        if (arr == null) arr = catalog.optJSONArray("heroOptions");
+        if (arr == null) arr = catalog.optJSONArray("hero_options");
         if (arr == null) return out;
         for (int i = 0; i < arr.length(); i++) {
             JSONObject o = arr.optJSONObject(i);
@@ -333,12 +401,59 @@ public final class FormationStore {
             Hero h = new Hero();
             h.id = o.optLong("id", 0);
             if (h.id <= 0) continue;
-            h.name = o.optString("name", "");
+            h.name = FormationModel.cleanName(o.optString("name", ""));
             if (h.name.isEmpty()) h.name = com.carlos.vault.wjdr.asset.HeroCatalog.name(h.id);
-            h.level = o.optInt("level", 0);
-            h.star = o.optInt("star", 0);
-            h.power = o.optLong("power", 0);
+            h.name = FormationModel.cleanName(h.name);
+            if (h.name.isEmpty()) h.name = "英雄" + h.id;
+            h.level = o.optInt("level", o.optInt("effectiveLevel", o.optInt("lev", 0)));
+            h.star = o.optInt("star", o.optInt("star_lv", o.optInt("starLevel", 0)));
+            h.starDisplay = clampInt(o.optInt("starDisplay", o.optInt("star_display", 0)), 0, 5);
+            h.generation = Math.max(0, o.optInt("generation", 0));
+            h.power = Math.max(0, o.optLong("power", o.optLong("fight_num",
+                    o.optLong("fight_capacity", 0))));
+            h.troopCapacity = Math.max(0, o.optLong("troopCapacity",
+                    o.optLong("troop_capacity", 0)));
             h.status = o.optString("status", "");
+            h.availabilityState = o.optString("availabilityState",
+                    o.optString("availability_state", ""));
+            h.availabilityReason = o.optString("availabilityReason",
+                    o.optString("availability_reason", ""));
+            // 职业：服务端 state v2 用数值 profession，网页 collection 用中文 profession
+            Object prof = o.opt("profession");
+            if (prof instanceof Number) {
+                h.professionType = clampInt(((Number) prof).intValue(), 0, 3);
+                h.profession = FormationRules.professionName(h.professionType);
+            } else if (prof instanceof String) {
+                h.profession = ((String) prof).trim();
+                h.professionType = FormationRules.professionTypeOf(h.profession);
+            }
+            int profType = o.optInt("professionType",
+                    o.optInt("profession_type", h.professionType));
+            if (profType >= 0 && profType <= 3 && profType != h.professionType) {
+                h.professionType = profType;
+                if (h.profession.isEmpty()) {
+                    h.profession = FormationRules.professionName(profType);
+                }
+            }
+            String profName = o.optString("professionName",
+                    o.optString("profession_name", ""));
+            if (!profName.isEmpty()) h.profession = profName;
+            if (h.professionType == 0 && !h.profession.isEmpty()) {
+                h.professionType = FormationRules.professionTypeOf(h.profession);
+            }
+            // 可用性：显式 available 优先；否则按 availabilityState / 旧 status 推导
+            if (o.has("available")) {
+                h.available = o.optBoolean("available", true);
+            } else if (!h.availabilityState.isEmpty()) {
+                h.available = "AVAILABLE".equalsIgnoreCase(h.availabilityState);
+            } else if (!h.status.isEmpty()) {
+                String s = h.status.toLowerCase(java.util.Locale.ROOT);
+                h.available = !(s.contains("away") || s.contains("march")
+                        || s.contains("出征") || s.contains("驻防") || s.contains("outside"));
+            }
+            if (!h.available && h.availabilityReason.isEmpty()) {
+                h.availabilityReason = h.availabilityText();
+            }
             out.add(h);
         }
         return out;
@@ -421,46 +536,260 @@ public final class FormationStore {
         return sb.toString();
     }
 
-    // ==================== 存取：本地编队库 ====================
+    // ==================== 存取：本地编队库（v2 事实源 + 旧 API 兼容桥） ====================
+    //
+    // 存储格式 = 契约 §5：{"version":2,"automatic_settings":{...},"formations":[<FormationModel v2>]}
+    // 旧 API（list/saveLibrary/upsert/delete/duplicate）仍可用，内部桥接到 v2；
+    // 旧版 int id 无法表示内置大 id（9000000001/2），旧视图会跳过它们（新代码用 formations()）。
 
-    /** 读取某角色编队库（宽容解析；无库返回空列表）。 */
-    public static List<Formation> list(Context ctx, String fpid, long sid) {
+    /** 读取某角色编队库（v2 全量，宽容解析；无库返回空列表）。 */
+    public static List<FormationModel> formations(Context ctx, String fpid, long sid) {
         if (ctx == null) return new ArrayList<>();
-        try {
-            String raw = prefs(ctx).getString(prefKey(fpid, sid), null);
-            return parseLibrary(raw);
-        } catch (Throwable t) {
-            return new ArrayList<>();
+        return readModels(ctx, fpid, sid);
+    }
+
+    /** 按 id 取 v2 编队；不存在返回 null。 */
+    public static FormationModel formation(Context ctx, String fpid, long sid, long id) {
+        return FormationRules.findById(formations(ctx, fpid, sid), id);
+    }
+
+    /**
+     * 新增/更新编队（契约 §2.2）：{@code id<=0} 新建分配 id；{@code id>0} 覆盖；
+     * 游戏编队（{@code id<0}）自动转自定义副本；受保护内置（9000000001/2）返回 null 不修改。
+     *
+     * <p>覆盖时保留原 {@code source/builtIn/templateKey} 并递增 version；名称截断 30 字；
+     * 保存时按当前目录刷新在城可用性字段。
+     */
+    public static FormationModel saveFormation(Context ctx, String fpid, long sid, FormationModel f) {
+        return saveFormation(ctx, fpid, sid, "", f);
+    }
+
+    /**
+     * 保存编队（v2，uid 感知；T7 2026-10-25）：可用性标记（是否在家）用 uid 键目录精确刷新，
+     * 避免同 fpid:sid 多角色时按另一角色的目录把英雄标成"未归队/在家"。
+     */
+    public static FormationModel saveFormation(Context ctx, String fpid, long sid, String uid,
+                                               FormationModel f) {
+        if (ctx == null || f == null) return null;
+        List<FormationModel> lib = formations(ctx, fpid, sid);
+        FormationModel target = f.copy();
+        String name = FormationModel.truncateName(target.name);
+        if (name.isEmpty()) return null;
+        target.name = name;
+
+        boolean isNew = target.id <= 0 || target.id < 0 || FormationRules.findById(lib, target.id) == null;
+        if (!isNew && FormationBuiltIns.isProtected(target.id)) return null;
+        if (target.id < 0) {
+            // 游戏编队只读 → 保存即生成自定义副本（契约 §2.5）
+            target.id = 0;
+            target.source = FormationModel.SOURCE_CUSTOM;
+            target.builtIn = false;
+            target.templateKey = null;
+            isNew = true;
+        }
+        if (isNew) {
+            target.id = nextFormationId(lib);
+            target.source = FormationModel.SOURCE_CUSTOM;
+            if (target.builtIn && target.templateKey == null) target.builtIn = false;
+            target.version = Math.max(1, target.version);
+            target.updatedAt = System.currentTimeMillis();
+            lib.add(target);
+        } else {
+            FormationModel existing = FormationRules.findById(lib, target.id);
+            target.source = existing.source;
+            target.builtIn = existing.builtIn || target.builtIn;
+            if (existing.templateKey != null) target.templateKey = existing.templateKey;
+            target.version = Math.max(existing.version + 1, 2);
+            target.updatedAt = System.currentTimeMillis();
+            for (int i = 0; i < lib.size(); i++) {
+                if (lib.get(i).id == target.id) {
+                    lib.set(i, target);
+                    break;
+                }
+            }
+        }
+        // 剔除非法队长（不在上阵列表 → 由 heroIds[0] 兜底）
+        if (target.captainHeroId != null && target.captainHeroId > 0
+                && !target.hasHero(target.captainHeroId)) {
+            target.captainHeroId = target.heroIds.isEmpty() ? null : target.heroIds.get(0);
+        }
+        FormationRules.markAvailability(target, catalogOf(ctx, fpid, sid, uid));
+        writeModels(ctx, fpid, sid, lib, null);
+        return target;
+    }
+
+    /** 删除编队（契约 §2.2）：受保护内置不删；不存在静默返回。 */
+    public static void deleteFormation(Context ctx, String fpid, long sid, long id) {
+        if (ctx == null) return;
+        if (FormationBuiltIns.isProtected(id)) return;
+        List<FormationModel> lib = formations(ctx, fpid, sid);
+        boolean removed = false;
+        for (int i = lib.size() - 1; i >= 0; i--) {
+            if (lib.get(i).id == id) {
+                lib.remove(i);
+                removed = true;
+            }
+        }
+        if (removed) writeModels(ctx, fpid, sid, lib, null);
+    }
+
+    /** 复制编队（契约 §2.2）：名称 + 「（副本）」并截断 30 字；源不存在返回 null。 */
+    public static FormationModel duplicateFormation(Context ctx, String fpid, long sid, long id) {
+        FormationModel src = formation(ctx, fpid, sid, id);
+        if (src == null) return null;
+        FormationModel copy = src.copy();
+        copy.id = 0;
+        copy.name = FormationModel.truncateName(src.name + "（副本）");
+        copy.builtIn = false;
+        copy.templateKey = null;
+        copy.source = FormationModel.SOURCE_CUSTOM;
+        copy.version = 1;
+        return saveFormation(ctx, fpid, sid, copy);
+    }
+
+    /**
+     * 懒创建 8 个内置编队（契约 §2.6）：2 个基础内置始终补齐；6 个在
+     * {@code 容量已同步 + 目录有英雄} 时补齐。幂等，不覆盖已有数据。
+     */
+    public static void ensureBuiltIns(Context ctx, String fpid, long sid) {
+        ensureBuiltIns(ctx, fpid, sid, "");
+    }
+
+    /**
+     * 懒创建 8 个内置编队（v2，uid 感知；T7 2026-10-25）：目录用 {@code uid} 键精确读取，
+     * 避免同 fpid:sid 多角色时用错角色的英雄懒填内置编队（其它行为与无 uid 版一致）。
+     */
+    public static void ensureBuiltIns(Context ctx, String fpid, long sid, String uid) {
+        if (ctx == null) return;
+        List<FormationModel> lib = formations(ctx, fpid, sid);
+        String before = fingerprint(lib);
+        int created = FormationBuiltIns.ensure(lib, catalogOf(ctx, fpid, sid, uid));
+        if (created > 0 || !before.equals(fingerprint(lib))) {
+            writeModels(ctx, fpid, sid, lib, null);
         }
     }
 
-    /** 写回某角色编队库（按 id 升序保存；>MAX_FORMATIONS 只保留前 N 支）。 */
-    public static void saveLibrary(Context ctx, String fpid, long sid, List<Formation> formations) {
-        if (ctx == null) return;
+    /** 自动编队全局比例（[盾,矛,弓]；App 库内优先，服务端目录兜底，默认 50/20/30）。 */
+    public static int[] automaticSettings(Context ctx, String fpid, long sid) {
+        if (ctx == null) return new int[]{50, 20, 30};
+        int[] local = localAutomaticSettings(ctx, fpid, sid);
+        return local != null ? local : catalogOf(ctx, fpid, sid).automaticSettings();
+    }
+
+    /**
+     * 自动编队全局比例（v2，uid 感知；T7 2026-10-25）：App 本地库（fpid:sid 口径，契约 §0 共享）
+     * 优先；兜底目录用 uid 键精确读取，避免多角色同区服时读到另一角色的全局比例。
+     */
+    public static int[] automaticSettings(Context ctx, String fpid, long sid, String uid) {
+        if (ctx == null) return new int[]{50, 20, 30};
+        int[] local = localAutomaticSettings(ctx, fpid, sid);
+        return local != null ? local : catalogOf(ctx, fpid, sid, uid).automaticSettings();
+    }
+
+    /** 本地库里的自动比例（缺失/非法返回 null，交由调用方走目录兜底）。 */
+    private static int[] localAutomaticSettings(Context ctx, String fpid, long sid) {
         try {
-            List<Formation> sorted = new ArrayList<>();
-            if (formations != null) {
-                for (Formation f : formations) {
-                    if (f != null && f.id > 0) sorted.add(f);
+            JSONObject root = readRoot(ctx, fpid, sid);
+            JSONObject local = root.optJSONObject("automatic_settings");
+            if (local != null) {
+                int inf = clampPct(local.optInt("infantry_ratio",
+                        local.optInt("infantryRatio", -1)));
+                int lanc = clampPct(local.optInt("lancer_ratio",
+                        local.optInt("lancerRatio", -1)));
+                int mark = clampPct(local.optInt("marksman_ratio",
+                        local.optInt("marksmanRatio", -1)));
+                if (inf >= 0 && lanc >= 0 && mark >= 0 && inf + lanc + mark == 100) {
+                    return new int[]{inf, lanc, mark};
                 }
             }
-            sorted.sort((x, y) -> Integer.compare(x.id, y.id));
-            if (sorted.size() > MAX_FORMATIONS) {
-                sorted = new ArrayList<>(sorted.subList(0, MAX_FORMATIONS));
-            }
-            prefs(ctx).edit().putString(prefKey(fpid, sid), libraryJson(sorted)).apply();
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    /** 保存自动编队全局比例（三项 clamp 0..100；和=100 由 UI 校验，后端再校验）。 */
+    public static void saveAutomaticSettings(Context ctx, String fpid, long sid,
+                                             int inf, int lanc, int mark) {
+        if (ctx == null) return;
+        try {
+            JSONObject root = readRoot(ctx, fpid, sid);
+            JSONObject as = new JSONObject();
+            as.put("infantry_ratio", clampPct(inf));
+            as.put("lancer_ratio", clampPct(lanc));
+            as.put("marksman_ratio", clampPct(mark));
+            root.put("automatic_settings", as);
+            prefs(ctx).edit().putString(prefKey(fpid, sid), root.toString()).apply();
         } catch (Throwable ignored) {
         }
     }
 
-    /** 同步用：编队库 JSON（无编队返回空串=不上传，保持旧行为）。 */
-    public static String libraryJsonForSync(Context ctx, String fpid, long sid) {
-        List<Formation> list = list(ctx, fpid, sid);
-        if (list.isEmpty()) return "";
-        return libraryJson(list);
+    /** 上传服务端的 params JSON（契约 §5：version/automatic_settings/formations 全量 v2）。 */
+    public static String libraryJson(Context ctx, String fpid, long sid) {
+        if (ctx == null) return "{\"version\":2,\"automatic_settings\":{\"infantry_ratio\":50,"
+                + "\"lancer_ratio\":20,\"marksman_ratio\":30},\"formations\":[]}";
+        try {
+            JSONObject root = readRoot(ctx, fpid, sid);
+            root.put("version", 2);
+            if (root.optJSONObject("automatic_settings") == null) {
+                int[] a = automaticSettings(ctx, fpid, sid);
+                JSONObject as = new JSONObject();
+                as.put("infantry_ratio", a[0]);
+                as.put("lancer_ratio", a[1]);
+                as.put("marksman_ratio", a[2]);
+                root.put("automatic_settings", as);
+            }
+            JSONArray arr = new JSONArray();
+            for (FormationModel m : readModels(ctx, fpid, sid)) {
+                arr.put(m.toJson(false));
+            }
+            root.put("formations", arr);
+            return root.toString();
+        } catch (Throwable t) {
+            return "{\"version\":2,\"formations\":[]}";
+        }
     }
 
-    /** 按 id 取编队；不存在返回 null。 */
+    /** 读取旧版编队列表（兼容桥；跳过 int 无法表示的内置项）。 */
+    public static List<Formation> list(Context ctx, String fpid, long sid) {
+        List<Formation> out = new ArrayList<>();
+        for (FormationModel m : formations(ctx, fpid, sid)) {
+            Formation f = fromModel(m);
+            if (f != null) out.add(f);
+        }
+        return out;
+    }
+
+    /** 写回旧版编队列表（兼容桥；保留旧 UI 无法表示的内置/游戏项，按 id 升序，>MAX 截断）。 */
+    public static void saveLibrary(Context ctx, String fpid, long sid, List<Formation> formations) {
+        if (ctx == null) return;
+        try {
+            List<FormationModel> next = new ArrayList<>();
+            for (FormationModel m : formations(ctx, fpid, sid)) {
+                if (m.id > Integer.MAX_VALUE || m.id < 0) next.add(m);
+            }
+            List<FormationModel> incoming = new ArrayList<>();
+            if (formations != null) {
+                for (Formation f : formations) {
+                    if (f != null && f.id > 0) incoming.add(toModel(f));
+                }
+            }
+            incoming.sort((x, y) -> Long.compare(x.id, y.id));
+            if (incoming.size() > MAX_FORMATIONS) {
+                incoming = new ArrayList<>(incoming.subList(0, MAX_FORMATIONS));
+            }
+            next.addAll(incoming);
+            writeModels(ctx, fpid, sid, next, null);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 同步用：编队库 JSON（无编队返回空串=不上传，保持旧行为；内容为契约 §5 v2）。 */
+    public static String libraryJsonForSync(Context ctx, String fpid, long sid) {
+        if (formations(ctx, fpid, sid).isEmpty()) return "";
+        return libraryJson(ctx, fpid, sid);
+    }
+
+    /** 按 id 取旧版编队；不存在返回 null（int 无法表示的内置 id 也返回 null）。 */
     public static Formation byId(Context ctx, String fpid, long sid, long id) {
         for (Formation f : list(ctx, fpid, sid)) {
             if (f.id == id) return f;
@@ -469,41 +798,25 @@ public final class FormationStore {
     }
 
     /**
-     * 新增/更新编队：id≤0 时分配 {@link #nextId}；id 已存在则整条替换。
+     * 旧版新增/更新编队（兼容桥）：id≤0 时分配 {@link #nextId}；id 已存在则整条替换。
      * 返回保存后的编队（含分配后的 id）；校验失败返回 null。
      */
     public static Formation upsert(Context ctx, String fpid, long sid, Formation f) {
         if (f == null || validate(f) != null) return null;
-        List<Formation> list = list(ctx, fpid, sid);
-        if (f.id <= 0) f.id = nextId(list);
-        boolean replaced = false;
-        for (int i = 0; i < list.size(); i++) {
-            if (list.get(i).id == f.id) {
-                list.set(i, f);
-                replaced = true;
-                break;
-            }
-        }
-        if (!replaced) list.add(f);
-        saveLibrary(ctx, fpid, sid, list);
+        FormationModel saved = saveFormation(ctx, fpid, sid, toModel(f));
+        if (saved == null || saved.id <= 0 || saved.id > Integer.MAX_VALUE) return null;
+        f.id = (int) saved.id;
         return f;
     }
 
-    /** 删除编队（不存在返回 false）。 */
+    /** 旧版删除编队（不存在返回 false）。 */
     public static boolean delete(Context ctx, String fpid, long sid, long id) {
-        List<Formation> list = list(ctx, fpid, sid);
-        boolean removed = false;
-        for (int i = list.size() - 1; i >= 0; i--) {
-            if (list.get(i).id == id) {
-                list.remove(i);
-                removed = true;
-            }
-        }
-        if (removed) saveLibrary(ctx, fpid, sid, list);
-        return removed;
+        if (formation(ctx, fpid, sid, id) == null) return false;
+        deleteFormation(ctx, fpid, sid, id);
+        return true;
     }
 
-    /** 复制编队（新 id + 名称加「副本」）；源不存在返回 null。 */
+    /** 旧版复制编队（新 id + 名称加「副本」）；源不存在返回 null。 */
     public static Formation duplicate(Context ctx, String fpid, long sid, long id) {
         Formation src = byId(ctx, fpid, sid, id);
         if (src == null) return null;
@@ -518,10 +831,31 @@ public final class FormationStore {
 
     /** 读服务器编队目录（daily_state 键 srv:formation:catalog:{fpid}:{sid}）；缺失返回 null。 */
     public static JSONObject catalog(Context ctx, String fpid, long sid) {
-        if (ctx == null) return null;
+        return readCatalogKey(ctx, catalogStateKey(fpid, sid));
+    }
+
+    /**
+     * 读服务器编队目录（v2，uid 感知；T7 2026-10-25）。
+     *
+     * <p><b>读取优先级</b>：① {@code srv:formation:catalog:{fpid}:{sid}:{uid}}（v2 键，
+     * 角色精确匹配）；② 缺失/空/解析失败 → 回退旧键 {@code ...:{fpid}:{sid}}（一版过渡兼容）；
+     * ③ 都无 → 返回 null（调用方 {@link FormationCatalogStore} 降级 configured()=false）。
+     * uid 为空/{@code "0"} 时等价于旧方法。
+     */
+    public static JSONObject catalog(Context ctx, String fpid, long sid, String uid) {
+        JSONObject own = readCatalogKey(ctx, catalogStateKey(fpid, sid, uid));
+        if (own != null) return own;
+        String u = nz(uid);
+        if (u.isEmpty() || "0".equals(u)) return null;          // 旧键即本体，避免重复读
+        return readCatalogKey(ctx, catalogStateKey(fpid, sid)); // 过渡期回退旧键
+    }
+
+    /** 读 daily_state 中单个目录键（缺失/空/坏 JSON → null）。 */
+    private static JSONObject readCatalogKey(Context ctx, String key) {
+        if (ctx == null || key == null) return null;
         try {
             String raw = ctx.getSharedPreferences("daily_state", Context.MODE_PRIVATE)
-                    .getString(catalogStateKey(fpid, sid), null);
+                    .getString(key, null);
             if (raw == null || raw.trim().isEmpty()) return null;
             return new JSONObject(raw.trim());
         } catch (Throwable t) {
@@ -533,6 +867,22 @@ public final class FormationStore {
     public static boolean hasCatalog(Context ctx, String fpid, long sid) {
         return !parseHeroes(catalog(ctx, fpid, sid)).isEmpty();
     }
+
+    /** 目录是否可用（uid 感知；优先级同 {@link #catalog(Context, String, long, String)}）。 */
+    public static boolean hasCatalog(Context ctx, String fpid, long sid, String uid) {
+        return !parseHeroes(catalog(ctx, fpid, sid, uid)).isEmpty();
+    }
+
+    /** App 侧目录 v2（契约 §2.3）：恒返回非空对象；无目录时 {@code configured()=false}（降级）。 */
+    public static FormationCatalogStore catalogOf(Context ctx, String fpid, long sid) {
+        return new FormationCatalogStore(catalog(ctx, fpid, sid));
+    }
+
+    /** App 侧目录 v2（uid 感知；优先级同 {@link #catalog(Context, String, long, String)}）。 */
+    public static FormationCatalogStore catalogOf(Context ctx, String fpid, long sid, String uid) {
+        return new FormationCatalogStore(catalog(ctx, fpid, sid, uid));
+    }
+
 
     // ==================== 每功能 params（formation_mode/formation_id/ratio/total） ====================
 
@@ -546,13 +896,40 @@ public final class FormationStore {
         }
     }
 
-    /** 该功能指定编队 id（0=未指定）。 */
+    /** 该功能指定编队 id（0=未指定；有 {@code formation_ids} 数组时取首个，兼容旧调用）。 */
     public static long fnFormationId(Context ctx, String fpid, long sid, String fnId) {
         try {
-            return FnParams.params(ctx, fpid, sid, fnId).optLong("formation_id", 0);
+            JSONObject p = FnParams.params(ctx, fpid, sid, fnId);
+            long id = p.optLong("formation_id", 0);
+            if (id != 0) return id;
+            long[] ids = FormationBinding.parseIds(p);
+            return ids.length > 0 ? ids[0] : 0;
         } catch (Throwable t) {
             return 0;
         }
+    }
+
+    /** 该功能绑定的编队 id 数组（契约 §2.2；兼容旧 {@code formation_id}）。 */
+    public static long[] fnFormationIds(Context ctx, String fpid, long sid, String fnId) {
+        return FormationBinding.readIds(ctx, fpid, sid, fnId);
+    }
+
+    /** 写该功能绑定编队 id 数组（模式置 ROLE；空数组=清引用并回落 AUTOMATIC）。 */
+    public static void saveFnFormationIds(Context ctx, String fpid, long sid, String fnId,
+                                          long[] ids) {
+        if (ids == null || ids.length == 0) {
+            FormationBinding.writeAutomatic(ctx, fpid, sid, fnId);
+            return;
+        }
+        FormationBinding.writeIds(ctx, fpid, sid, fnId, ids);
+    }
+
+    /**
+     * 队列绑定校验（契约 §2.2 / 网页 §4.6 文案）：{@code null}=合法，否则中文原因。
+     */
+    public static String validateBinding(FormationCatalogStore cat, List<FormationModel> lib,
+                                         String fnId, String mode, long[] ids) {
+        return FormationBinding.validate(cat, lib, fnId, mode, ids);
     }
 
     /** 写该功能编队模式（AUTOMATIC 时清掉 formation_id，避免服务器按旧 id 出征）。 */
@@ -561,18 +938,20 @@ public final class FormationStore {
             JSONObject p = FnParams.params(ctx, fpid, sid, fnId);
             String m = normalizeMode(mode);
             p.put("formation_mode", m);
-            if (MODE_AUTOMATIC.equals(m)) p.remove("formation_id");
+            if (MODE_AUTOMATIC.equals(m)) {
+                p.remove("formation_id");
+                p.remove("formation_ids");
+            }
             FnParams.saveParams(ctx, fpid, sid, fnId, p);
         } catch (Throwable ignored) {
         }
     }
 
-    /** 写该功能指定编队 id（同时把模式置 ROLE）。 */
+    /** 写该功能指定编队 id（同时把模式置 ROLE；兼容写 formation_ids 数组）。 */
     public static void saveFnFormation(Context ctx, String fpid, long sid, String fnId, long formationId) {
         try {
             JSONObject p = FnParams.params(ctx, fpid, sid, fnId);
-            p.put("formation_mode", MODE_ROLE);
-            p.put("formation_id", formationId);
+            FormationBinding.applyIds(p, formationId > 0 ? new long[]{formationId} : new long[0]);
             FnParams.saveParams(ctx, fpid, sid, fnId, p);
         } catch (Throwable ignored) {
         }
@@ -782,7 +1161,304 @@ public final class FormationStore {
         return o;
     }
 
+    // ==================== 巨熊模板 / 游戏编队副本 / 一键编队（契约外补充 API） ====================
+
+    /** 30 套巨熊模板（assets {@code formation/bear_templates.json} 优先，缺失/损坏回落内置常量）。 */
+    public static List<BearFormationTemplates.Template> bearTemplates(Context ctx) {
+        if (ctx != null) {
+            BufferedReader reader = null;
+            try {
+                reader = new BufferedReader(new InputStreamReader(
+                        ctx.getAssets().open(BearFormationTemplates.ASSET_PATH), "UTF-8"));
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) sb.append(line).append('\n');
+                List<BearFormationTemplates.Template> parsed =
+                        BearFormationTemplates.parse(sb.toString());
+                if (!parsed.isEmpty()) return parsed;
+            } catch (Throwable ignored) {
+                // assets 未就绪 → 回落内置常量
+            } finally {
+                if (reader != null) {
+                    try {
+                        reader.close();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            }
+        }
+        return BearFormationTemplates.all();
+    }
+
+    /**
+     * 应用巨熊模板（网页 B1 / §1.11）：删除已有「巨熊·」编队后生成 1 开车队 + 6 上车队并保存；
+     * 同时把巨熊配置改为 6 个 ROLE 引用（{@code join_formations}）+ 本地模板状态。
+     *
+     * @return 已保存的 7 支编队（含分配后 id）；模板不存在返回空列表
+     */
+    public static List<FormationModel> applyBearTemplate(Context ctx, String fpid, long sid,
+                                                         String templateId) {
+        return applyBearTemplate(ctx, fpid, sid, "", templateId);
+    }
+
+    /** 应用巨熊模板（v2，uid 感知）：模板英雄可用性/懒填用 uid 键目录（多角色不串）。 */
+    public static List<FormationModel> applyBearTemplate(Context ctx, String fpid, long sid,
+                                                         String uid, String templateId) {
+        if (ctx == null) return new ArrayList<>();
+        BearFormationTemplates.Template t = null;
+        for (BearFormationTemplates.Template item : bearTemplates(ctx)) {
+            if (templateId != null && templateId.equals(item.id)) {
+                t = item;
+                break;
+            }
+        }
+        if (t == null) return new ArrayList<>();
+        List<FormationModel> lib = formations(ctx, fpid, sid);
+        for (int i = lib.size() - 1; i >= 0; i--) {
+            if (lib.get(i).isBear()) lib.remove(i);
+        }
+        List<FormationModel> built = BearFormationTemplates.buildFormations(
+                t, catalogOf(ctx, fpid, sid, uid).heroOptions());
+        long next = nextFormationId(lib);
+        long now = System.currentTimeMillis();
+        for (FormationModel m : built) {
+            m.id = next++;
+            m.version = 1;
+            m.updatedAt = now;
+            lib.add(m);
+        }
+        writeModels(ctx, fpid, sid, lib, null);
+
+        // 上游联动：6 个上车槽改 ROLE 引用（网页 B1 / index jd()）
+        JSONArray joinIds = new JSONArray();
+        for (int n = 1; n <= built.size() - 1; n++) {
+            long id = built.get(n).id;
+            joinIds.put(id);
+            saveJoinFormation(ctx, fpid, sid, n, MODE_ROLE, id, true);
+        }
+        JSONObject p = FnParams.params(ctx, fpid, sid, "bear");
+        JSONObject launch = new JSONObject();
+        try {
+            launch.put("mode", MODE_ROLE);
+            launch.put("formation_id", built.get(0).id);
+            p.put("launch_formation", launch);
+            JSONObject state = new JSONObject();
+            state.put("template_id", t.id);
+            state.put("title", t.title);
+            state.put("generation", t.generation);
+            state.put("tier", t.tier);
+            state.put("applied_at", now);
+            state.put("launch_formation_id", built.get(0).id);
+            state.put("join_formation_ids", joinIds);
+            p.put("template_state", state);
+            FnParams.saveParams(ctx, fpid, sid, "bear", p);
+        } catch (Throwable ignored) {
+        }
+        List<FormationModel> saved = new ArrayList<>();
+        for (FormationModel m : built) saved.add(m);
+        return saved;
+    }
+
+    /** 本地巨熊模板应用状态（无则空对象）。 */
+    public static JSONObject bearTemplateState(Context ctx, String fpid, long sid) {
+        try {
+            JSONObject state = FnParams.params(ctx, fpid, sid, "bear")
+                    .optJSONObject("template_state");
+            return state == null ? new JSONObject() : state;
+        } catch (Throwable t) {
+            return new JSONObject();
+        }
+    }
+
+    /**
+     * 复制游戏编队为自定义（契约 §2.5 / 网页 R6）：名称 + 「（副本）」、id 新分配、source=CUSTOM。
+     *
+     * @param gameId 游戏编队 id（负数，如 -1；也接受正数 sourceId）
+     * @return 保存后的自定义编队；不存在返回 null
+     */
+    public static FormationModel copyGameFormation(Context ctx, String fpid, long sid, long gameId) {
+        return copyGameFormation(ctx, fpid, sid, "", gameId);
+    }
+
+    /** 复制游戏编队为自定义（v2，uid 感知）：游戏编队镜像按 uid 键目录读取（多角色不串）。 */
+    public static FormationModel copyGameFormation(Context ctx, String fpid, long sid, String uid,
+                                                   long gameId) {
+        List<FormationModel> games = catalogOf(ctx, fpid, sid, uid).gameFormations();
+        FormationModel src = null;
+        long want = gameId < 0 ? gameId : -gameId;
+        for (FormationModel g : games) {
+            if (g.id == want || g.id == -Math.abs(gameId)) {
+                src = g;
+                break;
+            }
+        }
+        if (src == null) return null;
+        FormationModel copy = src.copy();
+        copy.id = 0;
+        copy.source = FormationModel.SOURCE_CUSTOM;
+        copy.builtIn = false;
+        copy.templateKey = null;
+        copy.name = FormationModel.truncateName(src.name + "（副本）");
+        copy.version = 1;
+        return saveFormation(ctx, fpid, sid, copy);
+    }
+
+    // ==================== 模型兼容桥（Formation ⇄ FormationModel） ====================
+
+    /** 旧模型 → v2 模型：比例模式映射为 PERCENTAGE；兵量取 soldiers 或 total。 */
+    public static FormationModel toModel(Formation f) {
+        if (f == null) return null;
+        FormationModel m = new FormationModel();
+        m.id = f.id;
+        m.name = f.name == null ? "" : f.name;
+        m.source = m.id < 0 ? FormationModel.SOURCE_GAME : FormationModel.SOURCE_CUSTOM;
+        m.heroIds.addAll(f.heroIds);
+        m.infantry = Math.max(0, f.infantry);
+        m.lancer = Math.max(0, f.lancer);
+        m.marksman = Math.max(0, f.marksman);
+        m.infantryRatio = Math.max(0, f.ratioInfantry);
+        m.lancerRatio = Math.max(0, f.ratioLancer);
+        m.marksmanRatio = Math.max(0, f.ratioMarksman);
+        m.totalSoldiers = m.soldiersTotal() > 0 ? m.soldiersTotal() : Math.max(0, f.total);
+        m.allocationMode = f.ratioMode ? FormationModel.MODE_PERCENTAGE
+                : FormationModel.MODE_MANUAL;
+        // 旧 ratioMode 且兵量为 0：比例模式按容量换算，total 0=按容量
+        if (f.ratioMode) {
+            m.infantry = 0;
+            m.lancer = 0;
+            m.marksman = 0;
+        }
+        if (!m.heroIds.isEmpty()) m.captainHeroId = m.heroIds.get(0);
+        return m;
+    }
+
+    /** v2 模型 → 旧模型；id 超出 int 范围（内置大 id）返回 null。 */
+    public static Formation fromModel(FormationModel m) {
+        if (m == null || m.id == 0) return null;
+        if (m.id > Integer.MAX_VALUE || m.id < Integer.MIN_VALUE) return null;
+        Formation f = new Formation();
+        f.id = (int) m.id;
+        f.name = m.name == null ? "" : m.name;
+        f.heroIds.addAll(m.heroIds);
+        f.infantry = Math.max(0, m.infantry);
+        f.lancer = Math.max(0, m.lancer);
+        f.marksman = Math.max(0, m.marksman);
+        f.ratioInfantry = Math.max(0, m.infantryRatio);
+        f.ratioLancer = Math.max(0, m.lancerRatio);
+        f.ratioMarksman = Math.max(0, m.marksmanRatio);
+        f.total = Math.max(0, m.soldiersTotal() > 0 ? m.soldiersTotal() : m.totalSoldiers);
+        f.ratioMode = m.isPercentage();
+        return f;
+    }
+
     // ==================== 内部 ====================
+
+    /** 读库根 JSON（恒定非 null）：兼容旧格式（裸数组/仅 formations）。 */
+    private static JSONObject readRoot(Context ctx, String fpid, long sid) {
+        JSONObject root = new JSONObject();
+        try {
+            String raw = prefs(ctx).getString(prefKey(fpid, sid), null);
+            if (raw != null && !raw.trim().isEmpty()) {
+                String text = raw.trim();
+                if (text.startsWith("[")) {
+                    root.put("formations", new JSONArray(text));
+                } else {
+                    root = new JSONObject(text);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (root.optJSONArray("formations") == null) root.put("formations", new JSONArray());
+        } catch (Throwable ignored) {
+        }
+        return root;
+    }
+
+    /** 读 v2 编队列表（宽容；0/非法条目丢弃）。 */
+    private static List<FormationModel> readModels(Context ctx, String fpid, long sid) {
+        try {
+            return FormationModel.parseArray(readRoot(ctx, fpid, sid).optJSONArray("formations"));
+        } catch (Throwable t) {
+            return new ArrayList<>();
+        }
+    }
+
+    /**
+     * 写 v2 编队列表（保留 automatic_settings；{@code auto} 非空则一并覆盖）。
+     * 不做数量上限（网页未设上限，契约 §0）。
+     */
+    private static void writeModels(Context ctx, String fpid, long sid,
+                                    List<FormationModel> models, int[] auto) {
+        if (ctx == null) return;
+        try {
+            JSONObject root = readRoot(ctx, fpid, sid);
+            root.put("version", 2);
+            JSONArray arr = new JSONArray();
+            if (models != null) {
+                List<FormationModel> sorted = new ArrayList<>();
+                for (FormationModel m : models) {
+                    if (m != null && m.id != 0) sorted.add(m);
+                }
+                sorted.sort((x, y) -> Long.compare(x.id, y.id));
+                for (FormationModel m : sorted) arr.put(m.toJson(false));
+            }
+            root.put("formations", arr);
+            if (auto != null) {
+                JSONObject as = new JSONObject();
+                as.put("infantry_ratio", clampPct(auto[0]));
+                as.put("lancer_ratio", clampPct(auto[1]));
+                as.put("marksman_ratio", clampPct(auto[2]));
+                root.put("automatic_settings", as);
+            } else if (root.optJSONObject("automatic_settings") == null) {
+                JSONObject as = new JSONObject();
+                as.put("infantry_ratio", 50);
+                as.put("lancer_ratio", 20);
+                as.put("marksman_ratio", 30);
+                root.put("automatic_settings", as);
+            }
+            prefs(ctx).edit().putString(prefKey(fpid, sid), root.toString()).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 库内容指纹（用于懒创建后判断是否需要落盘，避免无变化写 prefs）。 */
+    private static String fingerprint(List<FormationModel> lib) {
+        StringBuilder sb = new StringBuilder();
+        if (lib != null) {
+            for (FormationModel m : lib) {
+                if (m == null) continue;
+                sb.append(m.id).append('|').append(m.name).append('|')
+                        .append(m.heroIds).append('|').append(m.captainHeroId).append('|')
+                        .append(m.infantry).append('/').append(m.lancer).append('/')
+                        .append(m.marksman).append('\n');
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 下一个自定义编队 id：避开内置大 id、从 1 起、跳过已占用。 */    private static long nextFormationId(List<FormationModel> lib) {
+        long max = 0;
+        Set<Long> used = new LinkedHashSet<>();
+        if (lib != null) {
+            for (FormationModel m : lib) {
+                if (m == null || m.id <= 0) continue;
+                used.add(m.id);
+                if (m.id < FormationBuiltIns.ID_ONE_INFANTRY && m.id > max) max = m.id;
+            }
+        }
+        long next = max + 1;
+        while (used.contains(next) || FormationBuiltIns.isBuiltIn(next)) next++;
+        return next;
+    }
+
+    private static int clampPct(int v) {
+        return v < 0 ? 0 : (v > 100 ? 100 : v);
+    }
+
+    private static int clampInt(int v, int min, int max) {
+        return v < min ? min : (v > max ? max : v);
+    }
 
     private static SharedPreferences prefs(Context ctx) {
         return ctx.getApplicationContext()

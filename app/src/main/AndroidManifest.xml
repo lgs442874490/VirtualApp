@@ -124,6 +124,12 @@
             android:name="com.carlos.vault.daily.GatherConfigActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
+        <!-- 编队管理页（1:1 网页版「编队管理」弹窗，2026-10-25）：
+             自动编队/游戏编队/我的编队 3 tab + 编队板 + 编辑器；从功能页编队卡进入。 -->
+        <activity
+            android:name="com.carlos.vault.daily.FormationManagerActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
         <!-- 资产中心（W9）：核心资产库 9 大域只读展示，从今日页「资产」快捷入口进入 -->
         <activity
             android:name="com.carlos.vault.AssetCenterActivity"

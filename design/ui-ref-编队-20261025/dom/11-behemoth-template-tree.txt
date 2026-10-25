@@ -1,0 +1,3668 @@
+===== OVERLAY el-overlay el-modal-dialog  DIALOG el-dialog responsive-dialog role-formation-dialog formation-page-dialog
+div.el-dialog.responsive-dialog.role-formation-dialog.formation-page-dialog  {463x499 @489,24}
+  header.el-dialog__header  {461x40 @490,25}
+    div.formation-page-title  {461x39 @490,25}
+      span  «编队管理»  {60x23 @690,32}
+      button[aria-label="关闭编队管理" type="button"]  {30x30 @911,29}
+  div.el-dialog__body  {461x457 @490,65}
+    div.formation-manager-body  {461x457 @490,65}
+      div.formation-source-tabs[role="tablist" aria-label="编队管理分类"]  {461x51 @490,65}
+        button[role="tab" type="button" aria-selected="false"]  {146x38 @496,71}
+          span  «自动编队»  {56x22 @550,79}
+        button[role="tab" type="button" aria-selected="false"]  {146x38 @647,71}
+          span  «游戏编队»  {56x22 @702,79}
+        button.is-active[role="tab" type="button" aria-selected="true"]  {146x38 @799,71}
+          span  «我的编队»  {56x22 @854,79}
+      div.mine-sub-tabs[role="tablist" aria-label="我的编队来源"]  {461x83 @490,116}
+        button[role="tab" type="button" aria-selected="false"]  «全部 12»  {144x32 @498,122}
+        button[role="tab" type="button" aria-selected="false"]  «内置 8»  {144x32 @648,122}
+        button[role="tab" type="button" aria-selected="false"]  «自定义 4»  {144x32 @798,122}
+        button.is-active[role="tab" type="button" aria-selected="true"]  «巨熊编队 0»  {144x32 @498,160}
+      section.bear-formation-entry  {461x87 @490,199}
+        button.bear-formation-entry-copy[aria-label="查看巨熊编队模板" type="button"]  {331x65 @503,210}
+          strong  «巨熊编队»  {331x22 @503,210}
+          small  «尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队（盾 5% / 矛 5% / 弓 90%）»  {331x41 @503,235}
+        button.el-button.el-button--primary.is-plain[type="button" aria-disabled="false"]  {94x36 @844,225}
+          span  «选择模板»  {60x15 @861,235}
+      div.el-empty  {461x228 @490,294}
+        div.el-empty__image  {72x78 @684,334}
+        div.el-empty__description  {461x50 @490,433}
+          p  «还没有巨熊编队；点击上方「选择模板」生成 1 支开车队与 6 支上车队»  {461x50 @490,433}
+===== OVERLAY el-overlay el-modal-dialog  DIALOG el-dialog responsive-dialog bear-template-dialog
+div.el-dialog.responsive-dialog.bear-template-dialog  {760x1170 @340,24}
+  header.el-dialog__header  {726x106 @357,41}
+    div.bear-template-title  {678x69 @381,61}
+      div  {144x61 @383,65}
+        span  «巨熊编队模板»  {144x37 @383,65}
+        small  «尚未选择模板»  {144x22 @383,104}
+      button[aria-label="关闭巨熊编队模板" type="button"]  {30x30 @1027,80}
+  div.el-dialog__body  {726x1030 @357,147}
+    div.bear-template-body  {678x10423 @381,167}
+      div.bear-template-toolbar  {654x155 @393,177}
+        div.el-input.el-input--suffix  {654x36 @393,177}
+          div.el-input__wrapper  {654x36 @393,177}
+            input.el-input__inner[placeholder="搜索英雄或模板，例如：杰西、十一代" type="text"]  {608x30 @405,180}
+            span.el-input__suffix  {22x32 @1013,179}
+              span.el-input__suffix-inner  {22x32 @1013,179}
+        div.bear-template-chips[role="tablist" aria-label="按代数筛选"]  {654x36 @393,221}
+          button.is-active[type="button"]  «全部代数»  {78x34 @393,221}
+          button[type="button"]  «1 代»  {48x34 @477,221}
+          button[type="button"]  «2 代»  {48x34 @531,221}
+          button[type="button"]  «3 代»  {48x34 @586,221}
+          button[type="button"]  «4 代»  {48x34 @640,221}
+          button[type="button"]  «5 代»  {48x34 @695,221}
+          button[type="button"]  «6 代»  {48x34 @749,221}
+          button[type="button"]  «7 代»  {48x34 @804,221}
+          button[type="button"]  «8 代»  {48x34 @858,221}
+          button[type="button"]  «9 代»  {48x34 @913,221}
+          button[type="button"]  «10 代»  {57x34 @967,221}
+          button[type="button"]  «11 代»  {57x34 @1030,221}
+          button[type="button"]  «12 代»  {57x34 @1093,221}
+          button[type="button"]  «13 代»  {57x34 @1157,221}
+          button[type="button"]  «14 代»  {57x34 @1220,221}
+        div.bear-template-chips.is-tier[role="tablist" aria-label="按定位筛选"]  {654x36 @393,265}
+          button.is-active[type="button"]  «全部定位»  {78x34 @393,265}
+          button[type="button"]  «大氪»  {50x34 @477,265}
+          button[type="button"]  «微氪»  {50x34 @533,265}
+          button[type="button"]  «零氪»  {50x34 @589,265}
+          button[type="button"]  «前瞻»  {50x34 @645,265}
+        div.bear-template-filter  {654x24 @393,308}
+          label  {160x24 @393,308}
+            div.el-switch.el-switch--small  {44x24 @393,308}
+              span.el-switch__core  {44x22 @393,309}
+                div.el-switch__action  {18x18 @395,311}
+            span  «只看可用（4 套）»  {110x22 @443,309}
+          span.bear-template-total  «共 30 套模板»  {81x22 @966,309}
+      div.bear-template-alert.is-info  {654x43 @393,342}
+        p  «等待角色英雄数据同步完成后再应用模板»  {628x21 @406,353}
+      ul.bear-template-list  {654x10181 @393,395}
+        li.bear-template-card.is-locked  {654x330 @393,395}
+          header.bear-template-card-head  {632x46 @404,406}
+            div.bear-template-card-title  {185x46 @404,406}
+              strong  «一代·大氪»  {185x22 @404,406}
+              span.bear-template-tags  {185x20 @404,432}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,432}
+                  span.el-tag__content  «1 代»  {23x12 @415,436}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,432}
+                  span.el-tag__content  «大氪»  {24x12 @464,436}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,432}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,436}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,406}
+              span  «应用模板»  {60x15 @959,417}
+          div.bear-template-team.is-launch  {632x34 @404,460}
+            span.bear-template-role  «开车队»  {56x22 @411,466}
+            ul.bear-template-heroes  {556x24 @473,465}
+              li  {116x24 @473,465}
+                div.el-image  {24x24 @473,465}
+                span  «赫罗尼莫»  {56x22 @501,466}
+                small  «盾兵»  {28x22 @561,466}
+              li  {88x24 @597,465}
+                div.el-image  {24x24 @597,465}
+                span  «茉莉»  {28x22 @625,466}
+                small  «矛兵»  {28x22 @657,466}
+              li  {102x24 @693,465}
+                div.el-image  {24x24 @693,465}
+                span  «巴希提»  {42x22 @721,466}
+                small  «射手»  {28x22 @767,466}
+          div.bear-template-joins  {632x212 @404,502}
+            div.bear-template-team  {632x32 @404,502}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,507}
+              ul.bear-template-heroes  {558x24 @472,506}
+                li.is-captain  {88x24 @472,506}
+                  div.el-image  {24x24 @472,506}
+                  span  «杰西»  {28x22 @500,507}
+                  small  «矛兵»  {28x22 @532,507}
+                li  {88x24 @568,506}
+                  div.el-image  {24x24 @568,506}
+                  span  «尤金»  {28x22 @596,507}
+                  small  «盾兵»  {28x22 @628,507}
+                li  {116x24 @664,506}
+                  div.el-image  {24x24 @664,506}
+                  span  «克劳瑞斯»  {56x22 @692,507}
+                  small  «射手»  {28x22 @752,507}
+            div.bear-template-team  {632x32 @404,538}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,543}
+              ul.bear-template-heroes  {558x24 @472,542}
+                li.is-captain  {88x24 @472,542}
+                  div.el-image  {24x24 @472,542}
+                  span  «书允»  {28x22 @500,543}
+                  small  «射手»  {28x22 @532,543}
+                li  {102x24 @568,542}
+                  div.el-image  {24x24 @568,542}
+                  span  «史密斯»  {42x22 @596,543}
+                  small  «盾兵»  {28x22 @642,543}
+                li  {88x24 @678,542}
+                  div.el-image  {24x24 @678,542}
+                  span  «查理»  {28x22 @706,543}
+                  small  «矛兵»  {28x22 @738,543}
+            div.bear-template-team  {632x32 @404,574}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,579}
+              ul.bear-template-heroes  {558x24 @472,578}
+                li.is-captain  {102x24 @472,578}
+                  div.el-image  {24x24 @472,578}
+                  span  «杰塞尔»  {42x22 @500,579}
+                  small  «射手»  {28x22 @546,579}
+                li  {116x24 @582,578}
+                  div.el-image  {24x24 @582,578}
+                  span  «帕特里克»  {56x22 @610,579}
+                  small  «矛兵»  {28x22 @670,579}
+            div.bear-template-team  {632x32 @404,610}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,615}
+              ul.bear-template-heroes  {558x24 @472,614}
+                li.is-captain  {116x24 @472,614}
+                  div.el-image  {24x24 @472,614}
+                  span  «娜塔莉亚»  {56x22 @500,615}
+                  small  «盾兵»  {28x22 @560,615}
+                li  {120x24 @596,614}
+                  div.el-image  {24x24 @596,614}
+                  span  «卢姆·波根»  {60x22 @624,615}
+                  small  «矛兵»  {28x22 @688,615}
+                li  {88x24 @724,614}
+                  div.el-image  {24x24 @724,614}
+                  span  «津曼»  {28x22 @752,615}
+                  small  «射手»  {28x22 @784,615}
+            div.bear-template-team  {632x32 @404,646}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,651}
+              ul.bear-template-heroes  {558x24 @472,650}
+                li.is-captain  {102x24 @472,650}
+                  div.el-image  {24x24 @472,650}
+                  span  «谢尔盖»  {42x22 @500,651}
+                  small  «盾兵»  {28x22 @546,651}
+                li  {88x24 @582,650}
+                  div.el-image  {24x24 @582,650}
+                  span  «凌霜»  {28x22 @610,651}
+                  small  «矛兵»  {28x22 @642,651}
+            div.bear-template-team  {632x32 @404,682}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,687}
+              ul.bear-template-heroes  {558x24 @472,686}
+                li.is-captain  {88x24 @472,686}
+                  div.el-image  {24x24 @472,686}
+                  span  «吉娜»  {28x22 @500,687}
+                  small  «射手»  {28x22 @532,687}
+        li.bear-template-card.is-locked  {654x330 @393,735}
+          header.bear-template-card-head  {632x46 @404,746}
+            div.bear-template-card-title  {185x46 @404,746}
+              strong  «一代·微氪»  {185x22 @404,746}
+              span.bear-template-tags  {185x20 @404,772}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,772}
+                  span.el-tag__content  «1 代»  {23x12 @415,776}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,772}
+                  span.el-tag__content  «微氪»  {24x12 @464,776}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,772}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,776}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,746}
+              span  «应用模板»  {60x15 @959,756}
+          div.bear-template-team.is-launch  {632x34 @404,800}
+            span.bear-template-role  «开车队»  {56x22 @411,806}
+            ul.bear-template-heroes  {556x24 @473,805}
+              li  {116x24 @473,805}
+                div.el-image  {24x24 @473,805}
+                span  «娜塔莉亚»  {56x22 @501,806}
+                small  «盾兵»  {28x22 @561,806}
+              li  {88x24 @597,805}
+                div.el-image  {24x24 @597,805}
+                span  «茉莉»  {28x22 @625,806}
+                small  «矛兵»  {28x22 @657,806}
+              li  {102x24 @693,805}
+                div.el-image  {24x24 @693,805}
+                span  «巴希提»  {42x22 @721,806}
+                small  «射手»  {28x22 @767,806}
+          div.bear-template-joins  {632x212 @404,842}
+            div.bear-template-team  {632x32 @404,842}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,847}
+              ul.bear-template-heroes  {558x24 @472,846}
+                li.is-captain  {88x24 @472,846}
+                  div.el-image  {24x24 @472,846}
+                  span  «杰西»  {28x22 @500,847}
+                  small  «矛兵»  {28x22 @532,847}
+                li  {88x24 @568,846}
+                  div.el-image  {24x24 @568,846}
+                  span  «尤金»  {28x22 @596,847}
+                  small  «盾兵»  {28x22 @628,847}
+                li  {116x24 @664,846}
+                  div.el-image  {24x24 @664,846}
+                  span  «克劳瑞斯»  {56x22 @692,847}
+                  small  «射手»  {28x22 @752,847}
+            div.bear-template-team  {632x32 @404,878}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,883}
+              ul.bear-template-heroes  {558x24 @472,882}
+                li.is-captain  {88x24 @472,882}
+                  div.el-image  {24x24 @472,882}
+                  span  «书允»  {28x22 @500,883}
+                  small  «射手»  {28x22 @532,883}
+                li  {102x24 @568,882}
+                  div.el-image  {24x24 @568,882}
+                  span  «史密斯»  {42x22 @596,883}
+                  small  «盾兵»  {28x22 @642,883}
+                li  {88x24 @678,882}
+                  div.el-image  {24x24 @678,882}
+                  span  «查理»  {28x22 @706,883}
+                  small  «矛兵»  {28x22 @738,883}
+            div.bear-template-team  {632x32 @404,914}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,919}
+              ul.bear-template-heroes  {558x24 @472,918}
+                li.is-captain  {102x24 @472,918}
+                  div.el-image  {24x24 @472,918}
+                  span  «杰塞尔»  {42x22 @500,919}
+                  small  «射手»  {28x22 @546,919}
+                li  {116x24 @582,918}
+                  div.el-image  {24x24 @582,918}
+                  span  «帕特里克»  {56x22 @610,919}
+                  small  «矛兵»  {28x22 @670,919}
+            div.bear-template-team  {632x32 @404,950}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,955}
+              ul.bear-template-heroes  {558x24 @472,954}
+                li.is-captain  {116x24 @472,954}
+                  div.el-image  {24x24 @472,954}
+                  span  «赫罗尼莫»  {56x22 @500,955}
+                  small  «盾兵»  {28x22 @560,955}
+                li  {120x24 @596,954}
+                  div.el-image  {24x24 @596,954}
+                  span  «卢姆·波根»  {60x22 @624,955}
+                  small  «矛兵»  {28x22 @688,955}
+                li  {88x24 @724,954}
+                  div.el-image  {24x24 @724,954}
+                  span  «津曼»  {28x22 @752,955}
+                  small  «射手»  {28x22 @784,955}
+            div.bear-template-team  {632x32 @404,986}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,991}
+              ul.bear-template-heroes  {558x24 @472,990}
+                li.is-captain  {102x24 @472,990}
+                  div.el-image  {24x24 @472,990}
+                  span  «谢尔盖»  {42x22 @500,991}
+                  small  «盾兵»  {28x22 @546,991}
+                li  {88x24 @582,990}
+                  div.el-image  {24x24 @582,990}
+                  span  «凌霜»  {28x22 @610,991}
+                  small  «矛兵»  {28x22 @642,991}
+            div.bear-template-team  {632x32 @404,1022}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,1027}
+              ul.bear-template-heroes  {558x24 @472,1026}
+                li.is-captain  {88x24 @472,1026}
+                  div.el-image  {24x24 @472,1026}
+                  span  «吉娜»  {28x22 @500,1027}
+                  small  «射手»  {28x22 @532,1027}
+        li.bear-template-card.is-locked  {654x330 @393,1075}
+          header.bear-template-card-head  {632x46 @404,1086}
+            div.bear-template-card-title  {185x46 @404,1086}
+              strong  «一代·零氪»  {185x22 @404,1086}
+              span.bear-template-tags  {185x20 @404,1111}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,1111}
+                  span.el-tag__content  «1 代»  {23x12 @415,1115}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,1111}
+                  span.el-tag__content  «零氪»  {24x12 @464,1115}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,1111}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,1115}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,1086}
+              span  «应用模板»  {60x15 @959,1096}
+          div.bear-template-team.is-launch  {632x34 @404,1139}
+            span.bear-template-role  «开车队»  {56x22 @411,1145}
+            ul.bear-template-heroes  {556x24 @473,1144}
+              li  {102x24 @473,1144}
+                div.el-image  {24x24 @473,1144}
+                span  «谢尔盖»  {42x22 @501,1145}
+                small  «盾兵»  {28x22 @547,1145}
+              li  {88x24 @583,1144}
+                div.el-image  {24x24 @583,1144}
+                span  «茉莉»  {28x22 @611,1145}
+                small  «矛兵»  {28x22 @643,1145}
+              li  {102x24 @679,1144}
+                div.el-image  {24x24 @679,1144}
+                span  «巴希提»  {42x22 @707,1145}
+                small  «射手»  {28x22 @753,1145}
+          div.bear-template-joins  {632x212 @404,1181}
+            div.bear-template-team  {632x32 @404,1181}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,1186}
+              ul.bear-template-heroes  {558x24 @472,1185}
+                li.is-captain  {88x24 @472,1185}
+                  div.el-image  {24x24 @472,1185}
+                  span  «杰西»  {28x22 @500,1186}
+                  small  «矛兵»  {28x22 @532,1186}
+                li  {88x24 @568,1185}
+                  div.el-image  {24x24 @568,1185}
+                  span  «尤金»  {28x22 @596,1186}
+                  small  «盾兵»  {28x22 @628,1186}
+                li  {116x24 @664,1185}
+                  div.el-image  {24x24 @664,1185}
+                  span  «克劳瑞斯»  {56x22 @692,1186}
+                  small  «射手»  {28x22 @752,1186}
+            div.bear-template-team  {632x32 @404,1217}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,1222}
+              ul.bear-template-heroes  {558x24 @472,1221}
+                li.is-captain  {88x24 @472,1221}
+                  div.el-image  {24x24 @472,1221}
+                  span  «书允»  {28x22 @500,1222}
+                  small  «射手»  {28x22 @532,1222}
+                li  {102x24 @568,1221}
+                  div.el-image  {24x24 @568,1221}
+                  span  «史密斯»  {42x22 @596,1222}
+                  small  «盾兵»  {28x22 @642,1222}
+                li  {88x24 @678,1221}
+                  div.el-image  {24x24 @678,1221}
+                  span  «查理»  {28x22 @706,1222}
+                  small  «矛兵»  {28x22 @738,1222}
+            div.bear-template-team  {632x32 @404,1253}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,1258}
+              ul.bear-template-heroes  {558x24 @472,1257}
+                li.is-captain  {102x24 @472,1257}
+                  div.el-image  {24x24 @472,1257}
+                  span  «杰塞尔»  {42x22 @500,1258}
+                  small  «射手»  {28x22 @546,1258}
+                li  {116x24 @582,1257}
+                  div.el-image  {24x24 @582,1257}
+                  span  «帕特里克»  {56x22 @610,1258}
+                  small  «矛兵»  {28x22 @670,1258}
+            div.bear-template-team  {632x32 @404,1289}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,1294}
+              ul.bear-template-heroes  {558x24 @472,1293}
+                li.is-captain  {116x24 @472,1293}
+                  div.el-image  {24x24 @472,1293}
+                  span  «赫罗尼莫»  {56x22 @500,1294}
+                  small  «盾兵»  {28x22 @560,1294}
+                li  {120x24 @596,1293}
+                  div.el-image  {24x24 @596,1293}
+                  span  «卢姆·波根»  {60x22 @624,1294}
+                  small  «矛兵»  {28x22 @688,1294}
+                li  {88x24 @724,1293}
+                  div.el-image  {24x24 @724,1293}
+                  span  «津曼»  {28x22 @752,1294}
+                  small  «射手»  {28x22 @784,1294}
+            div.bear-template-team  {632x32 @404,1325}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,1330}
+              ul.bear-template-heroes  {558x24 @472,1329}
+                li.is-captain  {116x24 @472,1329}
+                  div.el-image  {24x24 @472,1329}
+                  span  «娜塔莉亚»  {56x22 @500,1330}
+                  small  «盾兵»  {28x22 @560,1330}
+                li  {88x24 @596,1329}
+                  div.el-image  {24x24 @596,1329}
+                  span  «凌霜»  {28x22 @624,1330}
+                  small  «矛兵»  {28x22 @656,1330}
+            div.bear-template-team  {632x32 @404,1361}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,1366}
+              ul.bear-template-heroes  {558x24 @472,1365}
+                li.is-captain  {88x24 @472,1365}
+                  div.el-image  {24x24 @472,1365}
+                  span  «吉娜»  {28x22 @500,1366}
+                  small  «射手»  {28x22 @532,1366}
+        li.bear-template-card.is-locked  {654x330 @393,1414}
+          header.bear-template-card-head  {632x46 @404,1425}
+            div.bear-template-card-title  {185x46 @404,1425}
+              strong  «二代·大氪»  {185x22 @404,1425}
+              span.bear-template-tags  {185x20 @404,1451}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,1451}
+                  span.el-tag__content  «2 代»  {23x12 @415,1455}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,1451}
+                  span.el-tag__content  «大氪»  {24x12 @464,1455}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,1451}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,1455}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,1425}
+              span  «应用模板»  {60x15 @959,1436}
+          div.bear-template-team.is-launch  {632x34 @404,1479}
+            span.bear-template-role  «开车队»  {56x22 @411,1485}
+            ul.bear-template-heroes  {556x24 @473,1484}
+              li  {116x24 @473,1484}
+                div.el-image  {24x24 @473,1484}
+                span  «赫罗尼莫»  {56x22 @501,1485}
+                small  «盾兵»  {28x22 @561,1485}
+              li  {102x24 @597,1484}
+                div.el-image  {24x24 @597,1484}
+                span  «菲兰德»  {42x22 @625,1485}
+                small  «矛兵»  {28x22 @671,1485}
+              li  {102x24 @707,1484}
+                div.el-image  {24x24 @707,1484}
+                span  «阿隆索»  {42x22 @735,1485}
+                small  «射手»  {28x22 @781,1485}
+          div.bear-template-joins  {632x212 @404,1521}
+            div.bear-template-team  {632x32 @404,1521}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,1526}
+              ul.bear-template-heroes  {558x24 @472,1525}
+                li.is-captain  {88x24 @472,1525}
+                  div.el-image  {24x24 @472,1525}
+                  span  «杰西»  {28x22 @500,1526}
+                  small  «矛兵»  {28x22 @532,1526}
+                li  {88x24 @568,1525}
+                  div.el-image  {24x24 @568,1525}
+                  span  «尤金»  {28x22 @596,1526}
+                  small  «盾兵»  {28x22 @628,1526}
+                li  {116x24 @664,1525}
+                  div.el-image  {24x24 @664,1525}
+                  span  «克劳瑞斯»  {56x22 @692,1526}
+                  small  «射手»  {28x22 @752,1526}
+            div.bear-template-team  {632x32 @404,1557}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,1562}
+              ul.bear-template-heroes  {558x24 @472,1561}
+                li.is-captain  {88x24 @472,1561}
+                  div.el-image  {24x24 @472,1561}
+                  span  «书允»  {28x22 @500,1562}
+                  small  «射手»  {28x22 @532,1562}
+                li  {102x24 @568,1561}
+                  div.el-image  {24x24 @568,1561}
+                  span  «史密斯»  {42x22 @596,1562}
+                  small  «盾兵»  {28x22 @642,1562}
+                li  {88x24 @678,1561}
+                  div.el-image  {24x24 @678,1561}
+                  span  «查理»  {28x22 @706,1562}
+                  small  «矛兵»  {28x22 @738,1562}
+            div.bear-template-team  {632x32 @404,1593}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,1598}
+              ul.bear-template-heroes  {558x24 @472,1597}
+                li.is-captain  {102x24 @472,1597}
+                  div.el-image  {24x24 @472,1597}
+                  span  «杰塞尔»  {42x22 @500,1598}
+                  small  «射手»  {28x22 @546,1598}
+                li  {116x24 @582,1597}
+                  div.el-image  {24x24 @582,1597}
+                  span  «帕特里克»  {56x22 @610,1598}
+                  small  «矛兵»  {28x22 @670,1598}
+            div.bear-template-team  {632x32 @404,1629}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,1634}
+              ul.bear-template-heroes  {558x24 @472,1633}
+                li.is-captain  {102x24 @472,1633}
+                  div.el-image  {24x24 @472,1633}
+                  span  «弗林特»  {42x22 @500,1634}
+                  small  «盾兵»  {28x22 @546,1634}
+                li  {120x24 @582,1633}
+                  div.el-image  {24x24 @582,1633}
+                  span  «卢姆·波根»  {60x22 @610,1634}
+                  small  «矛兵»  {28x22 @674,1634}
+                li  {88x24 @710,1633}
+                  div.el-image  {24x24 @710,1633}
+                  span  «吉娜»  {28x22 @738,1634}
+                  small  «射手»  {28x22 @770,1634}
+            div.bear-template-team  {632x32 @404,1665}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,1670}
+              ul.bear-template-heroes  {558x24 @472,1669}
+                li.is-captain  {116x24 @472,1669}
+                  div.el-image  {24x24 @472,1669}
+                  span  «娜塔莉亚»  {56x22 @500,1670}
+                  small  «盾兵»  {28x22 @560,1670}
+                li  {88x24 @596,1669}
+                  div.el-image  {24x24 @596,1669}
+                  span  «凌霜»  {28x22 @624,1670}
+                  small  «矛兵»  {28x22 @656,1670}
+                li  {88x24 @692,1669}
+                  div.el-image  {24x24 @692,1669}
+                  span  «津曼»  {28x22 @720,1670}
+                  small  «射手»  {28x22 @752,1670}
+            div.bear-template-team  {632x32 @404,1701}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,1706}
+              ul.bear-template-heroes  {558x24 @472,1705}
+                li.is-captain  {102x24 @472,1705}
+                  div.el-image  {24x24 @472,1705}
+                  span  «谢尔盖»  {42x22 @500,1706}
+                  small  «盾兵»  {28x22 @546,1706}
+                li  {88x24 @582,1705}
+                  div.el-image  {24x24 @582,1705}
+                  span  «茉莉»  {28x22 @610,1706}
+                  small  «矛兵»  {28x22 @642,1706}
+                li  {102x24 @678,1705}
+                  div.el-image  {24x24 @678,1705}
+                  span  «巴希提»  {42x22 @706,1706}
+                  small  «射手»  {28x22 @752,1706}
+        li.bear-template-card.is-locked  {654x330 @393,1754}
+          header.bear-template-card-head  {632x46 @404,1765}
+            div.bear-template-card-title  {185x46 @404,1765}
+              strong  «二代·微氪»  {185x22 @404,1765}
+              span.bear-template-tags  {185x20 @404,1791}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,1791}
+                  span.el-tag__content  «2 代»  {23x12 @415,1795}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,1791}
+                  span.el-tag__content  «微氪»  {24x12 @464,1795}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,1791}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,1795}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,1765}
+              span  «应用模板»  {60x15 @959,1776}
+          div.bear-template-team.is-launch  {632x34 @404,1819}
+            span.bear-template-role  «开车队»  {56x22 @411,1825}
+            ul.bear-template-heroes  {556x24 @473,1824}
+              li  {116x24 @473,1824}
+                div.el-image  {24x24 @473,1824}
+                span  «娜塔莉亚»  {56x22 @501,1825}
+                small  «盾兵»  {28x22 @561,1825}
+              li  {102x24 @597,1824}
+                div.el-image  {24x24 @597,1824}
+                span  «菲兰德»  {42x22 @625,1825}
+                small  «矛兵»  {28x22 @671,1825}
+              li  {102x24 @707,1824}
+                div.el-image  {24x24 @707,1824}
+                span  «阿隆索»  {42x22 @735,1825}
+                small  «射手»  {28x22 @781,1825}
+          div.bear-template-joins  {632x212 @404,1861}
+            div.bear-template-team  {632x32 @404,1861}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,1866}
+              ul.bear-template-heroes  {558x24 @472,1865}
+                li.is-captain  {88x24 @472,1865}
+                  div.el-image  {24x24 @472,1865}
+                  span  «杰西»  {28x22 @500,1866}
+                  small  «矛兵»  {28x22 @532,1866}
+                li  {88x24 @568,1865}
+                  div.el-image  {24x24 @568,1865}
+                  span  «尤金»  {28x22 @596,1866}
+                  small  «盾兵»  {28x22 @628,1866}
+                li  {116x24 @664,1865}
+                  div.el-image  {24x24 @664,1865}
+                  span  «克劳瑞斯»  {56x22 @692,1866}
+                  small  «射手»  {28x22 @752,1866}
+            div.bear-template-team  {632x32 @404,1897}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,1902}
+              ul.bear-template-heroes  {558x24 @472,1901}
+                li.is-captain  {88x24 @472,1901}
+                  div.el-image  {24x24 @472,1901}
+                  span  «书允»  {28x22 @500,1902}
+                  small  «射手»  {28x22 @532,1902}
+                li  {102x24 @568,1901}
+                  div.el-image  {24x24 @568,1901}
+                  span  «史密斯»  {42x22 @596,1902}
+                  small  «盾兵»  {28x22 @642,1902}
+                li  {88x24 @678,1901}
+                  div.el-image  {24x24 @678,1901}
+                  span  «查理»  {28x22 @706,1902}
+                  small  «矛兵»  {28x22 @738,1902}
+            div.bear-template-team  {632x32 @404,1933}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,1938}
+              ul.bear-template-heroes  {558x24 @472,1937}
+                li.is-captain  {102x24 @472,1937}
+                  div.el-image  {24x24 @472,1937}
+                  span  «杰塞尔»  {42x22 @500,1938}
+                  small  «射手»  {28x22 @546,1938}
+                li  {116x24 @582,1937}
+                  div.el-image  {24x24 @582,1937}
+                  span  «帕特里克»  {56x22 @610,1938}
+                  small  «矛兵»  {28x22 @670,1938}
+            div.bear-template-team  {632x32 @404,1969}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,1974}
+              ul.bear-template-heroes  {558x24 @472,1973}
+                li.is-captain  {102x24 @472,1973}
+                  div.el-image  {24x24 @472,1973}
+                  span  «弗林特»  {42x22 @500,1974}
+                  small  «盾兵»  {28x22 @546,1974}
+                li  {120x24 @582,1973}
+                  div.el-image  {24x24 @582,1973}
+                  span  «卢姆·波根»  {60x22 @610,1974}
+                  small  «矛兵»  {28x22 @674,1974}
+                li  {88x24 @710,1973}
+                  div.el-image  {24x24 @710,1973}
+                  span  «吉娜»  {28x22 @738,1974}
+                  small  «射手»  {28x22 @770,1974}
+            div.bear-template-team  {632x32 @404,2005}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,2010}
+              ul.bear-template-heroes  {558x24 @472,2009}
+                li.is-captain  {116x24 @472,2009}
+                  div.el-image  {24x24 @472,2009}
+                  span  «赫罗尼莫»  {56x22 @500,2010}
+                  small  «盾兵»  {28x22 @560,2010}
+                li  {88x24 @596,2009}
+                  div.el-image  {24x24 @596,2009}
+                  span  «凌霜»  {28x22 @624,2010}
+                  small  «矛兵»  {28x22 @656,2010}
+                li  {88x24 @692,2009}
+                  div.el-image  {24x24 @692,2009}
+                  span  «津曼»  {28x22 @720,2010}
+                  small  «射手»  {28x22 @752,2010}
+            div.bear-template-team  {632x32 @404,2041}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,2046}
+              ul.bear-template-heroes  {558x24 @472,2045}
+                li.is-captain  {102x24 @472,2045}
+                  div.el-image  {24x24 @472,2045}
+                  span  «谢尔盖»  {42x22 @500,2046}
+                  small  «盾兵»  {28x22 @546,2046}
+                li  {88x24 @582,2045}
+                  div.el-image  {24x24 @582,2045}
+                  span  «茉莉»  {28x22 @610,2046}
+                  small  «矛兵»  {28x22 @642,2046}
+                li  {102x24 @678,2045}
+                  div.el-image  {24x24 @678,2045}
+                  span  «巴希提»  {42x22 @706,2046}
+                  small  «射手»  {28x22 @752,2046}
+        li.bear-template-card.is-locked  {654x330 @393,2094}
+          header.bear-template-card-head  {632x46 @404,2105}
+            div.bear-template-card-title  {185x46 @404,2105}
+              strong  «二代·零氪»  {185x22 @404,2105}
+              span.bear-template-tags  {185x20 @404,2130}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,2130}
+                  span.el-tag__content  «2 代»  {23x12 @415,2134}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,2130}
+                  span.el-tag__content  «零氪»  {24x12 @464,2134}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,2130}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,2134}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,2105}
+              span  «应用模板»  {60x15 @959,2115}
+          div.bear-template-team.is-launch  {632x34 @404,2158}
+            span.bear-template-role  «开车队»  {56x22 @411,2165}
+            ul.bear-template-heroes  {556x24 @473,2163}
+              li  {102x24 @473,2163}
+                div.el-image  {24x24 @473,2163}
+                span  «弗林特»  {42x22 @501,2165}
+                small  «盾兵»  {28x22 @547,2165}
+              li  {88x24 @583,2163}
+                div.el-image  {24x24 @583,2163}
+                span  «茉莉»  {28x22 @611,2165}
+                small  «矛兵»  {28x22 @643,2165}
+              li  {102x24 @679,2163}
+                div.el-image  {24x24 @679,2163}
+                span  «巴希提»  {42x22 @707,2165}
+                small  «射手»  {28x22 @753,2165}
+          div.bear-template-joins  {632x212 @404,2200}
+            div.bear-template-team  {632x32 @404,2200}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,2206}
+              ul.bear-template-heroes  {558x24 @472,2204}
+                li.is-captain  {88x24 @472,2204}
+                  div.el-image  {24x24 @472,2204}
+                  span  «杰西»  {28x22 @500,2206}
+                  small  «矛兵»  {28x22 @532,2206}
+                li  {88x24 @568,2204}
+                  div.el-image  {24x24 @568,2204}
+                  span  «尤金»  {28x22 @596,2206}
+                  small  «盾兵»  {28x22 @628,2206}
+                li  {116x24 @664,2204}
+                  div.el-image  {24x24 @664,2204}
+                  span  «克劳瑞斯»  {56x22 @692,2206}
+                  small  «射手»  {28x22 @752,2206}
+            div.bear-template-team  {632x32 @404,2236}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,2242}
+              ul.bear-template-heroes  {558x24 @472,2240}
+                li.is-captain  {88x24 @472,2240}
+                  div.el-image  {24x24 @472,2240}
+                  span  «书允»  {28x22 @500,2242}
+                  small  «射手»  {28x22 @532,2242}
+                li  {102x24 @568,2240}
+                  div.el-image  {24x24 @568,2240}
+                  span  «史密斯»  {42x22 @596,2242}
+                  small  «盾兵»  {28x22 @642,2242}
+                li  {88x24 @678,2240}
+                  div.el-image  {24x24 @678,2240}
+                  span  «查理»  {28x22 @706,2242}
+                  small  «矛兵»  {28x22 @738,2242}
+            div.bear-template-team  {632x32 @404,2272}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,2278}
+              ul.bear-template-heroes  {558x24 @472,2276}
+                li.is-captain  {102x24 @472,2276}
+                  div.el-image  {24x24 @472,2276}
+                  span  «杰塞尔»  {42x22 @500,2278}
+                  small  «射手»  {28x22 @546,2278}
+                li  {102x24 @582,2276}
+                  div.el-image  {24x24 @582,2276}
+                  span  «谢尔盖»  {42x22 @610,2278}
+                  small  «盾兵»  {28x22 @656,2278}
+                li  {116x24 @692,2276}
+                  div.el-image  {24x24 @692,2276}
+                  span  «帕特里克»  {56x22 @720,2278}
+                  small  «矛兵»  {28x22 @780,2278}
+            div.bear-template-team  {632x32 @404,2308}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,2314}
+              ul.bear-template-heroes  {558x24 @472,2312}
+                li.is-captain  {102x24 @472,2312}
+                  div.el-image  {24x24 @472,2312}
+                  span  «阿隆索»  {42x22 @500,2314}
+                  small  «射手»  {28x22 @546,2314}
+                li  {120x24 @582,2312}
+                  div.el-image  {24x24 @582,2312}
+                  span  «卢姆·波根»  {60x22 @610,2314}
+                  small  «矛兵»  {28x22 @674,2314}
+            div.bear-template-team  {632x32 @404,2344}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,2350}
+              ul.bear-template-heroes  {558x24 @472,2348}
+                li.is-captain  {116x24 @472,2348}
+                  div.el-image  {24x24 @472,2348}
+                  span  «娜塔莉亚»  {56x22 @500,2350}
+                  small  «盾兵»  {28x22 @560,2350}
+                li  {88x24 @596,2348}
+                  div.el-image  {24x24 @596,2348}
+                  span  «凌霜»  {28x22 @624,2350}
+                  small  «矛兵»  {28x22 @656,2350}
+                li  {88x24 @692,2348}
+                  div.el-image  {24x24 @692,2348}
+                  span  «吉娜»  {28x22 @720,2350}
+                  small  «射手»  {28x22 @752,2350}
+            div.bear-template-team  {632x32 @404,2380}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,2386}
+              ul.bear-template-heroes  {558x24 @472,2384}
+                li.is-captain  {116x24 @472,2384}
+                  div.el-image  {24x24 @472,2384}
+                  span  «赫罗尼莫»  {56x22 @500,2386}
+                  small  «盾兵»  {28x22 @560,2386}
+                li  {102x24 @596,2384}
+                  div.el-image  {24x24 @596,2384}
+                  span  «菲兰德»  {42x22 @624,2386}
+                  small  «矛兵»  {28x22 @670,2386}
+                li  {88x24 @706,2384}
+                  div.el-image  {24x24 @706,2384}
+                  span  «津曼»  {28x22 @734,2386}
+                  small  «射手»  {28x22 @766,2386}
+        li.bear-template-card.is-locked  {654x330 @393,2433}
+          header.bear-template-card-head  {632x46 @404,2444}
+            div.bear-template-card-title  {185x46 @404,2444}
+              strong  «三代·大氪»  {185x22 @404,2444}
+              span.bear-template-tags  {185x20 @404,2470}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,2470}
+                  span.el-tag__content  «3 代»  {23x12 @415,2474}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,2470}
+                  span.el-tag__content  «大氪»  {24x12 @464,2474}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,2470}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,2474}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,2444}
+              span  «应用模板»  {60x15 @959,2455}
+          div.bear-template-team.is-launch  {632x34 @404,2498}
+            span.bear-template-role  «开车队»  {56x22 @411,2504}
+            ul.bear-template-heroes  {556x24 @473,2503}
+              li  {116x24 @473,2503}
+                div.el-image  {24x24 @473,2503}
+                span  «娜塔莉亚»  {56x22 @501,2504}
+                small  «盾兵»  {28x22 @561,2504}
+              li  {88x24 @597,2503}
+                div.el-image  {24x24 @597,2503}
+                span  «米娅»  {28x22 @625,2504}
+                small  «矛兵»  {28x22 @657,2504}
+              li  {102x24 @693,2503}
+                div.el-image  {24x24 @693,2503}
+                span  «阿隆索»  {42x22 @721,2504}
+                small  «射手»  {28x22 @767,2504}
+          div.bear-template-joins  {632x212 @404,2540}
+            div.bear-template-team  {632x32 @404,2540}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,2545}
+              ul.bear-template-heroes  {558x24 @472,2544}
+                li.is-captain  {88x24 @472,2544}
+                  div.el-image  {24x24 @472,2544}
+                  span  «杰西»  {28x22 @500,2545}
+                  small  «矛兵»  {28x22 @532,2545}
+                li  {88x24 @568,2544}
+                  div.el-image  {24x24 @568,2544}
+                  span  «尤金»  {28x22 @596,2545}
+                  small  «盾兵»  {28x22 @628,2545}
+                li  {116x24 @664,2544}
+                  div.el-image  {24x24 @664,2544}
+                  span  «克劳瑞斯»  {56x22 @692,2545}
+                  small  «射手»  {28x22 @752,2545}
+            div.bear-template-team  {632x32 @404,2576}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,2581}
+              ul.bear-template-heroes  {558x24 @472,2580}
+                li.is-captain  {88x24 @472,2580}
+                  div.el-image  {24x24 @472,2580}
+                  span  «书允»  {28x22 @500,2581}
+                  small  «射手»  {28x22 @532,2581}
+                li  {102x24 @568,2580}
+                  div.el-image  {24x24 @568,2580}
+                  span  «史密斯»  {42x22 @596,2581}
+                  small  «盾兵»  {28x22 @642,2581}
+                li  {88x24 @678,2580}
+                  div.el-image  {24x24 @678,2580}
+                  span  «查理»  {28x22 @706,2581}
+                  small  «矛兵»  {28x22 @738,2581}
+            div.bear-template-team  {632x32 @404,2612}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,2617}
+              ul.bear-template-heroes  {558x24 @472,2616}
+                li.is-captain  {102x24 @472,2616}
+                  div.el-image  {24x24 @472,2616}
+                  span  «杰塞尔»  {42x22 @500,2617}
+                  small  «射手»  {28x22 @546,2617}
+                li  {102x24 @582,2616}
+                  div.el-image  {24x24 @582,2616}
+                  span  «谢尔盖»  {42x22 @610,2617}
+                  small  «盾兵»  {28x22 @656,2617}
+                li  {116x24 @692,2616}
+                  div.el-image  {24x24 @692,2616}
+                  span  «帕特里克»  {56x22 @720,2617}
+                  small  «矛兵»  {28x22 @780,2617}
+            div.bear-template-team  {632x32 @404,2648}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,2653}
+              ul.bear-template-heroes  {558x24 @472,2652}
+                li.is-captain  {116x24 @472,2652}
+                  div.el-image  {24x24 @472,2652}
+                  span  «赫罗尼莫»  {56x22 @500,2653}
+                  small  «盾兵»  {28x22 @560,2653}
+                li  {120x24 @596,2652}
+                  div.el-image  {24x24 @596,2652}
+                  span  «卢姆·波根»  {60x22 @624,2653}
+                  small  «矛兵»  {28x22 @688,2653}
+                li  {88x24 @724,2652}
+                  div.el-image  {24x24 @724,2652}
+                  span  «吉娜»  {28x22 @752,2653}
+                  small  «射手»  {28x22 @784,2653}
+            div.bear-template-team  {632x32 @404,2684}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,2689}
+              ul.bear-template-heroes  {558x24 @472,2688}
+                li.is-captain  {102x24 @472,2688}
+                  div.el-image  {24x24 @472,2688}
+                  span  «弗林特»  {42x22 @500,2689}
+                  small  «盾兵»  {28x22 @546,2689}
+                li  {88x24 @582,2688}
+                  div.el-image  {24x24 @582,2688}
+                  span  «凌霜»  {28x22 @610,2689}
+                  small  «矛兵»  {28x22 @642,2689}
+                li  {88x24 @678,2688}
+                  div.el-image  {24x24 @678,2688}
+                  span  «津曼»  {28x22 @706,2689}
+                  small  «射手»  {28x22 @738,2689}
+            div.bear-template-team  {632x32 @404,2720}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,2725}
+              ul.bear-template-heroes  {558x24 @472,2724}
+                li.is-captain  {102x24 @472,2724}
+                  div.el-image  {24x24 @472,2724}
+                  span  «格雷格»  {42x22 @500,2725}
+                  small  «射手»  {28x22 @546,2725}
+                li  {88x24 @582,2724}
+                  div.el-image  {24x24 @582,2724}
+                  span  «罗根»  {28x22 @610,2725}
+                  small  «盾兵»  {28x22 @642,2725}
+                li  {102x24 @678,2724}
+                  div.el-image  {24x24 @678,2724}
+                  span  «菲兰德»  {42x22 @706,2725}
+                  small  «矛兵»  {28x22 @752,2725}
+        li.bear-template-card.is-locked  {654x330 @393,2773}
+          header.bear-template-card-head  {632x46 @404,2784}
+            div.bear-template-card-title  {185x46 @404,2784}
+              strong  «三代·微氪»  {185x22 @404,2784}
+              span.bear-template-tags  {185x20 @404,2810}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,2810}
+                  span.el-tag__content  «3 代»  {23x12 @415,2814}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,2810}
+                  span.el-tag__content  «微氪»  {24x12 @464,2814}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,2810}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,2814}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,2784}
+              span  «应用模板»  {60x15 @959,2795}
+          div.bear-template-team.is-launch  {632x34 @404,2838}
+            span.bear-template-role  «开车队»  {56x22 @411,2844}
+            ul.bear-template-heroes  {556x24 @473,2843}
+              li  {116x24 @473,2843}
+                div.el-image  {24x24 @473,2843}
+                span  «赫罗尼莫»  {56x22 @501,2844}
+                small  «盾兵»  {28x22 @561,2844}
+              li  {102x24 @597,2843}
+                div.el-image  {24x24 @597,2843}
+                span  «菲兰德»  {42x22 @625,2844}
+                small  «矛兵»  {28x22 @671,2844}
+              li  {102x24 @707,2843}
+                div.el-image  {24x24 @707,2843}
+                span  «阿隆索»  {42x22 @735,2844}
+                small  «射手»  {28x22 @781,2844}
+          div.bear-template-joins  {632x212 @404,2880}
+            div.bear-template-team  {632x32 @404,2880}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,2885}
+              ul.bear-template-heroes  {558x24 @472,2884}
+                li.is-captain  {88x24 @472,2884}
+                  div.el-image  {24x24 @472,2884}
+                  span  «杰西»  {28x22 @500,2885}
+                  small  «矛兵»  {28x22 @532,2885}
+                li  {88x24 @568,2884}
+                  div.el-image  {24x24 @568,2884}
+                  span  «尤金»  {28x22 @596,2885}
+                  small  «盾兵»  {28x22 @628,2885}
+                li  {116x24 @664,2884}
+                  div.el-image  {24x24 @664,2884}
+                  span  «克劳瑞斯»  {56x22 @692,2885}
+                  small  «射手»  {28x22 @752,2885}
+            div.bear-template-team  {632x32 @404,2916}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,2921}
+              ul.bear-template-heroes  {558x24 @472,2920}
+                li.is-captain  {88x24 @472,2920}
+                  div.el-image  {24x24 @472,2920}
+                  span  «书允»  {28x22 @500,2921}
+                  small  «射手»  {28x22 @532,2921}
+                li  {102x24 @568,2920}
+                  div.el-image  {24x24 @568,2920}
+                  span  «史密斯»  {42x22 @596,2921}
+                  small  «盾兵»  {28x22 @642,2921}
+                li  {88x24 @678,2920}
+                  div.el-image  {24x24 @678,2920}
+                  span  «查理»  {28x22 @706,2921}
+                  small  «矛兵»  {28x22 @738,2921}
+            div.bear-template-team  {632x32 @404,2952}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,2957}
+              ul.bear-template-heroes  {558x24 @472,2956}
+                li.is-captain  {102x24 @472,2956}
+                  div.el-image  {24x24 @472,2956}
+                  span  «杰塞尔»  {42x22 @500,2957}
+                  small  «射手»  {28x22 @546,2957}
+                li  {102x24 @582,2956}
+                  div.el-image  {24x24 @582,2956}
+                  span  «谢尔盖»  {42x22 @610,2957}
+                  small  «盾兵»  {28x22 @656,2957}
+                li  {116x24 @692,2956}
+                  div.el-image  {24x24 @692,2956}
+                  span  «帕特里克»  {56x22 @720,2957}
+                  small  «矛兵»  {28x22 @780,2957}
+            div.bear-template-team  {632x32 @404,2988}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,2993}
+              ul.bear-template-heroes  {558x24 @472,2992}
+                li.is-captain  {88x24 @472,2992}
+                  div.el-image  {24x24 @472,2992}
+                  span  «米娅»  {28x22 @500,2993}
+                  small  «矛兵»  {28x22 @532,2993}
+                li  {116x24 @568,2992}
+                  div.el-image  {24x24 @568,2992}
+                  span  «娜塔莉亚»  {56x22 @596,2993}
+                  small  «盾兵»  {28x22 @656,2993}
+                li  {88x24 @692,2992}
+                  div.el-image  {24x24 @692,2992}
+                  span  «吉娜»  {28x22 @720,2993}
+                  small  «射手»  {28x22 @752,2993}
+            div.bear-template-team  {632x32 @404,3024}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,3029}
+              ul.bear-template-heroes  {558x24 @472,3028}
+                li.is-captain  {102x24 @472,3028}
+                  div.el-image  {24x24 @472,3028}
+                  span  «弗林特»  {42x22 @500,3029}
+                  small  «盾兵»  {28x22 @546,3029}
+                li  {120x24 @582,3028}
+                  div.el-image  {24x24 @582,3028}
+                  span  «卢姆·波根»  {60x22 @610,3029}
+                  small  «矛兵»  {28x22 @674,3029}
+                li  {88x24 @710,3028}
+                  div.el-image  {24x24 @710,3028}
+                  span  «津曼»  {28x22 @738,3029}
+                  small  «射手»  {28x22 @770,3029}
+            div.bear-template-team  {632x32 @404,3060}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,3065}
+              ul.bear-template-heroes  {558x24 @472,3064}
+                li.is-captain  {102x24 @472,3064}
+                  div.el-image  {24x24 @472,3064}
+                  span  «格雷格»  {42x22 @500,3065}
+                  small  «射手»  {28x22 @546,3065}
+                li  {88x24 @582,3064}
+                  div.el-image  {24x24 @582,3064}
+                  span  «罗根»  {28x22 @610,3065}
+                  small  «盾兵»  {28x22 @642,3065}
+                li  {88x24 @678,3064}
+                  div.el-image  {24x24 @678,3064}
+                  span  «凌霜»  {28x22 @706,3065}
+                  small  «矛兵»  {28x22 @738,3065}
+        li.bear-template-card.is-locked  {654x330 @393,3113}
+          header.bear-template-card-head  {632x46 @404,3124}
+            div.bear-template-card-title  {185x46 @404,3124}
+              strong  «三代·零氪»  {185x22 @404,3124}
+              span.bear-template-tags  {185x20 @404,3149}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,3149}
+                  span.el-tag__content  «3 代»  {23x12 @415,3153}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,3149}
+                  span.el-tag__content  «零氪»  {24x12 @464,3153}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,3149}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,3153}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,3124}
+              span  «应用模板»  {60x15 @959,3134}
+          div.bear-template-team.is-launch  {632x34 @404,3177}
+            span.bear-template-role  «开车队»  {56x22 @411,3184}
+            ul.bear-template-heroes  {556x24 @473,3182}
+              li  {102x24 @473,3182}
+                div.el-image  {24x24 @473,3182}
+                span  «弗林特»  {42x22 @501,3184}
+                small  «盾兵»  {28x22 @547,3184}
+              li  {88x24 @583,3182}
+                div.el-image  {24x24 @583,3182}
+                span  «米娅»  {28x22 @611,3184}
+                small  «矛兵»  {28x22 @643,3184}
+              li  {102x24 @679,3182}
+                div.el-image  {24x24 @679,3182}
+                span  «巴希提»  {42x22 @707,3184}
+                small  «射手»  {28x22 @753,3184}
+          div.bear-template-joins  {632x212 @404,3219}
+            div.bear-template-team  {632x32 @404,3219}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,3225}
+              ul.bear-template-heroes  {558x24 @472,3223}
+                li.is-captain  {88x24 @472,3223}
+                  div.el-image  {24x24 @472,3223}
+                  span  «杰西»  {28x22 @500,3225}
+                  small  «矛兵»  {28x22 @532,3225}
+                li  {88x24 @568,3223}
+                  div.el-image  {24x24 @568,3223}
+                  span  «尤金»  {28x22 @596,3225}
+                  small  «盾兵»  {28x22 @628,3225}
+                li  {116x24 @664,3223}
+                  div.el-image  {24x24 @664,3223}
+                  span  «克劳瑞斯»  {56x22 @692,3225}
+                  small  «射手»  {28x22 @752,3225}
+            div.bear-template-team  {632x32 @404,3255}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,3261}
+              ul.bear-template-heroes  {558x24 @472,3259}
+                li.is-captain  {88x24 @472,3259}
+                  div.el-image  {24x24 @472,3259}
+                  span  «书允»  {28x22 @500,3261}
+                  small  «射手»  {28x22 @532,3261}
+                li  {102x24 @568,3259}
+                  div.el-image  {24x24 @568,3259}
+                  span  «史密斯»  {42x22 @596,3261}
+                  small  «盾兵»  {28x22 @642,3261}
+                li  {88x24 @678,3259}
+                  div.el-image  {24x24 @678,3259}
+                  span  «查理»  {28x22 @706,3261}
+                  small  «矛兵»  {28x22 @738,3261}
+            div.bear-template-team  {632x32 @404,3291}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,3297}
+              ul.bear-template-heroes  {558x24 @472,3295}
+                li.is-captain  {102x24 @472,3295}
+                  div.el-image  {24x24 @472,3295}
+                  span  «杰塞尔»  {42x22 @500,3297}
+                  small  «射手»  {28x22 @546,3297}
+                li  {102x24 @582,3295}
+                  div.el-image  {24x24 @582,3295}
+                  span  «谢尔盖»  {42x22 @610,3297}
+                  small  «盾兵»  {28x22 @656,3297}
+                li  {116x24 @692,3295}
+                  div.el-image  {24x24 @692,3295}
+                  span  «帕特里克»  {56x22 @720,3297}
+                  small  «矛兵»  {28x22 @780,3297}
+            div.bear-template-team  {632x32 @404,3327}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,3333}
+              ul.bear-template-heroes  {558x24 @472,3331}
+                li.is-captain  {116x24 @472,3331}
+                  div.el-image  {24x24 @472,3331}
+                  span  «赫罗尼莫»  {56x22 @500,3333}
+                  small  «盾兵»  {28x22 @560,3333}
+                li  {120x24 @596,3331}
+                  div.el-image  {24x24 @596,3331}
+                  span  «卢姆·波根»  {60x22 @624,3333}
+                  small  «矛兵»  {28x22 @688,3333}
+                li  {88x24 @724,3331}
+                  div.el-image  {24x24 @724,3331}
+                  span  «吉娜»  {28x22 @752,3333}
+                  small  «射手»  {28x22 @784,3333}
+            div.bear-template-team  {632x32 @404,3363}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,3369}
+              ul.bear-template-heroes  {558x24 @472,3367}
+                li.is-captain  {116x24 @472,3367}
+                  div.el-image  {24x24 @472,3367}
+                  span  «娜塔莉亚»  {56x22 @500,3369}
+                  small  «盾兵»  {28x22 @560,3369}
+                li  {88x24 @596,3367}
+                  div.el-image  {24x24 @596,3367}
+                  span  «凌霜»  {28x22 @624,3369}
+                  small  «矛兵»  {28x22 @656,3369}
+                li  {88x24 @692,3367}
+                  div.el-image  {24x24 @692,3367}
+                  span  «津曼»  {28x22 @720,3369}
+                  small  «射手»  {28x22 @752,3369}
+            div.bear-template-team  {632x32 @404,3399}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,3405}
+              ul.bear-template-heroes  {558x24 @472,3403}
+                li.is-captain  {102x24 @472,3403}
+                  div.el-image  {24x24 @472,3403}
+                  span  «格雷格»  {42x22 @500,3405}
+                  small  «射手»  {28x22 @546,3405}
+                li  {88x24 @582,3403}
+                  div.el-image  {24x24 @582,3403}
+                  span  «罗根»  {28x22 @610,3405}
+                  small  «盾兵»  {28x22 @642,3405}
+                li  {102x24 @678,3403}
+                  div.el-image  {24x24 @678,3403}
+                  span  «菲兰德»  {42x22 @706,3405}
+                  small  «矛兵»  {28x22 @752,3405}
+        li.bear-template-card.is-locked  {654x330 @393,3452}
+          header.bear-template-card-head  {632x46 @404,3463}
+            div.bear-template-card-title  {185x46 @404,3463}
+              strong  «四代·大氪»  {185x22 @404,3463}
+              span.bear-template-tags  {185x20 @404,3489}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,3489}
+                  span.el-tag__content  «4 代»  {23x12 @415,3493}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,3489}
+                  span.el-tag__content  «大氪»  {24x12 @464,3493}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,3489}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,3493}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,3463}
+              span  «应用模板»  {60x15 @959,3474}
+          div.bear-template-team.is-launch  {632x34 @404,3517}
+            span.bear-template-role  «开车队»  {56x22 @411,3523}
+            ul.bear-template-heroes  {556x24 @473,3522}
+              li  {116x24 @473,3522}
+                div.el-image  {24x24 @473,3522}
+                span  «赫罗尼莫»  {56x22 @501,3523}
+                small  «盾兵»  {28x22 @561,3523}
+              li  {88x24 @597,3522}
+                div.el-image  {24x24 @597,3522}
+                span  «玲奈»  {28x22 @625,3523}
+                small  «矛兵»  {28x22 @657,3523}
+              li  {102x24 @693,3522}
+                div.el-image  {24x24 @693,3522}
+                span  «阿隆索»  {42x22 @721,3523}
+                small  «射手»  {28x22 @767,3523}
+          div.bear-template-joins  {632x212 @404,3559}
+            div.bear-template-team  {632x32 @404,3559}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,3564}
+              ul.bear-template-heroes  {558x24 @472,3563}
+                li.is-captain  {88x24 @472,3563}
+                  div.el-image  {24x24 @472,3563}
+                  span  «杰西»  {28x22 @500,3564}
+                  small  «矛兵»  {28x22 @532,3564}
+                li  {88x24 @568,3563}
+                  div.el-image  {24x24 @568,3563}
+                  span  «尤金»  {28x22 @596,3564}
+                  small  «盾兵»  {28x22 @628,3564}
+                li  {116x24 @664,3563}
+                  div.el-image  {24x24 @664,3563}
+                  span  «克劳瑞斯»  {56x22 @692,3564}
+                  small  «射手»  {28x22 @752,3564}
+            div.bear-template-team  {632x32 @404,3595}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,3600}
+              ul.bear-template-heroes  {558x24 @472,3599}
+                li.is-captain  {88x24 @472,3599}
+                  div.el-image  {24x24 @472,3599}
+                  span  «书允»  {28x22 @500,3600}
+                  small  «射手»  {28x22 @532,3600}
+                li  {102x24 @568,3599}
+                  div.el-image  {24x24 @568,3599}
+                  span  «史密斯»  {42x22 @596,3600}
+                  small  «盾兵»  {28x22 @642,3600}
+                li  {88x24 @678,3599}
+                  div.el-image  {24x24 @678,3599}
+                  span  «查理»  {28x22 @706,3600}
+                  small  «矛兵»  {28x22 @738,3600}
+            div.bear-template-team  {632x32 @404,3631}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,3636}
+              ul.bear-template-heroes  {558x24 @472,3635}
+                li.is-captain  {102x24 @472,3635}
+                  div.el-image  {24x24 @472,3635}
+                  span  «杰塞尔»  {42x22 @500,3636}
+                  small  «射手»  {28x22 @546,3636}
+                li  {102x24 @582,3635}
+                  div.el-image  {24x24 @582,3635}
+                  span  «谢尔盖»  {42x22 @610,3636}
+                  small  «盾兵»  {28x22 @656,3636}
+                li  {116x24 @692,3635}
+                  div.el-image  {24x24 @692,3635}
+                  span  «帕特里克»  {56x22 @720,3636}
+                  small  «矛兵»  {28x22 @780,3636}
+            div.bear-template-team  {632x32 @404,3667}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,3672}
+              ul.bear-template-heroes  {558x24 @472,3671}
+                li.is-captain  {88x24 @472,3671}
+                  div.el-image  {24x24 @472,3671}
+                  span  «米娅»  {28x22 @500,3672}
+                  small  «矛兵»  {28x22 @532,3672}
+                li  {116x24 @568,3671}
+                  div.el-image  {24x24 @568,3671}
+                  span  «娜塔莉亚»  {56x22 @596,3672}
+                  small  «盾兵»  {28x22 @656,3672}
+                li  {88x24 @692,3671}
+                  div.el-image  {24x24 @692,3671}
+                  span  «吉娜»  {28x22 @720,3672}
+                  small  «射手»  {28x22 @752,3672}
+            div.bear-template-team  {632x32 @404,3703}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,3708}
+              ul.bear-template-heroes  {558x24 @472,3707}
+                li.is-captain  {88x24 @472,3707}
+                  div.el-image  {24x24 @472,3707}
+                  span  «琳恩»  {28x22 @500,3708}
+                  small  «射手»  {28x22 @532,3708}
+                li  {88x24 @568,3707}
+                  div.el-image  {24x24 @568,3707}
+                  span  «罗根»  {28x22 @596,3708}
+                  small  «盾兵»  {28x22 @628,3708}
+                li  {120x24 @664,3707}
+                  div.el-image  {24x24 @664,3707}
+                  span  «卢姆·波根»  {60x22 @692,3708}
+                  small  «矛兵»  {28x22 @756,3708}
+            div.bear-template-team  {632x32 @404,3739}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,3744}
+              ul.bear-template-heroes  {558x24 @472,3743}
+                li.is-captain  {102x24 @472,3743}
+                  div.el-image  {24x24 @472,3743}
+                  span  «弗林特»  {42x22 @500,3744}
+                  small  «盾兵»  {28x22 @546,3744}
+                li  {88x24 @582,3743}
+                  div.el-image  {24x24 @582,3743}
+                  span  «凌霜»  {28x22 @610,3744}
+                  small  «矛兵»  {28x22 @642,3744}
+                li  {88x24 @678,3743}
+                  div.el-image  {24x24 @678,3743}
+                  span  «津曼»  {28x22 @706,3744}
+                  small  «射手»  {28x22 @738,3744}
+        li.bear-template-card.is-locked  {654x330 @393,3792}
+          header.bear-template-card-head  {632x46 @404,3803}
+            div.bear-template-card-title  {185x46 @404,3803}
+              strong  «四代·微氪»  {185x22 @404,3803}
+              span.bear-template-tags  {185x20 @404,3829}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,3829}
+                  span.el-tag__content  «4 代»  {23x12 @415,3833}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,3829}
+                  span.el-tag__content  «微氪»  {24x12 @464,3833}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,3829}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,3833}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,3803}
+              span  «应用模板»  {60x15 @959,3814}
+          div.bear-template-team.is-launch  {632x34 @404,3857}
+            span.bear-template-role  «开车队»  {56x22 @411,3863}
+            ul.bear-template-heroes  {556x24 @473,3862}
+              li  {116x24 @473,3862}
+                div.el-image  {24x24 @473,3862}
+                span  «娜塔莉亚»  {56x22 @501,3863}
+                small  «盾兵»  {28x22 @561,3863}
+              li  {88x24 @597,3862}
+                div.el-image  {24x24 @597,3862}
+                span  «米娅»  {28x22 @625,3863}
+                small  «矛兵»  {28x22 @657,3863}
+              li  {88x24 @693,3862}
+                div.el-image  {24x24 @693,3862}
+                span  «琳恩»  {28x22 @721,3863}
+                small  «射手»  {28x22 @753,3863}
+          div.bear-template-joins  {632x212 @404,3899}
+            div.bear-template-team  {632x32 @404,3899}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,3904}
+              ul.bear-template-heroes  {558x24 @472,3903}
+                li.is-captain  {88x24 @472,3903}
+                  div.el-image  {24x24 @472,3903}
+                  span  «杰西»  {28x22 @500,3904}
+                  small  «矛兵»  {28x22 @532,3904}
+                li  {88x24 @568,3903}
+                  div.el-image  {24x24 @568,3903}
+                  span  «尤金»  {28x22 @596,3904}
+                  small  «盾兵»  {28x22 @628,3904}
+                li  {116x24 @664,3903}
+                  div.el-image  {24x24 @664,3903}
+                  span  «克劳瑞斯»  {56x22 @692,3904}
+                  small  «射手»  {28x22 @752,3904}
+            div.bear-template-team  {632x32 @404,3935}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,3940}
+              ul.bear-template-heroes  {558x24 @472,3939}
+                li.is-captain  {88x24 @472,3939}
+                  div.el-image  {24x24 @472,3939}
+                  span  «书允»  {28x22 @500,3940}
+                  small  «射手»  {28x22 @532,3940}
+                li  {102x24 @568,3939}
+                  div.el-image  {24x24 @568,3939}
+                  span  «史密斯»  {42x22 @596,3940}
+                  small  «盾兵»  {28x22 @642,3940}
+                li  {88x24 @678,3939}
+                  div.el-image  {24x24 @678,3939}
+                  span  «查理»  {28x22 @706,3940}
+                  small  «矛兵»  {28x22 @738,3940}
+            div.bear-template-team  {632x32 @404,3971}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,3976}
+              ul.bear-template-heroes  {558x24 @472,3975}
+                li.is-captain  {102x24 @472,3975}
+                  div.el-image  {24x24 @472,3975}
+                  span  «杰塞尔»  {42x22 @500,3976}
+                  small  «射手»  {28x22 @546,3976}
+                li  {102x24 @582,3975}
+                  div.el-image  {24x24 @582,3975}
+                  span  «谢尔盖»  {42x22 @610,3976}
+                  small  «盾兵»  {28x22 @656,3976}
+                li  {116x24 @692,3975}
+                  div.el-image  {24x24 @692,3975}
+                  span  «帕特里克»  {56x22 @720,3976}
+                  small  «矛兵»  {28x22 @780,3976}
+            div.bear-template-team  {632x32 @404,4007}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,4012}
+              ul.bear-template-heroes  {558x24 @472,4011}
+                li.is-captain  {88x24 @472,4011}
+                  div.el-image  {24x24 @472,4011}
+                  span  «玲奈»  {28x22 @500,4012}
+                  small  «矛兵»  {28x22 @532,4012}
+                li  {88x24 @568,4011}
+                  div.el-image  {24x24 @568,4011}
+                  span  «罗根»  {28x22 @596,4012}
+                  small  «盾兵»  {28x22 @628,4012}
+                li  {88x24 @664,4011}
+                  div.el-image  {24x24 @664,4011}
+                  span  «吉娜»  {28x22 @692,4012}
+                  small  «射手»  {28x22 @724,4012}
+            div.bear-template-team  {632x32 @404,4043}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,4048}
+              ul.bear-template-heroes  {558x24 @472,4047}
+                li.is-captain  {116x24 @472,4047}
+                  div.el-image  {24x24 @472,4047}
+                  span  «赫罗尼莫»  {56x22 @500,4048}
+                  small  «盾兵»  {28x22 @560,4048}
+                li  {120x24 @596,4047}
+                  div.el-image  {24x24 @596,4047}
+                  span  «卢姆·波根»  {60x22 @624,4048}
+                  small  «矛兵»  {28x22 @688,4048}
+                li  {88x24 @724,4047}
+                  div.el-image  {24x24 @724,4047}
+                  span  «津曼»  {28x22 @752,4048}
+                  small  «射手»  {28x22 @784,4048}
+            div.bear-template-team  {632x32 @404,4079}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,4084}
+              ul.bear-template-heroes  {558x24 @472,4083}
+                li.is-captain  {102x24 @472,4083}
+                  div.el-image  {24x24 @472,4083}
+                  span  «阿隆索»  {42x22 @500,4084}
+                  small  «射手»  {28x22 @546,4084}
+                li  {116x24 @582,4083}
+                  div.el-image  {24x24 @582,4083}
+                  span  «阿赫摩斯»  {56x22 @610,4084}
+                  small  «盾兵»  {28x22 @670,4084}
+                li  {88x24 @706,4083}
+                  div.el-image  {24x24 @706,4083}
+                  span  «凌霜»  {28x22 @734,4084}
+                  small  «矛兵»  {28x22 @766,4084}
+        li.bear-template-card.is-locked  {654x330 @393,4132}
+          header.bear-template-card-head  {632x46 @404,4143}
+            div.bear-template-card-title  {185x46 @404,4143}
+              strong  «四代·零氪»  {185x22 @404,4143}
+              span.bear-template-tags  {185x20 @404,4169}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,4169}
+                  span.el-tag__content  «4 代»  {23x12 @415,4173}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,4169}
+                  span.el-tag__content  «零氪»  {24x12 @464,4173}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,4169}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,4173}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,4143}
+              span  «应用模板»  {60x15 @959,4153}
+          div.bear-template-team.is-launch  {632x34 @404,4197}
+            span.bear-template-role  «开车队»  {56x22 @411,4203}
+            ul.bear-template-heroes  {556x24 @473,4202}
+              li  {102x24 @473,4202}
+                div.el-image  {24x24 @473,4202}
+                span  «弗林特»  {42x22 @501,4203}
+                small  «盾兵»  {28x22 @547,4203}
+              li  {88x24 @583,4202}
+                div.el-image  {24x24 @583,4202}
+                span  «米娅»  {28x22 @611,4203}
+                small  «矛兵»  {28x22 @643,4203}
+              li  {88x24 @679,4202}
+                div.el-image  {24x24 @679,4202}
+                span  «琳恩»  {28x22 @707,4203}
+                small  «射手»  {28x22 @739,4203}
+          div.bear-template-joins  {632x212 @404,4239}
+            div.bear-template-team  {632x32 @404,4239}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,4244}
+              ul.bear-template-heroes  {558x24 @472,4243}
+                li.is-captain  {88x24 @472,4243}
+                  div.el-image  {24x24 @472,4243}
+                  span  «杰西»  {28x22 @500,4244}
+                  small  «矛兵»  {28x22 @532,4244}
+                li  {88x24 @568,4243}
+                  div.el-image  {24x24 @568,4243}
+                  span  «尤金»  {28x22 @596,4244}
+                  small  «盾兵»  {28x22 @628,4244}
+                li  {116x24 @664,4243}
+                  div.el-image  {24x24 @664,4243}
+                  span  «克劳瑞斯»  {56x22 @692,4244}
+                  small  «射手»  {28x22 @752,4244}
+            div.bear-template-team  {632x32 @404,4275}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,4280}
+              ul.bear-template-heroes  {558x24 @472,4279}
+                li.is-captain  {88x24 @472,4279}
+                  div.el-image  {24x24 @472,4279}
+                  span  «书允»  {28x22 @500,4280}
+                  small  «射手»  {28x22 @532,4280}
+                li  {102x24 @568,4279}
+                  div.el-image  {24x24 @568,4279}
+                  span  «史密斯»  {42x22 @596,4280}
+                  small  «盾兵»  {28x22 @642,4280}
+                li  {88x24 @678,4279}
+                  div.el-image  {24x24 @678,4279}
+                  span  «查理»  {28x22 @706,4280}
+                  small  «矛兵»  {28x22 @738,4280}
+            div.bear-template-team  {632x32 @404,4311}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,4316}
+              ul.bear-template-heroes  {558x24 @472,4315}
+                li.is-captain  {102x24 @472,4315}
+                  div.el-image  {24x24 @472,4315}
+                  span  «杰塞尔»  {42x22 @500,4316}
+                  small  «射手»  {28x22 @546,4316}
+                li  {102x24 @582,4315}
+                  div.el-image  {24x24 @582,4315}
+                  span  «谢尔盖»  {42x22 @610,4316}
+                  small  «盾兵»  {28x22 @656,4316}
+                li  {116x24 @692,4315}
+                  div.el-image  {24x24 @692,4315}
+                  span  «帕特里克»  {56x22 @720,4316}
+                  small  «矛兵»  {28x22 @780,4316}
+            div.bear-template-team  {632x32 @404,4347}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,4352}
+              ul.bear-template-heroes  {558x24 @472,4351}
+                li.is-captain  {88x24 @472,4351}
+                  div.el-image  {24x24 @472,4351}
+                  span  «玲奈»  {28x22 @500,4352}
+                  small  «矛兵»  {28x22 @532,4352}
+                li  {116x24 @568,4351}
+                  div.el-image  {24x24 @568,4351}
+                  span  «娜塔莉亚»  {56x22 @596,4352}
+                  small  «盾兵»  {28x22 @656,4352}
+                li  {88x24 @692,4351}
+                  div.el-image  {24x24 @692,4351}
+                  span  «吉娜»  {28x22 @720,4352}
+                  small  «射手»  {28x22 @752,4352}
+            div.bear-template-team  {632x32 @404,4383}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,4388}
+              ul.bear-template-heroes  {558x24 @472,4387}
+                li.is-captain  {116x24 @472,4387}
+                  div.el-image  {24x24 @472,4387}
+                  span  «赫罗尼莫»  {56x22 @500,4388}
+                  small  «盾兵»  {28x22 @560,4388}
+                li  {120x24 @596,4387}
+                  div.el-image  {24x24 @596,4387}
+                  span  «卢姆·波根»  {60x22 @624,4388}
+                  small  «矛兵»  {28x22 @688,4388}
+                li  {88x24 @724,4387}
+                  div.el-image  {24x24 @724,4387}
+                  span  «津曼»  {28x22 @752,4388}
+                  small  «射手»  {28x22 @784,4388}
+            div.bear-template-team  {632x32 @404,4419}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,4424}
+              ul.bear-template-heroes  {558x24 @472,4423}
+                li.is-captain  {102x24 @472,4423}
+                  div.el-image  {24x24 @472,4423}
+                  span  «格雷格»  {42x22 @500,4424}
+                  small  «射手»  {28x22 @546,4424}
+                li  {88x24 @582,4423}
+                  div.el-image  {24x24 @582,4423}
+                  span  «罗根»  {28x22 @610,4424}
+                  small  «盾兵»  {28x22 @642,4424}
+                li  {88x24 @678,4423}
+                  div.el-image  {24x24 @678,4423}
+                  span  «凌霜»  {28x22 @706,4424}
+                  small  «矛兵»  {28x22 @738,4424}
+        li.bear-template-card.is-locked  {654x330 @393,4472}
+          header.bear-template-card-head  {632x46 @404,4483}
+            div.bear-template-card-title  {185x46 @404,4483}
+              strong  «五代·大氪»  {185x22 @404,4483}
+              span.bear-template-tags  {185x20 @404,4508}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,4508}
+                  span.el-tag__content  «5 代»  {23x12 @415,4512}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,4508}
+                  span.el-tag__content  «大氪»  {24x12 @464,4512}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,4508}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,4512}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,4483}
+              span  «应用模板»  {60x15 @959,4493}
+          div.bear-template-team.is-launch  {632x34 @404,4536}
+            span.bear-template-role  «开车队»  {56x22 @411,4542}
+            ul.bear-template-heroes  {556x24 @473,4541}
+              li  {116x24 @473,4541}
+                div.el-image  {24x24 @473,4541}
+                span  «赫罗尼莫»  {56x22 @501,4542}
+                small  «盾兵»  {28x22 @561,4542}
+              li  {88x24 @597,4541}
+                div.el-image  {24x24 @597,4541}
+                span  «玲奈»  {28x22 @625,4542}
+                small  «矛兵»  {28x22 @657,4542}
+              li  {88x24 @693,4541}
+                div.el-image  {24x24 @693,4541}
+                span  «格温»  {28x22 @721,4542}
+                small  «射手»  {28x22 @753,4542}
+          div.bear-template-joins  {632x212 @404,4578}
+            div.bear-template-team  {632x32 @404,4578}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,4583}
+              ul.bear-template-heroes  {558x24 @472,4582}
+                li.is-captain  {88x24 @472,4582}
+                  div.el-image  {24x24 @472,4582}
+                  span  «杰西»  {28x22 @500,4583}
+                  small  «矛兵»  {28x22 @532,4583}
+                li  {88x24 @568,4582}
+                  div.el-image  {24x24 @568,4582}
+                  span  «尤金»  {28x22 @596,4583}
+                  small  «盾兵»  {28x22 @628,4583}
+                li  {116x24 @664,4582}
+                  div.el-image  {24x24 @664,4582}
+                  span  «克劳瑞斯»  {56x22 @692,4583}
+                  small  «射手»  {28x22 @752,4583}
+            div.bear-template-team  {632x32 @404,4614}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,4619}
+              ul.bear-template-heroes  {558x24 @472,4618}
+                li.is-captain  {88x24 @472,4618}
+                  div.el-image  {24x24 @472,4618}
+                  span  «书允»  {28x22 @500,4619}
+                  small  «射手»  {28x22 @532,4619}
+                li  {102x24 @568,4618}
+                  div.el-image  {24x24 @568,4618}
+                  span  «史密斯»  {42x22 @596,4619}
+                  small  «盾兵»  {28x22 @642,4619}
+                li  {88x24 @678,4618}
+                  div.el-image  {24x24 @678,4618}
+                  span  «查理»  {28x22 @706,4619}
+                  small  «矛兵»  {28x22 @738,4619}
+            div.bear-template-team  {632x32 @404,4650}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,4655}
+              ul.bear-template-heroes  {558x24 @472,4654}
+                li.is-captain  {102x24 @472,4654}
+                  div.el-image  {24x24 @472,4654}
+                  span  «杰塞尔»  {42x22 @500,4655}
+                  small  «射手»  {28x22 @546,4655}
+                li  {102x24 @582,4654}
+                  div.el-image  {24x24 @582,4654}
+                  span  «谢尔盖»  {42x22 @610,4655}
+                  small  «盾兵»  {28x22 @656,4655}
+                li  {116x24 @692,4654}
+                  div.el-image  {24x24 @692,4654}
+                  span  «帕特里克»  {56x22 @720,4655}
+                  small  «矛兵»  {28x22 @780,4655}
+            div.bear-template-team  {632x32 @404,4686}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,4691}
+              ul.bear-template-heroes  {558x24 @472,4690}
+                li.is-captain  {88x24 @472,4690}
+                  div.el-image  {24x24 @472,4690}
+                  span  «米娅»  {28x22 @500,4691}
+                  small  «矛兵»  {28x22 @532,4691}
+                li  {116x24 @568,4690}
+                  div.el-image  {24x24 @568,4690}
+                  span  «娜塔莉亚»  {56x22 @596,4691}
+                  small  «盾兵»  {28x22 @656,4691}
+                li  {88x24 @692,4690}
+                  div.el-image  {24x24 @692,4690}
+                  span  «吉娜»  {28x22 @720,4691}
+                  small  «射手»  {28x22 @752,4691}
+            div.bear-template-team  {632x32 @404,4722}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,4727}
+              ul.bear-template-heroes  {558x24 @472,4726}
+                li.is-captain  {102x24 @472,4726}
+                  div.el-image  {24x24 @472,4726}
+                  span  «阿隆索»  {42x22 @500,4727}
+                  small  «射手»  {28x22 @546,4727}
+                li  {88x24 @582,4726}
+                  div.el-image  {24x24 @582,4726}
+                  span  «罗根»  {28x22 @610,4727}
+                  small  «盾兵»  {28x22 @642,4727}
+                li  {120x24 @678,4726}
+                  div.el-image  {24x24 @678,4726}
+                  span  «卢姆·波根»  {60x22 @706,4727}
+                  small  «矛兵»  {28x22 @770,4727}
+            div.bear-template-team  {632x32 @404,4758}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,4763}
+              ul.bear-template-heroes  {558x24 @472,4762}
+                li.is-captain  {102x24 @472,4762}
+                  div.el-image  {24x24 @472,4762}
+                  span  «弗林特»  {42x22 @500,4763}
+                  small  «盾兵»  {28x22 @546,4763}
+                li  {88x24 @582,4762}
+                  div.el-image  {24x24 @582,4762}
+                  span  «凌霜»  {28x22 @610,4763}
+                  small  «矛兵»  {28x22 @642,4763}
+                li  {88x24 @678,4762}
+                  div.el-image  {24x24 @678,4762}
+                  span  «津曼»  {28x22 @706,4763}
+                  small  «射手»  {28x22 @738,4763}
+        li.bear-template-card.is-locked  {654x330 @393,4811}
+          header.bear-template-card-head  {632x46 @404,4822}
+            div.bear-template-card-title  {185x46 @404,4822}
+              strong  «五代·微氪»  {185x22 @404,4822}
+              span.bear-template-tags  {185x20 @404,4848}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,4848}
+                  span.el-tag__content  «5 代»  {23x12 @415,4852}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,4848}
+                  span.el-tag__content  «微氪»  {24x12 @464,4852}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,4848}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,4852}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,4822}
+              span  «应用模板»  {60x15 @959,4833}
+          div.bear-template-team.is-launch  {632x34 @404,4876}
+            span.bear-template-role  «开车队»  {56x22 @411,4882}
+            ul.bear-template-heroes  {556x24 @473,4881}
+              li  {102x24 @473,4881}
+                div.el-image  {24x24 @473,4881}
+                span  «赫克托»  {42x22 @501,4882}
+                small  «盾兵»  {28x22 @547,4882}
+              li  {88x24 @583,4881}
+                div.el-image  {24x24 @583,4881}
+                span  «米娅»  {28x22 @611,4882}
+                small  «矛兵»  {28x22 @643,4882}
+              li  {88x24 @679,4881}
+                div.el-image  {24x24 @679,4881}
+                span  «格温»  {28x22 @707,4882}
+                small  «射手»  {28x22 @739,4882}
+          div.bear-template-joins  {632x212 @404,4918}
+            div.bear-template-team  {632x32 @404,4918}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,4923}
+              ul.bear-template-heroes  {558x24 @472,4922}
+                li.is-captain  {88x24 @472,4922}
+                  div.el-image  {24x24 @472,4922}
+                  span  «杰西»  {28x22 @500,4923}
+                  small  «矛兵»  {28x22 @532,4923}
+                li  {88x24 @568,4922}
+                  div.el-image  {24x24 @568,4922}
+                  span  «尤金»  {28x22 @596,4923}
+                  small  «盾兵»  {28x22 @628,4923}
+                li  {116x24 @664,4922}
+                  div.el-image  {24x24 @664,4922}
+                  span  «克劳瑞斯»  {56x22 @692,4923}
+                  small  «射手»  {28x22 @752,4923}
+            div.bear-template-team  {632x32 @404,4954}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,4959}
+              ul.bear-template-heroes  {558x24 @472,4958}
+                li.is-captain  {88x24 @472,4958}
+                  div.el-image  {24x24 @472,4958}
+                  span  «书允»  {28x22 @500,4959}
+                  small  «射手»  {28x22 @532,4959}
+                li  {102x24 @568,4958}
+                  div.el-image  {24x24 @568,4958}
+                  span  «史密斯»  {42x22 @596,4959}
+                  small  «盾兵»  {28x22 @642,4959}
+                li  {88x24 @678,4958}
+                  div.el-image  {24x24 @678,4958}
+                  span  «查理»  {28x22 @706,4959}
+                  small  «矛兵»  {28x22 @738,4959}
+            div.bear-template-team  {632x32 @404,4990}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,4995}
+              ul.bear-template-heroes  {558x24 @472,4994}
+                li.is-captain  {102x24 @472,4994}
+                  div.el-image  {24x24 @472,4994}
+                  span  «杰塞尔»  {42x22 @500,4995}
+                  small  «射手»  {28x22 @546,4995}
+                li  {102x24 @582,4994}
+                  div.el-image  {24x24 @582,4994}
+                  span  «谢尔盖»  {42x22 @610,4995}
+                  small  «盾兵»  {28x22 @656,4995}
+                li  {116x24 @692,4994}
+                  div.el-image  {24x24 @692,4994}
+                  span  «帕特里克»  {56x22 @720,4995}
+                  small  «矛兵»  {28x22 @780,4995}
+            div.bear-template-team  {632x32 @404,5026}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,5031}
+              ul.bear-template-heroes  {558x24 @472,5030}
+                li.is-captain  {88x24 @472,5030}
+                  div.el-image  {24x24 @472,5030}
+                  span  «玲奈»  {28x22 @500,5031}
+                  small  «矛兵»  {28x22 @532,5031}
+                li  {116x24 @568,5030}
+                  div.el-image  {24x24 @568,5030}
+                  span  «娜塔莉亚»  {56x22 @596,5031}
+                  small  «盾兵»  {28x22 @656,5031}
+                li  {88x24 @692,5030}
+                  div.el-image  {24x24 @692,5030}
+                  span  «吉娜»  {28x22 @720,5031}
+                  small  «射手»  {28x22 @752,5031}
+            div.bear-template-team  {632x32 @404,5062}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,5067}
+              ul.bear-template-heroes  {558x24 @472,5066}
+                li.is-captain  {116x24 @472,5066}
+                  div.el-image  {24x24 @472,5066}
+                  span  «赫罗尼莫»  {56x22 @500,5067}
+                  small  «盾兵»  {28x22 @560,5067}
+                li  {120x24 @596,5066}
+                  div.el-image  {24x24 @596,5066}
+                  span  «卢姆·波根»  {60x22 @624,5067}
+                  small  «矛兵»  {28x22 @688,5067}
+                li  {88x24 @724,5066}
+                  div.el-image  {24x24 @724,5066}
+                  span  «津曼»  {28x22 @752,5067}
+                  small  «射手»  {28x22 @784,5067}
+            div.bear-template-team  {632x32 @404,5098}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,5103}
+              ul.bear-template-heroes  {558x24 @472,5102}
+                li.is-captain  {102x24 @472,5102}
+                  div.el-image  {24x24 @472,5102}
+                  span  «阿隆索»  {42x22 @500,5103}
+                  small  «射手»  {28x22 @546,5103}
+                li  {88x24 @582,5102}
+                  div.el-image  {24x24 @582,5102}
+                  span  «罗根»  {28x22 @610,5103}
+                  small  «盾兵»  {28x22 @642,5103}
+                li  {88x24 @678,5102}
+                  div.el-image  {24x24 @678,5102}
+                  span  «凌霜»  {28x22 @706,5103}
+                  small  «矛兵»  {28x22 @738,5103}
+        li.bear-template-card.is-locked  {654x330 @393,5151}
+          header.bear-template-card-head  {632x46 @404,5162}
+            div.bear-template-card-title  {185x46 @404,5162}
+              strong  «五代·零氪»  {185x22 @404,5162}
+              span.bear-template-tags  {185x20 @404,5188}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,5188}
+                  span.el-tag__content  «5 代»  {23x12 @415,5192}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,5188}
+                  span.el-tag__content  «零氪»  {24x12 @464,5192}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,5188}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,5192}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,5162}
+              span  «应用模板»  {60x15 @959,5172}
+          div.bear-template-team.is-launch  {632x34 @404,5216}
+            span.bear-template-role  «开车队»  {56x22 @411,5222}
+            ul.bear-template-heroes  {556x24 @473,5221}
+              li  {102x24 @473,5221}
+                div.el-image  {24x24 @473,5221}
+                span  «赫克托»  {42x22 @501,5222}
+                small  «盾兵»  {28x22 @547,5222}
+              li  {88x24 @583,5221}
+                div.el-image  {24x24 @583,5221}
+                span  «米娅»  {28x22 @611,5222}
+                small  «矛兵»  {28x22 @643,5222}
+              li  {88x24 @679,5221}
+                div.el-image  {24x24 @679,5221}
+                span  «琳恩»  {28x22 @707,5222}
+                small  «射手»  {28x22 @739,5222}
+          div.bear-template-joins  {632x212 @404,5258}
+            div.bear-template-team  {632x32 @404,5258}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,5263}
+              ul.bear-template-heroes  {558x24 @472,5262}
+                li.is-captain  {88x24 @472,5262}
+                  div.el-image  {24x24 @472,5262}
+                  span  «杰西»  {28x22 @500,5263}
+                  small  «矛兵»  {28x22 @532,5263}
+                li  {88x24 @568,5262}
+                  div.el-image  {24x24 @568,5262}
+                  span  «尤金»  {28x22 @596,5263}
+                  small  «盾兵»  {28x22 @628,5263}
+                li  {116x24 @664,5262}
+                  div.el-image  {24x24 @664,5262}
+                  span  «克劳瑞斯»  {56x22 @692,5263}
+                  small  «射手»  {28x22 @752,5263}
+            div.bear-template-team  {632x32 @404,5294}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,5299}
+              ul.bear-template-heroes  {558x24 @472,5298}
+                li.is-captain  {88x24 @472,5298}
+                  div.el-image  {24x24 @472,5298}
+                  span  «书允»  {28x22 @500,5299}
+                  small  «射手»  {28x22 @532,5299}
+                li  {102x24 @568,5298}
+                  div.el-image  {24x24 @568,5298}
+                  span  «史密斯»  {42x22 @596,5299}
+                  small  «盾兵»  {28x22 @642,5299}
+                li  {88x24 @678,5298}
+                  div.el-image  {24x24 @678,5298}
+                  span  «查理»  {28x22 @706,5299}
+                  small  «矛兵»  {28x22 @738,5299}
+            div.bear-template-team  {632x32 @404,5330}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,5335}
+              ul.bear-template-heroes  {558x24 @472,5334}
+                li.is-captain  {102x24 @472,5334}
+                  div.el-image  {24x24 @472,5334}
+                  span  «杰塞尔»  {42x22 @500,5335}
+                  small  «射手»  {28x22 @546,5335}
+                li  {102x24 @582,5334}
+                  div.el-image  {24x24 @582,5334}
+                  span  «谢尔盖»  {42x22 @610,5335}
+                  small  «盾兵»  {28x22 @656,5335}
+                li  {116x24 @692,5334}
+                  div.el-image  {24x24 @692,5334}
+                  span  «帕特里克»  {56x22 @720,5335}
+                  small  «矛兵»  {28x22 @780,5335}
+            div.bear-template-team  {632x32 @404,5366}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,5371}
+              ul.bear-template-heroes  {558x24 @472,5370}
+                li.is-captain  {88x24 @472,5370}
+                  div.el-image  {24x24 @472,5370}
+                  span  «玲奈»  {28x22 @500,5371}
+                  small  «矛兵»  {28x22 @532,5371}
+                li  {116x24 @568,5370}
+                  div.el-image  {24x24 @568,5370}
+                  span  «娜塔莉亚»  {56x22 @596,5371}
+                  small  «盾兵»  {28x22 @656,5371}
+                li  {88x24 @692,5370}
+                  div.el-image  {24x24 @692,5370}
+                  span  «吉娜»  {28x22 @720,5371}
+                  small  «射手»  {28x22 @752,5371}
+            div.bear-template-team  {632x32 @404,5402}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,5407}
+              ul.bear-template-heroes  {558x24 @472,5406}
+                li.is-captain  {116x24 @472,5406}
+                  div.el-image  {24x24 @472,5406}
+                  span  «赫罗尼莫»  {56x22 @500,5407}
+                  small  «盾兵»  {28x22 @560,5407}
+                li  {120x24 @596,5406}
+                  div.el-image  {24x24 @596,5406}
+                  span  «卢姆·波根»  {60x22 @624,5407}
+                  small  «矛兵»  {28x22 @688,5407}
+                li  {88x24 @724,5406}
+                  div.el-image  {24x24 @724,5406}
+                  span  «津曼»  {28x22 @752,5407}
+                  small  «射手»  {28x22 @784,5407}
+            div.bear-template-team  {632x32 @404,5438}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,5443}
+              ul.bear-template-heroes  {558x24 @472,5442}
+                li.is-captain  {88x24 @472,5442}
+                  div.el-image  {24x24 @472,5442}
+                  span  «格温»  {28x22 @500,5443}
+                  small  «射手»  {28x22 @532,5443}
+                li  {88x24 @568,5442}
+                  div.el-image  {24x24 @568,5442}
+                  span  «罗根»  {28x22 @596,5443}
+                  small  «盾兵»  {28x22 @628,5443}
+                li  {88x24 @664,5442}
+                  div.el-image  {24x24 @664,5442}
+                  span  «凌霜»  {28x22 @692,5443}
+                  small  «矛兵»  {28x22 @724,5443}
+        li.bear-template-card.is-locked  {654x330 @393,5491}
+          header.bear-template-card-head  {632x46 @404,5502}
+            div.bear-template-card-title  {185x46 @404,5502}
+              strong  «六代·大氪»  {185x22 @404,5502}
+              span.bear-template-tags  {185x20 @404,5527}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,5527}
+                  span.el-tag__content  «6 代»  {23x12 @415,5531}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,5527}
+                  span.el-tag__content  «大氪»  {24x12 @464,5531}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,5527}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,5531}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,5502}
+              span  «应用模板»  {60x15 @959,5512}
+          div.bear-template-team.is-launch  {632x34 @404,5555}
+            span.bear-template-role  «开车队»  {56x22 @411,5561}
+            ul.bear-template-heroes  {556x24 @473,5560}
+              li  {116x24 @473,5560}
+                div.el-image  {24x24 @473,5560}
+                span  «赫罗尼莫»  {56x22 @501,5561}
+                small  «盾兵»  {28x22 @561,5561}
+              li  {88x24 @597,5560}
+                div.el-image  {24x24 @597,5560}
+                span  «玲奈»  {28x22 @625,5561}
+                small  «矛兵»  {28x22 @657,5561}
+              li  {88x24 @693,5560}
+                div.el-image  {24x24 @693,5560}
+                span  «韦恩»  {28x22 @721,5561}
+                small  «射手»  {28x22 @753,5561}
+          div.bear-template-joins  {632x212 @404,5597}
+            div.bear-template-team  {632x32 @404,5597}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,5602}
+              ul.bear-template-heroes  {558x24 @472,5601}
+                li.is-captain  {88x24 @472,5601}
+                  div.el-image  {24x24 @472,5601}
+                  span  «杰西»  {28x22 @500,5602}
+                  small  «矛兵»  {28x22 @532,5602}
+                li  {88x24 @568,5601}
+                  div.el-image  {24x24 @568,5601}
+                  span  «尤金»  {28x22 @596,5602}
+                  small  «盾兵»  {28x22 @628,5602}
+                li  {116x24 @664,5601}
+                  div.el-image  {24x24 @664,5601}
+                  span  «克劳瑞斯»  {56x22 @692,5602}
+                  small  «射手»  {28x22 @752,5602}
+            div.bear-template-team  {632x32 @404,5633}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,5638}
+              ul.bear-template-heroes  {558x24 @472,5637}
+                li.is-captain  {88x24 @472,5637}
+                  div.el-image  {24x24 @472,5637}
+                  span  «书允»  {28x22 @500,5638}
+                  small  «射手»  {28x22 @532,5638}
+                li  {102x24 @568,5637}
+                  div.el-image  {24x24 @568,5637}
+                  span  «史密斯»  {42x22 @596,5638}
+                  small  «盾兵»  {28x22 @642,5638}
+                li  {88x24 @678,5637}
+                  div.el-image  {24x24 @678,5637}
+                  span  «查理»  {28x22 @706,5638}
+                  small  «矛兵»  {28x22 @738,5638}
+            div.bear-template-team  {632x32 @404,5669}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,5674}
+              ul.bear-template-heroes  {558x24 @472,5673}
+                li.is-captain  {102x24 @472,5673}
+                  div.el-image  {24x24 @472,5673}
+                  span  «杰塞尔»  {42x22 @500,5674}
+                  small  «射手»  {28x22 @546,5674}
+                li  {102x24 @582,5673}
+                  div.el-image  {24x24 @582,5673}
+                  span  «谢尔盖»  {42x22 @610,5674}
+                  small  «盾兵»  {28x22 @656,5674}
+                li  {116x24 @692,5673}
+                  div.el-image  {24x24 @692,5673}
+                  span  «帕特里克»  {56x22 @720,5674}
+                  small  «矛兵»  {28x22 @780,5674}
+            div.bear-template-team  {632x32 @404,5705}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,5710}
+              ul.bear-template-heroes  {558x24 @472,5709}
+                li.is-captain  {88x24 @472,5709}
+                  div.el-image  {24x24 @472,5709}
+                  span  «米娅»  {28x22 @500,5710}
+                  small  «矛兵»  {28x22 @532,5710}
+                li  {116x24 @568,5709}
+                  div.el-image  {24x24 @568,5709}
+                  span  «娜塔莉亚»  {56x22 @596,5710}
+                  small  «盾兵»  {28x22 @656,5710}
+                li  {88x24 @692,5709}
+                  div.el-image  {24x24 @692,5709}
+                  span  «吉娜»  {28x22 @720,5710}
+                  small  «射手»  {28x22 @752,5710}
+            div.bear-template-team  {632x32 @404,5741}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,5746}
+              ul.bear-template-heroes  {558x24 @472,5745}
+                li.is-captain  {88x24 @472,5745}
+                  div.el-image  {24x24 @472,5745}
+                  span  «格温»  {28x22 @500,5746}
+                  small  «射手»  {28x22 @532,5746}
+                li  {88x24 @568,5745}
+                  div.el-image  {24x24 @568,5745}
+                  span  «罗根»  {28x22 @596,5746}
+                  small  «盾兵»  {28x22 @628,5746}
+                li  {120x24 @664,5745}
+                  div.el-image  {24x24 @664,5745}
+                  span  «卢姆·波根»  {60x22 @692,5746}
+                  small  «矛兵»  {28x22 @756,5746}
+            div.bear-template-team  {632x32 @404,5777}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,5782}
+              ul.bear-template-heroes  {558x24 @472,5781}
+                li.is-captain  {102x24 @472,5781}
+                  div.el-image  {24x24 @472,5781}
+                  span  «赫克托»  {42x22 @500,5782}
+                  small  «盾兵»  {28x22 @546,5782}
+                li  {88x24 @582,5781}
+                  div.el-image  {24x24 @582,5781}
+                  span  «凌霜»  {28x22 @610,5782}
+                  small  «矛兵»  {28x22 @642,5782}
+                li  {88x24 @678,5781}
+                  div.el-image  {24x24 @678,5781}
+                  span  «津曼»  {28x22 @706,5782}
+                  small  «射手»  {28x22 @738,5782}
+        li.bear-template-card.is-locked  {654x330 @393,5830}
+          header.bear-template-card-head  {632x46 @404,5841}
+            div.bear-template-card-title  {185x46 @404,5841}
+              strong  «六代·零氪»  {185x22 @404,5841}
+              span.bear-template-tags  {185x20 @404,5867}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,5867}
+                  span.el-tag__content  «6 代»  {23x12 @415,5871}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,5867}
+                  span.el-tag__content  «零氪»  {24x12 @464,5871}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,5867}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,5871}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,5841}
+              span  «应用模板»  {60x15 @959,5852}
+          div.bear-template-team.is-launch  {632x34 @404,5895}
+            span.bear-template-role  «开车队»  {56x22 @411,5901}
+            ul.bear-template-heroes  {556x24 @473,5900}
+              li  {102x24 @473,5900}
+                div.el-image  {24x24 @473,5900}
+                span  «赫克托»  {42x22 @501,5901}
+                small  «盾兵»  {28x22 @547,5901}
+              li  {88x24 @583,5900}
+                div.el-image  {24x24 @583,5900}
+                span  «芮妮»  {28x22 @611,5901}
+                small  «矛兵»  {28x22 @643,5901}
+              li  {88x24 @679,5900}
+                div.el-image  {24x24 @679,5900}
+                span  «琳恩»  {28x22 @707,5901}
+                small  «射手»  {28x22 @739,5901}
+          div.bear-template-joins  {632x212 @404,5937}
+            div.bear-template-team  {632x32 @404,5937}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,5942}
+              ul.bear-template-heroes  {558x24 @472,5941}
+                li.is-captain  {88x24 @472,5941}
+                  div.el-image  {24x24 @472,5941}
+                  span  «杰西»  {28x22 @500,5942}
+                  small  «矛兵»  {28x22 @532,5942}
+                li  {88x24 @568,5941}
+                  div.el-image  {24x24 @568,5941}
+                  span  «尤金»  {28x22 @596,5942}
+                  small  «盾兵»  {28x22 @628,5942}
+                li  {116x24 @664,5941}
+                  div.el-image  {24x24 @664,5941}
+                  span  «克劳瑞斯»  {56x22 @692,5942}
+                  small  «射手»  {28x22 @752,5942}
+            div.bear-template-team  {632x32 @404,5973}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,5978}
+              ul.bear-template-heroes  {558x24 @472,5977}
+                li.is-captain  {88x24 @472,5977}
+                  div.el-image  {24x24 @472,5977}
+                  span  «书允»  {28x22 @500,5978}
+                  small  «射手»  {28x22 @532,5978}
+                li  {102x24 @568,5977}
+                  div.el-image  {24x24 @568,5977}
+                  span  «史密斯»  {42x22 @596,5978}
+                  small  «盾兵»  {28x22 @642,5978}
+                li  {88x24 @678,5977}
+                  div.el-image  {24x24 @678,5977}
+                  span  «查理»  {28x22 @706,5978}
+                  small  «矛兵»  {28x22 @738,5978}
+            div.bear-template-team  {632x32 @404,6009}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,6014}
+              ul.bear-template-heroes  {558x24 @472,6013}
+                li.is-captain  {102x24 @472,6013}
+                  div.el-image  {24x24 @472,6013}
+                  span  «杰塞尔»  {42x22 @500,6014}
+                  small  «射手»  {28x22 @546,6014}
+                li  {102x24 @582,6013}
+                  div.el-image  {24x24 @582,6013}
+                  span  «谢尔盖»  {42x22 @610,6014}
+                  small  «盾兵»  {28x22 @656,6014}
+                li  {116x24 @692,6013}
+                  div.el-image  {24x24 @692,6013}
+                  span  «帕特里克»  {56x22 @720,6014}
+                  small  «矛兵»  {28x22 @780,6014}
+            div.bear-template-team  {632x32 @404,6045}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,6050}
+              ul.bear-template-heroes  {558x24 @472,6049}
+                li.is-captain  {88x24 @472,6049}
+                  div.el-image  {24x24 @472,6049}
+                  span  «米娅»  {28x22 @500,6050}
+                  small  «矛兵»  {28x22 @532,6050}
+                li  {116x24 @568,6049}
+                  div.el-image  {24x24 @568,6049}
+                  span  «娜塔莉亚»  {56x22 @596,6050}
+                  small  «盾兵»  {28x22 @656,6050}
+                li  {88x24 @692,6049}
+                  div.el-image  {24x24 @692,6049}
+                  span  «吉娜»  {28x22 @720,6050}
+                  small  «射手»  {28x22 @752,6050}
+            div.bear-template-team  {632x32 @404,6081}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,6086}
+              ul.bear-template-heroes  {558x24 @472,6085}
+                li.is-captain  {88x24 @472,6085}
+                  div.el-image  {24x24 @472,6085}
+                  span  «格温»  {28x22 @500,6086}
+                  small  «射手»  {28x22 @532,6086}
+                li  {88x24 @568,6085}
+                  div.el-image  {24x24 @568,6085}
+                  span  «罗根»  {28x22 @596,6086}
+                  small  «盾兵»  {28x22 @628,6086}
+                li  {120x24 @664,6085}
+                  div.el-image  {24x24 @664,6085}
+                  span  «卢姆·波根»  {60x22 @692,6086}
+                  small  «矛兵»  {28x22 @756,6086}
+            div.bear-template-team  {632x32 @404,6117}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,6122}
+              ul.bear-template-heroes  {558x24 @472,6121}
+                li.is-captain  {116x24 @472,6121}
+                  div.el-image  {24x24 @472,6121}
+                  span  «赫罗尼莫»  {56x22 @500,6122}
+                  small  «盾兵»  {28x22 @560,6122}
+                li  {88x24 @596,6121}
+                  div.el-image  {24x24 @596,6121}
+                  span  «凌霜»  {28x22 @624,6122}
+                  small  «矛兵»  {28x22 @656,6122}
+                li  {88x24 @692,6121}
+                  div.el-image  {24x24 @692,6121}
+                  span  «津曼»  {28x22 @720,6122}
+                  small  «射手»  {28x22 @752,6122}
+        li.bear-template-card.is-locked  {654x330 @393,6170}
+          header.bear-template-card-head  {632x46 @404,6181}
+            div.bear-template-card-title  {185x46 @404,6181}
+              strong  «七代·大氪»  {185x22 @404,6181}
+              span.bear-template-tags  {185x20 @404,6207}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,6207}
+                  span.el-tag__content  «7 代»  {23x12 @415,6211}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,6207}
+                  span.el-tag__content  «大氪»  {24x12 @464,6211}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,6207}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,6211}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,6181}
+              span  «应用模板»  {60x15 @959,6191}
+          div.bear-template-team.is-launch  {632x34 @404,6235}
+            span.bear-template-role  «开车队»  {56x22 @411,6241}
+            ul.bear-template-heroes  {556x24 @473,6240}
+              li  {116x24 @473,6240}
+                div.el-image  {24x24 @473,6240}
+                span  «赫罗尼莫»  {56x22 @501,6241}
+                small  «盾兵»  {28x22 @561,6241}
+              li  {88x24 @597,6240}
+                div.el-image  {24x24 @597,6240}
+                span  «米娅»  {28x22 @625,6241}
+                small  «矛兵»  {28x22 @657,6241}
+              li  {116x24 @693,6240}
+                div.el-image  {24x24 @693,6240}
+                span  «布拉德利»  {56x22 @721,6241}
+                small  «射手»  {28x22 @781,6241}
+          div.bear-template-joins  {632x212 @404,6277}
+            div.bear-template-team  {632x32 @404,6277}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,6282}
+              ul.bear-template-heroes  {558x24 @472,6281}
+                li.is-captain  {88x24 @472,6281}
+                  div.el-image  {24x24 @472,6281}
+                  span  «杰西»  {28x22 @500,6282}
+                  small  «矛兵»  {28x22 @532,6282}
+                li  {88x24 @568,6281}
+                  div.el-image  {24x24 @568,6281}
+                  span  «尤金»  {28x22 @596,6282}
+                  small  «盾兵»  {28x22 @628,6282}
+                li  {116x24 @664,6281}
+                  div.el-image  {24x24 @664,6281}
+                  span  «克劳瑞斯»  {56x22 @692,6282}
+                  small  «射手»  {28x22 @752,6282}
+            div.bear-template-team  {632x32 @404,6313}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,6318}
+              ul.bear-template-heroes  {558x24 @472,6317}
+                li.is-captain  {88x24 @472,6317}
+                  div.el-image  {24x24 @472,6317}
+                  span  «书允»  {28x22 @500,6318}
+                  small  «射手»  {28x22 @532,6318}
+                li  {102x24 @568,6317}
+                  div.el-image  {24x24 @568,6317}
+                  span  «史密斯»  {42x22 @596,6318}
+                  small  «盾兵»  {28x22 @642,6318}
+                li  {88x24 @678,6317}
+                  div.el-image  {24x24 @678,6317}
+                  span  «查理»  {28x22 @706,6318}
+                  small  «矛兵»  {28x22 @738,6318}
+            div.bear-template-team  {632x32 @404,6349}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,6354}
+              ul.bear-template-heroes  {558x24 @472,6353}
+                li.is-captain  {102x24 @472,6353}
+                  div.el-image  {24x24 @472,6353}
+                  span  «杰塞尔»  {42x22 @500,6354}
+                  small  «射手»  {28x22 @546,6354}
+                li  {102x24 @582,6353}
+                  div.el-image  {24x24 @582,6353}
+                  span  «谢尔盖»  {42x22 @610,6354}
+                  small  «盾兵»  {28x22 @656,6354}
+                li  {116x24 @692,6353}
+                  div.el-image  {24x24 @692,6353}
+                  span  «帕特里克»  {56x22 @720,6354}
+                  small  «矛兵»  {28x22 @780,6354}
+            div.bear-template-team  {632x32 @404,6385}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,6390}
+              ul.bear-template-heroes  {558x24 @472,6389}
+                li.is-captain  {88x24 @472,6389}
+                  div.el-image  {24x24 @472,6389}
+                  span  «玲奈»  {28x22 @500,6390}
+                  small  «矛兵»  {28x22 @532,6390}
+                li  {116x24 @568,6389}
+                  div.el-image  {24x24 @568,6389}
+                  span  «娜塔莉亚»  {56x22 @596,6390}
+                  small  «盾兵»  {28x22 @656,6390}
+                li  {88x24 @692,6389}
+                  div.el-image  {24x24 @692,6389}
+                  span  «吉娜»  {28x22 @720,6390}
+                  small  «射手»  {28x22 @752,6390}
+            div.bear-template-team  {632x32 @404,6421}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,6426}
+              ul.bear-template-heroes  {558x24 @472,6425}
+                li.is-captain  {88x24 @472,6425}
+                  div.el-image  {24x24 @472,6425}
+                  span  «格温»  {28x22 @500,6426}
+                  small  «射手»  {28x22 @532,6426}
+                li  {88x24 @568,6425}
+                  div.el-image  {24x24 @568,6425}
+                  span  «罗根»  {28x22 @596,6426}
+                  small  «盾兵»  {28x22 @628,6426}
+                li  {120x24 @664,6425}
+                  div.el-image  {24x24 @664,6425}
+                  span  «卢姆·波根»  {60x22 @692,6426}
+                  small  «矛兵»  {28x22 @756,6426}
+            div.bear-template-team  {632x32 @404,6457}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,6462}
+              ul.bear-template-heroes  {558x24 @472,6461}
+                li.is-captain  {102x24 @472,6461}
+                  div.el-image  {24x24 @472,6461}
+                  span  «艾迪丝»  {42x22 @500,6462}
+                  small  «盾兵»  {28x22 @546,6462}
+                li  {88x24 @582,6461}
+                  div.el-image  {24x24 @582,6461}
+                  span  «凌霜»  {28x22 @610,6462}
+                  small  «矛兵»  {28x22 @642,6462}
+                li  {88x24 @678,6461}
+                  div.el-image  {24x24 @678,6461}
+                  span  «津曼»  {28x22 @706,6462}
+                  small  «射手»  {28x22 @738,6462}
+        li.bear-template-card  {654x330 @393,6510}
+          header.bear-template-card-head  {632x46 @404,6521}
+            div.bear-template-card-title  {158x46 @404,6521}
+              strong  «七代·零氪»  {158x22 @404,6521}
+              span.bear-template-tags  {158x20 @404,6546}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,6546}
+                  span.el-tag__content  «7 代»  {23x12 @415,6550}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,6546}
+                  span.el-tag__content  «零氪»  {24x12 @464,6550}
+                span.el-tag.el-tag--success.el-tag--small.el-tag--light  {58x20 @504,6546}
+                  span.el-tag__content  «可应用»  {36x12 @515,6550}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,6521}
+              span  «应用模板»  {60x15 @959,6531}
+          div.bear-template-team.is-launch  {632x34 @404,6574}
+            span.bear-template-role  «开车队»  {56x22 @411,6580}
+            ul.bear-template-heroes  {556x24 @473,6579}
+              li  {102x24 @473,6579}
+                div.el-image  {24x24 @473,6579}
+                span  «赫克托»  {42x22 @501,6580}
+                small  «盾兵»  {28x22 @547,6580}
+              li  {88x24 @583,6579}
+                div.el-image  {24x24 @583,6579}
+                span  «米娅»  {28x22 @611,6580}
+                small  «矛兵»  {28x22 @643,6580}
+              li  {116x24 @679,6579}
+                div.el-image  {24x24 @679,6579}
+                span  «布拉德利»  {56x22 @707,6580}
+                small  «射手»  {28x22 @767,6580}
+          div.bear-template-joins  {632x212 @404,6616}
+            div.bear-template-team  {632x32 @404,6616}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,6621}
+              ul.bear-template-heroes  {558x24 @472,6620}
+                li.is-captain  {88x24 @472,6620}
+                  div.el-image  {24x24 @472,6620}
+                  span  «杰西»  {28x22 @500,6621}
+                  small  «矛兵»  {28x22 @532,6621}
+                li  {88x24 @568,6620}
+                  div.el-image  {24x24 @568,6620}
+                  span  «尤金»  {28x22 @596,6621}
+                  small  «盾兵»  {28x22 @628,6621}
+                li  {116x24 @664,6620}
+                  div.el-image  {24x24 @664,6620}
+                  span  «克劳瑞斯»  {56x22 @692,6621}
+                  small  «射手»  {28x22 @752,6621}
+            div.bear-template-team  {632x32 @404,6652}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,6657}
+              ul.bear-template-heroes  {558x24 @472,6656}
+                li.is-captain  {88x24 @472,6656}
+                  div.el-image  {24x24 @472,6656}
+                  span  «书允»  {28x22 @500,6657}
+                  small  «射手»  {28x22 @532,6657}
+                li  {102x24 @568,6656}
+                  div.el-image  {24x24 @568,6656}
+                  span  «史密斯»  {42x22 @596,6657}
+                  small  «盾兵»  {28x22 @642,6657}
+                li  {88x24 @678,6656}
+                  div.el-image  {24x24 @678,6656}
+                  span  «查理»  {28x22 @706,6657}
+                  small  «矛兵»  {28x22 @738,6657}
+            div.bear-template-team  {632x32 @404,6688}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,6693}
+              ul.bear-template-heroes  {558x24 @472,6692}
+                li.is-captain  {102x24 @472,6692}
+                  div.el-image  {24x24 @472,6692}
+                  span  «杰塞尔»  {42x22 @500,6693}
+                  small  «射手»  {28x22 @546,6693}
+                li  {102x24 @582,6692}
+                  div.el-image  {24x24 @582,6692}
+                  span  «谢尔盖»  {42x22 @610,6693}
+                  small  «盾兵»  {28x22 @656,6693}
+                li  {116x24 @692,6692}
+                  div.el-image  {24x24 @692,6692}
+                  span  «帕特里克»  {56x22 @720,6693}
+                  small  «矛兵»  {28x22 @780,6693}
+            div.bear-template-team  {632x32 @404,6724}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,6729}
+              ul.bear-template-heroes  {558x24 @472,6728}
+                li.is-captain  {88x24 @472,6728}
+                  div.el-image  {24x24 @472,6728}
+                  span  «玲奈»  {28x22 @500,6729}
+                  small  «矛兵»  {28x22 @532,6729}
+                li  {116x24 @568,6728}
+                  div.el-image  {24x24 @568,6728}
+                  span  «娜塔莉亚»  {56x22 @596,6729}
+                  small  «盾兵»  {28x22 @656,6729}
+                li  {88x24 @692,6728}
+                  div.el-image  {24x24 @692,6728}
+                  span  «吉娜»  {28x22 @720,6729}
+                  small  «射手»  {28x22 @752,6729}
+            div.bear-template-team  {632x32 @404,6760}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,6765}
+              ul.bear-template-heroes  {558x24 @472,6764}
+                li.is-captain  {88x24 @472,6764}
+                  div.el-image  {24x24 @472,6764}
+                  span  «格温»  {28x22 @500,6765}
+                  small  «射手»  {28x22 @532,6765}
+                li  {88x24 @568,6764}
+                  div.el-image  {24x24 @568,6764}
+                  span  «罗根»  {28x22 @596,6765}
+                  small  «盾兵»  {28x22 @628,6765}
+                li  {120x24 @664,6764}
+                  div.el-image  {24x24 @664,6764}
+                  span  «卢姆·波根»  {60x22 @692,6765}
+                  small  «矛兵»  {28x22 @756,6765}
+            div.bear-template-team  {632x32 @404,6796}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,6801}
+              ul.bear-template-heroes  {558x24 @472,6800}
+                li.is-captain  {88x24 @472,6800}
+                  div.el-image  {24x24 @472,6800}
+                  span  «哥顿»  {28x22 @500,6801}
+                  small  «矛兵»  {28x22 @532,6801}
+                li  {88x24 @568,6800}
+                  div.el-image  {24x24 @568,6800}
+                  span  «无名»  {28x22 @596,6801}
+                  small  «盾兵»  {28x22 @628,6801}
+                li  {88x24 @664,6800}
+                  div.el-image  {24x24 @664,6800}
+                  span  «津曼»  {28x22 @692,6801}
+                  small  «射手»  {28x22 @724,6801}
+        li.bear-template-card.is-locked  {654x330 @393,6849}
+          header.bear-template-card-head  {632x46 @404,6860}
+            div.bear-template-card-title  {185x46 @404,6860}
+              strong  «八代·大氪»  {185x22 @404,6860}
+              span.bear-template-tags  {185x20 @404,6886}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,6886}
+                  span.el-tag__content  «8 代»  {23x12 @415,6890}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,6886}
+                  span.el-tag__content  «大氪»  {24x12 @464,6890}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,6886}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,6890}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,6860}
+              span  «应用模板»  {60x15 @959,6871}
+          div.bear-template-team.is-launch  {632x34 @404,6914}
+            span.bear-template-role  «开车队»  {56x22 @411,6920}
+            ul.bear-template-heroes  {556x24 @473,6919}
+              li  {116x24 @473,6919}
+                div.el-image  {24x24 @473,6919}
+                span  «赫罗尼莫»  {56x22 @501,6920}
+                small  «盾兵»  {28x22 @561,6920}
+              li  {88x24 @597,6919}
+                div.el-image  {24x24 @597,6919}
+                span  «米娅»  {28x22 @625,6920}
+                small  «矛兵»  {28x22 @657,6920}
+              li  {116x24 @693,6919}
+                div.el-image  {24x24 @693,6919}
+                span  «布拉德利»  {56x22 @721,6920}
+                small  «射手»  {28x22 @781,6920}
+          div.bear-template-joins  {632x212 @404,6956}
+            div.bear-template-team  {632x32 @404,6956}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,6961}
+              ul.bear-template-heroes  {558x24 @472,6960}
+                li.is-captain  {88x24 @472,6960}
+                  div.el-image  {24x24 @472,6960}
+                  span  «杰西»  {28x22 @500,6961}
+                  small  «矛兵»  {28x22 @532,6961}
+                li  {88x24 @568,6960}
+                  div.el-image  {24x24 @568,6960}
+                  span  «尤金»  {28x22 @596,6961}
+                  small  «盾兵»  {28x22 @628,6961}
+                li  {116x24 @664,6960}
+                  div.el-image  {24x24 @664,6960}
+                  span  «克劳瑞斯»  {56x22 @692,6961}
+                  small  «射手»  {28x22 @752,6961}
+            div.bear-template-team  {632x32 @404,6992}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,6997}
+              ul.bear-template-heroes  {558x24 @472,6996}
+                li.is-captain  {88x24 @472,6996}
+                  div.el-image  {24x24 @472,6996}
+                  span  «书允»  {28x22 @500,6997}
+                  small  «射手»  {28x22 @532,6997}
+                li  {102x24 @568,6996}
+                  div.el-image  {24x24 @568,6996}
+                  span  «史密斯»  {42x22 @596,6997}
+                  small  «盾兵»  {28x22 @642,6997}
+                li  {88x24 @678,6996}
+                  div.el-image  {24x24 @678,6996}
+                  span  «查理»  {28x22 @706,6997}
+                  small  «矛兵»  {28x22 @738,6997}
+            div.bear-template-team  {632x32 @404,7028}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,7033}
+              ul.bear-template-heroes  {558x24 @472,7032}
+                li.is-captain  {102x24 @472,7032}
+                  div.el-image  {24x24 @472,7032}
+                  span  «杰塞尔»  {42x22 @500,7033}
+                  small  «射手»  {28x22 @546,7033}
+                li  {102x24 @582,7032}
+                  div.el-image  {24x24 @582,7032}
+                  span  «谢尔盖»  {42x22 @610,7033}
+                  small  «盾兵»  {28x22 @656,7033}
+                li  {116x24 @692,7032}
+                  div.el-image  {24x24 @692,7032}
+                  span  «帕特里克»  {56x22 @720,7033}
+                  small  «矛兵»  {28x22 @780,7033}
+            div.bear-template-team  {632x32 @404,7064}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,7069}
+              ul.bear-template-heroes  {558x24 @472,7068}
+                li.is-captain  {88x24 @472,7068}
+                  div.el-image  {24x24 @472,7068}
+                  span  «玲奈»  {28x22 @500,7069}
+                  small  «矛兵»  {28x22 @532,7069}
+                li  {116x24 @568,7068}
+                  div.el-image  {24x24 @568,7068}
+                  span  «娜塔莉亚»  {56x22 @596,7069}
+                  small  «盾兵»  {28x22 @656,7069}
+                li  {88x24 @692,7068}
+                  div.el-image  {24x24 @692,7068}
+                  span  «吉娜»  {28x22 @720,7069}
+                  small  «射手»  {28x22 @752,7069}
+            div.bear-template-team  {632x32 @404,7100}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,7105}
+              ul.bear-template-heroes  {558x24 @472,7104}
+                li.is-captain  {88x24 @472,7104}
+                  div.el-image  {24x24 @472,7104}
+                  span  «格温»  {28x22 @500,7105}
+                  small  «射手»  {28x22 @532,7105}
+                li  {88x24 @568,7104}
+                  div.el-image  {24x24 @568,7104}
+                  span  «罗根»  {28x22 @596,7105}
+                  small  «盾兵»  {28x22 @628,7105}
+                li  {120x24 @664,7104}
+                  div.el-image  {24x24 @664,7104}
+                  span  «卢姆·波根»  {60x22 @692,7105}
+                  small  «矛兵»  {28x22 @756,7105}
+            div.bear-template-team  {632x32 @404,7136}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,7141}
+              ul.bear-template-heroes  {558x24 @472,7140}
+                li.is-captain  {102x24 @472,7140}
+                  div.el-image  {24x24 @472,7140}
+                    div.el-image__wrapper  {24x24 @472,7140}
+                      div.el-image__placeholder  {24x24 @472,7140}
+                  span  «索尼娅»  {42x22 @500,7141}
+                  small  «矛兵»  {28x22 @546,7141}
+                li  {88x24 @582,7140}
+                  div.el-image  {24x24 @582,7140}
+                  span  «加托»  {28x22 @610,7141}
+                  small  «盾兵»  {28x22 @642,7141}
+                li  {88x24 @678,7140}
+                  div.el-image  {24x24 @678,7140}
+                  span  «津曼»  {28x22 @706,7141}
+                  small  «射手»  {28x22 @738,7141}
+        li.bear-template-card  {654x330 @393,7189}
+          header.bear-template-card-head  {632x46 @404,7200}
+            div.bear-template-card-title  {158x46 @404,7200}
+              strong  «八代·零氪»  {158x22 @404,7200}
+              span.bear-template-tags  {158x20 @404,7226}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,7226}
+                  span.el-tag__content  «8 代»  {23x12 @415,7230}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,7226}
+                  span.el-tag__content  «零氪»  {24x12 @464,7230}
+                span.el-tag.el-tag--success.el-tag--small.el-tag--light  {58x20 @504,7226}
+                  span.el-tag__content  «可应用»  {36x12 @515,7230}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,7200}
+              span  «应用模板»  {60x15 @959,7211}
+          div.bear-template-team.is-launch  {632x34 @404,7254}
+            span.bear-template-role  «开车队»  {56x22 @411,7260}
+            ul.bear-template-heroes  {556x24 @473,7259}
+              li  {102x24 @473,7259}
+                div.el-image  {24x24 @473,7259}
+                span  «赫克托»  {42x22 @501,7260}
+                small  «盾兵»  {28x22 @547,7260}
+              li  {88x24 @583,7259}
+                div.el-image  {24x24 @583,7259}
+                span  «米娅»  {28x22 @611,7260}
+                small  «矛兵»  {28x22 @643,7260}
+              li  {116x24 @679,7259}
+                div.el-image  {24x24 @679,7259}
+                span  «布拉德利»  {56x22 @707,7260}
+                small  «射手»  {28x22 @767,7260}
+          div.bear-template-joins  {632x212 @404,7296}
+            div.bear-template-team  {632x32 @404,7296}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,7301}
+              ul.bear-template-heroes  {558x24 @472,7300}
+                li.is-captain  {88x24 @472,7300}
+                  div.el-image  {24x24 @472,7300}
+                  span  «杰西»  {28x22 @500,7301}
+                  small  «矛兵»  {28x22 @532,7301}
+                li  {88x24 @568,7300}
+                  div.el-image  {24x24 @568,7300}
+                  span  «尤金»  {28x22 @596,7301}
+                  small  «盾兵»  {28x22 @628,7301}
+                li  {116x24 @664,7300}
+                  div.el-image  {24x24 @664,7300}
+                  span  «克劳瑞斯»  {56x22 @692,7301}
+                  small  «射手»  {28x22 @752,7301}
+            div.bear-template-team  {632x32 @404,7332}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,7337}
+              ul.bear-template-heroes  {558x24 @472,7336}
+                li.is-captain  {88x24 @472,7336}
+                  div.el-image  {24x24 @472,7336}
+                  span  «书允»  {28x22 @500,7337}
+                  small  «射手»  {28x22 @532,7337}
+                li  {102x24 @568,7336}
+                  div.el-image  {24x24 @568,7336}
+                  span  «史密斯»  {42x22 @596,7337}
+                  small  «盾兵»  {28x22 @642,7337}
+                li  {88x24 @678,7336}
+                  div.el-image  {24x24 @678,7336}
+                  span  «查理»  {28x22 @706,7337}
+                  small  «矛兵»  {28x22 @738,7337}
+            div.bear-template-team  {632x32 @404,7368}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,7373}
+              ul.bear-template-heroes  {558x24 @472,7372}
+                li.is-captain  {102x24 @472,7372}
+                  div.el-image  {24x24 @472,7372}
+                  span  «杰塞尔»  {42x22 @500,7373}
+                  small  «射手»  {28x22 @546,7373}
+                li  {102x24 @582,7372}
+                  div.el-image  {24x24 @582,7372}
+                  span  «谢尔盖»  {42x22 @610,7373}
+                  small  «盾兵»  {28x22 @656,7373}
+                li  {116x24 @692,7372}
+                  div.el-image  {24x24 @692,7372}
+                  span  «帕特里克»  {56x22 @720,7373}
+                  small  «矛兵»  {28x22 @780,7373}
+            div.bear-template-team  {632x32 @404,7404}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,7409}
+              ul.bear-template-heroes  {558x24 @472,7408}
+                li.is-captain  {88x24 @472,7408}
+                  div.el-image  {24x24 @472,7408}
+                  span  «玲奈»  {28x22 @500,7409}
+                  small  «矛兵»  {28x22 @532,7409}
+                li  {116x24 @568,7408}
+                  div.el-image  {24x24 @568,7408}
+                  span  «娜塔莉亚»  {56x22 @596,7409}
+                  small  «盾兵»  {28x22 @656,7409}
+                li  {88x24 @692,7408}
+                  div.el-image  {24x24 @692,7408}
+                  span  «吉娜»  {28x22 @720,7409}
+                  small  «射手»  {28x22 @752,7409}
+            div.bear-template-team  {632x32 @404,7440}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,7445}
+              ul.bear-template-heroes  {558x24 @472,7444}
+                li.is-captain  {88x24 @472,7444}
+                  div.el-image  {24x24 @472,7444}
+                  span  «格温»  {28x22 @500,7445}
+                  small  «射手»  {28x22 @532,7445}
+                li  {88x24 @568,7444}
+                  div.el-image  {24x24 @568,7444}
+                  span  «罗根»  {28x22 @596,7445}
+                  small  «盾兵»  {28x22 @628,7445}
+                li  {120x24 @664,7444}
+                  div.el-image  {24x24 @664,7444}
+                  span  «卢姆·波根»  {60x22 @692,7445}
+                  small  «矛兵»  {28x22 @756,7445}
+            div.bear-template-team  {632x32 @404,7476}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,7481}
+              ul.bear-template-heroes  {558x24 @472,7480}
+                li.is-captain  {116x24 @472,7480}
+                  div.el-image  {24x24 @472,7480}
+                  span  «亨德里克»  {56x22 @500,7481}
+                  small  «射手»  {28x22 @560,7481}
+                li  {88x24 @596,7480}
+                  div.el-image  {24x24 @596,7480}
+                  span  «加托»  {28x22 @624,7481}
+                  small  «盾兵»  {28x22 @656,7481}
+                li  {88x24 @692,7480}
+                  div.el-image  {24x24 @692,7480}
+                  span  «凌霜»  {28x22 @720,7481}
+                  small  «矛兵»  {28x22 @752,7481}
+        li.bear-template-card.is-locked  {654x330 @393,7529}
+          header.bear-template-card-head  {632x46 @404,7540}
+            div.bear-template-card-title  {185x46 @404,7540}
+              strong  «九代·大氪»  {185x22 @404,7540}
+              span.bear-template-tags  {185x20 @404,7565}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,7565}
+                  span.el-tag__content  «9 代»  {23x12 @415,7569}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,7565}
+                  span.el-tag__content  «大氪»  {24x12 @464,7569}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @504,7565}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @515,7569}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,7540}
+              span  «应用模板»  {60x15 @959,7550}
+          div.bear-template-team.is-launch  {632x34 @404,7593}
+            span.bear-template-role  «开车队»  {56x22 @411,7600}
+            ul.bear-template-heroes  {556x24 @473,7598}
+              li  {116x24 @473,7598}
+                div.el-image  {24x24 @473,7598}
+                span  «赫罗尼莫»  {56x22 @501,7600}
+                small  «盾兵»  {28x22 @561,7600}
+              li  {88x24 @597,7598}
+                div.el-image  {24x24 @597,7598}
+                span  «米娅»  {28x22 @625,7600}
+                small  «矛兵»  {28x22 @657,7600}
+              li  {116x24 @693,7598}
+                div.el-image  {24x24 @693,7598}
+                span  «布拉德利»  {56x22 @721,7600}
+                small  «射手»  {28x22 @781,7600}
+          div.bear-template-joins  {632x212 @404,7635}
+            div.bear-template-team  {632x32 @404,7635}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,7641}
+              ul.bear-template-heroes  {558x24 @472,7639}
+                li.is-captain  {88x24 @472,7639}
+                  div.el-image  {24x24 @472,7639}
+                  span  «杰西»  {28x22 @500,7641}
+                  small  «矛兵»  {28x22 @532,7641}
+                li  {88x24 @568,7639}
+                  div.el-image  {24x24 @568,7639}
+                  span  «尤金»  {28x22 @596,7641}
+                  small  «盾兵»  {28x22 @628,7641}
+                li  {116x24 @664,7639}
+                  div.el-image  {24x24 @664,7639}
+                  span  «克劳瑞斯»  {56x22 @692,7641}
+                  small  «射手»  {28x22 @752,7641}
+            div.bear-template-team  {632x32 @404,7671}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,7677}
+              ul.bear-template-heroes  {558x24 @472,7675}
+                li.is-captain  {88x24 @472,7675}
+                  div.el-image  {24x24 @472,7675}
+                  span  «书允»  {28x22 @500,7677}
+                  small  «射手»  {28x22 @532,7677}
+                li  {102x24 @568,7675}
+                  div.el-image  {24x24 @568,7675}
+                  span  «史密斯»  {42x22 @596,7677}
+                  small  «盾兵»  {28x22 @642,7677}
+                li  {88x24 @678,7675}
+                  div.el-image  {24x24 @678,7675}
+                  span  «查理»  {28x22 @706,7677}
+                  small  «矛兵»  {28x22 @738,7677}
+            div.bear-template-team  {632x32 @404,7707}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,7713}
+              ul.bear-template-heroes  {558x24 @472,7711}
+                li.is-captain  {102x24 @472,7711}
+                  div.el-image  {24x24 @472,7711}
+                  span  «杰塞尔»  {42x22 @500,7713}
+                  small  «射手»  {28x22 @546,7713}
+                li  {102x24 @582,7711}
+                  div.el-image  {24x24 @582,7711}
+                  span  «谢尔盖»  {42x22 @610,7713}
+                  small  «盾兵»  {28x22 @656,7713}
+                li  {116x24 @692,7711}
+                  div.el-image  {24x24 @692,7711}
+                  span  «帕特里克»  {56x22 @720,7713}
+                  small  «矛兵»  {28x22 @780,7713}
+            div.bear-template-team  {632x32 @404,7743}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,7749}
+              ul.bear-template-heroes  {558x24 @472,7747}
+                li.is-captain  {88x24 @472,7747}
+                  div.el-image  {24x24 @472,7747}
+                  span  «玲奈»  {28x22 @500,7749}
+                  small  «矛兵»  {28x22 @532,7749}
+                li  {116x24 @568,7747}
+                  div.el-image  {24x24 @568,7747}
+                  span  «娜塔莉亚»  {56x22 @596,7749}
+                  small  «盾兵»  {28x22 @656,7749}
+                li  {88x24 @692,7747}
+                  div.el-image  {24x24 @692,7747}
+                  span  «吉娜»  {28x22 @720,7749}
+                  small  «射手»  {28x22 @752,7749}
+            div.bear-template-team  {632x32 @404,7779}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,7785}
+              ul.bear-template-heroes  {558x24 @472,7783}
+                li.is-captain  {88x24 @472,7783}
+                  div.el-image  {24x24 @472,7783}
+                  span  «格温»  {28x22 @500,7785}
+                  small  «射手»  {28x22 @532,7785}
+                li  {88x24 @568,7783}
+                  div.el-image  {24x24 @568,7783}
+                  span  «罗根»  {28x22 @596,7785}
+                  small  «盾兵»  {28x22 @628,7785}
+                li  {120x24 @664,7783}
+                  div.el-image  {24x24 @664,7783}
+                  span  «卢姆·波根»  {60x22 @692,7785}
+                  small  «矛兵»  {28x22 @756,7785}
+            div.bear-template-team  {632x32 @404,7815}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,7821}
+              ul.bear-template-heroes  {558x24 @472,7819}
+                li.is-captain  {116x24 @472,7819}
+                  div.el-image  {24x24 @472,7819}
+                    div.el-image__wrapper  {24x24 @472,7819}
+                      div.el-image__placeholder  {24x24 @472,7819}
+                  span  «马格努斯»  {56x22 @500,7821}
+                  small  «盾兵»  {28x22 @560,7821}
+                li  {88x24 @596,7819}
+                  div.el-image  {24x24 @596,7819}
+                  span  «凌霜»  {28x22 @624,7821}
+                  small  «矛兵»  {28x22 @656,7821}
+                li  {88x24 @692,7819}
+                  div.el-image  {24x24 @692,7819}
+                  span  «津曼»  {28x22 @720,7821}
+                  small  «射手»  {28x22 @752,7821}
+        li.bear-template-card  {654x330 @393,7868}
+          header.bear-template-card-head  {632x46 @404,7879}
+            div.bear-template-card-title  {158x46 @404,7879}
+              strong  «九代·零氪»  {158x22 @404,7879}
+              span.bear-template-tags  {158x20 @404,7905}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {45x20 @404,7905}
+                  span.el-tag__content  «9 代»  {23x12 @415,7909}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @453,7905}
+                  span.el-tag__content  «零氪»  {24x12 @464,7909}
+                span.el-tag.el-tag--success.el-tag--small.el-tag--light  {58x20 @504,7905}
+                  span.el-tag__content  «可应用»  {36x12 @515,7909}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,7879}
+              span  «应用模板»  {60x15 @959,7890}
+          div.bear-template-team.is-launch  {632x34 @404,7933}
+            span.bear-template-role  «开车队»  {56x22 @411,7939}
+            ul.bear-template-heroes  {556x24 @473,7938}
+              li  {102x24 @473,7938}
+                div.el-image  {24x24 @473,7938}
+                span  «赫克托»  {42x22 @501,7939}
+                small  «盾兵»  {28x22 @547,7939}
+              li  {88x24 @583,7938}
+                div.el-image  {24x24 @583,7938}
+                span  «米娅»  {28x22 @611,7939}
+                small  «矛兵»  {28x22 @643,7939}
+              li  {116x24 @679,7938}
+                div.el-image  {24x24 @679,7938}
+                span  «布拉德利»  {56x22 @707,7939}
+                small  «射手»  {28x22 @767,7939}
+          div.bear-template-joins  {632x212 @404,7975}
+            div.bear-template-team  {632x32 @404,7975}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,7980}
+              ul.bear-template-heroes  {558x24 @472,7979}
+                li.is-captain  {88x24 @472,7979}
+                  div.el-image  {24x24 @472,7979}
+                  span  «杰西»  {28x22 @500,7980}
+                  small  «矛兵»  {28x22 @532,7980}
+                li  {88x24 @568,7979}
+                  div.el-image  {24x24 @568,7979}
+                  span  «尤金»  {28x22 @596,7980}
+                  small  «盾兵»  {28x22 @628,7980}
+                li  {116x24 @664,7979}
+                  div.el-image  {24x24 @664,7979}
+                  span  «克劳瑞斯»  {56x22 @692,7980}
+                  small  «射手»  {28x22 @752,7980}
+            div.bear-template-team  {632x32 @404,8011}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,8016}
+              ul.bear-template-heroes  {558x24 @472,8015}
+                li.is-captain  {88x24 @472,8015}
+                  div.el-image  {24x24 @472,8015}
+                  span  «书允»  {28x22 @500,8016}
+                  small  «射手»  {28x22 @532,8016}
+                li  {102x24 @568,8015}
+                  div.el-image  {24x24 @568,8015}
+                  span  «史密斯»  {42x22 @596,8016}
+                  small  «盾兵»  {28x22 @642,8016}
+                li  {88x24 @678,8015}
+                  div.el-image  {24x24 @678,8015}
+                  span  «查理»  {28x22 @706,8016}
+                  small  «矛兵»  {28x22 @738,8016}
+            div.bear-template-team  {632x32 @404,8047}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,8052}
+              ul.bear-template-heroes  {558x24 @472,8051}
+                li.is-captain  {102x24 @472,8051}
+                  div.el-image  {24x24 @472,8051}
+                  span  «杰塞尔»  {42x22 @500,8052}
+                  small  «射手»  {28x22 @546,8052}
+                li  {102x24 @582,8051}
+                  div.el-image  {24x24 @582,8051}
+                  span  «谢尔盖»  {42x22 @610,8052}
+                  small  «盾兵»  {28x22 @656,8052}
+                li  {116x24 @692,8051}
+                  div.el-image  {24x24 @692,8051}
+                  span  «帕特里克»  {56x22 @720,8052}
+                  small  «矛兵»  {28x22 @780,8052}
+            div.bear-template-team  {632x32 @404,8083}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,8088}
+              ul.bear-template-heroes  {558x24 @472,8087}
+                li.is-captain  {88x24 @472,8087}
+                  div.el-image  {24x24 @472,8087}
+                  span  «玲奈»  {28x22 @500,8088}
+                  small  «矛兵»  {28x22 @532,8088}
+                li  {116x24 @568,8087}
+                  div.el-image  {24x24 @568,8087}
+                  span  «娜塔莉亚»  {56x22 @596,8088}
+                  small  «盾兵»  {28x22 @656,8088}
+                li  {88x24 @692,8087}
+                  div.el-image  {24x24 @692,8087}
+                  span  «吉娜»  {28x22 @720,8088}
+                  small  «射手»  {28x22 @752,8088}
+            div.bear-template-team  {632x32 @404,8119}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,8124}
+              ul.bear-template-heroes  {558x24 @472,8123}
+                li.is-captain  {102x24 @472,8123}
+                  div.el-image  {24x24 @472,8123}
+                    div.el-image__wrapper  {24x24 @472,8123}
+                      div.el-image__placeholder  {24x24 @472,8123}
+                  span  «索尼娅»  {42x22 @500,8124}
+                  small  «矛兵»  {28x22 @546,8124}
+                li  {88x24 @582,8123}
+                  div.el-image  {24x24 @582,8123}
+                  span  «罗根»  {28x22 @610,8124}
+                  small  «盾兵»  {28x22 @642,8124}
+                li  {88x24 @678,8123}
+                  div.el-image  {24x24 @678,8123}
+                  span  «津曼»  {28x22 @706,8124}
+                  small  «射手»  {28x22 @738,8124}
+            div.bear-template-team  {632x32 @404,8155}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,8160}
+              ul.bear-template-heroes  {558x24 @472,8159}
+                li.is-captain  {116x24 @472,8159}
+                  div.el-image  {24x24 @472,8159}
+                    div.el-image__wrapper  {24x24 @472,8159}
+                      div.el-image__placeholder  {24x24 @472,8159}
+                  span  «马格努斯»  {56x22 @500,8160}
+                  small  «盾兵»  {28x22 @560,8160}
+                li  {120x24 @596,8159}
+                  div.el-image  {24x24 @596,8159}
+                  span  «卢姆·波根»  {60x22 @624,8160}
+                  small  «矛兵»  {28x22 @688,8160}
+                li  {102x24 @724,8159}
+                  div.el-image  {24x24 @724,8159}
+                  span  «巴希提»  {42x22 @752,8160}
+                  small  «射手»  {28x22 @798,8160}
+        li.bear-template-card.is-locked  {654x330 @393,8208}
+          header.bear-template-card-head  {632x46 @404,8219}
+            div.bear-template-card-title  {193x46 @404,8219}
+              strong  «十代·大氪»  {193x22 @404,8219}
+              span.bear-template-tags  {193x20 @404,8245}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {53x20 @404,8245}
+                  span.el-tag__content  «10 代»  {31x12 @415,8249}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @461,8245}
+                  span.el-tag__content  «大氪»  {24x12 @472,8249}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @512,8245}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @523,8249}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,8219}
+              span  «应用模板»  {60x15 @959,8230}
+          div.bear-template-team.is-launch  {632x34 @404,8273}
+            span.bear-template-role  «开车队»  {56x22 @411,8279}
+            ul.bear-template-heroes  {556x24 @473,8278}
+              li  {116x24 @473,8278}
+                div.el-image  {24x24 @473,8278}
+                span  «赫罗尼莫»  {56x22 @501,8279}
+                small  «盾兵»  {28x22 @561,8279}
+              li  {88x24 @597,8278}
+                div.el-image  {24x24 @597,8278}
+                span  «米娅»  {28x22 @625,8279}
+                small  «矛兵»  {28x22 @657,8279}
+              li  {102x24 @693,8278}
+                div.el-image  {24x24 @693,8278}
+                  div.el-image__wrapper  {24x24 @693,8278}
+                    div.el-image__placeholder  {24x24 @693,8278}
+                span  «布兰琪»  {42x22 @721,8279}
+                small  «射手»  {28x22 @767,8279}
+          div.bear-template-joins  {632x212 @404,8315}
+            div.bear-template-team  {632x32 @404,8315}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,8320}
+              ul.bear-template-heroes  {558x24 @472,8319}
+                li.is-captain  {88x24 @472,8319}
+                  div.el-image  {24x24 @472,8319}
+                  span  «杰西»  {28x22 @500,8320}
+                  small  «矛兵»  {28x22 @532,8320}
+                li  {88x24 @568,8319}
+                  div.el-image  {24x24 @568,8319}
+                  span  «尤金»  {28x22 @596,8320}
+                  small  «盾兵»  {28x22 @628,8320}
+                li  {116x24 @664,8319}
+                  div.el-image  {24x24 @664,8319}
+                  span  «克劳瑞斯»  {56x22 @692,8320}
+                  small  «射手»  {28x22 @752,8320}
+            div.bear-template-team  {632x32 @404,8351}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,8356}
+              ul.bear-template-heroes  {558x24 @472,8355}
+                li.is-captain  {88x24 @472,8355}
+                  div.el-image  {24x24 @472,8355}
+                  span  «书允»  {28x22 @500,8356}
+                  small  «射手»  {28x22 @532,8356}
+                li  {102x24 @568,8355}
+                  div.el-image  {24x24 @568,8355}
+                  span  «史密斯»  {42x22 @596,8356}
+                  small  «盾兵»  {28x22 @642,8356}
+                li  {88x24 @678,8355}
+                  div.el-image  {24x24 @678,8355}
+                  span  «查理»  {28x22 @706,8356}
+                  small  «矛兵»  {28x22 @738,8356}
+            div.bear-template-team  {632x32 @404,8387}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,8392}
+              ul.bear-template-heroes  {558x24 @472,8391}
+                li.is-captain  {102x24 @472,8391}
+                  div.el-image  {24x24 @472,8391}
+                  span  «杰塞尔»  {42x22 @500,8392}
+                  small  «射手»  {28x22 @546,8392}
+                li  {102x24 @582,8391}
+                  div.el-image  {24x24 @582,8391}
+                  span  «谢尔盖»  {42x22 @610,8392}
+                  small  «盾兵»  {28x22 @656,8392}
+                li  {116x24 @692,8391}
+                  div.el-image  {24x24 @692,8391}
+                  span  «帕特里克»  {56x22 @720,8392}
+                  small  «矛兵»  {28x22 @780,8392}
+            div.bear-template-team  {632x32 @404,8423}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,8428}
+              ul.bear-template-heroes  {558x24 @472,8427}
+                li.is-captain  {88x24 @472,8427}
+                  div.el-image  {24x24 @472,8427}
+                  span  «玲奈»  {28x22 @500,8428}
+                  small  «矛兵»  {28x22 @532,8428}
+                li  {116x24 @568,8427}
+                  div.el-image  {24x24 @568,8427}
+                  span  «娜塔莉亚»  {56x22 @596,8428}
+                  small  «盾兵»  {28x22 @656,8428}
+                li  {88x24 @692,8427}
+                  div.el-image  {24x24 @692,8427}
+                  span  «吉娜»  {28x22 @720,8428}
+                  small  «射手»  {28x22 @752,8428}
+            div.bear-template-team  {632x32 @404,8459}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,8464}
+              ul.bear-template-heroes  {558x24 @472,8463}
+                li.is-captain  {116x24 @472,8463}
+                  div.el-image  {24x24 @472,8463}
+                  span  «布拉德利»  {56x22 @500,8464}
+                  small  «射手»  {28x22 @560,8464}
+                li  {88x24 @596,8463}
+                  div.el-image  {24x24 @596,8463}
+                  span  «罗根»  {28x22 @624,8464}
+                  small  «盾兵»  {28x22 @656,8464}
+                li  {120x24 @692,8463}
+                  div.el-image  {24x24 @692,8463}
+                  span  «卢姆·波根»  {60x22 @720,8464}
+                  small  «矛兵»  {28x22 @784,8464}
+            div.bear-template-team  {632x32 @404,8495}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,8500}
+              ul.bear-template-heroes  {558x24 @472,8499}
+                li.is-captain  {116x24 @472,8499}
+                  div.el-image  {24x24 @472,8499}
+                    div.el-image__wrapper  {24x24 @472,8499}
+                      div.el-image__placeholder  {24x24 @472,8499}
+                  span  «马格努斯»  {56x22 @500,8500}
+                  small  «盾兵»  {28x22 @560,8500}
+                li  {88x24 @596,8499}
+                  div.el-image  {24x24 @596,8499}
+                  span  «凌霜»  {28x22 @624,8500}
+                  small  «矛兵»  {28x22 @656,8500}
+                li  {88x24 @692,8499}
+                  div.el-image  {24x24 @692,8499}
+                  span  «津曼»  {28x22 @720,8500}
+                  small  «射手»  {28x22 @752,8500}
+        li.bear-template-card  {654x330 @393,8548}
+          header.bear-template-card-head  {632x46 @404,8559}
+            div.bear-template-card-title  {166x46 @404,8559}
+              strong  «十代·零氪»  {166x22 @404,8559}
+              span.bear-template-tags  {166x20 @404,8584}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {53x20 @404,8584}
+                  span.el-tag__content  «10 代»  {31x12 @415,8588}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @461,8584}
+                  span.el-tag__content  «零氪»  {24x12 @472,8588}
+                span.el-tag.el-tag--success.el-tag--small.el-tag--light  {58x20 @512,8584}
+                  span.el-tag__content  «可应用»  {36x12 @523,8588}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,8559}
+              span  «应用模板»  {60x15 @959,8569}
+          div.bear-template-team.is-launch  {632x34 @404,8612}
+            span.bear-template-role  «开车队»  {56x22 @411,8619}
+            ul.bear-template-heroes  {556x24 @473,8617}
+              li  {102x24 @473,8617}
+                div.el-image  {24x24 @473,8617}
+                span  «赫克托»  {42x22 @501,8619}
+                small  «盾兵»  {28x22 @547,8619}
+              li  {88x24 @583,8617}
+                div.el-image  {24x24 @583,8617}
+                span  «米娅»  {28x22 @611,8619}
+                small  «矛兵»  {28x22 @643,8619}
+              li  {102x24 @679,8617}
+                div.el-image  {24x24 @679,8617}
+                  div.el-image__wrapper  {24x24 @679,8617}
+                    div.el-image__placeholder  {24x24 @679,8617}
+                span  «布兰琪»  {42x22 @707,8619}
+                small  «射手»  {28x22 @753,8619}
+          div.bear-template-joins  {632x212 @404,8654}
+            div.bear-template-team  {632x32 @404,8654}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,8660}
+              ul.bear-template-heroes  {558x24 @472,8658}
+                li.is-captain  {88x24 @472,8658}
+                  div.el-image  {24x24 @472,8658}
+                  span  «杰西»  {28x22 @500,8660}
+                  small  «矛兵»  {28x22 @532,8660}
+                li  {88x24 @568,8658}
+                  div.el-image  {24x24 @568,8658}
+                  span  «尤金»  {28x22 @596,8660}
+                  small  «盾兵»  {28x22 @628,8660}
+                li  {116x24 @664,8658}
+                  div.el-image  {24x24 @664,8658}
+                  span  «克劳瑞斯»  {56x22 @692,8660}
+                  small  «射手»  {28x22 @752,8660}
+            div.bear-template-team  {632x32 @404,8690}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,8696}
+              ul.bear-template-heroes  {558x24 @472,8694}
+                li.is-captain  {88x24 @472,8694}
+                  div.el-image  {24x24 @472,8694}
+                  span  «书允»  {28x22 @500,8696}
+                  small  «射手»  {28x22 @532,8696}
+                li  {102x24 @568,8694}
+                  div.el-image  {24x24 @568,8694}
+                  span  «史密斯»  {42x22 @596,8696}
+                  small  «盾兵»  {28x22 @642,8696}
+                li  {88x24 @678,8694}
+                  div.el-image  {24x24 @678,8694}
+                  span  «查理»  {28x22 @706,8696}
+                  small  «矛兵»  {28x22 @738,8696}
+            div.bear-template-team  {632x32 @404,8726}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,8732}
+              ul.bear-template-heroes  {558x24 @472,8730}
+                li.is-captain  {102x24 @472,8730}
+                  div.el-image  {24x24 @472,8730}
+                  span  «杰塞尔»  {42x22 @500,8732}
+                  small  «射手»  {28x22 @546,8732}
+                li  {102x24 @582,8730}
+                  div.el-image  {24x24 @582,8730}
+                  span  «谢尔盖»  {42x22 @610,8732}
+                  small  «盾兵»  {28x22 @656,8732}
+                li  {116x24 @692,8730}
+                  div.el-image  {24x24 @692,8730}
+                  span  «帕特里克»  {56x22 @720,8732}
+                  small  «矛兵»  {28x22 @780,8732}
+            div.bear-template-team  {632x32 @404,8762}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,8768}
+              ul.bear-template-heroes  {558x24 @472,8766}
+                li.is-captain  {88x24 @472,8766}
+                  div.el-image  {24x24 @472,8766}
+                  span  «玲奈»  {28x22 @500,8768}
+                  small  «矛兵»  {28x22 @532,8768}
+                li  {116x24 @568,8766}
+                  div.el-image  {24x24 @568,8766}
+                  span  «娜塔莉亚»  {56x22 @596,8768}
+                  small  «盾兵»  {28x22 @656,8768}
+                li  {88x24 @692,8766}
+                  div.el-image  {24x24 @692,8766}
+                  span  «吉娜»  {28x22 @720,8768}
+                  small  «射手»  {28x22 @752,8768}
+            div.bear-template-team  {632x32 @404,8798}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,8804}
+              ul.bear-template-heroes  {558x24 @472,8802}
+                li.is-captain  {116x24 @472,8802}
+                  div.el-image  {24x24 @472,8802}
+                  span  «布拉德利»  {56x22 @500,8804}
+                  small  «射手»  {28x22 @560,8804}
+                li  {88x24 @596,8802}
+                  div.el-image  {24x24 @596,8802}
+                  span  «罗根»  {28x22 @624,8804}
+                  small  «盾兵»  {28x22 @656,8804}
+                li  {120x24 @692,8802}
+                  div.el-image  {24x24 @692,8802}
+                  span  «卢姆·波根»  {60x22 @720,8804}
+                  small  «矛兵»  {28x22 @784,8804}
+            div.bear-template-team  {632x32 @404,8834}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,8840}
+              ul.bear-template-heroes  {558x24 @472,8838}
+                li.is-captain  {116x24 @472,8838}
+                  div.el-image  {24x24 @472,8838}
+                    div.el-image__wrapper  {24x24 @472,8838}
+                      div.el-image__placeholder  {24x24 @472,8838}
+                  span  «格里高利»  {56x22 @500,8840}
+                  small  «盾兵»  {28x22 @560,8840}
+                li  {88x24 @596,8838}
+                  div.el-image  {24x24 @596,8838}
+                  span  «凌霜»  {28x22 @624,8840}
+                  small  «矛兵»  {28x22 @656,8840}
+                li  {88x24 @692,8838}
+                  div.el-image  {24x24 @692,8838}
+                  span  «津曼»  {28x22 @720,8840}
+                  small  «射手»  {28x22 @752,8840}
+        li.bear-template-card.is-locked  {654x330 @393,8887}
+          header.bear-template-card-head  {632x46 @404,8898}
+            div.bear-template-card-title  {193x46 @404,8898}
+              strong  «十一代·大氪»  {193x22 @404,8898}
+              span.bear-template-tags  {193x20 @404,8924}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {53x20 @404,8924}
+                  span.el-tag__content  «11 代»  {31x12 @415,8928}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @461,8924}
+                  span.el-tag__content  «大氪»  {24x12 @472,8928}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @512,8924}
+                  span.el-tag__content  «缺 2 个英雄»  {63x12 @523,8928}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,8898}
+              span  «应用模板»  {60x15 @959,8909}
+          div.bear-template-team.is-launch  {632x34 @404,8952}
+            span.bear-template-role  «开车队»  {56x22 @411,8958}
+            ul.bear-template-heroes  {556x24 @473,8957}
+              li  {116x24 @473,8957}
+                div.el-image  {24x24 @473,8957}
+                span  «赫罗尼莫»  {56x22 @501,8958}
+                small  «盾兵»  {28x22 @561,8958}
+              li  {88x24 @597,8957}
+                div.el-image  {24x24 @597,8957}
+                span  «米娅»  {28x22 @625,8958}
+                small  «矛兵»  {28x22 @657,8958}
+              li  {102x24 @693,8957}
+                div.el-image  {24x24 @693,8957}
+                  div.el-image__wrapper  {24x24 @693,8957}
+                    div.el-image__placeholder  {24x24 @693,8957}
+                span  «鲁弗斯»  {42x22 @721,8958}
+                small  «射手»  {28x22 @767,8958}
+          div.bear-template-joins  {632x212 @404,8994}
+            div.bear-template-team  {632x32 @404,8994}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,8999}
+              ul.bear-template-heroes  {558x24 @472,8998}
+                li.is-captain  {88x24 @472,8998}
+                  div.el-image  {24x24 @472,8998}
+                  span  «杰西»  {28x22 @500,8999}
+                  small  «矛兵»  {28x22 @532,8999}
+                li  {88x24 @568,8998}
+                  div.el-image  {24x24 @568,8998}
+                  span  «尤金»  {28x22 @596,8999}
+                  small  «盾兵»  {28x22 @628,8999}
+                li  {116x24 @664,8998}
+                  div.el-image  {24x24 @664,8998}
+                  span  «克劳瑞斯»  {56x22 @692,8999}
+                  small  «射手»  {28x22 @752,8999}
+            div.bear-template-team  {632x32 @404,9030}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,9035}
+              ul.bear-template-heroes  {558x24 @472,9034}
+                li.is-captain  {88x24 @472,9034}
+                  div.el-image  {24x24 @472,9034}
+                  span  «书允»  {28x22 @500,9035}
+                  small  «射手»  {28x22 @532,9035}
+                li  {102x24 @568,9034}
+                  div.el-image  {24x24 @568,9034}
+                  span  «史密斯»  {42x22 @596,9035}
+                  small  «盾兵»  {28x22 @642,9035}
+                li  {88x24 @678,9034}
+                  div.el-image  {24x24 @678,9034}
+                  span  «查理»  {28x22 @706,9035}
+                  small  «矛兵»  {28x22 @738,9035}
+            div.bear-template-team  {632x32 @404,9066}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,9071}
+              ul.bear-template-heroes  {558x24 @472,9070}
+                li.is-captain  {102x24 @472,9070}
+                  div.el-image  {24x24 @472,9070}
+                  span  «杰塞尔»  {42x22 @500,9071}
+                  small  «射手»  {28x22 @546,9071}
+                li  {102x24 @582,9070}
+                  div.el-image  {24x24 @582,9070}
+                  span  «谢尔盖»  {42x22 @610,9071}
+                  small  «盾兵»  {28x22 @656,9071}
+                li  {116x24 @692,9070}
+                  div.el-image  {24x24 @692,9070}
+                  span  «帕特里克»  {56x22 @720,9071}
+                  small  «矛兵»  {28x22 @780,9071}
+            div.bear-template-team  {632x32 @404,9102}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,9107}
+              ul.bear-template-heroes  {558x24 @472,9106}
+                li.is-captain  {88x24 @472,9106}
+                  div.el-image  {24x24 @472,9106}
+                  span  «玲奈»  {28x22 @500,9107}
+                  small  «矛兵»  {28x22 @532,9107}
+                li  {116x24 @568,9106}
+                  div.el-image  {24x24 @568,9106}
+                  span  «娜塔莉亚»  {56x22 @596,9107}
+                  small  «盾兵»  {28x22 @656,9107}
+                li  {88x24 @692,9106}
+                  div.el-image  {24x24 @692,9106}
+                  span  «吉娜»  {28x22 @720,9107}
+                  small  «射手»  {28x22 @752,9107}
+            div.bear-template-team  {632x32 @404,9138}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,9143}
+              ul.bear-template-heroes  {558x24 @472,9142}
+                li.is-captain  {102x24 @472,9142}
+                  div.el-image  {24x24 @472,9142}
+                    div.el-image__wrapper  {24x24 @472,9142}
+                      div.el-image__placeholder  {24x24 @472,9142}
+                  span  «布兰琪»  {42x22 @500,9143}
+                  small  «射手»  {28x22 @546,9143}
+                li  {88x24 @582,9142}
+                  div.el-image  {24x24 @582,9142}
+                  span  «罗根»  {28x22 @610,9143}
+                  small  «盾兵»  {28x22 @642,9143}
+                li  {120x24 @678,9142}
+                  div.el-image  {24x24 @678,9142}
+                  span  «卢姆·波根»  {60x22 @706,9143}
+                  small  «矛兵»  {28x22 @770,9143}
+            div.bear-template-team  {632x32 @404,9174}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,9179}
+              ul.bear-template-heroes  {558x24 @472,9178}
+                li.is-captain  {116x24 @472,9178}
+                  div.el-image  {24x24 @472,9178}
+                    div.el-image__wrapper  {24x24 @472,9178}
+                      div.el-image__placeholder  {24x24 @472,9178}
+                  span  «马格努斯»  {56x22 @500,9179}
+                  small  «盾兵»  {28x22 @560,9179}
+                li  {88x24 @596,9178}
+                  div.el-image  {24x24 @596,9178}
+                  span  «凌霜»  {28x22 @624,9179}
+                  small  «矛兵»  {28x22 @656,9179}
+                li  {88x24 @692,9178}
+                  div.el-image  {24x24 @692,9178}
+                  span  «津曼»  {28x22 @720,9179}
+                  small  «射手»  {28x22 @752,9179}
+        li.bear-template-card.is-locked  {654x330 @393,9227}
+          header.bear-template-card-head  {632x46 @404,9238}
+            div.bear-template-card-title  {193x46 @404,9238}
+              strong  «十一代·零氪»  {193x22 @404,9238}
+              span.bear-template-tags  {193x20 @404,9264}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {53x20 @404,9264}
+                  span.el-tag__content  «11 代»  {31x12 @415,9268}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @461,9264}
+                  span.el-tag__content  «零氪»  {24x12 @472,9268}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @512,9264}
+                  span.el-tag__content  «缺 1 个英雄»  {63x12 @523,9268}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,9238}
+              span  «应用模板»  {60x15 @959,9249}
+          div.bear-template-team.is-launch  {632x34 @404,9292}
+            span.bear-template-role  «开车队»  {56x22 @411,9298}
+            ul.bear-template-heroes  {556x24 @473,9297}
+              li  {102x24 @473,9297}
+                div.el-image  {24x24 @473,9297}
+                span  «赫克托»  {42x22 @501,9298}
+                small  «盾兵»  {28x22 @547,9298}
+              li  {88x24 @583,9297}
+                div.el-image  {24x24 @583,9297}
+                span  «米娅»  {28x22 @611,9298}
+                small  «矛兵»  {28x22 @643,9298}
+              li  {102x24 @679,9297}
+                div.el-image  {24x24 @679,9297}
+                  div.el-image__wrapper  {24x24 @679,9297}
+                    div.el-image__placeholder  {24x24 @679,9297}
+                span  «鲁弗斯»  {42x22 @707,9298}
+                small  «射手»  {28x22 @753,9298}
+          div.bear-template-joins  {632x212 @404,9334}
+            div.bear-template-team  {632x32 @404,9334}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,9339}
+              ul.bear-template-heroes  {558x24 @472,9338}
+                li.is-captain  {88x24 @472,9338}
+                  div.el-image  {24x24 @472,9338}
+                  span  «杰西»  {28x22 @500,9339}
+                  small  «矛兵»  {28x22 @532,9339}
+                li  {88x24 @568,9338}
+                  div.el-image  {24x24 @568,9338}
+                  span  «尤金»  {28x22 @596,9339}
+                  small  «盾兵»  {28x22 @628,9339}
+                li  {116x24 @664,9338}
+                  div.el-image  {24x24 @664,9338}
+                  span  «克劳瑞斯»  {56x22 @692,9339}
+                  small  «射手»  {28x22 @752,9339}
+            div.bear-template-team  {632x32 @404,9370}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,9375}
+              ul.bear-template-heroes  {558x24 @472,9374}
+                li.is-captain  {88x24 @472,9374}
+                  div.el-image  {24x24 @472,9374}
+                  span  «书允»  {28x22 @500,9375}
+                  small  «射手»  {28x22 @532,9375}
+                li  {102x24 @568,9374}
+                  div.el-image  {24x24 @568,9374}
+                  span  «史密斯»  {42x22 @596,9375}
+                  small  «盾兵»  {28x22 @642,9375}
+                li  {88x24 @678,9374}
+                  div.el-image  {24x24 @678,9374}
+                  span  «查理»  {28x22 @706,9375}
+                  small  «矛兵»  {28x22 @738,9375}
+            div.bear-template-team  {632x32 @404,9406}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,9411}
+              ul.bear-template-heroes  {558x24 @472,9410}
+                li.is-captain  {102x24 @472,9410}
+                  div.el-image  {24x24 @472,9410}
+                  span  «杰塞尔»  {42x22 @500,9411}
+                  small  «射手»  {28x22 @546,9411}
+                li  {102x24 @582,9410}
+                  div.el-image  {24x24 @582,9410}
+                  span  «谢尔盖»  {42x22 @610,9411}
+                  small  «盾兵»  {28x22 @656,9411}
+                li  {116x24 @692,9410}
+                  div.el-image  {24x24 @692,9410}
+                  span  «帕特里克»  {56x22 @720,9411}
+                  small  «矛兵»  {28x22 @780,9411}
+            div.bear-template-team  {632x32 @404,9442}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,9447}
+              ul.bear-template-heroes  {558x24 @472,9446}
+                li.is-captain  {88x24 @472,9446}
+                  div.el-image  {24x24 @472,9446}
+                  span  «玲奈»  {28x22 @500,9447}
+                  small  «矛兵»  {28x22 @532,9447}
+                li  {116x24 @568,9446}
+                  div.el-image  {24x24 @568,9446}
+                  span  «娜塔莉亚»  {56x22 @596,9447}
+                  small  «盾兵»  {28x22 @656,9447}
+                li  {88x24 @692,9446}
+                  div.el-image  {24x24 @692,9446}
+                  span  «吉娜»  {28x22 @720,9447}
+                  small  «射手»  {28x22 @752,9447}
+            div.bear-template-team  {632x32 @404,9478}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,9483}
+              ul.bear-template-heroes  {558x24 @472,9482}
+                li.is-captain  {102x24 @472,9482}
+                  div.el-image  {24x24 @472,9482}
+                    div.el-image__wrapper  {24x24 @472,9482}
+                      div.el-image__placeholder  {24x24 @472,9482}
+                  span  «布兰琪»  {42x22 @500,9483}
+                  small  «射手»  {28x22 @546,9483}
+                li  {88x24 @582,9482}
+                  div.el-image  {24x24 @582,9482}
+                  span  «罗根»  {28x22 @610,9483}
+                  small  «盾兵»  {28x22 @642,9483}
+                li  {120x24 @678,9482}
+                  div.el-image  {24x24 @678,9482}
+                  span  «卢姆·波根»  {60x22 @706,9483}
+                  small  «矛兵»  {28x22 @770,9483}
+            div.bear-template-team  {632x32 @404,9514}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,9519}
+              ul.bear-template-heroes  {558x24 @472,9518}
+                li.is-captain  {116x24 @472,9518}
+                  div.el-image  {24x24 @472,9518}
+                    div.el-image__wrapper  {24x24 @472,9518}
+                      div.el-image__placeholder  {24x24 @472,9518}
+                  span  «格里高利»  {56x22 @500,9519}
+                  small  «盾兵»  {28x22 @560,9519}
+                li  {88x24 @596,9518}
+                  div.el-image  {24x24 @596,9518}
+                  span  «凌霜»  {28x22 @624,9519}
+                  small  «矛兵»  {28x22 @656,9519}
+                li  {88x24 @692,9518}
+                  div.el-image  {24x24 @692,9518}
+                  span  «津曼»  {28x22 @720,9519}
+                  small  «射手»  {28x22 @752,9519}
+        li.bear-template-card.is-locked  {654x330 @393,9567}
+          header.bear-template-card-head  {632x46 @404,9578}
+            div.bear-template-card-title  {193x46 @404,9578}
+              strong  «十二代·前瞻»  {193x22 @404,9578}
+              span.bear-template-tags  {193x20 @404,9604}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {53x20 @404,9604}
+                  span.el-tag__content  «12 代»  {31x12 @415,9608}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @461,9604}
+                  span.el-tag__content  «前瞻»  {24x12 @472,9608}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @512,9604}
+                  span.el-tag__content  «缺 7 个英雄»  {63x12 @523,9608}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,9578}
+              span  «应用模板»  {60x15 @959,9588}
+          div.bear-template-team.is-launch  {632x34 @404,9632}
+            span.bear-template-role  «开车队»  {56x22 @411,9638}
+            ul.bear-template-heroes  {556x24 @473,9637}
+              li  {116x24 @473,9637}
+                div.el-image  {24x24 @473,9637}
+                span  «赫罗尼莫»  {56x22 @501,9638}
+                small  «盾兵»  {28x22 @561,9638}
+              li  {88x24 @597,9637}
+                div.el-image  {24x24 @597,9637}
+                span  «米娅»  {28x22 @625,9638}
+                small  «矛兵»  {28x22 @657,9638}
+              li  {102x24 @693,9637}
+                div.el-image  {24x24 @693,9637}
+                  div.el-image__wrapper  {24x24 @693,9637}
+                    div.el-image__placeholder  {24x24 @693,9637}
+                span  «鲁弗斯»  {42x22 @721,9638}
+                small  «射手»  {28x22 @767,9638}
+          div.bear-template-joins  {632x212 @404,9674}
+            div.bear-template-team  {632x32 @404,9674}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,9679}
+              ul.bear-template-heroes  {558x24 @472,9678}
+                li.is-captain  {88x24 @472,9678}
+                  div.el-image  {24x24 @472,9678}
+                  span  «杰西»  {28x22 @500,9679}
+                  small  «矛兵»  {28x22 @532,9679}
+                li  {116x24 @568,9678}
+                  div.el-image  {24x24 @568,9678}
+                    div.el-image__wrapper  {24x24 @568,9678}
+                      div.el-image__placeholder  {24x24 @568,9678}
+                  span  «赫尔薇尔»  {56x22 @596,9679}
+                  small  «盾兵»  {28x22 @656,9679}
+                li  {102x24 @692,9678}
+                  div.el-image  {24x24 @692,9678}
+                    div.el-image__wrapper  {24x24 @692,9678}
+                      div.el-image__placeholder  {24x24 @692,9678}
+                  span  «丽姬娅»  {42x22 @720,9679}
+                  small  «射手»  {28x22 @766,9679}
+            div.bear-template-team  {632x32 @404,9710}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,9715}
+              ul.bear-template-heroes  {558x24 @472,9714}
+                li.is-captain  {88x24 @472,9714}
+                  div.el-image  {24x24 @472,9714}
+                  span  «书允»  {28x22 @500,9715}
+                  small  «射手»  {28x22 @532,9715}
+                li  {130x24 @568,9714}
+                  div.el-image  {24x24 @568,9714}
+                    div.el-image__wrapper  {24x24 @568,9714}
+                      div.el-image__placeholder  {24x24 @568,9714}
+                  span  «埃莱奥诺拉»  {70x22 @596,9715}
+                  small  «盾兵»  {28x22 @670,9715}
+                li  {102x24 @706,9714}
+                  div.el-image  {24x24 @706,9714}
+                    div.el-image__wrapper  {24x24 @706,9714}
+                      div.el-image__placeholder  {24x24 @706,9714}
+                  span  «加罗尔»  {42x22 @734,9715}
+                  small  «矛兵»  {28x22 @780,9715}
+            div.bear-template-team  {632x32 @404,9746}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,9751}
+              ul.bear-template-heroes  {558x24 @472,9750}
+                li.is-captain  {102x24 @472,9750}
+                  div.el-image  {24x24 @472,9750}
+                  span  «杰塞尔»  {42x22 @500,9751}
+                  small  «射手»  {28x22 @546,9751}
+                li  {88x24 @582,9750}
+                  div.el-image  {24x24 @582,9750}
+                  span  «尤金»  {28x22 @610,9751}
+                  small  «盾兵»  {28x22 @642,9751}
+                li  {102x24 @678,9750}
+                  div.el-image  {24x24 @678,9750}
+                    div.el-image__wrapper  {24x24 @678,9750}
+                      div.el-image__placeholder  {24x24 @678,9750}
+                  span  «劳埃德»  {42x22 @706,9751}
+                  small  «矛兵»  {28x22 @752,9751}
+            div.bear-template-team  {632x32 @404,9782}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,9787}
+              ul.bear-template-heroes  {558x24 @472,9786}
+                li.is-captain  {88x24 @472,9786}
+                  div.el-image  {24x24 @472,9786}
+                  span  «玲奈»  {28x22 @500,9787}
+                  small  «矛兵»  {28x22 @532,9787}
+                li  {102x24 @568,9786}
+                  div.el-image  {24x24 @568,9786}
+                  span  «史密斯»  {42x22 @596,9787}
+                  small  «盾兵»  {28x22 @642,9787}
+                li  {116x24 @678,9786}
+                  div.el-image  {24x24 @678,9786}
+                  span  «克劳瑞斯»  {56x22 @706,9787}
+                  small  «射手»  {28x22 @766,9787}
+            div.bear-template-team  {632x32 @404,9818}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,9823}
+              ul.bear-template-heroes  {558x24 @472,9822}
+                li.is-captain  {102x24 @472,9822}
+                  div.el-image  {24x24 @472,9822}
+                    div.el-image__wrapper  {24x24 @472,9822}
+                      div.el-image__placeholder  {24x24 @472,9822}
+                  span  «布兰琪»  {42x22 @500,9823}
+                  small  «射手»  {28x22 @546,9823}
+                li  {102x24 @582,9822}
+                  div.el-image  {24x24 @582,9822}
+                  span  «谢尔盖»  {42x22 @610,9823}
+                  small  «盾兵»  {28x22 @656,9823}
+                li  {88x24 @692,9822}
+                  div.el-image  {24x24 @692,9822}
+                  span  «查理»  {28x22 @720,9823}
+                  small  «矛兵»  {28x22 @752,9823}
+            div.bear-template-team  {632x32 @404,9854}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,9859}
+              ul.bear-template-heroes  {558x24 @472,9858}
+                li.is-captain  {116x24 @472,9858}
+                  div.el-image  {24x24 @472,9858}
+                    div.el-image__wrapper  {24x24 @472,9858}
+                      div.el-image__placeholder  {24x24 @472,9858}
+                  span  «格里高利»  {56x22 @500,9859}
+                  small  «盾兵»  {28x22 @560,9859}
+                li  {116x24 @596,9858}
+                  div.el-image  {24x24 @596,9858}
+                  span  «帕特里克»  {56x22 @624,9859}
+                  small  «矛兵»  {28x22 @684,9859}
+                li  {88x24 @720,9858}
+                  div.el-image  {24x24 @720,9858}
+                  span  «吉娜»  {28x22 @748,9859}
+                  small  «射手»  {28x22 @780,9859}
+        li.bear-template-card.is-locked  {654x330 @393,9907}
+          header.bear-template-card-head  {632x46 @404,9918}
+            div.bear-template-card-title  {193x46 @404,9918}
+              strong  «十三代·前瞻»  {193x22 @404,9918}
+              span.bear-template-tags  {193x20 @404,9943}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {53x20 @404,9943}
+                  span.el-tag__content  «13 代»  {31x12 @415,9947}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @461,9943}
+                  span.el-tag__content  «前瞻»  {24x12 @472,9947}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @512,9943}
+                  span.el-tag__content  «缺 8 个英雄»  {63x12 @523,9947}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,9918}
+              span  «应用模板»  {60x15 @959,9928}
+          div.bear-template-team.is-launch  {632x34 @404,9971}
+            span.bear-template-role  «开车队»  {56x22 @411,9977}
+            ul.bear-template-heroes  {556x24 @473,9976}
+              li  {116x24 @473,9976}
+                div.el-image  {24x24 @473,9976}
+                span  «赫罗尼莫»  {56x22 @501,9977}
+                small  «盾兵»  {28x22 @561,9977}
+              li  {88x24 @597,9976}
+                div.el-image  {24x24 @597,9976}
+                span  «米娅»  {28x22 @625,9977}
+                small  «矛兵»  {28x22 @657,9977}
+              li  {102x24 @693,9976}
+                div.el-image  {24x24 @693,9976}
+                  div.el-image__wrapper  {24x24 @693,9976}
+                    div.el-image__placeholder  {24x24 @693,9976}
+                span  «鲁弗斯»  {42x22 @721,9977}
+                small  «射手»  {28x22 @767,9977}
+          div.bear-template-joins  {632x212 @404,10013}
+            div.bear-template-team  {632x32 @404,10013}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,10018}
+              ul.bear-template-heroes  {558x24 @472,10017}
+                li.is-captain  {88x24 @472,10017}
+                  div.el-image  {24x24 @472,10017}
+                  span  «杰西»  {28x22 @500,10018}
+                  small  «矛兵»  {28x22 @532,10018}
+                li  {102x24 @568,10017}
+                  div.el-image  {24x24 @568,10017}
+                    div.el-image__wrapper  {24x24 @568,10017}
+                      div.el-image__placeholder  {24x24 @568,10017}
+                  span  «吉塞拉»  {42x22 @596,10018}
+                  small  «盾兵»  {28x22 @642,10018}
+                li  {130x24 @678,10017}
+                  div.el-image  {24x24 @678,10017}
+                    div.el-image__wrapper  {24x24 @678,10017}
+                      div.el-image__placeholder  {24x24 @678,10017}
+                  span  «乌尔卡努斯»  {70x22 @706,10018}
+                  small  «射手»  {28x22 @780,10018}
+            div.bear-template-team  {632x32 @404,10049}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,10054}
+              ul.bear-template-heroes  {558x24 @472,10053}
+                li.is-captain  {88x24 @472,10053}
+                  div.el-image  {24x24 @472,10053}
+                  span  «书允»  {28x22 @500,10054}
+                  small  «射手»  {28x22 @532,10054}
+                li  {116x24 @568,10053}
+                  div.el-image  {24x24 @568,10053}
+                    div.el-image__wrapper  {24x24 @568,10053}
+                      div.el-image__placeholder  {24x24 @568,10053}
+                  span  «赫尔薇尔»  {56x22 @596,10054}
+                  small  «盾兵»  {28x22 @656,10054}
+                li  {102x24 @692,10053}
+                  div.el-image  {24x24 @692,10053}
+                    div.el-image__wrapper  {24x24 @692,10053}
+                      div.el-image__placeholder  {24x24 @692,10053}
+                  span  «加罗尔»  {42x22 @720,10054}
+                  small  «矛兵»  {28x22 @766,10054}
+            div.bear-template-team  {632x32 @404,10085}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,10090}
+              ul.bear-template-heroes  {558x24 @472,10089}
+                li.is-captain  {102x24 @472,10089}
+                  div.el-image  {24x24 @472,10089}
+                  span  «杰塞尔»  {42x22 @500,10090}
+                  small  «射手»  {28x22 @546,10090}
+                li  {88x24 @582,10089}
+                  div.el-image  {24x24 @582,10089}
+                  span  «尤金»  {28x22 @610,10090}
+                  small  «盾兵»  {28x22 @642,10090}
+                li  {88x24 @678,10089}
+                  div.el-image  {24x24 @678,10089}
+                  span  «查理»  {28x22 @706,10090}
+                  small  «矛兵»  {28x22 @738,10090}
+            div.bear-template-team  {632x32 @404,10121}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,10126}
+              ul.bear-template-heroes  {558x24 @472,10125}
+                li.is-captain  {102x24 @472,10125}
+                  div.el-image  {24x24 @472,10125}
+                    div.el-image__wrapper  {24x24 @472,10125}
+                      div.el-image__placeholder  {24x24 @472,10125}
+                  span  «弗洛拉»  {42x22 @500,10126}
+                  small  «矛兵»  {28x22 @546,10126}
+                li  {102x24 @582,10125}
+                  div.el-image  {24x24 @582,10125}
+                  span  «史密斯»  {42x22 @610,10126}
+                  small  «盾兵»  {28x22 @656,10126}
+                li  {102x24 @692,10125}
+                  div.el-image  {24x24 @692,10125}
+                    div.el-image__wrapper  {24x24 @692,10125}
+                      div.el-image__placeholder  {24x24 @692,10125}
+                  span  «丽姬娅»  {42x22 @720,10126}
+                  small  «射手»  {28x22 @766,10126}
+            div.bear-template-team  {632x32 @404,10157}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,10162}
+              ul.bear-template-heroes  {558x24 @472,10161}
+                li.is-captain  {102x24 @472,10161}
+                  div.el-image  {24x24 @472,10161}
+                    div.el-image__wrapper  {24x24 @472,10161}
+                      div.el-image__placeholder  {24x24 @472,10161}
+                  span  «布兰琪»  {42x22 @500,10162}
+                  small  «射手»  {28x22 @546,10162}
+                li  {102x24 @582,10161}
+                  div.el-image  {24x24 @582,10161}
+                  span  «谢尔盖»  {42x22 @610,10162}
+                  small  «盾兵»  {28x22 @656,10162}
+                li  {116x24 @692,10161}
+                  div.el-image  {24x24 @692,10161}
+                  span  «帕特里克»  {56x22 @720,10162}
+                  small  «矛兵»  {28x22 @780,10162}
+            div.bear-template-team  {632x32 @404,10193}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,10198}
+              ul.bear-template-heroes  {558x24 @472,10197}
+                li.is-captain  {116x24 @472,10197}
+                  div.el-image  {24x24 @472,10197}
+                    div.el-image__wrapper  {24x24 @472,10197}
+                      div.el-image__placeholder  {24x24 @472,10197}
+                  span  «马格努斯»  {56x22 @500,10198}
+                  small  «盾兵»  {28x22 @560,10198}
+                li  {120x24 @596,10197}
+                  div.el-image  {24x24 @596,10197}
+                  span  «卢姆·波根»  {60x22 @624,10198}
+                  small  «矛兵»  {28x22 @688,10198}
+                li  {116x24 @724,10197}
+                  div.el-image  {24x24 @724,10197}
+                  span  «克劳瑞斯»  {56x22 @752,10198}
+                  small  «射手»  {28x22 @812,10198}
+        li.bear-template-card.is-locked  {654x330 @393,10246}
+          header.bear-template-card-head  {632x46 @404,10257}
+            div.bear-template-card-title  {193x46 @404,10257}
+              strong  «十四代·前瞻（多米尼克版）»  {193x22 @404,10257}
+              span.bear-template-tags  {193x20 @404,10283}
+                span.el-tag.el-tag--primary.el-tag--small.el-tag--plain  {53x20 @404,10283}
+                  span.el-tag__content  «14 代»  {31x12 @415,10287}
+                span.el-tag.el-tag--info.el-tag--small.el-tag--plain  {46x20 @461,10283}
+                  span.el-tag__content  «前瞻»  {24x12 @472,10287}
+                span.el-tag.el-tag--warning.el-tag--small.el-tag--light  {85x20 @512,10283}
+                  span.el-tag__content  «缺 8 个英雄»  {63x12 @523,10287}
+            button.el-button.el-button--primary.el-button--small[type="button" aria-disabled="false"]  {94x36 @942,10257}
+              span  «应用模板»  {60x15 @959,10268}
+          div.bear-template-team.is-launch  {632x34 @404,10311}
+            span.bear-template-role  «开车队»  {56x22 @411,10317}
+            ul.bear-template-heroes  {556x24 @473,10316}
+              li  {116x24 @473,10316}
+                div.el-image  {24x24 @473,10316}
+                span  «赫罗尼莫»  {56x22 @501,10317}
+                small  «盾兵»  {28x22 @561,10317}
+              li  {116x24 @597,10316}
+                div.el-image  {24x24 @597,10316}
+                  div.el-image__wrapper  {24x24 @597,10316}
+                    div.el-image__placeholder  {24x24 @597,10316}
+                span  «多米尼克»  {56x22 @625,10317}
+                small  «矛兵»  {28x22 @685,10317}
+              li  {102x24 @721,10316}
+                div.el-image  {24x24 @721,10316}
+                  div.el-image__wrapper  {24x24 @721,10316}
+                    div.el-image__placeholder  {24x24 @721,10316}
+                span  «鲁弗斯»  {42x22 @749,10317}
+                small  «射手»  {28x22 @795,10317}
+          div.bear-template-joins  {632x212 @404,10353}
+            div.bear-template-team  {632x32 @404,10353}
+              span.bear-template-role.is-join  «上车 1»  {56x22 @410,10358}
+              ul.bear-template-heroes  {558x24 @472,10357}
+                li.is-captain  {88x24 @472,10357}
+                  div.el-image  {24x24 @472,10357}
+                  span  «杰西»  {28x22 @500,10358}
+                  small  «矛兵»  {28x22 @532,10358}
+                li  {102x24 @568,10357}
+                  div.el-image  {24x24 @568,10357}
+                    div.el-image__wrapper  {24x24 @568,10357}
+                      div.el-image__placeholder  {24x24 @568,10357}
+                  span  «艾丽芙»  {42x22 @596,10358}
+                  small  «盾兵»  {28x22 @642,10358}
+                li  {88x24 @678,10357}
+                  div.el-image  {24x24 @678,10357}
+                    div.el-image__wrapper  {24x24 @678,10357}
+                      div.el-image__placeholder  {24x24 @678,10357}
+                  span  «卡拉»  {28x22 @706,10358}
+                  small  «射手»  {28x22 @738,10358}
+            div.bear-template-team  {632x32 @404,10389}
+              span.bear-template-role.is-join  «上车 2»  {56x22 @410,10394}
+              ul.bear-template-heroes  {558x24 @472,10393}
+                li.is-captain  {88x24 @472,10393}
+                  div.el-image  {24x24 @472,10393}
+                  span  «书允»  {28x22 @500,10394}
+                  small  «射手»  {28x22 @532,10394}
+                li  {102x24 @568,10393}
+                  div.el-image  {24x24 @568,10393}
+                    div.el-image__wrapper  {24x24 @568,10393}
+                      div.el-image__placeholder  {24x24 @568,10393}
+                  span  «吉塞拉»  {42x22 @596,10394}
+                  small  «盾兵»  {28x22 @642,10394}
+                li  {102x24 @678,10393}
+                  div.el-image  {24x24 @678,10393}
+                    div.el-image__wrapper  {24x24 @678,10393}
+                      div.el-image__placeholder  {24x24 @678,10393}
+                  span  «弗洛拉»  {42x22 @706,10394}
+                  small  «矛兵»  {28x22 @752,10394}
+            div.bear-template-team  {632x32 @404,10425}
+              span.bear-template-role.is-join  «上车 3»  {56x22 @410,10430}
+              ul.bear-template-heroes  {558x24 @472,10429}
+                li.is-captain  {102x24 @472,10429}
+                  div.el-image  {24x24 @472,10429}
+                  span  «杰塞尔»  {42x22 @500,10430}
+                  small  «射手»  {28x22 @546,10430}
+                li  {88x24 @582,10429}
+                  div.el-image  {24x24 @582,10429}
+                  span  «尤金»  {28x22 @610,10430}
+                  small  «盾兵»  {28x22 @642,10430}
+                li  {88x24 @678,10429}
+                  div.el-image  {24x24 @678,10429}
+                  span  «查理»  {28x22 @706,10430}
+                  small  «矛兵»  {28x22 @738,10430}
+            div.bear-template-team  {632x32 @404,10461}
+              span.bear-template-role.is-join  «上车 4»  {56x22 @410,10466}
+              ul.bear-template-heroes  {558x24 @472,10465}
+                li.is-captain  {88x24 @472,10465}
+                  div.el-image  {24x24 @472,10465}
+                  span  «玲奈»  {28x22 @500,10466}
+                  small  «矛兵»  {28x22 @532,10466}
+                li  {102x24 @568,10465}
+                  div.el-image  {24x24 @568,10465}
+                  span  «史密斯»  {42x22 @596,10466}
+                  small  «盾兵»  {28x22 @642,10466}
+                li  {130x24 @678,10465}
+                  div.el-image  {24x24 @678,10465}
+                    div.el-image__wrapper  {24x24 @678,10465}
+                      div.el-image__placeholder  {24x24 @678,10465}
+                  span  «乌尔卡努斯»  {70x22 @706,10466}
+                  small  «射手»  {28x22 @780,10466}
+            div.bear-template-team  {632x32 @404,10497}
+              span.bear-template-role.is-join  «上车 5»  {56x22 @410,10502}
+              ul.bear-template-heroes  {558x24 @472,10501}
+                li.is-captain  {102x24 @472,10501}
+                  div.el-image  {24x24 @472,10501}
+                    div.el-image__wrapper  {24x24 @472,10501}
+                      div.el-image__placeholder  {24x24 @472,10501}
+                  span  «布兰琪»  {42x22 @500,10502}
+                  small  «射手»  {28x22 @546,10502}
+                li  {102x24 @582,10501}
+                  div.el-image  {24x24 @582,10501}
+                  span  «谢尔盖»  {42x22 @610,10502}
+                  small  «盾兵»  {28x22 @656,10502}
+                li  {116x24 @692,10501}
+                  div.el-image  {24x24 @692,10501}
+                  span  «帕特里克»  {56x22 @720,10502}
+                  small  «矛兵»  {28x22 @780,10502}
+            div.bear-template-team  {632x32 @404,10533}
+              span.bear-template-role.is-join  «上车 6»  {56x22 @410,10538}
+              ul.bear-template-heroes  {558x24 @472,10537}
+                li.is-captain  {116x24 @472,10537}
+                  div.el-image  {24x24 @472,10537}
+                    div.el-image__wrapper  {24x24 @472,10537}
+                      div.el-image__placeholder  {24x24 @472,10537}
+                  span  «格里高利»  {56x22 @500,10538}
+                  small  «盾兵»  {28x22 @560,10538}
+                li  {120x24 @596,10537}
+                  div.el-image  {24x24 @596,10537}
+                  span  «卢姆·波根»  {60x22 @624,10538}
+                  small  «矛兵»  {28x22 @688,10538}
+                li  {116x24 @724,10537}
+                  div.el-image  {24x24 @724,10537}
+                  span  «克劳瑞斯»  {56x22 @752,10538}
+                  small  «射手»  {28x22 @812,10538}

@@ -98,6 +98,11 @@ public final class SessionKeeper implements SessionControl,
     private volatile boolean stopped;
     /** 角色动作串行化锁（P0 规模下全局锁粒度足够，杜绝多角色并发动作竞态）。 */
     private final Object actionLock = new Object();
+    /**
+     * 编队动作串行化锁（独立于 actionLock）：记忆恢复要逐槽 500ms 发协议（最长数秒），
+     * 不能占住角色控制面的全局锁，否则同进程其它角色的 login/stop 会被拖住。
+     */
+    private final Object formationActionLock = new Object();
 
     /** 角色会话键：fpid|sid|uid（uid 数字规范化，缺省空串——旧数据无 uid 的会话槽）。 */
     static String sessionKey(String fpid, String sid, String uid) {
@@ -383,6 +388,8 @@ public final class SessionKeeper implements SessionControl,
             // R2 通知历史（批次3 2026-10-23）：与唤醒钩子并列挂同一 inbound 线程，
             // 登录期早到的多实例活动 init 推送也不丢（引擎 per-proto 只留最后一帧）。
             attachNotifyHistoryHook();
+            // 编队目录 v2（契约 §3.1/§3.2）：hero/soldier/编队/pet 推送到达即增量刷新并落 state
+            attachFormationHook();
         }
 
         // ---------- C2 推送唤醒（notify → 任务 cadence 立即到期） ----------
@@ -441,6 +448,49 @@ public final class SessionKeeper implements SessionControl,
                 ServerNotifyHistory.record(fp, proto, content);
             });
             FileLog.info("通知历史钩子已挂载 {}", key);
+        }
+
+        // ---------- 编队目录 v2（契约 §3.1/§3.2；批次 T2 2026-10-25） ----------
+
+        /** 编队目录钩子幂等标记（每会话至多一个）。 */
+        private final java.util.concurrent.atomic.AtomicBoolean formationHookAttached =
+                new java.util.concurrent.atomic.AtomicBoolean(false);
+        /** 目录 state 落盘节流（推送可能连续到达；≤1 次/5s，实际数据仍即时进内存缓存）。 */
+        volatile long lastFormationPersistAt;
+
+        /**
+         * 挂载 inbound 钩子 → {@link com.carlos.vaultserver.formation.FormationCatalog#onNotify}。
+         *
+         * <p>资产库钩子已对每条 inbound 调 onNotify（兵力增量等）；这里只补「init/编队/pet 到达后
+         * 立刻把目录快照落 state」，避免登录期目录要等 10 分钟周期采集 App 才看到。
+         * 只在 active 写入会话、在线且 sid 已落地时落盘；异常由引擎兜住。
+         */
+        private void attachFormationHook() {
+            if (!formationHookAttached.compareAndSet(false, true)) return;
+            final WjdrEngine eng = engine;
+            eng.addMessageHook((proto, content) -> {
+                if (!wantOnline || !WjdrEngine.STATE_ONLINE.equals(eng.sessionState())) return;
+                if (!isFormationCatalogProto(proto)) return;
+                long now = System.currentTimeMillis();
+                if (now - lastFormationPersistAt < 5_000L) return;
+                if (resolveSid() <= 0L) return;
+                lastFormationPersistAt = now;
+                try {
+                    persistFormationCatalog(this);
+                } catch (Throwable ignored) {
+                }
+            });
+            FileLog.info("编队目录钩子已挂载 {}", key);
+        }
+
+        /** 触发目录落盘的推送集合（兵力增量已有资产库钩子做内存刷新，这里不需要）。 */
+        private static boolean isFormationCatalogProto(String proto) {
+            return "notify_hero_init".equals(proto) || "notify_soldier_init".equals(proto)
+                    || "notify_soldier_formation_update".equals(proto)
+                    || "notify_pet_info".equals(proto) || "notify_pet_ex_info".equals(proto)
+                    // 容量来源（MarchCapacityCalculator）：到达即刷新，App 不必等 10 分钟周期采集
+                    || "notify_shelter_info".equals(proto) || "notify_all_research".equals(proto)
+                    || "notify_homeland_info".equals(proto) || "notify_buff_show".equals(proto);
         }
 
         // ---------- W1 核心资产库（attach / inbound 回灌 / state 投影 / detach） ----------
@@ -686,17 +736,9 @@ public final class SessionKeeper implements SessionControl,
                         long captureSid = resolveSid();
                         String err = CaptureTasks.captureAll(engine, stateStore, fpid, captureSid);
                         if (err != null) FileLog.warn("采集失败 fpid={}：{}", fpid, err);
-                        // 统一编队目录（批次10）：与周期采集一起刷新（只读、幂等），
-                        // 写冻结 state 键供 App 功能页/日报消费（键型见 FormationCatalog.STATE_KEY_PREFIX）。
-                        try {
-                            com.carlos.vaultserver.formation.FormationCatalog.capture(engine);
-                            stateStore.putString(
-                                    com.carlos.vaultserver.formation.FormationCatalog.STATE_KEY_PREFIX
-                                            + fpid + ":" + captureSid,
-                                    new org.json.JSONObject(
-                                            com.carlos.vaultserver.formation.FormationCatalog.snapshot(engine)).toString());
-                        } catch (Throwable ignored) {
-                        }
+                        // 统一编队目录 v2（契约 §3.1/§3.2）：与周期采集一起刷新（只读、幂等），
+                        // 带 uid 新键 + 旧键双写；空快照不覆盖好目录（审计 P0-6）。
+                        persistFormationCatalog(this);
                         nextCaptureAt = System.currentTimeMillis() + CaptureTasks.CAPTURE_INTERVAL_MILLIS;
                         stateStore.flush();
                     }
@@ -1981,4 +2023,249 @@ public final class SessionKeeper implements SessionControl,
         }
         return addr != null ? new Proxy(Proxy.Type.SOCKS, addr) : null;
     }
+
+    // ------------------------------------------------------------------
+    // 编队目录 v2 / 编队动作（契约 §3.1/§3.2/§3.5；T2 2026-10-25）
+    // ------------------------------------------------------------------
+
+    /** 编队动作结果（code=0 成功；由 HTTP 层转 {code,message,data} 信封/BizError）。 */
+    public static final class FormationActionResult {
+        public final int code;
+        public final String message;
+        public final org.json.JSONObject data;
+
+        private FormationActionResult(int code, String message, org.json.JSONObject data) {
+            this.code = code;
+            this.message = message == null ? "" : message;
+            this.data = data;
+        }
+
+        public static FormationActionResult ok(org.json.JSONObject data) {
+            return new FormationActionResult(0, "", data == null ? new org.json.JSONObject() : data);
+        }
+
+        public static FormationActionResult fail(int code, String message) {
+            return new FormationActionResult(code, message, null);
+        }
+    }
+
+    /**
+     * 编队动作分发（{@code /v1/vault/role-action} 的 {@code formation.*} 分支，契约 §3.5）。
+     *
+     * <p>动作：{@code formation.catalog-refresh}（刷新目录）、{@code formation.memory-save}
+     * （记忆当前游戏编队，overwrite 语义）、{@code formation.memory-restore}（逐槽恢复）、
+     * {@code formation.bear-binding}（读巨熊绑定）。
+     */
+    public FormationActionResult formationAction(String fpid, String sid, String uid, String action,
+                                                 Map<String, Object> payload) {
+        if (fpid == null || fpid.isEmpty()) return FormationActionResult.fail(3002, "缺少 fpid");
+        if (sid == null || sid.isEmpty()) return FormationActionResult.fail(3002, "缺少 sid");
+        if (uid == null || uid.isEmpty()) return FormationActionResult.fail(3002, "缺少 uid");
+        if (action == null || action.isEmpty()) return FormationActionResult.fail(3002, "缺少 action");
+        VaultStore.Account acc = store.find(fpid);
+        if (acc == null) return FormationActionResult.fail(1004, "账号不存在: " + fpid);
+        VaultStore.RoleEntry role = resolveOnSnapshot(acc, sid, uid);
+        if (role == null) {
+            return FormationActionResult.fail(RoleOpResult.CODE_ROLE_NOT_FOUND,
+                    "角色不存在: sid=" + sid + " uid=" + uid);
+        }
+        LiveSession ls = sessions.get(sessionKey(fpid, role.sid, role.uid));
+        if (ls == null || !bindsRole(ls, role.sid, role.uid)) {
+            return FormationActionResult.fail(3002, "角色会话不存在，请先上线");
+        }
+        String sidStr = role.sid;
+        String uidStr = role.uid;
+        WjdrEngine engine = ls.engine;
+        synchronized (formationActionLock) {
+            boolean online = ls.wantOnline && WjdrEngine.STATE_ONLINE.equals(engine.sessionState());
+            switch (action) {
+                case "formation.catalog-refresh": {
+                    if (!online) {
+                        return FormationActionResult.fail(3002, "账号离线，无法刷新编队目录，请先上线");
+                    }
+                    persistFormationCatalog(ls);
+                    org.json.JSONObject data = new org.json.JSONObject();
+                    data.put("ok", true);
+                    data.put("capturedAt",
+                            com.carlos.vaultserver.formation.FormationCatalog.catalog(engine).capturedAt);
+                    return FormationActionResult.ok(data);
+                }
+                case "formation.memory-save": {
+                    if (!online) {
+                        return FormationActionResult.fail(3002, "账号离线，无法记忆编队，请先上线");
+                    }
+                    String kind = kindOf(payload);
+                    if (kind == null) {
+                        return FormationActionResult.fail(3002, "kind 必须是 DAILY 或 BATTLE");
+                    }
+                    boolean overwrite = payloadBool(payload, "overwrite", false);
+                    try {
+                        org.json.JSONObject data = com.carlos.vaultserver.formation.FormationMemory
+                                .save(stateStore, engine, fpid, sidStr, uidStr, kind, overwrite);
+                        persistFormationCatalog(ls);
+                        return FormationActionResult.ok(data);
+                    } catch (com.carlos.vaultserver.formation.FormationMemory.MemoryError e) {
+                        return FormationActionResult.fail(e.code, e.getMessage());
+                    }
+                }
+                case "formation.memory-restore": {
+                    if (!online) {
+                        return FormationActionResult.fail(3002, "账号离线，无法恢复编队，请先上线");
+                    }
+                    String kind = kindOf(payload);
+                    if (kind == null) {
+                        return FormationActionResult.fail(3002, "kind 必须是 DAILY 或 BATTLE");
+                    }
+                    try {
+                        org.json.JSONObject data = com.carlos.vaultserver.formation.FormationMemory
+                                .restore(stateStore, engine, fpid, sidStr, uidStr, kind);
+                        persistFormationCatalog(ls);
+                        return FormationActionResult.ok(data);
+                    } catch (com.carlos.vaultserver.formation.FormationMemory.MemoryError e) {
+                        return FormationActionResult.fail(e.code, e.getMessage());
+                    }
+                }
+                case "formation.bear-binding": {
+                    return FormationActionResult.ok(com.carlos.vaultserver.formation.FormationMemory
+                            .bearBinding(stateStore, fpid, sidStr, uidStr));
+                }
+                default:
+                    return FormationActionResult.fail(3002, "未知 action: " + action);
+            }
+        }
+    }
+
+    /** payload.kind（DAILY/BATTLE；大小写容忍；非法 null）。 */
+    private static String kindOf(Map<String, Object> payload) {
+        Object v = payload == null ? null : payload.get("kind");
+        if (v == null) return null;
+        String k = String.valueOf(v).trim().toUpperCase();
+        if (com.carlos.vaultserver.formation.FormationMemory.KIND_DAILY.equals(k)
+                || com.carlos.vaultserver.formation.FormationMemory.KIND_BATTLE.equals(k)) {
+            return k;
+        }
+        return null;
+    }
+
+    /** 布尔参数（Boolean/字符串 "true"/"1"）。 */
+    private static boolean payloadBool(Map<String, Object> payload, String key, boolean def) {
+        Object v = payload == null ? null : payload.get(key);
+        if (v == null) return def;
+        if (v instanceof Boolean) return ((Boolean) v).booleanValue();
+        return "true".equalsIgnoreCase(String.valueOf(v)) || "1".equals(String.valueOf(v));
+    }
+
+    /**
+     * 编队目录 v2 落 state（新键带 uid + 旧键双写；空快照不覆盖好目录）。
+     *
+     * <p>顺序：会话元数据（角色标识/自动比例/记忆/巨熊绑定）→ capture → 空快照保护 → 双写。
+     * 异常只记日志（目录是旁路数据，不能影响会话节拍）。
+     */
+    void persistFormationCatalog(LiveSession ls) {
+        if (ls == null || ls.engine == null) return;
+        long sid = ls.resolveSid();
+        if (sid <= 0L) return;
+        long uidNum = ls.wantUid > 0L ? ls.wantUid : ls.engine.lastUid();
+        String fpid = ls.fpid;
+        String sidStr = String.valueOf(sid);
+        String uidStr = uidNum > 0L ? String.valueOf(uidNum) : "";
+        try {
+            com.carlos.vaultserver.formation.FormationCatalog.identify(ls.engine, fpid, sid, uidStr);
+            int[] auto = automaticSettingsFor(fpid, sidStr);
+            com.carlos.vaultserver.formation.FormationCatalog
+                    .setAutomaticSettings(ls.engine, auto[0], auto[1], auto[2]);
+            // 自动比例 state 键（契约 §3.2；App 兜底读取，同键型带 uid）
+            org.json.JSONObject autoJson = new org.json.JSONObject();
+            autoJson.put("infantryRatio", auto[0]);
+            autoJson.put("lancerRatio", auto[1]);
+            autoJson.put("marksmanRatio", auto[2]);
+            stateStore.putString(com.carlos.vaultserver.formation.FormationCatalog
+                    .autosettingsKey(fpid, sidStr, uidStr), autoJson.toString());
+            com.carlos.vaultserver.formation.FormationCatalog.setMemoryStatus(ls.engine,
+                    com.carlos.vaultserver.formation.FormationMemory
+                            .statusMap(stateStore, fpid, sidStr, uidStr));
+            com.carlos.vaultserver.formation.FormationCatalog.setBearBinding(ls.engine,
+                    com.carlos.vaultserver.formation.FormationMemory
+                            .bearBindingMap(stateStore, fpid, sidStr, uidStr));
+            com.carlos.vaultserver.formation.FormationCatalog.capture(ls.engine);
+            Map<String, Object> snap = com.carlos.vaultserver.formation.FormationCatalog
+                    .snapshot(ls.engine);
+            if (catalogSnapshotEmpty(snap) && hasGoodFormationCatalog(fpid, sidStr, uidStr)) {
+                FileLog.info("编队目录为空快照，保留既有目录 fpid={} sid={} uid={}", fpid, sidStr, uidStr);
+                return;
+            }
+            String json = new org.json.JSONObject(snap).toString();
+            stateStore.putString(com.carlos.vaultserver.formation.FormationCatalog
+                    .stateKey(fpid, sidStr, uidStr), json);
+            // 旧键（无 uid）只由 active 角色写入，避免同 fpid+sid 多角色互踩（一版过渡）
+            if (ls.isActiveRoleWriter()) {
+                stateStore.putString(com.carlos.vaultserver.formation.FormationCatalog
+                        .legacyStateKey(fpid, sidStr), json);
+            }
+        } catch (Throwable t) {
+            FileLog.warn("编队目录写入失败 fpid={} sid={}：{}", fpid, sidStr, String.valueOf(t));
+        }
+    }
+
+    /** 自动编队比例：角色参数 formation_library（或伪功能 formation 内嵌）→ 默认 50/20/30。 */
+    int[] automaticSettingsFor(String fpid, String sid) {
+        int[] def = com.carlos.vaultserver.formation.FormationCatalog.DEFAULT_AUTOMATIC_SETTINGS.clone();
+        try {
+            VaultStore.Account acc = store.find(fpid);
+            if (acc == null) return def;
+            Map<String, String> params = acc.roleParams.get(sid);
+            if (params == null || params.isEmpty()) return def;
+            for (String key : new String[]{"formation_library", "formation"}) {
+                String raw = params.get(key);
+                int[] s = com.carlos.vaultserver.formation.FormationCatalog
+                        .parseAutomaticSettings(raw);
+                if (s != null) return s;
+            }
+        } catch (Throwable ignored) {
+        }
+        return def;
+    }
+
+    /** 目录 Map 是否属于「空快照」（无英雄且三兵种库存全 0）。 */
+    static boolean catalogSnapshotEmpty(Map<String, Object> snap) {
+        if (snap == null) return true;
+        Object heroes = snap.get("heroes");
+        if (heroes instanceof java.util.List && !((java.util.List<?>) heroes).isEmpty()) return false;
+        Object soldiers = snap.get("soldiers");
+        if (soldiers instanceof Map) {
+            Map<?, ?> sol = (Map<?, ?>) soldiers;
+            for (String k : new String[]{"infantry", "lancer", "marksman"}) {
+                Object v = sol.get(k);
+                if (v instanceof Number && ((Number) v).longValue() > 0L) return false;
+            }
+        }
+        Object formations = snap.get("gameFormations");
+        if (formations instanceof java.util.List && !((java.util.List<?>) formations).isEmpty()) {
+            return false;
+        }
+        return true;
+    }
+
+    /** 已存在的目录是否「好目录」（有英雄或有兵力；新旧键任一命中）。 */
+    boolean hasGoodFormationCatalog(String fpid, String sid, String uid) {
+        for (String key : new String[]{
+                com.carlos.vaultserver.formation.FormationCatalog.stateKey(fpid, sid, uid),
+                com.carlos.vaultserver.formation.FormationCatalog.legacyStateKey(fpid, sid)}) {
+            String raw = stateStore.getString(key);
+            if (raw == null || raw.trim().isEmpty()) continue;
+            try {
+                org.json.JSONObject o = new org.json.JSONObject(raw.trim());
+                org.json.JSONArray heroes = o.optJSONArray("heroes");
+                if (heroes != null && heroes.length() > 0) return true;
+                org.json.JSONObject soldiers = o.optJSONObject("soldiers");
+                if (soldiers != null) {
+                    if (soldiers.optLong("infantry", 0) > 0 || soldiers.optLong("lancer", 0) > 0
+                            || soldiers.optLong("marksman", 0) > 0) return true;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        return false;
+    }
+
 }

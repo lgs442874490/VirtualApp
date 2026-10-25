@@ -1,0 +1,30 @@
+===== OVERLAY el-overlay el-modal-dialog  DIALOG el-dialog responsive-dialog role-formation-dialog formation-page-dialog
+div.el-dialog.responsive-dialog.role-formation-dialog.formation-page-dialog  {463x499 @489,24}
+  header.el-dialog__header  {461x40 @490,25}
+    div.formation-page-title  {461x39 @490,25}
+      span  «编队管理»  {60x23 @690,32}
+      button[aria-label="关闭编队管理" type="button"]  {30x30 @911,29}
+  div.el-dialog__body  {461x457 @490,65}
+    div.formation-manager-body  {461x457 @490,65}
+      div.formation-source-tabs[role="tablist" aria-label="编队管理分类"]  {461x51 @490,65}
+        button[role="tab" type="button" aria-selected="false"]  {146x38 @496,71}
+          span  «自动编队»  {56x22 @550,79}
+        button[role="tab" type="button" aria-selected="false"]  {146x38 @647,71}
+          span  «游戏编队»  {56x22 @702,79}
+        button.is-active[role="tab" type="button" aria-selected="true"]  {146x38 @799,71}
+          span  «我的编队»  {56x22 @854,79}
+      div.mine-sub-tabs[role="tablist" aria-label="我的编队来源"]  {461x83 @490,116}
+        button[role="tab" type="button" aria-selected="false"]  «全部 12»  {144x32 @498,122}
+        button[role="tab" type="button" aria-selected="false"]  «内置 8»  {144x32 @648,122}
+        button[role="tab" type="button" aria-selected="false"]  «自定义 4»  {144x32 @798,122}
+        button.is-active[role="tab" type="button" aria-selected="true"]  «巨熊编队 0»  {144x32 @498,160}
+      section.bear-formation-entry  {461x87 @490,199}
+        button.bear-formation-entry-copy[aria-label="查看巨熊编队模板" type="button"]  {331x65 @503,210}
+          strong  «巨熊编队»  {331x22 @503,210}
+          small  «尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队（盾 5% / 矛 5% / 弓 90%）»  {331x41 @503,235}
+        button.el-button.el-button--primary.is-plain[type="button" aria-disabled="false"]  {94x36 @844,225}
+          span  «选择模板»  {60x15 @861,235}
+      div.el-empty  {461x228 @490,294}
+        div.el-empty__image  {72x78 @684,334}
+        div.el-empty__description  {461x50 @490,433}
+          p  «还没有巨熊编队；点击上方「选择模板」生成 1 支开车队与 6 支上车队»  {461x50 @490,433}

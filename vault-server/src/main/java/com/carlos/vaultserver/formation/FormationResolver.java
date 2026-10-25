@@ -1,54 +1,70 @@
 package com.carlos.vaultserver.formation;
 
 import com.carlos.vault.wjdr.WjdrEngine;
-import com.carlos.vault.wjdr.asset.MarchCapacityCalculator;
+import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.task.Exec;
 import com.carlos.vaultserver.task.TaskContext;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.math.BigInteger;
 import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
 /**
- * 统一编队解析器（批次10，服务端核心）：把「功能页选好的编队」或「自动编队」解析成
+ * 统一编队解析器（批次10/v2，服务端核心）：把「功能页选好的编队」或「自动编队」解析成
  * {@code req_world_march} 的 formation 参数，供采集/情报/狩猎/联盟矿（以及 impl-bear 的
  * 巨熊/巨兽/守护盟友）统一使用。
  *
- * <p><b>1:1 参考网页版</b>：
+ * <p><b>1:1 参考网页版/旧版（release 288）</b>：
  * <ul>
- *   <li>{@code modules/daily/config/DailyFormationMode}：AUTOMATIC | ROLE（NORMAL/CUSTOM→ROLE）；</li>
- *   <li>{@code modules/daily/config/DailyFormationConfigSupport}：formationMode/formationIds、
- *       模式回落规则（有 formationId→ROLE，否则 AUTOMATIC）；</li>
- *   <li>{@code service/DailyMarchFormationResolver}：AUTOMATIC 走 strongest/idle 英雄 + 比例容量；
- *       ROLE 取保存编队 heroIds + 兵量；不可用返回 WAITING/空（不静默换编队）；</li>
- *   <li>{@code service/DailyRoleFormationCalculator} / {@code DailyRoleFormationLimits}：容量/比例计算；</li>
- *   <li>{@code config/DailyBearFormationConfig}：巨熊 1:1:1 比例（由调用方传入 ratio，本类不写死）。</li>
+ *   <li>{@code DailyFormationMode}：AUTOMATIC | ROLE（NORMAL/CUSTOM→ROLE）；</li>
+ *   <li>{@code DailyFormationConfigSupport}：formationMode/formationIds、模式回落规则（有 id→ROLE）；</li>
+ *   <li>{@code DailyMarchFormationResolver}：AUTOMATIC 走空闲/最强英雄 + 容量夹取；ROLE 取保存编队，
+ *       候选 {@code formation_ids[]} 逐个尝试，不可用返回 WAITING/SKIP（不静默换编队）；</li>
+ *   <li>{@code DailyRoleFormationService.validated}（保存期校验 → 运行期兜底）：英雄 ≤3、无重复、
+ *       职业唯一（盾/矛/弓各 1）、必须在角色英雄库；</li>
+ *   <li>{@code DailyRoleFormationCalculator}：最大余数分配 {@code allocateLargestRemainders}、
+ *       百分比分配 {@code allocatePercentages}、容量扩张 {@code expandedFixedTarget}、同比缩放 {@code scaleTotal}；</li>
+ *   <li>{@code DailyRoleFormationService.fitFormation}：MANUAL=按容量扩张后按兵量权重重分配；
+ *       PERCENTAGE=按容量×比例重算；容量未知 → 不夹取仅 WARN。</li>
  * </ul>
  *
  * <p><b>参数 schema（roleParams，App 写入；无参数=旧行为）</b>：
  * <ul>
- *   <li>全局库：{@code formation_library}（字符串 JSON，见 {@link FormationLibrary}）；
- *       优先从任务自身 params 读，其次从 {@code tc.params("formation")} 读；</li>
- *   <li>每任务：{@code formation_mode}("AUTOMATIC"|"ROLE"|"NORMAL"|"CUSTOM")、{@code formation_id}、
- *       {@code soldiers:{infantry,lancer,marksman}}（覆盖编队兵量）、{@code ratio:{infantry,lancer,marksman}}、
- *       {@code total}、{@code squad_index}（仅 FALLBACK 旧行为用）。</li>
+ *   <li>全局库：{@code formation_library}（字符串 JSON，见 {@link FormationLibrary}）；</li>
+ *   <li>每任务：{@code formation_mode}("AUTOMATIC"|"ROLE"|"NORMAL"|"CUSTOM")、
+ *       {@code formation_id} / {@code formation_ids[]}（候选列表，按序回退）、
+ *       {@code soldiers:{infantry,lancer,marksman}}（覆盖编队兵量）、
+ *       {@code ratio:{infantry,lancer,marksman}}、{@code total}、
+ *       {@code formation_fallback}（黑名单回退：AUTO|SKIP，默认 SKIP）、{@code squad_index}；</li>
+ *   <li>多队列预留：{@code resolveOutcome(..., usedHeroes)} 传入本轮前序队列已用英雄（采集 v2 4 队列）。</li>
  * </ul>
  *
- * <p><b>SKIP 语义（宁可不发）</b>：库缺失/编队 id 不存在/英雄不存在/库存不足/比例=0/容量未知
- * 一律返回 {@code null}（{@link ResolveOutcome#reason} 给可读原因），**绝不静默回退旧编队**；
+ * <p><b>SKIP 语义（宁可不发）</b>：库缺失/候选全部非法/英雄目录未同步/库存不足为 0/兵量分配为 0
+ * 一律返回 {@code null}（{@link ResolveOutcome#reason} 给可读中文原因），<b>绝不静默回退旧编队</b>；
  * 唯一例外=**无任何编队参数**（{@link #isConfigured} false）时返回 FALLBACK（旧行为，零变化）。
+ * v2 起「显式兵量超容量/超库存」不再 SKIP，而是按旧版 fitFormation 口径缩放后下发。
  */
 public final class FormationResolver {
 
     public static final String MODE_AUTOMATIC = "AUTOMATIC";
     public static final String MODE_ROLE = "ROLE";
 
-    /** 自动编队最多上阵英雄数（网页版最强/空闲编队 ≤5）。 */
+    /** 黑名单/候选不可用时回退自动编队（params {@code formation_fallback=AUTO}）。 */
+    public static final String FALLBACK_AUTO = "AUTO";
+    /** 黑名单/候选不可用时不发（默认）。 */
+    public static final String FALLBACK_SKIP = "SKIP";
+
+    /** 自动编队最多上阵英雄数（网页版最强/空闲编队 ≤5；v2 实际上限 3，见 {@link HeroAvailability}）。 */
     static final int MAX_AUTO_HEROES = 5;
     /** 单队兵力估算上限（与既有 Exec.formationWithHeroes 的 50000 上限同口径）。 */
     static final long MAX_SOLDIERS_PER_MARCH = 50_000L;
@@ -85,14 +101,11 @@ public final class FormationResolver {
         }
     }
 
-    // ------------------------------------------------------------------
-    // 入口（冻结契约）
-    // ------------------------------------------------------------------
+    // ==================================================================
+    // 入口（冻结契约；旧签名全部保留并委托新重载）
+    // ==================================================================
 
-    /**
-     * 解析本任务编队（冻结契约入口；失败返回 null，调用方 SKIP）。
-     * {@code lib} 可以是 {@link #libraryFor(TaskContext, String)} 的返回值（可能为空库）。
-     */
+    /** 解析本任务编队（冻结契约入口；失败返回 null，调用方 SKIP）。 */
     public static ResolvedFormation resolve(WjdrEngine engine, FormationLibrary lib,
                                             Map<String, Object> fnParams) {
         return resolveOutcome(engine, lib, fnParams).formation;
@@ -105,12 +118,29 @@ public final class FormationResolver {
 
     /** JSONObject 重载（TaskContext.params 直接可用）。 */
     public static ResolveOutcome resolveOutcome(WjdrEngine engine, FormationLibrary lib, JSONObject fnParams) {
-        return resolveOutcome(engine, lib, toMap(fnParams));
+        return resolveOutcome(engine, lib, toMap(fnParams), null);
     }
 
-    /** 带原因的解析（服务端任务 SKIP 文案用；契约外的增量 API）。 */
+    /** JSONObject 重载 + 同轮已用英雄（多队列预留）。 */
+    public static ResolveOutcome resolveOutcome(WjdrEngine engine, FormationLibrary lib,
+                                                JSONObject fnParams, Collection<Long> usedHeroes) {
+        return resolveOutcome(engine, lib, toMap(fnParams), usedHeroes);
+    }
+
+    /**
+     * 带原因的解析（服务端任务 SKIP 文案用；契约外的增量 API）。
+     *
+     * @param usedHeroes 本轮前序队列已占用英雄（null=不预留）；AUTO 候选与 ROLE 候选都会排除
+     */
     public static ResolveOutcome resolveOutcome(WjdrEngine engine, FormationLibrary lib,
                                                 Map<String, Object> fnParams) {
+        return resolveOutcome(engine, lib, fnParams, null);
+    }
+
+    /** 带原因 + 同轮已用英雄预留的解析（采集 v2 多队列调用）。 */
+    public static ResolveOutcome resolveOutcome(WjdrEngine engine, FormationLibrary lib,
+                                                Map<String, Object> fnParams,
+                                                Collection<Long> usedHeroes) {
         Map<String, Object> p = fnParams == null ? Map.of() : fnParams;
         if (engine == null) return ResolveOutcome.skip("engine 为空");
         // 无任何编队参数 = 旧行为（零变化）；返回 FALLBACK（调用方可直接用 payload）
@@ -121,19 +151,19 @@ public final class FormationResolver {
         try {
             String mode = modeOf(p);
             if (MODE_ROLE.equals(mode)) {
-                return resolveRole(engine, lib, p);
+                return resolveRole(engine, lib, p, normalizeHeroes(usedHeroes));
             }
-            return autoOutcome(engine, ratioOf(p, FormationSpec.defaultRatio()), totalOf(p));
+            return autoOutcome(engine, ratioOf(p, automaticDefaultRatio(lib)), totalOf(p), usedHeroes);
         } catch (Throwable t) {
             return ResolveOutcome.skip("编队解析异常：" + brief(t.getMessage()));
         }
     }
 
     /**
-     * 自动编队（冻结契约）：按可用英雄（强→弱，≤5）+ 兵种库存/比例分配。
+     * 自动编队（冻结契约）：按可用英雄（强→弱，≤3）+ 兵种库存/比例分配。
      *
      * @param ratio 比例权重（键 infantry/lancer/marksman；null/空=40:30:30）
-     * @param total 目标总兵力（≤0=按库存上限，单队再夹 50000）
+     * @param total 目标总兵力（≤0=按库存上限，单队再夹 50000 与本队容量）
      * @return 编队；英雄/库存缺失返回 null（不静默回退）
      */
     public static ResolvedFormation auto(WjdrEngine engine, Map<String, Long> ratio, long total) {
@@ -142,29 +172,58 @@ public final class FormationResolver {
 
     /** 自动编队（带原因）。 */
     public static ResolveOutcome autoOutcome(WjdrEngine engine, Map<String, Long> ratio, long total) {
+        return autoOutcome(engine, ratio, total, null);
+    }
+
+    /** 自动编队（带原因 + 同轮已用英雄预留；415/406 自适应在此消费）。 */
+    public static ResolveOutcome autoOutcome(WjdrEngine engine, Map<String, Long> ratio, long total,
+                                             Collection<Long> usedHeroes) {
         if (engine == null) return ResolveOutcome.skip("engine 为空");
-        List<Long> heroIds = autoProfessionHeroes(engine);
+        List<Long> heroIds = autoProfessionHeroes(engine, usedHeroes);
         if (heroIds.isEmpty()) {
-            return ResolveOutcome.skip("英雄目录未同步（notify_hero_init 缺失或无可用英雄）");
+            String why = "英雄目录未同步（notify_hero_init 缺失或无可用英雄）";
+            if (usedHeroes != null && !usedHeroes.isEmpty()) {
+                why = why + "；本轮前序队列已占用英雄 " + usedHeroes;
+            }
+            return ResolveOutcome.skip(why);
         }
         long[] stock = FormationCatalog.soldierStock(engine);
         long stockSum = stock[0] + stock[1] + stock[2];
         if (stockSum <= 0) {
             return ResolveOutcome.skip("兵种库存未同步（notify_soldier_init 缺失）");
         }
+        StringBuilder notes = new StringBuilder();
         long target = total > 0 ? total : Math.min(stockSum, MAX_SOLDIERS_PER_MARCH);
         // 406 修复：按“本队英雄容量”精确夹取总兵力（网页版 MarchCapacityState 公式）
-        long capacity = MarchCapacityCalculator.capacityFor(engine, heroIds);
-        if (capacity > 0L) target = Math.min(target, capacity);
+        long capacity = capacityForHeroes(engine, heroIds);
+        if (capacity > 0L) {
+            if (target > capacity) {
+                notes.append("，按容量").append(capacity).append("夹取");
+                target = capacity;
+            }
+        } else {
+            capacityWarn("AUTO", 0L, target);
+            notes.append("，出征容量未知未夹取");
+        }
+        // 406 拒绝后按 75/50/25% 逐级缩放（成功后由 HeroAvailability.markSuccess 复位）
         int scalePct = HeroAvailability.soldierScalePercent(engine);
-        if (scalePct < 100) target = Math.max(1L, target * scalePct / 100L);
+        if (scalePct < 100) {
+            target = Math.max(1L, applyPercent(target, scalePct));
+            notes.append("，406 缩放至").append(scalePct).append('%');
+        }
         long[] weights = ratioArray(ratio, DEFAULT_RATIO);
         long[] soldiers = allocate(target, weights, stock);
         if (soldiers[0] + soldiers[1] + soldiers[2] <= 0) {
             return ResolveOutcome.skip("兵种库存不足（盾" + stock[0] + "/矛" + stock[1] + "/弓" + stock[2] + "）");
         }
-        return ResolveOutcome.ready(build(engine, ResolvedFormation.SRC_AUTO, 0L, "自动编队",
-                heroIds, soldiers), "自动编队（比例 " + weights[0] + ":" + weights[1] + ":" + weights[2] + "）");
+        int heroLimit = HeroAvailability.autoHeroLimit(engine);
+        if (heroLimit < HeroAvailability.DEFAULT_AUTO_HEROES) {
+            notes.append("，415 英雄上限下调至").append(heroLimit);
+        }
+        ResolvedFormation rf = build(engine, ResolvedFormation.SRC_AUTO, 0L, "自动编队",
+                heroIds, soldiers);
+        return ResolveOutcome.ready(rf, "自动编队（比例 " + weights[0] + ":" + weights[1] + ":"
+                + weights[2] + notes + "）");
     }
 
     /**
@@ -176,55 +235,93 @@ public final class FormationResolver {
         return ResolvedFormation.fallback(Exec.formation(engine, squadIndex <= 0 ? 1 : squadIndex));
     }
 
-    // ------------------------------------------------------------------
-    // ROLE 解析
-    // ------------------------------------------------------------------
+    // ==================================================================
+    // ROLE 解析（候选回退 + 合法性校验 + 容量/库存缩放 + 黑名单）
+    // ==================================================================
 
     private static ResolveOutcome resolveRole(WjdrEngine engine, FormationLibrary lib,
-                                              Map<String, Object> p) {
-        long formationId = formationIdOf(p);
-        if (formationId <= 0) {
-            return ResolveOutcome.skip("formation_mode=ROLE 但未选择 formation_id（请到功能页选编队）");
-        }
+                                              Map<String, Object> p, Set<Long> usedHeroes) {
         if (lib == null || lib.isEmpty()) {
             return ResolveOutcome.skip("编队库未同步（roleParams formation_library 缺失/为空）");
         }
+        List<Long> candidates = formationIdsOf(p);
+        if (candidates.isEmpty()) {
+            return ResolveOutcome.skip("formation_mode=ROLE 但未选择 formation_id（请到功能页选编队）");
+        }
+        List<String> failures = new ArrayList<>();
+        for (Long cid : candidates) {
+            if (cid == null || cid == 0L) continue;
+            ResolveOutcome outcome = tryRoleCandidate(engine, lib, p, cid, usedHeroes, failures);
+            if (outcome != null) return outcome;
+        }
+        String summary = String.join("；", failures);
+        if (summary.length() > 200) summary = summary.substring(0, 200) + "…";
+        return ResolveOutcome.skip("编队候选均不可用：" + summary);
+    }
+
+    /**
+     * 尝试单个 ROLE 候选；失败返回 null 并往 {@code failures} 追加可读原因（继续下一候选）。
+     * 成功返回 READY（reason 含来源/缩放说明）。
+     */
+    private static ResolveOutcome tryRoleCandidate(WjdrEngine engine, FormationLibrary lib,
+                                                   Map<String, Object> p, long formationId,
+                                                   Set<Long> usedHeroes, List<String> failures) {
         FormationSpec spec = lib.byId(formationId);
-        if (spec == null || !spec.usable()) {
-            return ResolveOutcome.skip("编队 #" + formationId + " 不存在或没有英雄（编队库 " + lib.ids() + "）");
+        if (spec == null) {
+            failures.add("编队 #" + formationId + " 不存在（编队库 " + lib.ids() + "）");
+            return null;
         }
-        // 英雄校验：必须存在于角色英雄目录（目录缺失 → 宁可不发，不猜测上阵）
-        Set<Long> known = new LinkedHashSet<>(FormationCatalog.heroIds(engine));
-        if (known.isEmpty()) {
-            return ResolveOutcome.skip("英雄目录未同步（notify_hero_init 缺失），无法校验编队英雄");
+        if (spec.isGame()) {
+            failures.add("编队 #" + formationId + " 是游戏内编队（只读），请在 App 里生成副本后使用");
+            return null;
         }
-        List<Long> missing = new ArrayList<>();
-        for (Long h : spec.heroIds) {
-            if (h == null || h <= 0 || !known.contains(h)) missing.add(h);
+        if (!spec.usable()) {
+            failures.add("编队 #" + formationId + " 没有英雄或 id 非法");
+            return null;
         }
-        if (!missing.isEmpty()) {
-            return ResolveOutcome.skip("编队 #" + formationId + " 英雄不在角色英雄列表：" + missing
-                    + "（可能已下阵/未同步）");
+        // ① 英雄合法性：≤3 / 无重复 / 职业唯一 / 目录存在（网页版 R1 + 旧版保存期校验）
+        String heroError = validateRoleHeroes(engine, spec);
+        if (heroError != null) {
+            failures.add("编队 #" + formationId + " " + heroError);
+            return null;
         }
-        // 兵种库存
+        // ② 同轮多队列预留：英雄被前序队列占用 → 试下一候选（旧版 HERO_RESERVED）
+        List<Long> reserved = intersection(spec.heroIds, usedHeroes);
+        if (!reserved.isEmpty()) {
+            failures.add("编队 #" + formationId + " 英雄已被本轮前序队列占用（HERO_RESERVED）：" + reserved);
+            return null;
+        }
+        // ③ 301/403 黑名单：命中 → 按 formation_fallback（默认 SKIP）回退 AUTO 或 SKIP
+        List<Long> blocked = HeroAvailability.blockedAmong(engine, spec.heroIds);
+        if (!blocked.isEmpty()) {
+            String away = "编队 #" + formationId + " 英雄不在城/被占用（HERO_AWAY）：" + blocked;
+            if (FALLBACK_AUTO.equals(fallbackModeOf(p))) {
+                ResolveOutcome auto = autoOutcome(engine, ratioOf(p, automaticDefaultRatio(lib)),
+                        totalOf(p), usedHeroes);
+                if (auto.ready()) {
+                    return ResolveOutcome.ready(auto.formation,
+                            away + " → formation_fallback=AUTO，回退自动编队 · " + auto.reason);
+                }
+                failures.add(away + "；回退自动编队失败：" + auto.reason);
+                return null;
+            }
+            failures.add(away);
+            return null;
+        }
+        // ④ 兵种库存
         long[] stock = FormationCatalog.soldierStock(engine);
         long stockSum = stock[0] + stock[1] + stock[2];
         if (stockSum <= 0) {
-            return ResolveOutcome.skip("兵种库存未同步（notify_soldier_init 缺失）");
+            failures.add("编队 #" + formationId + " 兵种库存未同步（notify_soldier_init 缺失）");
+            return null;
         }
-        // ---------------------------------------------------------------
-        // ROLE 兵量优先级（批次11 修复：必须用编队库 spec 的兵量，不能落回自动分配）
-        //   ① 功能级 soldiers 字段覆盖（>0 生效，按兵种逐项覆盖）
-        //   ② 编队库 FormationSpec 三兵种（infantry/lancer/marksman，任一 >0）
-        //   ③ spec.total>0 或显式 ratio → 按 total/ratio + 库存分配（保留 AUTOMATIC 分配语义）
-        //   ④ 库无兵量且无 total/ratio → SKIP + 可读原因（不静默缩小/不静默自动分配）
-        // 任何显式/库兵量超库存 → SKIP（不静默削减）。
-        // ---------------------------------------------------------------
+        // ⑤ 兵量：显式兵量/比例 → fitFormation（超容量同比缩放、超库存缩放，不再 SKIP）
+        List<String> notes = new ArrayList<>();
         long[] override = soldiersOf(p);
         long[] merged = new long[]{
-                spec.infantry > 0 ? spec.infantry : 0L,
-                spec.lancer > 0 ? spec.lancer : 0L,
-                spec.marksman > 0 ? spec.marksman : 0L};
+                Math.max(0L, spec.infantry),
+                Math.max(0L, spec.lancer),
+                Math.max(0L, spec.marksman)};
         boolean overrideAny = false;
         if (override != null) {
             for (int i = 0; i < 3; i++) {
@@ -234,73 +331,300 @@ public final class FormationResolver {
                 }
             }
         }
-        boolean libraryAny = merged[0] > 0 || merged[1] > 0 || merged[2] > 0;
-        long capacity = MarchCapacityCalculator.capacityFor(engine, new ArrayList<>(spec.heroIds));
+        // 契约 §3.1：容量上限统一走 T2 FormationCatalog.capacityForHeroes（marchCapacity 同源）
+        long capacity = capacityForHeroes(engine, new ArrayList<>(spec.heroIds));
+        long bp = percentageBasisPoints(engine);
         long[] soldiers;
         String sourceNote;
-        if (libraryAny) {
-            soldiers = merged;
-            String shortLine = shortage(soldiers, stock);
-            if (shortLine != null) {
-                return ResolveOutcome.skip("编队 #" + formationId + " 兵量超出库存：" + shortLine
-                        + "（库存 盾" + stock[0] + "/矛" + stock[1] + "/弓" + stock[2] + "）");
-            }
+        if (overrideAny || spec.hasExplicitSoldiers()) {
+            // MANUAL：configuredTotal → expandedFixedTarget（容量扩张）→ 最大余数按兵量权重重分配
+            long configuredTotal = merged[0] + merged[1] + merged[2];
+            long target = configuredTotal;
             if (capacity > 0L) {
-                long sum = soldiers[0] + soldiers[1] + soldiers[2];
-                if (sum > capacity) {
-                    return ResolveOutcome.skip("编队 #" + formationId + " 兵量(" + sum
-                            + ")超出出征容量(" + capacity + ")，请下调兵量或增加英雄");
+                long expanded = expandedFixedTarget(configuredTotal, bp, 0L, capacity);
+                if (expanded < 0L) {
+                    capacityWarn("ROLE", capacity, configuredTotal);
+                    target = Math.min(configuredTotal, capacity);
+                } else {
+                    target = expanded;
+                    if (target != configuredTotal) {
+                        notes.add("兵量(" + configuredTotal + ")按出征容量(" + capacity
+                                + ")同比缩放为 " + target);
+                    }
                 }
+            } else {
+                capacityWarn("ROLE", 0L, configuredTotal);
+                notes.add("出征容量未知（0），未按容量夹取");
             }
+            soldiers = allocateLargestRemainders(target, merged);
             sourceNote = overrideAny ? "功能级 soldiers 覆盖" : "编队库兵量";
         } else {
             long total = totalOf(p);
-            if (total <= 0) total = spec.total;
-            boolean explicitRatio = hasExplicitRatio(p);
-            if (total <= 0 && !explicitRatio) {
-                return ResolveOutcome.skip("编队 #" + formationId
-                        + " 未配置兵量（soldiers 全 0）且未设置 total/ratio（请在功能页编队里配置兵量或比例）");
-            }
-            // ③ total>0 或显式 ratio：按 total/ratio + 库存分配（网页版 AUTOMATIC 分配语义）
-            if (total <= 0) total = Math.min(stockSum, MAX_SOLDIERS_PER_MARCH);
-            if (capacity > 0L) total = Math.min(total, capacity);   // 406 修复：按英雄容量夹取
+            if (total <= 0L) total = spec.total;
+            boolean ratioInformed = hasExplicitRatio(p) || spec.ratioExplicit;
             long[] weights = ratioArray(ratioOf(p, spec.ratio), DEFAULT_RATIO);
-            soldiers = allocate(total, weights, stock);
-            if (soldiers[0] + soldiers[1] + soldiers[2] <= 0) {
-                return ResolveOutcome.skip("编队 #" + formationId + " 兵量分配为 0（比例/库存不可用）");
+            if (total > 0L) {
+                // 旧 App/队列级 total 语义：目标总量按比例权重分配（兼容既有行为）
+                long target = total;
+                if (capacity > 0L && target > capacity) {
+                    notes.add("total(" + target + ")超出出征容量(" + capacity + ")，已夹取");
+                    target = capacity;
+                } else if (capacity <= 0L) {
+                    capacityWarn("ROLE", 0L, target);
+                    notes.add("出征容量未知（0），未按容量夹取");
+                }
+                soldiers = allocateLargestRemainders(target, weights);
+                sourceNote = "total=" + target + " 按比例分配";
+            } else if (ratioInformed && capacity > 0L) {
+                // PERCENTAGE（1:1 旧版 fitFormation）：targetTotal=round(capacity×sumPct/100)，
+                // 再按比例权重最大余数分配（denominator=100，余数相同盾优先）。
+                String ratioError = validatePercentages(weights);
+                if (ratioError != null) {
+                    failures.add("编队 #" + formationId + " " + ratioError);
+                    return null;
+                }
+                soldiers = allocatePercentages(capacity, weights);
+                sourceNote = "按比例分配（容量" + capacity + " × "
+                        + weights[0] + ":" + weights[1] + ":" + weights[2] + "）";
+            } else if (ratioInformed) {
+                // 容量未知：退化为"库存上限内按比例分配"（旧行为，不阻塞），只 WARN
+                capacityWarn("ROLE", 0L, 0L);
+                long target = Math.min(stockSum, MAX_SOLDIERS_PER_MARCH);
+                soldiers = allocateLargestRemainders(target, weights);
+                notes.add("出征容量未知（0），按库存上限分配");
+                sourceNote = "total=" + target + " 按比例分配";
+            } else {
+                failures.add("编队 #" + formationId
+                        + " 未配置兵量（soldiers 全 0）且未设置 total/ratio（请在功能页编队里配置兵量或比例）");
+                return null;
             }
-            sourceNote = "total=" + total + " 按比例分配";
         }
+        // ⑥ 406 自适应：按 75/50/25% 缩放（成功出征后 markSuccess 复位）
+        int scalePct = HeroAvailability.soldierScalePercent(engine);
+        if (scalePct < 100) {
+            long total = soldiers[0] + soldiers[1] + soldiers[2];
+            if (total > 0L) {
+                long scaled = Math.max(1L, applyPercent(total, scalePct));
+                soldiers = allocateLargestRemainders(scaled, soldiers);
+                notes.add("406 缩放至" + scalePct + "%");
+            }
+        }
+        // ⑦ 库存缩放（逐兵种夹到可用库存；不再 SKIP 空转）
+        long[] clamped = clampSoldiersToStock(soldiers, stock);
+        if (!java.util.Arrays.equals(clamped, soldiers)) {
+            notes.add("库存不足已按库存缩放（盾" + stock[0] + "/矛" + stock[1] + "/弓" + stock[2] + "）");
+            soldiers = clamped;
+        }
+        if (soldiers[0] + soldiers[1] + soldiers[2] <= 0) {
+            failures.add("编队 #" + formationId + " 兵量分配为 0（比例/库存不可用）");
+            return null;
+        }
+        // ⑧ 队长排到上阵位第 1（网页版 captainFirst）
+        Long captain = spec.effectiveCaptain();
+        List<Long> heroOrder = captainFirst(spec.heroIds, captain);
         ResolvedFormation rf = build(engine, ResolvedFormation.SRC_ROLE, spec.id,
-                spec.name, new ArrayList<>(spec.heroIds), soldiers);
-        return ResolveOutcome.ready(rf, "角色编队 #" + spec.id
-                + (spec.name == null || spec.name.isEmpty() ? "" : "(" + spec.name + ")")
-                + " · " + sourceNote);
+                spec.name, heroOrder, soldiers)
+                .withMeta(captain, spec.effectiveAllocationMode(), spec.templateKey, spec.isBuiltIn());
+        StringBuilder reason = new StringBuilder("角色编队 #").append(spec.id);
+        if (spec.name != null && !spec.name.isEmpty()) reason.append('(').append(spec.name).append(')');
+        reason.append(" · ").append(sourceNote);
+        if (!notes.isEmpty()) reason.append(" · ").append(String.join("；", notes));
+        return ResolveOutcome.ready(rf, reason.toString());
     }
 
-    /** 是否显式给出比例（params.ratio/soldier_ratio 非空 Map；spec 默认 40:30:30 不算显式）。 */
-    static boolean hasExplicitRatio(Map<String, Object> fnParams) {
-        Object v = first(fnParams, "ratio", "soldier_ratio");
-        if (v instanceof JSONObject) v = toMap((JSONObject) v);
-        if (!(v instanceof Map)) return false;
-        return !((Map<?, ?>) v).isEmpty();
-    }
-
-    private static String shortage(long[] want, long[] stock) {
-        StringBuilder sb = new StringBuilder();
-        String[] names = new String[]{"盾", "矛", "弓"};
-        for (int i = 0; i < 3; i++) {
-            if (want[i] > stock[i]) {
-                if (sb.length() > 0) sb.append('/');
-                sb.append(names[i]).append("要").append(want[i]).append("有").append(stock[i]);
+    /**
+     * ROLE 英雄合法性校验（返回 null=合法，否则中文原因；契约 §3.4）：
+     * 英雄数 ≤ {@link FormationSpec#TEAM_SIZE}、无重复、职业唯一（未知职业=0 跳过不误杀）、
+     * 必须在角色英雄目录内。
+     */
+    static String validateRoleHeroes(WjdrEngine engine, FormationSpec spec) {
+        List<Long> heroes = spec.heroIds == null ? List.of() : spec.heroIds;
+        if (heroes.isEmpty()) return "没有英雄";
+        if (heroes.size() > FormationSpec.TEAM_SIZE) {
+            return "英雄数 " + heroes.size() + " 超过上限 " + FormationSpec.TEAM_SIZE
+                    + "（盾/矛/弓各 1 名）";
+        }
+        Set<Long> seen = new LinkedHashSet<>();
+        List<Long> duplicates = new ArrayList<>();
+        for (Long h : heroes) {
+            if (h == null || h <= 0L) continue;
+            if (!seen.add(h)) duplicates.add(h);
+        }
+        if (!duplicates.isEmpty()) return "英雄重复：" + duplicates;
+        List<FormationCatalog.Hero> catalog = FormationCatalog.heroes(engine);
+        if (catalog.isEmpty()) {
+            return "英雄目录未同步（notify_hero_init 缺失），无法校验编队英雄";
+        }
+        Map<Long, Integer> professionOf = new LinkedHashMap<>();
+        for (FormationCatalog.Hero h : catalog) professionOf.put(h.id, h.profession);
+        List<Long> missing = new ArrayList<>();
+        for (Long h : heroes) {
+            if (h == null || h <= 0L || !professionOf.containsKey(h)) missing.add(h);
+        }
+        if (!missing.isEmpty()) return "英雄不在角色英雄库：" + missing + "（可能已下阵/未同步）";
+        Map<Integer, Long> byProfession = new LinkedHashMap<>();
+        List<Long> conflict = new ArrayList<>();
+        for (Long h : heroes) {
+            int p = professionOf.getOrDefault(h, 0);
+            if (p < 1 || p > 3) continue;                 // 未知职业=0：跳过职业校验（不误杀）
+            Long first = byProfession.get(p);
+            if (first != null) {
+                conflict.add(first);
+                conflict.add(h);
+            } else {
+                byProfession.put(p, h);
             }
         }
-        return sb.length() == 0 ? null : sb.toString();
+        if (!conflict.isEmpty()) {
+            return "职业重复（盾/矛/弓各限 1 名）：" + conflict;
+        }
+        return null;
     }
 
-    // ------------------------------------------------------------------
+    // ==================================================================
+    // 纯函数：旧版 release288 分配/缩放算法（单测直接锁定）
+    // ==================================================================
+
+    /**
+     * 406 兵力百分比缩放（旧版自动编队 {@code target * pct / 100} 的等价四舍五入实现）：
+     * {@code round_half_up(total*pct/100)}；pct&lt;=0 → 0，pct&gt;=100 → 原值。
+     *
+     * <p>注意与 {@link #scaleTotal} 区分：scaleTotal 是"按容量上限同比缩放"（要求 oldTotal≤oldLimit），
+     * 本方法是"按百分比缩放总量"（如 406 后 75%/50%/25%）。
+     */
+    public static long applyPercent(long total, int pct) {
+        if (total <= 0L || pct <= 0) return 0L;
+        if (pct >= 100) return total;
+        try {
+            return Math.addExact(Math.multiplyExact(total, (long) pct), 50L) / 100L;
+        } catch (ArithmeticException e) {
+            return total / 100L * pct;
+        }
+    }
+
+    /**
+     * 旧版 {@code DailyRoleFormationCalculator.scaleTotal}：<b>四舍五入</b>等比缩放
+     * {@code round_half_up(oldTotal*newLimit/oldLimit)}，再 {@code min(newLimit, ·)}。
+     * 参数非法（oldTotal<0 / oldLimit<=0 / newLimit<0 / oldTotal>oldLimit）返回 <b>-1</b>
+     * （旧版抛错；服务端改为 WARN+跳过缩放，不阻塞出征）。
+     */
+    public static long scaleTotal(long oldTotal, long oldLimit, long newLimit) {
+        if (oldTotal < 0L || oldLimit <= 0L || newLimit < 0L || oldTotal > oldLimit) return -1L;
+        BigInteger divisor = BigInteger.valueOf(oldLimit);
+        BigInteger scaled = BigInteger.valueOf(oldTotal).multiply(BigInteger.valueOf(newLimit))
+                .add(divisor.divide(BigInteger.TWO)).divide(divisor);
+        try {
+            return Math.min(newLimit, scaled.longValueExact());
+        } catch (ArithmeticException e) {
+            return -1L;
+        }
+    }
+
+    /**
+     * 旧版 {@code DailyRoleFormationService.expandedFixedTarget}：
+     * {@code min(floor((configuredTotal+fixedBonus)*(10000+max(0,bp))/10000), effectiveLimit)}。
+     * 参数非法/溢出返回 <b>-1</b>（调用方 WARN+跳过缩放）。
+     *
+     * <p>服务端当前无 avalanche/cyril 运行时容量增益，{@code fixedBonus} 传 0（容量天然偏小，
+     * 宁低勿高，安全）。
+     */
+    public static long expandedFixedTarget(long configuredTotal, long percentageBasisPoints,
+                                           long fixedBonus, long effectiveLimit) {
+        if (configuredTotal < 0L || fixedBonus < 0L || effectiveLimit < 0L) return -1L;
+        try {
+            long multiplier = Math.addExact(10000L, Math.max(0L, percentageBasisPoints));
+            long fixedSubtotal = Math.addExact(configuredTotal, fixedBonus);
+            long expanded = Math.floorDiv(Math.multiplyExact(fixedSubtotal, multiplier), 10000L);
+            return Math.min(expanded, effectiveLimit);
+        } catch (ArithmeticException e) {
+            return -1L;
+        }
+    }
+
+    /**
+     * 最大余数法分配（旧版 {@code IntegerAllocationSupport.allocateLargestRemainders}）：
+     * 按权重把 {@code targetTotal} 分成三份，每份先 floor，余数大者依次 +1；
+     * <b>余数并列时序号小的优先（盾→矛→弓）</b>。
+     */
+    public static long[] allocateLargestRemainders(long targetTotal, long... weights) {
+        if (weights == null || weights.length == 0) return new long[0];
+        long weightSum = 0L;
+        for (long w : weights) weightSum += Math.max(0L, w);
+        return allocateFractions(targetTotal, targetTotal, weightSum, weights);
+    }
+
+    /**
+     * 最大余数法分配通用形式：每份 {@code floor(multiplier*weight/divisor)}，余数大者依次 +1。
+     * PERCENTAGE 路径用 {@code multiplier=limit, divisor=100}（与旧版 allocatePercentages 一致）。
+     */
+    public static long[] allocateFractions(long targetTotal, long multiplier,
+                                           long divisor, long... weights) {
+        if (weights == null || weights.length == 0) return new long[0];
+        long[] out = new long[weights.length];
+        if (targetTotal <= 0L || multiplier <= 0L || divisor <= 0L) return out;
+        BigInteger div = BigInteger.valueOf(divisor);
+        BigInteger mult = BigInteger.valueOf(multiplier);
+        BigInteger[] remainders = new BigInteger[weights.length];
+        long allocated = 0L;
+        for (int i = 0; i < weights.length; i++) {
+            BigInteger[] qr = mult.multiply(BigInteger.valueOf(Math.max(0L, weights[i])))
+                    .divideAndRemainder(div);
+            try {
+                out[i] = qr[0].longValueExact();
+            } catch (ArithmeticException e) {
+                out[i] = 0L;
+            }
+            remainders[i] = qr[1];
+            allocated += out[i];
+        }
+        // 余数补齐：每轮取余数最大者 +1 并置 -1（并列取序号小=盾优先）
+        int guard = 0;
+        while (allocated < targetTotal && guard++ < 10_000) {
+            int target = 0;
+            for (int i = 1; i < remainders.length; i++) {
+                if (remainders[i].compareTo(remainders[target]) > 0) target = i;
+            }
+            out[target] += 1L;
+            allocated += 1L;
+            remainders[target] = BigInteger.valueOf(-1L);
+        }
+        return out;
+    }
+
+    /**
+     * 旧版 {@code allocatePercentages(limit, inf%,lanc%,mark%)}：
+     * {@code targetTotal=round_half_up(limit*sumPct/100)}，再按 {@code multiplier=limit, divisor=100}
+     * 最大余数分配（每份 = limit×pct/100）。比例非法（负/&gt;100/合计 0 或 &gt;100）返回全 0。
+     */
+    public static long[] allocatePercentages(long limit, long... percentages) {
+        long[] out = new long[percentages == null ? 0 : percentages.length];
+        if (percentages == null || percentages.length != 3 || limit <= 0L) return out;
+        long sum = 0L;
+        for (long p : percentages) {
+            if (p < 0L || p > 100L) return out;
+            sum += p;
+        }
+        if (sum <= 0L || sum > 100L) return out;
+        BigInteger limitValue = BigInteger.valueOf(limit);
+        long targetTotal = limitValue.multiply(BigInteger.valueOf(sum))
+                .add(BigInteger.valueOf(50L)).divide(BigInteger.valueOf(100L)).longValue();
+        return allocateFractions(targetTotal, limit, 100L, percentages);
+    }
+
+    /** 逐兵种夹到可用库存（"库存不足按库存缩放"；返回新数组，不修改入参）。 */
+    public static long[] clampSoldiersToStock(long[] soldiers, long[] stock) {
+        long[] out = new long[3];
+        for (int i = 0; i < 3; i++) {
+            long want = soldiers == null || i >= soldiers.length ? 0L : Math.max(0L, soldiers[i]);
+            long cap = stock == null || i >= stock.length ? 0L : Math.max(0L, stock[i]);
+            out[i] = Math.min(want, cap);
+        }
+        return out;
+    }
+
+    // ==================================================================
     // 构造 payload
-    // ------------------------------------------------------------------
+    // ==================================================================
 
     private static ResolvedFormation build(WjdrEngine engine, String source, long formationId,
                                            String label, List<Long> heroIds, long[] soldiers) {
@@ -325,7 +649,21 @@ public final class FormationResolver {
         };
     }
 
-    /** 自动编队英雄候选：按战力/等级/星级/ id 降序，最多 {@code max} 个（≤5）。 */
+    /** 队长排到第 1 位（其余保持原顺序）。 */
+    static List<Long> captainFirst(List<Long> heroIds, Long captainHeroId) {
+        List<Long> out = heroIds == null ? new ArrayList<>() : new ArrayList<>(heroIds);
+        if (captainHeroId != null) {
+            out.remove(captainHeroId);
+            out.add(0, captainHeroId);
+        }
+        return out;
+    }
+
+    // ==================================================================
+    // 英雄候选
+    // ==================================================================
+
+    /** 自动编队英雄候选：按战力/等级/星级/id 降序，最多 {@code max} 个（≤5）。 */
     public static List<Long> strongestHeroes(WjdrEngine engine, int max) {
         int cap = Math.max(1, Math.min(MAX_AUTO_HEROES, max));
         List<Long> out = new ArrayList<>();
@@ -341,34 +679,46 @@ public final class FormationResolver {
         return out;
     }
 
-    /**
-     * 自动编队英雄：游戏规则每队列最多 3 名英雄且<b>盾/矛/弓各一名</b>（用户实证：
-     * 上阵位只能上三个英雄、兵种一一对应）。按职业各选“最强且在城/未拉黑”的一名；
-     * 某职业无可用英雄时返回已凑齐的部分（调用方按空/不足 SKIP 或降级）。
-     */
+    /** 自动编队英雄（无同轮预留；旧签名保留）。 */
     public static List<Long> autoProfessionHeroes(WjdrEngine engine) {
+        return autoProfessionHeroes(engine, null);
+    }
+
+    /**
+     * 自动编队英雄：游戏规则每队列最多 3 名英雄且<b>盾/矛/弓各一名</b>。按职业各选
+     * “最强且在城/未拉黑/未被前序队列占用”的一名；415 后上限按
+     * {@link HeroAvailability#autoHeroLimit} 下调（3→2→1，成功出征复位）；
+     * <b>职业未知（profession=0）的英雄不参与 AUTO</b>（网页版 R1 / P2-1）。
+     *
+     * @param usedHeroes 本轮前序队列已占用英雄（null/空=不预留；多队列 403 防护）
+     */
+    public static List<Long> autoProfessionHeroes(WjdrEngine engine, Collection<Long> usedHeroes) {
         List<Long> out = new ArrayList<>();
         if (engine == null) return out;
+        Set<Long> used = normalizeHeroes(usedHeroes);
         java.util.Set<Long> busy = FormationCatalog.busyHeroIds(engine);
+        int limit = Math.max(1, Math.min(HeroAvailability.DEFAULT_AUTO_HEROES,
+                HeroAvailability.autoHeroLimit(engine)));
         long[] picked = new long[4];   // index 1/2/3 = 盾/矛/弓
         for (FormationCatalog.Hero h : FormationCatalog.heroes(engine)) {
             int p = h.profession;
-            if (p < 1 || p > 3) continue;
+            if (p < 1 || p > 3) continue;                 // 职业未知不参与自动编队
             if (picked[p] > 0L) continue;
+            if (used.contains(h.id)) continue;            // 同轮前序队列已预留
             if (HeroAvailability.isBlocked(engine, h.id)) continue;
             if (busy.contains(h.id)) continue;
             picked[p] = h.id;
             if (picked[1] > 0L && picked[2] > 0L && picked[3] > 0L) break;
         }
-        for (int p = 1; p <= 3; p++) {
+        for (int p = 1; p <= 3 && out.size() < limit; p++) {
             if (picked[p] > 0L) out.add(picked[p]);
         }
         return out;
     }
 
-    // ------------------------------------------------------------------
-    // 比例分配（纯函数；库存上限 + 总量夹取）
-    // ------------------------------------------------------------------
+    // ==================================================================
+    // 比例分配（AUTO 用；库存上限 + 总量夹取；保留旧语义/单测）
+    // ==================================================================
 
     /**
      * 按比例把 {@code total} 分配到三兵种，绝不超库存。
@@ -416,19 +766,22 @@ public final class FormationResolver {
         return out;
     }
 
-    // ------------------------------------------------------------------
+    // ==================================================================
     // 参数解析（纯函数，容错 Map/JSONObject/字符串数字）
-    // ------------------------------------------------------------------
+    // ==================================================================
 
     /** 是否配置了「新编队系统」参数（无参数=旧行为）。 */
     public static boolean isConfigured(Map<String, Object> fnParams) {
         if (fnParams == null || fnParams.isEmpty()) return false;
         for (String k : new String[]{"formation_mode", "formationMode", "mode",
-                "formation_id", "formationId", "soldiers", "ratio", "total"}) {
+                "formation_id", "formationId", "formation_ids", "formationIds",
+                "soldiers", "ratio", "total"}) {
             Object v = fnParams.get(k);
             if (v == null) continue;
             if (v instanceof String && ((String) v).trim().isEmpty()) continue;
             if (v instanceof Map && ((Map<?, ?>) v).isEmpty()) continue;
+            if (v instanceof List && ((List<?>) v).isEmpty()) continue;
+            if (v instanceof JSONArray && ((JSONArray) v).length() == 0) continue;
             return true;
         }
         return false;
@@ -439,17 +792,17 @@ public final class FormationResolver {
         return isConfigured(toMap(fnParams));
     }
 
-    /** 编队模式：AUTOMATIC|ROLE；NORMAL/CUSTOM→ROLE；有 formation_id 且未写 mode→ROLE，否则 AUTOMATIC。 */
+    /** 编队模式：AUTOMATIC|ROLE；NORMAL/CUSTOM→ROLE；有 formation_id(s) 且未写 mode→ROLE。 */
     public static String modeOf(Map<String, Object> fnParams) {
         String raw = str(fnParams, "formation_mode", "formationMode");
         if (raw.isEmpty()) {
-            return formationIdOf(fnParams) > 0 ? MODE_ROLE : MODE_AUTOMATIC;
+            return firstFormationIdOf(fnParams) != 0L ? MODE_ROLE : MODE_AUTOMATIC;
         }
-        String up = raw.trim().toUpperCase(java.util.Locale.ROOT);
+        String up = raw.trim().toUpperCase(Locale.ROOT);
         if ("NORMAL".equals(up) || "CUSTOM".equals(up)) return MODE_ROLE;
         if (MODE_ROLE.equals(up)) return MODE_ROLE;
         if (MODE_AUTOMATIC.equals(up)) return MODE_AUTOMATIC;
-        return formationIdOf(fnParams) > 0 ? MODE_ROLE : MODE_AUTOMATIC;
+        return firstFormationIdOf(fnParams) != 0L ? MODE_ROLE : MODE_AUTOMATIC;
     }
 
     /** 选中的编队 id（formation_id/formationId；无=0）。 */
@@ -458,9 +811,32 @@ public final class FormationResolver {
         return num(v, 0L);
     }
 
+    /** ROLE 候选编队 id 列表（formation_ids[] 优先，formation_id 兜底；去重保持顺序）。 */
+    public static List<Long> formationIdsOf(Map<String, Object> fnParams) {
+        LinkedHashSet<Long> out = new LinkedHashSet<>();
+        addIds(out, first(fnParams, "formation_ids", "formationIds"));
+        long single = formationIdOf(fnParams);
+        if (single != 0L) out.add(single);
+        return new ArrayList<>(out);
+    }
+
+    /** 首个候选 id（formation_id 优先，其次 formation_ids[0]；无=0）。 */
+    private static long firstFormationIdOf(Map<String, Object> fnParams) {
+        long single = formationIdOf(fnParams);
+        if (single != 0L) return single;
+        List<Long> ids = formationIdsOf(fnParams);
+        return ids.isEmpty() ? 0L : ids.get(0);
+    }
+
     /** total 参数（无=0）。 */
     public static long totalOf(Map<String, Object> fnParams) {
         return num(first(fnParams, "total", "troop_total"), 0L);
+    }
+
+    /** 黑名单回退模式：AUTO|SKIP（默认 SKIP）。 */
+    public static String fallbackModeOf(Map<String, Object> fnParams) {
+        String raw = str(fnParams, "formation_fallback", "formationFallback", "fallback");
+        return FALLBACK_AUTO.equalsIgnoreCase(raw.trim()) ? FALLBACK_AUTO : FALLBACK_SKIP;
     }
 
     /** 兵量覆盖（params.soldiers；兼容 shield/spear/bow 别名）；无配置返回 null。 */
@@ -512,6 +888,40 @@ public final class FormationResolver {
         return out;
     }
 
+    /** 是否显式给出比例（params.ratio/soldier_ratio 非空 Map；spec 默认 40:30:30 不算显式）。 */
+    public static boolean hasExplicitRatio(Map<String, Object> fnParams) {
+        Object v = first(fnParams, "ratio", "soldier_ratio");
+        if (v instanceof JSONObject) v = toMap((JSONObject) v);
+        if (!(v instanceof Map)) return false;
+        return !((Map<?, ?>) v).isEmpty();
+    }
+
+    /** 自动编队默认比例：库内 {@code automatic_settings}（显式配置时）优先，否则 40:30:30。 */
+    private static Map<String, Long> automaticDefaultRatio(FormationLibrary lib) {
+        if (lib != null && lib.automaticSettingsPresent) {
+            int[] a = lib.automaticSettings();
+            Map<String, Long> m = new LinkedHashMap<>();
+            m.put("infantry", (long) Math.max(0, a[0]));
+            m.put("lancer", (long) Math.max(0, a[1]));
+            m.put("marksman", (long) Math.max(0, a[2]));
+            return m;
+        }
+        return FormationSpec.defaultRatio();
+    }
+
+    /** 比例合法性（PERCENTAGE 模式）：0..100 且合计 1..100；返回 null=合法。 */
+    static String validatePercentages(long[] percentages) {
+        if (percentages == null || percentages.length != 3) return "比例配置缺失";
+        long sum = 0L;
+        for (long p : percentages) {
+            if (p < 0L || p > 100L) return "比例必须是 0..100 的整数";
+            sum += p;
+        }
+        if (sum <= 0L) return "比例合计必须大于 0%";
+        if (sum > 100L) return "比例合计不能超过 100%";
+        return null;
+    }
+
     /** 旧行为回退用的 squad_index（无=默认）。 */
     public static int squadIndexOf(Map<String, Object> fnParams, int def) {
         long v = num(first(fnParams, "squad_index", "squadIndex"), def);
@@ -545,9 +955,115 @@ public final class FormationResolver {
         return raw == null ? "" : raw.trim();
     }
 
-    // ------------------------------------------------------------------
+    // ==================================================================
+    // 容量（契约 §3.1 FormationCatalog.capacityForHeroes 等价实现）
+    // ==================================================================
+
+    /**
+     * 出征容量 = floor((fixedCapacity+Σ troopCapacity)*(10000+bp)/10000)（契约 §3.1/§2.4）。
+     * 统一委托 T2 冻结访问器 {@code FormationCatalog.capacityForHeroes}；未同步/取不到返回 0
+     * （调用方视为未知：不夹取，仅 WARN）。
+     */
+    public static long capacityForHeroes(WjdrEngine engine, List<Long> heroIds) {
+        if (engine == null) return 0L;
+        try {
+            return FormationCatalog.capacityForHeroes(engine, heroIds);
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    /**
+     * 容量百分比 Buff（万分比；契约 §3.1 {@code marchCapacity.percentageBasisPoints} 同源口径）。
+     *
+     * <p>取<b>即时</b>值：{@code FormationCatalog.capacityForHeroes} 每次即时估算容量，若 bp 读
+     * capture 时的目录快照，buff 变更后会与容量公式不一致（容量已扩、扩张目标却按旧 bp）。
+     * 与 T2 {@code MarchCapacity.of(engine)} 使用同一数据源（{@code MarchCapacityCalculator}）。
+     */
+    public static long percentageBasisPoints(WjdrEngine engine) {
+        if (engine == null) return 0L;
+        try {
+            com.carlos.vault.wjdr.asset.MarchCapacityCalculator.Estimate est =
+                    com.carlos.vault.wjdr.asset.MarchCapacityCalculator.estimateSquad(
+                            engine, java.util.Collections.emptyList());
+            return est == null ? 0L : Math.max(0L, est.bp);
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    /** 容量未知/夹取告警（契约 §3.4：capacity<=0 不夹取只 WARN）。 */
+    private static void capacityWarn(String source, long capacity, long wouldSend) {
+        try {
+            FileLog.warn("编队容量未知/夹取 [{}] capacity={} 欲下发={}（不夹取，仅告警）",
+                    source, capacity, wouldSend);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    // ==================================================================
     // 内部工具
-    // ------------------------------------------------------------------
+    // ==================================================================
+
+    private static Set<Long> normalizeHeroes(Collection<Long> usedHeroes) {
+        if (usedHeroes == null || usedHeroes.isEmpty()) return Collections.emptySet();
+        Set<Long> out = new LinkedHashSet<>();
+        for (Long id : usedHeroes) {
+            if (id != null && id > 0L) out.add(id);
+        }
+        return out;
+    }
+
+    private static List<Long> intersection(List<Long> heroes, Set<Long> used) {
+        List<Long> out = new ArrayList<>();
+        if (heroes == null || used == null || used.isEmpty()) return out;
+        for (Long h : heroes) {
+            if (h != null && used.contains(h)) out.add(h);
+        }
+        return out;
+    }
+
+    private static void addIds(Set<Long> out, Object v) {
+        if (v == null) return;
+        if (v instanceof JSONArray) {
+            JSONArray arr = (JSONArray) v;
+            for (int i = 0; i < arr.length(); i++) {
+                long id = arr.optLong(i, 0L);
+                if (id != 0L) out.add(id);
+            }
+            return;
+        }
+        if (v instanceof long[]) {
+            for (long id : (long[]) v) if (id != 0L) out.add(id);
+            return;
+        }
+        if (v instanceof int[]) {
+            for (int id : (int[]) v) if (id != 0) out.add((long) id);
+            return;
+        }
+        if (v instanceof Collection) {
+            for (Object o : (Collection<?>) v) {
+                long id = num(o, 0L);
+                if (id != 0L) out.add(id);
+            }
+            return;
+        }
+        if (v instanceof Number) {
+            long id = ((Number) v).longValue();
+            if (id != 0L) out.add(id);
+            return;
+        }
+        String raw = String.valueOf(v).trim();
+        if (raw.isEmpty()) return;
+        for (String part : raw.split("[,;\\s\\[\\]]+")) {
+            if (part.isEmpty()) continue;
+            try {
+                long id = Long.parseLong(part.trim());
+                if (id != 0L) out.add(id);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
 
     private static Object first(Map<String, Object> m, String... keys) {
         if (m == null) return null;

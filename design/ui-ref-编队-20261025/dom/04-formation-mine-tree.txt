@@ -1,0 +1,126 @@
+===== OVERLAY el-overlay el-modal-dialog  DIALOG el-dialog responsive-dialog role-formation-dialog formation-page-dialog
+div.el-dialog.responsive-dialog.role-formation-dialog.formation-page-dialog  {463x763 @489,24}
+  header.el-dialog__header  {461x40 @490,25}
+    div.formation-page-title  {461x39 @490,25}
+      span  «编队管理»  {60x23 @690,32}
+      button[aria-label="关闭编队管理" type="button"]  {30x30 @911,29}
+  div.el-dialog__body  {461x721 @490,65}
+    div.formation-manager-body  {461x721 @490,65}
+      div.formation-source-tabs[role="tablist" aria-label="编队管理分类"]  {461x51 @490,65}
+        button[role="tab" type="button" aria-selected="false"]  {146x38 @496,71}
+          span  «自动编队»  {56x22 @550,79}
+        button[role="tab" type="button" aria-selected="false"]  {146x38 @647,71}
+          span  «游戏编队»  {56x22 @702,79}
+        button.is-active[role="tab" type="button" aria-selected="true"]  {146x38 @799,71}
+          span  «我的编队»  {56x22 @854,79}
+      div.mine-sub-tabs[role="tablist" aria-label="我的编队来源"]  {461x83 @490,116}
+        button.is-active[role="tab" type="button" aria-selected="true"]  «全部 12»  {144x32 @498,122}
+        button[role="tab" type="button" aria-selected="false"]  «内置 8»  {144x32 @648,122}
+        button[role="tab" type="button" aria-selected="false"]  «自定义 4»  {144x32 @798,122}
+        button[role="tab" type="button" aria-selected="false"]  «巨熊编队 0»  {144x32 @498,160}
+      div.daily-formation-board  {461x587 @490,199}
+        div.formation-board-tabs[role="tablist" aria-label="我的编队"]  {461x68 @490,199}
+          button.formation-board-tab.active.is-active.is-checked[role="tab" type="button" title="基础编队·一盾兵（无英雄）" aria-selected="true"]  {80x56 @498,204}
+            span.formation-board-tab-icon  {25x23 @546,211}
+            span.formation-board-tab-name  «基础编队·一盾兵（无英雄）»  {63x15 @507,237}
+            span.formation-board-tab-badge  «内置»  {36x20 @507,211}
+          button.formation-board-tab[role="tab" type="button" title="基础编队·任意英雄一兵" aria-selected="false"]  {80x56 @586,205}
+            span.formation-board-tab-icon  {25x23 @634,212}
+            span.formation-board-tab-name  «基础编队·任意英雄一兵»  {63x15 @595,238}
+            span.formation-board-tab-badge  «内置»  {36x20 @595,212}
+          button.formation-board-tab[role="tab" type="button" title="基础编队·巨兽" aria-selected="false"]  {80x56 @674,205}
+            span.formation-board-tab-icon  {25x23 @722,212}
+            span.formation-board-tab-name  «基础编队·巨兽»  {63x15 @683,238}
+            span.formation-board-tab-badge  «内置»  {36x20 @683,212}
+          button.formation-board-tab[role="tab" type="button" title="基础编队·煤矿采集" aria-selected="false"]  {80x56 @762,205}
+            span.formation-board-tab-icon  {25x23 @810,212}
+            span.formation-board-tab-name  «基础编队·煤矿采集»  {63x15 @771,238}
+            span.formation-board-tab-badge  «内置»  {36x20 @771,212}
+          button.formation-board-tab[role="tab" type="button" title="基础编队·铁矿采集" aria-selected="false"]  {80x56 @850,205}
+            span.formation-board-tab-icon  {25x23 @898,212}
+            span.formation-board-tab-name  «基础编队·铁矿采集»  {63x15 @859,238}
+            span.formation-board-tab-badge  «内置»  {36x20 @859,212}
+          button.formation-board-tab[role="tab" type="button" title="基础编队·生肉采集" aria-selected="false"]  {80x56 @938,205}
+            span.formation-board-tab-icon  {25x23 @986,212}
+            span.formation-board-tab-name  «基础编队·生肉采集»  {63x15 @947,238}
+            span.formation-board-tab-badge  «内置»  {36x20 @947,212}
+          button.formation-board-tab[role="tab" type="button" title="基础编队·木材采集" aria-selected="false"]  {80x56 @1026,205}
+            span.formation-board-tab-icon  {25x23 @1074,212}
+            span.formation-board-tab-name  «基础编队·木材采集»  {63x15 @1035,238}
+            span.formation-board-tab-badge  «内置»  {36x20 @1035,212}
+          button.formation-board-tab[role="tab" type="button" title="基础编队·打野" aria-selected="false"]  {80x56 @1114,205}
+            span.formation-board-tab-icon  {25x23 @1162,212}
+            span.formation-board-tab-name  «基础编队·打野»  {63x15 @1123,238}
+            span.formation-board-tab-badge  «内置»  {36x20 @1123,212}
+          button.formation-board-tab[role="tab" type="button" title="跑快快" aria-selected="false"]  {80x56 @1202,205}
+            span.formation-board-tab-icon  {25x23 @1250,212}
+            span.formation-board-tab-name  «跑快快»  {63x15 @1211,238}
+            span.formation-board-tab-badge  «自定义»  {39x20 @1211,212}
+          button.formation-board-tab[role="tab" type="button" title="采集铁" aria-selected="false"]  {80x56 @1290,205}
+            span.formation-board-tab-icon  {25x23 @1338,212}
+            span.formation-board-tab-name  «采集铁»  {63x15 @1299,238}
+            span.formation-board-tab-badge  «自定义»  {39x20 @1299,212}
+          button.formation-board-tab[role="tab" type="button" title="采集煤" aria-selected="false"]  {80x56 @1378,205}
+            span.formation-board-tab-icon  {25x23 @1426,212}
+            span.formation-board-tab-name  «采集煤»  {63x15 @1387,238}
+            span.formation-board-tab-badge  «自定义»  {39x20 @1387,212}
+          button.formation-board-tab[role="tab" type="button" title="采集木" aria-selected="false"]  {80x56 @1466,205}
+            span.formation-board-tab-icon  {25x23 @1514,212}
+            span.formation-board-tab-name  «采集木»  {63x15 @1475,238}
+            span.formation-board-tab-badge  «自定义»  {39x20 @1475,212}
+        div.formation-board-stats  {461x68 @490,267}
+          span.formation-board-stat.troops  {93x22 @502,273}
+            b  «1»  {8x22 @526,273}
+          span.formation-board-stat.formation-name[title="基础编队·一盾兵（无英雄）"]  {437x21 @502,307}
+            b  «基础编队·一盾兵（无英雄）»  {163x16 @502,312}
+        div.formation-board-buffs  {461x41 @490,335}
+          span.formation-board-buffs-label  «战争增益»  {56x22 @502,344}
+          button.formation-board-buff[aria-label="出征容量详情" type="button"]  {32x32 @566,339}
+          button.formation-board-buff.is-pet[aria-label="宠物技能增益" type="button"]  {32x32 @606,339}
+          button.formation-board-buffs-add[aria-label="打开编队设置" type="button"]  {30x30 @909,340}
+        div.formation-board-heroes  {461x180 @490,376}
+          article.formation-board-hero.profession-1.is-empty.is-static[aria-label="添加盾兵英雄"]  {105x180 @545,376}
+            span.formation-board-hero-empty  {103x178 @546,377}
+              span.formation-board-hero-profession  «盾»  {26x26 @551,382}
+              span.formation-board-hero-empty-icon  {48x48 @573,418}
+              span.formation-board-hero-empty-copy  {52x39 @571,475}
+                strong  «盾兵英雄»  {52x20 @571,475}
+                small  «未上阵»  {52x17 @571,497}
+          article.formation-board-hero.profession-2.is-empty.is-static[aria-label="添加矛兵英雄"]  {105x180 @668,376}
+            span.formation-board-hero-empty  {103x178 @669,377}
+              span.formation-board-hero-profession  «矛»  {26x26 @674,382}
+              span.formation-board-hero-empty-icon  {48x48 @696,418}
+              span.formation-board-hero-empty-copy  {52x39 @694,475}
+                strong  «矛兵英雄»  {52x20 @694,475}
+                small  «未上阵»  {52x17 @694,497}
+          article.formation-board-hero.profession-3.is-empty.is-static[aria-label="添加弓兵英雄"]  {105x180 @791,376}
+            span.formation-board-hero-empty  {103x178 @792,377}
+              span.formation-board-hero-profession  «弓»  {26x26 @797,382}
+              span.formation-board-hero-empty-icon  {48x48 @819,418}
+              span.formation-board-hero-empty-copy  {52x39 @817,475}
+                strong  «弓兵英雄»  {52x20 @817,475}
+                small  «未上阵»  {52x17 @817,497}
+        div.formation-board-troops  {461x200 @490,556}
+          div.formation-board-troop.is-locked.is-readonly  {457x58 @492,558}
+            span.formation-board-troop-badge  {52x52 @501,561}
+            span.formation-board-troop-name  «盾兵»  {304x23 @561,575}
+            span.formation-board-troop-count  {67x23 @872,575}
+              b  «1»  {8x23 @872,575}
+          div.formation-board-troop.is-locked.is-readonly  {457x58 @492,627}
+            span.formation-board-troop-badge  {52x52 @501,630}
+            span.formation-board-troop-name  «矛兵»  {304x23 @561,644}
+            span.formation-board-troop-count  {67x23 @872,644}
+              b  «0»  {8x23 @872,644}
+          div.formation-board-troop.is-locked.is-readonly  {457x58 @492,696}
+            span.formation-board-troop-badge  {52x52 @501,699}
+            span.formation-board-troop-name  «弓兵»  {304x23 @561,713}
+            span.formation-board-troop-count  {67x23 @872,713}
+              b  «0»  {8x23 @872,713}
+        div.formation-board-ratios  {461x30 @490,756}
+          span.formation-board-ratios-label  «士兵比例：»  {70x22 @502,760}
+          span.formation-board-ratio  {55x22 @582,760}
+            b  «100%»  {31x22 @606,760}
+          span.formation-board-ratio  {39x22 @646,760}
+            b  «0%»  {15x22 @670,760}
+          span.formation-board-ratio  {39x22 @696,760}
+            b  «0%»  {15x22 @720,760}

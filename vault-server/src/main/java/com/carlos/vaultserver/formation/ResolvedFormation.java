@@ -14,11 +14,14 @@ import java.util.Map;
  * <ul>
  *   <li>{@link #SRC_ROLE}：App 功能页保存的角色编队（{@link FormationSpec} → 英雄+兵量）；</li>
  *   <li>{@link #SRC_AUTO}：自动编队（按库存/比例分配；AUTOMATIC 模式）；</li>
- *   <li>{@link #SRC_FALLBACK}：旧行为回退（无编队参数时 = 既有 {@code Exec.formation} 结果）；</li>
+ *   <li>{@link #SRC_FALLBACK}：旧行为回退（无编队参数时 = 既有 {@code Exec.formation} 结果）。</li>
  * </ul>
  *
  * <p>payload 形状与既有服务端任务完全一致（{@code Exec.formationWithHeroes} 同款）：
- * <pre>{"hero_id":[{"k":50041,"v":1},...],"soldier":[{"k":11000,"v":20000},...]}</pre>
+ * <pre>{"hero_id":[{"k":1,"v":50041},...],"soldier":[{"k":11000,"v":20000},...]}</pre>
+ *
+ * <p>v2（契约 §3.3/§3.4）新增元数据：{@link #captainHeroId}（队长必须排在上阵位第 1 位，
+ * 网页版 {@code captainFirst}）、{@link #allocationMode}/{@link #templateKey}/{@link #builtIn}（日志/状态行）。
  */
 public final class ResolvedFormation {
 
@@ -33,7 +36,7 @@ public final class ResolvedFormation {
     public long formationId;
     /** 展示名（日志/状态行用）。 */
     public String label = "";
-    /** 英雄 id 列表（顺序=上阵顺序）。 */
+    /** 英雄 id 列表（顺序=上阵顺序，队长已提前到第 1 位）。 */
     public List<Long> heroIds = new ArrayList<>();
     /** 盾兵兵力。 */
     public long infantry;
@@ -43,6 +46,16 @@ public final class ResolvedFormation {
     public long marksman;
     /** 来源：{@link #SRC_ROLE}/{@link #SRC_AUTO}/{@link #SRC_FALLBACK}。 */
     public String source = SRC_AUTO;
+
+    // ---- v2 元数据（可选；AUTO/FALLBACK 为 null） ----
+    /** 队长英雄 id（已保证排在 {@link #heroIds} 第 1 位；AUTO/FALLBACK=null）。 */
+    public Long captainHeroId;
+    /** 分配方式 MANUAL/PERCENTAGE（AUTO/FALLBACK=null）。 */
+    public String allocationMode;
+    /** 内置模板键（可空）。 */
+    public String templateKey;
+    /** 是否内置编队。 */
+    public boolean builtIn;
 
     /** {@code hero_id} 参数对（[{k:位次1..n, v:英雄id}]，实证与网页版一致）。 */
     public List<Map<String, Object>> heroPairs = new ArrayList<>();
@@ -68,6 +81,16 @@ public final class ResolvedFormation {
         f.heroPairs = heroPairs == null ? new ArrayList<>() : new ArrayList<>(heroPairs);
         f.soldierPairs = soldierPairs == null ? new ArrayList<>() : new ArrayList<>(soldierPairs);
         return f;
+    }
+
+    /** 补 v2 元数据（链式；AUTO/FALLBACK 不调用）。 */
+    public ResolvedFormation withMeta(Long captainHeroId, String allocationMode,
+                                      String templateKey, boolean builtIn) {
+        this.captainHeroId = captainHeroId;
+        this.allocationMode = allocationMode;
+        this.templateKey = templateKey;
+        this.builtIn = builtIn;
+        return this;
     }
 
     /** 旧行为回退（无编队参数时）：payload 原样透传；payload=null 表示"无英雄可派"（与旧行为一致）。 */
@@ -103,12 +126,15 @@ public final class ResolvedFormation {
         return f;
     }
 
-    /** 日志/状态行文案：`来源=ROLE#1 英雄=[50041,50039] 兵种=盾20000/矛1549/弓28451`。 */
+    /** 日志/状态行文案：`来源=ROLE#1(采集队) 队长=50041 英雄=[...] 兵种=盾.../矛.../弓...`。 */
     public String describe() {
         StringBuilder sb = new StringBuilder();
         sb.append("来源=").append(source);
-        if (formationId > 0) sb.append('#').append(formationId);
+        if (formationId != 0L) sb.append('#').append(formationId);
         if (label != null && !label.isEmpty()) sb.append('(').append(label).append(')');
+        if (captainHeroId != null) sb.append(" 队长=").append(captainHeroId);
+        if (allocationMode != null && !allocationMode.isEmpty()) sb.append(" 模式=").append(allocationMode);
+        if (templateKey != null && !templateKey.isEmpty()) sb.append(" 模板=").append(templateKey);
         sb.append(" 英雄=").append(heroIds == null ? List.of() : heroIds);
         sb.append(" 兵种=盾").append(infantry).append("/矛").append(lancer).append("/弓").append(marksman);
         if (SRC_FALLBACK.equals(source)) sb.append("（旧行为）");

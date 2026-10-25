@@ -3,6 +3,7 @@ package com.carlos.vaultserver.formation;
 import com.carlos.vault.wjdr.WjdrEngine;
 
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -10,13 +11,19 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 /**
- * 英雄可用性短时黑名单（301 英雄不在城 → 拉黑换组合重试）。
+ * 英雄可用性短时黑名单 + 出征自适应状态（301/403/406/415）。
  *
- * <p>背景：游戏对 {@code req_world_march} 返回 301 表示编队中的英雄不在城（随其他部队外出/
- * 驻防/训练等），而登录 {@code notify_hero_init} 不含实时在城状态。自动编队重复选同一批英雄
- * 会持续 301（生产实证：采集 4 队列 × 5 英雄全 301）。本类按引擎实例记录被 301 拒绝的英雄，
- * TTL 10 分钟内 {@link FormationResolver} 自动编队会跳过它们，下一轮换下一批候选；全部被拉黑时
- * 返回明确 SKIP 原因，等英雄回城（TTL 到期自动恢复）。
+ * <p><b>301/403 黑名单</b>：游戏对 {@code req_world_march} 返回 301 表示编队中的英雄不在城
+ * （随其他部队外出/驻防/训练等），403 表示英雄被占用；登录 {@code notify_hero_init} 不含实时
+ * 在城状态。按引擎实例记录被拒英雄，TTL 10 分钟内 {@link FormationResolver} 的 AUTO 候选与
+ * ROLE 校验都会排除它们，下一轮换下一批候选；全部被拉黑时返回明确 SKIP 原因，等英雄回城
+ * （TTL 到期自动恢复）。
+ *
+ * <p><b>415 自适应</b>：{@code noteHeroCountRejected} 把自动编队英雄上限逐级下调（3→2→1），
+ * 由 {@link FormationResolver#autoProfessionHeroes} 消费；成功出征后 {@link #markSuccess} 复位。
+ *
+ * <p><b>406 自适应</b>：{@code noteSoldierLimitRejected} 把兵力缩放 100%→75%→50%→25%；
+ * AUTO/ROLE 解析都会按 {@link #soldierScalePercent} 缩放后下发；成功出征后 {@link #markSuccess} 复位。
  *
  * <p>线程安全：WeakHashMap + 同步块（会话销毁后引擎可回收；与 FormationCatalog 缓存同策略）。
  */
@@ -28,7 +35,7 @@ public final class HeroAvailability {
     private static final Map<WjdrEngine, Map<Long, Long>> BLOCKED =
             Collections.synchronizedMap(new WeakHashMap<WjdrEngine, Map<Long, Long>>());
 
-    /** 415（编队人数/配置超限）后的自动编队英雄数上限（默认 5；被拒后逐步下调，直到成功）。 */
+    /** 415（编队人数/配置超限）后的自动编队英雄数上限（被拒后逐步下调，成功后复位）。 */
     private static final Map<WjdrEngine, Integer> HERO_LIMIT_HINT =
             Collections.synchronizedMap(new WeakHashMap<WjdrEngine, Integer>());
 
@@ -41,6 +48,10 @@ public final class HeroAvailability {
 
     private HeroAvailability() {
     }
+
+    // ------------------------------------------------------------------
+    // 301/403 黑名单
+    // ------------------------------------------------------------------
 
     /** 拉黑一批英雄（until = now + millis；id<=0 忽略）。 */
     public static void block(WjdrEngine engine, Iterable<Long> heroIds, long millis) {
@@ -75,6 +86,16 @@ public final class HeroAvailability {
         }
     }
 
+    /** 在给定英雄里挑出仍被拉黑的（顺序保持；供 ROLE 校验写可读 SKIP 原因）。 */
+    public static List<Long> blockedAmong(WjdrEngine engine, Collection<Long> heroIds) {
+        List<Long> out = new ArrayList<Long>();
+        if (heroIds == null) return out;
+        for (Long id : heroIds) {
+            if (id != null && isBlocked(engine, id)) out.add(id);
+        }
+        return out;
+    }
+
     /** 当前仍被拉黑的英雄 id（诊断/日志用）。 */
     public static List<Long> blockedIds(WjdrEngine engine) {
         List<Long> out = new ArrayList<Long>();
@@ -96,7 +117,11 @@ public final class HeroAvailability {
         return out;
     }
 
-    /** 当前自动编队英雄数上限（415 后自适应下调；默认 5）。 */
+    // ------------------------------------------------------------------
+    // 415：自动编队英雄数自适应
+    // ------------------------------------------------------------------
+
+    /** 当前自动编队英雄数上限（415 后自适应下调；默认 {@link #DEFAULT_AUTO_HEROES}=3）。 */
     public static int autoHeroLimit(WjdrEngine engine) {
         if (engine == null) return DEFAULT_AUTO_HEROES;
         Integer hint = HERO_LIMIT_HINT.get(engine);
@@ -104,7 +129,12 @@ public final class HeroAvailability {
         return Math.min(DEFAULT_AUTO_HEROES, hint);
     }
 
-    /** 415 拒绝：把自动编队英雄数下调到 used-1（最低 1）；返回新的上限。 */
+    /** 是否处于 415 下调态（诊断/单测用）。 */
+    public static boolean hasHeroLimitHint(WjdrEngine engine) {
+        return engine != null && HERO_LIMIT_HINT.get(engine) != null;
+    }
+
+    /** 415 拒绝：把自动编队英雄数下调到 used-1（最低 1，最高默认-1）；返回新的上限。 */
     public static int noteHeroCountRejected(WjdrEngine engine, int usedHeroCount) {
         if (engine == null) return DEFAULT_AUTO_HEROES;
         int next = Math.max(1, Math.min(DEFAULT_AUTO_HEROES - 1,
@@ -118,11 +148,20 @@ public final class HeroAvailability {
         if (engine != null) HERO_LIMIT_HINT.remove(engine);
     }
 
-    /** 406 后的兵力缩放百分比（100=不缩放）。 */
+    // ------------------------------------------------------------------
+    // 406：兵力缩放自适应
+    // ------------------------------------------------------------------
+
+    /** 406 后的兵力缩放百分比（100=不缩放，最低 25）。 */
     public static int soldierScalePercent(WjdrEngine engine) {
         if (engine == null) return 100;
         Integer v = SOLDIER_SCALE_PCT.get(engine);
         return v == null ? 100 : Math.max(25, Math.min(100, v));
+    }
+
+    /** 是否处于 406 缩放态（诊断/单测用）。 */
+    public static boolean hasSoldierScaleHint(WjdrEngine engine) {
+        return engine != null && SOLDIER_SCALE_PCT.get(engine) != null;
     }
 
     /** 406 拒绝：兵力缩放 -25%（最低 25%），返回新百分比。 */
@@ -133,7 +172,27 @@ public final class HeroAvailability {
         return next;
     }
 
-    /** 会话关闭/测试清理。 */
+    /** 复位 406 缩放（成功出征后）。 */
+    public static void clearSoldierScale(WjdrEngine engine) {
+        if (engine != null) SOLDIER_SCALE_PCT.remove(engine);
+    }
+
+    // ------------------------------------------------------------------
+    // 成功回调（P0-5：406/415 自适应必须能恢复）
+    // ------------------------------------------------------------------
+
+    /**
+     * 出征成功回调（ServerFieldTasks 成功分支 / {@link FormationResolver} 出口统一调用）：
+     * 复位 415 英雄上限与 406 兵力缩放，下一轮按完整英雄数/兵量重新尝试。
+     * <b>不</b>清 301/403 黑名单（拉黑是英雄级事实，TTL 自然过期）。
+     */
+    public static void markSuccess(WjdrEngine engine) {
+        if (engine == null) return;
+        clearHeroLimitHint(engine);
+        clearSoldierScale(engine);
+    }
+
+    /** 会话关闭/测试清理（黑名单 + 415/406 自适应状态）。 */
     public static void clear(WjdrEngine engine) {
         if (engine == null) return;
         BLOCKED.remove(engine);

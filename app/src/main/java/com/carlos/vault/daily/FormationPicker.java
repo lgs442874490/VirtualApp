@@ -6,14 +6,19 @@ import android.graphics.Typeface;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.CheckBox;
-import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.carlos.vault.UiStyle;
 import com.carlos.vault.VaultSync;
+import com.carlos.vault.daily.formation.FormationBinding;
+import com.carlos.vault.daily.formation.FormationCatalogStore;
+import com.carlos.vault.daily.formation.FormationModel;
+import com.carlos.vault.daily.formation.FormationRules;
+import com.carlos.vault.daily.formation.ui.FormationBoardView;
+import com.carlos.vault.daily.formation.ui.FormationEntryCard;
+import com.carlos.vault.daily.formation.ui.FormationManagerDialogs;
 
 import org.json.JSONObject;
 
@@ -21,21 +26,22 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * 批次10（2026-10-23）：统一编队选择/编辑 UI（代码构建，无 XML，复用 {@link UiStyle}）。
+ * 编队选择/入口 UI 门面（T5，1:1 网页版；契约 §4.4）。
  *
- * <p>交互（1:1 参考网页版 DailyRoleFormation* / DailyFormationConfigSupport）：
- * <ul>
- *   <li>{@link #buildCard}：功能页顶部「编队」卡片 —— 自动/指定编队、编队下拉、
- *       摘要行（英雄 N 名 · 盾x 矛y 弓z · 来源=指定#1/自动）、自动比例、管理编队入口；</li>
- *   <li>{@link #buildBearJoinCard}：巨熊「上车编队 1-6」（每支可独立自动/指定）；</li>
- *   <li>{@link #showLibrary}：编队库列表（新增/编辑/复制/删除）；</li>
- *   <li>{@link #showEditor}：编队编辑（名称、英雄≤3、兵种数量或比例+总量）。</li>
- * </ul>
+ * <p><b>四个旧 public static 方法签名保持不变</b>（外部调用方零改动）：
+ * <ol>
+ *   <li>{@link #buildCard}：功能页「编队」摘要卡 → 委托 {@link FormationEntryCard}
+ *       （摘要 + 「编队管理」入口 + 状态行 + 出征容量入口）；</li>
+ *   <li>{@link #buildBearJoinCard}：巨熊「发起队 + 上车编队 1-6」（v2 目录 + 旧 params 双读）；</li>
+ *   <li>{@link #pickFormationFor}：队列编队选择器（来源 tab 自动/内置/巨熊/游戏 + 只读
+ *       {@link FormationBoardView} + `确认使用`）——旧回调签名不变，另加 v2 重载返回
+ *       mode/formationIds/troops；</li>
+ *   <li>{@link #showLibrary}：兼容旧调用方 → 打开 {@code FormationManagerActivity}（T4）。</li>
+ * </ol>
  *
- * <p>英雄列表来自服务器 state 键 {@code srv:formation:catalog:{fpid}:{sid}}（由
- * {@link FormationStore#catalog} 从 VaultSync 缓存的 daily_state 读）；目录缺失时
- * 降级为手动输入英雄 ID 并提示「目录同步中」。保存后调用 {@link VaultSync#onAccountsChanged}
- * 触发既有同步链路（编队库作为 params.formation_library 上传），不新增任何游戏协议。
+ * <p>选择器不写编队库（选择结果交回调落库）；巨熊槽位沿用既有 params API。兵量统一走
+ * {@link FormationRules#allocateByRatio}。任何状态（角色未同步/目录未就绪/无编队/离线）
+ * 都有可见文案与可点入口，不出现空白弹窗（用户实测缺陷 ①）。
  */
 public final class FormationPicker {
 
@@ -44,731 +50,871 @@ public final class FormationPicker {
         void onChanged();
     }
 
-    /** 公共选编队回调（采集设置页每队列复用；formationId<=0 表示未选择/已取消）。 */
+    /** 旧选择回调（保持签名；formationId<=0 表示"自动编队"）。 */
     public interface OnFormationPicked {
         void onPicked(long formationId, FormationStore.Formation formation);
     }
 
+    /** v2 选择回调：mode + 多编队 id + 三项兵量（ROLE=编队兵量；AUTOMATIC=比例分摊）。 */
+    public interface OnFormationPickedDetail {
+        void onPicked(String mode, long[] formationIds, long infantry, long lancer,
+                      long marksman, int[] ratios);
+    }
+
+    /** 来源 tab（与网页版 §1.13 一致）。 */
+    private static final String SRC_AUTO = "AUTO";
+    private static final String SRC_BUILTIN = "BUILTIN";
+    private static final String SRC_BEAR = "BEAR";
+    private static final String SRC_GAME = "GAME";
+    private static final String[] SRC_LABELS = {"自动编队", "内置编队", "巨熊编队", "游戏编队"};
+
     private FormationPicker() {
     }
 
-    // ==================== 功能页「编队」卡片 ====================
+    // ==================== ① 功能页编队摘要卡 ====================
 
     /**
-     * 队列功能页顶部「编队」卡片（gather/intel/hunt/behemoth/bear/guardian）。
-     * 返回的卡片自管理内容（修改后原位重建）。
+     * 队列功能页顶部「编队」卡（gather/intel/hunt/behemoth/bear/guardian）。
+     * 摘要卡 + 「编队管理」按钮；sid≤0 时自动回退当前角色 sid，仍为 0 则卡片显示「等待角色同步」。
      */
     public static LinearLayout buildCard(final Activity act, final String fpid, final long sid,
                                          final String fnId, final OnChanged onChanged) {
+        long useSid = sid > 0 ? sid : activeRoleSid(act, fpid);
+        String uid = activeRoleUid(act, fpid);
+        final OnChanged cb = onChanged;
+        return FormationEntryCard.build(act, fpid, useSid, uid, fnId,
+                cb == null ? null : cb::onChanged);
+    }
+
+    // ==================== ② 巨熊：发起队 + 上车编队 1-6 ====================
+
+    /** 巨熊页「发起队 + 上车编队 1-6」卡片（每支独立：自动/指定 + 启停；模板入口进管理页）。 */
+    public static LinearLayout buildBearJoinCard(final Activity act, final String fpid,
+                                                 final long sid, final OnChanged onChanged) {
+        final long useSid = sid > 0 ? sid : activeRoleSid(act, fpid);
+        final String uid = activeRoleUid(act, fpid);
         final LinearLayout card = UiStyle.outlineCard(act);
+        card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(act, 14), dp(act, 12), dp(act, 14), dp(act, 12));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.setMargins(dp(act, 18), dp(act, 10), dp(act, 18), 0);
         card.setLayoutParams(lp);
-        final Runnable refresh = () -> fillFormationCard(act, fpid, sid, fnId, card, onChanged);
-        refresh.run();
-        return card;
-    }
-
-    private static void fillFormationCard(final Activity act, final String fpid, final long sid,
-                                          final String fnId, final LinearLayout card,
-                                          final OnChanged onChanged) {
-        card.removeAllViews();
-        // 标题行：编队 + 来源徽章 + 「管理编队」
-        LinearLayout head = new LinearLayout(act);
-        head.setOrientation(LinearLayout.HORIZONTAL);
-        head.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text(act, "编队", 15, UiStyle.INK, true);
-        head.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView manage = text(act, "管理编队 ›", 12, UiStyle.BRAND_TEXT, true);
-        UiStyle.press(manage);
-        manage.setOnClickListener(v -> showLibrary(act, fpid, sid, () -> {
-            if (onChanged != null) onChanged.onChanged();
-            fillFormationCard(act, fpid, sid, fnId, card, onChanged);
-        }));
-        head.addView(manage);
-        card.addView(head);
-
-        final String mode = FormationStore.fnMode(act, fpid, sid, fnId);
-        TextView modeSub = text(act, FormationStore.MODE_ROLE.equals(mode)
-                ? "按指定编队的英雄/兵种出征"
-                : "服务器按空闲英雄 + 兵力库存自动分配", 11, UiStyle.INK2, false);
-        modeSub.setPadding(0, dp(act, 3), 0, dp(act, 6));
-        card.addView(modeSub);
-
-        // 模式分段：自动 / 指定
-        final Runnable refresh = () -> fillFormationCard(act, fpid, sid, fnId, card, onChanged);
-        card.addView(UiStyle.segmented(act, new String[]{"自动编队", "指定编队"},
-                FormationStore.MODE_ROLE.equals(mode) ? 1 : 0, idx -> {
-                    String next = idx == 1 ? FormationStore.MODE_ROLE : FormationStore.MODE_AUTOMATIC;
-                    FormationStore.saveFnMode(act, fpid, sid, fnId, next);
-                    if (idx == 1 && FormationStore.fnFormationId(act, fpid, sid, fnId) <= 0) {
-                        // 切到指定但还没选：直接弹编队选择
-                        pickFormation(act, fpid, sid, fnId, () -> {
-                            sync(act);
-                            refresh.run();
-                        });
-                    }
-                    sync(act);
-                    refresh.run();
-                }));
-
-        if (FormationStore.MODE_ROLE.equals(mode)) {
-            long fid = FormationStore.fnFormationId(act, fpid, sid, fnId);
-            FormationStore.Formation f = FormationStore.byId(act, fpid, sid, fid);
-            String value;
-            if (fid <= 0) value = "未选择";
-            else if (f == null) value = "#" + fid + "（编队已删除，请重选）";
-            else value = "#" + f.id + " " + f.name;
-            card.addView(UiStyle.dropdownRow(act, "使用编队", value,
-                    () -> pickFormation(act, fpid, sid, fnId, () -> {
-                        sync(act);
-                        refresh.run();
-                    })));
-            // 摘要行（批次11：带功能级兵量覆盖）
-            long[] override = FormationStore.fnSoldiersOverride(act, fpid, sid, fnId);
-            String overrideText = FormationStore.soldiersOverrideText(override);
-            TextView sum = text(act, (f == null
-                    ? "英雄 -- · 请选择/新建编队"
-                    : "英雄 " + f.heroIds.size() + " 名 · " + soldiersOf(f)
-                    + " · 来源=指定#" + f.id)
-                    + " · " + overrideText, 11.5f, UiStyle.INK2, false);
-            sum.setPadding(0, dp(act, 6), 0, 0);
-            card.addView(sum);
-            // 兵量覆盖（可选）：0/空=用编队库兵量；写入 params soldiers（服务器 resolver 覆盖）
-            card.addView(UiStyle.dropdownRow(act, "兵量覆盖（可选）",
-                    "未覆盖（用编队库兵量）".equals(overrideText) ? overrideText
-                            : overrideText + "（0=用库值）",
-                    () -> showSoldiersOverrideDialog(act, fpid, sid, fnId, () -> refresh.run())));
-        } else {
-            long[] ratio = FormationStore.fnAutoRatio(act, fpid, sid, fnId);
-            card.addView(UiStyle.dropdownRow(act, "自动比例",
-                    ratio[0] + ":" + ratio[1] + ":" + ratio[2]
-                            + " · 总量" + (ratio[3] <= 0 ? "按容量" : String.valueOf(ratio[3])),
-                    () -> showAutoRatioDialog(act, fpid, sid, fnId, () -> refresh.run())));
-            TextView sum = text(act, "来源=自动 · 服务器按空闲英雄+库存分配（英雄≤3）",
-                    11.5f, UiStyle.INK2, false);
-            sum.setPadding(0, dp(act, 6), 0, 0);
-            card.addView(sum);
-        }
-
-        // 目录状态提示（缺失时说明降级策略）
-        if (!FormationStore.hasCatalog(act, fpid, sid)) {
-            TextView tip = text(act, "英雄目录同步中：可先「管理编队」手动填英雄 ID；同步后自动显示名字/状态",
-                    10.5f, UiStyle.WARN_INK, false);
-            tip.setPadding(0, dp(act, 6), 0, 0);
-            card.addView(tip);
-        }
-
-        // 选择/新建入口（库为空时的引导）
-        if (FormationStore.list(act, fpid, sid).isEmpty()) {
-            TextView create = text(act, "＋ 新建第一支编队", 12.5f, UiStyle.BRAND_TEXT, true);
-            create.setPadding(0, dp(act, 8), 0, 0);
-            UiStyle.press(create);
-            create.setOnClickListener(v -> showEditor(act, fpid, sid, null, () -> {
-                sync(act);
-                refresh.run();
-                if (onChanged != null) onChanged.onChanged();
-            }));
-            card.addView(create);
-        }
-    }
-
-    /** 巨熊页「上车编队 1-6」卡片（每支独立：自动/指定；缺省自动）。 */
-    public static LinearLayout buildBearJoinCard(final Activity act, final String fpid, final long sid,
-                                                 final OnChanged onChanged) {
-        final LinearLayout card = UiStyle.outlineCard(act);
-        card.setPadding(dp(act, 14), dp(act, 12), dp(act, 14), dp(act, 12));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.setMargins(dp(act, 18), dp(act, 10), dp(act, 18), 0);
-        card.setLayoutParams(lp);
-        final Runnable refresh = () -> fillBearJoinCard(act, fpid, sid, card, onChanged);
-        refresh.run();
+        fillBearJoinCard(act, fpid, useSid, uid, card, onChanged);
         return card;
     }
 
     private static void fillBearJoinCard(final Activity act, final String fpid, final long sid,
-                                         final LinearLayout card, final OnChanged onChanged) {
+                                         final String uid, final LinearLayout card,
+                                         final OnChanged onChanged) {
         card.removeAllViews();
-        TextView title = text(act, "上车编队 1-6", 15, UiStyle.INK, true);
-        card.addView(title);
-        TextView sub = text(act, "巨熊集结开始后按序上 1-6 辆车；缺省=自动（沿用默认编队）",
-                11, UiStyle.INK2, false);
-        sub.setPadding(0, dp(act, 3), 0, dp(act, 4));
+        final boolean ready = fpid != null && !fpid.trim().isEmpty() && sid > 0;
+        final FormationCatalogStore cat = ready
+                ? FormationStore.catalogOf(act, fpid, sid, uid) : null;   // T7：uid 感知目录
+        final Runnable refresh = () -> fillBearJoinCard(act, fpid, sid, uid, card, onChanged);
+
+        card.addView(text(act, "巨熊编队", 15, UiStyle.INK, true));
+        TextView sub = text(act, "发起队 + 上车 1-6：每支可独立设为自动或指定编队", 11,
+                UiStyle.INK2, false);
+        sub.setPadding(0, dp(act, 3), 0, dp(act, 6));
         card.addView(sub);
-        final Runnable refresh = () -> fillBearJoinCard(act, fpid, sid, card, onChanged);
+
+        if (!ready) {
+            TextView wait = text(act, "等待角色同步：请在账号页选择角色后返回本页", 11,
+                    UiStyle.WARN_INK, false);
+            card.addView(wait);
+            return;
+        }
+
+        // 模板状态 + 模板入口（模板应用/一键编队由 T1/T4 提供，这里只做入口）
+        boolean applied = false;
+        String bearText;
+        try {
+            JSONObject bear = cat.bearBinding();
+            applied = bear != null && bear.optBoolean("applied", false);
+            if (applied) {
+                String title = bear.optString("title", "");
+                int gen = bear.optInt("generation", 0);
+                String tier = bear.optString("tier", "");
+                bearText = "已应用：" + title + "（" + gen + " 代"
+                        + (tier.isEmpty() ? "" : " · " + tier) + "）";
+            } else {
+                bearText = "尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队（盾 5% / 矛 5% / 弓 90%）";
+            }
+        } catch (Throwable t) {
+            bearText = "尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队（盾 5% / 矛 5% / 弓 90%）";
+        }
+        TextView bearStatus = text(act, bearText, 11, applied ? UiStyle.OK_INK : UiStyle.INK2, false);
+        bearStatus.setPadding(0, 0, 0, dp(act, 6));
+        card.addView(bearStatus);
+        card.addView(UiStyle.dropdownRow(act, "巨熊编队模板", applied ? "更换模板" : "选择模板",
+                () -> openManager(act, fpid, sid, uid, "bear")));
+
+        // 发起队（沿用 bear 功能 params 的 formation_mode/formation_id）
+        String bearMode = FormationStore.fnMode(act, fpid, sid, "bear");
+        long bearId = FormationStore.fnFormationId(act, fpid, sid, "bear");
+        String bearValue = FormationStore.MODE_ROLE.equals(bearMode) && bearId > 0
+                ? "#" + bearId + " " + nameOf(act, fpid, sid, bearId) : "自动";
+        card.addView(UiStyle.dropdownRow(act, "发起队", bearValue,
+                () -> pickFormationFor(act, fpid, sid, uid, null,
+                        (mode, ids, inf, lanc, mark, ratios) -> {
+                            if (FormationStore.MODE_ROLE.equals(mode) && ids.length > 0) {
+                                FormationStore.saveFnMode(act, fpid, sid, "bear", FormationStore.MODE_ROLE);
+                                FormationStore.saveFnFormation(act, fpid, sid, "bear", ids[0]);
+                                FormationStore.saveFnSoldiersOverride(act, fpid, sid, "bear", inf, lanc, mark);
+                            } else {
+                                FormationStore.saveFnMode(act, fpid, sid, "bear", FormationStore.MODE_AUTOMATIC);
+                                FormationStore.saveFnAutoRatio(act, fpid, sid, "bear",
+                                        ratios[0], ratios[1], ratios[2], 0);
+                            }
+                            sync(act);
+                            refresh.run();
+                            if (onChanged != null) onChanged.onChanged();
+                        })));
+
+        // 上车 1-6
         for (int j = 1; j <= 6; j++) {
-            final int joinId = j;   // lambda 捕获需 effectively final
+            final int joinId = j;
             JSONObject cfg = FormationStore.joinFormation(act, fpid, sid, joinId);
             String mode = FormationStore.normalizeMode(cfg.optString("mode",
                     FormationStore.MODE_AUTOMATIC));
             long fid = cfg.optLong("formation_id", 0);
-            FormationStore.Formation f = fid > 0 ? FormationStore.byId(act, fpid, sid, fid) : null;
+            final boolean enabled = FormationStore.joinEnabled(cfg);
             String value;
             if (!FormationStore.MODE_ROLE.equals(mode) || fid <= 0) {
                 value = "自动";
-            } else if (f == null) {
-                value = "#" + fid + "（已删除）";
             } else {
-                value = "#" + f.id + " " + f.name;
+                value = "#" + fid + " " + nameOf(act, fpid, sid, fid);
             }
-            final boolean enabled = FormationStore.joinEnabled(cfg);
             LinearLayout row = new LinearLayout(act);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
             TextView dd = UiStyle.dropdownRow(act, "上车编队 " + joinId,
-                    value + (enabled ? "" : "（已停用）"), () -> showJoinChooser(act, fpid, sid,
-                            joinId, () -> {
+                    value + (enabled ? "" : "（已停用）"),
+                    () -> pickFormationFor(act, fpid, sid, uid, null,
+                            (mode2, ids, inf, lanc, mark, ratios) -> {
+                                boolean cur = FormationStore.joinEnabled(
+                                        FormationStore.joinFormation(act, fpid, sid, joinId));
+                                if (FormationStore.MODE_ROLE.equals(mode2) && ids.length > 0) {
+                                    FormationStore.saveJoinFormation(act, fpid, sid, joinId,
+                                            FormationStore.MODE_ROLE, ids[0], cur);
+                                } else {
+                                    FormationStore.saveJoinFormation(act, fpid, sid, joinId,
+                                            FormationStore.MODE_AUTOMATIC, 0, cur);
+                                }
                                 sync(act);
                                 refresh.run();
                                 if (onChanged != null) onChanged.onChanged();
                             }));
-            if (!enabled) dd.setAlpha(.45f);   // 停用行置灰，但仍可点开改配置
+            if (!enabled) dd.setAlpha(.45f);
             row.addView(dd, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-            UiStyle.Switch sw = new UiStyle.Switch(act, enabled, () -> {
-                FormationStore.saveJoinEnabled(act, fpid, sid, joinId,
-                        !FormationStore.joinEnabled(FormationStore.joinFormation(
-                                act, fpid, sid, joinId)));
+            row.addView(new UiStyle.Switch(act, enabled, () -> {
+                FormationStore.saveJoinEnabled(act, fpid, sid, joinId, !enabled);
                 sync(act);
                 refresh.run();
                 if (onChanged != null) onChanged.onChanged();
-            });
-            row.addView(sw);
+            }));
             card.addView(row);
         }
     }
 
-    // ==================== 编队选择（功能页用） ====================
+    // ==================== ③ 队列编队选择器 ====================
 
-    /**
-     * 公共选编队入口（采集设置页每队列复用）：从编队库选择，或新建后自动回传新编队。
-     * 只回调编队 id，不写任何功能级 params —— 保存到何处由调用方决定。
-     *
-     * @param cb 选中回调（取消/未选择时可能不回调；formationId>0 表示选中）
-     */
+    /** 旧签名（保持）：确认后回调所选编队；AUTOMATIC 回调 formationId=0、formation=null。 */
     public static void pickFormationFor(final Activity act, final String fpid, final long sid,
                                         final OnFormationPicked cb) {
-        final List<FormationStore.Formation> list = FormationStore.list(act, fpid, sid);
-        final List<String> names = new ArrayList<>();
-        for (FormationStore.Formation f : list) {
-            names.add("#" + f.id + " " + f.name + " · " + FormationStore.summary(f));
+        final long useSid = sid > 0 ? sid : activeRoleSid(act, fpid);
+        final String uid = activeRoleUid(act, fpid);
+        pickFormationFor(act, fpid, useSid, uid, null,
+                (mode, ids, inf, lanc, mark, ratios) -> {
+                    if (cb == null) return;
+                    if (FormationStore.MODE_ROLE.equals(mode) && ids.length > 0) {
+                        cb.onPicked(ids[0], FormationStore.byId(act, fpid, sid, ids[0]));
+                    } else {
+                        cb.onPicked(0L, null);
+                    }
+                });
+    }
+
+    /**
+     * v2 选择器（1:1 §1.13）：来源 tab（自动编队/内置编队/巨熊编队/游戏编队）+ 只读
+     * {@link FormationBoardView} + `确认使用`。
+     *
+     * @param disabledIds 不可选编队 id（多队列互斥用，可空）
+     */
+    public static void pickFormationFor(final Activity act, final String fpid, final long sid,
+                                        final String uid, final List<Long> disabledIds,
+                                        final OnFormationPickedDetail cb) {
+        if (act == null) return;
+        if (fpid == null || fpid.trim().isEmpty() || sid <= 0) {
+            UiStyle.toast(act, "等待角色同步，请先选择角色");
+            return;
         }
-        names.add("＋ 新建编队");
-        new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("选择编队")
-                .setItems(names.toArray(new String[0]), (d, which) -> {
-                    if (which >= list.size()) {
-                        // 新建：保存后按「新增的更大 id」回传，避免让用户再选一次
-                        final long maxBefore = maxFormationId(list);
-                        showEditor(act, fpid, sid, null, () -> {
-                            sync(act);
-                            FormationStore.Formation created = newestAfter(act, fpid, sid, maxBefore);
-                            if (cb != null) {
-                                if (created != null) cb.onPicked(created.id, created);
-                                else cb.onPicked(0L, null);
-                            }
-                        });
-                        return;
-                    }
-                    FormationStore.Formation f = list.get(which);
-                    if (cb != null) cb.onPicked(f.id, f);
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    private static long maxFormationId(List<FormationStore.Formation> list) {
-        long max = 0L;
-        for (FormationStore.Formation f : list) {
-            if (f != null && f.id > max) max = f.id;
+        final FormationCatalogStore cat = FormationStore.catalogOf(act, fpid, sid, uid);   // T7：uid 优先
+        // T4 便利 API：把目录装进编队板（英雄等级/星级/职业/队长展示用；不装则回落静态表）
+        try {
+            FormationBoardView.installCatalog(cat);
+        } catch (Throwable ignored) {
         }
-        return max;
-    }
-
-    private static FormationStore.Formation newestAfter(Activity act, String fpid, long sid,
-                                                        long maxBefore) {
-        FormationStore.Formation best = null;
-        for (FormationStore.Formation f : FormationStore.list(act, fpid, sid)) {
-            if (f != null && f.id > maxBefore && (best == null || f.id > best.id)) best = f;
+        // 内置编队懒创建（幂等；容量+目录就绪才建 8 个，否则仅 2 个基础内置）
+        try {
+            FormationStore.ensureBuiltIns(act, fpid, sid, uid);   // T7：按角色目录懒填内置
+        } catch (Throwable ignored) {
         }
-        return best;
-    }
+        final List<FormationModel> lib = FormationStore.formations(act, fpid, sid);
+        final List<FormationModel> games = cat.gameFormations();
+        final List<Long> disabled = disabledIds == null
+                ? new ArrayList<Long>() : disabledIds;
 
-    private static void pickFormation(final Activity act, final String fpid, final long sid,
-                                      final String fnId, final Runnable onPicked) {
-        final List<FormationStore.Formation> list = FormationStore.list(act, fpid, sid);
-        final List<String> names = new ArrayList<>();
-        for (FormationStore.Formation f : list) {
-            names.add("#" + f.id + " " + f.name + " · " + FormationStore.summary(f));
-        }
-        names.add("＋ 新建编队");
-        new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("选择编队")
-                .setItems(names.toArray(new String[0]), (d, which) -> {
-                    if (which >= list.size()) {
-                        showEditor(act, fpid, sid, null, () -> {
-                            if (onPicked != null) onPicked.run();
-                        });
-                        return;
-                    }
-                    FormationStore.Formation f = list.get(which);
-                    FormationStore.saveFnFormation(act, fpid, sid, fnId, f.id);
-                    if (onPicked != null) onPicked.run();
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
+        final String[] source = {SRC_AUTO};
+        final long[] selectedId = {0L};
+        final LinearLayout body = new LinearLayout(act);
+        body.setOrientation(LinearLayout.VERTICAL);
+        body.setPadding(dp(act, 16), dp(act, 8), dp(act, 16), dp(act, 8));
 
-    private static void showAutoRatioDialog(final Activity act, final String fpid, final long sid,
-                                            final String fnId, final Runnable onSaved) {
-        long[] cur = FormationStore.fnAutoRatio(act, fpid, sid, fnId);
-        LinearLayout box = new LinearLayout(act);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(act, 20), dp(act, 10), dp(act, 20), dp(act, 6));
-        LinearLayout ratioRow = new LinearLayout(act);
-        ratioRow.setOrientation(LinearLayout.HORIZONTAL);
-        ratioRow.setGravity(Gravity.CENTER_VERTICAL);
-        final EditText inf = numInput(act, "盾%", String.valueOf(cur[0]));
-        final EditText lan = numInput(act, "矛%", String.valueOf(cur[1]));
-        final EditText mar = numInput(act, "弓%", String.valueOf(cur[2]));
-        ratioRow.addView(labeled(act, "盾", inf), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        ratioRow.addView(labeled(act, "矛", lan), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        ratioRow.addView(labeled(act, "弓", mar), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        box.addView(ratioRow);
-        final JSONObject catalog = FormationStore.catalog(act, fpid, sid);
-        final EditText total = numInput(act, "总兵力（0=按容量自动）", String.valueOf(cur[3]));
-        box.addView(labeled(act, "总量", total));
-        String stock = FormationStore.soldierStockText(catalog);
-        long capacity = FormationStore.capacity(catalog);
-        StringBuilder tipSb = new StringBuilder("比例之和必须=100；总量 0 表示按服务器容量自动");
-        if (capacity > 0) tipSb.append("\n服务器容量 ").append(capacity).append("（总量上限提示）");
-        if (!stock.isEmpty()) tipSb.append("\n当前兵种库存：").append(stock);
-        List<Long> best = FormationStore.bestSoldierIds(catalog);
-        if (!best.isEmpty()) tipSb.append("\n最高兵种：").append(best.toString());
-        TextView tip = text(act, tipSb.toString(), 11, UiStyle.INK2, false);
-        tip.setPadding(0, dp(act, 8), 0, 0);
-        box.addView(tip);
-        new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("自动编队比例")
-                .setView(box)
-                .setPositiveButton("保存", (d, w) -> {
-                    int i0 = (int) parseLong(inf, 40), i1 = (int) parseLong(lan, 30),
-                            i2 = (int) parseLong(mar, 30);
-                    if (i0 < 0 || i1 < 0 || i2 < 0) {
-                        UiStyle.toast(act, "比例不能为负数");
-                        return;
-                    }
-                    if (i0 + i1 + i2 != 100) {
-                        UiStyle.toast(act, "比例之和必须等于 100（当前 " + (i0 + i1 + i2) + "）");
-                        return;
-                    }
-                    FormationStore.saveFnAutoRatio(act, fpid, sid, fnId, i0, i1, i2,
-                            Math.max(0, parseLong(total, 0)));
-                    sync(act);
-                    if (onSaved != null) onSaved.run();
-                    UiStyle.toast(act, "自动编队已保存并同步");
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    private static void showJoinChooser(final Activity act, final String fpid, final long sid,
-                                        final int joinId, final Runnable onSaved) {
-        // 批次11：切换编队/自动时保留该槽位的 enabled 状态（停用的槽位不因改配置被重新启用）
-        final boolean enabled = FormationStore.joinEnabled(
-                FormationStore.joinFormation(act, fpid, sid, joinId));
-        final List<FormationStore.Formation> list = FormationStore.list(act, fpid, sid);
-        final List<String> names = new ArrayList<>();
-        names.add("自动（默认）");
-        for (FormationStore.Formation f : list) {
-            names.add("#" + f.id + " " + f.name + " · " + FormationStore.summary(f));
-        }
-        names.add("＋ 新建编队");
-        new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("上车编队 " + joinId)
-                .setItems(names.toArray(new String[0]), (d, which) -> {
-                    if (which == 0) {
-                        FormationStore.saveJoinFormation(act, fpid, sid, joinId,
-                                FormationStore.MODE_AUTOMATIC, 0, enabled);
-                        if (onSaved != null) onSaved.run();
-                        return;
-                    }
-                    if (which > list.size()) {
-                        showEditor(act, fpid, sid, null, () -> {
-                            if (onSaved != null) onSaved.run();
-                        });
-                        return;
-                    }
-                    FormationStore.Formation f = list.get(which - 1);
-                    FormationStore.saveJoinFormation(act, fpid, sid, joinId,
-                            FormationStore.MODE_ROLE, f.id, enabled);
-                    if (onSaved != null) onSaved.run();
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    /** 功能级兵量覆盖弹窗（盾/矛/弓，0/空=用编队库值；写 params soldiers）。 */
-    private static void showSoldiersOverrideDialog(final Activity act, final String fpid,
-                                                   final long sid, final String fnId,
-                                                   final Runnable onSaved) {
-        long[] cur = FormationStore.fnSoldiersOverride(act, fpid, sid, fnId);
-        LinearLayout box = new LinearLayout(act);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(act, 20), dp(act, 10), dp(act, 20), dp(act, 6));
-        LinearLayout row = new LinearLayout(act);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        final EditText inf = numInput(act, "盾兵（0=库值）", String.valueOf(cur[0]));
-        final EditText lan = numInput(act, "矛兵（0=库值）", String.valueOf(cur[1]));
-        final EditText mar = numInput(act, "弓兵（0=库值）", String.valueOf(cur[2]));
-        row.addView(labeled(act, "盾", inf), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        row.addView(labeled(act, "矛", lan), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        row.addView(labeled(act, "弓", mar), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        box.addView(row);
-        TextView tip = text(act, "留空或 0 = 使用编队库兵量；非 0 = 覆盖该功能出征兵量（写入 params.soldiers）",
-                11, UiStyle.INK2, false);
-        tip.setPadding(0, dp(act, 8), 0, 0);
-        box.addView(tip);
-        new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("兵量覆盖（可选）")
-                .setView(box)
-                .setPositiveButton("保存", (d, w) -> {
-                    long i0 = Math.max(0, parseLong(inf, 0));
-                    long i1 = Math.max(0, parseLong(lan, 0));
-                    long i2 = Math.max(0, parseLong(mar, 0));
-                    FormationStore.saveFnSoldiersOverride(act, fpid, sid, fnId, i0, i1, i2);
-                    sync(act);
-                    if (onSaved != null) onSaved.run();
-                    UiStyle.toast(act, i0 + i1 + i2 <= 0
-                            ? "已清除兵量覆盖（使用编队库兵量）" : "兵量覆盖已保存并同步");
-                })
-                .setNegativeButton("取消", null)
-                .show();
-    }
-
-    // ==================== 编队库列表（新增/编辑/复制/删除） ====================
-
-    /** 编队库列表弹窗。 */
-    public static void showLibrary(final Activity act, final String fpid, final long sid,
-                                   final OnChanged onChanged) {
-        final List<FormationStore.Formation> list = FormationStore.list(act, fpid, sid);
-        ScrollView sc = new ScrollView(act);
-        LinearLayout box = new LinearLayout(act);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(act, 18), dp(act, 8), dp(act, 18), dp(act, 8));
         final AlertDialog[] dlgRef = new AlertDialog[1];
-        final OnChanged reopen = () -> {
-            if (dlgRef[0] != null) dlgRef[0].dismiss();
-            if (onChanged != null) onChanged.onChanged();
-            showLibrary(act, fpid, sid, onChanged);
-        };
-
-        if (list.isEmpty()) {
-            box.addView(UiStyle.emptyState(act, "🧩", "还没有编队",
-                    "新建一支编队：选英雄、填兵种数量或比例，采集/情报/巨兽/巨熊都会按它出征",
-                    "＋ 新建编队", () -> {
-                        if (dlgRef[0] != null) dlgRef[0].dismiss();
-                        showEditor(act, fpid, sid, null, reopen);
-                    }));
-        } else {
-            for (final FormationStore.Formation f : list) {
-                LinearLayout row = UiStyle.outlineCard(act);
-                row.setOrientation(LinearLayout.VERTICAL);
-                row.setPadding(dp(act, 12), dp(act, 10), dp(act, 12), dp(act, 10));
-                LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                rlp.bottomMargin = dp(act, 8);
-                row.setLayoutParams(rlp);
-                LinearLayout l1 = new LinearLayout(act);
-                l1.setOrientation(LinearLayout.HORIZONTAL);
-                l1.setGravity(Gravity.CENTER_VERTICAL);
-                l1.addView(text(act, "#" + f.id + " " + f.name, 14, UiStyle.INK, true),
-                        new LinearLayout.LayoutParams(0,
-                                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-                l1.addView(text(act, f.heroIds.size() + " 英雄", 11, UiStyle.INK2, false));
-                row.addView(l1);
-                TextView sum = text(act, FormationStore.summary(f)
-                        + (FormationStore.validate(f) == null ? "" : " · ⚠配置不完整"), 11,
-                        UiStyle.INK2, false);
-                sum.setPadding(0, dp(act, 4), 0, dp(act, 6));
-                row.addView(sum);
-                LinearLayout acts = new LinearLayout(act);
-                acts.setOrientation(LinearLayout.HORIZONTAL);
-                acts.setGravity(Gravity.END);
-                acts.addView(miniBtn(act, "编辑", () -> {
-                    if (dlgRef[0] != null) dlgRef[0].dismiss();
-                    showEditor(act, fpid, sid, f, reopen);
-                }));
-                acts.addView(miniBtn(act, "复制", () -> {
-                    FormationStore.Formation copy = FormationStore.duplicate(act, fpid, sid, f.id);
-                    if (copy == null) {
-                        UiStyle.toast(act, "复制失败：源编队不存在");
-                        return;
-                    }
-                    sync(act);
-                    reopen.onChanged();
-                    UiStyle.toast(act, "已复制为 #" + copy.id + " " + copy.name);
-                }));
-                acts.addView(miniBtn(act, "删除", () -> UiStyle.showConfirmDialog(act, "删除编队",
-                        "#" + f.id + " " + f.name + "\n删除后引用它的功能会提示重新选择。",
-                        "删除", UiStyle.ERR_INK, () -> {
-                            FormationStore.delete(act, fpid, sid, f.id);
-                            sync(act);
-                            reopen.onChanged();
-                        })));
-                row.addView(acts);
-                box.addView(row);
+        final Runnable[] rebuild = new Runnable[1];
+        final PickerHost host = new PickerHost(act, fpid, sid, uid, cat, lib, games, source,
+                selectedId, disabled, rebuild, dlgRef, cb);
+        rebuild[0] = () -> {
+            body.removeAllViews();
+            header(act, body, source, host, rebuild);
+            boolean boardOk = false;
+            try {
+                FormationBoardView board = new FormationBoardView(act, host);
+                body.addView(board.view());
+                board.render();
+                boardOk = true;
+            } catch (Throwable t) {
+                // Board 未就绪/渲染异常时降级为简易列表，保证弹窗不为空（缺陷 ①）
+                body.addView(fallbackList(act, host, rebuild));
             }
-            TextView add = text(act, "＋ 新建编队", 13, UiStyle.BRAND_TEXT, true);
-            add.setGravity(Gravity.CENTER);
-            add.setPadding(0, dp(act, 10), 0, dp(act, 6));
-            UiStyle.press(add);
-            add.setOnClickListener(v -> {
-                if (dlgRef[0] != null) dlgRef[0].dismiss();
-                showEditor(act, fpid, sid, null, reopen);
-            });
-            box.addView(add);
-        }
-        sc.addView(box);
+            if (!boardOk) {
+                // 降级态才自绘 banner + 确认按钮（Board 正常时自带 banner/主按钮，避免双按钮）
+                body.addView(confirmBar(act, host, dlgRef));
+            }
+        };
+        resetSelection(host, source, selectedId);
+        rebuild[0].run();
+
+        ScrollView scroll = new ScrollView(act);
+        scroll.addView(body);
         AlertDialog dlg = new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("编队库（按角色隔离）")
-                .setView(sc)
-                .setNegativeButton("关闭", null)
+                .setView(scroll)
+                .setNegativeButton("取消", null)
                 .create();
         dlgRef[0] = dlg;
         dlg.show();
     }
 
-    // ==================== 编队编辑（名称/英雄≤3/数量或比例+总量） ====================
+    /** 头部：标题 + 来源 tab。 */
+    private static void header(final Activity act, LinearLayout body, final String[] source,
+                               final PickerHost host, final Runnable[] rebuild) {
+        // 标题行：右侧给「＋ 新建」「编队管理」入口（用户反馈：选择器里只有选择，没有新增入口）
+        LinearLayout titleRow = new LinearLayout(act);
+        titleRow.setOrientation(LinearLayout.HORIZONTAL);
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView title = text(act, "选择编队", 15, UiStyle.INK, true);
+        titleRow.addView(title, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView addBtn = text(act, "＋ 新建", 12, UiStyle.BRAND_TEXT, true);
+        UiStyle.press(addBtn);
+        titleRow.addView(addBtn);
+        TextView manageBtn = text(act, "编队管理 ›", 12, UiStyle.BRAND_TEXT, true);
+        UiStyle.press(manageBtn);
+        LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        mlp.leftMargin = dp(act, 10);
+        titleRow.addView(manageBtn, mlp);
+        titleRow.setPadding(0, 0, 0, dp(act, 6));
+        body.addView(titleRow);
+        addBtn.setOnClickListener(v -> {
+            if (host.dlgRef[0] != null) host.dlgRef[0].dismiss();
+            openManagerNew(act, host.fpid, host.sid, host.uid);
+        });
+        manageBtn.setOnClickListener(v -> {
+            if (host.dlgRef[0] != null) host.dlgRef[0].dismiss();
+            openManager(act, host.fpid, host.sid, host.uid, "mine");
+        });
+        body.addView(UiStyle.segmented(act, SRC_LABELS, sourceIndex(source[0]), idx -> {
+            source[0] = indexSource(idx);
+            host.tabKey = SRC_AUTO.equals(source[0]) ? SRC_AUTO : "";
+            host.selectedId[0] = 0L;
+            if (!SRC_AUTO.equals(source[0])) {
+                List<FormationModel> list = host.listOf(source[0]);
+                if (!list.isEmpty()) {
+                    host.tabKey = host.keyOf(list.get(0));
+                    host.selectedId[0] = list.get(0).id;
+                }
+            }
+            rebuild[0].run();
+        }));
+        // 游戏编队只读镜像：编辑 = 生成自定义副本（T1 copyGameFormation）
+        if (SRC_GAME.equals(source[0]) && host.selectedId[0] < 0) {
+            body.addView(UiStyle.dropdownRow(act, "游戏编队", "编辑副本 →", () -> {
+                FormationModel copy = FormationStore.copyGameFormation(act, host.fpid, host.sid,
+                        host.uid, host.selectedId[0]);   // T7：uid 感知游戏编队镜像
+                if (copy == null) {
+                    UiStyle.toast(act, "复制失败：编队不存在");
+                    return;
+                }
+                UiStyle.toast(act, FormationRules.MSG_GAME_READONLY);
+                if (host.dlgRef[0] != null) host.dlgRef[0].dismiss();
+                openManager(act, host.fpid, host.sid, host.uid, "mine");
+            }));
+        }
+    }
 
-    /** 新建（existing=null）或编辑编队。 */
-    public static void showEditor(final Activity act, final String fpid, final long sid,
-                                  final FormationStore.Formation existing, final OnChanged onSaved) {
-        final FormationStore.Formation base = existing == null
-                ? new FormationStore.Formation() : existing.copy();
-        ScrollView sc = new ScrollView(act);
+    /** 初始选中：自动 tab；否则该来源第一支编队。 */
+    private static void resetSelection(PickerHost host, String[] source, long[] selectedId) {
+        if (SRC_AUTO.equals(source[0])) {
+            host.tabKey = SRC_AUTO;
+            selectedId[0] = 0L;
+            return;
+        }
+        List<FormationModel> list = host.listOf(source[0]);
+        host.tabKey = list.isEmpty() ? "" : host.keyOf(list.get(0));
+        selectedId[0] = list.isEmpty() ? 0L : list.get(0).id;
+    }
+
+    /** 只读 Board 不可用时的降级列表（保证选择器永远可操作）。 */
+    private static View fallbackList(final Activity act, final PickerHost host,
+                                     final Runnable[] rebuild) {
         LinearLayout box = new LinearLayout(act);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(act, 18), dp(act, 8), dp(act, 18), dp(act, 8));
+        if (SRC_AUTO.equals(host.source[0])) {
+            String sub = host.capacity() > 0
+                    ? "出征时按实时最大容量自动分配盾、矛、弓（上限 " +
+                    FormationRules.fmt(host.capacity()) + "）"
+                    : "出征时按实时最大容量自动分配盾、矛、弓";
+            box.addView(UiStyle.emptyState(act, "⚡", "自动编队", sub, null, null));
+            return box;
+        }
+        List<FormationModel> list = host.listOf(host.source[0]);
+        if (list.isEmpty()) {
+            String empty = SRC_GAME.equals(host.source[0])
+                    ? "暂未同步到游戏内编队；请先登录游戏并保存编队"
+                    : "还没有编队；可到「编队管理」创建自定义编队";
+            box.addView(UiStyle.emptyState(act, "🧩", "暂无编队", empty, "＋ 新建编队",
+                    () -> openManagerNew(act, host.fpid, host.sid, host.uid)));
+            return box;
+        }
+        for (final FormationModel f : list) {
+            box.addView(UiStyle.dropdownRow(act, host.labelOf(f), host.badgeOf(f), () -> {
+                host.selectedId[0] = f.id;
+                host.tabKey = host.keyOf(f);
+                rebuild[0].run();
+            }));
+        }
+        return box;
+    }
 
-        // ① 名称
-        box.addView(label(act, "编队名称"));
-        final EditText nameEt = UiStyle.searchInput(act, "如：采集队 / 巨熊主队");
-        nameEt.setText(base.name);
-        box.addView(nameEt);
+    /** 底部：banner + 确认使用。 */
+    private static View confirmBar(final Activity act, final PickerHost host,
+                                   final AlertDialog[] dlgRef) {
+        LinearLayout box = new LinearLayout(act);
+        box.setOrientation(LinearLayout.VERTICAL);
+        box.setPadding(0, dp(act, 6), 0, dp(act, 2));
+        TextView banner = text(act, host.bannerText(), 11,
+                host.bannerTone() == 2 ? UiStyle.WARN_INK : UiStyle.INK2, false);
+        banner.setPadding(0, dp(act, 2), 0, dp(act, 6));
+        box.addView(banner);
+        TextView primary = text(act, host.primaryEnabled() ? "确认使用" : "确认使用", 13,
+                UiStyle.WHITE, true);
+        primary.setGravity(Gravity.CENTER);
+        primary.setPadding(0, dp(act, 11), 0, dp(act, 11));
+        primary.setBackground(UiStyle.roundRectDp(act,
+                host.primaryEnabled() ? UiStyle.BRAND : UiStyle.LINE_STRONG, 12));
+        primary.setOnClickListener(v -> host.doConfirm());
+        box.addView(primary);
+        return box;
+    }
 
-        // ② 英雄（目录可用 → 多选；缺失 → 手动 ID 输入）
-        box.addView(label(act, "英雄（1-5 个）"));
-        final List<FormationStore.Hero> catalog = FormationStore.parseHeroes(
-                FormationStore.catalog(act, fpid, sid));
-        final List<Long> picked = new ArrayList<>(base.heroIds);
-        final TextView pickedText = text(act, "已选 " + picked.size() + "/" + FormationStore.HERO_MAX,
-                11.5f, UiStyle.INK2, false);
-        box.addView(pickedText);
-        final EditText heroIdsEt;
-        if (catalog.isEmpty()) {
-            // 降级：手动输入英雄 ID
-            heroIdsEt = UiStyle.searchInput(act, "英雄ID，逗号分隔（如 50041,50039）");
-            StringBuilder pre = new StringBuilder();
-            for (int i = 0; i < base.heroIds.size(); i++) {
-                if (i > 0) pre.append(',');
-                pre.append(base.heroIds.get(i));
+    // ==================== ③-b 触发器（网页版 §1.13 role-picker-trigger） ====================
+
+    /**
+     * 来源描述（网页版 `sa`）：AUTOMATIC→`自动编队`；所选全为内置→`内置编队`；否则`角色编队`。
+     */
+    public static String triggerSource(String mode, List<FormationModel> lib, long[] ids) {
+        if (!FormationStore.MODE_ROLE.equals(FormationStore.normalizeMode(mode))) {
+            return "自动编队";
+        }
+        if (ids == null || ids.length == 0) return "角色编队";
+        boolean allBuiltIn = true;
+        for (long id : ids) {
+            FormationModel f = find(lib, id);
+            if (f == null || !f.builtIn) {
+                allBuiltIn = false;
+                break;
             }
-            heroIdsEt.setText(pre.toString());
-            box.addView(heroIdsEt);
-            TextView tip = text(act, "英雄目录同步中：可先手填英雄 ID 保存；服务器同步目录后自动显示名字/状态",
-                    10.5f, UiStyle.WARN_INK, false);
-            tip.setPadding(0, dp(act, 4), 0, 0);
-            box.addView(tip);
-        } else {
-            heroIdsEt = null;
-            for (final FormationStore.Hero h : catalog) {
-                final CheckBox cb = new CheckBox(act);
-                cb.setText(h.label());
-                cb.setTextSize(12.5f);
-                cb.setTextColor(UiStyle.INK);
-                cb.setChecked(picked.contains(h.id));
-                cb.setOnCheckedChangeListener((btn, checked) -> {
-                    if (checked) {
-                        if (picked.contains(h.id)) return;
-                        if (picked.size() >= FormationStore.HERO_MAX) {
-                            btn.setChecked(false);
-                            UiStyle.toast(act, "英雄最多 " + FormationStore.HERO_MAX + " 个");
-                            return;
-                        }
-                        picked.add(h.id);
-                    } else {
-                        picked.remove(h.id);
-                    }
-                    pickedText.setText("已选 " + picked.size() + "/" + FormationStore.HERO_MAX);
-                });
-                box.addView(cb);
+        }
+        return allBuiltIn ? "内置编队" : "角色编队";
+    }
+
+    /**
+     * 摘要（网页版 `K`）：AUTOMATIC→`自动盾矛弓 · 全局比例 · 实时最大容量`；ROLE→编队名
+     * （`、` 连接）；未选→`尚未选择编队`；库为空→`尚未同步或创建编队`。
+     */
+    public static String triggerSummary(String mode, List<FormationModel> lib, long[] ids) {
+        if (!FormationStore.MODE_ROLE.equals(FormationStore.normalizeMode(mode))) {
+            return "自动盾矛弓 · 全局比例 · 实时最大容量";
+        }
+        if (ids == null || ids.length == 0) {
+            return lib == null || lib.isEmpty() ? "尚未同步或创建编队" : "尚未选择编队";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (long id : ids) {
+            FormationModel f = find(lib, id);
+            String name = f == null ? ("#" + id + "（已删除）")
+                    : (f.name == null || f.name.isEmpty() ? ("编队 " + f.id) : f.name);
+            if (sb.length() > 0) sb.append('、');
+            sb.append(name);
+        }
+        return sb.toString();
+    }
+
+    /**
+     * 触发器行：`{来源描述小字} {编队名粗体} 选择编队 ›`（点击打开来源选择器）。
+     *
+     * @param automaticRatios 自动编队比例（仅摘要展示用，可空）
+     */
+    public static LinearLayout buildTrigger(Activity act, String mode, List<FormationModel> lib,
+                                            long[] ids, int[] automaticRatios, Runnable onClick) {
+        LinearLayout row = new LinearLayout(act);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(act, 10), dp(act, 8), dp(act, 10), dp(act, 8));
+        row.setBackground(UiStyle.roundRectStroke(act, UiStyle.SURFACE_2, 12, UiStyle.LINE));
+
+        boolean auto = !FormationStore.MODE_ROLE.equals(FormationStore.normalizeMode(mode));
+        LinearLayout textBox = new LinearLayout(act);
+        textBox.setOrientation(LinearLayout.VERTICAL);
+        TextView small = text(act, triggerSource(mode, lib, ids), 10.5f, UiStyle.INK2, false);
+        String summary = triggerSummary(mode, lib, ids);
+        if (auto && automaticRatios != null && automaticRatios.length >= 3) {
+            summary = "自动 " + automaticRatios[0] + "/" + automaticRatios[1] + "/"
+                    + automaticRatios[2] + " · 实时最大容量";
+        }
+        TextView strong = text(act, summary, 12.5f, UiStyle.INK, true);
+        strong.setSingleLine(true);
+        strong.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        textBox.addView(small);
+        textBox.addView(strong);
+        row.addView(textBox, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        TextView action = text(act, "选择编队 ›", 11.5f, UiStyle.BRAND_TEXT, true);
+        row.addView(action);
+        // aria：网页版 `选择出征编队，当前为{...}`
+        row.setContentDescription("选择出征编队，当前为" + summary);
+        UiStyle.press(row);
+        row.setOnClickListener(v -> {
+            if (onClick != null) onClick.run();
+        });
+        return row;
+    }
+
+    private static FormationModel find(List<FormationModel> lib, long id) {
+        if (lib == null) return null;
+        for (FormationModel f : lib) {
+            if (f != null && f.id == id) return f;
+        }
+        return null;
+    }
+
+    // ==================== ④ showLibrary 兼容 ====================
+
+    /** 兼容旧调用方：直接打开编队管理页（T4）。 */
+    public static void showLibrary(final Activity act, final String fpid, final long sid,
+                                   final OnChanged onChanged) {
+        long useSid = sid > 0 ? sid : activeRoleSid(act, fpid);
+        openManager(act, fpid, useSid, activeRoleUid(act, fpid), null);
+        if (onChanged != null) onChanged.onChanged();
+    }
+
+    /** 打开编队管理并直达「新建编队」编辑器。 */
+    private static void openManagerNew(Activity act, String fpid, long sid, String uid) {
+        if (sid <= 0 || fpid == null || fpid.trim().isEmpty()) {
+            UiStyle.toast(act, "等待角色同步，请先选择角色");
+            return;
+        }
+        try {
+            FormationManagerActivity.launchNew(act, fpid, sid, uid, null);
+        } catch (Throwable t) {
+            UiStyle.toast(act, "打开编队管理失败：" + t.getMessage());
+        }
+    }
+
+    private static void openManager(Activity act, String fpid, long sid, String uid, String focusFnId) {
+        if (sid <= 0 || fpid == null || fpid.trim().isEmpty()) {
+            UiStyle.toast(act, "等待角色同步，请先选择角色");
+            return;
+        }
+        try {
+            FormationManagerActivity.launch(act, fpid, sid, uid, focusFnId);
+        } catch (Throwable t) {
+            UiStyle.toast(act, "打开编队管理失败：" + t.getMessage());
+        }
+    }
+
+    // ==================== 选择器 Host（只读 Board） ====================
+
+    /** 只读 Board 的 Host 实现（契约 §4.2 冻结接口）。 */
+    private static final class PickerHost implements FormationBoardView.Host {
+        final Activity act;
+        final String fpid;
+        final long sid;
+        final String uid;
+        final FormationCatalogStore cat;
+        final List<FormationModel> lib;
+        final List<FormationModel> games;
+        final String[] source;
+        final long[] selectedId;
+        final List<Long> disabled;
+        final Runnable[] rebuild;
+        final AlertDialog[] dlgRef;
+        final OnFormationPickedDetail cb;
+        String tabKey = SRC_AUTO;
+
+        PickerHost(Activity act, String fpid, long sid, String uid, FormationCatalogStore cat,
+                   List<FormationModel> lib, List<FormationModel> games, String[] source,
+                   long[] selectedId, List<Long> disabled, Runnable[] rebuild,
+                   AlertDialog[] dlgRef, OnFormationPickedDetail cb) {
+            this.act = act;
+            this.fpid = fpid;
+            this.sid = sid;
+            this.uid = uid == null ? "" : uid;
+            this.cat = cat;
+            this.lib = lib == null ? new ArrayList<FormationModel>() : lib;
+            this.games = games == null ? new ArrayList<FormationModel>() : games;
+            this.source = source;
+            this.selectedId = selectedId;
+            this.disabled = disabled;
+            this.rebuild = rebuild;
+            this.dlgRef = dlgRef;
+            this.cb = cb;
+        }
+
+        // ---------- 数据 ----------
+
+        List<FormationModel> listOf(String src) {
+            List<FormationModel> out = new ArrayList<>();
+            if (SRC_GAME.equals(src)) {
+                out.addAll(games);
+            } else if (SRC_BEAR.equals(src)) {
+                for (FormationModel f : lib) if (isBear(f)) out.add(f);
+            } else if (SRC_BUILTIN.equals(src)) {
+                for (FormationModel f : lib) if (!isBear(f) && !f.isGame()) out.add(f);
             }
-            // 目录里没有的历史英雄（编队来自旧数据）保留可编辑提示
-            for (Long id : base.heroIds) {
-                boolean known = false;
-                for (FormationStore.Hero h : catalog) {
-                    if (h.id == id) {
-                        known = true;
+            return out;
+        }
+
+        FormationModel byId(long id) {
+            for (FormationModel f : lib) if (f.id == id) return f;
+            for (FormationModel f : games) if (f.id == id) return f;
+            return null;
+        }
+
+        String keyOf(FormationModel f) {
+            return f.id < 0 ? ("G" + Math.abs(f.id)) : ("C" + f.id);
+        }
+
+        String labelOf(FormationModel f) {
+            if (f.id < 0) {
+                return "G" + (Math.abs(f.id) < 10 ? "0" : "") + Math.abs(f.id);
+            }
+            return f.name == null || f.name.isEmpty() ? ("编队 " + f.id) : f.name;
+        }
+
+        String badgeOf(FormationModel f) {
+            if (f.isGame()) return f.name == null || f.name.isEmpty() ? "游戏" : f.name;
+            if (f.builtIn) return "内置";
+            return "自定义";
+        }
+
+        String mode() {
+            return SRC_AUTO.equals(source[0])
+                    ? FormationStore.MODE_AUTOMATIC : FormationStore.MODE_ROLE;
+        }
+
+        // ---------- FormationBoardView.Host ----------
+
+        @Override
+        public String boardKey() {
+            return "picker:" + source[0] + ":" + tabKey;
+        }
+
+        @Override
+        public List<FormationBoardView.BoardTab> tabs() {
+            List<FormationBoardView.BoardTab> out = new ArrayList<>();
+            if (SRC_AUTO.equals(source[0])) {
+                int[] r = automaticRatios();
+                out.add(new FormationBoardView.BoardTab(SRC_AUTO, "自动盾矛弓",
+                        FormationRules.ratioCode(r[0], r[1], r[2]), 0L));
+                return out;
+            }
+            for (FormationModel f : listOf(source[0])) {
+                out.add(new FormationBoardView.BoardTab(keyOf(f), labelOf(f), badgeOf(f), 0L));
+            }
+            return out;
+        }
+
+        @Override
+        public String selectedTab() {
+            return tabKey;
+        }
+
+        @Override
+        public FormationModel formation() {
+            if (SRC_AUTO.equals(source[0])) return null;
+            return byId(selectedId[0]);
+        }
+
+        @Override
+        public boolean automatic() {
+            return SRC_AUTO.equals(source[0]);
+        }
+
+        @Override
+        public long capacity() {
+            if (automatic()) {
+                return cat == null ? 0L : cat.capacity();
+            }
+            FormationModel f = formation();
+            if (cat == null) return 0L;
+            return f == null ? cat.capacity() : cat.capacityFor(f.heroIds);
+        }
+
+        @Override
+        public long[] capacityLimits() {
+            return cat == null ? new long[]{0, 0, 0, 0} : cat.limits();
+        }
+
+        @Override
+        public String bannerText() {
+            if (automatic()) {
+                if (cat == null || !cat.automaticAvailable()) return "容量未同步，暂不可用自动编队";
+                return FormationRules.MSG_AUTO_CAPACITY;
+            }
+            FormationModel f = formation();
+            if (f == null) return FormationBinding.selectionBanner(0, 1);
+            if (disabled.contains(f.id)) return "该编队已被其它队列占用，请重新选择";
+            String away = FormationRules.availabilityWarning(f, cat);
+            if (away != null && !away.isEmpty()) return away;
+            return FormationRules.MSG_ALL_GOOD;
+        }
+
+        @Override
+        public int bannerTone() {
+            if (automatic()) return cat != null && cat.automaticAvailable() ? 1 : 2;
+            FormationModel f = formation();
+            if (f == null || disabled.contains(f.id)) return 2;
+            return f.allHeroesAvailable ? 0 : 2;
+        }
+
+        @Override
+        public boolean editable() {
+            return false;
+        }
+
+        @Override
+        public boolean heroesInteractive() {
+            return false;
+        }
+
+        @Override
+        public boolean secondaryActions() {
+            return false;
+        }
+
+        @Override
+        public String primaryLabel() {
+            return "确认使用";
+        }
+
+        @Override
+        public String primaryHint() {
+            if (automatic()) {
+                int[] r = automaticRatios();
+                return FormationRules.ratioCode(r[0], r[1], r[2]);
+            }
+            return (selectedId[0] > 0 ? "1" : "0") + "/1 支";
+        }
+
+        @Override
+        public boolean primaryEnabled() {
+            if (automatic()) return cat != null && cat.automaticAvailable();
+            return selectedId[0] > 0 && !disabled.contains(selectedId[0]);
+        }
+
+        @Override
+        public int[] automaticRatios() {
+            try {
+                int[] r = cat == null ? null : cat.automaticSettings();
+                if (r != null && r.length >= 3 && r[0] + r[1] + r[2] == 100) return r;
+            } catch (Throwable ignored) {
+            }
+            try {
+                int[] r = FormationStore.automaticSettings(act, fpid, sid, uid);   // T7：uid 兜底目录
+                if (r != null && r.length >= 3 && r[0] + r[1] + r[2] == 100) return r;
+            } catch (Throwable ignored) {
+            }
+            return new int[]{50, 20, 30};
+        }
+
+        @Override
+        public void onTabSelected(String key) {
+            tabKey = key;
+            if (SRC_AUTO.equals(source[0])) {
+                selectedId[0] = 0L;
+            } else {
+                for (FormationModel f : listOf(source[0])) {
+                    if (keyOf(f).equals(key)) {
+                        selectedId[0] = f.id;
                         break;
                     }
                 }
-                if (!known) {
-                    TextView legacy = text(act, "另有历史英雄 ID " + id + "（目录未含，保存时保留）",
-                            10.5f, UiStyle.INK2, false);
-                    box.addView(legacy);
+            }
+            rebuild[0].run();
+        }
+
+        @Override
+        public void onHeroSlot(int professionType) {
+        }
+
+        @Override
+        public void onHeroLongPress(long heroId) {
+        }
+
+        @Override
+        public void onCaptainToggle(long heroId) {
+        }
+
+        @Override
+        public void onTroopChanged(String key, long value) {
+        }
+
+        @Override
+        public void onRatioChanged(String key, int pct) {
+        }
+
+        @Override
+        public void onSecondaryAction(String action) {
+        }
+
+        @Override
+        public void onPrimary() {
+            doConfirm();
+        }
+
+        /** 确认使用：ROLE 回传编队兵量；AUTOMATIC 回传比例分摊到实时容量。 */
+        void doConfirm() {
+            if (!primaryEnabled()) {
+                UiStyle.toast(act, bannerText());
+                return;
+            }
+            if (FormationStore.MODE_ROLE.equals(mode())) {
+                FormationModel f = byId(selectedId[0]);
+                if (f == null) {
+                    UiStyle.toast(act, "请选择一支编队");
+                    return;
+                }
+                long[] ids = new long[]{f.id};
+                int[] ratios = new int[]{f.infantryRatio, f.lancerRatio, f.marksmanRatio};
+                if (dlgRef[0] != null) dlgRef[0].dismiss();
+                if (cb != null) {
+                    cb.onPicked(FormationStore.MODE_ROLE, ids,
+                            f.infantry, f.lancer, f.marksman, ratios);
+                }
+            } else {
+                int[] ratios = automaticRatios();
+                long[] troops = FormationRules.allocateByRatio(
+                        Math.max(0, capacity()), ratios[0], ratios[1], ratios[2]);
+                if (dlgRef[0] != null) dlgRef[0].dismiss();
+                if (cb != null) {
+                    cb.onPicked(FormationStore.MODE_AUTOMATIC, new long[0],
+                            troops[0], troops[1], troops[2], ratios);
                 }
             }
         }
 
-        // ③ 分配方式：固定数量 / 比例+总量
-        box.addView(label(act, "兵力分配"));
-        final boolean[] ratioMode = {base.ratioMode || base.totalSoldiers() == 0};
-        final LinearLayout countPanel = new LinearLayout(act);
-        countPanel.setOrientation(LinearLayout.VERTICAL);
-        final LinearLayout ratioPanel = new LinearLayout(act);
-        ratioPanel.setOrientation(LinearLayout.VERTICAL);
-        final Runnable syncPanels = () -> {
-            countPanel.setVisibility(ratioMode[0] ? View.GONE : View.VISIBLE);
-            ratioPanel.setVisibility(ratioMode[0] ? View.VISIBLE : View.GONE);
-        };
-        final JSONObject catalogNow = FormationStore.catalog(act, fpid, sid);
-        final long stockInf = FormationStore.soldierStock(catalogNow, "infantry");
-        final long stockLan = FormationStore.soldierStock(catalogNow, "lancer");
-        final long stockMar = FormationStore.soldierStock(catalogNow, "marksman");
-        final EditText infEt = numInput(act, stockHint(stockInf, "盾兵数量"), String.valueOf(base.infantry));
-        final EditText lanEt = numInput(act, stockHint(stockLan, "矛兵数量"), String.valueOf(base.lancer));
-        final EditText marEt = numInput(act, stockHint(stockMar, "弓兵数量"), String.valueOf(base.marksman));
-        countPanel.addView(labeled(act, stockHint(stockInf, "盾兵"), infEt));
-        countPanel.addView(labeled(act, stockHint(stockLan, "矛兵"), lanEt));
-        countPanel.addView(labeled(act, stockHint(stockMar, "弓兵"), marEt));
-        final EditText rInf = numInput(act, "盾%", String.valueOf(base.ratioMode ? base.ratioInfantry : 40));
-        final EditText rLan = numInput(act, "矛%", String.valueOf(base.ratioMode ? base.ratioLancer : 30));
-        final EditText rMar = numInput(act, "弓%", String.valueOf(base.ratioMode ? base.ratioMarksman : 30));
-        final EditText totalEt = numInput(act, "总量（0=按容量自动）", String.valueOf(base.total));
-        LinearLayout ratioRow = new LinearLayout(act);
-        ratioRow.setOrientation(LinearLayout.HORIZONTAL);
-        ratioRow.setGravity(Gravity.CENTER_VERTICAL);
-        ratioRow.addView(labeled(act, "盾", rInf), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        ratioRow.addView(labeled(act, "矛", rLan), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        ratioRow.addView(labeled(act, "弓", rMar), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        ratioPanel.addView(ratioRow);
-        ratioPanel.addView(labeled(act, "总量", totalEt));
-        long capacityNow = FormationStore.capacity(catalogNow);
-        String ratioTipText = "比例之和必须=100；总量 0=按服务器容量自动"
-                + (capacityNow > 0 ? "\n服务器容量 " + capacityNow + "（总量上限提示）" : "");
-        String stockText = FormationStore.soldierStockText(catalogNow);
-        if (!stockText.isEmpty()) ratioTipText += "\n当前兵种库存：" + stockText;
-        TextView ratioTip = text(act, ratioTipText, 10.5f, UiStyle.INK2, false);
-        ratioPanel.addView(ratioTip);
-        box.addView(UiStyle.segmented(act, new String[]{"固定数量", "比例+总量"},
-                ratioMode[0] ? 1 : 0, idx -> {
-                    ratioMode[0] = idx == 1;
-                    syncPanels.run();
-                }));
-        box.addView(countPanel);
-        box.addView(ratioPanel);
-        syncPanels.run();
+        @Override
+        public void onCapacityDetail() {
+            try {
+                FormationManagerDialogs.showCapacityDialog(act, cat);
+            } catch (Throwable ignored) {
+            }
+        }
 
-        // ④ 保存/取消
-        AlertDialog dlg = new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle(existing == null ? "新建编队" : "编辑编队 #" + existing.id)
-                .setView(sc)
-                .setPositiveButton("保存", null)
-                .setNegativeButton("取消", null)
-                .create();
-        dlg.setOnShowListener(d -> dlg.getButton(AlertDialog.BUTTON_POSITIVE)
-                .setOnClickListener(v -> {
-                    FormationStore.Formation f = new FormationStore.Formation();
-                    f.id = base.id;
-                    f.name = nameEt.getText().toString().trim();
-                    if (heroIdsEt != null) {
-                        for (String part : heroIdsEt.getText().toString().split("[,，\\s]+")) {
-                            try {
-                                long id = Long.parseLong(part.trim());
-                                if (id > 0 && !f.heroIds.contains(id)) f.heroIds.add(id);
-                            } catch (Throwable ignored) {
-                            }
-                        }
-                        // 手动 ID 模式保留历史英雄（目录缺失时不丢旧数据）
-                        for (Long id : base.heroIds) {
-                            if (!f.heroIds.contains(id)) f.heroIds.add(id);
-                        }
-                    } else {
-                        f.heroIds.addAll(picked);
-                        for (Long id : base.heroIds) {
-                            if (!f.heroIds.contains(id)) f.heroIds.add(id);
-                        }
-                    }
-                    f.ratioMode = ratioMode[0];
-                    if (ratioMode[0]) {
-                        f.ratioInfantry = (int) parseLong(rInf, 0);
-                        f.ratioLancer = (int) parseLong(rLan, 0);
-                        f.ratioMarksman = (int) parseLong(rMar, 0);
-                        f.total = Math.max(0, parseLong(totalEt, 0));
-                        f.infantry = 0;
-                        f.lancer = 0;
-                        f.marksman = 0;
-                    } else {
-                        f.infantry = Math.max(0, parseLong(infEt, 0));
-                        f.lancer = Math.max(0, parseLong(lanEt, 0));
-                        f.marksman = Math.max(0, parseLong(marEt, 0));
-                        f.total = f.totalSoldiers();
-                        // 数量模式同步一份比例（服务器展示/参考；按数量出征）
-                        long sum = Math.max(1, f.total);
-                        f.ratioInfantry = (int) Math.round(f.infantry * 100.0 / sum);
-                        f.ratioLancer = (int) Math.round(f.lancer * 100.0 / sum);
-                        f.ratioMarksman = 100 - f.ratioInfantry - f.ratioLancer;
-                    }
-                    String err = FormationStore.validate(f);
-                    if (err != null) {
-                        UiStyle.toast(act, err);
-                        return;
-                    }
-                    // 批次10：超库存仅提示（不阻止保存）——服务器 FormationResolver 会按库存
-                    // 削减或 SKIP；提前告知避免“保存了但不出征”的困惑。
-                    if (!ratioMode[0]) {
-                        boolean over = (stockInf >= 0 && f.infantry > stockInf)
-                                || (stockLan >= 0 && f.lancer > stockLan)
-                                || (stockMar >= 0 && f.marksman > stockMar);
-                        if (over) {
-                            UiStyle.toast(act, "兵力超过当前库存（" + stockText
-                                    + "），服务器可能按库存削减/跳过");
-                        }
-                    }
-                    FormationStore.Formation saved = FormationStore.upsert(act, fpid, sid, f);
-                    if (saved == null) {
-                        UiStyle.toast(act, "保存失败：编队非法");
-                        return;
-                    }
-                    sync(act);
-                    if (onSaved != null) onSaved.onChanged();
-                    UiStyle.toast(act, "编队 #" + saved.id + " 已保存并同步");
-                    dlg.dismiss();
-                }));
-        dlg.show();
+        @Override
+        public void onPetCapacity() {
+            try {
+                FormationManagerDialogs.showPetCapacityDialog(act, cat);
+            } catch (Throwable ignored) {
+            }
+        }
+
+        @Override
+        public void onOpenSettings() {
+            openManager(act, fpid, sid, uid, null);
+        }
     }
 
-    // ==================== 小工具（排版） ====================
+    // ==================== 小工具 ====================
 
-    private static TextView label(Activity act, String s) {
-        TextView t = text(act, s, 13, UiStyle.INK, true);
-        t.setPadding(0, dp(act, 12), 0, dp(act, 4));
-        return t;
+    private static int sourceIndex(String src) {
+        for (int i = 0; i < SRC_LABELS.length; i++) {
+            if (indexSource(i).equals(src)) return i;
+        }
+        return 0;
+    }
+
+    private static String indexSource(int idx) {
+        switch (idx) {
+            case 1:
+                return SRC_BUILTIN;
+            case 2:
+                return SRC_BEAR;
+            case 3:
+                return SRC_GAME;
+            default:
+                return SRC_AUTO;
+        }
+    }
+
+    private static boolean isBear(FormationModel f) {
+        if (f == null) return false;
+        try {
+            return f.isBear();
+        } catch (Throwable t) {
+            return f.name != null && f.name.startsWith("巨熊·");
+        }
+    }
+
+    private static String nameOf(Activity act, String fpid, long sid, long id) {
+        try {
+            FormationModel f = FormationStore.formation(act, fpid, sid, id);
+            return f == null || f.name == null || f.name.isEmpty() ? "" : f.name;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private static long activeRoleSid(Activity act, String fpid) {
+        try {
+            return RoleStore.activeRole(act, fpid == null ? "" : fpid);
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    private static String activeRoleUid(Activity act, String fpid) {
+        try {
+            long uid = RoleStore.activeRoleUid(act, fpid == null ? "" : fpid);
+            return uid > 0 ? String.valueOf(uid) : "";
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     private static TextView text(Activity act, String s, float size, int color, boolean bold) {
@@ -780,76 +926,14 @@ public final class FormationPicker {
         return t;
     }
 
-    private static EditText numInput(Activity act, String hint, String prefill) {
-        EditText et = UiStyle.searchInput(act, hint);
-        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        et.setText(prefill == null ? "" : prefill);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(act, 4);
-        et.setLayoutParams(lp);
-        return et;
-    }
-
-    private static LinearLayout labeled(Activity act, String name, EditText et) {
-        LinearLayout col = new LinearLayout(act);
-        col.setOrientation(LinearLayout.VERTICAL);
-        TextView t = text(act, name, 11.5f, UiStyle.INK2, false);
-        col.addView(t);
-        col.addView(et);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.rightMargin = dp(act, 6);
-        col.setLayoutParams(lp);
-        return col;
-    }
-
-    private static TextView miniBtn(Activity act, String s, Runnable r) {
-        TextView t = text(act, s, 11.5f, UiStyle.BRAND_TEXT, true);
-        t.setGravity(Gravity.CENTER);
-        t.setPadding(dp(act, 10), dp(act, 4), dp(act, 10), dp(act, 4));
-        t.setBackground(UiStyle.roundRectDp(act, UiStyle.BRAND_50, 999));
-        UiStyle.press(t);
-        t.setOnClickListener(v -> r.run());
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.leftMargin = dp(act, 8);
-        t.setLayoutParams(lp);
-        return t;
-    }
-
-    private static String soldiersOf(FormationStore.Formation f) {
-        if (f.ratioMode) {
-            return "比例" + f.ratioInfantry + ":" + f.ratioLancer + ":" + f.ratioMarksman
-                    + " 总量" + (f.total <= 0 ? "按容量" : String.valueOf(f.total));
-        }
-        return "盾" + f.infantry + " 矛" + f.lancer + " 弓" + f.marksman;
-    }
-
-    /** 库存提示后缀（库存未知返回空）。 */
-    private static String stockHint(long stock, String base) {
-        return stock >= 0 ? base + "（库存" + stock + "）" : base;
-    }
-
-    private static long parseLong(EditText et, long def) {
-        try {
-            String s = et.getText().toString().trim();
-            if (s.isEmpty()) return def;
-            return Long.parseLong(s);
-        } catch (Throwable t) {
-            return def;
-        }
-    }
-
-    private static int dp(Activity act, int v) {
-        return (int) (act.getResources().getDisplayMetrics().density * v + 0.5f);
-    }
-
-    /** 保存后触发既有同步链路（VaultSync 会把 formation_library 写进该角色 params）。 */
     private static void sync(Activity act) {
         try {
             VaultSync.onAccountsChanged(act);
         } catch (Throwable ignored) {
         }
+    }
+
+    private static int dp(Activity act, int v) {
+        return UiStyle.dp(act, v);
     }
 }
