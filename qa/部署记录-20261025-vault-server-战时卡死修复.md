@@ -37,3 +37,24 @@ curl -s http://127.0.0.1:8790/healthz
 - 该时间早于本次部署（03:27）；旧 jar 时期即已发生，不是本次升级导致。
 - 可恢复快照：`/opt/vault-server/data/vault.json.stopbad-20261024-174527`（2 个账号，含 token，savedAt=1792863775750 ≈ 01:42 北京）。
 - 风险：若 App 端确实无账号（如卸载重装后首次同步），下次同步会再次清空 → 建议加「空列表保护/需显式确认」再恢复。
+
+---
+
+## 2026-10-25 14:44 合并部署：token 回取 + 战时卡死修复 + 空同步保护
+
+| 项 | 值 |
+|---|---|
+| 新 jar | `vault-server-0.1.0-all.jar`，1,271,295 B，sha256 `65d41d979ded383a7d676ee081da943826e1d8fb02f301f5de0d6c46528ff366` |
+| 覆盖掉的 jar | sha256 `d6df75cb04e1baf9323514bfa429b1b78a0a2a202133e8cb13e3952dec1c0e01`（并发会话 14:07 部署，仅含 token/get，不含战时修复/空保护）→ 已备份 `backup/vault-server-all.jar.bak-20261025-1442` |
+| 合并提交 | `6eda58b merge: 合并并发会话的 token 回取接口 + 本分支（战时卡死修复/空同步保护）`；token/get 三文件取自并发会话 worktree `modify/clone-autofill-anr-20261025-0335` 的未提交改动（经用户同意，未改动其 worktree），三方合并无冲突 |
+| 门禁 | vault-server 全量单测 **915/915 通过（76 类）**，含 token/get 8 条新用例与空同步保护用例 |
+| 启动验证 | `systemctl is-active` active、`/healthz` ok；日志：`身份库载入：2 个账号`、`战争态全局节拍已启动：30000ms…战时上限=不限` |
+| 线上功能验证 | ① 空 `accountsJson` 同步 → `emptyRejected=true, serverAccounts=2`，账号未被清空；② `POST /v1/vault/token/get {"fpid":"48460403"}` → `hasToken=true`（token 已脱敏核对）；③ `policy action=war-reset` → `cleared=0` 正常 |
+| 账号恢复 | 从 `data/vault.json.stopbad-20261024-174527`（2 账号含 token，01:42 快照）合并 accounts 到当前 vault.json（保留 watch/顶号策略），重启后加载 2 个账号（keep=false，不自动起会话）；恢复前备份 `backup/vault.json.before-restore-20261025-064413` |
+
+### 运维注意
+1. **空同步保护已上线**：服务端非空时，App 发送空账号列表会被拒绝（`emptyRejected=true`，不影响 App 现状）；
+   真需清空必须显式 `allowEmpty=true`（后续 App「删除全部账号」流程可带上）。
+2. **部署协调**：同一时间只允许一个会话部署生产 jar；本次因并发会话各自部署导致一次覆盖（已回滚+合并修复），
+   后续部署前先确认。
+3. 清理账号/恢复快照前先备份 `vault.json`；`keep=false` 账号不会自动起会话。
