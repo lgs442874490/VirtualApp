@@ -21,6 +21,7 @@ import java.util.concurrent.Executors;
  * POST /v1/vault/sync    全量身份库同步（accountsJson 字符串字段；空列表保护：服务端非空时
  *                        空覆盖被拒，确需清空须显式 allowEmpty=true，2026-10-25）
  * POST /v1/vault/token   单账号 token 更新（NEED_TOKEN 补给通道）
+ * POST /v1/vault/token/get   单账号 token 只读回取（重装/清数据后恢复，2026-10-25）
  * POST /v1/vault/status  会话状态查询
  * POST /v1/vault/policy  顶号策略设置 / 让位指令 / 战时解卡（action=war-reset，2026-10-25）
  * POST /v1/vault/accounts        账号池列表+聚合计数+每角色运行态（M1）
@@ -40,6 +41,8 @@ import java.util.concurrent.Executors;
 public final class VaultHttpApi {
 
     public static final int CODE_ACCOUNT_NOT_FOUND = 1004;
+    /** 账号存在但服务器侧没有 token（从未补给/已被清空）：App 应提示重贴，而非当网络故障重试。 */
+    public static final int CODE_TOKEN_MISSING = 1005;
 
     private static final int MAX_BODY_BYTES = 4 * 1024 * 1024;
 
@@ -83,6 +86,9 @@ public final class VaultHttpApi {
             return t;
         }));
         server.createContext("/v1/vault/sync", ex -> guard(ex, "POST", "vaultSync", this::handleSync));
+        // 注意：HttpServer 按最长前缀匹配，"/v1/vault/token/get" 必须单独注册（否则会被
+        // "/v1/vault/token" 吞掉按写通道处理）。读通道与写通道分 OP，验签互不串用。
+        server.createContext("/v1/vault/token/get", ex -> guard(ex, "POST", "vaultTokenGet", this::handleTokenGet));
         server.createContext("/v1/vault/token", ex -> guard(ex, "POST", "vaultToken", this::handleToken));
         server.createContext("/v1/vault/status", ex -> guard(ex, "POST", "vaultStatus", this::handleStatus));
         server.createContext("/v1/vault/state", ex -> guard(ex, "POST", "vaultState", this::handleState));
@@ -276,6 +282,39 @@ public final class VaultHttpApi {
         JSONObject data = new JSONObject();
         data.put("fpid", fpid);
         data.put("updated", true);
+        return data;
+    }
+
+    /**
+     * 重装/清数据后恢复 token（2026-10-25）：只读回取服务器留存的账号 token。
+     *
+     * <p>与写通道 {@code /v1/vault/token} 对称（同走 ApiSign，OP=vaultTokenGet）。App 新装后
+     * 本地账号库为空、服务器 status_cache 仍 hasToken=true 时，用本接口把 token 拉回本地回填，
+     * 免去重贴/手动登录一次；写库由调用方决定（本接口只读，不改 store）。
+     *
+     * <p>返回 {@code {fpid, token, hasToken:true}}；updatedAt 本期不落 token 更新时间戳，省略。
+     * 业务码：1004 账号不存在、1005 账号无 token、2004 缺 fpid、2001 验签失败。
+     * 日志纪律：只落 fpid/hasToken，绝不落 token 明文；错误信息同样不含 token。
+     */
+    private JSONObject handleTokenGet(Map<String, Object> fields) {
+        String fpid = str(fields, "fpid");
+        if (fpid == null || fpid.isEmpty()) {
+            throw new BizError(ApiSign.CODE_BAD_REQUEST, "缺少 fpid");
+        }
+        String token = store.getToken(fpid);
+        if (token == null) {
+            FileLog.warn("token 读取失败：fpid={} 账号不存在", fpid);
+            throw new BizError(CODE_ACCOUNT_NOT_FOUND, "账号不存在: " + fpid);
+        }
+        if (token.isEmpty()) {
+            FileLog.warn("token 读取失败：fpid={} 无 token", fpid);
+            throw new BizError(CODE_TOKEN_MISSING, "账号没有 token: " + fpid);
+        }
+        FileLog.info("token 读取：fpid={} hasToken=true", fpid);
+        JSONObject data = new JSONObject();
+        data.put("fpid", fpid);
+        data.put("token", token);
+        data.put("hasToken", true);
         return data;
     }
 
