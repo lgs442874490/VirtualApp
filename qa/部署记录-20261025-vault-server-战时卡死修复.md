@@ -58,3 +58,23 @@ curl -s http://127.0.0.1:8790/healthz
 2. **部署协调**：同一时间只允许一个会话部署生产 jar；本次因并发会话各自部署导致一次覆盖（已回滚+合并修复），
    后续部署前先确认。
 3. 清理账号/恢复快照前先备份 `vault.json`；`keep=false` 账号不会自动起会话。
+
+---
+
+## 2026-10-26 01:24 部署：Guardian P1 对等加速（默认全关）
+
+| 项 | 值 |
+|---|---|
+| 合并提交 | `4835538 merge: Guardian P1 驻防对等加速（默认全关）并入生产分支` |
+| 新 jar | 1,289,525 B，sha256 `0cd9187714f045c82291f44acbdf94a6cf3a3e2f8b388a27eb1323b8eeddb921` |
+| 被替换 jar | sha256 `65d41d97…`（战时修复+空同步保护+token回取）→ 备份 `backup/vault-server-all.jar.bak-20261026-0125` |
+| 门禁 | vault-server **957/957 全绿**（合并后：master 896 + 战时 10 + 空保护 1 + token 8 + P1 42） |
+| 启动验证 | `active`、`/healthz` ok；`身份库载入：1 个账号`、`战争态全局节拍已启动`、会话 `48460403|888|35371154` 登录成功 |
+| P1 默认状态 | 日志回显 `enabled=false dry_run=true … speedup=false diamond_speedup=false diamond_max=3 speedup_margin=2s max_speedups=unlimited` → **零行为变化、零请求** |
+| 灰度入口 | env `VAULT_GUARDIAN_SPEEDUP=1` / `VAULT_GUARDIAN_DIAMOND=1`（未设置=以 roleParams 为准）；另需 roleParams `guardian.enabled=true` + 目标配置 |
+
+### 备注（运维现状）
+- 生产当前仅 1 个账号：`48460403`（label=测试账号，keep/auto=true，active 888/35371154，已自动上线）。
+- 10-25 17:18 一次 App 非空同步（1 个测试账号）覆盖了此前恢复的 2 个真实账号；真实账号快照仍在：
+  `backup/vault.json.before-restore-20261025-064413`、`data/vault.json.stopbad-20261024-174527`。
+- 灰度未开启：`guardian` roleParams 当前不存在（roleParams 仅 formation/gather/intel），需目标配置（盟友 uid/目标城/坐标/兵力档位）才能实发；P1 对等加速依赖"在途驻防"，因此 dry_run 无法验证加速链，灰度需真发驻防。
