@@ -65,6 +65,7 @@ public final class VaultSync {
     private static final String PATH_GLOBAL_ACTION = "/v1/vault/global-action";
     private static final String PATH_WATCH = "/v1/vault/watch";
     private static final String PATH_EVENTS = "/v1/vault/events";
+    private static final String PATH_MONITOR = "/v1/vault/monitor";
     private static final String OP_SYNC = "vaultSync";
     private static final String OP_TOKEN = "vaultToken";
     /** 恢复读通道 OP：与写通道 vaultToken 分开，服务端按 op 绑定验签，互不串用。 */
@@ -80,6 +81,7 @@ public final class VaultSync {
     private static final String OP_GLOBAL_ACTION = "vaultGlobalAction";
     private static final String OP_WATCH = "vaultWatch";
     private static final String OP_EVENTS = "vaultEvents";
+    private static final String OP_MONITOR = "vaultMonitor";
 
     /**
      * 本地回调码（非服务端业务码）：{@code /v1/vault/token/get} 回 code=0 但 data 缺非空
@@ -923,6 +925,76 @@ public final class VaultSync {
         return AccountPoolCache.load(ctx);
     }
 
+    // ---------- 任务级协议监控（2026-10-25：真机监控页，POST /v1/vault/monitor） ----------
+
+    /**
+     * 任务级协议监控通道（{@code POST /v1/vault/monitor}，op={@code vaultMonitor}）。
+     *
+     * <p>契约：{@code design/真机监控-服务端任务级协议监控-20261025.md} §3.3。请求字段扁平
+     * （action/since/limit/kinds/fpid/includeData/msg），其中 {@code includeData} 用字符串
+     * "1"/"0"（服务端按扁平字符串字段读取，避免布尔序列化差异）。响应 data：
+     * {@code {enabled,events[],count,lastSeq,minSeq,mem,dropped,serverTime}}。
+     *
+     * <p>复用类内 {@link #post} 的签名/信封通道，不另建网络栈。未开服务器模式回调
+     * {@code code=-1,message=server_mode_off}（与 watch/events 通道同口径）；旧服务端无此路由
+     * 时返回非 JSON 404 → post 回调 {@code code=-1} 且 message 含 "HTTP 404"，页面据此提示
+     * 「服务端未升级」而不是崩溃。回调在 OkHttp 线程。
+     *
+     * @param fields 服务端扁平请求字段（调用方负责 action 与业务字段）
+     * @param cb     结果回调（可空；data 为响应信封的 data，未被服务端升级时可能为 null）
+     */
+    public static void fetchMonitor(Context ctx, Map<String, Object> fields, Callback cb) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app)) {
+            if (cb != null) cb.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        // 复制一份（TreeMap）：签名通道会补 ts/nonce/sign，避免调用方复用同一 Map 被污染
+        Map<String, Object> f = fields == null
+                ? new TreeMap<String, Object>() : new TreeMap<>(fields);
+        new Thread(() -> post(app, PATH_MONITOR, OP_MONITOR, f, cb), "vault-monitor").start();
+    }
+
+    /**
+     * 监控事件查询便捷重载（action=query）：只取 seq &gt; since 的事件。
+     * 字段口径见 {@link #monitorQueryFields}（limit 裁剪到 1..1000，includeData 用 "1"/"0"）。
+     * 回调在 OkHttp 线程。
+     */
+    public static void fetchMonitor(Context ctx, long since, int limit, String kinds,
+                                    String fpid, boolean includeData, Callback cb) {
+        fetchMonitor(ctx, monitorQueryFields(since, limit, kinds, fpid, includeData), cb);
+    }
+
+    /**
+     * 监控打点（action=mark）：把用户手动操作（如「原生游戏领取前」）写入服务端事件流，
+     * 与服务端自动化/会话事件同一脉冲对齐。响应 data：{@code {enabled,seq,serverTime}}。
+     * 回调在 OkHttp 线程。
+     */
+    public static void markMonitor(Context ctx, String msg, Callback cb) {
+        fetchMonitor(ctx, monitorMarkFields(msg), cb);
+    }
+
+    /** 监控 query 请求字段（纯函数，JVM 单测直跑；since/limit 兜底，includeData 用 "1"/"0"）。 */
+    static Map<String, Object> monitorQueryFields(long since, int limit, String kinds,
+                                                  String fpid, boolean includeData) {
+        Map<String, Object> f = new TreeMap<>();
+        f.put("action", "query");
+        f.put("since", Math.max(0L, since));
+        f.put("limit", Math.max(1, Math.min(1000, limit)));
+        f.put("kinds", kinds == null ? "" : kinds.trim());
+        f.put("fpid", fpid == null ? "" : fpid.trim());
+        f.put("includeData", includeData ? "1" : "0");
+        return f;
+    }
+
+    /** 监控 mark 请求字段（纯函数）：action=mark + msg（null → 空串）。 */
+    static Map<String, Object> monitorMarkFields(String msg) {
+        Map<String, Object> f = new TreeMap<>();
+        f.put("action", "mark");
+        f.put("msg", msg == null ? "" : msg);
+        return f;
+    }
+
     /** 上次账号池请求是否失败（stale 横幅开关；unsupported 时不显示横幅）。 */
     public static boolean isPoolStale(Context ctx) {
         return AccountPoolCache.isStale(ctx);
@@ -1124,11 +1196,11 @@ public final class VaultSync {
                 try {
                     envelope = new JSONObject(text);
                 } catch (Throwable t2) {
-                    // 非 JSON 响应（旧服务端 404 HTML 等）：把 HTTP 码带进 message，
-                    // 供上层把「接口不存在」（unsupported）与网络故障（stale）区分开
+                    // 非 JSON 响应（旧服务端 404 HTML / 网关 502 重启页等）：把 HTTP 码带进 message，
+                    // 供上层把「接口不存在/未升级」（unsupported）与「服务端暂时不可用」（可重试）区分开。
+                    // 2026-10-25：502 的原文是 HTML，直接透出JSONException文案对用户不可读。
                     Log.w(TAG, path + " 非 JSON 响应 http=" + response.code());
-                    if (cb != null) cb.onResult(-1,
-                            "HTTP " + response.code() + " " + t2.getMessage(), null);
+                    if (cb != null) cb.onResult(-1, nonJsonMessage(response.code()), null);
                     return;
                 }
                 int code = envelope.optInt("code", -1);
@@ -1143,6 +1215,23 @@ public final class VaultSync {
             Log.w(TAG, path + " 网络失败: " + t.getMessage());
             if (cb != null) cb.onResult(-1, String.valueOf(t.getMessage()), null);
         }
+    }
+
+    /**
+     * 非 JSON 响应（网关 502/HTML 错误页、旧服务端 404 等）→ 可读的中文错误文案。
+     *
+     * <p>2026-10-25：服务端热部署期间 nginx 返回 502 HTML，旧实现把 JSONException 原文
+     * （"Value &lt;html&gt; of type java.lang.String cannot be converted to JSONObject"）透给用户，
+     * 真机监控页显示成“服务端异常”，且旧页面逻辑据此停止自动刷新。现在 5xx 标注“稍后自动重试”。
+     */
+    private static String nonJsonMessage(int httpCode) {
+        if (httpCode >= 500) {
+            return "HTTP " + httpCode + "（服务端暂时不可用，稍后自动重试）";
+        }
+        if (httpCode == 404 || httpCode == 405) {
+            return "HTTP " + httpCode + "（服务端未升级，缺少该接口）";
+        }
+        return "HTTP " + httpCode + "（非 JSON 响应）";
     }
 
     /** 与服务端 ApiSign.computeSign 同式（v1 前缀，OP 不含 /v1 前缀）。 */

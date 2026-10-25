@@ -23,6 +23,7 @@ import java.util.List;
  * <p>批次7（2026-10-23）按 {@link FeatureGate} 分级门控重排：
  * <ul>
  *   <li><b>敌情监控</b>（T3 高级会员）：推送渠道 + 开关 + 配置；无权限不渲染；</li>
+ *   <li><b>真机监控</b>（T3 高级会员）：服务端任务级协议监控页（daily/MonitorActivity）；</li>
  *   <li><b>协议监听</b>（调试包专属）：正式包不渲染；</li>
  *   <li><b>P1 协议探针</b>（调试包专属）：长按「开放策略」卡片进入，正式包无入口；</li>
  *   <li><b>历史「规划中 · 14」整段下架</b>：三消/爆兵/宠物洗练/移民抢位/侦察战报/迁城/
@@ -62,9 +63,10 @@ public class ToolBoxActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // 批次7 防旁路：本页只有 T3（敌情监控）与调试工具；无任何可用工具时（含直接 Intent
+        // 批次7 防旁路：本页只有 T3（敌情监控/真机监控）与调试工具；无任何可用工具时（含直接 Intent
         // 启动绕过 Home 入口门控）直接返回，不放空壳页也不泄露功能清单。
         if (!FeatureGate.visible(this, FeatureGate.Feature.ENEMY_WATCH)
+                && !FeatureGate.visible(this, FeatureGate.Feature.DEV_MONITOR)
                 && !FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER)) {
             toast(FeatureGate.reasonText(FeatureGate.Feature.TOOLBOX));
             finish();
@@ -122,6 +124,7 @@ public class ToolBoxActivity extends Activity {
         final boolean debugBuild = FeatureGate.isDebugBuild(this);
         final int tier = FeatureGate.currentTier(this);
         final boolean canWatch = FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, tier, debugBuild);      // T3 高阶
+        final boolean canMonitor = FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, tier, debugBuild);    // T3 高阶（正式包可见）
         final boolean canProto = FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, tier, debugBuild); // 仅调试包
         final int toolCount = FeatureGate.visibleToolCount(tier, debugBuild);
         if (toolCount > 0) {
@@ -162,6 +165,17 @@ public class ToolBoxActivity extends Activity {
                 // 点卡片主体 = 打开配置（开关只承担开关，避免误触）
                 watchCard.setOnClickListener(v -> showWatchConfig());
                 box.addView(watchCard);
+            }
+            // 真机监控（T3 高级会员，2026-10-25）：服务端任务级协议监控只读页，点击进入。
+            // 服务端未部署该接口时页内提示「服务端未升级」，入口照常（先装 App 等部署）。
+            if (canMonitor) {
+                LinearLayout monitorCard = toolCard(UiStyle.Icon.TARGET, "真机监控",
+                        "服务端任务/协议实时监控（领取·任务）", UiStyle.BRAND_50);
+                monitorCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
+                        UiStyle.INK3, 18));
+                monitorCard.setOnClickListener(v -> startActivity(
+                        new Intent(this, com.carlos.vault.daily.MonitorActivity.class)));
+                box.addView(monitorCard);
             }
         } else {
             // 批次8（P0-1）：无任何可见工具时**整组/占位都不渲染**（不放空卡片、不放“暂无”占位）。

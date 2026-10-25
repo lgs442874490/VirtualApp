@@ -19,6 +19,15 @@ public final class Main {
                 config.socksProxy == null ? "直连" : String.valueOf(config.socksProxy),
                 config.takeoverPolicy);
 
+        // 真机监控（2026-10-25）：任务级协议/会话事件环形缓冲 + JSONL 落盘（默认 off，VAULT_MONITOR=on 开启）。
+        // 只做观测，不改任务判定；App「工具箱 → 真机监控」经 POST /v1/vault/monitor 拉取。
+        com.carlos.vaultserver.monitor.MonitorStore monitor =
+                com.carlos.vaultserver.monitor.MonitorStore.install(config.dataDir);
+        com.carlos.vaultserver.monitor.MonitorStore.pruneOldFiles(monitor.dir(), 7);
+        com.carlos.vaultserver.monitor.TaskTrace.install();
+        FileLog.info("真机监控：{}（dir={}）", monitor.isEnabled() ? "已启用" : "未启用",
+                monitor.dir());
+
         VaultStore store = new VaultStore(config.dataDir);
         boolean fresh = !Files.isRegularFile(config.dataDir.resolve("vault.json"));
         store.load();
@@ -82,6 +91,7 @@ public final class Main {
             scheduler.stop();
             keeper.shutdownAll();
             stateStore.flush();
+            com.carlos.vaultserver.monitor.MonitorStore.shutdown();
         }));
 
         // 主线程驻留（daemon 线程不自持）

@@ -19,15 +19,54 @@ public final class TaskContext {
     public final String trigger;
     /** 角色参数：fnId → 参数 JSONObject（App FnParams p:fpid:sid:fn 的同步副本）。 */
     private final java.util.Map<String, JSONObject> params;
+    /**
+     * 本角色当前启用任务判定（2026-10-25 P0 修复）：供任务内做“关联任务是否在跑”的决策，
+     * 例如采集让位给情报前必须先确认 intel 确实启用（未启用时情报待办永远没人处理，
+     * 采集会被永久让位）。null = 未知（旧测试/反应式路径）→ {@link #taskEnabled} 返回 true。
+     */
+    private final java.util.function.Predicate<String> enabledTasks;
 
     public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
                        java.util.Map<String, JSONObject> params, String trigger) {
+        this(engine, fpid, sid, store, params, trigger, null);
+    }
+
+    /** 带启用任务判定的构造（整轮/单任务执行器传入；见 {@link #enabledPredicate}）。 */
+    public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
+                       java.util.Map<String, JSONObject> params, String trigger,
+                       java.util.function.Predicate<String> enabledTasks) {
         this.engine = engine;
         this.fpid = fpid;
         this.sid = sid;
         this.store = store;
         this.params = params == null ? java.util.Collections.emptyMap() : params;
         this.trigger = trigger == null ? "服务器" : trigger;
+        this.enabledTasks = enabledTasks;
+    }
+
+    /**
+     * 该角色某任务是否启用：roleConfig 显式值优先，缺省回退目录默认（与执行器选任务的语义一致）。
+     * 与 {@link #taskEnabled} 配套；执行器在创建 TaskContext 时传入。
+     */
+    public static java.util.function.Predicate<String> enabledPredicate(
+            java.util.Map<String, Boolean> roleConfig) {
+        return fnId -> {
+            if (fnId == null || fnId.isEmpty()) return false;
+            Boolean explicit = roleConfig == null ? null : roleConfig.get(fnId);
+            if (explicit != null) return explicit;
+            ServerTasks.TaskDef def = ServerTasks.byId(fnId);
+            return def != null && def.enabledByDefault;
+        };
+    }
+
+    /** 该角色某任务是否启用（无判定信息时保守返回 true，保持旧行为）。 */
+    public boolean taskEnabled(String fnId) {
+        if (enabledTasks == null) return true;
+        try {
+            return enabledTasks.test(fnId);
+        } catch (Throwable t) {
+            return true;
+        }
     }
 
     private JSONObject fnParams(String fnId) {

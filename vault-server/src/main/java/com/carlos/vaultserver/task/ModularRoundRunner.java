@@ -54,10 +54,12 @@ public final class ModularRoundRunner {
                                   StateStore store, Map<String, JSONObject> params,
                                   String fnOnly, String trigger) {
         String fpid = acc.fpid;
-        TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger);
+        Map<String, Boolean> roleConfig = acc.roleConfig.get(String.valueOf(sid));
+        // 2026-10-25 P0：启用任务集合带进上下文（采集×情报让位判定需要知道 intel 是否在跑）
+        TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger,
+                TaskContext.enabledPredicate(roleConfig));
         ModuleRegistry reg = registry();
 
-        Map<String, Boolean> roleConfig = acc.roleConfig.get(String.valueOf(sid));
         AutomationConfig config = AutomationConfig.fromLegacy(
                 reg.modules().values(), roleConfig, params);
         AutomationContext ctx = new AutomationContext(tc, config.module("legacy"),

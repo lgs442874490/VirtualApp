@@ -79,6 +79,10 @@ public final class FeatureGate {
         // ===== T3 高级会员：高阶已实现（有真实实现/入口） =====
         // 敌情监控 = T3 六项中唯一已完整实现（App EnemyWatch/EnemyWatchStore + 服务端 WarNotify/WeComNotifier）
         ENEMY_WATCH("enemy_watch", TIER_PREMIUM, true, false, "敌情监控"),
+        // 真机监控（2026-10-25）：服务端任务级协议监控 /v1/vault/monitor + App daily/MonitorActivity。
+        // T3 正式包可见（非 debugOnly）：用户当前即 T3，需要在真机上观察领取/任务链路与会话顶号。
+        // 旧服务端无该接口时页面内提示「服务端未升级」，不影响入口（可先装 App 等部署）。
+        DEV_MONITOR("dev_monitor", TIER_PREMIUM, true, false, "真机监控"),
         // 工具箱：release 包仅剩敌情监控（T3）与调试工具 → 跟随 T3；T2 无可渲染工具则不显示
         TOOLBOX("toolbox", TIER_PREMIUM, true, false, "工具箱"),
         // 守护盟友：T3 高阶（批次11 用户确认放开 UI）。服务端 ServerGuardianEngine/Launcher 已上线：
@@ -278,12 +282,13 @@ public final class FeatureGate {
     }
 
     /**
-     * 工具箱当前等级/构建下的可用工具数（release 下仅 T3 敌情监控；debug 包额外协议监听）。
+     * 工具箱当前等级/构建下的可用工具数（release 下 T3 敌情监控 + 真机监控；debug 包额外协议监听）。
      * 用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
      */
     public static int visibleToolCount(int tier, boolean debugBuild) {
         int n = 0;
         if (visible(Feature.ENEMY_WATCH, tier, debugBuild)) n++;
+        if (visible(Feature.DEV_MONITOR, tier, debugBuild)) n++;
         if (visible(Feature.PROTOCOL_LOGGER, tier, debugBuild)) n++;
         return n;
     }
