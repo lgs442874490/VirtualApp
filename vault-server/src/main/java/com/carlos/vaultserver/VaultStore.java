@@ -1047,6 +1047,21 @@ public final class VaultStore {
     }
 
     /**
+     * 只读：账号当前 token（重装后恢复通道 {@code /v1/vault/token/get} 用）。
+     *
+     * <p>锁内取值返回不可变 String，调用方拿到的不是 Account 引用，避免锁外读到半更新状态。
+     * 账号不存在返回 {@code null}；账号存在但从未补给 token 返回空串（两者语义不同，调用方
+     * 分别映射 CODE_ACCOUNT_NOT_FOUND / CODE_TOKEN_MISSING，错误信息不含 token 明文）。
+     */
+    public String getToken(String fpid) {
+        synchronized (lock) {
+            Account a = findLocked(fpid);
+            if (a == null) return null;
+            return a.token == null ? "" : a.token;
+        }
+    }
+
+    /**
      * 统一自动化开关：auto（整轮调度）与 keep（常驻会话）同值。
      * 客户端登录按钮/总开关都会走这里，保证服务器侧不会出现“开但没会话”的半开状态。
      */
