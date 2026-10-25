@@ -126,7 +126,10 @@ public final class MarchCapacity {
             String note = base.note == null ? "" : base.note;
             boolean initialized = !note.contains(MISSING_COMMAND_CENTER);
 
-            if (!initialized) return emptyModel(note);
+            if (!initialized) {
+                logMissingOnce(engine, note);
+                return emptyModel(note);
+            }
             List<Long> heroCaps = heroTroopCapacities(engine);
             long s1 = 0L, s2 = 0L, s3 = 0L;
             if (!heroCaps.isEmpty()) {
@@ -141,6 +144,30 @@ public final class MarchCapacity {
                     calc(fixedRaw, s3, bp), note);
         } catch (Throwable t) {
             return emptyModel();
+        }
+    }
+
+    /** 容量数据缺失时打一次结构诊断日志（定位 notify 形状差异；每引擎一次）。 */
+    private static final java.util.Map<WjdrEngine, Boolean> MISSING_LOGGED =
+            java.util.Collections.synchronizedMap(new java.util.WeakHashMap<WjdrEngine, Boolean>());
+
+    private static void logMissingOnce(WjdrEngine engine, String note) {
+        if (engine == null || MISSING_LOGGED.put(engine, Boolean.TRUE) != null) return;
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append("出征容量未就绪 note=").append(note);
+            for (String proto : new String[]{"notify_shelter_info", "notify_all_research",
+                    "notify_homeland_info", "notify_buff_show"}) {
+                Map<String, Object> d = engine.notifyData(proto);
+                sb.append(" | ").append(proto).append(d == null ? "=null" : "=keys" + d.keySet());
+                if (d != null && "notify_shelter_info".equals(proto)) {
+                    Object bi = d.get("building_info");
+                    sb.append(" building_info=").append(bi == null ? "null"
+                            : (bi instanceof Map ? "map" + ((Map<?, ?>) bi).keySet() : bi.getClass().getSimpleName()));
+                }
+            }
+            com.carlos.vaultserver.FileLog.info(sb.toString());
+        } catch (Throwable ignored) {
         }
     }
 

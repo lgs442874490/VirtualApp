@@ -215,17 +215,9 @@ public final class MarchCapacityCalculator {
         StringBuilder missing = new StringBuilder();
         long fixed = 500L;   // 基础（原版同款）
 
-        // 指挥中心 331（notify_shelter_info.building_info["331"].base.lv / .lv）
-        long ccLevel = 0;
-        Map<String, Object> shelter = engine.notifyData("notify_shelter_info");
-        Object bi = shelter == null ? null : shelter.get("building_info");
-        if (bi instanceof Map) {
-            Object cc = ((Map<?, ?>) bi).get("331");
-            if (cc instanceof Map && ((Map<?, ?>) cc).get("base") instanceof Map) {
-                cc = ((Map<?, ?>) cc).get("base");
-            }
-            if (cc instanceof Map) ccLevel = num(((Map<?, ?>) cc).get("lv"));
-        }
+        // 指挥中心 331（notify_shelter_info.building_info；兼容 map keyed by id "331"/"331.0"、
+        // list<{bid/lv}>、base.lv / lv / level 多种形状——生产不同版本形状不一致，深扫兜底）
+        long ccLevel = findBuildingLevel(engine.notifyData("notify_shelter_info"), 331L, 0);
         if (ccLevel > 0) fixed += commandCenterCapacity(ccLevel);
         else missing.append("指挥中心等级未同步；");
 
@@ -362,6 +354,59 @@ public final class MarchCapacityCalculator {
                 }
             }
         }
+    }
+
+    /** 在任意 notify 结构中按建筑 id 找等级（map keyed by id / 记录含 id 字段 / 嵌套 list）。 */
+    static long findBuildingLevel(Object node, long buildingId, int depth) {
+        if (node == null || depth > 6 || buildingId <= 0L) return 0L;
+        if (node instanceof Map) {
+            Map<?, ?> m = (Map<?, ?>) node;
+            // 形状 1：{ "331": {...} } / { "331.0": {...} }
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                if (num(e.getKey()) != buildingId) continue;
+                long lv = levelOf(e.getValue());
+                if (lv > 0L) return lv;
+            }
+            // 形状 2：{id|bid|building_id|type: 331, lv|level: n}
+            long rid = 0L;
+            for (String k : new String[]{"id", "bid", "building_id", "building_type", "type"}) {
+                Object v = m.get(k);
+                if (v != null) {
+                    rid = num(v);
+                    if (rid > 0L) break;
+                }
+            }
+            if (rid == buildingId) {
+                long lv = levelOf(m);
+                if (lv > 0L) return lv;
+            }
+            for (Object child : m.values()) {
+                long lv = findBuildingLevel(child, buildingId, depth + 1);
+                if (lv > 0L) return lv;
+            }
+        } else if (node instanceof List) {
+            for (Object child : (List<?>) node) {
+                long lv = findBuildingLevel(child, buildingId, depth + 1);
+                if (lv > 0L) return lv;
+            }
+        }
+        return 0L;
+    }
+
+    private static long levelOf(Object node) {
+        Map<String, Object> m = mapOf(node);
+        if (m == null) return 0L;
+        long lv = numIn(m, "lv");
+        if (lv <= 0L) lv = numIn(m, "level");
+        if (lv <= 0L) lv = numIn(m, "lvl");
+        if (lv <= 0L) {
+            Map<String, Object> base = mapOf(m.get("base"));
+            if (base != null) {
+                lv = numIn(base, "lv");
+                if (lv <= 0L) lv = numIn(base, "level");
+            }
+        }
+        return lv;
     }
 
     private MarchCapacityCalculator() {

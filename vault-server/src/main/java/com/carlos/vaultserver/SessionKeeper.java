@@ -472,7 +472,18 @@ public final class SessionKeeper implements SessionControl,
                 if (!wantOnline || !WjdrEngine.STATE_ONLINE.equals(eng.sessionState())) return;
                 if (!isFormationCatalogProto(proto)) return;
                 long now = System.currentTimeMillis();
-                if (now - lastFormationPersistAt < 5_000L) return;
+                // 节流：≥1 次/5s。但登录期「容量来源」推送（shelter/all_research/家园/buff）常落在
+                // hero_init 之后 5s 内被丢掉，导致 App 一直「等待登录容量同步」到下一个 10 分钟周期
+                // （生产实测 2026-10-25：capturedAt 停在登录+3s，marchCapacity.initialized=false）。
+                // 因此容量未就绪时不节流，保证登录后首次拿到指挥中心/科技数据即刷新目录。
+                boolean capacityReady;
+                try {
+                    capacityReady = com.carlos.vaultserver.formation.MarchCapacity
+                            .of(eng).initialized;
+                } catch (Throwable t) {
+                    capacityReady = false;
+                }
+                if (capacityReady && now - lastFormationPersistAt < 5_000L) return;
                 if (resolveSid() <= 0L) return;
                 lastFormationPersistAt = now;
                 try {
