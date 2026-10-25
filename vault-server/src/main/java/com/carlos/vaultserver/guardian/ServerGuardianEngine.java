@@ -1030,6 +1030,11 @@ public final class ServerGuardianEngine {
     // 配置读取（roleParams `guardian`，默认关）
     // =====================================================================
 
+    /** 当前生效配置快照（包可见：单测/诊断用；返回只读引用）。 */
+    Config configSnapshot() {
+        return config;
+    }
+
     /** 配置热载（10s 节流；force=启动时立即读）。任何异常 → 关闭（fail-closed）。 */
     void reloadConfig(boolean force) {
         long now = System.currentTimeMillis();
@@ -1039,7 +1044,10 @@ public final class ServerGuardianEngine {
             VaultStore.Account acc = vault == null ? null : vault.find(fpid);
             Map<String, String> raw = acc == null ? null : acc.roleParams.get(String.valueOf(sid));
             String json = raw == null ? null : raw.get(FN_ID);
-            Config parsed = json == null || json.isEmpty() ? Config.disabled() : parseConfig(new JSONObject(json));
+            // 无 App 参数时也必须走 parseConfig(null) 以应用 env 实盘/灰度覆盖（VAULT_GUARDIAN_*）；
+            // 无 env 时 parseConfig(null) 等价 Config.disabled()（默认关，零行为变化）。
+            Config parsed = json == null || json.isEmpty()
+                    ? parseConfig(null) : parseConfig(new JSONObject(json));
             // 批次10：编队库可能由 App 同步在独立 formation fn 参数里（与 FormationResolver.libraryFor 同口径兜底）
             if (parsed.formationLibraryJson.isEmpty() && raw != null) {
                 try {

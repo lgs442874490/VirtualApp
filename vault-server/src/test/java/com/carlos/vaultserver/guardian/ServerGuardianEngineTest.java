@@ -318,6 +318,28 @@ public class ServerGuardianEngineTest {
     }
 
     @Test
+    public void reloadConfig_appliesEnvOverrides_withoutRoleParams() {
+        try {
+            System.clearProperty("VAULT_GUARDIAN_ENABLED");
+            System.clearProperty("VAULT_GUARDIAN_DRY_RUN");
+            accountWithParams(null);            // 账号存在但无 guardian roleParams（App 未下发）
+            ServerGuardianEngine e = engine();
+            e.reloadConfig(true);
+            assertFalse("无 env/无参数 → 默认关", e.configSnapshot().enabled);
+            assertTrue(e.configSnapshot().dryRun);
+
+            System.setProperty("VAULT_GUARDIAN_ENABLED", "1");
+            System.setProperty("VAULT_GUARDIAN_DRY_RUN", "0");
+            e.reloadConfig(true);
+            assertTrue("env 实盘：仅 env 即可开守护（无需任何目标配置/roleParams）", e.configSnapshot().enabled);
+            assertFalse("env 实盘：dry_run=0", e.configSnapshot().dryRun);
+        } finally {
+            System.clearProperty("VAULT_GUARDIAN_ENABLED");
+            System.clearProperty("VAULT_GUARDIAN_DRY_RUN");
+        }
+    }
+
+    @Test
     public void parseConfig_subStrategyFieldsAndLegacyIntercept() {
         JSONObject p = new JSONObject(
                 "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"recall\":false},"
