@@ -1205,7 +1205,8 @@ public class VaultEngine {
      * 直接的动机：入口可能会频繁被打开/退出，每次无脑重写一遍约 9MB 的 zip 既慢又伤存储。
      * 用轻量指纹判断有无变化即可，指纹只有"文件数 / 总字节数 / 最新 mtime"，不读文件内容。
      *
-     * @return true 表示写了新快照；false 表示判定为无变化（**没有**写）
+     * @return true 表示写了新快照；false 表示**没有写**（判定为无变化，或 live 里没有有效登录会话
+     *         而被主动跳过；调用方无需区分，失败/跳过都不影响启动主流程）
      */
     public boolean autoSaveEntrySnapshot(String entryId) throws IOException {
         // P0-3：SessionSaver 的后台自动存档可能与切号（wipe/还原 live 目录）交错，
@@ -1227,6 +1228,32 @@ public class VaultEngine {
         // 位置刻意在**指纹判定之前**：否则"内容没变"时会提前 return，归属同步会被一起跳过。
         // 同步失败/读不到会话都静默跳过 —— 绝不因为它中断存档（返回值不参与下面的流程判定）。
         syncSessionOwner(entryId);
+
+        // 【修复 2026-10-25】写侧纵向门：live 里**没有有效登录会话**时不要压缩。
+        // 真机现场：容器停在「注册/登录」页（`account_session_cn` 计数=0），而每次启动/回号库
+        // 都把这份未登录态压成 ~2.8MB 快照，还覆盖掉原来那份好快照 —— 于是"点一次还原一次坏态"。
+        // 判定口径与读侧 SessionProbe（session_key 非空 + fpid 归属）一致，纯逻辑部分见
+        // SessionProbe.canSnapshotLive。
+        // ⚠ 必须用**不带进程存活门**的读取：自动存档本来就发生在"游戏已退出"之后，
+        // 带门的 readLiveSessionFpid() 此时必然返回空 ⇒ 会把所有正常存档一起掐掉。
+        String liveFpid = readLiveSessionFpidOnDisk();
+        AccountStore.Account tgt = null;
+        try {
+            tgt = store.byId(entryId);
+        } catch (Throwable ignored) {
+        }
+        String expectFpid = (tgt == null || tgt.fpid == null) ? "" : tgt.fpid.trim();
+        if (liveFpid.isEmpty()) {
+            android.util.Log.w("VaultEngine",
+                    "autoSave 跳过：live 无有效登录会话（不把未登录态写进快照）entry=" + entryId);
+            return false;
+        }
+        if (!SessionProbe.canSnapshotLive(liveFpid, expectFpid)) {
+            android.util.Log.w("VaultEngine", "autoSave 跳过：live 会话(" + liveFpid
+                    + ") 不属于入口(" + expectFpid + ") entry=" + entryId);
+            return false;
+        }
+
         String fp = liveFingerprint();
         if (fp != null && fp.equals(store.getSnapshotFingerprint(entryId)) && hasEntrySnapshot(entryId)) {
             return false;
@@ -1251,6 +1278,22 @@ public class VaultEngine {
         // 匹配到「宿主 UID + com.gof.china cmdline」的进程即为容器游戏存活
         // （原生游戏 cmdline 相同但 UID 不同，不算）。
         if (!isContainerGameRunning()) return "";
+        return readLiveSessionFpidOnDisk();
+    }
+
+    /**
+     * 只读盘上的 live 会话文件、**不做进程存活判断**的版本。
+     *
+     * <p><b>谁该用它</b>：需要回答"live 目录此刻有没有登录态"的写侧/保存前判定
+     * （{@link #autoSaveEntrySnapshotLocked}、{@link #captureGuardReason}）——这些场景
+     * 要保存的本来就是盘上这份数据，与游戏进程是否还活着无关；反过来说，若复用带
+     * {@link #isContainerGameRunning()} 门的 {@link #readLiveSessionFpid()}，自动存档
+     * （正常发生在游戏退出后）会被恒定判成"无会话"而全部跳过。
+     *
+     * <p><b>语义与 {@link #readLiveSessionFpid()} 完全一致</b>（{@code session_key} 非空才算
+     * 登录着，登出态返回 {@code ""}），只是少了进程门。任何读取/解析失败也返回 {@code ""}。
+     */
+    private String readLiveSessionFpidOnDisk() {
         try {
             File f = new File(new File(gameDataDir(), "shared_prefs"), PREF_NAME + ".xml");
             if (!f.isFile()) return "";
@@ -1698,7 +1741,8 @@ public class VaultEngine {
      * 【#72 F4】「保存登录现场」的前置校验：不让"别人的 live"或"未登录态"被写进本入口快照。
      *
      * <p>判定口径与 {@link SessionProbe} 完全一致（{@code session_key} 非空 + fpid 匹配），
-     * 只是对象从 zip 换成 live 目录 —— 这就是 {@link #readLiveSessionFpid}。
+     * 只是对象从 zip 换成 live 目录（读的是盘上的 prefs 文本，见
+     * {@link #readLiveSessionFpidOnDisk()}，刻意不要求游戏进程存活）。
      * 入口没配 fpid（原生登录型）时只要求"会话存在且不为空"，与读侧 probe 的宽松口径对齐。
      *
      * @param entryId 目标入口 id
@@ -1717,13 +1761,18 @@ public class VaultEngine {
                 String nm = (oa == null || oa.label == null || oa.label.isEmpty()) ? owner : oa.label;
                 return "当前游戏里登录的是入口「" + nm + "」，不是本入口。请从本入口启动并登录后再保存";
             }
-            String live = readLiveSessionFpid();
+            // 【修复 2026-10-25】读盘用不带进程门的版本：手动保存的是**盘上这份数据**，
+            // 游戏退出后再点保存同样应当允许（原先带门的读取在游戏已退出时恒为空，
+            // 会把"没在跑游戏"误报成"没有有效会话"）。
+            String live = readLiveSessionFpidOnDisk();
             if (live.isEmpty()) {
-                return "当前游戏处于未登录状态，保存会把「未登录」写进本入口。请先登录游戏再保存";
+                // 不写"未登录快照"（真机：未登录 live 被压成 2.8MB 快照，还被 UI 显示成
+                // 「已保存登录 · 备有 token」）。提示必须说清**没保存**，不能让用户以为存上了。
+                return "当前没有有效登录会话，未保存。请先在游戏里登录一次，再点「保存当前登录现场」";
             }
             AccountStore.Account target = store.byId(entryId);
             String expect = (target == null || target.fpid == null) ? "" : target.fpid;
-            if (!expect.isEmpty() && !expect.equals(live)) {
+            if (!SessionProbe.canSnapshotLive(live, expect)) {
                 return "当前游戏登录的号（" + live + "）与本入口记录的号（" + expect + "）不一致，已取消保存";
             }
             return null;

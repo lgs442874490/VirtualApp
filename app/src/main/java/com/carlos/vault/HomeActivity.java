@@ -2491,8 +2491,39 @@ public class HomeActivity extends AccountVaultActivity {
                 hasSnap = engine.hasEntrySnapshot(a.id);
             } catch (Throwable ignored) {
             }
+            // 【真机 2026-10-25】卡片墙的「原生」同样不能只看快照文件存在：快照里可能压根没有
+            // 登录会话（重装/未登录时存下的坏态），显示「原生」会让用户以为可以免登录。
+            // 判定口径复用 SessionProbe（与 VaultEngine.launchEntry 的还原分支一致）。
+            // 只在「没有 token 且确实有快照」时才解 zip，token 账号的文案本来就是 token，不必多读盘。
+            boolean snapValid = false;
+            if (!hasToken && hasSnap) {
+                try {
+                    snapValid = SessionProbe.snapshotHasValidSession(engine.entrySnapshot(a.id),
+                            "shared_prefs/" + VaultEngine.PREF_NAME + ".xml",
+                            VaultEngine.SESSION_KEY, a.fpid);
+                } catch (Throwable ignored) {
+                    // fail-closed：探测失败按「无有效会话」显示
+                }
+            }
+            String subLabel;
+            switch (SessionProbe.classifySnapshot(hasToken, hasSnap, snapValid)) {
+                case SNAP_VALID:
+                    subLabel = hasToken ? "token" : "原生";
+                    break;
+                case TOKEN_ONLY:
+                    subLabel = "token";
+                    break;
+                case SNAP_NO_SESSION:
+                    // 有快照文件但没有有效登录会话 ⇒ 提示还要登录一次，不再冒充「原生」
+                    subLabel = "待登录";
+                    break;
+                case NATIVE_ONLY:
+                default:
+                    subLabel = "无";
+                    break;
+            }
             TextView subStatus = new TextView(this);
-            subStatus.setText(hasToken ? "token" : (hasSnap ? "原生" : "无"));
+            subStatus.setText(subLabel);
             subStatus.setTextSize(9.5f);
             subStatus.setMaxLines(1);
             subStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);

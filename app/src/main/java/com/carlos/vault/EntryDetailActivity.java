@@ -212,7 +212,9 @@ public class EntryDetailActivity extends Activity {
         profileMeta.setTextColor(UiStyle.INK2);
         profileMeta.setPadding(0, dp(5), 0, 0);
         headText.addView(profileMeta);
-        profileBadge = UiStyle.badge(this, "ok", "已保存登录 · 备有 token");
+        // 初始必须是中性态：refreshInfo() 会按「快照里是否真有效会话」重算（旧代码这里预置了
+        // 「已保存登录 · 备有 token」，在探测完成前就先给了一个可能错误的绿色结论）。
+        profileBadge = UiStyle.badge(this, "idle", "读取中…");
         LinearLayout.LayoutParams blp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         blp.topMargin = dp(8);
@@ -320,6 +322,8 @@ public class EntryDetailActivity extends Activity {
         loginCard.addView(sectionTitle("登录数据"));
         loginCard.addView(actionRow(UiStyle.Icon.USER, "设置 token",
                 "粘贴：号 ID----token", this::showTokenDialog));
+        loginCard.addView(actionRow(UiStyle.Icon.CLOUD, "从服务器恢复登录",
+                "重装/清数据后，用服务器保存的 token 回填", this::restoreTokenFromServer));
         loginCard.addView(actionRow(UiStyle.Icon.DOC, "提取并复制当前 token",
                 "读取游戏当前登录，复制为 号ID----token", this::confirmExtractToken));
         loginCard.addView(actionRow(UiStyle.Icon.CLOUD, "保存当前登录现场",
@@ -554,6 +558,21 @@ public class EntryDetailActivity extends Activity {
     private void refreshInfo() {
         boolean hasToken = acc.token != null && !acc.token.isEmpty();
         boolean hasSnap = engine.hasEntrySnapshot(acc.id);
+        // 【真机 2026-10-25】快照文件存在 ≠ 快照里有登录态：`snap_<id>.zip` 内的
+        // account_session_cn 可能是 0（四个 ANR 现场都是"未登录快照"），旧文案却显示
+        // 「已保存登录 · 备有 token」。这里先探一次「快照里有没有本入口可用的会话」，
+        // 判定口径与 VaultEngine.launchEntry 的还原分支完全一致，避免 UI 与启动行为两套说法。
+        boolean snapValid = false;
+        if (hasSnap) {
+            try {
+                snapValid = SessionProbe.snapshotHasValidSession(engine.entrySnapshot(acc.id),
+                        "shared_prefs/" + VaultEngine.PREF_NAME + ".xml", VaultEngine.SESSION_KEY, acc.fpid);
+            } catch (Throwable ignored) {
+                // fail-closed：探测失败按「无有效会话」显示，绝不把未知状态说成"已保存登录"
+            }
+        }
+        SessionProbe.SnapshotState snapState =
+                SessionProbe.classifySnapshot(hasToken, hasSnap, snapValid);
         long sid = RoleStore.activeRole(this, acc.fpid);
         if (sid <= 0) {
             List<RoleStore.Role> rs = RoleStore.roles(this, acc.fpid);
@@ -572,18 +591,31 @@ public class EntryDetailActivity extends Activity {
             profileMeta.setText(sb.toString());
         }
         if (profileBadge != null) {
-            if (hasSnap) {
-                profileBadge.setText("已保存登录 · 备有 token");
-                profileBadge.setTextColor(UiStyle.OK_INK);
-                profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.OK_BG, 999));
-            } else if (hasToken) {
-                profileBadge.setText("token 登录 · 未保存现场");
-                profileBadge.setTextColor(UiStyle.WAIT_INK);
-                profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.WAIT_BG, 999));
-            } else {
-                profileBadge.setText("原生登录 · 未绑定 token");
-                profileBadge.setTextColor(UiStyle.INK2);
-                profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.IDLE_BG, 999));
+            // 四态文案（与启动流程的真实行为对齐）：
+            //   快照有效 ⇒ 可免登录；有 token 无有效快照 ⇒ token 登录；有快照但无会话 ⇒
+            //   必须明说"需登录一次"，**禁止**再出现「备有 token」这类误导。
+            switch (snapState) {
+                case SNAP_VALID:
+                    profileBadge.setText("已保存登录 · 可免登录");
+                    profileBadge.setTextColor(UiStyle.OK_INK);
+                    profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.OK_BG, 999));
+                    break;
+                case TOKEN_ONLY:
+                    profileBadge.setText("token 登录 · 未保存现场");
+                    profileBadge.setTextColor(UiStyle.WAIT_INK);
+                    profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.WAIT_BG, 999));
+                    break;
+                case SNAP_NO_SESSION:
+                    profileBadge.setText("已存现场 · 无登录会话（需登录一次）");
+                    profileBadge.setTextColor(UiStyle.WAIT_INK);
+                    profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.WAIT_BG, 999));
+                    break;
+                case NATIVE_ONLY:
+                default:
+                    profileBadge.setText("原生登录 · 未绑定 token");
+                    profileBadge.setTextColor(UiStyle.INK2);
+                    profileBadge.setBackground(UiStyle.roundRectDp(this, UiStyle.IDLE_BG, 999));
+                    break;
             }
         }
         refreshLaunchStatus();
@@ -1535,6 +1567,59 @@ public class EntryDetailActivity extends Activity {
                     toast("token 已保存，下次打开该入口时重新登录");
                     refreshInfo();
                 });
+    }
+
+    // ---------- 从服务器恢复 token（重装/清数据后的补通道） ----------
+
+    /**
+     * 「从服务器恢复登录」：用服务器保存的 token 回填本入口。
+     *
+     * <p>背景：宿主重装/清数据会带走本地 token，而服务器 `/v1/vault/status` 只回
+     * {@code hasToken} 布尔、历史上没有读取通道，用户只能重贴 token 或手动登录一次
+     * （见 2026-10-25 分身登录闪退排查）。新接口 {@code POST /v1/vault/token/get}
+     * （OP=vaultTokenGet，ApiSign 验签）提供读取；本入口仅在服务器模式下可用。
+     *
+     * <p>错误码：1005=服务器没有该账号 token（应重贴/原生登录）；1004=服务器没有该号ID；
+     * 其余网络/验签错误按 message 提示。日志纪律：接口层不打印 token 明文。
+     */
+    private void restoreTokenFromServer() {
+        if (!VaultSync.isServerMode(this)) {
+            toast("当前未开启服务器模式，无法从服务器恢复");
+            return;
+        }
+        final String fpid = acc.fpid == null ? "" : acc.fpid.trim();
+        if (fpid.isEmpty()) {
+            toast("入口没有号 ID：请先「设置 token」或原生登录一次");
+            return;
+        }
+        final ProgressDialog pd = new ProgressDialog(this);
+        pd.setMessage("正在从服务器获取 token…");
+        pd.setCancelable(false);
+        pd.show();
+        VaultSync.restoreTokenFromServer(this, fpid, (code, message, data) -> runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            pd.dismiss();
+            if (code == 0 && data != null) {
+                String token = data.optString("token", "").trim();
+                if (token.isEmpty()) {
+                    toast("服务器未返回 token");
+                    return;
+                }
+                store.updateToken(acc.id, token);
+                // 与「设置 token」一致：摘掉 live 归属，避免下次 launchEntry 走 keepLive 而沿用旧会话。
+                engine.invalidateEntrySession(acc.id);
+                AccountStore.Account fresh = store.byId(acc.id);
+                if (fresh != null) acc = fresh;
+                refreshInfo();
+                toast("已从服务器恢复 token，下次启动该入口将自动登录");
+            } else if (code == 1005) {
+                toast("服务器没有该账号的 token，请重贴或原生登录一次");
+            } else if (code == 1004) {
+                toast("服务器没有该号 ID，请确认号 ID 是否正确");
+            } else {
+                toast("恢复失败：" + (message == null ? ("code " + code) : message));
+            }
+        }));
     }
 
     // ---------- 提取并复制当前登录 token ----------
