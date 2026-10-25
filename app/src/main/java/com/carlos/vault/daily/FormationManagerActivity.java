@@ -162,6 +162,11 @@ public class FormationManagerActivity extends Activity {
             mineFilter = MINE_BEAR;
         }
         ensureData();
+        // 账号池缓存异步刷新（只读；失败不影响本页），避免 online() 用旧缓存误判离线
+        try {
+            VaultSync.fetchAccountPool(this, null);
+        } catch (Throwable ignored) {
+        }
         render();
         // 直达「新建编队」：入口方（功能页编队卡 / 队列选择器 / 采集设置）期望立刻看到编辑器，
         // 而不是先让用户在管理页里找按钮（用户反馈：只看到“选择编队”，找不到新增入口）。
@@ -288,20 +293,32 @@ public class FormationManagerActivity extends Activity {
     // ==================== 在线/能力判定 ====================
 
     private boolean online() {
+        boolean cached = false;
         try {
             JSONObject data = AccountPoolCache.load(this);
-            if (data == null || AccountPoolCache.isUnsupported(this)) {
-                return catalog.configured();
+            if (data != null && !AccountPoolCache.isUnsupported(this)) {
+                Map<String, JSONObject> accs = AccountPoolCache.accountsByFpid(data);
+                JSONObject acc = accs == null ? null : accs.get(fpid);
+                JSONObject role = acc == null ? null : AccountPoolCache.findRole(acc, sid, uid);
+                if (role != null) cached = AccountPoolCache.isRoleOnline(role);
+                else cached = catalog.configured();
+            } else {
+                cached = catalog.configured();
             }
-            Map<String, JSONObject> accs = AccountPoolCache.accountsByFpid(data);
-            JSONObject acc = accs == null ? null : accs.get(fpid);
-            if (acc == null) return catalog.configured();
-            JSONObject role = AccountPoolCache.findRole(acc, sid, uid);
-            if (role == null) return catalog.configured();
-            return AccountPoolCache.isRoleOnline(role);
-        } catch (Throwable t) {
-            return catalog.configured();
+        } catch (Throwable ignored) {
         }
+        if (cached) return true;
+        // 账号池缓存可能是本页打开前的旧值（生产实测：App 首页显示“游戏在线”，
+        // 编队页却因 AccountPoolCache 过期判定离线 → 新建编队被拒「账号离线」）。
+        // 目录新鲜（≤3 分钟捕获）说明服务端角色会话在线（只有在线会话才会写入该目录）。
+        try {
+            if (catalog.configured() && catalog.capturedAt() > 0L
+                    && System.currentTimeMillis() - catalog.capturedAt() < 180_000L) {
+                return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
     }
 
     private boolean editableNow() {
@@ -975,17 +992,28 @@ public class FormationManagerActivity extends Activity {
         return f.distinctHeroIds().size() + " 英雄";
     }
 
+    /** 主按钮校验：新建编队用占位名跳过「请填写编队名称」，其余错误照常返回。 */
+    private String validateDraftForPrimary() {
+        if (draft == null) return "编队配置不完整";
+        final String saved = draft.name;
+        final boolean needName = draft.id <= 0 && (saved == null || saved.trim().isEmpty());
+        if (needName) draft.name = "新编队";
+        try {
+            return FormationRules.validate(draft, catalog);
+        } catch (Throwable t) {
+            return "编队配置不完整";
+        } finally {
+            if (needName) draft.name = saved == null ? "" : saved;
+        }
+    }
+
     private boolean boardPrimaryEnabled() {
         if (saving) return false;
         if (editorOpen) {
             if (draft == null) return false;
-            String err = null;
-            try {
-                err = FormationRules.validate(draft, catalog);
-            } catch (Throwable t) {
-                err = "编队配置不完整";
-            }
-            return err == null;
+            // 新建编队：名称由「编队阵容」弹窗输入（网页 §1.6），主按钮不能因名称为空而禁用，
+            // 否则用户永远点不进名称弹窗（生产实测：保存编队按钮一直灰色不可点）。
+            return validateDraftForPrimary() == null;
         }
         if (TAB_AUTO.equals(tab)) {
             // T7：自动比例是 App 本地设置（保存即上传），不依赖容量同步 → 在线即可保存
@@ -1782,21 +1810,7 @@ public class FormationManagerActivity extends Activity {
 
     private void saveEditor() {
         if (draft == null || saving) return;
-        String err = null;
-        // 新建编队：名称由「编队阵容」弹窗输入（网页 §1.6），这里先用占位名做其余校验，
-        // 避免被「请填写编队名称」提前拦截导致无法进入保存流程。
-        final String pendingName = draft.name;
-        final boolean isNewDraft = draft.id <= 0;
-        if (isNewDraft && (pendingName == null || pendingName.trim().isEmpty())) {
-            draft.name = "新编队";
-        }
-        try {
-            err = FormationRules.validate(draft, catalog);
-        } catch (Throwable t) {
-            err = "编队配置不完整";
-        } finally {
-            if (isNewDraft) draft.name = pendingName == null ? "" : pendingName;
-        }
+        String err = validateDraftForPrimary();
         if (err != null) {
             UiStyle.toast(this, err);
             return;

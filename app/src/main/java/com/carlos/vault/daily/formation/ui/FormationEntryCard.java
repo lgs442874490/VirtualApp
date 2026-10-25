@@ -246,6 +246,7 @@ public final class FormationEntryCard {
         if (lib == null) return 0;
         for (FormationModel f : lib) {
             if (f == null || f.isGame()) continue;
+            if (f.builtIn || f.templateKey != null) continue;   // 内置模板不算“自定义”
             n++;
         }
         return n;
