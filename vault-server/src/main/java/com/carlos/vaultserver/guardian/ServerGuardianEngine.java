@@ -1056,10 +1056,13 @@ public final class ServerGuardianEngine {
         }
     }
 
-    /** 解析 roleParams `guardian` JSON（纯函数；缺省/异常一律关闭+dry_run）。 */
+    /** 解析 roleParams `guardian` JSON（纯函数；缺省/异常一律关闭+dry_run；env 灰度可覆盖）。 */
     static Config parseConfig(JSONObject p) {
         Config c = Config.disabled();
-        if (p == null) return c;
+        if (p == null) {
+            applyEnvOverrides(c);
+            return c;
+        }
         try {
             JSONObject sub = p.optJSONObject("sub");
             JSONObject st = p.optJSONObject("strategy");
@@ -1138,16 +1141,13 @@ public final class ServerGuardianEngine {
             Object rd = first(sub, st, p, "recall_distance");
             if (rd != null) c.recallDistance = Math.max(0d, Exec.longOf(rd));
         } catch (Throwable ignored) {
-            return Config.disabled();
+            Config bad = Config.disabled();
+            applyEnvOverrides(bad);
+            return bad;
         }
-        // P1 灰度开关（可选环境变量覆盖）：App 侧尚无 speedup_enabled/diamond_speedup_enabled 的
-        // 参数入口时，可用服务端 env 灰度开启；env 未设置/非法 → 完全以 roleParams 为准（默认零变化）。
-        //   VAULT_GUARDIAN_SPEEDUP=1|0   → 强制 speedup_enabled
-        //   VAULT_GUARDIAN_DIAMOND=1|0   → 强制 diamond_speedup_enabled（真实花钻石，慎用）
-        Boolean envSpeedup = envBool("VAULT_GUARDIAN_SPEEDUP");
-        if (envSpeedup != null) c.speedupEnabled = envSpeedup;
-        Boolean envDiamond = envBool("VAULT_GUARDIAN_DIAMOND");
-        if (envDiamond != null) c.diamondSpeedupEnabled = envDiamond;
+        // P1/灰度环境变量覆盖（可选）：App 侧尚无 guardian 新键入口时，可用服务端 env 灰度/实盘开启；
+        // env 未设置/非法 → 完全以 roleParams 为准（默认零变化）。
+        applyEnvOverrides(c);
         // 批次10：统一编队参数（无这些键 → isConfigured=false → 旧行为）
         c.rawParams = ServerGuardianLauncher.toParamMap(p);
         c.formationLibraryJson = p.optString("formation_library", "");
@@ -1187,6 +1187,39 @@ public final class ServerGuardianEngine {
             return System.getenv(key);
         } catch (Throwable ignored) {
             return null;
+        }
+    }
+
+    /**
+     * 灰度/实盘 env 覆盖（未设置或不合法 → 保持 roleParams 值，默认行为零变化）：
+     * <ul>
+     *   <li>{@code VAULT_GUARDIAN_ENABLED=1|0}：守护总开关（实盘开启无需 App 参数入口）</li>
+     *   <li>{@code VAULT_GUARDIAN_DRY_RUN=1|0}：演练开关（实盘需 0）</li>
+     *   <li>{@code VAULT_GUARDIAN_TROOPS_MIN=N}：敌方兵力下限（0=不限）</li>
+     *   <li>{@code VAULT_GUARDIAN_SPEEDUP=1|0}：P1 对等加速总开关</li>
+     *   <li>{@code VAULT_GUARDIAN_DIAMOND=1|0}：钻石购买开关（真实花钻石，慎用）</li>
+     * </ul>
+     * 目标（盟友 uid / 坐标）无需配置：威胁目标由联盟/世界 push 自动解析
+     * （{@code decide} 的 ally_uid/target_uid/target_point 均为 0 时不过滤、{@code resolveTargetPoint}
+     * 优先用 push endpoint，其次盟友坐标表）。
+     */
+    static void applyEnvOverrides(Config c) {
+        if (c == null) return;
+        Boolean enabled = envBool("VAULT_GUARDIAN_ENABLED");
+        if (enabled != null) c.enabled = enabled;
+        Boolean dryRun = envBool("VAULT_GUARDIAN_DRY_RUN");
+        if (dryRun != null) c.dryRun = dryRun;
+        Boolean speedup = envBool("VAULT_GUARDIAN_SPEEDUP");
+        if (speedup != null) c.speedupEnabled = speedup;
+        Boolean diamond = envBool("VAULT_GUARDIAN_DIAMOND");
+        if (diamond != null) c.diamondSpeedupEnabled = diamond;
+        String troops = setting("VAULT_GUARDIAN_TROOPS_MIN");
+        if (troops != null) {
+            try {
+                long v = Long.parseLong(troops.trim());
+                if (v >= 0L) c.troopsMin = v;
+            } catch (Throwable ignored) {
+            }
         }
     }
 
