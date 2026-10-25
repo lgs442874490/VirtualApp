@@ -135,8 +135,52 @@ public final class FormationEntryCard {
             return;
         }
 
-        // ---------- 当前绑定摘要 ----------
-        card.addView(bindingSummary(act, fpid, sid, uid, fnId, lib));
+        // ---------- 当前绑定摘要（非采集：点击可切换 自动/指定编队，1:1 网页版队列选择器） ----------
+        final View bindRow = bindingSummary(act, fpid, sid, uid, fnId, lib);
+        if (!"gather".equals(fnId)) {
+            bindRow.setContentDescription("选择出征编队");
+            UiStyle.press(bindRow);
+            bindRow.setOnClickListener(v -> {
+                try {
+                    com.carlos.vault.daily.FormationPicker.pickFormationFor(act, fpid, sid, uid,
+                            null,
+                            (mode, ids, inf, lanc, mark, ratios) -> {
+                                if (FormationStore.MODE_ROLE.equals(mode)) {
+                                    FormationStore.saveFnMode(act, fpid, sid, fnId, mode);
+                                    long first = ids != null && ids.length > 0 ? ids[0] : 0L;
+                                    FormationStore.saveFnFormation(act, fpid, sid, fnId, first);
+                                    if (ids != null && ids.length > 1) {
+                                        FormationStore.saveFnFormationIds(act, fpid, sid, fnId, ids);
+                                    }
+                                    FormationStore.saveFnSoldiersOverride(act, fpid, sid, fnId,
+                                            inf, lanc, mark);
+                                } else {
+                                    // 自动编队：只写 mode+比例权重；不要调用 saveFnFormation(0)
+                                    // （该方法会把模式强制改回 ROLE，生产实测踩坑）
+                                    int r0 = ratios != null && ratios.length >= 3 ? ratios[0] : 50;
+                                    int r1 = ratios != null && ratios.length >= 3 ? ratios[1] : 20;
+                                    int r2 = ratios != null && ratios.length >= 3 ? ratios[2] : 30;
+                                    FormationStore.saveFnAutoRatio(act, fpid, sid, fnId, r0, r1, r2, 0);
+                                    FormationStore.saveFnMode(act, fpid, sid, fnId,
+                                            FormationStore.MODE_AUTOMATIC);
+                                    FormationStore.saveFnSoldiersOverride(act, fpid, sid, fnId,
+                                            0, 0, 0);
+                                }
+                                try {
+                                    VaultSync.onAccountsChanged(act);
+                                } catch (Throwable ignored) {
+                                }
+                                fill(act, fpid, sid, uid, fnId, card, onChanged);
+                                if (onChanged != null) onChanged.run();
+                                UiStyle.toast(act, FormationStore.MODE_ROLE.equals(mode)
+                                        ? "已指定出征编队" : "已切换为自动编队");
+                            });
+                } catch (Throwable t) {
+                    UiStyle.toast(act, "打开编队选择失败：" + t.getMessage());
+                }
+            });
+        }
+        card.addView(bindRow);
 
         // ---------- 出征容量入口（复用 T4 容量弹窗）----------
         if (cat != null) {

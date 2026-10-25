@@ -40,7 +40,9 @@ public class FormationQuickSetupTest {
         assertTrue(step(steps, "behemoth").message.contains("仅单队列"));
         assertEquals("applied", step(steps, "intel").status);
         assertEquals("多队列时狩猎跳过", "skipped", step(steps, "hunt").status);
-        assertEquals("applied", step(steps, "hero_mission").status);
+        // App 当前无「英雄的使命」模块（FnRegistry 无该功能）→ 明确 skipped，不谎报已设置
+        assertEquals("skipped", step(steps, "hero_mission").status);
+        assertTrue(step(steps, "hero_mission").message.contains("暂无"));
     }
 
     @Test

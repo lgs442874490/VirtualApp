@@ -116,7 +116,16 @@ public final class FormationQuickSetup {
         steps.add(oneQueueStep(MODULE_BEHEMOTH, limit));
         steps.add(new Step(MODULE_INTEL, STATUS_APPLIED, "已绑定打野内置编队"));
         steps.add(oneQueueStep(MODULE_HUNT, limit));
-        steps.add(new Step(MODULE_HERO_MISSION, STATUS_APPLIED, "已绑定巨兽内置编队"));
+        // 网页版有「英雄的使命」模块；本 App 目前没有该功能入口 → 明确 skipped，
+        // 不再谎报“已设置”写入一个没有消费方的 params 键。
+        boolean hasHeroMission = false;
+        try {
+            hasHeroMission = com.carlos.vault.daily.FnRegistry.byId(MODULE_HERO_MISSION) != null;
+        } catch (Throwable ignored) {
+        }
+        steps.add(new Step(MODULE_HERO_MISSION,
+                hasHeroMission ? STATUS_APPLIED : STATUS_SKIPPED,
+                hasHeroMission ? "已绑定巨兽内置编队" : "当前版本暂无「英雄的使命」模块"));
         return steps;
     }
 
