@@ -91,6 +91,72 @@ public final class SessionProbe {
     }
 
     /**
+     * 入口「登录现场」的四个状态 —— App 侧徽标 / 卡片副标题的**唯一判定口径**。
+     *
+     * <p><b>为什么要有它</b>（真机 2026-10-25）：账号详情页在「隆科多」上同时显示
+     * 「未绑定 token」和绿色徽标「已保存登录 · 备有 token」，可 `files/snap_<id>.zip` 里
+     * `account_session_cn` 的计数其实是 0（无效会话）。原因是 UI 只看「快照文件存不存在」，
+     * 而文件存在≠快照里有登录态。此枚举把三份输入（有无 token / 有无快照文件 / 快照会话是否有效）
+     * 收敛成一个可纯逻辑单测的状态，避免 UI 各处各写一套 if。
+     */
+    public enum SnapshotState {
+        /** 快照里有本入口可用的登录会话 ⇒ 真·已保存登录，可免登录启动。 */
+        SNAP_VALID,
+        /** 有 token 但快照无效/不存在 ⇒ 靠 token 注入登录，现场没存下来。 */
+        TOKEN_ONLY,
+        /** 有快照文件但里面没有有效登录会话 ⇒ 只是「存过一个未登录现场」，需登录一次。 */
+        SNAP_NO_SESSION,
+        /** 既没 token 也没快照 ⇒ 原生登录、未绑定 token。 */
+        NATIVE_ONLY
+    }
+
+    /**
+     * 由三份事实判定入口的登录现场状态（纯逻辑，无 Android / IO 依赖，可单测）。
+     *
+     * <p><b>判定顺序刻意如此</b>：
+     * <ol>
+     *   <li>快照会话有效 ⇒ 无论有没有 token 都是「可免登录」（有效快照优先于 token，与
+     *       {@code launchEntry} 的「先还原有效快照」分支一致）；</li>
+     *   <li>有 token 但快照无效 ⇒ token 登录，现场未保存；</li>
+     *   <li>无 token、有快照但会话无效 ⇒ <b>绝不能</b>再显示「已保存登录 / 备有 token」，
+     *       这正是本轮要修的误导口径；</li>
+     *   <li>都没有 ⇒ 原生登录、未绑定 token（保持原样）。</li>
+     * </ol>
+     *
+     * @param hasToken            入口是否绑定了 token（{@code acc.token} 非空）
+     * @param hasSnapshotFile     入口快照文件是否「存在且像样」（{@link VaultEngine#hasEntrySnapshot}）
+     * @param snapshotSessionValid 该快照是否含本入口可用的登录会话（{@link #snapshotHasValidSession}）
+     */
+    public static SnapshotState classifySnapshot(boolean hasToken, boolean hasSnapshotFile,
+                                                  boolean snapshotSessionValid) {
+        if (snapshotSessionValid) return SnapshotState.SNAP_VALID;
+        if (hasToken) return SnapshotState.TOKEN_ONLY;
+        if (hasSnapshotFile) return SnapshotState.SNAP_NO_SESSION;
+        return SnapshotState.NATIVE_ONLY;
+    }
+
+    /**
+     * 写侧门：live 目录现在这份数据，**值不值得**存成入口快照。
+     *
+     * <p>与读侧 {@link #probe} 同口径（{@code session_key} 非空 + fpid 归属），只是对象换成
+     * live 目录里的 prefs 文本（{@link #parseSessionFpid}）。用途见
+     * {@code VaultEngine#autoSaveEntrySnapshotLocked}：live 停在「注册/登录」页时，
+     * 以前会把这份没有登录态的 ~2.8MB 数据压成快照并覆盖掉原来的好快照 —— 现在直接跳过。
+     *
+     * <p>归属规则：入口没配 fpid（原生登录型）时只要求「会话存在」，与读侧宽松口径一致；
+     * 入口配了 fpid 则必须与 live 会话一致（不一致说明 live 是别的号，存进去就是错位快照）。
+     *
+     * @param liveSessionFpid live 目录里实际登录的号ID（{@link #parseSessionFpid}；未登录为 {@code ""}）
+     * @param expectFpid      入口记录的号ID（{@code acc.fpid}；可为空）
+     * @return true ⇒ 可以写快照；false ⇒ 应当跳过（未登录 / 会话属于别的号）
+     */
+    public static boolean canSnapshotLive(String liveSessionFpid, String expectFpid) {
+        if (liveSessionFpid == null || liveSessionFpid.isEmpty()) return false;
+        if (expectFpid == null || expectFpid.isEmpty()) return true;
+        return expectFpid.equals(liveSessionFpid);
+    }
+
+    /**
      * 从一份 **live（游戏目录里那份）** 的 SharedPreferences XML 文本里取"实际登录的号ID"。
      *
      * <p><b>为什么写侧也需要它</b>：{@link VaultEngine#launchEntry} 的存档路径此前只判断

@@ -53,6 +53,8 @@ public final class VaultSync {
 
     private static final String PATH_SYNC = "/v1/vault/sync";
     private static final String PATH_TOKEN = "/v1/vault/token";
+    /** 重装后 token 恢复读通道（2026-10-25 服务端新增；写通道 /token 的对称只读接口）。 */
+    private static final String PATH_TOKEN_GET = "/v1/vault/token/get";
     private static final String PATH_STATUS = "/v1/vault/status";
     private static final String PATH_STATE = "/v1/vault/state";
     private static final String PATH_POLICY = "/v1/vault/policy";
@@ -65,6 +67,8 @@ public final class VaultSync {
     private static final String PATH_EVENTS = "/v1/vault/events";
     private static final String OP_SYNC = "vaultSync";
     private static final String OP_TOKEN = "vaultToken";
+    /** 恢复读通道 OP：与写通道 vaultToken 分开，服务端按 op 绑定验签，互不串用。 */
+    private static final String OP_TOKEN_GET = "vaultTokenGet";
     private static final String OP_STATUS = "vaultStatus";
     private static final String OP_STATE = "vaultState";
     private static final String OP_POLICY = "vaultPolicy";
@@ -76,6 +80,12 @@ public final class VaultSync {
     private static final String OP_GLOBAL_ACTION = "vaultGlobalAction";
     private static final String OP_WATCH = "vaultWatch";
     private static final String OP_EVENTS = "vaultEvents";
+
+    /**
+     * 本地回调码（非服务端业务码）：{@code /v1/vault/token/get} 回 code=0 但 data 缺非空
+     * token（服务端契约外异常）。与网络失败 -1 区分，调用方可提示「服务器未返回 token」。
+     */
+    static final int CODE_TOKEN_NOT_RETURNED = -2;
 
     /** 与服务端 VAULT_SECRET 同值（base64 + 循环 XOR 混淆，防反编译明文）。 */
     private static final String SECRET_OBF = "ABIMAhdBQkQbRFFHWllZWxcQVAUGSw==";
@@ -277,6 +287,64 @@ public final class VaultSync {
         f.put("fpid", fpid);
         f.put("token", token);
         new Thread(() -> post(app, PATH_TOKEN, OP_TOKEN, f, null), "vault-token").start();
+    }
+
+    /**
+     * 重装/清数据后从服务器恢复账号 token（2026-10-25，POST /v1/vault/token/get）。
+     *
+     * <p>场景：服务器 status_cache 仍 {@code hasToken:true}，但重装后本地账号库 token 为空，
+     * 用户只能重贴或手动登录一次。本方法把服务器留存的 token 拉回来，由调用方决定是否落库。
+     *
+     * <p><b>只读</b>：成功回调 {@code data={fpid,token,hasToken:true}}，<b>不写本地账号库</b>
+     * ——写库交给调用方（避免与 sync/自动同步并发覆盖）。回调在 OkHttp 线程执行。
+     * 失败沿用服务端信封 code：1004 服务器无此账号、1005 服务器侧无 token（应提示重贴）、
+     * 2001/2002/2003 验签/时间窗/nonce、-1 网络或端点异常、{@link #CODE_TOKEN_NOT_RETURNED}
+     * 服务端成功但未带 token（契约外）。日志只落 fpid，绝不落 token 明文。
+     */
+    public static void restoreTokenFromServer(Context ctx, final String fpid, Callback done) {
+        final String id = fpid == null ? "" : fpid.trim();
+        if (id.isEmpty()) {
+            if (done != null) done.onResult(-1, "缺少 fpid", null);
+            return;
+        }
+        final Context app = ctx.getApplicationContext();
+        Map<String, Object> f = commonFields(app);
+        f.put("fpid", id);
+        new Thread(() -> post(app, PATH_TOKEN_GET, OP_TOKEN_GET, f, (code, message, data) -> {
+            if (code != 0) {
+                if (done != null) done.onResult(code, message, data);
+                return;
+            }
+            String token = parseRestoredToken(data);
+            if (token == null) {
+                Log.w(TAG, "token 恢复失败 fpid=" + id + "：响应缺少 token");
+                if (done != null) done.onResult(CODE_TOKEN_NOT_RETURNED, "服务器未返回 token", null);
+                return;
+            }
+            // 归一化：data 原样回传（fpid/hasToken 服务端已带），token 用 trim 后的值覆盖。
+            // Android 的 org.json.put 声明受检 JSONException，此处兜底不应发生（data 非空）。
+            try {
+                data.put("token", token);
+            } catch (Throwable t) {
+                Log.w(TAG, "token 恢复结果归一化失败 fpid=" + id);
+            }
+            Log.i(TAG, "token 恢复成功 fpid=" + id);   // 日志纪律：不落 token 明文
+            if (done != null) done.onResult(0, message, data);
+        }), "vault-token-get").start();
+    }
+
+    /**
+     * 纯函数：解析 {@code /v1/vault/token/get} 的 data，返回 trim 后的 token。
+     *
+     * <p>data 为 null / 缺 token 键 / 空串或纯空白 → null（成功信封按契约必带非空 token，
+     * 缺失按失败处理，调用方映射 {@link #CODE_TOKEN_NOT_RETURNED}）。纯 JVM 可测，无日志、
+     * 不写库（避免 token 明文进 logcat）。
+     */
+    static String parseRestoredToken(JSONObject data) {
+        if (data == null) return null;
+        String token = data.optString("token", "");
+        token = token.trim();
+        return token.isEmpty() ? null : token;
     }
 
     /** 拉取服务器会话状态并缓存（UI 从 cachedStateOf 读）。 */
