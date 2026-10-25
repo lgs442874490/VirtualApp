@@ -276,6 +276,9 @@ public class ServerGuardianEngineTest {
         try {
             System.clearProperty("VAULT_GUARDIAN_SPEEDUP");
             System.clearProperty("VAULT_GUARDIAN_DIAMOND");
+            System.clearProperty("VAULT_GUARDIAN_ENABLED");
+            System.clearProperty("VAULT_GUARDIAN_DRY_RUN");
+            System.clearProperty("VAULT_GUARDIAN_TROOPS_MIN");
             JSONObject p = new JSONObject("{\"sub\":{\"enabled\":true,\"dry_run\":false}}");
             ServerGuardianEngine.Config base = ServerGuardianEngine.parseConfig(p);
             assertFalse("env 未设置：以 roleParams 为准（默认关）", base.speedupEnabled);
@@ -287,6 +290,19 @@ public class ServerGuardianEngineTest {
             assertTrue("env 灰度开启对等加速", gray.speedupEnabled);
             assertTrue("env 灰度开启钻石（慎用）", gray.diamondSpeedupEnabled);
 
+            // 无 roleParams 时也能靠 env 实盘开启（目标由 push 自动解析，无需配置盟友/坐标）
+            System.setProperty("VAULT_GUARDIAN_ENABLED", "1");
+            System.setProperty("VAULT_GUARDIAN_DRY_RUN", "0");
+            System.setProperty("VAULT_GUARDIAN_TROOPS_MIN", "50000");
+            ServerGuardianEngine.Config live = ServerGuardianEngine.parseConfig(null);
+            assertTrue("env 实盘：无 roleParams 也可开守护", live.enabled);
+            assertFalse("env 实盘：dry_run=0", live.dryRun);
+            assertEquals("env 兵力档位", 50000L, live.troopsMin);
+
+            System.setProperty("VAULT_GUARDIAN_TROOPS_MIN", "abc");
+            ServerGuardianEngine.Config badTroops = ServerGuardianEngine.parseConfig(null);
+            assertEquals("非法兵力档位忽略", 0L, badTroops.troopsMin);
+
             System.setProperty("VAULT_GUARDIAN_SPEEDUP", "maybe");
             System.setProperty("VAULT_GUARDIAN_DIAMOND", "0");
             ServerGuardianEngine.Config bad = ServerGuardianEngine.parseConfig(p);
@@ -295,6 +311,9 @@ public class ServerGuardianEngineTest {
         } finally {
             System.clearProperty("VAULT_GUARDIAN_SPEEDUP");
             System.clearProperty("VAULT_GUARDIAN_DIAMOND");
+            System.clearProperty("VAULT_GUARDIAN_ENABLED");
+            System.clearProperty("VAULT_GUARDIAN_DRY_RUN");
+            System.clearProperty("VAULT_GUARDIAN_TROOPS_MIN");
         }
     }
 
