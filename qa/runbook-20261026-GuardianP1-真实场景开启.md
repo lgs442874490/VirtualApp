@@ -57,8 +57,9 @@ systemctl restart vault-server
 | `strategy.speedup_margin_s` / `strategy.max_speedups_per_march` | 2 / 0 | 先至余量秒 / 单行军加速发数上限（0=不限） |
 | `strategy.formation{squad_index,hero_ids}` | — | 缺省用 App 编队库 |
 
-## 5. 当前生产状态（2026-10-26 02:40）
+## 5. 当前生产状态（2026-10-26 03:15，已实机验证 env 开启路径）
 
-- 生产 jar `0cd91877…`（含 P1，默认全关；env 未设置 → 守护/加速均不触发，零请求）。
+- 生产 jar sha256 `9860f3792f1a99770ff7a02a5a4006562a68d8816661fb60cbb8d9f3d851a1d1`（master `5ebd767`：v4.2.11 + 战时修复 + 空同步保护 + token 回取 + P1/对等加速 + env 实盘开关；全部默认关）。
+- **env 实盘路径已实机验证**：临时加 `VAULT_GUARDIAN_ENABLED=1 + VAULT_GUARDIAN_DRY_RUN=1` → 钩子日志 `enabled=true dry_run=true`；撤销后恢复 `enabled=false dry_run=true`（当前默认关）。
 - 账号：1 个测试号 `48460403`（已在线）；真实账号快照在 `backup/vault.json.before-restore-20261025-064413`、`data/vault.json.stopbad-20261024-174527`。
-- 分支已合并 master（`5be519b`），未 push、未发版（仓库 merge 钩子自动发版流程因临时 worktree 无 gradlew 中止，版本仍 4.2.10）。
+- master 已合并（`5ebd767`），**未 push**；仓库 merge 钩子的自动发版流程仍因临时 worktree 无 gradlew 中止（v4.2.11 由另一会话正式发版，版本文件已是 4.2.11）。
