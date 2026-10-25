@@ -78,3 +78,17 @@ curl -s http://127.0.0.1:8790/healthz
 - 10-25 17:18 一次 App 非空同步（1 个测试账号）覆盖了此前恢复的 2 个真实账号；真实账号快照仍在：
   `backup/vault.json.before-restore-20261025-064413`、`data/vault.json.stopbad-20261024-174527`。
 - 灰度未开启：`guardian` roleParams 当前不存在（roleParams 仅 formation/gather/intel），需目标配置（盟友 uid/目标城/坐标/兵力档位）才能实发；P1 对等加速依赖"在途驻防"，因此 dry_run 无法验证加速链，灰度需真发驻防。
+
+
+---
+
+## 2026-10-26 03:14 部署：Guardian env 实盘开关修复（master 5ebd767）
+
+| 项 | 值 |
+|---|---|
+| 新 jar | 1,374,025 B，sha256 `9860f3792f1a99770ff7a02a5a4006562a68d8816661fb60cbb8d9f3d851a1d1`（基于 v4.2.11 + 本轮全部修复/P1） |
+| 被替换 jar | `ce8f42d8…`（v4.2.11 + P1，不含 env 实盘缺省路径修复）→ 备份 `backup/vault-server-all.jar.bak-envfix-20261026-0315` |
+| 修复 | `reloadConfig` 在无 guardian roleParams 时改走 `parseConfig(null)`，使 `VAULT_GUARDIAN_ENABLED/DRY_RUN/TROOPS_MIN` 生效（此前被 `Config.disabled()` 绕过） |
+| 门禁 | 合并后 master 全量单测 **1086/1086 绿**（91 类）；App 无改动 |
+| 实机验证 | ① 默认（无 env）：钩子 `enabled=false dry_run=true`；② 临时 env `ENABLED=1 DRY_RUN=1`：`enabled=true dry_run=true`；③ 撤销 env 重启：恢复 `enabled=false`；`/healthz` ok |
+| 回滚 | `cp backup/vault-server-all.jar.bak-envfix-20261026-0315 … && systemctl restart vault-server` |
