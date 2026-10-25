@@ -442,6 +442,8 @@ public final class HealthMonitor {
         public long firstAt;
         public int globalMax;
         public int minuteDispatch;
+        /** 当日各闸门跳过次数（reason → 次数；告警文案用于自解释“为什么没派单”）。 */
+        public final Map<String, Long> skip = new LinkedHashMap<>();
     }
 
     /** 解析派单统计 JSON（{@code srv:cad:stats:{date}}）；缺失/坏 JSON → null。 */
@@ -455,6 +457,13 @@ public final class HealthMonitor {
             c.firstAt = Math.max(0L, o.optLong("firstAt", 0L));
             c.globalMax = Math.max(0, o.optInt("globalMax", 0));
             c.minuteDispatch = Math.max(0, o.optInt("minuteDispatch", 0));
+            JSONObject sk = o.optJSONObject("skip");
+            if (sk != null) {
+                for (String k : sk.keySet()) {
+                    long v = Math.max(0L, sk.optLong(k, 0L));
+                    if (v > 0L) c.skip.put(k, v);
+                }
+            }
             return c;
         } catch (Throwable t) {
             return null;
@@ -524,10 +533,43 @@ public final class HealthMonitor {
 
     /** 构造派单停滞告警（全局一条；6h 节流键 fpid=global）。 */
     public static Alert cadenceStallAlert(long dispatch, long nowMillis) {
-        return new Alert(KIND_CADENCE_STALL, GLOBAL_FPID, "派单停滞", "全局",
-                "30 分钟无派单（当日累计 " + dispatch + "）",
-                "检查 TaskCadenceScheduler / Token / 会话在线态；确认 VAULT_TASK_CADENCE 未关闭",
+        return cadenceStallAlert(dispatch, "", nowMillis);
+    }
+
+    /**
+     * 构造派单停滞告警（可携带现场信息 detail：跳过原因 Top / 当前战时让位）。
+     *
+     * <p>2026-10-25 增强：原文案只有“当日累计”，无法自解释；实际事故根因是战时让位卡死，
+     * 告警里带上 {@code skip} Top 原因与 WARTIME 摘要后，值守可直接判断是“战时预期拦截”还是
+     * “真的调度/会话故障”。
+     */
+    public static Alert cadenceStallAlert(long dispatch, String detail, long nowMillis) {
+        String metric = "30 分钟无派单（当日累计 " + dispatch
+                + (detail == null || detail.isEmpty() ? "" : "；" + detail) + "）";
+        return new Alert(KIND_CADENCE_STALL, GLOBAL_FPID, "派单停滞", "全局", metric,
+                "检查 TaskCadenceScheduler / Token / 会话在线态；确认 VAULT_TASK_CADENCE 未关闭；"
+                        + "战时让位卡死可 policy war-reset 解卡（无需重启）",
                 nowMillis);
+    }
+
+    /**
+     * 跳过原因 Top N（纯函数）：按次数降序、同次数按原因名升序，输出 {@code "wartime 4578 / min_gap 21141"}。
+     * 空/全 0 → 空串（不污染告警文案）。
+     */
+    static String topSkipSummary(Map<String, Long> skip, int limit) {
+        if (skip == null || skip.isEmpty() || limit <= 0) return "";
+        List<Map.Entry<String, Long>> list = new ArrayList<>(skip.entrySet());
+        list.removeIf(e -> e.getValue() == null || e.getValue() <= 0L || e.getKey() == null);
+        list.sort((a, b) -> {
+            int byCount = Long.compare(b.getValue(), a.getValue());
+            return byCount != 0 ? byCount : a.getKey().compareTo(b.getKey());
+        });
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < list.size() && i < limit; i++) {
+            if (sb.length() > 0) sb.append(" / ");
+            sb.append(list.get(i).getKey()).append(' ').append(list.get(i).getValue());
+        }
+        return sb.toString();
     }
 
     /**
@@ -550,7 +592,15 @@ public final class HealthMonitor {
         }
         boolean online = anyOnline(sessionStatus);
         if (dispatchStalled(online, stat.dispatch, stat.firstAt, prevSeen, prevChange, nowMillis)) {
-            out.add(cadenceStallAlert(stat.dispatch, nowMillis));
+            StringBuilder detail = new StringBuilder();
+            String top = topSkipSummary(stat.skip, 3);
+            if (!top.isEmpty()) detail.append("当日跳过 Top: ").append(top);
+            String war = com.carlos.vaultserver.ServerWarState.activeWartimeSummary(nowMillis);
+            if (!war.isEmpty()) {
+                if (detail.length() > 0) detail.append("；");
+                detail.append("当前战时让位: ").append(war);
+            }
+            out.add(cadenceStallAlert(stat.dispatch, detail.toString(), nowMillis));
         }
         if (budgetSaturated(stat.minuteDispatch, stat.globalMax)) {
             if (budgetHighSinceMillis <= 0L) budgetHighSinceMillis = nowMillis;

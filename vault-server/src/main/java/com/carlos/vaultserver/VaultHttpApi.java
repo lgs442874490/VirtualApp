@@ -18,11 +18,12 @@ import java.util.concurrent.Executors;
  * HTTP API（JDK HttpServer，线程池执行）。
  *
  * <pre>
- * POST /v1/vault/sync    全量身份库同步（accountsJson 字符串字段）
+ * POST /v1/vault/sync    全量身份库同步（accountsJson 字符串字段；空列表保护：服务端非空时
+ *                        空覆盖被拒，确需清空须显式 allowEmpty=true，2026-10-25）
  * POST /v1/vault/token   单账号 token 更新（NEED_TOKEN 补给通道）
  * POST /v1/vault/token/get   单账号 token 只读回取（重装/清数据后恢复，2026-10-25）
  * POST /v1/vault/status  会话状态查询
- * POST /v1/vault/policy  顶号策略设置 / 让位指令
+ * POST /v1/vault/policy  顶号策略设置 / 让位指令 / 战时解卡（action=war-reset，2026-10-25）
  * POST /v1/vault/accounts        账号池列表+聚合计数+每角色运行态（M1）
  * POST /v1/vault/role-action     单角色 login/logout/pause/resume/stop（M1）；
  *                                formation.catalog-refresh / memory-save / memory-restore / bear-binding（编队 v2）
@@ -245,6 +246,23 @@ public final class VaultHttpApi {
             }
             incoming.add(a);
         }
+        // 空同步保护（2026-10-25）：App 全量同步为「本地即真相」，卸载重装/换机/清数据后
+        // App 本地账号列表为空，若直接 replaceAll([]) 会把服务端身份库清空（生产已发生一次：
+        // 03:15:17 身份库同步 0 条 → vault.json accounts=[]，账号/token 全丢）。
+        // 规则：incoming 为空且服务端已有账号时拒绝覆盖；确需清空必须显式 allowEmpty=true
+        // （App 后续可在「删除全部账号」流程里带上）。返回 code=0 + emptyRejected，App 无需改码。
+        int currentAccounts = store.snapshot().size();
+        boolean allowEmpty = truthy(fields.get("allowEmpty")) || truthy(fields.get("force"));
+        if (incoming.isEmpty() && currentAccounts > 0 && !allowEmpty) {
+            FileLog.warn("身份库空同步已拒绝：服务端 {} 个账号，incoming=0（防卸载重装/换机空列表清库；"
+                    + "确需清空请带 allowEmpty=true）", String.valueOf(currentAccounts));
+            JSONObject data = new JSONObject();
+            data.put("accepted", 0);
+            data.put("emptyRejected", true);
+            data.put("serverAccounts", currentAccounts);
+            data.put("message", "服务端已有 " + currentAccounts + " 个账号，空列表同步被拒绝（防误清空）");
+            return data;
+        }
         int n = store.replaceAll(incoming);
         keeper.reconcile();
         FileLog.info("身份库同步：{} 条（keep={}）", String.valueOf(n),
@@ -399,6 +417,18 @@ public final class VaultHttpApi {
             JSONObject data = new JSONObject();
             data.put("fpid", fpid);
             data.put("accepted", true);
+            return data;
+        }
+        if ("war-reset".equals(action)) {
+            // 运维解卡（2026-10-25）：清掉该账号所有角色的 WARTIME，不必重启进程。
+            // 事故场景：副角色实例卡在战时态且不再被 tick → 账号级战时让位无限期拦截节奏派单。
+            String fpid = str(fields, "fpid");
+            if (fpid == null || fpid.isEmpty()) throw new IllegalArgumentException("缺少 fpid");
+            int cleared = ServerWarState.resetWartime(fpid);
+            FileLog.info("战争态解卡 fpid={} 清除实例数={}", fpid, String.valueOf(cleared));
+            JSONObject data = new JSONObject();
+            data.put("fpid", fpid);
+            data.put("cleared", cleared);
             return data;
         }
         throw new IllegalArgumentException("未知 action: " + action);
@@ -982,6 +1012,14 @@ public final class VaultHttpApi {
         if (v == null) return null;
         String s = String.valueOf(v);
         return "null".equals(s) ? null : s;
+    }
+
+    /** 宽松布尔解析（Boolean/true/1/yes；用于 allowEmpty/force 这类显式确认开关）。 */
+    private static boolean truthy(Object v) {
+        if (v == null) return false;
+        if (v instanceof Boolean) return (Boolean) v;
+        String s = String.valueOf(v).trim();
+        return "true".equalsIgnoreCase(s) || "1".equals(s) || "yes".equalsIgnoreCase(s);
     }
 
     /** P7：会话 sid 字符串 → long（空/非法 = 0，warState 摘要查不到时按 fpid 兜底）。 */
