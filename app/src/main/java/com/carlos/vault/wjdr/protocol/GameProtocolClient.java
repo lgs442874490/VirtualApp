@@ -174,6 +174,22 @@ public class GameProtocolClient {
         this.sendRequestFrame(proto, args, session);
     }
 
+    /**
+     * 指定 session 的「只发不等」发送：地图范围查询（req_world_map_info）等协议专用。
+     *
+     * <p>这类协议不走 请求/响应 对账，而是发请求后由服务端以 notify 推送回数据（推送里带
+     * 请求时使用的 session）。调用方自行约定 session 号段（地图查询实测约定 1e8~4e8），
+     * 用 {@link #addInboundListener} 或引擎消息钩子按 content.session 对账。
+     *
+     * <p>复用固定 session（同一矩形每次同号）可避免 codec 会话表无限增长；发送本身在
+     * ioLock 内串行写帧，线程安全。
+     */
+    public void sendFireAndForget(String proto, Map<String, Object> args, int session) {
+        this.requireCodecAvailable();
+        this.connect();
+        this.sendRequestFrame(proto, args, session);
+    }
+
     private void requireCodecAvailable() {
         if (!this.isCodecAvailable()) {
             throw new IllegalStateException("\u6e38\u620f\u534f\u8bae\u7ed3\u6784\u5c1a\u672a\u52a0\u8f7d\uff0c\u8bf7\u5148\u521d\u59cb\u5316\u534f\u8bae\u5ba2\u6237\u7aef");
