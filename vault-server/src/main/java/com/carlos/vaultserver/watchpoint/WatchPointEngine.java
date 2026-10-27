@@ -120,13 +120,22 @@ public final class WatchPointEngine {
 
     private volatile boolean running;
     private Thread thread;
-    private long tokens = 5;
+    /** 令牌桶：必须用 double 累积，否则 80ms tick 下 floor 恒为 0 → 首轮后永远发不出请求。 */
+    private double tokens = 5.0d;
     private long lastRefillAt = System.currentTimeMillis();
     private long nextScanAt;
     private long storeMtime = -1L;
     private long lastStoreCheck;
     private long lastPruneAt;
     private long lastWecomAt;
+    private final java.util.concurrent.atomic.AtomicLong statSentMonitor = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong statSentProtect = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong statOkMonitor = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong statOkProtect = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong statTimeouts = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong statAlerts = new java.util.concurrent.atomic.AtomicLong();
+    private long lastStatsAt;
+    private volatile boolean lastTickHadEngine;
     private volatile String lastEngineDesc = "";
     private volatile boolean baselineDone;
     private volatile long startedAt;
@@ -179,6 +188,7 @@ public final class WatchPointEngine {
                     continue;
                 }
                 WjdrEngine engine = pickEngine();
+                lastTickHadEngine = engine != null;
                 if (engine == null) {
                     // 扫描中会话掉线：超时后按已收到的数据收尾，避免卡在扫描态
                     if (scan.active && System.currentTimeMillis() - scan.startedAt > SCAN_TIMEOUT_MS + 15_000L) {
@@ -195,6 +205,7 @@ public final class WatchPointEngine {
                 } else {
                     pollTick(engine);
                 }
+                maybeLogStats();
                 Thread.sleep(80L);
             } catch (InterruptedException e) {
                 return;
@@ -207,6 +218,19 @@ public final class WatchPointEngine {
                 }
             }
         }
+    }
+
+    /** 每 60s 打一条运维统计（证明轮询在跑：发送/回包/超时/告警）。 */
+    private void maybeLogStats() {
+        long now = System.currentTimeMillis();
+        if (now - lastStatsAt < 60_000L) return;
+        lastStatsAt = now;
+        FileLog.info("[{}] 运行统计：有会话={} 会话={} 监视发送={}(回包{} 超时{}) 保护发送={}(回包{}) 告警={} 扫描={} 城缓存={}",
+                LOG, String.valueOf(lastTickHadEngine), lastEngineDesc,
+                String.valueOf(statSentMonitor.get()), String.valueOf(statOkMonitor.get()),
+                String.valueOf(statTimeouts.get()), String.valueOf(statSentProtect.get()),
+                String.valueOf(statOkProtect.get()), String.valueOf(statAlerts.get()),
+                scan.active ? "进行中" : "空闲", String.valueOf(cityByUid.size()));
     }
 
     /** 选一条目标区服在线的会话（优先 fpid 匹配；无匹配则任意同 kid 会话）。 */
@@ -306,6 +330,7 @@ public final class WatchPointEngine {
                 Ctx c = e.getValue();
                 if (!c.ended && now - c.sentAt > RESPONSE_TIMEOUT_MS * 2) {
                     ctxBySession.remove(e.getKey(), c);
+                    statTimeouts.incrementAndGet();
                 }
             }
             alerted.entrySet().removeIf(en -> now - en.getValue() > ALERT_DEDUPE_MS * 2);
@@ -316,18 +341,25 @@ public final class WatchPointEngine {
         long elapsed = now - lastRefillAt;
         if (elapsed <= 0) return;
         lastRefillAt = now;
-        tokens = Math.min(10, tokens + (long) Math.floor(store.maxReqPerSec * elapsed / 1000.0));
-        if (tokens < 1 && store.maxReqPerSec * elapsed / 1000.0 >= 1.0) tokens = 1;
+        tokens = Math.min(10.0d, tokens + store.maxReqPerSec * elapsed / 1000.0d);
     }
 
     private boolean takeToken() {
-        if (tokens < 1) return false;
-        tokens--;
+        if (tokens < 1.0d) return false;
+        tokens -= 1.0d;
         return true;
     }
 
     private void send(WjdrEngine engine, int session, WatchPointStore.Rect rect, Kind kind) {
         long now = System.currentTimeMillis();
+        try {
+            doSend(engine, session, rect, kind, now);
+        } catch (Throwable t) {
+            FileLog.warn("[{}] 发送失败 session={}：{}", LOG, String.valueOf(session), String.valueOf(t));
+        }
+    }
+
+    private void doSend(WjdrEngine engine, int session, WatchPointStore.Rect rect, Kind kind, long now) {
         Ctx ctx = new Ctx(session, kind, rect);
         ctxBySession.put(session, ctx);
         lastSent.put(session, now);
@@ -341,6 +373,8 @@ public final class WatchPointEngine {
         payload.put("fulldata", Boolean.TRUE);
         payload.put("lod", 1L);
         engine.sendFireAndForget("req_world_map_info", payload, session);
+        if (kind == Kind.MONITOR) statSentMonitor.incrementAndGet();
+        else if (kind == Kind.PROTECT) statSentProtect.incrementAndGet();
     }
 
     private static Map<String, Object> xy(int x, int y) {
@@ -420,6 +454,8 @@ public final class WatchPointEngine {
     }
 
     private void onComplete(Ctx ctx) {
+        if (ctx.kind == Kind.MONITOR) statOkMonitor.incrementAndGet();
+        else if (ctx.kind == Kind.PROTECT) statOkProtect.incrementAndGet();
         if (ctx.kind == Kind.SCAN) {
             scan.ended++;
             if (scan.ended >= SCAN_TILES) finishScan();
@@ -637,6 +673,7 @@ public final class WatchPointEngine {
         Long prev = alerted.get(key);
         if (prev != null && now - prev < ALERT_DEDUPE_MS) return;
         alerted.put(key, now);
+        statAlerts.incrementAndGet();
         FileLog.info("[{}] {}", LOG, text.replace('\n', ' ').replace('\r', ' '));
         if (!store.wecomEnabled) return;
         VaultStore.WatchConfig cfg = vaultStore.watchConfig();
