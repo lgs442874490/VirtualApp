@@ -320,6 +320,8 @@ public class EntryDetailActivity extends Activity {
         lclp.setMargins(dp(18), dp(14), dp(18), 0);
         loginCard.setLayoutParams(lclp);
         loginCard.addView(sectionTitle("登录数据"));
+        loginCard.addView(actionRow(UiStyle.Icon.SEARCH, "微信扫码登录",
+                "手机微信扫码 → 自动回填号 ID + token（无需容器登录）", this::openWechatQrLogin));
         loginCard.addView(actionRow(UiStyle.Icon.USER, "设置 token",
                 "粘贴：号 ID----token", this::showTokenDialog));
         loginCard.addView(actionRow(UiStyle.Icon.CLOUD, "从服务器恢复登录",
@@ -1542,6 +1544,18 @@ public class EntryDetailActivity extends Activity {
     }
 
     // ---------- token ----------
+
+    /** 打开微信扫码登录，并把扫码结果回填到本入口（fpid/token）。 */
+    private void openWechatQrLogin() {
+        try {
+            android.content.Intent it = new android.content.Intent(
+                    this, com.carlos.vault.wechat.WechatQrLoginActivity.class);
+            it.putExtra(com.carlos.vault.wechat.WechatQrLoginActivity.EXTRA_ENTRY_ID, acc.id);
+            startActivity(it);
+        } catch (Throwable t) {
+            toast("打开扫码登录失败：" + t.getMessage());
+        }
+    }
 
     private void showTokenDialog() {
         String prefill = (acc.fpid != null && !acc.fpid.isEmpty()) ? acc.fpid + "----" : "";
