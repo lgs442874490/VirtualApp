@@ -502,9 +502,16 @@ public final class WatchPointEngine {
         if (ctx.kind == Kind.MONITOR) {
             if (!ctx.rect.contains(sx, sy)) return;
             if (!isMonitoredUid(owner)) return;
+            City ownerCity = cityByUid.get(owner);
+            // 同联盟目标（增援/自家城/内部动作）不算“打谁”，避免噪音
+            if (ownerCity != null && targetCity != null
+                    && ownerCity.aid > 0 && ownerCity.aid == targetCity.aid) return;
             alertOutgoing(owner, id, type, ex, ey, endtime, troopsOf(m));
         } else if (ctx.kind == Kind.PROTECT) {
             if (!ctx.rect.contains(ex, ey)) return;
+            // 必须打到“友盟城”：保护矩形内可能有其它联盟的城/野怪，只对友盟城告警
+            if (targetCity != null && targetCity.aid > 0
+                    && !store.friendAids.contains(targetCity.aid)) return;
             City ownerCity = cityByUid.get(owner);
             if (ownerCity != null && store.friendAids.contains(ownerCity.aid)) return;
             alertIncoming(owner, ownerCity, id, type, ex, ey, endtime, troopsOf(m));
