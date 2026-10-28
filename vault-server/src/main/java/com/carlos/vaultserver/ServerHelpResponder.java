@@ -13,11 +13,23 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Supplier;
 
 /**
  * 联盟互助自动响应（移植自 App 端 daily/HelpResponder，判定字段照抄原版 HelpRequest）：
  * 推送到达（钩子线程）只做解析+置脏；真正的请求动作由会话线程 tick 驱动（秒级响应，且与心跳/采集天然串行）。
  * 状态写 StateStore 的 mod:fpid:sid:alliance_help（与 App 端展示链路同键）。
+ *
+ * <p>R2 Phase 1（2026-10-29）：按角色 uid 隔离（同账号多角色并行在线时各角色独立互助）：
+ * <ul>
+ *   <li>旧 3 参构造器（roleUid=0）：完全维持 P0 行为，状态只写旧键
+ *       {@code mod:<fpid>:<sid>:alliance_help}；</li>
+ *   <li>角色构造器（roleUid&gt;0）：状态写 {@code mod:<fpid>:<sid>:<roleUid>:alliance_help}；
+ *       若 activeRole.get()==true（主控角色写入方）则同时双写旧键（App 今日页读旧键），
+ *       兄弟角色只写角色键、不覆盖旧键；读取时优先角色键，缺失回退旧键（迁移保留进度字段）。</li>
+ *   <li>历史 settled 清理：旧路径行为不变；角色路径下仅 active 角色清理旧
+ *       {@code srv:alliance_help_settled:<fpid>:<sid>} 脏键（1536 已不落盘，无需按 uid 建 settled）。</li>
+ * </ul>
  *
  * <p>P0 2026-10-28 二次加固（生产实证 vault-20261028.log / monitor-20261028.jsonl）：
  * <ul>
@@ -125,6 +137,10 @@ public final class ServerHelpResponder {
 
     private final String fpid;
     private final long sid;
+    /** 角色 uid（Phase 1）：>0=按角色隔离状态键；<=0=旧/主控兼容路径（只写旧键）。 */
+    private final long roleUid;
+    /** 当前会话是否 active 角色写入方（SessionKeeper 提供；roleUid<=0 时不用；异常按 false）。 */
+    private final Supplier<Boolean> activeRole;
     private final StateStore store;
     private final Map<String, HelpReq> helpRequests = new ConcurrentHashMap<>();
     private final AtomicBoolean dirty = new AtomicBoolean(false);
@@ -140,10 +156,58 @@ public final class ServerHelpResponder {
     volatile int helpNumToday;
     volatile long dayGlory;
 
+    /** 旧 3 参构造器（P0/兼容路径）：roleUid=0、activeRole=null，状态只写旧键，行为与 P0 完全一致。 */
     ServerHelpResponder(String fpid, long sid, StateStore store) {
+        this(fpid, sid, 0L, store, null);
+    }
+
+    /**
+     * 按角色隔离的构造器（R2 Phase 1）。
+     *
+     * <p>状态键规则：
+     * <ul>
+     *   <li>roleUid&lt;=0：旧键 {@code mod:<fpid>:<sid>:alliance_help}（行为同旧 3 参构造器）；</li>
+     *   <li>roleUid&gt;0：角色键 {@code mod:<fpid>:<sid>:<roleUid>:alliance_help}；
+     *       activeRole.get()==true 时同时双写旧键（App 今日页读取旧键），兄弟角色只写角色键。</li>
+     * </ul>
+     *
+     * @param roleUid    角色 uid（真实会话 uid；测试/兼容可传 0）
+     * @param activeRole 当前是否为 active 角色写入方；null 视为 false；get() 抛异常按 false
+     */
+    ServerHelpResponder(String fpid, long sid, long roleUid, StateStore store,
+                        Supplier<Boolean> activeRole) {
         this.fpid = fpid;
         this.sid = sid;
+        this.roleUid = roleUid;
         this.store = store;
+        this.activeRole = activeRole;
+    }
+
+    /** 旧键（App 今日页/现有链路读取）：mod:<fpid>:<sid>:alliance_help。 */
+    static String legacyStateKey(String fpid, long sid) {
+        return "mod:" + fpid + ":" + sid + ":alliance_help";
+    }
+
+    /** 角色隔离键：mod:<fpid>:<sid>:<roleUid>:alliance_help（roleUid<=0 退化为旧键）。 */
+    static String roleStateKey(String fpid, long sid, long roleUid) {
+        return roleUid > 0 ? "mod:" + fpid + ":" + sid + ":" + roleUid + ":alliance_help"
+                : legacyStateKey(fpid, sid);
+    }
+
+    /** 本实例负责写入的状态键（角色键或旧键）。 */
+    private String stateKey() {
+        return roleStateKey(fpid, sid, roleUid);
+    }
+
+    /** 当前会话是否 active 角色写入方（旧路径恒 true；supplier 异常按 false）。 */
+    private boolean isActiveRole() {
+        if (roleUid <= 0) return true;
+        if (activeRole == null) return false;
+        try {
+            return Boolean.TRUE.equals(activeRole.get());
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     /** 挂到引擎消息钩子（推送线程调用：只解析+置脏，不发请求）。 */
@@ -185,6 +249,9 @@ public final class ServerHelpResponder {
     // ---------------- 历史 settled 脏键清理（幂等） ----------------
 
     private void clearLegacySettledOnce() {
+        if (legacySettledCleared.get()) return;
+        // Phase 1：角色路径下只由 active 角色清理旧脏键（兄弟角色不动旧键，避免互相覆盖语义）。
+        if (roleUid > 0 && !isActiveRole()) return;
         if (!legacySettledCleared.compareAndSet(false, true)) return;
         removeLegacySettled(store, fpid, sid);
     }
@@ -493,16 +560,22 @@ public final class ServerHelpResponder {
     /** 写互助状态行（与 App FnParams.saveModText 同构：文案 + _ts + _trg + 进度字段）。 */
     private void saveState(boolean acted, long done, String trigger, String text) {
         try {
-            String key = "mod:" + fpid + ":" + sid + ":alliance_help";
+            String key = stateKey();
+            String legacy = legacyStateKey(fpid, sid);
             JSONObject mod = new JSONObject();
+            // 读取：优先角色键；角色键缺失时回退旧键（迁移/切换时保留旧进度字段）。
             String raw = store.getString(key);
+            if (raw == null && roleUid > 0 && !key.equals(legacy)) raw = store.getString(legacy);
             if (raw != null) mod = new JSONObject(raw);
             mod.put("help_all", text);
             mod.put("help_all_ts", System.currentTimeMillis());
             mod.put("help_all_trg", trigger);
             if (helpNumToday > 0) mod.put("help_num", helpNumToday);
             if (dayGlory > 0) mod.put("day_glory", dayGlory);
-            store.putString(key, mod.toString());
+            String json = mod.toString();
+            store.putString(key, json);
+            // Phase 1：主控角色双写旧键（App 今日页读旧键）；兄弟角色只写角色键。
+            if (roleUid > 0 && isActiveRole()) store.putString(legacy, json);
         } catch (Throwable ignored) {
         }
     }

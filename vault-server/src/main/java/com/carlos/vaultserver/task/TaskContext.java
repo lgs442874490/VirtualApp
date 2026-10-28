@@ -26,15 +26,33 @@ public final class TaskContext {
      */
     private final java.util.function.Predicate<String> enabledTasks;
 
+    /**
+     * 角色 uid（Phase 1，0=旧/主控兼容路径）：
+     * <ul>
+     *   <li>0：所有状态键保持旧型 mod:&lt;fpid&gt;:&lt;sid&gt;:&lt;fn&gt; —— 主控角色/App 显示链路 100% 不变；</li>
+     *   <li>&gt;0：同账号同服多角色按 uid 隔离（SessionKeeper 对非主控角色每 30s 跑科技捐献时传入）。</li>
+     * </ul>
+     */
+    public final long roleUid;
+
     public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
                        java.util.Map<String, JSONObject> params, String trigger) {
-        this(engine, fpid, sid, store, params, trigger, null);
+        this(engine, fpid, sid, store, params, trigger, null, 0L);
     }
 
     /** 带启用任务判定的构造（整轮/单任务执行器传入；见 {@link #enabledPredicate}）。 */
     public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
                        java.util.Map<String, JSONObject> params, String trigger,
                        java.util.function.Predicate<String> enabledTasks) {
+        this(engine, fpid, sid, store, params, trigger, enabledTasks, 0L);
+    }
+
+    /**
+     * Phase 1：带角色 uid 的构造（同服多角色状态隔离）。roleUid<=0 等价旧构造，行为完全不变。
+     */
+    public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
+                       java.util.Map<String, JSONObject> params, String trigger,
+                       java.util.function.Predicate<String> enabledTasks, long roleUid) {
         this.engine = engine;
         this.fpid = fpid;
         this.sid = sid;
@@ -42,6 +60,7 @@ public final class TaskContext {
         this.params = params == null ? java.util.Collections.emptyMap() : params;
         this.trigger = trigger == null ? "服务器" : trigger;
         this.enabledTasks = enabledTasks;
+        this.roleUid = roleUid;
     }
 
     /**
@@ -104,10 +123,25 @@ public final class TaskContext {
         return fnParams(fnId).optInt("strategy_min_" + subId, def);
     }
 
-    /** 读模块状态（App FnParams.modState 同款：mod:fpid:sid:fn）。 */
+    /**
+     * mod 状态键（Phase 1 按角色隔离）：roleUid&gt;0 → mod:&lt;fpid&gt;:&lt;sid&gt;:&lt;uid&gt;:&lt;fn&gt;；
+     * roleUid&lt;=0 → 旧键 mod:&lt;fpid&gt;:&lt;sid&gt;:&lt;fn&gt;（包级可见便于单测锁定键型）。
+     */
+    static String modKey(String fpid, long sid, long roleUid, String fnId) {
+        return roleUid > 0L
+                ? "mod:" + fpid + ":" + sid + ":" + roleUid + ":" + fnId
+                : "mod:" + fpid + ":" + sid + ":" + fnId;
+    }
+
+    /** 读模块状态（App FnParams.modState 同款：mod:fpid:sid:fn；角色键缺失时回退旧键一次）。 */
     public JSONObject modState(String fnId) {
         try {
-            String raw = store.getString("mod:" + fpid + ":" + sid + ":" + fnId);
+            String raw = store.getString(modKey(fpid, sid, roleUid, fnId));
+            if (raw == null && roleUid > 0L) {
+                // 迁移兼容：本角色首次没有角色键 → 复用旧（主控）键里的状态作为初始值；
+                // 随后的 saveModText 只写角色键，旧键不被改写（主控/App 链路不变）。
+                raw = store.getString(modKey(fpid, sid, 0L, fnId));
+            }
             return raw == null ? new JSONObject() : new JSONObject(raw);
         } catch (Throwable t) {
             return new JSONObject();
@@ -121,7 +155,7 @@ public final class TaskContext {
             o.put(subId, text);
             o.put(subId + "_ts", System.currentTimeMillis());
             o.put(subId + "_trg", trigger);
-            store.putString("mod:" + fpid + ":" + sid + ":" + fnId, o.toString());
+            store.putString(modKey(fpid, sid, roleUid, fnId), o.toString());
         } catch (Throwable ignored) {
         }
     }

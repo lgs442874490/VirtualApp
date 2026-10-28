@@ -3674,6 +3674,16 @@ public final class ServerTasks {
         return "srv:alliance_science:" + fpid + ":" + sid;
     }
 
+    /**
+     * Phase 1：按角色 uid 隔离的持久化键。roleUid&gt;0 → srv:alliance_science:&lt;fpid&gt;:&lt;sid&gt;:&lt;uid&gt;；
+     * roleUid&lt;=0 → 旧键（主控角色/App 显示链路 100% 不变）。
+     */
+    static String allianceScienceKey(String fpid, long sid, long roleUid) {
+        return roleUid > 0L
+                ? "srv:alliance_science:" + fpid + ":" + sid + ":" + roleUid
+                : allianceScienceKey(fpid, sid);
+    }
+
     /** 编码持久化快照（纯函数，便于 round-trip 单测）。 */
     static String encodeAllianceScience(AllianceScienceState st) {
         JSONObject o = new JSONObject();
@@ -3737,22 +3747,40 @@ public final class ServerTasks {
         return st;
     }
 
-    /** 读取持久化快照（无记录=空状态）。 */
+    /** 读取持久化快照（无记录=空状态；非主控角色首次 miss 时回退旧键作初始快照一次）。 */
     static AllianceScienceState loadAllianceScience(TaskContext tc) {
         try {
-            return decodeAllianceScience(tc.store.getString(allianceScienceKey(tc.fpid, tc.sid)));
+            String raw = tc.store.getString(allianceScienceKey(tc.fpid, tc.sid, tc.roleUid));
+            if (raw == null && tc.roleUid > 0L) {
+                // Phase 1 迁移：角色键首次缺失 → 复用旧键（主控角色）快照作为初始值，
+                // 避免非主控角色首轮“科技数据未同步”白等；随后 saveAllianceScience 只写角色键。
+                raw = tc.store.getString(allianceScienceKey(tc.fpid, tc.sid));
+            }
+            return decodeAllianceScience(raw);
         } catch (Throwable t) {
             return new AllianceScienceState();
         }
     }
 
-    /** 写持久化快照（写盘失败不影响任务）。 */
+    /** 写持久化快照（写盘失败不影响任务）。roleUid 由 TaskContext 决定键型。 */
     static void saveAllianceScience(TaskContext tc, AllianceScienceState st) {
         if (st == null) return;
         try {
             st.updatedAtMs = System.currentTimeMillis();
-            tc.store.putString(allianceScienceKey(tc.fpid, tc.sid), encodeAllianceScience(st));
+            tc.store.putString(allianceScienceKey(tc.fpid, tc.sid, tc.roleUid), encodeAllianceScience(st));
         } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * Phase 1 公开入口（供 SessionKeeper 对非主控角色每 30s 调用）：
+     * 与主控整轮里的联盟捐献是同一实现，仅 TaskContext.roleUid 决定状态键是否按 uid 隔离。
+     */
+    public static TaskOutcome runAllianceDonate(TaskContext tc) {
+        try {
+            return allianceDonate(tc);
+        } catch (Exception e) {
+            return classifyException(e, "联盟捐献");
         }
     }
 

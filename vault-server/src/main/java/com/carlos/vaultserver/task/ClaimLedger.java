@@ -10,7 +10,8 @@ import java.util.Iterator;
  * 按天领取台账：解决“游戏通知仍显示可领/服务端重复回 success”导致的重复领取、
  * 重复弹窗和状态不更新。
  *
- * <p>键：ledger:&lt;fpid&gt;:&lt;sid&gt;:&lt;scope&gt; → {itemKey: "yyyy-MM-dd"}。
+ * <p>键：ledger:&lt;fpid&gt;:&lt;sid&gt;:&lt;scope&gt; → {itemKey: "yyyy-MM-dd"}（Phase 1 起非主控角色为
+ * ledger:&lt;fpid&gt;:&lt;sid&gt;:&lt;uid&gt;:&lt;scope&gt;，按角色隔离）。
  * 只保留当天键，跨天自动失效；状态随 StateStore 一起回传 App。
  */
 final class ClaimLedger {
@@ -18,8 +19,17 @@ final class ClaimLedger {
     private ClaimLedger() {
     }
 
+    /**
+     * 台账键（Phase 1 按角色隔离）：roleUid&gt;0 → ledger:&lt;fpid&gt;:&lt;sid&gt;:&lt;uid&gt;:&lt;scope&gt;；
+     * roleUid&lt;=0 → 旧键 ledger:&lt;fpid&gt;:&lt;sid&gt;:&lt;scope&gt;。
+     *
+     * <p>非主控角色读取时<b>不做</b>跨角色回退：把主控角色的“今日已领”当成自己的会漏领，
+     * 宁可本角色首次多请求一次（服务端已有已领码兜底）。
+     */
     private static String storeKey(TaskContext tc, String scope) {
-        return "ledger:" + tc.fpid + ":" + tc.sid + ":" + scope;
+        return tc.roleUid > 0L
+                ? "ledger:" + tc.fpid + ":" + tc.sid + ":" + tc.roleUid + ":" + scope
+                : "ledger:" + tc.fpid + ":" + tc.sid + ":" + scope;
     }
 
     private static String today() {

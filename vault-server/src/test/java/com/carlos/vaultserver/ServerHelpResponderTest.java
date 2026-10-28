@@ -14,6 +14,7 @@ import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.BiConsumer;
 
 import static org.junit.Assert.assertEquals;
@@ -148,13 +149,40 @@ public class ServerHelpResponderTest {
     }
 
     private String modText() {
-        String raw = state.getString("mod:" + FPID + ":" + SID + ":alliance_help");
+        return modText(legacyModKey());
+    }
+
+    private String modText(String key) {
+        String raw = state.getString(key);
         return raw == null ? "" : new JSONObject(raw).optString("help_all", "");
     }
 
     private JSONObject modJson() {
-        String raw = state.getString("mod:" + FPID + ":" + SID + ":alliance_help");
+        return modJson(legacyModKey());
+    }
+
+    private JSONObject modJson(String key) {
+        String raw = state.getString(key);
         return raw == null ? new JSONObject() : new JSONObject(raw);
+    }
+
+    /** 旧状态键（App 今日页/兼容路径）。 */
+    private String legacyModKey() {
+        return ServerHelpResponder.legacyStateKey(FPID, SID);
+    }
+
+    /** Phase 1 角色隔离状态键。 */
+    private String roleModKey(long uid) {
+        return ServerHelpResponder.roleStateKey(FPID, SID, uid);
+    }
+
+    /** 当前 state 里 alliance_help 状态键个数（旧键 + 各角色键）。 */
+    private int countAllianceHelpStateKeys() {
+        int n = 0;
+        for (String k : state.snapshot().keySet()) {
+            if (k.startsWith("mod:" + FPID + ":" + SID + ":") && k.endsWith(":alliance_help")) n++;
+        }
+        return n;
     }
 
     private String legacyKey() {
@@ -536,5 +564,174 @@ public class ServerHelpResponderTest {
         responder.attach(engine);
         assertFalse(responder.tick(engine, BASE_NOW));
         assertTrue(engine.requested.isEmpty());
+    }
+
+    // ==================== Phase 1：按角色 uid 隔离状态键 ====================
+
+    /** 同 fpid:sid 的两个兄弟角色：各自独立状态键、互不覆盖、都不写旧键。 */
+    @Test
+    public void roleState_isolatedPerRoleUid() {
+        TestEngine e1 = new TestEngine();
+        e1.uid = 5001L;
+        e1.push("notify_alliance_help_init",
+                initPush(List.of(helpReq(2002L, 60001L, 111L, 0L, 51L))));
+        e1.responses.put("req_alliance_help_all", msg(0, map("count", 1L)));
+        ServerHelpResponder r1 = new ServerHelpResponder(FPID, SID, 5001L, state, () -> false);
+        r1.attach(e1);
+        r1.tick(e1, BASE_NOW);
+
+        TestEngine e2 = new TestEngine();
+        e2.uid = 5002L;
+        e2.push("notify_alliance_help_init",
+                map("alliance_help", map("help_list",
+                        List.of(helpReq(3003L, 60001L, 222L, 0L, 51L)),
+                        "day_glory", 2000L, "help_num", 0L)));
+        e2.responses.put("req_alliance_help_all", msg(0, map("count", 1L)));
+        ServerHelpResponder r2 = new ServerHelpResponder(FPID, SID, 5002L, state, () -> false);
+        r2.attach(e2);
+        r2.tick(e2, BASE_NOW);
+
+        assertTrue("角色键格式必须为 mod:<fpid>:<sid>:<uid>:alliance_help",
+                state.snapshot().containsKey("mod:" + FPID + ":" + SID + ":5001:alliance_help"));
+        assertTrue(state.snapshot().containsKey("mod:" + FPID + ":" + SID + ":5002:alliance_help"));
+        assertTrue(modText(roleModKey(5001L)).contains("已响应 1 位"));
+        assertTrue(modText(roleModKey(5002L)).contains("已响应 1 位"));
+        assertEquals("角色 1 的进度独立", 1700L, modJson(roleModKey(5001L)).optLong("day_glory", 0L));
+        assertEquals("角色 2 的进度独立", 2000L, modJson(roleModKey(5002L)).optLong("day_glory", 0L));
+        assertFalse("两个都是兄弟角色，谁都不写旧键", state.snapshot().containsKey(legacyModKey()));
+        assertEquals(2, countAllianceHelpStateKeys());
+    }
+
+    /** 主控角色双写旧键（App 今日页不变）；兄弟角色只写角色键、不覆盖旧键。 */
+    @Test
+    public void activeRole_doubleWritesLegacyKey_siblingDoesNot() {
+        TestEngine e1 = new TestEngine();
+        e1.uid = 6001L;
+        e1.push("notify_alliance_help_init",
+                initPush(List.of(helpReq(2002L, 60001L, 111L, 0L, 51L))));
+        e1.responses.put("req_alliance_help_all", msg(0, map("count", 1L)));
+        ServerHelpResponder main = new ServerHelpResponder(FPID, SID, 6001L, state, () -> true);
+        main.attach(e1);
+        main.tick(e1, BASE_NOW);
+
+        assertTrue("主控角色双写旧键", modText(legacyModKey()).contains("已响应 1 位"));
+        assertTrue(modText(roleModKey(6001L)).contains("已响应 1 位"));
+        assertEquals(1700L, modJson(legacyModKey()).optLong("day_glory", 0L));
+
+        TestEngine e2 = new TestEngine();
+        e2.uid = 6002L;
+        e2.push("notify_alliance_help_init",
+                map("alliance_help", map("help_list",
+                        List.of(helpReq(3003L, 60001L, 222L, 0L, 51L)),
+                        "day_glory", 2500L, "help_num", 0L)));
+        e2.responses.put("req_alliance_help_all", msg(0, map("count", 1L)));
+        ServerHelpResponder sibling = new ServerHelpResponder(FPID, SID, 6002L, state, () -> false);
+        sibling.attach(e2);
+        sibling.tick(e2, BASE_NOW);
+
+        assertTrue(modText(roleModKey(6002L)).contains("已响应 1 位"));
+        assertEquals("兄弟角色不得覆盖旧键（App 今日页仍显示主控角色）", 1700L,
+                modJson(legacyModKey()).optLong("day_glory", 0L));
+        assertEquals(2500L, modJson(roleModKey(6002L)).optLong("day_glory", 0L));
+    }
+
+    /** activeRole supplier 返回值变化：写键随之切换（兄弟 → 主控开始双写旧键）。 */
+    @Test
+    public void activeRole_switchFollowsSupplier() {
+        AtomicBoolean active = new AtomicBoolean(false);
+        TestEngine engine = new TestEngine();
+        engine.uid = 7001L;
+        engine.push("notify_alliance_help_init",
+                initPush(List.of(helpReq(2002L, 60001L, 111L, 0L, 51L))));
+        engine.responses.put("req_alliance_help_all", msg(0, map("count", 1L)));
+        ServerHelpResponder responder = new ServerHelpResponder(FPID, SID, 7001L, state, active::get);
+        responder.attach(engine);
+        responder.tick(engine, BASE_NOW);
+
+        assertTrue(modText(roleModKey(7001L)).contains("已响应 1 位"));
+        assertFalse("非 active 不写旧键", state.snapshot().containsKey(legacyModKey()));
+
+        active.set(true);
+        engine.push("notify_alliance_help_update",
+                updatePush(1L, List.of(helpReq(3003L, 60001L, 222L, 0L, 51L))));
+        responder.tick(engine, BASE_NOW + 6_000L);
+
+        assertEquals(2, engine.requested.size());
+        assertTrue("切成 active 后开始双写旧键", modText(legacyModKey()).contains("已响应 1 位"));
+        assertTrue(modText(roleModKey(7001L)).contains("已响应 1 位"));
+    }
+
+    /** 旧 3 参构造器（roleUid=0）：行为不变，只写旧键、不产生角色键。 */
+    @Test
+    public void legacy3ArgConstructor_keepsOldBehaviorOnly() {
+        TestEngine engine = new TestEngine();
+        engine.push("notify_alliance_help_init",
+                initPush(List.of(helpReq(2002L, 60001L, 111L, 0L, 51L))));
+        engine.responses.put("req_alliance_help_all", msg(0, map("count", 1L)));
+        ServerHelpResponder responder = new ServerHelpResponder(FPID, SID, state);
+        responder.attach(engine);
+        responder.tick(engine, BASE_NOW);
+
+        assertTrue("旧构造器写旧键", modText(legacyModKey()).contains("已响应 1 位"));
+        assertEquals("旧构造器不得产生角色键", 1, countAllianceHelpStateKeys());
+    }
+
+    /** 角色键缺失时读取回退旧键（迁移保留进度字段），但写入只落到角色键。 */
+    @Test
+    public void roleState_readFallsBackToLegacyKey() {
+        state.putString(legacyModKey(), new JSONObject()
+                .put("help_all", "旧文案").put("help_num", 9).put("day_glory", 888).toString());
+        TestEngine engine = new TestEngine();
+        engine.uid = 8001L;
+        // 本角色的推送不带进度字段，且响应 count=0 → 不会覆盖继承来的 help_num/day_glory。
+        engine.push("notify_alliance_help_init",
+                map("alliance_help", map("help_list",
+                        List.of(helpReq(2002L, 60001L, 111L, 0L, 51L)))));
+        engine.responses.put("req_alliance_help_all", msg(0, map()));
+        ServerHelpResponder responder = new ServerHelpResponder(FPID, SID, 8001L, state, () -> false);
+        responder.attach(engine);
+        responder.tick(engine, BASE_NOW);
+
+        assertEquals("读取回退旧键：继承 help_num", 9, modJson(roleModKey(8001L)).optInt("help_num", 0));
+        assertEquals("读取回退旧键：继承 day_glory", 888L,
+                modJson(roleModKey(8001L)).optLong("day_glory", 0L));
+        assertEquals("兄弟角色不改写旧键", "旧文案", modText(legacyModKey()));
+    }
+
+    /** activeRole 为 null（接线缺失/异常）时按非 active 处理：只写角色键、不 NPE。 */
+    @Test
+    public void roleConstructor_nullSupplier_treatedAsInactive() {
+        TestEngine engine = new TestEngine();
+        engine.uid = 9501L;
+        engine.push("notify_alliance_help_init",
+                initPush(List.of(helpReq(2002L, 60001L, 111L, 0L, 51L))));
+        engine.responses.put("req_alliance_help_all", msg(0, map("count", 1L)));
+        ServerHelpResponder responder = new ServerHelpResponder(FPID, SID, 9501L, state, null);
+        responder.attach(engine);
+        responder.tick(engine, BASE_NOW);
+
+        assertTrue(modText(roleModKey(9501L)).contains("已响应 1 位"));
+        assertFalse("supplier=null 按非 active：不写旧键", state.snapshot().containsKey(legacyModKey()));
+        assertNull(state.getString(legacyKey()));
+    }
+
+    /** 历史 settled 脏键：角色路径下只由 active 角色清理。 */
+    @Test
+    public void roleLegacySettled_clearedByActiveRoleOnly() {
+        state.putString(legacyKey(), "2026-10-28");
+        AtomicBoolean active = new AtomicBoolean(false);
+        TestEngine engine = new TestEngine();
+        engine.uid = 9001L;
+        engine.push("notify_alliance_help_init",
+                initPush(List.of(helpReq(2002L, 60001L, 111L, 0L, 51L))));
+        engine.responses.put("req_alliance_help_all", msg(0, map("count", 1L)));
+        ServerHelpResponder responder = new ServerHelpResponder(FPID, SID, 9001L, state, active::get);
+        responder.attach(engine);
+        responder.tick(engine, BASE_NOW);
+        assertEquals("兄弟角色不动旧 settled 键", "2026-10-28", state.getString(legacyKey()));
+
+        active.set(true);
+        responder.tick(engine, BASE_NOW + 31_000L);
+        assertNull("成为 active 后清理旧 settled 脏键", state.getString(legacyKey()));
     }
 }
