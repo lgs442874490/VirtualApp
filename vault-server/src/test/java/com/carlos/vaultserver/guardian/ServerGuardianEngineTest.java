@@ -4,6 +4,8 @@ import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.StateStore;
 import com.carlos.vaultserver.VaultStore;
+import com.carlos.vaultserver.formation.HeroAvailability;
+import com.carlos.vaultserver.task.Exec;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -1441,5 +1443,161 @@ public class ServerGuardianEngineTest {
         assertTrue("无我方在途驻防 → 零请求", e.requested.isEmpty());
         assertNull(ledgerEvent("speedup_dry"));
         engine.shutdown();
+    }
+
+    // =======================================================================
+    // 2026-10-28：415/406 自适应（生产：无编队参数取 5 英雄 → 该号上限 3 → 永远 415）
+    // =======================================================================
+
+    /** 客户端队伍 5 英雄（生产实证 Exec.formation 取整队 5 英雄 → 每队上限 3 → 415）。 */
+    private static void presetClientSquad(TestEngine e, int heroCount) {
+        List<Object> fightHeros = new ArrayList<>();
+        for (int i = 0; i < heroCount; i++) fightHeros.add(50001L + i);
+        Map<String, Object> arrange = new LinkedHashMap<>();
+        arrange.put("hero_arranges", List.of(new LinkedHashMap<>(Map.of("fight_heros", fightHeros))));
+        e.notifies.put("notify_battle_hero_arrange_data", arrange);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static int heroCount(Map<String, Object> formation) {
+        Object raw = formation == null ? null : formation.get("hero_id");
+        return raw instanceof List ? ((List<?>) raw).size() : 0;
+    }
+
+    @SuppressWarnings("unchecked")
+    private static long soldierTotal(Map<String, Object> formation) {
+        Object raw = formation == null ? null : formation.get("soldier");
+        if (!(raw instanceof List)) return 0L;
+        long total = 0L;
+        for (Object o : (List<?>) raw) {
+            Map<String, Object> pair = (Map<String, Object>) o;
+            total += Exec.longOf(pair.get("v"));
+        }
+        return total;
+    }
+
+    @Test
+    public void formationOf_clampsClientSquadHeroesToAutoLimit() {
+        TestEngine e = new TestEngine();
+        presetClientSquad(e, 5);
+        presetSoldiers(e);
+        Map<String, Object> formation = engine().formationOf(e, ServerGuardianEngine.parseConfig(null));
+        assertNotNull(formation);
+        assertEquals("客户端整队 5 英雄必须夹到默认上限 3（否则该号每队上限 3 → 永远 415）",
+                3, heroCount(formation));
+    }
+
+    @Test
+    public void formationOf_clampsExplicitHeroIds() {
+        TestEngine e = new TestEngine();
+        presetSoldiers(e);
+        ServerGuardianEngine.Config cfg = ServerGuardianEngine.parseConfig(null);
+        cfg.heroIds = new ArrayList<>(List.of(1L, 2L, 3L, 4L, 5L));
+        Map<String, Object> formation = engine().formationOf(e, cfg);
+        assertNotNull(formation);
+        assertEquals("hero_ids 显式路径同样夹到上限 3", 3, heroCount(formation));
+    }
+
+    @Test
+    public void clampFormationHeroes_pure() {
+        assertEquals(3, ServerGuardianEngine.clampFormationHeroes(
+                List.of(1L, 2L, 3L, 4L, 5L), 0).size());
+        assertEquals(2, ServerGuardianEngine.clampFormationHeroes(
+                List.of(1L, 2L, 3L, 4L, 5L), 2).size());
+        assertEquals(1, ServerGuardianEngine.clampFormationHeroes(List.of(1L), 3).size());
+        assertTrue("null → 空列表", ServerGuardianEngine.clampFormationHeroes(null, 3).isEmpty());
+        assertEquals("非法 id 跳过", 2, ServerGuardianEngine.clampFormationHeroes(
+                List.of(0L, 1L, -5L, 2L), 3).size());
+    }
+
+    @Test
+    public void scaleFormationSoldiers_pure() {
+        Map<String, Object> pair = new LinkedHashMap<>();
+        pair.put("k", 11000L);
+        pair.put("v", 1000L);
+        Map<String, Object> formation = new LinkedHashMap<>();
+        formation.put("soldier", new ArrayList<>(List.of(pair)));
+        assertEquals("100% 不缩放", 1000L,
+                soldierTotal(ServerGuardianEngine.scaleFormationSoldiers(formation, 100)));
+        assertEquals("75% 缩放", 750L,
+                soldierTotal(ServerGuardianEngine.scaleFormationSoldiers(formation, 75)));
+        assertEquals("25% 缩放", 250L,
+                soldierTotal(ServerGuardianEngine.scaleFormationSoldiers(formation, 25)));
+        // 缩放后不小于 1（防 0 兵 payload）
+        Map<String, Object> one = new LinkedHashMap<>();
+        one.put("k", 11000L);
+        one.put("v", 2L);
+        Map<String, Object> f2 = new LinkedHashMap<>();
+        f2.put("soldier", new ArrayList<>(List.of(one)));
+        assertEquals(1L, soldierTotal(ServerGuardianEngine.scaleFormationSoldiers(f2, 25)));
+        assertNull(ServerGuardianEngine.scaleFormationSoldiers(null, 75));
+    }
+
+    @Test
+    public void onLaunchFailure_415AdaptsAndCoolsDownTarget() {
+        TestEngine e = new TestEngine();
+        presetClientSquad(e, 5);
+        presetSoldiers(e);
+        ServerGuardianEngine engine = engine();
+        Map<String, Object> formation = engine.formationOf(e, ServerGuardianEngine.parseConfig(null));
+        assertEquals(3, heroCount(formation));
+
+        long t0 = System.currentTimeMillis();
+        String text = engine.onLaunchFailure(e, 415L, formation, "t:176846552", t0);
+        assertNotNull("415 必须走自适应", text);
+        assertTrue("文案写明 415 与降档结果，实际=" + text,
+                text.contains("415") && text.contains("2 英雄"));
+        assertEquals("415 后英雄上限 3→2", 2, HeroAvailability.autoHeroLimit(e));
+        assertTrue("同目标进入冷却", engine.targetInCooldown("t:176846552", t0 + 1_000L));
+        assertFalse("冷却到期（45s 后）", engine.targetInCooldown(
+                "t:176846552", t0 + ServerGuardianEngine.LAUNCH_FAIL_COOLDOWN_MS + 1L));
+        // 下一威胁按更低上限构造编队
+        assertEquals("下一威胁英雄数降到 2", 2, heroCount(
+                engine.formationOf(e, ServerGuardianEngine.parseConfig(null))));
+        // 成功发射后复位
+        HeroAvailability.markSuccess(e);
+        assertEquals("成功后复位默认上限", 3, HeroAvailability.autoHeroLimit(e));
+    }
+
+    @Test
+    public void onLaunchFailure_406ScalesSoldiers() {
+        TestEngine e = new TestEngine();
+        presetClientSquad(e, 5);
+        presetSoldiers(e);
+        ServerGuardianEngine engine = engine();
+        Map<String, Object> formation = engine.formationOf(e, ServerGuardianEngine.parseConfig(null));
+
+        String text = engine.onLaunchFailure(e, 406L, formation, "t:1", System.currentTimeMillis());
+        assertNotNull(text);
+        assertTrue("文案写明 406 与缩放比例，实际=" + text,
+                text.contains("406") && text.contains("75%"));
+        assertEquals(75, HeroAvailability.soldierScalePercent(e));
+        // 下一威胁兵力按 75% 下发
+        Map<String, Object> scaled = engine.formationOf(e, ServerGuardianEngine.parseConfig(null));
+        // 原始 40/30/30 夹取后 1000+900+1000=2900，×75% = 2175（每兵种向下取整、最小 1）
+        assertEquals("兵力按 75% 缩放", 2175L, soldierTotal(scaled));
+        HeroAvailability.markSuccess(e);
+        assertEquals("成功后复位 100%", 100, HeroAvailability.soldierScalePercent(e));
+    }
+
+    @Test
+    public void onLaunchFailure_otherCodesDoNotAdapt() {
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine engine = engine();
+        long t0 = System.currentTimeMillis();
+        assertNull("其它码不走自适应", engine.onLaunchFailure(e, 51L, new LinkedHashMap<>(), "t:9", t0));
+        assertFalse(engine.targetInCooldown("t:9", t0 + 1_000L));
+        assertEquals(3, HeroAvailability.autoHeroLimit(e));
+    }
+
+    @Test
+    public void cooldownAndLogThrottlePure() {
+        assertTrue(ServerGuardianEngine.inLaunchCooldown(1_100L, 1_000L));
+        assertFalse(ServerGuardianEngine.inLaunchCooldown(1_000L, 1_000L));
+        assertFalse(ServerGuardianEngine.inLaunchCooldown(0L, 1_000L));
+        assertTrue("首次必记", ServerGuardianEngine.failureLogDue(0L, 1_000L, 60_000L));
+        assertFalse("60s 内不重复", ServerGuardianEngine.failureLogDue(1_000L, 30_000L, 60_000L));
+        assertTrue("超窗口可记", ServerGuardianEngine.failureLogDue(1_000L, 61_000L, 60_000L));
+        assertTrue("时钟回拨按可记", ServerGuardianEngine.failureLogDue(5_000L, 1_000L, 60_000L));
     }
 }
