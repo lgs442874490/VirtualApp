@@ -1,12 +1,16 @@
 package com.carlos.vaultserver.guardian;
 
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.HeroCatalog;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.ServerWarState;
 import com.carlos.vaultserver.StateStore;
 import com.carlos.vaultserver.VaultStore;
+import com.carlos.vaultserver.formation.FormationCatalog;
+import com.carlos.vaultserver.formation.FormationResolver;
 import com.carlos.vaultserver.formation.HeroAvailability;
+import com.carlos.vaultserver.formation.ResolvedFormation;
 import com.carlos.vaultserver.task.Exec;
 
 import org.json.JSONArray;
@@ -343,6 +347,8 @@ public final class ServerGuardianEngine {
     private final Map<String, Long> targetCooldowns = new ConcurrentHashMap<>();
     /** {@code targetKey|code → 上次失败日志时刻}（节流用）。 */
     private final Map<String, Long> failLogAt = new ConcurrentHashMap<>();
+    /** 最近一次自动编队摘要（英雄/容量/兵力比；供 launched 账本文案，2026-10-28 需求）。 */
+    private volatile String lastAutoFormationSummary = "";
     /**
      * P1：每个敌方行军已处理的「压缩态」endtime（敌方 marchId → 最近一次触发加速的敌 endSec）。
      * 同一压缩态重复推送只处理一次（幂等，防请求风暴）；敌方再次压缩（endSec 更小）→ 新一轮最小响应。
@@ -674,9 +680,11 @@ public final class ServerGuardianEngine {
                 missions.put(targetKey, new Mission(t.marchId, r.marchId, r.endtimeSec, nowMs));
                 long nowS = nowSec(engine);
                 long ahead = t.endEpochSec > 0 && r.endtimeSec > 0 ? t.endEpochSec - r.endtimeSec : 0L;
+                String autoNote = lastAutoFormationSummary;
                 String text = "已发射 type=5 驻防 marchId=" + r.marchId + " endtime=" + r.endtimeSec
                         + "（敌 endtime=" + t.endEpochSec + (ahead != 0 ? "，我方" + (ahead >= 0 ? "先于敌 " : "晚于敌 ") + Math.abs(ahead) + "s" : "")
-                        + "）目标" + targetText(t, pt);
+                        + "）目标" + targetText(t, pt)
+                        + (autoNote == null || autoNote.isEmpty() ? "" : "｜" + autoNote);
                 FileLog.info("守护盟友发射 {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("launched", t, r, text);
                 writeMod("🛡" + text);
@@ -1666,17 +1674,95 @@ public final class ServerGuardianEngine {
                         Exec.formationWithHeroes(engine, clampFormationHeroes(cfg.heroIds, heroLimit)),
                         scale);
             }
-            int squad = cfg == null || cfg.squadIndex <= 0 ? 1 : cfg.squadIndex;
-            List<Long> heroes = Exec.clientSquads(engine).get((long) squad);
-            if (heroes == null || heroes.isEmpty()) {
-                List<Long> all = Exec.allHeroes(engine);
-                heroes = all.subList(0, Math.min(3, all.size()));
-            }
-            return scaleFormationSoldiers(
-                    Exec.formationWithHeroes(engine, clampFormationHeroes(heroes, heroLimit)), scale);
+            // 2026-10-28 用户需求：无任何显式编队参数时，不再用客户端编队（可能 5 英雄 → 415），
+            // 改为「最强空闲盾/矛/弓各一名 + 盾50%/矛20%/弓30% 按出征上限带兵」的 AUTO 编队。
+            lastAutoFormationSummary = "";
+            AutoFormation auto = guardianAutoFormation(engine);
+            if (auto == null) return null;
+            lastAutoFormationSummary = auto.summary;
+            return auto.payload;
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    // =====================================================================
+    // AUTO 最强空闲英雄编队（2026-10-28 用户需求）
+    // 盾:矛:弓 = 50:20:30，按出征容量夹取；复用 FormationResolver.autoProfessionHeroes /
+    // autoOutcome（已含在城/黑名单/415 限档/406 缩放/容量夹取），不重复实现选人/分配逻辑。
+    // =====================================================================
+
+    /** 自动编队结果：payload + 可读摘要（日志/账本/单测用）。 */
+    static final class AutoFormation {
+        final Map<String, Object> payload;
+        final String summary;
+
+        AutoFormation(Map<String, Object> payload, String summary) {
+            this.payload = payload;
+            this.summary = summary == null ? "" : summary;
+        }
+    }
+
+    /** 守护盟友 AUTO 编队比例（用户需求）：盾 50% / 矛 20% / 弓 30%。 */
+    static Map<String, Long> guardianAutoRatio() {
+        Map<String, Long> r = new LinkedHashMap<>();
+        r.put("infantry", 50L);
+        r.put("lancer", 20L);
+        r.put("marksman", 30L);
+        return r;
+    }
+
+    /** 英雄职业数摘要（纯函数）：盾x/矛y/弓z（职业未知不计）。 */
+    static String heroProfessionSummary(List<Long> heroIds) {
+        int shield = 0, spear = 0, bow = 0;
+        if (heroIds != null) {
+            for (Long id : heroIds) {
+                if (id == null || id <= 0L) continue;
+                int p = HeroCatalog.profession(id);
+                if (p == 1) shield++;
+                else if (p == 2) spear++;
+                else if (p == 3) bow++;
+            }
+        }
+        return "盾" + shield + "/矛" + spear + "/弓" + bow;
+    }
+
+    /**
+     * AUTO 最强空闲英雄编队：
+     * <ol>
+     *   <li>英雄：{@link FormationResolver#autoProfessionHeroes} —— 最强盾/矛/弓各一，
+     *       已含在城/黑名单/前序占用过滤，并受 415 限档（3→2→1）；</li>
+     *   <li>容量：{@link FormationCatalog#capacityForHeroes}（出征上限；0=未知 → 传 0 走库存/5万兜底）；</li>
+     *   <li>配兵：{@link FormationResolver#autoOutcome} 按 {@link #guardianAutoRatio()} 50:20:30
+     *       分配并按容量夹取（406 缩放/415 提示由 Resolver 内部消费）。</li>
+     * </ol>
+     *
+     * @return payload + 摘要；英雄/库存未同步 → null（上层 skip_no_formation，可读原因见日志）
+     */
+    AutoFormation guardianAutoFormation(WjdrEngine engine) {
+        if (engine == null) return null;
+        List<Long> heroes = FormationResolver.autoProfessionHeroes(engine);
+        if (heroes.isEmpty()) {
+            FileLog.info("守护盟友自动编队不可用 {}:{}：英雄目录未同步/无可用英雄（notify_hero_init）",
+                    fpid, String.valueOf(sid));
+            return null;
+        }
+        long capacity = FormationCatalog.capacityForHeroes(engine, heroes);
+        String capText = capacity > 0L ? String.valueOf(capacity) : "未知(兜底库存)";
+        FormationResolver.ResolveOutcome out =
+                FormationResolver.autoOutcome(engine, guardianAutoRatio(), Math.max(0L, capacity));
+        if (!out.ready()) {
+            FileLog.info("守护盟友自动编队不可用 {}:{}：{}（英雄{} 容量={}）",
+                    fpid, String.valueOf(sid), out.reason, heroProfessionSummary(heroes), capText);
+            return null;
+        }
+        ResolvedFormation rf = out.formation;
+        String summary = "自动编队 英雄[" + heroProfessionSummary(rf.heroIds) + "]"
+                + " 容量=" + capText
+                + " 兵力=盾" + rf.infantry + "/矛" + rf.lancer + "/弓" + rf.marksman
+                + " 比例50:20:30（" + out.reason + "）";
+        FileLog.info("守护盟友 {}", summary);
+        return new AutoFormation(rf.toFormationPayload(), summary);
     }
 
     // =====================================================================
