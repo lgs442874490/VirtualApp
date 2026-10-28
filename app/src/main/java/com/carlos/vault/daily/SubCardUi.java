@@ -76,9 +76,21 @@ public final class SubCardUi {
         } catch (Throwable ignored) {
         }
         final UiStyle.Switch[] ref = new UiStyle.Switch[1];
+        // 军医所「治疗后联盟求助」：服务端 MedicService 从角色 params 的**顶层** request_help
+        // 读取（键名契约锁定），故该子项开关写顶层键而非 sub:{...}，避免写成 sub.request_help
+        // 导致服务端读不到（2026-10-28 bug3）。
+        final boolean topLevelRequestHelp = "medic".equals(fnId) && "help".equals(sub.id);
         ref[0] = new UiStyle.Switch(ctx,
-                FnParams.subOn(ctx, fpid, sid, fnId, sub.id, sub.defOn),
-                () -> FnParams.saveSubOn(ctx, fpid, sid, fnId, sub.id, ref[0].isOn()));
+                topLevelRequestHelp
+                        ? FnParams.medicRequestHelp(FnParams.params(ctx, fpid, sid, fnId))
+                        : FnParams.subOn(ctx, fpid, sid, fnId, sub.id, sub.defOn),
+                () -> {
+                    if (topLevelRequestHelp) {
+                        FnParams.putTopLevel(ctx, fpid, sid, fnId, "request_help", ref[0].isOn());
+                    } else {
+                        FnParams.saveSubOn(ctx, fpid, sid, fnId, sub.id, ref[0].isOn());
+                    }
+                });
         UiStyle.Switch sw = ref[0];
         l1.addView(sw);
         card.addView(l1);

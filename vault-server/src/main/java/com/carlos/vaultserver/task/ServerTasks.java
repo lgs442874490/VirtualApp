@@ -9,6 +9,8 @@ import com.carlos.vaultserver.formation.FormationLibrary;
 import com.carlos.vaultserver.formation.FormationResolver;
 import com.carlos.vaultserver.formation.ResolvedFormation;
 
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -3185,39 +3187,67 @@ public final class ServerTasks {
             int ok = 0;
             tc.engine.collectNotifies(1500);
 
-            // 免费科技捐献（L2 P0 修复 2026-10-23）——1:1 网页版：
+            // 免费科技捐献（L2 P0 修复 2026-10-23；P0 2026-10-28 持久化加固）——1:1 网页版：
             // DailyAllianceDonationService.java:500-556（while freeCount>0 循环、推荐科技优先、
             //   req_alliance_science_donate{id,level:target.level()+1}、SKIPPABLE_TARGET_CODES:66-68、
-            //   orderedTargets:556+）；
+            //   orderedTargets:556+、均不可捐 → donationDeferred 300000ms）；
             // DailyAllianceDonationState.java:394-406（notify_alliance_science_init.sciences 是 Map，
             //   Exec.mapsOf 已兼容 Map/List）、:443-447（notify_alliance_science_exp_update.science 单条累积，
             //   生产单日 144 条）、:520-566（notify_recover_resource_init/update.data["205.0"]
             //   {count,max_count,next_calc_ts,recover,interval} + projectRecovery）。
-            // 旧实现：sciences 当时按 List-only 解析 → 判空写“科技数据未同步”；level 传 lv（网页版 lv+1）；
-            // 无 freeCount 门控 → 只盲捐一次。修复后按免费次数循环，免费次数未知则不盲捐（宁漏不花）。
+            // P0 2026-10-28（生产实证）：会话启动 37 分钟内 notify_alliance_science_init 未到 →
+            //   旧实现整段“科技数据未同步”一次不捐；1507/1584 单目标码阻塞整轮（883 次/日）。
+            //   修复：sciences/recommend/recovery 持久化到 srv:alliance_science:<fpid>:<sid>，
+            //   推送漏发/会话重启后仍可捐；免费次数仍「未知不盲捐」，但可由持久化快照投影恢复；
+            //   单目标不可捐 → 下一个目标；全部不可捐 → 明确状态 + 5 分钟冷却，不误判失败、不请求风暴。
             try {
-                java.util.Map<Long, long[]> sciences = collectSciences(tc.engine);
-                long recommend = recommendedScienceId(tc.engine);
-                java.util.Map<String, Object> recovery = recoveryOf(tc.engine);
+                // ① 读持久化快照 + 合并本次推送：推送权威、持久化补漏。
+                AllianceScienceState st = loadAllianceScience(tc);
                 long nowSec = serverNowSec(tc);
-                long freeCount = recovery == null ? -1L : projectedRecoveryCount(recovery, nowSec);
-                long noFreeUntil = tc.modState("alliance_donate").optLong("no_free_until", 0L);
-                if (freeCount > 0L && noFreeUntil > nowSec) freeCount = 0L;
-                if (sciences.isEmpty()) {
-                    sb.append("科技捐献:科技数据未同步（notify_alliance_science_init/exp_update 均未到）; ");
+                // 先按持久化快照投影（可能含上一轮本地扣减，不能先被推送覆盖）
+                long persistedFree = st.recoveryKnown()
+                        ? projectedRecoveryCount(st.recovery, nowSec) : -1L;
+                java.util.Map<Long, long[]> freshSciences = collectSciences(tc.engine);
+                if (!freshSciences.isEmpty()) mergeSciences(st.sciences, freshSciences);
+                long freshRecommend = recommendedScienceId(tc.engine);
+                if (freshRecommend > 0L) st.recommend = freshRecommend;
+                java.util.Map<String, Object> freshRecovery = recoveryOf(tc.engine);
+                long engineFree = freshRecovery == null ? -1L : projectedRecoveryCount(freshRecovery, nowSec);
+                // ② 免费次数：两路投影取小（宁漏不花）；都未知 → -1（不盲捐付费）。
+                long freeCount = effectiveFreeCount(engineFree, persistedFree);
+                // 选一个恢复快照做后续扣减：没有持久化 / 引擎侧更保守 → 用引擎新值；否则保留持久化侧
+                // （持久化侧可能已按上一轮成功捐献本地扣减，用陈旧 init 快照覆盖会导致重复超捐）。
+                if (freshRecovery != null && (persistedFree < 0L || engineFree <= persistedFree)) {
+                    st.recovery = new LinkedHashMap<>(freshRecovery);
+                }
+                // 兼容历史版本写在 mod 键里的 no_free_until
+                long legacyNoFree = tc.modState("alliance_donate").optLong("no_free_until", 0L);
+                if (legacyNoFree > nowSec) st.noFreeUntilSec = Math.max(st.noFreeUntilSec, legacyNoFree);
+                // 解析成功即落盘（推送漏发/会话重启后下一轮仍可用）
+                if (!freshSciences.isEmpty() || freshRecommend > 0L || freshRecovery != null) {
+                    saveAllianceScience(tc, st);
+                }
+                if (st.noFreeUntilSec > nowSec) freeCount = 0L;
+
+                if (!st.sciencesKnown()) {
+                    sb.append("科技捐献:科技数据未同步（notify_alliance_science_init/exp_update 未到，等待推送）; ");
                 } else if (freeCount < 0L) {
-                    sb.append("科技捐献:免费次数未同步（notify_recover_resource_init 未到），本轮不盲捐; ");
+                    sb.append("科技捐献:免费次数未同步（notify_recover_resource_init 未到），本轮不盲捐（不消耗付费）; ");
+                } else if (freeCount > 0L && st.targetCooldownUntilSec > nowSec) {
+                    sb.append("科技捐献:科技暂不可捐，")
+                            .append(donationClock(st.targetCooldownUntilSec)).append(" 后自动重试; ");
                 } else if (freeCount <= 0L) {
                     sb.append("科技捐献:免费次数已用尽");
-                    long next = recovery == null ? 0L : Exec.longOf(recovery.get("next_calc_ts"));
-                    if (next > nowSec) {
-                        sb.append("（下次恢复 ").append(Beijing.fmt("HH:mm")
-                                .format(new java.util.Date(next * 1000L))).append("）");
-                    }
-                    sb.append("; ");
+                    long next = st.recoveryKnown() ? Exec.longOf(st.recovery.get("next_calc_ts")) : 0L;
+                    if (next > nowSec) sb.append("（下次恢复 ").append(donationClock(next)).append("）");
+                    sb.append("，恢复后自动捐献; ");
                 } else {
+                    if (freshSciences.isEmpty()) {
+                        sb.append("科技捐献:推送未到，使用缓存科技表; ");   // 持久化兜底，避免整段时间不捐
+                    }
                     int donated = 0;
-                    java.util.List<long[]> targets = orderedScienceTargets(sciences, recommend);
+                    int lastSkipCode = 0;
+                    java.util.List<long[]> targets = orderedScienceTargets(st.sciences, st.recommend);
                     int budget = (int) Math.min(50L, freeCount);
                     boolean stopped = false;
                     for (int i = 0; i < budget && !stopped; i++) {
@@ -3240,46 +3270,67 @@ public final class ServerTasks {
                                 }
                                 break;   // 成功即重新选目标（网页版成功一次就进入下一次循环）
                             }
-                            if (isDonationTargetSkipCode(code)) continue;   // 该科技不可捐 → 下一个目标
+                            if (isDonationTargetSkipCode(code)) {
+                                // 1576 研究中 / 1577 捐满 / 1581 条件不满足 / 1507 今日已捐 / 1584 目标不可捐…
+                                lastSkipCode = code;
+                                continue;   // 该科技不可捐 → 下一个目标
+                            }
                             if (code == 1528) {
-                                // 免费次数已用尽：按 recovery 投影下一次恢复时间，避免每轮重复请求
-                                long interval = recovery == null ? 0L
-                                        : Math.max(0L, Exec.longOf(recovery.get("interval")));
-                                long nextCalc = recovery == null ? 0L
-                                        : Exec.longOf(recovery.get("next_calc_ts"));
-                                long next = nextCalc > nowSec
-                                        ? nextCalc + Math.max(60L, interval)
-                                        : nowSec + Math.max(60L, interval > 0L ? interval : 300L);
-                                tc.saveModText("alliance_donate", "no_free_until", String.valueOf(next));
-                                sb.append("科技捐献:免费次数已用尽; ");
+                                // 服务端判免费次数用尽：本地记恢复时刻，恢复后自动继续捐。
+                                java.util.Map<String, Object> base = st.recoveryKnown() ? st.recovery : freshRecovery;
+                                st.noFreeUntilSec = donationNoFreeUntil(base, nowSec);
+                                st.recovery = normalizeRecovery(base, nowSec, 0L);
+                                saveAllianceScience(tc, st);
+                                tc.saveModText("alliance_donate", "no_free_until", String.valueOf(st.noFreeUntilSec));
+                                sb.append("科技捐献:免费次数已用尽（服务端码1528），恢复后自动捐献; ");
                                 stopped = true;
                                 break;
                             }
                             if (code == 1545) {
-                                sb.append("科技捐献:当前资源不足，暂不捐; ");
+                                st.targetCooldownUntilSec = nowSec + DONATION_RESOURCE_COOLDOWN_SEC;
+                                saveAllianceScience(tc, st);
+                                sb.append("科技捐献:当前资源不足，").append(DONATION_RESOURCE_COOLDOWN_SEC)
+                                        .append(" 秒后再试; ");
                                 stopped = true;
                                 break;
                             }
                             if (code == 1510 || code == 1511) {
+                                st.targetCooldownUntilSec = nowSec + DONATION_UNKNOWN_COOLDOWN_SEC;
+                                saveAllianceScience(tc, st);
                                 sb.append("科技捐献:联盟状态异常，等待重新同步; ");
                                 stopped = true;
                                 break;
                             }
+                            // 其它未知码：不静默（warn + 可读状态 + 冷却），下一轮继续尝试。
                             FileLog.warn("联盟科技捐献失败 id={} level={} code={}",
                                     target[0], target[1] + 1L, code);
-                            sb.append("科技捐献").append(describeSupplyCode(code, ":")).append("; ");
+                            st.targetCooldownUntilSec = nowSec + DONATION_UNKNOWN_COOLDOWN_SEC;
+                            saveAllianceScience(tc, st);
+                            sb.append("科技捐献:未知错误码 ").append(code).append("，稍后自动重试; ");
                             stopped = true;
                             break;
                         }
                         if (!any && !stopped) {
-                            sb.append("科技捐献:当前联盟科技均不可捐; ");
+                            // 全部目标都“不可捐”：明确语义（不是失败），5 分钟后继续尝试（网页版 donationDeferred 同款）。
+                            st.targetCooldownUntilSec = nowSec + DONATION_TARGET_COOLDOWN_SEC;
+                            saveAllianceScience(tc, st);
+                            sb.append("科技捐献:当前联盟科技均不可捐（已满/研究中等")
+                                    .append(lastSkipCode > 0 ? "，最近码 " + lastSkipCode : "")
+                                    .append("），").append(donationClock(st.targetCooldownUntilSec))
+                                    .append(" 后自动重试; ");
                             break;
                         }
                     }
                     if (donated > 0) {
                         ok += donated;
-                        sb.append("科技捐献✓×").append(donated).append("; ");
+                        // ③ 成功捐献后落盘：本地扣减免费次数（服务端推送到达前不重复超捐）。
+                        java.util.Map<String, Object> base = st.recoveryKnown() ? st.recovery : freshRecovery;
+                        st.recovery = normalizeRecovery(base, nowSec, freeCount - donated);
+                        st.noFreeUntilSec = 0L;
+                        st.targetCooldownUntilSec = 0L;
+                        saveAllianceScience(tc, st);
                         tc.saveModText("alliance_donate", "no_free_until", "0");
+                        sb.append("科技捐献✓×").append(donated).append("; ");
                     }
                 }
             } catch (Exception ex) {
@@ -3558,16 +3609,213 @@ public final class ServerTasks {
         return out;
     }
 
-    /** 可跳过目标错误码（网页版 DailyAllianceDonationService.java:66-68 SKIPPABLE_TARGET_CODES）。 */
+    /**
+     * 可跳过目标错误码（网页版 DailyAllianceDonationService.java:66-68 SKIPPABLE_TARGET_CODES）。
+     *
+     * <p>P0 2026-10-28 生产实证补充：
+     * <ul>
+     *   <li>1507「今日已捐献」：vault-20261027.log 全天 883 次 {@code 科技捐献失败 id=6023 level=1 code=1507}
+     *       —— 推荐科技 id=6023 已捐满后旧实现直接停轮，其它科技永远不被尝试（=用户“捐献满了不自动捐”）；</li>
+     *   <li>1584：vault-20261028.log 17:51:55 {@code id=6023 level=1 code=1584}（该科技 lv=0 但
+     *       donate 累计值巨大 → 目标级“暂不可捐献/需研究”语义），同款阻塞整轮。</li>
+     * </ul>
+     * 两者都按「该目标不可捐 → 下一个目标」处理；若全部目标都跳过，本轮写“均不可捐”并 5 分钟冷却
+     * （网页版 donationDeferred 同款），不会请求风暴。
+     */
     static boolean isDonationTargetSkipCode(int code) {
         switch (code) {
             case 2:
+            case 1507: case 1584:
             case 1570: case 1571: case 1574: case 1576: case 1577: case 1579: case 1580:
             case 1581:
                 return true;
             default:
                 return false;
         }
+    }
+
+    // ---- 联盟科技捐献持久化（P0 2026-10-28：srv:alliance_science:<fpid>:<sid>） ----
+    // 生产实证：会话启动 17:13 → notify_alliance_science_init 17:50:45 才到，37 分钟内
+    // “科技数据未同步”一次都不捐（用户感知“捐献满了也不自动捐”）。修复后把已解析的
+    // sciences/recommend/免费次数(recovery) 落 StateStore，推送漏发/会话重启后仍可捐；
+    // 免费次数仍按网页版「未知不盲捐」，但可由持久化快照投影恢复。
+
+    /** 目标均不可捐冷却（网页版 donationDeferred 300000ms）。 */
+    static final long DONATION_TARGET_COOLDOWN_SEC = 300L;
+    /** 资源不足冷却（网页版 1545 → donationDeferred 60000ms）。 */
+    static final long DONATION_RESOURCE_COOLDOWN_SEC = 60L;
+    /** 联盟状态变化/未知码冷却（网页版 1510/1511 等待重新同步、未知码 300000ms）。 */
+    static final long DONATION_UNKNOWN_COOLDOWN_SEC = 300L;
+
+    /** 联盟科技捐献持久化快照。 */
+    static final class AllianceScienceState {
+        final java.util.Map<Long, long[]> sciences = new java.util.LinkedHashMap<>();
+        long recommend;
+        /** 免费次数恢复快照（null=未知）。 */
+        java.util.Map<String, Object> recovery;
+        /** 1528/服务端判“免费次数用尽”后的本地恢复时刻（秒，0=无）。 */
+        long noFreeUntilSec;
+        /** 目标均不可捐/资源不足/联盟异常后的冷却时刻（秒，0=无），防止 30s 节奏请求风暴。 */
+        long targetCooldownUntilSec;
+        long updatedAtMs;
+
+        boolean sciencesKnown() {
+            return !sciences.isEmpty();
+        }
+
+        boolean recoveryKnown() {
+            return recovery != null && !recovery.isEmpty();
+        }
+    }
+
+    /** 持久化键（按 fpid:sid，与其它 srv:* 台账同键型）。 */
+    static String allianceScienceKey(String fpid, long sid) {
+        return "srv:alliance_science:" + fpid + ":" + sid;
+    }
+
+    /** 编码持久化快照（纯函数，便于 round-trip 单测）。 */
+    static String encodeAllianceScience(AllianceScienceState st) {
+        JSONObject o = new JSONObject();
+        if (st == null) return o.toString();
+        try {
+            JSONObject sciences = new JSONObject();
+            for (java.util.Map.Entry<Long, long[]> e : st.sciences.entrySet()) {
+                long[] v = e.getValue();
+                if (e.getKey() == null || e.getKey() <= 0L || v == null) continue;
+                JSONObject item = new JSONObject();
+                item.put("lv", v[0]);
+                item.put("donate", v.length > 1 ? v[1] : 0L);
+                sciences.put(String.valueOf(e.getKey()), item);
+            }
+            o.put("sciences", sciences);
+            o.put("recommend", st.recommend);
+            if (st.recovery != null) o.put("recovery", new JSONObject(st.recovery));
+            o.put("no_free_until", st.noFreeUntilSec);
+            o.put("target_cooldown_until", st.targetCooldownUntilSec);
+            o.put("updated_at", st.updatedAtMs > 0L ? st.updatedAtMs : System.currentTimeMillis());
+        } catch (Throwable ignored) {
+        }
+        return o.toString();
+    }
+
+    /** 解码持久化快照（纯函数）：空/坏 JSON → 空状态，绝不抛。 */
+    static AllianceScienceState decodeAllianceScience(String json) {
+        AllianceScienceState st = new AllianceScienceState();
+        if (json == null || json.trim().isEmpty()) return st;
+        try {
+            JSONObject o = new JSONObject(json);
+            JSONObject sciences = o.optJSONObject("sciences");
+            if (sciences != null) {
+                for (String key : sciences.keySet()) {
+                    JSONObject item = sciences.optJSONObject(key);
+                    if (item == null) continue;
+                    long[] v = new long[]{Math.max(0L, item.optLong("lv", 0L)),
+                            Math.max(0L, item.optLong("donate", 0L))};
+                    long id = Exec.longOf(key);
+                    if (id > 0L) st.sciences.put(id, v);
+                }
+            }
+            st.recommend = Math.max(0L, o.optLong("recommend", 0L));
+            JSONObject rec = o.optJSONObject("recovery");
+            if (rec != null && rec.length() > 0) {
+                java.util.Map<String, Object> recovery = new LinkedHashMap<>();
+                for (String key : rec.keySet()) recovery.put(key, rec.get(key));
+                st.recovery = recovery;
+            }
+            st.noFreeUntilSec = Math.max(0L, o.optLong("no_free_until", 0L));
+            st.targetCooldownUntilSec = Math.max(0L, o.optLong("target_cooldown_until", 0L));
+            st.updatedAtMs = Math.max(0L, o.optLong("updated_at", 0L));
+        } catch (Throwable ignored) {
+            return new AllianceScienceState();
+        }
+        return st;
+    }
+
+    /** 读取持久化快照（无记录=空状态）。 */
+    static AllianceScienceState loadAllianceScience(TaskContext tc) {
+        try {
+            return decodeAllianceScience(tc.store.getString(allianceScienceKey(tc.fpid, tc.sid)));
+        } catch (Throwable t) {
+            return new AllianceScienceState();
+        }
+    }
+
+    /** 写持久化快照（写盘失败不影响任务）。 */
+    static void saveAllianceScience(TaskContext tc, AllianceScienceState st) {
+        if (st == null) return;
+        try {
+            st.updatedAtMs = System.currentTimeMillis();
+            tc.store.putString(allianceScienceKey(tc.fpid, tc.sid), encodeAllianceScience(st));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 合并科技表：引擎推送（fresh）覆盖持久化旧值；同级保留更高 lv（与 rememberScience 一致）。 */
+    static void mergeSciences(java.util.Map<Long, long[]> into,
+                              java.util.Map<Long, long[]> fresh) {
+        if (into == null || fresh == null) return;
+        for (java.util.Map.Entry<Long, long[]> e : fresh.entrySet()) {
+            long id = e.getKey() == null ? 0L : e.getKey();
+            long[] v = e.getValue();
+            if (id <= 0L || v == null) continue;
+            long[] prev = into.get(id);
+            if (prev == null || v[0] >= prev[0]) {
+                into.put(id, new long[]{v[0], v.length > 1 ? v[1] : 0L});
+            }
+        }
+    }
+
+    /**
+     * 两路免费次数投影合并（纯函数，宁漏不花）：都未知=-1；仅一路已知取该路；都已知取较小值
+     * （持久化侧通常是本地已扣减后的值，取小可避免用陈旧 init 快照重复捐到超出免费预算）。
+     */
+    static long effectiveFreeCount(long engineFreeCount, long persistedFreeCount) {
+        if (engineFreeCount < 0L && persistedFreeCount < 0L) return -1L;
+        if (engineFreeCount < 0L) return persistedFreeCount;
+        if (persistedFreeCount < 0L) return engineFreeCount;
+        return Math.min(engineFreeCount, persistedFreeCount);
+    }
+
+    /**
+     * 1528（免费次数已用尽）后的下一次可捐时刻（秒，纯函数）：优先 recovery.next_calc_ts，
+     * 无投影信息时按 interval 兜底（至少 60s，防 30s 节奏请求风暴）。
+     */
+    static long donationNoFreeUntil(java.util.Map<String, Object> recovery, long nowSec) {
+        long next = recovery == null ? 0L : Exec.longOf(recovery.get("next_calc_ts"));
+        long interval = recovery == null ? 0L : Math.max(0L, Exec.longOf(recovery.get("interval")));
+        if (next > nowSec) return next;
+        return nowSec + Math.max(60L, interval > 0L ? interval : 300L);
+    }
+
+    /**
+     * 把「按 next_calc_ts 投影后的免费次数」归一化成新快照（纯函数）：count=剩余次数，
+     * next_calc_ts 推进到未来第一个恢复点（否则下次投影会把已消费周期重复补算 → 多捐）。
+     */
+    static java.util.Map<String, Object> normalizeRecovery(java.util.Map<String, Object> recovery,
+                                                           long nowSec, long count) {
+        if (recovery == null) return null;
+        java.util.Map<String, Object> out = new LinkedHashMap<>(recovery);
+        long max = Math.max(0L, Exec.longOf(recovery.get("max_count")));
+        long interval = Math.max(0L, Exec.longOf(recovery.get("interval")));
+        long next = Exec.longOf(recovery.get("next_calc_ts"));
+        long left = Math.max(0L, count);
+        if (max > 0L) left = Math.min(left, max);
+        out.put("count", left);
+        if (interval > 0L && next > 0L) {
+            long firstFuture = next;
+            if (firstFuture <= nowSec) {
+                long cycles = 1L + (nowSec - firstFuture) / interval;
+                firstFuture = firstFuture + cycles * interval;
+            }
+            out.put("next_calc_ts", firstFuture);
+        }
+        return out;
+    }
+
+    /** 北京时间 HH:mm（状态文案用；next 秒<=0 → 空串）。 */
+    static String donationClock(long epochSec) {
+        if (epochSec <= 0L) return "";
+        return Beijing.fmt("HH:mm").format(new java.util.Date(epochSec * 1000L));
     }
 
     /** 免费护盾执行器（整轮与 ServerShieldResponder 反应式开盾复用；free_id 动态取，码表归 SKIPPED）。 */

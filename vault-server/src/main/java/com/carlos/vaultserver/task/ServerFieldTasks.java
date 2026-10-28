@@ -2188,19 +2188,27 @@ public final class ServerFieldTasks {
                     hasDispatchable = true;
                     break;
                 }
-                int allowedSlots = 0, activeIntelMarches = 0, freeSlots = 0;
+                // I2 队列门控（P0 2026-10-28，1:1 网页版 planActions:452-525 + consumesNormalWorldMarchSlot:614-616）：
+                // 营救(2) 不占普通行军队列；怪物(1)/活动巨兽(11)/冒险巨兽(100) 才占普通队列。
+                // remainingNormal = clamp(min(queueCount, 世界容量) - 在途情报(301|302), 0, 世界空闲)；
+                // 只有普通队列事件检查并扣减 remaining，营救类队列满时照发（旧实现营救/怪物一起被队列卡死）。
+                int allowedSlots = 0, activeIntelMarches = 0, remainingNormalSlots = 0;
                 boolean staminaKnown = false;
                 long usableStamina = Long.MAX_VALUE;
                 if (hasDispatchable) {
                     // 页面/请求只在有可派事件时取，避免纯领奖轮次多发队列查询。
-                    allowedSlots = intelQueueSlots(intelQueueCount(ip), marchCapacity(tc.engine));
-                    activeIntelMarches = countIntelMarches(tc.engine);
-                    freeSlots = Math.max(0, allowedSlots - activeIntelMarches);
+                    IntelQueueSnapshot q = intelQueueSnapshot(tc.engine);
+                    allowedSlots = intelQueueSlots(intelQueueCount(ip), q.capacity);
+                    activeIntelMarches = q.activeIntelligenceMarches;
+                    remainingNormalSlots = q.queueIdleKnown
+                            ? intelRemainingNormalSlots(allowedSlots, activeIntelMarches, q.normalIdle)
+                            : intelRemainingNormalSlots(allowedSlots, activeIntelMarches);
                     Long stamina = intelStamina(tc.engine);
                     staminaKnown = stamina != null;
                     if (staminaKnown) usableStamina = Math.max(0L, stamina - INTEL_STAMINA_RESERVE);
                 }
                 int handled = 0, claimed = 0, dispatched = 0, waiting = 0, deduped = 0;
+                int queueFullBlocked = 0, staminaBlocked = 0;
                 StringBuilder waits = new StringBuilder();
                 for (Map<String, Object> e : events.values()) {
                     long id = Exec.longOf(e.get("id"));
@@ -2237,12 +2245,15 @@ public final class ServerFieldTasks {
                     }
                     boolean worldMarch = intelIsWorldMarch(type);
                     long staminaCost = intelStaminaCost(type);
-                    if (worldMarch && freeSlots <= 0) {
-                        waiting++;      // 队列满：留待下一次节奏，不写失败
+                    int gate = intelDispatchGate(type, remainingNormalSlots, staminaKnown, usableStamina);
+                    if (gate == INTEL_GATE_QUEUE_FULL) {
+                        queueFullBlocked++;     // 普通队列满：留待下一次节奏，不写失败（营救类不走这里）
+                        waiting++;
                         continue;
                     }
-                    if (staminaKnown && !intelStaminaAllows(usableStamina, staminaCost)) {
-                        waiting++;      // 体力不足：留待下一次节奏，不写失败
+                    if (gate == INTEL_GATE_STAMINA) {
+                        staminaBlocked++;       // 体力不足：留待下一次节奏，不写失败
+                        waiting++;
                         continue;
                     }
                     if (type == 3) {
@@ -2292,7 +2303,8 @@ public final class ServerFieldTasks {
                         if (Exec.marchId(march) > 0) {
                             handled++;
                             dispatched++;
-                            freeSlots--;
+                            // 仅占普通队列的情报事件扣剩余槽位；营救(301)不占普通队列，不扣。
+                            if (intelConsumesNormalMarchSlot(type)) remainingNormalSlots--;
                             markIntelDispatched(tc, id, now);
                             if (staminaKnown) usableStamina = Math.max(0L, usableStamina - staminaCost);
                             // P0-5：成功出征复位 415 英雄上限/406 兵力缩放
@@ -2324,9 +2336,11 @@ public final class ServerFieldTasks {
                     m.claimed("处理情报×" + handled
                             + (claimed > 0 ? "（领奖" + claimed + "）" : "")
                             + (dispatched > 0 ? "（派队" + dispatched + "）" : ""));
-                } else if (hasDispatchable && freeSlots <= 0) {
-                    m.skip("情报队列已满(" + activeIntelMarches + "/" + allowedSlots + ")，待下一次");
-                } else if (hasDispatchable && staminaKnown && usableStamina < intelStaminaCost(1)) {
+                } else if (queueFullBlocked > 0) {
+                    m.skip("情报队列已满(情报" + activeIntelMarches + "/" + allowedSlots + "·空闲"
+                            + remainingNormalSlots + ")，营救类不受队列限制，怪物/巨兽待下一次");
+                } else if (staminaBlocked > 0
+                        || (hasDispatchable && staminaKnown && usableStamina < intelStaminaCost(1))) {
                     m.skip("情报体力不足(可用" + usableStamina + "·保留" + INTEL_STAMINA_RESERVE + ")，待下一次");
                 } else if (waiting > 0) {
                     m.skip("情报待重试：" + waits.toString().trim());
@@ -2480,6 +2494,111 @@ public final class ServerFieldTasks {
         int cap = worldCapacity > 0 ? worldCapacity : 3;   // 世界容量取不到时沿用 marchCapacity 的兜底 3
         return Math.max(0, Math.min(cfg, cap));
     }
+
+    // ---------- 情报普通队列语义（P0 2026-10-28：营救不占普通队列 / 狩猎类才占） ----------
+    // 基准：网页版 DailyIntelligenceService.consumesNormalWorldMarchSlot:614-616
+    //   → type!=2 && isWorldMarch(type)；planActions:452-525
+    //   → activeNormalMarches=count(301|302)，remaining=clamp(effectiveQueueCount-active,0,world.idle())。
+    // 生产现象：普通队列被采集/狩猎占满时，旧实现「所有世界行军一律要 freeSlots」导致营救照发、
+    // 怪物永不发（用户反馈“情报只会做营救类”）。修复后营救不检查也不扣普通队列，狩猎类按真实空闲排队。
+
+    /** 情报普通队列门控快照。 */
+    static final class IntelQueueSnapshot {
+        /** 普通行军队列容量（marchCapacity 口径，未再与配置取小）。 */
+        final int capacity;
+        /** 在途情报行军（type=301/302，网页版 activeIntelligenceMarchCount）。 */
+        final int activeIntelligenceMarches;
+        /** 是否拿到真实普通队列空闲（资产库 Queue.idle；false=只扣在途情报的兜底口径）。 */
+        final boolean queueIdleKnown;
+        /** 普通队列真实空闲（32 位保护性 clamp，≥0）。 */
+        final int normalIdle;
+
+        IntelQueueSnapshot(int capacity, int activeIntelligenceMarches,
+                           boolean queueIdleKnown, int normalIdle) {
+            this.capacity = Math.max(0, capacity);
+            this.activeIntelligenceMarches = Math.max(0, activeIntelligenceMarches);
+            this.queueIdleKnown = queueIdleKnown;
+            this.normalIdle = Math.max(0, normalIdle);
+        }
+    }
+
+    /**
+     * 读取情报普通队列门控数据：
+     * <ul>
+     *   <li>资产库优先：{@code AssetSnapshot.Queue} 的 capacity/occupied/idle 已按网页版口径算好
+     *       （301 等特殊队列不计普通占用，pending 也扣除），idle 与网页版 world.idle() 同义；</li>
+     *   <li>未接线/未 READY/容量未知：回退 {@code req_world_march_detail_4_player_situation}
+     *       只统计在途情报，空闲未知时按「容量 - 在途情报」口径（老口径，不会因采集占满而卡死营救）。</li>
+     * </ul>
+     */
+    static IntelQueueSnapshot intelQueueSnapshot(WjdrEngine engine) {
+        int capacity = 0;
+        int active = 0;
+        int normalIdle = 0;
+        boolean idleKnown = false;
+        if (engine != null && assetReadsEnabled()) {
+            try {
+                CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+                if (lib != null && lib.ready()) {
+                    AssetSnapshot.Queue q = lib.queue();
+                    if (q != null && q.known()) {
+                        capacity = q.capacity;
+                        normalIdle = q.idle;
+                        idleKnown = true;
+                        for (AssetSnapshot.QueueMarch march : q.marches) {
+                            if (march != null && (march.type == 301L || march.type == 302L)) active++;
+                        }
+                    }
+                }
+            } catch (Throwable ignored) {
+                // 资产库异常按未接线处理，走回退口径
+            }
+        }
+        if (capacity <= 0) capacity = engine == null ? 0 : marchCapacity(engine);
+        if (!idleKnown) {
+            active = engine == null ? 0 : countIntelMarches(engine);
+            normalIdle = Math.max(0, capacity - active);
+        }
+        return new IntelQueueSnapshot(capacity, active, idleKnown, normalIdle);
+    }
+
+    /** 是否消耗普通世界行军队列（1:1 网页版 consumesNormalWorldMarchSlot）：
+     *  营救(type=2) 不占普通队列，怪物(1)/活动巨兽(11)/冒险巨兽(100) 才占。 */
+    static boolean intelConsumesNormalMarchSlot(int type) {
+        return type != 2 && intelIsWorldMarch(type);
+    }
+
+    /** 普通队列可派情报数 = clamp(min(队列配置, 世界容量) - 在途情报, 0, 世界空闲)（网页版 planActions:461-463）。 */
+    static int intelRemainingNormalSlots(int allowedSlots, int activeIntelligenceMarches, int worldIdle) {
+        int slots = Math.max(0, allowedSlots - Math.max(0, activeIntelligenceMarches));
+        return Math.max(0, Math.min(slots, Math.max(0, worldIdle)));
+    }
+
+    /** 同上，但世界空闲未知时的兜底口径：只扣在途情报（保持旧行为，不因采集占满而误判队列满）。 */
+    static int intelRemainingNormalSlots(int allowedSlots, int activeIntelligenceMarches) {
+        return Math.max(0, allowedSlots - Math.max(0, activeIntelligenceMarches));
+    }
+
+    /** 派队门控结果：可派。 */
+    static final int INTEL_GATE_OK = 0;
+    /** 派队门控结果：普通队列已满（营救类不会返回该值）。 */
+    static final int INTEL_GATE_QUEUE_FULL = 1;
+    /** 派队门控结果：体力不足。 */
+    static final int INTEL_GATE_STAMINA = 2;
+
+    /**
+     * 单事件派队门控（纯函数，1:1 网页版 planActions 内联判定）：
+     * 先判普通队列（仅消耗队列的事件），再判体力；体力未知不阻塞（推送未到时只做队列门）。
+     */
+    static int intelDispatchGate(int type, int remainingNormalSlots, boolean staminaKnown,
+                                 long usableStamina) {
+        if (intelConsumesNormalMarchSlot(type) && remainingNormalSlots <= 0) return INTEL_GATE_QUEUE_FULL;
+        if (staminaKnown && !intelStaminaAllows(usableStamina, intelStaminaCost(type))) {
+            return INTEL_GATE_STAMINA;
+        }
+        return INTEL_GATE_OK;
+    }
+
 
     /** 单次情报体力消耗（1:1 网页版 DailyIntelligenceService.staminaCost:602-604）：
      *  营救(2)/英雄之旅(3) 12 点，其余 10 点。 */

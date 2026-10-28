@@ -3,6 +3,8 @@ package com.carlos.vault.daily;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.carlos.vault.VaultSync;
+
 import org.json.JSONObject;
 
 /**
@@ -26,11 +28,32 @@ public final class FnParams {
     }
 
     public static void saveParams(Context ctx, String fpid, long sid, String fnId, JSONObject p) {
+        boolean saved = false;
         try {
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .putString(key(fpid, sid, fnId), p.toString())
                     .apply();
+            saved = true;
         } catch (Exception ignored) {
+        }
+        // 用户设置写盘后立即触发下发（saveSubOn/saveStrategy/saveSelSet/putTopLevel 内部都经
+        // 本方法落盘，无需各处重复接线）；失败不影响本地保存。
+        if (saved) notifySettingsChanged(ctx);
+    }
+
+    /**
+     * 用户设置写盘后的轻量下发钩子（2026-10-28 功能型 bug）：训练等级、医院每批治疗数量
+     * 这类「设置」此前只写本地，最长要等 10 分钟全量同步才到服务器，用户感知「设置了也
+     * 无效」。
+     *
+     * <p>服务器模式下调用 {@link VaultSync#onAccountsChanged(Context)} 把上行窗口压到约 3 秒
+     * （该方法内部自带 3s 去抖，连续调用不会放大请求量）；非服务器模式或无 Context 时
+     * no-op；任何异常一律吞掉，绝不因同步失败影响本地保存/页面交互。
+     */
+    public static void notifySettingsChanged(Context ctx) {
+        try {
+            if (ctx != null && VaultSync.isServerMode(ctx)) VaultSync.onAccountsChanged(ctx);
+        } catch (Throwable ignored) {
         }
     }
 
@@ -148,6 +171,50 @@ public final class FnParams {
             saveParams(ctx, fpid, sid, fnId, p);
         } catch (Exception ignored) {
         }
+    }
+
+    // ================= 军医所批量治疗参数（2026-10-28 功能型 bug3） =================
+    //
+    // 服务端 MedicService.heal(tc, maxCount, immediate, requestHelp) 从角色 params 的
+    // medic 顶层键读取：heal_count（>0=每批最多治疗该数量，0=全部）与 request_help
+    // （治疗后是否 req_queue_ask_for_help 联盟求助，缺省 true）。键名由服务端契约锁定，
+    // App 侧不得改名/嵌套到 sub。
+
+    /** 每批治疗数量默认值（用户可改 1-10000）。 */
+    public static final int MEDIC_HEAL_COUNT_DEFAULT = 400;
+    /** 每批治疗数量下限。 */
+    public static final int MEDIC_HEAL_COUNT_MIN = 1;
+    /** 每批治疗数量上限。 */
+    public static final int MEDIC_HEAL_COUNT_MAX = 10000;
+    /** 治疗后联盟求助默认值（与服务端缺省 true 同口径）。 */
+    public static final boolean MEDIC_REQUEST_HELP_DEFAULT = true;
+
+    /** 规范化每批治疗数量（纯函数）：范围 1-10000，非法/越界回退默认 400。 */
+    public static int normalizeMedicHealCount(int value) {
+        return value >= MEDIC_HEAL_COUNT_MIN && value <= MEDIC_HEAL_COUNT_MAX
+                ? value : MEDIC_HEAL_COUNT_DEFAULT;
+    }
+
+    /** 解析输入框文本（纯函数）：空/非数字/越界回退默认 400。 */
+    public static int parseMedicHealCount(String text) {
+        if (text == null) return MEDIC_HEAL_COUNT_DEFAULT;
+        try {
+            return normalizeMedicHealCount(Integer.parseInt(text.trim()));
+        } catch (Throwable ignored) {
+            return MEDIC_HEAL_COUNT_DEFAULT;
+        }
+    }
+
+    /** 读 medic 参数里的每批治疗数量（缺失/非法/越界 → 默认 400）。 */
+    public static int medicHealCount(JSONObject p) {
+        if (p == null) return MEDIC_HEAL_COUNT_DEFAULT;
+        return normalizeMedicHealCount(p.optInt("heal_count", MEDIC_HEAL_COUNT_DEFAULT));
+    }
+
+    /** 读 medic 参数里的「治疗后联盟求助」(request_help，缺省 true)。 */
+    public static boolean medicRequestHelp(JSONObject p) {
+        return p == null ? MEDIC_REQUEST_HELP_DEFAULT
+                : p.optBoolean("request_help", MEDIC_REQUEST_HELP_DEFAULT);
     }
 
     /** 自定义策略分钟数。 */
@@ -539,6 +606,8 @@ public final class FnParams {
                 }
                 ed.apply();
             }
+            // 模板套用同时改开关与参数，直接触发一次下发（与 saveParams 同口径）
+            notifySettingsChanged(ctx);
             return true;
         } catch (Exception e) {
             return false;

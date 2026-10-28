@@ -4,7 +4,6 @@ import com.carlos.vaultserver.automation.ActionDefinition;
 import com.carlos.vaultserver.automation.AutomationModule;
 import com.carlos.vaultserver.automation.ModuleCategory;
 import com.carlos.vaultserver.automation.ModuleRegistry;
-import com.carlos.vaultserver.automation.services.MedicService;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -96,15 +95,10 @@ public final class Modules {
     }
 
     public static AutomationModule medic() {
+        // 参数契约唯一事实源：MedicService.healFromParams（heal_count 缺省 400、0=全部；
+        // request_help 缺省 true；同 ServerTownTasks.medic 入口，避免两处缺省漂移）。
         return new SimpleModule("medic", "军医所", ModuleCategory.MEDIC,
-                actions(action("medic", "伤兵统计/治疗/援助",
-                        tc -> {
-                            var p = tc.params("medic");
-                            return new MedicService().heal(tc,
-                                    p.optInt("heal_count", 0),
-                                    p.optBoolean("immediate", false),
-                                    p.optBoolean("request_help", true));
-                        })));
+                actions(action("medic", "伤兵统计/治疗/援助", ServerTownTasks::medic)));
     }
 
     public static AutomationModule wilderness() {
