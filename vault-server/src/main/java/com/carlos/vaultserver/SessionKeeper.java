@@ -9,6 +9,8 @@ import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vaultserver.monitor.TaskTrace;
 import com.carlos.vaultserver.task.AssetStateProjector;
 import com.carlos.vaultserver.task.ServerNotifyHistory;
+import com.carlos.vaultserver.task.ServerTasks;
+import com.carlos.vaultserver.task.TaskContext;
 import com.carlos.vaultserver.task.TaskWakeRouter;
 
 import org.json.JSONObject;
@@ -74,6 +76,11 @@ public final class SessionKeeper implements SessionControl,
     /** 资产库 state 投影最小写间隔（≤1 次/秒；节流器只写最后一帧）。 */
     private static final long ASSET_PROJECTION_MIN_INTERVAL_MS = 1000L;
 
+    /** Phase 1（2026-10-29）：兄弟角色（非主控）联盟科技捐献节拍，与主控节奏 alliance_donate=30s 对齐。 */
+    static final long ROLE_DONATE_INTERVAL_MILLIS = 30_000L;
+    /** 与 TaskCadenceScheduler.INIT_GRACE_MILLIS 对齐：登录后 20s 内不派任务（等 init 推送）。 */
+    static long ROLE_INIT_GRACE_MILLIS = 20_000L;
+
     /**
      * 资产库 state 投影调度器（全进程单线程 daemon）：监听回调在 engine inbound 线程上，
      * 不阻塞也不做 IO；节流到期后由本线程把「最新快照」写入 StateStore。
@@ -111,6 +118,19 @@ public final class SessionKeeper implements SessionControl,
     static String sessionKey(String fpid, String sid, String uid) {
         long u = parseUid(uid);
         return fpid + "|" + (sid == null ? "" : sid) + "|" + (u > 0 ? String.valueOf(u) : "");
+    }
+
+    /**
+     * 角色级任务开关（Phase 1 2026-10-29；与 {@code TaskCadenceScheduler.enabledTaskIds} 同口径的轻量版）：
+     * roleConfig 显式值优先，缺省回退任务目录默认。用于兄弟角色按角色跑联盟科技捐献前的门控。
+     */
+    static boolean roleTaskEnabled(VaultStore.Account acc, long sid, String fn) {
+        if (acc == null || fn == null || fn.isEmpty()) return false;
+        Map<String, Boolean> cfg = acc.roleConfig.get(String.valueOf(sid));
+        Boolean explicit = cfg == null ? null : cfg.get(fn);
+        if (explicit != null) return explicit;
+        ServerTasks.TaskDef def = ServerTasks.byId(fn);
+        return def != null && def.enabledByDefault;
     }
 
     private static String norm(String s) {
@@ -317,6 +337,8 @@ public final class SessionKeeper implements SessionControl,
         volatile long nextWarCfgAt;
         /** 下次全量采集时刻（登录后 3s 首采，之后每 10 分钟）。 */
         volatile long nextCaptureAt;
+        /** Phase 1（2026-10-29）：兄弟角色（非主控）下次联盟科技捐献时刻。 */
+        volatile long nextRoleDonateAt;
         volatile long stateSince = System.currentTimeMillis();
         volatile String state = WjdrEngine.STATE_OFFLINE;
         /**
@@ -872,14 +894,19 @@ public final class SessionKeeper implements SessionControl,
                     attachWarHook();
                     // 同 fpid 多会话（M1d）：App 消费的 state 键（res:/todo:/mod:… 均为
                     // fpid:sid 键型，/state 契约不变）只由 active 角色会话写入——
-                    // 兄弟角色会话保持「占位在线」（连接/心跳/重连），不执行任务，
+                    // 兄弟角色会话保持「占位在线」（连接/心跳/重连），不执行整轮/采集任务，
                     // 避免同区服多角色互相覆盖采集状态。
-                    if (!isActiveRoleWriter()) break;
-                    // 互助/开盾惰性挂载（成为写入方才挂；按真实 sid，默认角色登录时固化实际区服）
-                    if (help == null) {
-                        help = new ServerHelpResponder(fpid, resolveSid(), stateStore);
-                        help.attach(engine);
+                    // Phase 1（2026-10-29）例外：兄弟角色额外按角色 uid 独立跑「联盟互助」+
+                    // 「联盟科技捐献」（状态键按角色隔离、App 旧键仅主控角色双写），
+                    // 让非主控角色的互助/免费捐献次数也能被响应与消耗；全量任务按角色拆键留 Phase 2。
+                    if (!isActiveRoleWriter()) {
+                        ensureHelp(engine);
+                        ServerHelpResponder siblingHelp = help;
+                        if (siblingHelp != null) siblingHelp.tick(engine);
+                        roleScopedDonateTick(engine);
+                        break;
                     }
+                    // 开盾惰性挂载（成为写入方才挂；按真实 sid，默认角色登录时固化实际区服）
                     if (shield == null) {
                         shield = new ServerShieldResponder(fpid, resolveSid(), stateStore, store);
                         shield.attach(engine);
@@ -907,7 +934,6 @@ public final class SessionKeeper implements SessionControl,
                     }
                     com.carlos.vaultserver.guardian.ServerGuardianEngine g = guardian;
                     if (g != null) g.tick(engine);
-                    ServerHelpResponder h = help;
                     long now = System.currentTimeMillis();
                     if (now >= nextCaptureAt) {
                         long captureSid = resolveSid();
@@ -919,6 +945,10 @@ public final class SessionKeeper implements SessionControl,
                         nextCaptureAt = System.currentTimeMillis() + CaptureTasks.CAPTURE_INTERVAL_MILLIS;
                         stateStore.flush();
                     }
+                    // 互助响应（主控角色：状态键按角色 uid 隔离并双写 App 旧键；
+                    // 放在开盾/采集之后，保持原「开盾优先于互助」的响应优先级）
+                    ensureHelp(engine);
+                    ServerHelpResponder h = help;
                     if (h != null) h.tick(engine);
                     break;
                 case WjdrEngine.STATE_RECOVERING:
@@ -938,6 +968,53 @@ public final class SessionKeeper implements SessionControl,
                 }
                 default:
                     // logging：登录进行中；need_token：等 token 补给（token API 触发重启）
+            }
+        }
+
+        /**
+         * 互助响应器惰性挂载（Phase 1 2026-10-29）：所有在线角色会话各自挂载，
+         * 状态键按角色 uid 隔离（{@link ServerHelpResponder} 内部处理），
+         * 主控角色额外双写 App 今日页读取的旧键。挂载失败只记日志，不影响会话主流程。
+         */
+        private void ensureHelp(WjdrEngine engine) {
+            if (help != null) return;
+            try {
+                help = new ServerHelpResponder(fpid, resolveSid(), roleUid, stateStore,
+                        this::isActiveRoleWriter);
+                help.attach(engine);
+            } catch (Throwable t) {
+                FileLog.warn("互助响应器挂载失败 {}：{}", key, String.valueOf(t));
+            }
+        }
+
+        /**
+         * 非主控角色（兄弟会话）的联盟科技捐献节拍（Phase 1 2026-10-29）：
+         * 主控角色仍由 {@link com.carlos.vaultserver.task.TaskCadenceScheduler} 以旧键路径派单；
+         * 兄弟角色按角色 uid 键独立捐献，使同账号多角色的免费科技捐献次数都能被消耗
+         * （修复「非主控角色免费次数只涨不花，游戏内长期 24/25」）。
+         *
+         * <p>与节奏调度同款安全闸：登录初始化保护、账号 auto 开关、角色任务开关、战时让位；
+         * 异常吞掉只记日志，绝不影响兄弟会话的心跳/重连。
+         */
+        private void roleScopedDonateTick(WjdrEngine engine) {
+            if (roleUid <= 0L) return;                       // 角色身份未落地：下一拍再试
+            long now = System.currentTimeMillis();
+            if (now < nextRoleDonateAt) return;
+            nextRoleDonateAt = now + ROLE_DONATE_INTERVAL_MILLIS;
+            // C4 登录初始化保护：刚上线的 20s 内服务端关键 init 推送（含 recover_resource）可能还没到
+            if (onlineSince <= 0L || now - onlineSince < ROLE_INIT_GRACE_MILLIS) return;
+            VaultStore.Account acc = store.find(fpid);
+            if (acc == null || !acc.auto) return;            // 未开启自动：保持手动语义
+            long sidNow = resolveSid();
+            if (sidNow <= 0L) return;
+            if (!roleTaskEnabled(acc, sidNow, "alliance_donate")) return;
+            if (SessionKeeper.this.wartimeYield(fpid)) return;   // P7 战时让位
+            try {
+                TaskContext tc = new TaskContext(engine, fpid, sidNow, stateStore,
+                        java.util.Collections.emptyMap(), "角色", null, roleUid);
+                ServerTasks.runAllianceDonate(tc);
+            } catch (Throwable t) {
+                FileLog.warn("兄弟角色科技捐献异常 {}：{}", key, String.valueOf(t));
             }
         }
 
