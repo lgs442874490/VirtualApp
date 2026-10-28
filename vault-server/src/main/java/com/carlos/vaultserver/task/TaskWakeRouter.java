@@ -82,6 +82,37 @@ public final class TaskWakeRouter {
     }
 
     /**
+     * R2 Phase 2（2026-10-29）：按角色唤醒。cadence 键写角色级
+     * {@code srv:cad:<fpid>:<sid>:<uid>:<fn>}，节流键 {@code fpid|sid|uid|fn}，
+     * 同服双角色各自唤醒、互不覆盖；uid&lt;=0 时退回旧键（兼容）。
+     */
+    public void onNotify(String fpid, long sid, long uid, String proto) {
+        onNotifyAt(fpid, sid, uid, proto, clock.getAsLong());
+    }
+
+    /** 可注入时间的按角色实现（包级可见便于单测）。 */
+    int onNotifyAt(String fpid, long sid, long uid, String proto, long now) {
+        if (fpid == null || fpid.trim().isEmpty() || sid <= 0L || proto == null || proto.isEmpty()) {
+            return 0;
+        }
+        Set<String> taskIds = tasksForProtocol(proto);
+        if (taskIds.isEmpty()) return 0;
+        RoleKey role = new RoleKey(fpid, sid, uid);
+        String throttleKey = role.key();
+        int written = 0;
+        for (String fn : taskIds) {
+            if (!claimWakeSlot(throttleKey, fn, now)) continue;
+            stateStore.putLong(StateKeys.cadence(role, fn), 0L);
+            written++;
+            if (wakeLogged.add(throttleKey + "|" + fn)) {
+                FileLog.info("推送唤醒 role={} fn={} proto={}（cadence=0，节流 {}s）",
+                        throttleKey, fn, proto, String.valueOf(THROTTLE_MILLIS / 1000L));
+            }
+        }
+        return written;
+    }
+
+    /**
      * 可注入时间的实现（包级可见便于单测）。
      *
      * @return 实际写入 cadence 键的任务数（0 = 未知协议 / 参数非法 / 全部被节流）

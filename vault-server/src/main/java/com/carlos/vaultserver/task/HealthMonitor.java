@@ -319,9 +319,10 @@ public final class HealthMonitor {
     /** 解析一条 {@code log:{fpid}:{sid}:{fn}}（子项 fn 含冒号；计数只取顶层，lastLog 含全部）。 */
     private static void collectLog(Map<String, LogStats> stats, String key, Object raw,
                                    long from2h, long from1h, long nowMillis) {
-        String[] parts = key.split(":", 4);
-        if (parts.length < 4) return;
-        String fpid = parts[1];
+        // R2 Phase 2：兼容 log:<fpid>:<sid>[:<uid>]:<fn...>（uid 段存在时正确取 fn；fn 可含冒号）。
+        String[] parts = StateKeys.splitRoleKey("log", key);
+        if (parts == null) return;
+        String fpid = parts[0];
         String fn = parts[3];
         if (fpid.isEmpty() || fn.isEmpty()) return;
         LogStats ls = stats.computeIfAbsent(fpid, k -> new LogStats());

@@ -17,21 +17,52 @@ public final class FnParams {
     private static final String PREFS = "daily_params";
     private static final String KEY_TEMPLATE = "template";
 
+    /**
+     * 当前选中角色 uid（R2 Phase 2）：同服双角色的开关/参数按 uid 隔离。
+     * 返回 0 = 角色未知（旧数据/加载早期）→ 所有读写退回旧键，行为与 Phase 2 前一致。
+     */
+    private static long currentUid(Context ctx, String fpid) {
+        try {
+            return RoleStore.activeRoleUid(ctx, fpid);
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
     public static JSONObject params(Context ctx, String fpid, long sid, String fnId) {
+        return params(ctx, fpid, sid, currentUid(ctx, fpid), fnId);
+    }
+
+    /**
+     * 读取某角色 uid 的任务参数：优先 {@code p:fpid:sid:uid:fn}；miss 时回退旧键
+     * {@code p:fpid:sid:fn} 并**惰性迁移**到 uid 键（旧键保留供回滚/旧版本读取）。
+     */
+    public static JSONObject params(Context ctx, String fpid, long sid, long uid, String fnId) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         try {
-            String raw = sp.getString(key(fpid, sid, fnId), null);
-            return raw == null ? new JSONObject() : new JSONObject(raw);
+            String raw = sp.getString(key(fpid, sid, uid, fnId), null);
+            if (raw == null && uid > 0L) {
+                String legacy = sp.getString(key(fpid, sid, 0L, fnId), null);
+                if (legacy != null) {
+                    sp.edit().putString(key(fpid, sid, uid, fnId), legacy).apply();
+                    raw = legacy;
+                }
+            }
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
         } catch (Exception e) {
             return new JSONObject();
         }
     }
 
     public static void saveParams(Context ctx, String fpid, long sid, String fnId, JSONObject p) {
+        saveParams(ctx, fpid, sid, currentUid(ctx, fpid), fnId, p);
+    }
+
+    public static void saveParams(Context ctx, String fpid, long sid, long uid, String fnId, JSONObject p) {
         boolean saved = false;
         try {
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                    .putString(key(fpid, sid, fnId), p.toString())
+                    .putString(key(fpid, sid, uid, fnId), p.toString())
                     .apply();
             saved = true;
         } catch (Exception ignored) {
@@ -227,12 +258,21 @@ public final class FnParams {
         }
     }
 
-    /** 模块状态行（daily_state mod:fpid:sid:fnId JSON：subId→文案）。 */
+    /** 模块状态行（daily_state mod:fpid:sid[:uid]:fnId JSON：subId→文案）。 */
     public static JSONObject modState(Context ctx, String fpid, long sid, String fnId) {
+        return modState(ctx, fpid, sid, currentUid(ctx, fpid), fnId);
+    }
+
+    /**
+     * 按角色 uid 读模块状态行：优先 {@code mod:fpid:sid:uid:fn}，miss 回退旧键
+     * {@code mod:fpid:sid:fn}（服务端 /state 会同时投影旧键给 active 角色，双读兼容）。
+     */
+    public static JSONObject modState(Context ctx, String fpid, long sid, long uid, String fnId) {
         try {
-            String raw = ctx.getSharedPreferences("daily_state", Context.MODE_PRIVATE)
-                    .getString("mod:" + fpid + ":" + sid + ":" + fnId, null);
-            return raw == null ? new JSONObject() : new JSONObject(raw);
+            SharedPreferences sp = ctx.getSharedPreferences("daily_state", Context.MODE_PRIVATE);
+            String raw = sp.getString(modKey(fpid, sid, uid, fnId), null);
+            if (raw == null && uid > 0L) raw = sp.getString(modKey(fpid, sid, 0L, fnId), null);
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
         } catch (Exception e) {
             return new JSONObject();
         }
@@ -251,15 +291,33 @@ public final class FnParams {
     }
 
     public static void saveModState(Context ctx, String fpid, long sid, String fnId, JSONObject o) {
+        saveModState(ctx, fpid, sid, currentUid(ctx, fpid), fnId, o);
+    }
+
+    public static void saveModState(Context ctx, String fpid, long sid, long uid, String fnId,
+                                    JSONObject o) {
         try {
             ctx.getSharedPreferences("daily_state", Context.MODE_PRIVATE).edit()
-                    .putString("mod:" + fpid + ":" + sid + ":" + fnId, o.toString()).apply();
+                    .putString(modKey(fpid, sid, uid, fnId), o.toString()).apply();
         } catch (Exception ignored) {
         }
     }
 
-    private static String key(String fpid, long sid, String fnId) {
-        return "p:" + fpid + ":" + sid + ":" + fnId;
+    /**
+     * 参数键（R2 Phase 2）：{@code p:<fpid>:<sid>:<uid>:<fn>}（uid&gt;0）；
+     * uid&lt;=0 退化为旧键 {@code p:<fpid>:<sid>:<fn>}（旧数据/回滚兼容）。
+     */
+    static String key(String fpid, long sid, long uid, String fnId) {
+        return uid > 0L
+                ? "p:" + fpid + ":" + sid + ":" + uid + ":" + fnId
+                : "p:" + fpid + ":" + sid + ":" + fnId;
+    }
+
+    /** 模块状态键（R2 Phase 2）：{@code mod:<fpid>:<sid>:<uid>:<fn>}；uid&lt;=0 → 旧键。 */
+    static String modKey(String fpid, long sid, long uid, String fnId) {
+        return uid > 0L
+                ? "mod:" + fpid + ":" + sid + ":" + uid + ":" + fnId
+                : "mod:" + fpid + ":" + sid + ":" + fnId;
     }
 
     // ================= 守护盟友配置（批次11；1:1 服务器 ServerGuardianEngine.parseConfig） =================
@@ -602,7 +660,8 @@ public final class FnParams {
                 SharedPreferences.Editor ed = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit();
                 for (FnRegistry.Fn fn : FnRegistry.all()) {
                     JSONObject p = params.optJSONObject(fn.id);
-                    ed.putString(key(fpid, sid, fn.id), p == null ? "" : p.toString());
+                    ed.putString(key(fpid, sid, currentUid(ctx, fpid), fn.id),
+                            p == null ? "" : p.toString());
                 }
                 ed.apply();
             }

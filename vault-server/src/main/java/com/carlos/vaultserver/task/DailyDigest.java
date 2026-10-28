@@ -583,13 +583,17 @@ public final class DailyDigest {
         return d;
     }
 
-    /** 解析一条 {@code log:{fpid}:{sid}:{fn}}（fn 可含子项冒号）并聚合（仅窗口内 ts）。 */
+    /**
+     * 解析一条 {@code log:{fpid}:{sid}[:{uid}]:{fn}}（fn 可含子项冒号）并聚合（仅窗口内 ts）。
+     *
+     * <p>R2 Phase 2：uid 段存在时按“账号+区服”聚合（日报是账号级口径），只取正确的 fn 段。
+     */
     private static void collectLogEntries(DigestData d, Map<String, RoleDigest> roles, String key,
                                           Object raw, long from, long toExclusive) {
-        String[] parts = key.split(":", 4);
-        if (parts.length < 4) return;
-        String fpid = parts[1];
-        String sid = parts[2];
+        String[] parts = StateKeys.splitRoleKey("log", key);
+        if (parts == null) return;
+        String fpid = parts[0];
+        String sid = parts[1];
         String fn = parts[3];
         if (fpid.isEmpty() || sid.isEmpty() || fn.isEmpty()) return;
         JSONArray arr = jsonArray(raw);

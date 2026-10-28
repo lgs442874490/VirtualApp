@@ -608,4 +608,20 @@ public class HealthMonitorTest {
         assertEquals(0, monitor.runOnce(t0 + 5L * 60_000L));
         assertEquals(1, notifier.sends);
     }
+
+    @Test
+    public void snapshot_roleScopedLogKeysAggregatePerAccount() {
+        long now = System.currentTimeMillis();
+        StateStore store = new StateStore(tmp.getRoot().toPath());
+        // 同服双角色各自的角色键：必须都计入账号级统计（旧实现 split(":",4) 会把 uid 当 fn 前缀→漏计）。
+        // seedLog 的 fn 参数可含冒号：fn="<uid>:<task>" 即生成 log:<fpid>:<sid>:<uid>:<task> 角色键。
+        seedLog(store, FPID, SID, "35371154:login_rewards", now - 60_000L, "CLAIMED", "角色A领取");
+        seedLog(store, FPID, SID, "88280792:login_rewards", now - 30_000L, "CLAIMED", "角色B领取");
+
+        VaultStore vault = vault(account(FPID, true, "小鹿"));
+        List<HealthMonitor.AccountHealth> hs = HealthMonitor.snapshot(vault, store,
+                () -> statuses(FPID, "online"), now, new LinkedHashMap<>());
+        assertEquals(1, hs.size());
+        assertEquals("两个角色的 CLAIMED 都要计入账号", 2, hs.get(0).claimed2h);
+    }
 }
