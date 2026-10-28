@@ -6,6 +6,7 @@ import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.ServerWarState;
 import com.carlos.vaultserver.StateStore;
 import com.carlos.vaultserver.VaultStore;
+import com.carlos.vaultserver.formation.HeroAvailability;
 import com.carlos.vaultserver.task.Exec;
 
 import org.json.JSONArray;
@@ -333,6 +334,16 @@ public final class ServerGuardianEngine {
     /** 目标级进行中标记（"t:{uid}" / "p:{x},{y}"）。 */
     private final Set<String> activeTargets = ConcurrentHashMap.newKeySet();
     /**
+     * 2026-10-28：发射失败（415 编队超限 / 406 士兵超限）后的目标级冷却
+     * （targetKey → 截止毫秒）。冷却期内同目标新威胁只记账不发射，防 415/406 重试风暴。
+     */
+    static final long LAUNCH_FAIL_COOLDOWN_MS = 45_000L;
+    /** 同一 target+code 的 WARN/writeMod 日志节流窗口（60s；不再每个威胁刷一条）。 */
+    static final long FAIL_LOG_THROTTLE_MS = 60_000L;
+    private final Map<String, Long> targetCooldowns = new ConcurrentHashMap<>();
+    /** {@code targetKey|code → 上次失败日志时刻}（节流用）。 */
+    private final Map<String, Long> failLogAt = new ConcurrentHashMap<>();
+    /**
      * P1：每个敌方行军已处理的「压缩态」endtime（敌方 marchId → 最近一次触发加速的敌 endSec）。
      * 同一压缩态重复推送只处理一次（幂等，防请求风暴）；敌方再次压缩（endSec 更小）→ 新一轮最小响应。
      */
@@ -435,6 +446,10 @@ public final class ServerGuardianEngine {
                 }
                 return true;
             });
+            // 2026-10-28：清理过期目标冷却/失败日志节流表（防长期累积）
+            targetCooldowns.entrySet().removeIf(en -> en.getValue() == null || en.getValue() <= nowMs);
+            failLogAt.entrySet().removeIf(en -> en.getValue() == null
+                    || nowMs - en.getValue() > FAIL_LOG_THROTTLE_MS * 4L);
         } catch (Throwable ignored) {
         }
     }
@@ -606,6 +621,16 @@ public final class ServerGuardianEngine {
             return;
         }
         String targetKey = targetKey(t);
+        // 2026-10-28：同目标 415/406 失败后的冷却期内，新威胁只记账不发射（防重试风暴/日志刷屏）
+        Long coolUntil = targetCooldowns.get(targetKey);
+        if (coolUntil != null) {
+            if (inLaunchCooldown(coolUntil, nowMs)) {
+                ledger("skip_cooldown", t, null, "同目标发射失败冷却中（剩 "
+                        + Math.max(0L, (coolUntil - nowMs + 999L) / 1000L) + "s），本威胁只记账不发射");
+                return;
+            }
+            targetCooldowns.remove(targetKey);
+        }
         if (!activeTargets.add(targetKey) || missions.size() >= MAX_CONCURRENT_MISSIONS) {
             activeTargets.remove(targetKey);
             ledger("skip_busy", t, null,
@@ -644,6 +669,8 @@ public final class ServerGuardianEngine {
             }
             ServerGuardianLauncher.LaunchResult r = launcher.launch(engine, pt[0], pt[1], formation, t.targetUid);
             if (r.ok) {
+                // P0-5 同款：成功发射复位 415 英雄上限/406 兵力缩放（自适应必须能恢复）
+                HeroAvailability.markSuccess(engine);
                 missions.put(targetKey, new Mission(t.marchId, r.marchId, r.endtimeSec, nowMs));
                 long nowS = nowSec(engine);
                 long ahead = t.endEpochSec > 0 && r.endtimeSec > 0 ? t.endEpochSec - r.endtimeSec : 0L;
@@ -654,10 +681,29 @@ public final class ServerGuardianEngine {
                 ledger("launched", t, r, text);
                 writeMod("🛡" + text);
             } else {
-                String text = "发射失败 code=" + r.code + "（" + r.text + "），不重试";
-                FileLog.warn("守护盟友发射失败 {}:{} {}", fpid, String.valueOf(sid), text);
-                ledger("launch_failed", t, r, text);
-                writeMod("⚠ " + text);
+                // 2026-10-28：415（编队人数/配置超限）/406（士兵超限）自适应 + 目标冷却 + 日志节流。
+                // 本次生产事故：无编队参数时 Exec.formation 取客户端 5 英雄 → 该号每队上限 3 → 每个威胁 415，
+                // 一天 930 次失败且无降噪；现在失败后下调英雄上限/兵力缩放，下一威胁即生效。
+                String adapt = onLaunchFailure(engine, r.code, formation, targetKey, nowMs);
+                if (adapt != null) {
+                    String text = "发射失败 " + adapt + "（本目标冷却 "
+                            + (LAUNCH_FAIL_COOLDOWN_MS / 1000L) + "s，不重试本威胁）";
+                    long nowFail = System.currentTimeMillis();
+                    String logKey = targetKey + "|" + r.code;
+                    Long last = failLogAt.get(logKey);
+                    if (failureLogDue(last == null ? 0L : last, nowFail, FAIL_LOG_THROTTLE_MS)) {
+                        failLogAt.put(logKey, nowFail);
+                        FileLog.warn("守护盟友发射失败 {}:{} code={}（{}）",
+                                fpid, String.valueOf(sid), String.valueOf(r.code), adapt);
+                        writeMod("⚠ " + text);
+                    }
+                    ledger("launch_failed", t, r, text);
+                } else {
+                    String text = "发射失败 code=" + r.code + "（" + r.text + "），不重试";
+                    FileLog.warn("守护盟友发射失败 {}:{} {}", fpid, String.valueOf(sid), text);
+                    ledger("launch_failed", t, r, text);
+                    writeMod("⚠ " + text);
+                }
             }
         } finally {
             activeTargets.remove(targetKey);
@@ -1610,14 +1656,108 @@ public final class ServerGuardianEngine {
                 FileLog.info("守护盟友统一编队 {}:{}：{}", fpid, String.valueOf(sid), resolved.label);
                 return resolved.payload;
             }
+            // 2026-10-28 415 修复：旧路径直接用客户端整队英雄（实证 5 个）→ 该号每队上限 3 → 永远 415。
+            // 英雄数统一夹到 HeroAvailability.autoHeroLimit（默认 3；415 后 3→2→1），
+            // 并按 soldierScalePercent 缩放兵力（406 自适应）。
+            int heroLimit = HeroAvailability.autoHeroLimit(engine);
+            int scale = HeroAvailability.soldierScalePercent(engine);
             if (cfg != null && cfg.heroIds != null && !cfg.heroIds.isEmpty()) {
-                return Exec.formationWithHeroes(engine, cfg.heroIds);
+                return scaleFormationSoldiers(
+                        Exec.formationWithHeroes(engine, clampFormationHeroes(cfg.heroIds, heroLimit)),
+                        scale);
             }
             int squad = cfg == null || cfg.squadIndex <= 0 ? 1 : cfg.squadIndex;
-            return Exec.formation(engine, squad);
+            List<Long> heroes = Exec.clientSquads(engine).get((long) squad);
+            if (heroes == null || heroes.isEmpty()) {
+                List<Long> all = Exec.allHeroes(engine);
+                heroes = all.subList(0, Math.min(3, all.size()));
+            }
+            return scaleFormationSoldiers(
+                    Exec.formationWithHeroes(engine, clampFormationHeroes(heroes, heroLimit)), scale);
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    // =====================================================================
+    // 415/406 自适应（2026-10-28 生产事故：无编队参数取 5 英雄 → 该号上限 3 → 永远 415）
+    // =====================================================================
+
+    /** 英雄数夹取（纯函数）：最多 limit 个；limit&lt;=0 视为默认 3。 */
+    static List<Long> clampFormationHeroes(List<Long> heroes, int limit) {
+        List<Long> out = new ArrayList<>();
+        if (heroes == null) return out;
+        int cap = limit > 0 ? limit : HeroAvailability.DEFAULT_AUTO_HEROES;
+        for (Long id : heroes) {
+            if (out.size() >= cap) break;
+            if (id != null && id > 0L) out.add(id);
+        }
+        return out;
+    }
+
+    /**
+     * 兵力缩放（纯函数；406 自适应）：{@code formation.soldier=[{k,v}]} 每项 v 按 percent 缩放（≥1）。
+     * percent&lt;100 且存在 soldier 时才生成新 payload；其余原样返回。
+     */
+    static Map<String, Object> scaleFormationSoldiers(Map<String, Object> formation, int percent) {
+        if (formation == null || percent >= 100 || percent <= 0) return formation;
+        Object raw = formation.get("soldier");
+        if (!(raw instanceof List)) return formation;
+        List<Map<String, Object>> scaled = new ArrayList<>();
+        for (Object o : (List<?>) raw) {
+            Map<String, Object> pair = Exec.mapOf(o);
+            if (pair == null) continue;
+            Map<String, Object> copy = new LinkedHashMap<>(pair);
+            long v = Exec.longOf(pair.get("v"));
+            if (v > 0L) copy.put("v", Math.max(1L, v * percent / 100L));
+            scaled.add(copy);
+        }
+        Map<String, Object> out = new LinkedHashMap<>(formation);
+        out.put("soldier", scaled);
+        return out;
+    }
+
+    /** 冷却期判定（纯函数）：until&gt;0 且 now&lt;until。 */
+    static boolean inLaunchCooldown(long untilMs, long nowMs) {
+        return untilMs > 0L && nowMs < untilMs;
+    }
+
+    /** 失败日志节流判定（纯函数）：距上次 ≥window 才再记（时钟回拨按可记）。 */
+    static boolean failureLogDue(long lastAtMs, long nowMs, long windowMs) {
+        if (lastAtMs <= 0L) return true;
+        long delta = nowMs - lastAtMs;
+        return delta < 0L || delta >= windowMs;
+    }
+
+    /**
+     * 发射失败自适应（415/406）：下调英雄上限/兵力缩放 + 设置目标冷却，返回可读文案；其它码返回 null。
+     * <ul>
+     *   <li>415：{@link HeroAvailability#noteHeroCountRejected}(实际英雄数) → 下一威胁按更低上限重试；</li>
+     *   <li>406：{@link HeroAvailability#noteSoldierLimitRejected} → 下一威胁按更低兵力缩放。</li>
+     * </ul>
+     */
+    String onLaunchFailure(WjdrEngine engine, long code, Map<String, Object> formation,
+                           String targetKey, long nowMs) {
+        if (code != 415L && code != 406L) return null;
+        String text;
+        if (code == 415L) {
+            int used = HeroAvailability.heroIdsOf(formation).size();
+            int next = HeroAvailability.noteHeroCountRejected(engine, used);
+            text = "编队人数超限(415，英雄" + used + ")，已下调至 " + next + " 英雄重试";
+        } else {
+            int scale = HeroAvailability.noteSoldierLimitRejected(engine);
+            text = "士兵超限(406)，兵力已缩放至 " + scale + "%重试";
+        }
+        if (targetKey != null && !targetKey.isEmpty()) {
+            targetCooldowns.put(targetKey, nowMs + LAUNCH_FAIL_COOLDOWN_MS);
+        }
+        return text;
+    }
+
+    /** 测试/诊断：某目标当前是否处于 415/406 失败冷却期。 */
+    boolean targetInCooldown(String targetKey, long nowMs) {
+        Long until = targetKey == null ? null : targetCooldowns.get(targetKey);
+        return until != null && inLaunchCooldown(until, nowMs);
     }
 
     // =====================================================================
