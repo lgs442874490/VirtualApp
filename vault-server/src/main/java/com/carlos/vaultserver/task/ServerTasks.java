@@ -2944,6 +2944,54 @@ public final class ServerTasks {
      * </ol>
      * 形状兼容：chests/ids 在协议里可能是 List 也可能是 Map，统一走 {@link Exec#mapsOf(Object)}。
      */
+    /** 联盟宝箱 1540（已失效/不可领）本地抑制 TTL：6 小时。 */
+    static final long CHEST_INVALID_TTL_SEC = 6L * 3600L;
+
+    /** 解析角色级失效箱集合（纯函数）：{@code "id:ts,id:ts"} → Map。 */
+    static java.util.Map<Long, Long> parseInvalidChests(String raw) {
+        java.util.Map<Long, Long> out = new java.util.LinkedHashMap<>();
+        if (raw == null || raw.isEmpty()) return out;
+        for (String part : raw.split(",")) {
+            String s = part.trim();
+            if (s.isEmpty()) continue;
+            int i = s.indexOf(':');
+            try {
+                long id = i > 0 ? Long.parseLong(s.substring(0, i)) : Long.parseLong(s);
+                long ts = i > 0 ? Long.parseLong(s.substring(i + 1)) : 0L;
+                if (id > 0L) out.put(id, Math.max(0L, ts));
+            } catch (Throwable ignored) {
+            }
+        }
+        return out;
+    }
+
+    /** 序列化失效箱集合（纯函数）：Map → {@code "id:ts,id:ts"}（稳定顺序）。 */
+    static String formatInvalidChests(java.util.Map<Long, Long> map) {
+        if (map == null || map.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (java.util.Map.Entry<Long, Long> e : map.entrySet()) {
+            if (e.getKey() == null || e.getKey() <= 0L) continue;
+            if (sb.length() > 0) sb.append(',');
+            sb.append(e.getKey()).append(':').append(e.getValue() == null ? 0L : e.getValue());
+        }
+        return sb.toString();
+    }
+
+    private static java.util.Map<Long, Long> loadInvalidChests(TaskContext tc) {
+        try {
+            return parseInvalidChests(tc.modState("alliance_chest").optString("invalid_ids", ""));
+        } catch (Throwable t) {
+            return new java.util.LinkedHashMap<>();
+        }
+    }
+
+    private static void saveInvalidChests(TaskContext tc, java.util.Map<Long, Long> map) {
+        try {
+            tc.saveModText("alliance_chest", "invalid_ids", formatInvalidChests(map));
+        } catch (Throwable ignored) {
+        }
+    }
+
     static TaskOutcome allianceChest(TaskContext tc) throws Exception {
         try {
             tc.engine.collectNotifies(1500);
@@ -2987,6 +3035,12 @@ public final class ServerTasks {
             StringBuilder detail = new StringBuilder();
             // 2026-10-25：失败码入文案（生产 7 次 ERROR 只写“宝箱失败×1”，无法定位是 1540 还是别的）
             java.util.TreeSet<Integer> failCodes = new java.util.TreeSet<>();
+            // 2026-10-29（Phase2B）：1540 = 服务端判箱子已失效/不可领（生产实测陈旧战利品宝箱
+            // 每轮固定 25 次无效请求 × 两个角色）。本地记失效集合（角色级 mod 状态，TTL 6h），
+            // 到期前不再重复请求；TTL 过后再看服务端是否恢复（避免永久误杀）。
+            java.util.Map<Long, Long> invalidChests = loadInvalidChests(tc);
+            boolean invalidChanged = invalidChests.values().removeIf(ts -> ts <= 0L
+                    || ts < nowSec - CHEST_INVALID_TTL_SEC);
             for (Map<String, Object> chest : chests.values()) {
                 if (truthy(chest.get("receive"))) {
                     skipped++;
@@ -2994,6 +3048,10 @@ public final class ServerTasks {
                 }
                 long id = Exec.longOf(chest.get("id"));
                 if (id <= 0) continue;
+                if (invalidChests.containsKey(id)) {
+                    skipped++;            // 近期已被服务端判失效：本轮不再请求
+                    continue;
+                }
                 long endTime = firstLong(chest, "endtime", "end_time");
                 if (endTime > 0 && endTime < nowSec) {
                     skipped++;            // 已过期
@@ -3021,11 +3079,17 @@ public final class ServerTasks {
                 } else if (code == 1529) {   // 战利品宝箱上限
                     trophyLimitHit = true;
                     skipped++;
+                } else if (code == 1540) {
+                    // 箱子已失效/不可领（陈旧战利品宝箱）：记失效集合，本轮跳过、6h 内不再重复请求。
+                    invalidChests.put(id, nowSec);
+                    invalidChanged = true;
+                    skipped++;
                 } else {
                     failed++;
                     failCodes.add(code);
                 }
             }
+            if (invalidChanged) saveInvalidChests(tc, invalidChests);
             TaskOutcome r;
             if (claimed > 0) {
                 r = new TaskOutcome("alliance_chest", "联盟宝箱",
