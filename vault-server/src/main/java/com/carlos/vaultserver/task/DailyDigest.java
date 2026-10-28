@@ -40,7 +40,7 @@ import java.util.function.IntSupplier;
  *
  * <p><b>配置</b>（环境变量优先系统属性，便于单测注入）：
  * <ul>
- *   <li>{@code VAULT_DIGEST=off} 关闭（默认开）；</li>
+ *   <li>{@code VAULT_DIGEST=on/1/true} 显式开启（<b>默认关闭</b>：企微只发告警，不发日报）；</li>
  *   <li>{@code VAULT_DIGEST_TIME=HH:mm} 覆盖触发时刻（非法回落 09:00）。</li>
  * </ul>
  *
@@ -130,10 +130,23 @@ public final class DailyDigest {
         return v == null ? "" : v.trim();
     }
 
-    /** 日报开关：{@code VAULT_DIGEST=off/false/0} 关闭，缺省开启。 */
+    /**
+     * 日报开关：<b>缺省关闭</b>（2026-10-27 用户要求：企业微信只发告警，不发日报/汇总）；
+     * 仅 {@code VAULT_DIGEST=on/1/true} 显式开启。
+     */
     public static boolean enabled() {
         String v = setting(ENV_ENABLED);
-        return !("off".equalsIgnoreCase(v) || "false".equalsIgnoreCase(v) || "0".equals(v));
+        return "on".equalsIgnoreCase(v) || "true".equalsIgnoreCase(v) || "1".equals(v);
+    }
+
+    /**
+     * 显式关闭（{@code off/false/0}）：只用于 {@link #runOnce} 的手动触发闸门。
+     * 缺省（未设置环境变量）时手动 runOnce 允许执行（单测/运维补发），但 daemon 线程
+     * 必须由 {@link #enabled()} 显式开启才启动。
+     */
+    static boolean explicitlyDisabled() {
+        String v = setting(ENV_ENABLED);
+        return "off".equalsIgnoreCase(v) || "false".equalsIgnoreCase(v) || "0".equals(v);
     }
 
     /** 触发时刻（北京时间 HH:mm）：{@code VAULT_DIGEST_TIME} 合法则用之，否则 {@link #DEFAULT_TIME}。 */
@@ -831,7 +844,7 @@ public final class DailyDigest {
      * @param waiter 在线数 0 时的等待器（daemon loop 传 {@link #THREAD_WAITER}；null=不等待）
      */
     boolean runOnce(long nowMillis, Waiter waiter) {
-        if (!enabled()) return false;
+        if (explicitlyDisabled()) return false;
         if (stateStore == null) {   // 无状态仓：无法幂等/落盘，直接放弃（不影响主流程）
             FileLog.warn("自动化日报缺少 StateStore，跳过本次生成");
             return false;
@@ -913,10 +926,10 @@ public final class DailyDigest {
     // daemon 线程（Main 启动/停止）
     // =======================================================================
 
-    /** 启动 daemon 日报线程（{@code VAULT_DIGEST=off} 时只打一条日志不启动）。幂等。 */
+    /** 启动 daemon 日报线程（缺省关闭；{@code VAULT_DIGEST=on/1/true} 才启动）。幂等。 */
     public void start() {
         if (!enabled()) {
-            FileLog.info("自动化日报已关闭（{}=off）", ENV_ENABLED);
+            FileLog.info("自动化日报已关闭（缺省关闭，仅 {}=on/1/true 开启；企微只发告警）", ENV_ENABLED);
             return;
         }
         if (thread != null && thread.isAlive()) return;

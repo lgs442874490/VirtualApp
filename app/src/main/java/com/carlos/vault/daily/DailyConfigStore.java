@@ -47,6 +47,72 @@ public class DailyConfigStore {
         return readJson("acc:" + fpid);
     }
 
+    /**
+     * 有效配置（纯函数）：以本地已存配置为底，用全部已知任务 id 补齐缺失键，
+     * 缺省值取 {@link DailyTasks.TaskDef#enabledByDefault}。
+     *
+     * <p>背景（2026-10-28 功能型 bug）：服务器执行依据是 App 全量上传的
+     * {@code roles[].config}；历史配置可能是稀疏 map（如只有 {@code {"gather":true}}），
+     * 整包上传后服务端读不到 barracks/intel/arena 等键 → 判「配置未启用」，
+     * 而 App 里开关却显示为开。本函数把「本地生效配置」对齐成完整项，App 显示、
+     * 服务器上传、能力判断三处统一读它。
+     *
+     * <p>不修改入参；返回顺序 = 入参已有键序（保留未知/旧键，非破坏性）+ 缺失任务按
+     * {@code defs} 顺序追加；对完整配置幂等（返回值与入参等值）。
+     *
+     * @param sparse 本地配置（可为 null）
+     * @param defs   全部已知任务（通常 {@link DailyTasks#all()}）
+     */
+    public static Map<String, Boolean> fillMissing(Map<String, Boolean> sparse,
+                                                   List<DailyTasks.TaskDef> defs) {
+        Map<String, Boolean> out = new LinkedHashMap<>();
+        if (sparse != null) out.putAll(sparse);
+        if (defs != null) {
+            for (DailyTasks.TaskDef d : defs) {
+                if (d == null || d.id == null) continue;
+                if (!out.containsKey(d.id)) out.put(d.id, d.enabledByDefault);
+            }
+        }
+        return out;
+    }
+
+    /** 任务默认开关（DailyTasks.TaskDef.enabledByDefault；未知 id → false）。 */
+    public static boolean defaultOn(String fnId) {
+        if (fnId == null) return false;
+        for (DailyTasks.TaskDef d : DailyTasks.all()) {
+            if (d.id.equals(fnId)) return d.enabledByDefault;
+        }
+        return false;
+    }
+
+    /**
+     * 有效开关口径（纯函数，UI 显示与服务器执行同源）：显式配置值优先；
+     * 未配置（null/缺键）时回落到 {@code implemented && TaskDef.enabledByDefault}，
+     * 与日常页 HomeActivity.fnOn 完全一致。
+     */
+    public static boolean effectiveOn(Map<String, Boolean> cfg, FnRegistry.Fn fn) {
+        if (fn == null) return false;
+        Boolean on = cfg == null ? null : cfg.get(fn.id);
+        return on == null ? (fn.implemented && defaultOn(fn.id)) : on;
+    }
+
+    /**
+     * 有效角色配置（Android 读盘版）：{@link #roleConfig} 读出的稀疏/旧配置补齐为
+     * 完整配置后回写本地并返回。
+     *
+     * <p>读取链路保持原样（含 acc:&lt;fpid&gt; / meta 的历史迁移，见 {@link #roleConfig}）；
+     * 仅在补齐前后不一致时写盘，避免每次读都触发 SharedPreferences 写。
+     */
+    public Map<String, Boolean> effectiveRoleConfig(String fpid, long serverid,
+                                                    List<DailyTasks.TaskDef> defs) {
+        Map<String, Boolean> raw = roleConfig(fpid, serverid);
+        Map<String, Boolean> filled = fillMissing(raw, defs);
+        if (raw == null || !raw.equals(filled)) {
+            writeJson("acc:" + fpid + ":" + serverid, filled);
+        }
+        return filled;
+    }
+
     /** 角色（区服）维度配置：acc:<fpid>:<serverid>，互不覆盖。 */
     public Map<String, Boolean> roleConfig(String fpid, long serverid) {
         Map<String, Boolean> role = readJson("acc:" + fpid + ":" + serverid);

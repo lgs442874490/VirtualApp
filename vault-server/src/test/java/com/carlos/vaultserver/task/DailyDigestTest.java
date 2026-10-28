@@ -159,8 +159,11 @@ public class DailyDigestTest {
 
     @Test
     public void envDigestTimeAndSwitch() {
-        // 缺省
+        // 缺省：日报关闭（2026-10-27 起企微只发告警）
         assertEquals("09:00", DailyDigest.digestTime());
+        assertFalse(DailyDigest.enabled());
+        // 显式开启
+        System.setProperty(DailyDigest.ENV_ENABLED, "on");
         assertTrue(DailyDigest.enabled());
         // VAULT_DIGEST_TIME 覆盖
         System.setProperty(DailyDigest.ENV_TIME, "07:15");
@@ -176,6 +179,8 @@ public class DailyDigestTest {
         System.setProperty(DailyDigest.ENV_ENABLED, "0");
         assertFalse(DailyDigest.enabled());
         System.setProperty(DailyDigest.ENV_ENABLED, "");
+        assertFalse(DailyDigest.enabled());
+        System.setProperty(DailyDigest.ENV_ENABLED, "1");
         assertTrue(DailyDigest.enabled());
     }
 

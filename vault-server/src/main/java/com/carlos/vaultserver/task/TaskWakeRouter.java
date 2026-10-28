@@ -194,6 +194,18 @@ public final class TaskWakeRouter {
         //       审计 §6.3 补 notify_arena_report 结算推送）=====
         prefixes.add(new PrefixRule("notify_arena_", "arena"));
 
+        // ===== 兵营训练（2026-10-28 修复「练兵不会自动续」的服务端节奏缺口）=====
+        // 网页版 town 模块 interestedProtocols 含 notify_barrack_init/update 等；旧映射表完全没有
+        // barrack 家族 → 训练/收兵完成推送到达后要等 60s 节奏，且上轮 SKIPPED 退避还可能压到 180s，
+        // 用户侧表现为"训练完了不自动续"。这里补前缀唤醒（只改节奏，不改业务判定）。
+        prefixes.add(new PrefixRule("notify_barrack_", "barracks"));
+
+        // ===== 军医所（2026-10-28 医院循环治疗配套）=====
+        // 网页版 DailyHospitalState 的 acceptContent 消费 notify_hospital_init / _wound_soldiers /
+        // _heal_finish / _heal_speed_up；治疗完成推送到达即应重评（续疗下一批 + 联盟求助），
+        // 否则要等 60s 节奏。任务侧遇到"上批治疗中(2301)"会立刻 SKIP，不会放大请求。
+        prefixes.add(new PrefixRule("notify_hospital_", "medic"));
+
         // ===== 联盟总动员（网页版 task/alliancemobilization/AllianceMobilizationTaskModule.java:21：
         //       notify_mobilization_init/activity_update/position_update/score_update/quest_update/…）=====
         prefixes.add(new PrefixRule("notify_mobilization_", "alliance_mobilization"));

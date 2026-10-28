@@ -868,6 +868,21 @@ public class WjdrEngine {
     }
 
     /**
+     * 「只发不等」协议发送（地图范围查询 req_world_map_info 等专用）。
+     *
+     * <p>这类协议发请求后由服务端以 notify 推送回数据（notify_world_mapobjs /
+     * notify_world_marchs，推送 content.session 回显请求时使用的 session）；数据经
+     * {@link #addMessageHook} 按 session 对账。session 由调用方指定（地图查询约定 1e8~4e8）。
+     *
+     * <p>不占用 requestLock、不等待响应；写帧由底层 ioLock 串行化，线程安全。
+     */
+    public void sendFireAndForget(String proto, Map<String, Object> args, int session) {
+        GameProtocolClient c = client;
+        if (c == null) throw new IllegalStateException("游戏会话未初始化");
+        c.sendFireAndForget(proto, args == null ? new LinkedHashMap<String, Object>() : args, session);
+    }
+
+    /**
      * 短超时请求（卡秒路径专用）：超时仍会断连触发恢复，但把"无响应协议"的占坑时间
      * 从 20s 压到秒级，保住发射窗（守护盟友 R3 加速跟进用）。
      */

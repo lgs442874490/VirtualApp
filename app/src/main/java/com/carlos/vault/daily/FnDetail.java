@@ -79,7 +79,13 @@ public final class FnDetail {
                 new Sub("expert_soldier", "罗慕路斯·每日士兵", "领取每日兵营士兵（选择兵营：默认盾兵营）", true,
                         new String[][]{{"321", "盾兵营"}, {"322", "矛兵营"}, {"323", "弓兵营"}}));
         fn("medic",
-                new Sub("heal", "治疗伤兵", "高等级优先批量治疗伤兵（联盟互助已收敛到联盟模块）", true, null));
+                new Sub("heal", "自动治疗",
+                        "开启后按「医院设置」的每批治疗数量循环治疗伤兵，直到伤兵清零或资源不足", true, null),
+                // 子项 id 用 help：与服务端 MedicService 的 subResults["help"] 状态行对齐；
+                // 开关值实际写 params 顶层 request_help（SubCardUi 特殊处理，见该处注释）。
+                new Sub("help", "治疗后联盟求助",
+                        "每批治疗成功后向联盟求助加速下一批（写 params 顶层 request_help，默认开）",
+                        true, null));
         fn("barracks",
                 new Sub("collect_shield", "盾兵营收兵", "收回盾兵营已训练完毕的士兵", true, null),
                 new Sub("collect_spear", "矛兵营收兵", "收回矛兵营已训练完毕的士兵", true, null),

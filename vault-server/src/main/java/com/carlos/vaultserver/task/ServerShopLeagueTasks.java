@@ -1,6 +1,7 @@
 package com.carlos.vaultserver.task;
 
 import com.carlos.vault.wjdr.protocol.GameMessage;
+import com.carlos.vaultserver.ServerHelpResponder;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -2153,16 +2154,25 @@ public final class ServerShopLeagueTasks {
 
     public static TaskOutcome allianceHelp(TaskContext tc) {
         // 常驻互助（ServerHelpResponder）接管中：它 30s 轮询持续刷新 help_all_ts，
-        // 3 分钟内有过响应/巡检即视为已覆盖，跳过本轮重复请求（服务器上整轮仅在常驻会话跑，此跳过常态生效）
+        // 3 分钟内有过响应/巡检即视为已覆盖，跳过本轮重复请求（服务器上整轮仅在常驻会话跑，此跳过常态生效）。
+        // P0 2026-10-28：SKIP 文案带上常驻响应器的真实状态，避免用户把“跳过本轮”误读成“不执行互助”。
         try {
             long ts = tc.modState("alliance_help").optLong("help_all_ts", 0);
             if (ts > 0 && System.currentTimeMillis() - ts < 180_000L) {
+                String state = tc.modState("alliance_help").optString("help_all", "").trim();
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
-                        "常驻互助接管中，跳过本轮");
+                        "常驻响应器已接管自动互助，本轮跳过"
+                                + (state.isEmpty() ? "" : "（" + state + "）"));
             }
         } catch (Throwable ignored) {
         }
         try {
+            // 今日 1536 已结算（常驻响应器写入）：不再请求，跨天自动恢复。
+            if (ServerHelpResponder.helpSettled(tc.store, tc.fpid, tc.sid,
+                    System.currentTimeMillis())) {
+                return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
+                        "今日联盟互助次数已用完，明天自动继续");
+            }
             GameMessage rsp = tc.engine.request("req_alliance_help_all", null);
             int code = Exec.codeOf(rsp);
             if (Exec.ok(rsp)) {
@@ -2172,9 +2182,16 @@ public final class ServerShopLeagueTasks {
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.CLAIMED,
                         "已一键帮助全盟（服务器常驻秒级响应主力）");
             }
-            if (code == 75 || code == 2 || code == 1536) {
+            if (code == 1536) {
+                // 今日互助次数用完：记 settled，避免后续轮次反复请求（与常驻响应器同键）。
+                ServerHelpResponder.markHelpSettled(tc.store, tc.fpid, tc.sid,
+                        System.currentTimeMillis());
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
-                        code == 1536 ? "今日帮助次数已用完或无请求" : "当前无互助请求或不可用");
+                        "今日联盟互助次数已用完，明天自动继续");
+            }
+            if (code == 75 || code == 2) {
+                return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
+                        "当前没有可互助请求或暂不可用");
             }
             if (code == 16873) {
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED, "无联盟");
