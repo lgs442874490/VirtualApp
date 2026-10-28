@@ -2191,6 +2191,27 @@ public final class SessionKeeper implements SessionControl,
         return true;
     }
 
+    /**
+     * 观察点/地图扫描用：所有处于 {@link WjdrEngine#STATE_ONLINE} 的角色会话引擎快照（只读）。
+     *
+     * <p>返回的是引擎引用，调用方只应做两件事：{@code addMessageHook} 收推送、
+     * {@code sendFireAndForget} 发地图查询；不得调用 request/close 等会改变会话语义的方法。
+     * 会话掉线/重连时引擎实例保持不变，钩子仍有效。
+     */
+    public java.util.List<WjdrEngine> onlineEngines() {
+        java.util.List<WjdrEngine> out = new java.util.ArrayList<>();
+        for (LiveSession ls : sessions.values()) {
+            try {
+                if (ls.engine != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+                    out.add(ls.engine);
+                }
+            } catch (Throwable ignored) {
+                // 单个会话异常不影响其它会话
+            }
+        }
+        return out;
+    }
+
     @Override
     public List<SessionStatus> status() {
         List<SessionStatus> out = new ArrayList<>();
