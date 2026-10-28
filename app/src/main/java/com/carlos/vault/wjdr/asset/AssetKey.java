@@ -21,8 +21,18 @@ public final class AssetKey {
         this.sessionEpoch = sessionEpoch;
     }
 
-    /** fpid:sid 主键（同角色跨会话复用库时用它查）。 */
+    /**
+     * 资产库角色主键。
+     *
+     * <p>R2 Phase 2（2026-10-29）：同账号同服多角色（fpid:sid 相同、uid 不同）各自一条会话、
+     * 各持一个资产库，主键必须带 uid 才能共存；uid&lt;=0（旧/身份未落地）退回旧 {@code fpid:sid}。
+     */
     public String roleKey() {
+        return uid > 0L ? fpid + ":" + sid + ":" + uid : fpid + ":" + sid;
+    }
+
+    /** 旧角色主键（fpid:sid，无 uid）：仅旧调用/回退查询用。 */
+    public String legacyRoleKey() {
         return fpid + ":" + sid;
     }
 

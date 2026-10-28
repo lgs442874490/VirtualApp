@@ -53,7 +53,15 @@ public final class CoreAssetRegistry {
 
     public synchronized CoreAssetLibrary get(String fpid, long sid) {
         if (fpid == null) return null;
-        return byRole.get(fpid.trim() + ":" + sid);
+        String fp = fpid.trim();
+        CoreAssetLibrary lib = byRole.get(fp + ":" + sid);
+        if (lib != null) return lib;
+        // R2 Phase 2：同服多角色主键已带 uid，旧的无 uid 查询按前缀回退（仅兼容调用，返回任一角色库）。
+        String prefix = fp + ":" + sid + ":";
+        for (Map.Entry<String, CoreAssetLibrary> e : byRole.entrySet()) {
+            if (e.getKey() != null && e.getKey().startsWith(prefix)) return e.getValue();
+        }
+        return null;
     }
 
     public synchronized void detach(WjdrEngine engine) {
