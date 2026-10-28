@@ -3200,31 +3200,28 @@ public final class ServerTasks {
             //   修复：sciences/recommend/recovery 持久化到 srv:alliance_science:<fpid>:<sid>，
             //   推送漏发/会话重启后仍可捐；免费次数仍「未知不盲捐」，但可由持久化快照投影恢复；
             //   单目标不可捐 → 下一个目标；全部不可捐 → 明确状态 + 5 分钟冷却，不误判失败、不请求风暴。
+            // P0 2026-10-28 修复二（生产实证：免费次数「24/25」一直不花）：旧实现双路取小
+            //   （effectiveFreeCount=min(engineFree,persistedFree)）且仅在 engineFree<=persistedFree 时
+            //   采纳服务端快照 → 持久化 count=0 永远压住服务端真值 24，每 600s 只捐 1 次。
+            //   现改为「服务端快照权威 + 本地已消费 spentSinceSnapshot」：快照签名变化→整体采纳并清零
+            //   已消费；freeCount=max(0, project(快照,now)-spent)；投影到上限后本地归一化防恢复停滞。
             try {
-                // ① 读持久化快照 + 合并本次推送：推送权威、持久化补漏。
+                // ① 读持久化快照 + 合并本次推送：服务端快照权威、本地只记已消费。
                 AllianceScienceState st = loadAllianceScience(tc);
                 long nowSec = serverNowSec(tc);
-                // 先按持久化快照投影（可能含上一轮本地扣减，不能先被推送覆盖）
-                long persistedFree = st.recoveryKnown()
-                        ? projectedRecoveryCount(st.recovery, nowSec) : -1L;
                 java.util.Map<Long, long[]> freshSciences = collectSciences(tc.engine);
                 if (!freshSciences.isEmpty()) mergeSciences(st.sciences, freshSciences);
                 long freshRecommend = recommendedScienceId(tc.engine);
                 if (freshRecommend > 0L) st.recommend = freshRecommend;
                 java.util.Map<String, Object> freshRecovery = recoveryOf(tc.engine);
-                long engineFree = freshRecovery == null ? -1L : projectedRecoveryCount(freshRecovery, nowSec);
-                // ② 免费次数：两路投影取小（宁漏不花）；都未知 → -1（不盲捐付费）。
-                long freeCount = effectiveFreeCount(engineFree, persistedFree);
-                // 选一个恢复快照做后续扣减：没有持久化 / 引擎侧更保守 → 用引擎新值；否则保留持久化侧
-                // （持久化侧可能已按上一轮成功捐献本地扣减，用陈旧 init 快照覆盖会导致重复超捐）。
-                if (freshRecovery != null && (persistedFree < 0L || engineFree <= persistedFree)) {
-                    st.recovery = new LinkedHashMap<>(freshRecovery);
-                }
+                // ② 免费次数：新快照整体采纳并清零 spent；同快照不重复投影已消费。
+                long freeCount = resolveFreeCount(st, freshRecovery, nowSec);
                 // 兼容历史版本写在 mod 键里的 no_free_until
                 long legacyNoFree = tc.modState("alliance_donate").optLong("no_free_until", 0L);
                 if (legacyNoFree > nowSec) st.noFreeUntilSec = Math.max(st.noFreeUntilSec, legacyNoFree);
-                // 解析成功即落盘（推送漏发/会话重启后下一轮仍可用）
-                if (!freshSciences.isEmpty() || freshRecommend > 0L || freshRecovery != null) {
+                // 解析成功/快照/本地消费变化即落盘（推送漏发/会话重启后下一轮仍可用）
+                if (!freshSciences.isEmpty() || freshRecommend > 0L || freshRecovery != null
+                        || st.recoveryKnown()) {
                     saveAllianceScience(tc, st);
                 }
                 if (st.noFreeUntilSec > nowSec) freeCount = 0L;
@@ -3248,7 +3245,7 @@ public final class ServerTasks {
                     int donated = 0;
                     int lastSkipCode = 0;
                     java.util.List<long[]> targets = orderedScienceTargets(st.sciences, st.recommend);
-                    int budget = (int) Math.min(50L, freeCount);
+                    int budget = donationBudget(freeCount);
                     boolean stopped = false;
                     for (int i = 0; i < budget && !stopped; i++) {
                         boolean any = false;
@@ -3276,10 +3273,10 @@ public final class ServerTasks {
                                 continue;   // 该科技不可捐 → 下一个目标
                             }
                             if (code == 1528) {
-                                // 服务端判免费次数用尽：本地记恢复时刻，恢复后自动继续捐。
-                                java.util.Map<String, Object> base = st.recoveryKnown() ? st.recovery : freshRecovery;
-                                st.noFreeUntilSec = donationNoFreeUntil(base, nowSec);
-                                st.recovery = normalizeRecovery(base, nowSec, 0L);
+                                // 服务端判免费次数用尽：本地记恢复时刻，并把已消费推进到当前投影值
+                                // （保留服务端快照供下轮投影，恢复后自动继续捐）。
+                                st.noFreeUntilSec = donationNoFreeUntil(st.recovery, nowSec);
+                                recordServerExhausted(st, nowSec);
                                 saveAllianceScience(tc, st);
                                 tc.saveModText("alliance_donate", "no_free_until", String.valueOf(st.noFreeUntilSec));
                                 sb.append("科技捐献:免费次数已用尽（服务端码1528），恢复后自动捐献; ");
@@ -3323,11 +3320,11 @@ public final class ServerTasks {
                     }
                     if (donated > 0) {
                         ok += donated;
-                        // ③ 成功捐献后落盘：本地扣减免费次数（服务端推送到达前不重复超捐）。
-                        java.util.Map<String, Object> base = st.recoveryKnown() ? st.recovery : freshRecovery;
-                        st.recovery = normalizeRecovery(base, nowSec, freeCount - donated);
+                        // ③ 成功捐献后只累加「本地已消费」，不覆盖服务端权威快照
+                        //    （旧实现把 count 归一化成 0 会把服务端真值一起抹掉）。
                         st.noFreeUntilSec = 0L;
                         st.targetCooldownUntilSec = 0L;
+                        recordDonated(st, donated);
                         saveAllianceScience(tc, st);
                         tc.saveModText("alliance_donate", "no_free_until", "0");
                         sb.append("科技捐献✓×").append(donated).append("; ");
@@ -3651,8 +3648,12 @@ public final class ServerTasks {
     static final class AllianceScienceState {
         final java.util.Map<Long, long[]> sciences = new java.util.LinkedHashMap<>();
         long recommend;
-        /** 免费次数恢复快照（null=未知）。 */
+        /** 免费次数恢复快照（服务端权威原始值；null=未知）。 */
         java.util.Map<String, Object> recovery;
+        /** 最近一次服务端恢复快照的签名（count|max_count|next_calc_ts|recover|interval）；null=旧数据未知。 */
+        String recoverySig;
+        /** 自该服务端快照以来本地已消费的免费次数（成功捐献/服务端判 1528），投影时扣除。 */
+        long spentSinceSnapshot;
         /** 1528/服务端判“免费次数用尽”后的本地恢复时刻（秒，0=无）。 */
         long noFreeUntilSec;
         /** 目标均不可捐/资源不足/联盟异常后的冷却时刻（秒，0=无），防止 30s 节奏请求风暴。 */
@@ -3690,6 +3691,8 @@ public final class ServerTasks {
             o.put("sciences", sciences);
             o.put("recommend", st.recommend);
             if (st.recovery != null) o.put("recovery", new JSONObject(st.recovery));
+            if (st.recoverySig != null) o.put("recovery_sig", st.recoverySig);
+            o.put("spent_since_snapshot", st.spentSinceSnapshot);
             o.put("no_free_until", st.noFreeUntilSec);
             o.put("target_cooldown_until", st.targetCooldownUntilSec);
             o.put("updated_at", st.updatedAtMs > 0L ? st.updatedAtMs : System.currentTimeMillis());
@@ -3722,6 +3725,9 @@ public final class ServerTasks {
                 for (String key : rec.keySet()) recovery.put(key, rec.get(key));
                 st.recovery = recovery;
             }
+            st.recoverySig = o.has("recovery_sig") ? o.optString("recovery_sig", "") : null;
+            if (st.recoverySig != null && st.recoverySig.isEmpty()) st.recoverySig = null;
+            st.spentSinceSnapshot = Math.max(0L, o.optLong("spent_since_snapshot", 0L));
             st.noFreeUntilSec = Math.max(0L, o.optLong("no_free_until", 0L));
             st.targetCooldownUntilSec = Math.max(0L, o.optLong("target_cooldown_until", 0L));
             st.updatedAtMs = Math.max(0L, o.optLong("updated_at", 0L));
@@ -3766,14 +3772,64 @@ public final class ServerTasks {
     }
 
     /**
-     * 两路免费次数投影合并（纯函数，宁漏不花）：都未知=-1；仅一路已知取该路；都已知取较小值
-     * （持久化侧通常是本地已扣减后的值，取小可避免用陈旧 init 快照重复捐到超出免费预算）。
+     * 免费次数恢复快照签名（纯函数）：内容字段组合不变 = 同一份服务端快照，本地已消费不重复投影；
+     * 任一字段变化（服务端恢复/捐献后的 update/换会话的 init）= 新快照，整体采纳。
      */
-    static long effectiveFreeCount(long engineFreeCount, long persistedFreeCount) {
-        if (engineFreeCount < 0L && persistedFreeCount < 0L) return -1L;
-        if (engineFreeCount < 0L) return persistedFreeCount;
-        if (persistedFreeCount < 0L) return engineFreeCount;
-        return Math.min(engineFreeCount, persistedFreeCount);
+    static String recoverySignature(java.util.Map<String, Object> recovery) {
+        if (recovery == null) return null;
+        return "205|" + Exec.longOf(recovery.get("count")) + "|" + Exec.longOf(recovery.get("max_count"))
+                + "|" + Exec.longOf(recovery.get("next_calc_ts")) + "|" + Exec.longOf(recovery.get("recover"))
+                + "|" + Exec.longOf(recovery.get("interval"));
+    }
+
+    /**
+     * 合并服务端快照并解析本轮可用免费次数（纯函数，会更新 st）。返回 -1 = 完全未知（不盲捐付费）。
+     *
+     * <p>P0 2026-10-28 修复：废弃旧「双路投影取小 + 仅更小才采纳」，改为服务端快照权威模型——
+     * 新快照（签名变化或旧数据无签名）→ 整体采纳并把 spentSinceSnapshot 归零；同快照 → 投影后
+     * 扣掉本地已消费，既不会用陈旧 init 重复超捐，也不会因持久化旧值偏小而永远花不掉服务端积压。
+     */
+    static long resolveFreeCount(AllianceScienceState st,
+                                 java.util.Map<String, Object> freshRecovery, long nowSec) {
+        if (st == null) return -1L;
+        if (freshRecovery != null) {
+            String sig = recoverySignature(freshRecovery);
+            if (st.recoverySig == null || !sig.equals(st.recoverySig)) {
+                st.recovery = new LinkedHashMap<>(freshRecovery);
+                st.recoverySig = sig;
+                st.spentSinceSnapshot = 0L;
+            }
+        }
+        if (!st.recoveryKnown()) return -1L;
+        long projected = projectedRecoveryCount(st.recovery, nowSec);
+        long free = Math.max(0L, projected - st.spentSinceSnapshot);
+        long max = Math.max(0L, Exec.longOf(st.recovery.get("max_count")));
+        // 投影到上限后（count+恢复周期 >= max）时间推进不再让 projected 增长；若本地已消费 >0，
+        // 必须把「剩余次数」归一化回快照并清零 spent，否则 spent 只增不减会把 freeCount 永久压成 0
+        // （真实恢复仍按 next_calc_ts 推进，归一化后下一周期会正常 +1）。
+        if (st.spentSinceSnapshot > 0L && max > 0L && projected >= max) {
+            st.recovery = normalizeRecovery(st.recovery, nowSec, free);
+            st.spentSinceSnapshot = 0L;
+        }
+        return free;
+    }
+
+    /** 本轮成功捐献后记账（纯函数）：只累加本地已消费，不覆盖服务端权威快照。 */
+    static void recordDonated(AllianceScienceState st, long donated) {
+        if (st == null || donated <= 0L) return;
+        st.spentSinceSnapshot = Math.max(0L, st.spentSinceSnapshot + donated);
+    }
+
+    /** 服务端 1528 判用尽（纯函数）：把已消费推进到当前投影值，保留快照供下轮投影/恢复。 */
+    static void recordServerExhausted(AllianceScienceState st, long nowSec) {
+        if (st == null || !st.recoveryKnown()) return;
+        long projected = projectedRecoveryCount(st.recovery, nowSec);
+        st.spentSinceSnapshot = Math.max(st.spentSinceSnapshot, projected);
+    }
+
+    /** 单轮捐献预算（网页版 while freeCount>0 && attempts<50 的 50 次上限）。 */
+    static int donationBudget(long freeCount) {
+        return (int) Math.min(50L, Math.max(0L, freeCount));
     }
 
     /**

@@ -336,14 +336,28 @@ public class FunctionalBugsRegressionTest {
                 4L, ServerTasks.projectedRecoveryCount(back.recovery, 1000L));
     }
 
-    /** 引擎推送 vs 持久化的免费次数合并：宁漏不花（都已知取较小值）；未知不阻塞。 */
+    /**
+     * P0 2026-10-28 修复二：免费次数改为「服务端快照权威 + 本地已消费」，废弃旧双路取小
+     * （旧逻辑持久化 count=0 会永久压住服务端真值 → 免费次数停在 24/25 不花）。
+     */
     @Test
-    public void donationEffectiveFreeCount_prefersConservative() {
-        assertEquals("都未知 → 未知", -1L, ServerTasks.effectiveFreeCount(-1L, -1L));
-        assertEquals("仅持久化已知", 5L, ServerTasks.effectiveFreeCount(-1L, 5L));
-        assertEquals("仅引擎已知", 5L, ServerTasks.effectiveFreeCount(5L, -1L));
-        assertEquals("都已知取小，避免重复捐超预算", 3L,
-                ServerTasks.effectiveFreeCount(4L, 3L));
+    public void donationFreeCount_serverSnapshotAuthoritative() {
+        Map<String, Object> fresh = map("id", 205L, "count", 24L, "max_count", 25L,
+                "next_calc_ts", 2000L, "recover", 1L, "interval", 600L);
+        assertEquals("完全未知 → 未知（不盲捐付费）", -1L,
+                ServerTasks.resolveFreeCount(new ServerTasks.AllianceScienceState(), null, 1000L));
+
+        ServerTasks.AllianceScienceState st = new ServerTasks.AllianceScienceState();
+        assertEquals("服务端快照积压一次可见（旧取小会得到 0）", 24L,
+                ServerTasks.resolveFreeCount(st, fresh, 1000L));
+        ServerTasks.recordDonated(st, 4L);
+        assertEquals("本地已消费从投影中扣除", 20L,
+                ServerTasks.resolveFreeCount(st, fresh, 1000L));
+
+        Map<String, Object> newer = map("id", 205L, "count", 6L, "max_count", 25L,
+                "next_calc_ts", 2600L, "recover", 1L, "interval", 600L);
+        assertEquals("服务端新快照整体采纳并清零已消费", 6L,
+                ServerTasks.resolveFreeCount(st, newer, 1000L));
     }
 
     /**

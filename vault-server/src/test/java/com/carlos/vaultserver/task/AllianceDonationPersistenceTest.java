@@ -51,6 +51,8 @@ public class AllianceDonationPersistenceTest {
         st.recommend = 6023L;
         st.recovery = map("id", 205L, "count", 2L, "max_count", 5L,
                 "next_calc_ts", 1_800_000_000L, "recover", 1L, "interval", 600L);
+        st.recoverySig = ServerTasks.recoverySignature(st.recovery);
+        st.spentSinceSnapshot = 1L;
         st.noFreeUntilSec = 1_800_000_123L;
         st.targetCooldownUntilSec = 1_800_000_456L;
         return st;
@@ -71,6 +73,8 @@ public class AllianceDonationPersistenceTest {
         assertEquals(2L, Exec.longOf(out.recovery.get("count")));
         assertEquals(5L, Exec.longOf(out.recovery.get("max_count")));
         assertEquals(1_800_000_000L, Exec.longOf(out.recovery.get("next_calc_ts")));
+        assertEquals("快照签名保留", ServerTasks.recoverySignature(in.recovery), out.recoverySig);
+        assertEquals("本地已消费保留", 1L, out.spentSinceSnapshot);
         assertEquals(1_800_000_123L, out.noFreeUntilSec);
         assertEquals(1_800_000_456L, out.targetCooldownUntilSec);
         assertTrue(out.sciencesKnown());
@@ -139,13 +143,88 @@ public class AllianceDonationPersistenceTest {
         assertEquals(7L, into.get(1L)[1]);
     }
 
+    // ============ 免费次数：服务端快照权威 + 本地已消费（P0 2026-10-28 修复二） ============
+
+    private static Map<String, Object> rec(long count, long max, long next, long interval) {
+        return map("id", 205L, "count", count, "max_count", max,
+                "next_calc_ts", next, "recover", 1L, "interval", interval);
+    }
+
+    /**
+     * 核心回归：旧持久化残留 count=0（无签名） + 服务端真实快照 count=24。
+     * 旧实现 effectiveFreeCount=min(24,0)=0 会永远只捐 1 次/周期；修复后必须整体采纳并一轮捐掉积压。
+     */
     @Test
-    public void effectiveFreeCount_takesMinWhenBothKnown() {
-        assertEquals("都未知 → 未知（不盲捐）", -1L, ServerTasks.effectiveFreeCount(-1L, -1L));
-        assertEquals("仅引擎已知", 2L, ServerTasks.effectiveFreeCount(2L, -1L));
-        assertEquals("仅持久化已知", 3L, ServerTasks.effectiveFreeCount(-1L, 3L));
-        assertEquals("都已知取小（宁漏不花）", 2L, ServerTasks.effectiveFreeCount(2L, 5L));
-        assertEquals(1L, ServerTasks.effectiveFreeCount(4L, 1L));
+    public void stalePersistedZero_afterFreshServerSnapshot_donatesBacklog() {
+        ServerTasks.AllianceScienceState st = new ServerTasks.AllianceScienceState();
+        st.recovery = rec(0L, 25L, 1000L, 600L);
+        st.recoverySig = null;   // 旧版 encode 没有 recovery_sig
+        Map<String, Object> fresh = rec(24L, 25L, 1000L, 600L);
+
+        long freeCount = ServerTasks.resolveFreeCount(st, fresh, 999L);
+        assertEquals("服务端积压必须整体采纳（不再被持久化 0 压住）", 24L, freeCount);
+        assertEquals("一轮预算 = 积压次数", 24, ServerTasks.donationBudget(freeCount));
+        assertEquals("采纳后快照=服务端快照", 24L, Exec.longOf(st.recovery.get("count")));
+        assertEquals(0L, st.spentSinceSnapshot);
+
+        ServerTasks.recordDonated(st, 24L);   // 一轮把积压捐完
+        assertEquals("同一快照下一轮不能重复超捐", 0L, ServerTasks.resolveFreeCount(st, fresh, 999L));
+        assertEquals("到恢复点后只放行 +1", 1L, ServerTasks.resolveFreeCount(st, fresh, 1600L));
+    }
+
+    @Test
+    public void sameSnapshotNotDoubleSpent() {
+        ServerTasks.AllianceScienceState st = new ServerTasks.AllianceScienceState();
+        Map<String, Object> fresh = rec(3L, 5L, 1000L, 600L);
+        assertEquals(3L, ServerTasks.resolveFreeCount(st, fresh, 999L));
+        ServerTasks.recordDonated(st, 3L);
+        assertEquals("同一快照不重复投影已消费", 0L, ServerTasks.resolveFreeCount(st, fresh, 999L));
+        assertEquals("恢复 1 次后只放行 1 次", 1L, ServerTasks.resolveFreeCount(st, fresh, 1100L));
+    }
+
+    @Test
+    public void freshSnapshotResetsSpentAndAdoptsBacklog() {
+        ServerTasks.AllianceScienceState st = new ServerTasks.AllianceScienceState();
+        Map<String, Object> a = rec(0L, 25L, 1000L, 600L);
+        assertEquals(0L, ServerTasks.resolveFreeCount(st, a, 999L));
+        ServerTasks.recordDonated(st, 5L);   // 本地已消费 5（模拟跨轮扣减残留）
+        assertEquals(5L, st.spentSinceSnapshot);
+
+        Map<String, Object> b = rec(7L, 25L, 2000L, 600L);   // 服务端新快照（签名变化）
+        assertEquals("新快照整体采纳", 7L, ServerTasks.resolveFreeCount(st, b, 1500L));
+        assertEquals("采纳新快照即清零已消费", 0L, st.spentSinceSnapshot);
+        assertEquals(ServerTasks.recoverySignature(b), st.recoverySig);
+    }
+
+    @Test
+    public void legacyPersistedShape_adoptsNextSnapshot() {
+        // 旧版持久化 JSON：只有 recovery，无 recovery_sig / spent_since_snapshot
+        String legacy = "{\"sciences\":{},\"recommend\":6023,\"recovery\":"
+                + "{\"id\":205,\"count\":0,\"max_count\":25,\"next_calc_ts\":1000,"
+                + "\"recover\":1,\"interval\":600}}";
+        ServerTasks.AllianceScienceState st = ServerTasks.decodeAllianceScience(legacy);
+        assertTrue("旧 JSON 仍可读", st.recoveryKnown());
+        assertNull("旧数据签名未知", st.recoverySig);
+        assertEquals(0L, st.spentSinceSnapshot);
+
+        Map<String, Object> fresh = rec(24L, 25L, 1000L, 600L);
+        assertEquals("下一份服务端快照到达即整体采纳", 24L,
+                ServerTasks.resolveFreeCount(st, fresh, 999L));
+        assertNotNull(st.recoverySig);
+    }
+
+    /** 上限饱和回归：count=24/max=25 时捐完后 projection 被封顶，不能把 freeCount 永久压成 0。 */
+    @Test
+    public void capSnapshot_recoveryKeepsGrowingAfterBacklogSpent() {
+        ServerTasks.AllianceScienceState st = new ServerTasks.AllianceScienceState();
+        Map<String, Object> fresh = rec(24L, 25L, 1000L, 600L);
+        assertEquals(24L, ServerTasks.resolveFreeCount(st, fresh, 999L));
+        ServerTasks.recordDonated(st, 24L);
+
+        assertEquals("封顶快照捐完后，恢复周期到点仍放行 1 次", 1L,
+                ServerTasks.resolveFreeCount(st, fresh, 1600L));
+        ServerTasks.recordDonated(st, 1L);
+        assertEquals("下一周期继续放行 1 次", 1L, ServerTasks.resolveFreeCount(st, fresh, 2200L));
     }
 
     // ==================== 免费次数投影/归一化 ====================
