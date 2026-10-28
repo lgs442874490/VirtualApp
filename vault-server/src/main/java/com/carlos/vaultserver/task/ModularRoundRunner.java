@@ -27,6 +27,9 @@ import java.util.Map;
  * 但执行顺序由 ModuleRegistry 拓扑排序决定，单任务模式只跑目标动作。
  *
  * <p>切换：SessionKeeper 调本类；设置环境变量 VAULT_LEGACY_ROUND=1 可回退旧 RoundRunner。
+ *
+ * <p>R2 Phase 2（2026-10-29）：同账号同服多角色并行时，任务结果/摘要/整轮标记按角色 uid 隔离，
+ * 旧键仅由 active 角色镜像写（App 显示链路不变）；uid&lt;=0 旧调用路径行为不变。
  */
 public final class ModularRoundRunner {
 
@@ -50,14 +53,27 @@ public final class ModularRoundRunner {
         return r;
     }
 
+    /** 旧签名（兼容）：uid=0 主控路径，行为与 Phase 2 之前一致。 */
     public static String runRound(WjdrEngine engine, VaultStore.Account acc, long sid,
                                   StateStore store, Map<String, JSONObject> params,
                                   String fnOnly, String trigger) {
+        return runRound(engine, acc, sid, store, params, fnOnly, trigger, 0L, true);
+    }
+
+    /**
+     * R2 Phase 2（2026-10-29）：按角色执行整轮/单任务（uid>0 时任务状态键按角色隔离；
+     * activeWriter 仅用于旧键镜像，App 显示链路不变）。
+     */
+    public static String runRound(WjdrEngine engine, VaultStore.Account acc, long sid,
+                                  StateStore store, Map<String, JSONObject> params,
+                                  String fnOnly, String trigger,
+                                  long roleUid, boolean activeWriter) {
         String fpid = acc.fpid;
-        Map<String, Boolean> roleConfig = acc.roleConfig.get(String.valueOf(sid));
+        RoleKey role = new RoleKey(fpid, sid, roleUid);
+        Map<String, Boolean> roleConfig = RoundRunner.configForRole(acc, sid, roleUid);
         // 2026-10-25 P0：启用任务集合带进上下文（采集×情报让位判定需要知道 intel 是否在跑）
         TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger,
-                TaskContext.enabledPredicate(roleConfig));
+                TaskContext.enabledPredicate(roleConfig), roleUid);
         ModuleRegistry reg = registry();
 
         AutomationConfig config = AutomationConfig.fromLegacy(
@@ -108,7 +124,7 @@ public final class ModularRoundRunner {
                 if (reg.moduleOfAction(e.getKey()) != null) continue;
                 TaskOutcome r = new TaskOutcome(e.getKey(), e.getKey(),
                         TaskOutcome.Category.SKIPPED, "待迁移到模块化目录");
-                RoundRunner.applyResult(store, fpid, sid, e.getKey(), r, trigger);
+                RoundRunner.applyResult(store, role, e.getKey(), r, trigger, false, activeWriter);
             }
         }
 
@@ -119,7 +135,8 @@ public final class ModularRoundRunner {
         for (ModuleResult mr : results) {
             for (ModuleResult.Entry e : mr.entries) {
                 TaskOutcome o = e.outcome;
-                RoundRunner.applyResult(store, fpid, sid, e.actionId, o, trigger, singleTaskMode);
+                RoundRunner.applyResult(store, role, e.actionId, o, trigger,
+                        singleTaskMode, activeWriter);
                 if (o.category == TaskOutcome.Category.CLAIMED) claimed++;
                 if (o.category == TaskOutcome.Category.SKIPPED) skipped++;
                 if (o.category == TaskOutcome.Category.DEGRADED
@@ -132,7 +149,7 @@ public final class ModularRoundRunner {
         }
         if (!sessionClosed) {
             try {
-                CaptureTasks.captureAll(engine, store, fpid, sid);
+                CaptureTasks.captureAll(engine, store, fpid, sid, roleUid, activeWriter);
             } catch (Throwable ignored) {
             }
         }
@@ -141,15 +158,27 @@ public final class ModularRoundRunner {
                 + " 跳过" + skipped + ")" + (abnormal > 0 ? " 异常" + abnormal : "")
                 + (sessionClosed ? " 会话中断" : "") + (wartimeYield ? " 战时让位" : "");
         String text = head + "\n" + summary;
-        store.putString("summary:" + fpid, text);
+        putSummary(store, role, text, activeWriter);
         // 断线轮次不消耗当天整轮：允许调度器下一 tick 重试（st=1 可重试语义）。
         // P7：战时让位轮同样不消耗（退出战争态后错过窗口立即补跑）。
         if ((fnOnly == null || fnOnly.isEmpty()) && !sessionClosed && !wartimeYield) {
-            store.putLong("srv:lastrun:" + fpid, System.currentTimeMillis());
+            long now = System.currentTimeMillis();
+            store.putLong(RoundRunner.lastRunKey(role), now);
+            if (activeWriter && role.roleScoped()) {
+                store.putLong(RoundRunner.lastRunLegacyKey(role), now);
+            }
         }
         store.flush();
-        FileLog.info("模块化整轮完成 fpid={} sid={}：{}", fpid, String.valueOf(sid), head);
+        FileLog.info("模块化整轮完成 role={}：{}", role.key(), head);
         return text;
+    }
+
+    /** 写整轮摘要：角色键 + active 角色镜像旧键（App 读 {@code summary:<fpid>}）。 */
+    private static void putSummary(StateStore store, RoleKey role, String text, boolean activeWriter) {
+        store.putString(RoundRunner.summaryKey(role), text);
+        if (activeWriter && role.roleScoped()) {
+            store.putString(RoundRunner.summaryLegacyKey(role), text);
+        }
     }
 
     private static boolean hasSessionClosed(List<ModuleResult> results) {
