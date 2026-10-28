@@ -134,6 +134,12 @@ public final class WatchPointEngine {
     private final java.util.concurrent.atomic.AtomicLong statOkProtect = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong statTimeouts = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong statAlerts = new java.util.concurrent.atomic.AtomicLong();
+    /** 2026-10-28 误报修复计数：自循环行军 / 目标联盟未知的来袭候选 / 随从告警静默。 */
+    private final java.util.concurrent.atomic.AtomicLong statSelfIgnored = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong statUnknownTargetIgnored = new java.util.concurrent.atomic.AtomicLong();
+    private final java.util.concurrent.atomic.AtomicLong statRallyFollowerIgnored = new java.util.concurrent.atomic.AtomicLong();
+    /** 未知目标候选 INFO 去重（同 type/owner/坐标只记一次，防日志刷屏）。 */
+    private final Set<String> unknownTargetLogged = ConcurrentHashMap.newKeySet();
     private long lastStatsAt;
     private volatile boolean lastTickHadEngine;
     private volatile String lastEngineDesc = "";
@@ -225,12 +231,15 @@ public final class WatchPointEngine {
         long now = System.currentTimeMillis();
         if (now - lastStatsAt < 60_000L) return;
         lastStatsAt = now;
-        FileLog.info("[{}] 运行统计：有会话={} 会话={} 监视发送={}(回包{} 超时{}) 保护发送={}(回包{}) 告警={} 扫描={} 城缓存={}",
+        FileLog.info("[{}] 运行统计：有会话={} 会话={} 监视发送={}(回包{} 超时{}) 保护发送={}(回包{}) 告警={} 扫描={} 城缓存={}"
+                        + " 自循环忽略={} 未知目标忽略={} 随从静默={}",
                 LOG, String.valueOf(lastTickHadEngine), lastEngineDesc,
                 String.valueOf(statSentMonitor.get()), String.valueOf(statOkMonitor.get()),
                 String.valueOf(statTimeouts.get()), String.valueOf(statSentProtect.get()),
                 String.valueOf(statOkProtect.get()), String.valueOf(statAlerts.get()),
-                scan.active ? "进行中" : "空闲", String.valueOf(cityByUid.size()));
+                scan.active ? "进行中" : "空闲", String.valueOf(cityByUid.size()),
+                String.valueOf(statSelfIgnored.get()), String.valueOf(statUnknownTargetIgnored.get()),
+                String.valueOf(statRallyFollowerIgnored.get()));
     }
 
     /** 选一条目标区服在线的会话（优先 fpid 匹配；无匹配则任意同 kid 会话）。 */
@@ -498,24 +507,102 @@ public final class WatchPointEngine {
         long endtime = asLong(m.get("endtime"), 0L);
         // 只告警「打城」：地图行军的 atk_city/recon_city 在 map_info 数据里为空，用终点坐标是否命中已知城坐标判定
         City targetCity = cityByPoint.get(ex + "," + ey);
-        if (store.cityTargetOnly && targetCity == null) return;
+        long targetUid = targetCity == null ? 0L : targetCity.uid;
+        long targetAid = targetCity == null ? 0L : targetCity.aid;
+        City ownerCity = cityByUid.get(owner);
+        long ownerAid = ownerCity == null ? 0L : ownerCity.aid;
+        // 2026-10-28 误报修复①：自循环/自家城行军（起点=终点、目标是发起者自己的城）
+        // 典型场景：集结随从/部队往返自己的城或集结点 → 不是"打谁"，MONITOR/PROTECT 都不告警。
+        boolean selfMarch = isSelfMarch(sx, sy, ex, ey, targetUid, owner);
         if (ctx.kind == Kind.MONITOR) {
             if (!ctx.rect.contains(sx, sy)) return;
             if (!isMonitoredUid(owner)) return;
-            City ownerCity = cityByUid.get(owner);
+            if (selfMarch) {
+                statSelfIgnored.incrementAndGet();
+                return;
+            }
+            if (store.cityTargetOnly && targetCity == null) return;
             // 同联盟目标（增援/自家城/内部动作）不算“打谁”，避免噪音
-            if (ownerCity != null && targetCity != null
-                    && ownerCity.aid > 0 && ownerCity.aid == targetCity.aid) return;
+            if (!shouldAlertMonitor(ownerAid, targetAid)) return;
             alertOutgoing(owner, id, type, ex, ey, endtime, troopsOf(m));
         } else if (ctx.kind == Kind.PROTECT) {
             if (!ctx.rect.contains(ex, ey)) return;
-            // 必须打到“友盟城”：保护矩形内可能有其它联盟的城/野怪，只对友盟城告警
-            if (targetCity != null && targetCity.aid > 0
-                    && !store.friendAids.contains(targetCity.aid)) return;
-            City ownerCity = cityByUid.get(owner);
-            if (ownerCity != null && store.friendAids.contains(ownerCity.aid)) return;
+            if (selfMarch) {
+                statSelfIgnored.incrementAndGet();
+                return;
+            }
+            // 2026-10-28 误报修复②：来袭只对「已知友盟城」告警。
+            // targetCity 缺失或 aid<=0（联盟未知，如本次 12:18 的自循环误报）→ 仅 INFO 记录候选，不推送。
+            if (targetCity == null || targetAid <= 0L) {
+                statUnknownTargetIgnored.incrementAndGet();
+                logUnknownIncomingCandidate(type, owner, ex, ey);
+                return;
+            }
+            boolean alert = shouldAlertIncoming(selfMarch, ownerAid, targetAid,
+                    store.friendAids, type, store.incomingRallyFollowerAlerts);
+            if (!alert) {
+                if (!store.incomingRallyFollowerAlerts && (type == 99L || type == 100L)
+                        && store.friendAids.contains(targetAid)) {
+                    statRallyFollowerIgnored.incrementAndGet();
+                }
+                return;
+            }
             alertIncoming(owner, ownerCity, id, type, ex, ey, endtime, troopsOf(m));
         }
+    }
+
+    /** 未知目标（城未缓存/联盟未知）候选只记 INFO，不推送；同 type/owner/坐标去重防刷屏。 */
+    private void logUnknownIncomingCandidate(long type, long owner, int ex, int ey) {
+        String key = type + ":" + owner + ":" + ex + ":" + ey;
+        if (unknownTargetLogged.size() > 2000) unknownTargetLogged.clear();
+        if (!unknownTargetLogged.add(key)) return;
+        FileLog.info("[{}] 来袭候选被过滤（目标城联盟未知，不推送）：type={} 攻击者=uid{} 目标=({},{})",
+                LOG, String.valueOf(type), String.valueOf(owner),
+                String.valueOf(ex), String.valueOf(ey));
+    }
+
+    // ---------- 告警判定纯函数（2026-10-28 误报修复；单测见 WatchPointAlertFilterTest） ----------
+
+    /**
+     * 自循环/自身行军判定：满足任一条即不是"打别人"。
+     * <ul>
+     *   <li>起点 == 终点（部队往返自己的城/集结点、集结随从自循环；生产 12:18 误报即此形态）；</li>
+     *   <li>目标城就是发起者自己的城（{@code target.uid == owner}）。</li>
+     * </ul>
+     * 坐标未知（-1）时不参与起点=终点判定（避免脏数据误杀）。
+     */
+    static boolean isSelfMarch(int sx, int sy, int ex, int ey, long targetUid, long owner) {
+        if (sx >= 0 && sy >= 0 && sx == ex && sy == ey) return true;
+        return targetUid > 0L && targetUid == owner;
+    }
+
+    /**
+     * 来袭告警判定（PROTECT）：2026-10-28 收紧为「已知友盟城才告警」。
+     * 注意：目标联盟未知（aid&lt;=0）由调用方先计数过滤（{@code statUnknownTargetIgnored}），
+     * 这里再防御一次；友军发起的增援/自家部队不告警；99/100 随从类可被配置静默。
+     */
+    static boolean shouldAlertIncoming(boolean selfMarch, long ownerAid, long targetAid,
+                                       Set<Long> friendAids, long type, boolean rallyFollowerAlerts) {
+        if (selfMarch) return false;
+        if (targetAid <= 0L) return false;                                     // 目标联盟未知 → 不告警
+        if (friendAids == null || !friendAids.contains(targetAid)) return false; // 非友盟城
+        if (ownerAid > 0L && friendAids.contains(ownerAid)) return false;      // 友军自己人
+        if (!rallyFollowerAlerts && (type == 99L || type == 100L)) return false; // 随从告警可关
+        return true;
+    }
+
+    /** 敌情告警判定（MONITOR）：自循环已单独过滤；同联盟/自家城之间的行军不算"打谁"（原有口径）。 */
+    static boolean shouldAlertMonitor(long ownerAid, long targetAid) {
+        return !(ownerAid > 0L && targetAid > 0L && ownerAid == targetAid);
+    }
+
+    /** 联盟标注（纯函数）：aid&gt;0 → " [标签]"；联盟未知(aid&lt;=0) → "（联盟未知）"，不再留空白。 */
+    static String allySuffix(long aid, Map<Long, String> aidLabels) {
+        if (aid > 0L) {
+            String label = aidLabels == null ? null : aidLabels.get(aid);
+            return " [" + (label == null || label.isEmpty() ? "盟" + aid : label) + "]";
+        }
+        return "（联盟未知）";
     }
 
     private boolean isMonitoredUid(long uid) {
@@ -530,19 +617,32 @@ public final class WatchPointEngine {
         City ownerCity = cityByUid.get(owner);
         City target = cityByPoint.get(ex + "," + ey);
         String nick = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "uid" + owner;
+        String text = outgoingAlertText(nick, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
+                type, target == null ? null : target.nick, target == null ? 0L : target.aid,
+                ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText());
+        alert(key, text);
+    }
+
+    /**
+     * 敌情告警文案（纯函数，便于单测「联盟未知」标注）。
+     * 攻击者行：aid&gt;0 显示 [标签]，联盟未知显示（联盟未知）；目标行同理，不再留空白。
+     */
+    static String outgoingAlertText(String nick, long ownerAid, Map<Long, String> aidLabels,
+                                    long type, String targetNick, long targetAid,
+                                    int ex, int ey, long etaSeconds, long troops, String nowTime) {
         StringBuilder sb = new StringBuilder();
         sb.append("🚨 观察点·敌情\n");
-        sb.append("监视目标出兵：").append(nick).append("\n");
+        sb.append("监视目标出兵：").append(nick).append(allySuffix(ownerAid, aidLabels)).append("\n");
         sb.append("行为：").append(typeLabel(type)).append("\n");
         sb.append("目标：(").append(ex).append(",").append(ey).append(")");
-        if (target != null) {
-            sb.append(" ").append(target.nick.isEmpty() ? "?" : target.nick);
-            if (target.aid > 0) sb.append(" [").append(allyLabel(target.aid)).append("]");
+        if (targetNick != null) {
+            sb.append(" ").append(targetNick.isEmpty() ? "?" : targetNick)
+                    .append(allySuffix(targetAid, aidLabels));
         }
-        sb.append("\nETA：").append(hms(endtime - System.currentTimeMillis() / 1000L));
+        sb.append("\nETA：").append(hms(etaSeconds));
         if (troops > 0) sb.append("｜兵力约 ").append(troops);
-        sb.append("\n时间：").append(nowText());
-        alert(key, sb.toString());
+        sb.append("\n时间：").append(nowTime);
+        return sb.toString();
     }
 
     private void alertIncoming(long owner, City ownerCity, long marchId, long type,
@@ -553,22 +653,33 @@ public final class WatchPointEngine {
                 : "in:" + owner + ":" + marchId;
         City target = cityByPoint.get(ex + "," + ey);
         String who = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "uid" + owner;
+        String text = incomingAlertText(who, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
+                type, target == null ? null : target.nick, target == null ? 0L : target.aid,
+                ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText());
+        alert(key, text);
+    }
+
+    /**
+     * 来袭告警文案（纯函数）：攻击者联盟未知（aid&lt;=0）时显式标注「（联盟未知）」，
+     * 降低"攻守同名/没 [盟] 标签"歧义；目标一定是已知友盟城（带 [abbr]）。
+     */
+    static String incomingAlertText(String attackerNick, long attackerAid, Map<Long, String> aidLabels,
+                                    long type, String targetNick, long targetAid,
+                                    int ex, int ey, long etaSeconds, long troops, String nowTime) {
         StringBuilder sb = new StringBuilder();
         sb.append("🚨 观察点·来袭\n");
-        sb.append("攻击者：").append(who);
-        if (ownerCity != null && ownerCity.aid > 0) sb.append(" [").append(allyLabel(ownerCity.aid)).append("]");
+        sb.append("攻击者：").append(attackerNick).append(allySuffix(attackerAid, aidLabels));
         sb.append("\n行为：").append(typeLabel(type)).append("\n");
         sb.append("目标：");
-        if (target != null) {
-            sb.append(target.nick.isEmpty() ? "?" : target.nick);
-            if (target.aid > 0) sb.append(" [").append(allyLabel(target.aid)).append("]");
-            sb.append(" ");
+        if (targetNick != null) {
+            sb.append(targetNick.isEmpty() ? "?" : targetNick)
+                    .append(allySuffix(targetAid, aidLabels)).append(" ");
         }
         sb.append("(").append(ex).append(",").append(ey).append(")");
-        sb.append("\nETA：").append(hms(endtime - System.currentTimeMillis() / 1000L));
+        sb.append("\nETA：").append(hms(etaSeconds));
         if (troops > 0) sb.append("｜兵力约 ").append(troops);
-        sb.append("\n时间：").append(nowText());
-        alert(key, sb.toString());
+        sb.append("\n时间：").append(nowTime);
+        return sb.toString();
     }
 
     // ------------------------------------------------------------------ 整图扫描（迁城定位/基线）
@@ -747,11 +858,6 @@ public final class WatchPointEngine {
         }
     }
 
-    private String allyLabel(long aid) {
-        String s = store.aidLabels.get(aid);
-        return s == null || s.isEmpty() ? ("盟" + aid) : s;
-    }
-
     private static String typeLabel(long type) {
         if (type == 1) return "侦查";
         if (type == 2) return "进攻";
@@ -814,6 +920,9 @@ public final class WatchPointEngine {
         m.put("protectRects", store.protectRects.size());
         m.put("scanning", scan.active);
         m.put("citiesCached", cityByUid.size());
+        m.put("selfIgnored", statSelfIgnored.get());
+        m.put("unknownTargetIgnored", statUnknownTargetIgnored.get());
+        m.put("rallyFollowerIgnored", statRallyFollowerIgnored.get());
         m.put("uptimeMs", running ? System.currentTimeMillis() - startedAt : 0L);
         return m;
     }

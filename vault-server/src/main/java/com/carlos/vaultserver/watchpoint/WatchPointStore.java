@@ -106,6 +106,14 @@ public final class WatchPointStore {
     public Set<Long> alertTypes = new LinkedHashSet<>(List.of(1L, 2L, 99L, 100L, 102L));
     /** 只告警「目标是城」的行军（endpoint 命中已知城坐标）；false=不过滤（含打野/资源点）。 */
     public boolean cityTargetOnly = true;
+    /**
+     * 来袭告警是否包含 99/100「集结随从/集结」（2026-10-28 新增，默认 true）。
+     *
+     * <p>默认保留历史有效预警（如 技术分析→莲花emira [yYz]、小鹿月亮→师太 [SYD]）；
+     * 设为 false 时 PROTECT 只告警 102 集结主体 / 2 进攻 / 1 侦查，便于以后嫌吵时关小类。
+     * 注意：无论开关如何，目标必须是「已知友盟城」（aid&gt;0 且 ∈ friendAids），联盟未知目标永不告警。
+     */
+    public boolean incomingRallyFollowerAlerts = true;
     /** aid → 显示名（告警文案用；空则显示「盟{aid}」）。 */
     public Map<Long, String> aidLabels = new LinkedHashMap<>();
     /** 友盟 aid（来袭 owner 属于这些 aid 时不告警）。 */
@@ -152,6 +160,7 @@ public final class WatchPointStore {
             wecomEnabled = o.optBoolean("wecomEnabled", true);
             fullScanIntervalMs = clamp(o.optLong("fullScanIntervalMs", 0L), 0L, 86_400_000L);
             cityTargetOnly = o.optBoolean("cityTargetOnly", true);
+            incomingRallyFollowerAlerts = o.optBoolean("incomingRallyFollowerAlerts", true);
             alertTypes.clear();
             JSONArray at = o.optJSONArray("alertTypes");
             if (at != null) {
@@ -223,6 +232,7 @@ public final class WatchPointStore {
         o.put("wecomEnabled", wecomEnabled);
         o.put("fullScanIntervalMs", fullScanIntervalMs);
         o.put("cityTargetOnly", cityTargetOnly);
+        o.put("incomingRallyFollowerAlerts", incomingRallyFollowerAlerts);
         JSONArray at = new JSONArray();
         for (Long t : alertTypes) at.put(t);
         o.put("alertTypes", at);
@@ -259,6 +269,7 @@ public final class WatchPointStore {
         fpid = "";
         alertTypes = new LinkedHashSet<>(List.of(1L, 2L, 99L, 100L, 102L));
         cityTargetOnly = true;
+        incomingRallyFollowerAlerts = true;
         friendAids = new LinkedHashSet<>(List.of(
                 89700055L, 89700652L, 89700071L, 89700410L, 89700728L, 89700352L, 89700483L));
         aidLabels = new LinkedHashMap<>();
