@@ -1,7 +1,6 @@
 package com.carlos.vaultserver.task;
 
 import com.carlos.vault.wjdr.protocol.GameMessage;
-import com.carlos.vaultserver.ServerHelpResponder;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -2167,12 +2166,6 @@ public final class ServerShopLeagueTasks {
         } catch (Throwable ignored) {
         }
         try {
-            // 今日 1536 已结算（常驻响应器写入）：不再请求，跨天自动恢复。
-            if (ServerHelpResponder.helpSettled(tc.store, tc.fpid, tc.sid,
-                    System.currentTimeMillis())) {
-                return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
-                        "今日联盟互助次数已用完，明天自动继续");
-            }
             GameMessage rsp = tc.engine.request("req_alliance_help_all", null);
             int code = Exec.codeOf(rsp);
             if (Exec.ok(rsp)) {
@@ -2183,15 +2176,14 @@ public final class ServerShopLeagueTasks {
                         "已一键帮助全盟（服务器常驻秒级响应主力）");
             }
             if (code == 1536) {
-                // 今日互助次数用完：记 settled，避免后续轮次反复请求（与常驻响应器同键）。
-                ServerHelpResponder.markHelpSettled(tc.store, tc.fpid, tc.sid,
-                        System.currentTimeMillis());
+                // 1536 = 服务端此刻没有可响应的互助请求（瞬时），不是每日上限：
+                // 不落盘、不跨天；下一轮/下一次推送继续尝试。
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
-                        "今日联盟互助次数已用完，明天自动继续");
+                        "当前没有可互助请求（码1536），下一轮继续尝试");
             }
             if (code == 75 || code == 2) {
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
-                        "当前没有可互助请求或暂不可用");
+                        "当前没有可互助请求（码" + code + "），下一轮继续尝试");
             }
             if (code == 16873) {
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED, "无联盟");

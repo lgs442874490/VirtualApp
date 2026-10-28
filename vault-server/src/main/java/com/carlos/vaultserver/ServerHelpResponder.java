@@ -19,17 +19,24 @@ import java.util.concurrent.atomic.AtomicLong;
  * 推送到达（钩子线程）只做解析+置脏；真正的请求动作由会话线程 tick 驱动（秒级响应，且与心跳/采集天然串行）。
  * 状态写 StateStore 的 mod:fpid:sid:alliance_help（与 App 端展示链路同键）。
  *
- * <p>P0 2026-10-28 加固（生产实证 vault-20261028.log）：
+ * <p>P0 2026-10-28 二次加固（生产实证 vault-20261028.log / monitor-20261028.jsonl）：
  * <ul>
- *   <li>响应码语义：req_alliance_help_all 返回非 0 时旧实现仍按成功写“已响应 N 位”，
- *       1536（今日互助次数用完）也没有 settled，导致每 30s 反复请求且状态误导。
- *       现按码分流：0 成功 / 1536 今日结算（持久化到 srv:alliance_help_settled，跨天自动恢复）/
- *       75、2 无可帮 / 1510、1511 联盟身份变化 / 其它未知码 warn + 退避；</li>
- *   <li>进度字段：notify_alliance_help_init 的 help_num/day_glory 在 alliance_help 内层
- *       （proto 实证：{"alliance_help":{"help_list":[...],"day_glory":1700,"help_num":0}}），
- *       旧实现只找 data/info 包装 → App 今日互助次数永远不显示；</li>
- *   <li>形状兼容：owner 字段兼容 uid/user_id/id（真实样本是 uid，旧包/部分协议可能不同），
- *       helpers 兼容 List/Map，help_list 兼容 {alliance_help:{...}} 与裸 help_list 两种形状。</li>
+ *   <li><b>1536 语义纠正</b>：1536 不是“今日互助次数已用完”，而是“服务端此刻没有可响应的互助请求”
+ *       （网页版参考实现 DailyAllianceDonationService: {@code NO_AVAILABLE_HELP_CODE = 1536}，
+ *       handleHelpError 对 1536 只做 {@code markHelpAllHandled(ownUid, Map.of(), 0) + helpWaiting()}，
+ *       不落盘、不跨天）。旧实现把 1536 当每日上限并持久化 {@code srv:alliance_help_settled} 一整天，
+ *       生产 2026-10-28 04:23（北京）首次 1536 后当天 18.5 小时 0 次互助请求。
+ *       现改为：1536 → 标记当前可帮条目已处理（markHelpAllHandled 同款）+ 5s 短退避 + 继续等待推送；
+ *       不再写 settled，并幂等清理历史遗留键。</li>
+ *   <li><b>tick 不再每轮重放缓存 init</b>：旧实现每轮用登录快照 {@code notify_alliance_help_init}
+ *       clear+重建请求表，会抹掉推送增量与乐观“已帮”标记（新请求永远帮不到、30s 反复请求、日志假成功）。
+ *       现改为 seed-once：只有真正收到 init/update_all 推送（钩子路径）才全量替换；兜底轮询仅在
+ *       “从未 seed 过”时用 notifyContent 初始化一次。</li>
+ *   <li><b>成功判定只认服务端数据</b>：code==0 且 count/help_num&gt;0 才写“已响应 N 位”；
+ *       code==0 但 count==0 不得假成功。</li>
+ *   <li><b>单条唯一键改为 extra.help_id</b>（真实协议同一 owner+qid 可并发多条），缺失时回退
+ *       {@code owner:qid}；update type=3 优先按 help_id 精确删除，兼容旧形状。</li>
+ *   <li>busy 抢占失败保留 dirty；两次发送最小间隔 5s，避免推送洪峰把请求打成风暴。</li>
  * </ul>
  */
 public final class ServerHelpResponder {
@@ -42,17 +49,27 @@ public final class ServerHelpResponder {
 
     /** 失败退避：原版 10~15s（DailyAllianceDonationService.handleHelpError）。 */
     static final long HELP_BLOCK_MILLIS = 15_000L;
-    /** 未知码退避：同上，保持 15s 以免 30s 节奏反复打。 */
+    /**
+     * 1536（当前无可响应请求）短退避：网页版 helpWaiting 语义 = 本轮没有可做的东西，
+     * 等下一次推送/轮询再试；不落盘、不跨天。
+     */
+    static final long HELP_NO_AVAILABLE_BLOCK_MILLIS = 5_000L;
+    /** 未知码退避：15s，避免 30s 节奏反复打。 */
     static final long HELP_UNKNOWN_BLOCK_MILLIS = 15_000L;
     /** 联盟身份变化（1510/1511）退避：等联盟推送重新同步。 */
     static final long HELP_ALLIANCE_BLOCK_MILLIS = 60_000L;
     /** 无联盟/不可用（16873）退避：低频探测即可。 */
     static final long HELP_NO_ALLIANCE_BLOCK_MILLIS = 300_000L;
     static final long POLL_INTERVAL_MILLIS = 30_000L;
+    /** 两次 req_alliance_help_all 的最小间隔：推送洪峰下（抓包可见 ~1s/条）防止请求风暴。 */
+    static final long SEND_MIN_INTERVAL_MILLIS = 5_000L;
 
-    /** req_alliance_help_all 响应码 1536：今日互助次数已用完（原版 handleHelpError 同码）。 */
-    static final int HELP_CODE_DAILY_LIMIT = 1536;
-    /** 无请求/不可帮（原版按 SKIPPED 处理的码）。 */
+    /**
+     * req_alliance_help_all 响应码 1536：服务端当前没有可响应的互助请求（瞬时；网页版 NO_AVAILABLE_HELP_CODE）。
+     * <b>不是</b>“今日互助次数已用完”。
+     */
+    static final int HELP_CODE_NO_AVAILABLE = 1536;
+    /** 无请求/不可帮（网页版按 SKIPPED 处理的码）。 */
     static final int HELP_CODE_NO_REQUEST = 75;
     static final int HELP_CODE_PARAM_ILLEGAL = 2;
     /** 联盟身份变化。 */
@@ -63,32 +80,41 @@ public final class ServerHelpResponder {
 
     /** 响应码分类：成功。 */
     static final int HELP_RSP_OK = 0;
-    /** 响应码分类：今日互助次数已用完（需 settled）。 */
-    static final int HELP_RSP_DAILY_LIMIT = 1;
-    /** 响应码分类：当前无可帮请求（不算失败，不清空请求表）。 */
+    /** 响应码分类：1536 当前无可响应请求（瞬时；只做本地已处理标记 + 短退避）。 */
+    static final int HELP_RSP_NO_AVAILABLE = 1;
+    /** 响应码分类：75/2 当前什么也帮不了（不算失败，不清空请求表）。 */
     static final int HELP_RSP_NO_REQUEST = 2;
     /** 响应码分类：联盟身份变化/无联盟（等重新同步）。 */
     static final int HELP_RSP_ALLIANCE = 3;
     /** 响应码分类：未知错误码（warn + 退避）。 */
     static final int HELP_RSP_UNKNOWN = 4;
 
+    /**
+     * 历史版本（92ae8de 那一版）误写的“1536 当日结算”键前缀。
+     * 只用于首次 tick 幂等清理：否则改完代码当天仍会被旧键卡住。
+     */
+    static final String LEGACY_SETTLED_PREFIX = "srv:alliance_help_settled:";
+
     /** 一条互助请求（字段名与判定照抄原版 DailyAllianceDonationStateHelpRequest）。 */
     static final class HelpReq {
         final long owner;
         final long qid;
+        /** 真实协议单条唯一标识（extra.help_id；同一 owner+qid 可并发多条）。 */
+        final long helpId;
         final long endtime;
         final long max;
         final Set<Long> helpers = ConcurrentHashMap.newKeySet();
 
-        HelpReq(long owner, long qid, long endtime, long max) {
+        HelpReq(long owner, long qid, long helpId, long endtime, long max) {
             this.owner = owner;
             this.qid = qid;
+            this.helpId = helpId;
             this.endtime = endtime;
             this.max = max;
         }
 
         String key() {
-            return owner + ":" + qid;
+            return helpId > 0 ? owner + ":" + qid + ":" + helpId : owner + ":" + qid;
         }
 
         boolean availableFor(long ownUid, long nowSec) {
@@ -105,6 +131,12 @@ public final class ServerHelpResponder {
     private final AtomicBoolean busy = new AtomicBoolean(false);
     private final AtomicLong blockedUntil = new AtomicLong(0);
     private final AtomicLong lastPollAt = new AtomicLong(0);
+    /** 上次真正发出 req_alliance_help_all 的时刻（最小发送间隔用）。 */
+    private final AtomicLong lastSendAt = new AtomicLong(0);
+    /** 是否已用 init/update_all 快照播种过请求表（seed-once，详见 tick）。 */
+    private final AtomicBoolean seeded = new AtomicBoolean(false);
+    /** 历史 settled 脏键是否已清理（幂等）。 */
+    private final AtomicBoolean legacySettledCleared = new AtomicBoolean(false);
     volatile int helpNumToday;
     volatile long dayGlory;
 
@@ -119,7 +151,8 @@ public final class ServerHelpResponder {
         engine.addMessageHook((proto, content) -> {
             if (!HELP_PROTOS.contains(proto)) return;
             try {
-                applyPush(proto, content);
+                // 真实推送：init/update_all 全量替换；update 增量合并；auto_help 只更新进度。
+                applyPush(proto, content, true);
                 dirty.set(true);
             } catch (Throwable ignored) {
             }
@@ -128,20 +161,20 @@ public final class ServerHelpResponder {
 
     /** 会话线程 tick 驱动：脏标记或 30s 兜底轮询时尝试响应。返回 true 表示本轮有动作。 */
     boolean tick(WjdrEngine engine) {
-        long now = System.currentTimeMillis();
+        return tick(engine, System.currentTimeMillis());
+    }
+
+    /** 可注入时钟的 tick（单测走这条，避免真的 sleep 30s）。 */
+    boolean tick(WjdrEngine engine, long now) {
+        clearLegacySettledOnce();
         boolean due = dirty.compareAndSet(true, false)
                 || now - lastPollAt.get() >= POLL_INTERVAL_MILLIS;
         if (!due) return false;
         lastPollAt.set(now);
         if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) return false;
-        // 兜底：用最近一次 help 推送内容重算（推送丢失时的保险）
-        for (String p : new String[]{"notify_alliance_help_update_all", "notify_alliance_help_init"}) {
-            Map<String, Object> c = engine.notifyContent(p);
-            if (c != null) {
-                applyPush(p, c);
-                break;
-            }
-        }
+        // 兜底：仅在“从未 seed 过”时用最近一次 help 快照初始化一次；之后绝不重放，
+        // 否则会把推送增量与乐观已帮标记清掉（旧实现 bug）。
+        seedFromCacheOnce(engine);
         try {
             maybeHelp(engine, now);
         } catch (Throwable ignored) {
@@ -149,9 +182,43 @@ public final class ServerHelpResponder {
         return true;
     }
 
-    // ---------------- 推送解析（与 App HelpResponder.applyPush 一致 + P0 形状加固） ----------------
+    // ---------------- 历史 settled 脏键清理（幂等） ----------------
 
-    private void applyPush(String proto, Map<String, Object> content) {
+    private void clearLegacySettledOnce() {
+        if (!legacySettledCleared.compareAndSet(false, true)) return;
+        removeLegacySettled(store, fpid, sid);
+    }
+
+    /** 历史版本误写的 1536 当日结算键（清理失败忽略；键不存在静默返回）。 */
+    static void removeLegacySettled(StateStore store, String fpid, long sid) {
+        if (store == null) return;
+        try {
+            store.remove(LEGACY_SETTLED_PREFIX + fpid + ":" + sid);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    // ---------------- 快照播种（seed-once）与推送解析 ----------------
+
+    private void seedFromCacheOnce(WjdrEngine engine) {
+        if (seeded.get()) return;
+        for (String p : new String[]{"notify_alliance_help_update_all", "notify_alliance_help_init"}) {
+            Map<String, Object> c = engine.notifyContent(p);
+            if (c != null) {
+                applyPush(p, c, true);
+                return;
+            }
+        }
+        // 登录快照还没到：保持未 seed，等真正的 init 推送（钩子路径）或下一轮 tick。
+    }
+
+    /**
+     * 解析并写入请求表。
+     *
+     * @param replace true=全量替换（真实 init/update_all 推送、首次播种）；
+     *                false=增量合并（不 clear、不删“已帮”标记）
+     */
+    private void applyPush(String proto, Map<String, Object> content, boolean replace) {
         if (content == null) return;
         // 进度字段（今日已帮次数/互助荣耀）：init 的字段在 alliance_help 内层，update_auto_help 在本体。
         long helpNum = helpNumOf(content);
@@ -163,22 +230,42 @@ public final class ServerHelpResponder {
             long type = number(content.get("type"));
             Object data = content.get("data");
             if (type == 3) {
-                for (HelpReq r : parseHelpRequests(data)) helpRequests.remove(r.key());
+                for (HelpReq r : parseHelpRequests(data)) removeHelpRequest(r);
             } else if (type == 1 || type == 2) {
                 for (HelpReq r : parseHelpRequests(data)) helpRequests.put(r.key(), r);
             }
             pruneExpired(System.currentTimeMillis() / 1000L);
             return;
         }
+        if ("notify_alliance_help_auto_help".equals(proto)) {
+            // 只有进度（help_num/day_glory），不含请求列表。
+            return;
+        }
         Object list = deepGet(content, 3, "help_list");
-        if (list != null) {
+        if (list == null) return;
+        if (replace) {
             helpRequests.clear();
             for (HelpReq r : parseHelpRequests(list)) helpRequests.put(r.key(), r);
+        } else {
+            for (HelpReq r : parseHelpRequests(list)) helpRequests.putIfAbsent(r.key(), r);
         }
+        seeded.set(true);
         pruneExpired(System.currentTimeMillis() / 1000L);
     }
 
-    /** 过期请求清理（endtime 已过/已达上限的请求不再保留，避免内存缓慢增长与误判）。 */
+    /** type=3 删除：优先按 help_id 精确删除；只有旧形状（无 help_id）才退化为 owner:qid。 */
+    private void removeHelpRequest(HelpReq r) {
+        if (r.helpId > 0) {
+            if (helpRequests.remove(r.key()) != null) return;
+            // 同一 owner/qid 的旧键（无 help_id 入表的历史条目）顺带清理，但不误删其它并发请求。
+            helpRequests.values().removeIf(x -> x.helpId <= 0 && x.owner == r.owner && x.qid == r.qid);
+            return;
+        }
+        // 兼容旧形状：type=3 数据里没有 extra.help_id 时按 owner:qid 删除。
+        helpRequests.values().removeIf(x -> x.owner == r.owner && x.qid == r.qid);
+    }
+
+    /** 过期请求清理（endtime 已过的不再保留，避免内存缓慢增长与误判）。 */
     private void pruneExpired(long nowSec) {
         try {
             helpRequests.values().removeIf(r -> r.endtime > 0 && r.endtime <= nowSec);
@@ -190,7 +277,8 @@ public final class ServerHelpResponder {
 
     /**
      * 解析互助请求列表（纯函数）：兼容 List/Map 容器、单条 {uid,qid}、以及
-     * helpers 为 List/Map 两种形状；owner 字段优先 uid，其次 user_id/userId/id。
+     * helpers 为 List/Map 两种形状；owner 字段优先 uid，其次 user_id/userId/id；
+     * 单条唯一标识取 extra.help_id。
      */
     static List<HelpReq> parseHelpRequests(Object raw) {
         List<HelpReq> out = new ArrayList<>();
@@ -198,7 +286,7 @@ public final class ServerHelpResponder {
             long owner = helpOwnerOf(m);
             long qid = helpQidOf(m);
             if (owner <= 0 || qid <= 0) continue;
-            HelpReq r = new HelpReq(owner, qid,
+            HelpReq r = new HelpReq(owner, qid, helpIdOf(m),
                     Math.max(0, number(firstOf(m, "endtime", "end_time", "endTime"))),
                     Math.max(0, number(firstOf(m, "max", "max_count", "maxCount"))));
             collectHelpers(r, m.get("helpers"));
@@ -228,14 +316,25 @@ public final class ServerHelpResponder {
         return out;
     }
 
-    /** 请求发起人 uid（真实样本是 uid；兼容 user_id/userId/id/owner/owner_uid）。 */
+    /** 请求发起人 uid（真实样本是 uid；兼容 user_id/userId/owner_uid/owner/id）。 */
     static long helpOwnerOf(Map<String, Object> m) {
         return number(firstOf(m, "uid", "user_id", "userId", "owner_uid", "owner", "id"));
     }
 
-    /** 请求队列 id（真实样本是 qid；兼容 queue_id/queueId/help_id）。 */
+    /** 请求队列 id（真实样本是 qid；兼容 queue_id/queueId）。 */
     static long helpQidOf(Map<String, Object> m) {
         return number(firstOf(m, "qid", "queue_id", "queueId"));
+    }
+
+    /** 单条唯一标识：真实协议在 extra.help_id（同一 owner+qid 可并发多条）；兼容 helpId。 */
+    static long helpIdOf(Map<String, Object> m) {
+        if (m == null) return 0L;
+        Object extra = m.get("extra");
+        if (extra instanceof Map) {
+            long id = number(firstOf(castMap((Map<?, ?>) extra), "help_id", "helpId"));
+            if (id > 0) return id;
+        }
+        return number(firstOf(m, "help_id", "helpId"));
     }
 
     /** 今日互助进度：init 在 {alliance_help:{help_num}} 内层，update_auto_help 在本体。 */
@@ -271,7 +370,7 @@ public final class ServerHelpResponder {
     /** req_alliance_help_all 响应码分类（纯函数，1:1 网页版 handleHelpError）。 */
     static int helpResponseKind(int code) {
         if (code == 0) return HELP_RSP_OK;
-        if (code == HELP_CODE_DAILY_LIMIT) return HELP_RSP_DAILY_LIMIT;
+        if (code == HELP_CODE_NO_AVAILABLE) return HELP_RSP_NO_AVAILABLE;
         if (code == HELP_CODE_NO_REQUEST || code == HELP_CODE_PARAM_ILLEGAL) return HELP_RSP_NO_REQUEST;
         if (code == HELP_CODE_ALLIANCE_CHANGED || code == HELP_CODE_ALLIANCE_CHANGED_2
                 || code == HELP_CODE_NO_ALLIANCE) return HELP_RSP_ALLIANCE;
@@ -281,61 +380,29 @@ public final class ServerHelpResponder {
     /** 按响应分类给退避时长（毫秒，0=不额外退避）。 */
     static long helpBlockMillis(int kind) {
         switch (kind) {
-            case HELP_RSP_DAILY_LIMIT:
+            case HELP_RSP_NO_AVAILABLE:
+                return HELP_NO_AVAILABLE_BLOCK_MILLIS;
             case HELP_RSP_NO_REQUEST:
-                return HELP_BLOCK_MILLIS;
-            case HELP_RSP_ALLIANCE:
-                return HELP_ALLIANCE_BLOCK_MILLIS;
             case HELP_RSP_UNKNOWN:
                 return HELP_UNKNOWN_BLOCK_MILLIS;
+            case HELP_RSP_ALLIANCE:
+                return HELP_ALLIANCE_BLOCK_MILLIS;
             default:
                 return 0L;
-        }
-    }
-
-    /** 今日互助结算键（1536 记一天，跨天自动恢复；持久化到 StateStore）。 */
-    static String helpSettledKey(String fpid, long sid) {
-        return "srv:alliance_help_settled:" + fpid + ":" + sid;
-    }
-
-    /** 北京时间自然日（统一走 Beijing 时区，避免服务器 UTC 跨日错位）。 */
-    static String beijingDay(long nowMillis) {
-        return Beijing.fmt("yyyy-MM-dd").format(new java.util.Date(nowMillis));
-    }
-
-    /** 今日是否已结算（纯函数）：存的是北京自然日，跨天自动失效。 */
-    static boolean helpSettledToday(String storedDay, long nowMillis) {
-        return storedDay != null && !storedDay.isEmpty()
-                && storedDay.equals(beijingDay(nowMillis));
-    }
-
-    /** 任务层兜底路径：今日互助 1536 结算写盘（与常驻响应器同键，跨天自动恢复）。 */
-    public static void markHelpSettled(StateStore store, String fpid, long sid, long nowMillis) {
-        if (store == null) return;
-        try {
-            store.putString(helpSettledKey(fpid, sid), beijingDay(nowMillis));
-        } catch (Throwable ignored) {
-        }
-    }
-
-    /** 任务层兜底路径：读取今日互助是否已结算（无记录/跨天=false）。 */
-    public static boolean helpSettled(StateStore store, String fpid, long sid, long nowMillis) {
-        if (store == null) return false;
-        try {
-            return helpSettledToday(store.getString(helpSettledKey(fpid, sid)), nowMillis);
-        } catch (Throwable t) {
-            return false;
         }
     }
 
     // ---------------- 响应（会话线程内执行） ----------------
 
     private void maybeHelp(WjdrEngine engine, long now) {
-        if (now < blockedUntil.get()) return;
-        // 1536 已结算：今日不再请求（避免 30s 反复打），跨天自动恢复；状态始终保持可读
-        // （放在“无请求”判断之前，避免下次巡检把 settled 文案覆盖成“当前没有盟友需要互助”）。
-        if (helpSettledToday(readSettledDay(), now)) {
-            saveState(false, 0, "推送", "今日联盟互助次数已用完（码" + HELP_CODE_DAILY_LIMIT + "），明天自动继续");
+        if (now < blockedUntil.get()) {
+            // 退避中：保留脏标记，退避到期后的下一轮 tick 立即重试（不必等 30s 兜底）。
+            dirty.set(true);
+            return;
+        }
+        // 最小发送间隔：推送洪峰（抓包 ~1s/条）下避免每来一条推送就打一次协议。
+        if (now - lastSendAt.get() < SEND_MIN_INTERVAL_MILLIS) {
+            dirty.set(true);
             return;
         }
         long nowSec = now / 1000L;
@@ -348,28 +415,41 @@ public final class ServerHelpResponder {
             saveState(false, 0, "推送", "当前没有盟友需要互助");
             return;
         }
-        if (!busy.compareAndSet(false, true)) return;
+        if (!busy.compareAndSet(false, true)) {
+            // 抢不到锁（上一个请求还在飞）：保留唤醒，下个 tick 再来，不丢事件。
+            dirty.set(true);
+            return;
+        }
         try {
+            lastSendAt.set(now);
             GameMessage rsp = engine.request("req_alliance_help_all",
-                    new java.util.LinkedHashMap<String, Object>());
+                    new LinkedHashMap<String, Object>());
             int code = responseCode(rsp);
             int kind = helpResponseKind(code);
             if (kind == HELP_RSP_OK) {
-                long done = Math.max(available.size(), responseHelpNum(rsp));
-                // 乐观更新：把本次可帮请求都视为已帮（原版 markHelpAllHandled 同款）
+                // 只认服务端 count/help_num：code=0 但 count=0 说明其实没帮到人，不得写“已响应 N 位”。
+                long done = responseHelpNum(rsp);
+                // 乐观更新：把本次可帮请求都视为已帮（网页版 markHelpAllHandled 同款）。
                 for (HelpReq r : available) r.helpers.add(ownUid);
-                if (done > 0 && helpNumToday <= 0) helpNumToday = (int) Math.min(done, Integer.MAX_VALUE);
-                saveState(true, done, "推送", "已响应 " + done + " 位盟友互助");
-                FileLog.info("联盟互助 fpid={} sid={}：已响应 {} 位", fpid, String.valueOf(sid),
-                        String.valueOf(done));
-            } else if (kind == HELP_RSP_DAILY_LIMIT) {
-                // 1536=今日互助次数用完：结算到今天，清掉过期可帮标记（原版 markHelpAllHandled）。
-                storeSettledDay(now);
+                if (done > 0) {
+                    if (helpNumToday <= 0) helpNumToday = (int) Math.min(done, Integer.MAX_VALUE);
+                    saveState(true, done, "推送", "已响应 " + done + " 位盟友互助");
+                    FileLog.info("联盟互助 fpid={} sid={}：已响应 {} 位", fpid, String.valueOf(sid),
+                            String.valueOf(done));
+                } else {
+                    saveState(false, 0, "推送", "当前没有可互助请求（响应成功但无实际帮助），继续等待推送");
+                    FileLog.info("联盟互助 fpid={} sid={}：响应成功但无实际帮助（count=0）", fpid,
+                            String.valueOf(sid));
+                }
+            } else if (kind == HELP_RSP_NO_AVAILABLE) {
+                // 1536＝服务端此刻没有可响应请求（瞬时）。网页版语义 = markHelpAllHandled + helpWaiting：
+                // 标记现有可帮条目已处理，避免同一批反复打；不落盘、不跨天、不停摆。
                 for (HelpReq r : available) r.helpers.add(ownUid);
-                saveState(false, 0, "推送", "今日联盟互助次数已用完（码" + code + "），明天自动继续");
-                FileLog.info("联盟互助 fpid={} sid={}：今日次数已用完（1536）", fpid, String.valueOf(sid));
+                saveState(false, 0, "推送", "当前没有可互助请求（码" + code + "），继续等待推送");
+                FileLog.info("联盟互助 fpid={} sid={}：当前无可响应请求（码1536），继续等待推送", fpid,
+                        String.valueOf(sid));
             } else if (kind == HELP_RSP_NO_REQUEST) {
-                saveState(false, 0, "推送", "当前没有可互助请求（码" + code + "）");
+                saveState(false, 0, "推送", "当前没有可互助请求（码" + code + "），继续等待推送");
             } else if (kind == HELP_RSP_ALLIANCE) {
                 saveState(false, 0, "推送", "联盟状态异常/未加入联盟（码" + code + "），等待重新同步");
                 FileLog.warn("联盟互助 fpid={} sid={}：联盟状态异常 code={}", fpid,
@@ -380,9 +460,7 @@ public final class ServerHelpResponder {
                         String.valueOf(code));
             }
             long block = helpBlockMillis(kind);
-            if (block > 0 && kind != HELP_RSP_NO_REQUEST) {
-                blockedUntil.set(System.currentTimeMillis() + block);
-            }
+            if (block > 0) blockedUntil.set(now + block);
         } catch (Throwable t) {
             blockedUntil.set(System.currentTimeMillis() + HELP_BLOCK_MILLIS);
             saveState(false, 0, "推送", "联盟互助暂不可用，稍后重试");
@@ -390,23 +468,6 @@ public final class ServerHelpResponder {
                     String.valueOf(t.getMessage()));
         } finally {
             busy.set(false);
-        }
-    }
-
-    /** 读今日结算日（空=未结算/无记录）。 */
-    private String readSettledDay() {
-        try {
-            return store.getString(helpSettledKey(fpid, sid));
-        } catch (Throwable t) {
-            return "";
-        }
-    }
-
-    /** 记今日结算（北京自然日）。 */
-    private void storeSettledDay(long nowMillis) {
-        try {
-            store.putString(helpSettledKey(fpid, sid), beijingDay(nowMillis));
-        } catch (Throwable ignored) {
         }
     }
 
@@ -422,6 +483,11 @@ public final class ServerHelpResponder {
         if (rsp == null || rsp.getContent() == null) return 0L;
         Map<String, Object> body = helpBody(rsp.getContent());
         return Math.max(0L, number(firstOf(body, "help_num", "helpNum", "count")));
+    }
+
+    /** 当前请求表大小（包内可见：只给单测断言 seed/增量/删除行为，不影响生产语义）。 */
+    int pendingHelpCount() {
+        return helpRequests.size();
     }
 
     /** 写互助状态行（与 App FnParams.saveModText 同构：文案 + _ts + _trg + 进度字段）。 */
