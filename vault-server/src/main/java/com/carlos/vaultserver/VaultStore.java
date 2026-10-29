@@ -711,6 +711,10 @@ public final class VaultStore {
                 && (!nz(prev.activeSid).equals(nz(merged.activeSid))
                     || !nz(prev.activeUid).equals(nz(merged.activeUid)));
         long now = System.currentTimeMillis();
+        // R2 Phase 2（2026-10-29，用户决策「切换角色不停兄弟角色」）：VAULT_PER_ROLE=on 时，
+        // App 切换当前角色（activeUid 变化）不再连带停止其它已 desired 的角色会话——
+        // 双角色各自持续自动化；off（默认）保持旧「sync 切角色 = 单会话收敛」语义不变。
+        boolean perRole = perRoleMode();
         for (RoleEntry m : merged.roles.values()) {
             boolean isActive = activeKnown
                     && m.sid.equals(merged.activeSid) && m.uid.equals(merged.activeUid);
@@ -723,7 +727,7 @@ public final class VaultStore {
                 // 已 desired 的保留 runState（RUNNING/PAUSED 都不因 sync 抹掉）
                 m.desiredOnline = true;
             } else if (!merged.keep
-                    || (activeSwitched && m.desiredOnline && !isActive)) {
+                    || (!perRole && activeSwitched && m.desiredOnline && !isActive)) {
                 if (m.desiredOnline || !RUN_STOPPED.equals(m.runState)) m.runState = RUN_STOPPED;
                 m.desiredOnline = false;
             }
@@ -732,6 +736,26 @@ public final class VaultStore {
 
     private static String nz(String s) {
         return s == null ? "" : s;
+    }
+
+    /**
+     * Phase 2 灰度开关（与 task.RoundScheduler.perRoleEnabled 同源语义）：
+     * on = 全任务按角色并行；此时 App 切换当前角色不连带停止其它已 desired 的角色会话。
+     * 测试可用 {@link #setPerRoleModeForTest(Boolean)} 注入。
+     */
+    private static volatile Boolean perRoleOverrideForTest = null;
+
+    static boolean perRoleMode() {
+        Boolean o = perRoleOverrideForTest;
+        if (o != null) return o;
+        String v = System.getenv("VAULT_PER_ROLE");
+        return v != null && ("on".equalsIgnoreCase(v) || "1".equals(v)
+                || "true".equalsIgnoreCase(v));
+    }
+
+    /** 测试注入（null=恢复读 env）。 */
+    static void setPerRoleModeForTest(Boolean v) {
+        perRoleOverrideForTest = v;
     }
 
     /** 解析可寻址角色：精确 (sid,uid) 匹配；回落 active 角色（自动建条目）。找不到返回 null。 */
