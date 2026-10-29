@@ -40,6 +40,8 @@ import com.carlos.vault.daily.RoleDisplay;
 import com.carlos.vault.daily.RoleStore;
 import com.carlos.vault.gameupdate.GameApkDownloader;
 import com.carlos.vault.gameupdate.GameApkVerifier;
+import com.carlos.vault.gameupdate.GameCloneFallback;
+import com.carlos.vault.gameupdate.GameCloneGuide;
 import com.carlos.vault.gameupdate.GameClientUpdateConfig;
 import com.carlos.vault.gameupdate.GameRecloneFlow;
 import com.carlos.vault.gameupdate.GameVersionCheck;
@@ -1022,6 +1024,12 @@ public class EntryDetailActivity extends Activity {
                 if (err == null) {
                     toast("克隆完成，继续启动…");
                     doLaunch();
+                } else if (GameCloneFallback.isMissingGuide(err)
+                        || GameCloneFallback.isNativePackageMissing(err)) {
+                    // 2026-10-29 鸿蒙：应用市场下发的是鸿蒙版（HAP），安卓容器看不到。
+                    // 给原因 + 「选择本地 APK / 下载安卓版」两条出路，而不是一句找不到安装包。
+                    GameCloneGuide.showMissingDialog(EntryDetailActivity.this, err, engine,
+                            EntryDetailActivity.this::doLaunch);
                 } else {
                     // 本方法就是克隆流程，失败一律归 CLONE（原文保留）
                     showLaunchFailure(new VaultEngine.Diagnostic(
@@ -1219,6 +1227,11 @@ public class EntryDetailActivity extends Activity {
                     toast("重新克隆完成：分身已同步原生 " + engine.installedGameVersionName()
                             + "(" + vc + ")" + (dataKept ? "，游戏数据已保留" : ""));
                     doLaunch();   // 重新拉起游戏（版本闸门此时应放行）
+                } else if (GameCloneFallback.isMissingGuide(err)
+                        || GameCloneFallback.isNativePackageMissing(err)) {
+                    // 鸿蒙原生版不可克隆 → 引导用本地安卓 APK（保数据覆盖装入）
+                    GameCloneGuide.showMissingDialog(EntryDetailActivity.this, err, engine,
+                            EntryDetailActivity.this::doLaunch);
                 } else {
                     showLaunchFailure(new VaultEngine.Diagnostic(
                             VaultEngine.categorizeFailure(err), err));
@@ -1347,6 +1360,13 @@ public class EntryDetailActivity extends Activity {
             return;
         }
         continueLocalApkUpdate();
+    }
+
+    /** 鸿蒙兼容（2026-10-29）：克隆引导弹窗里「选择本地 APK」的选包结果 → 校验并装入容器。 */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        GameCloneGuide.handlePickResult(this, requestCode, resultCode, data, engine, this::doLaunch);
     }
 
     @Override

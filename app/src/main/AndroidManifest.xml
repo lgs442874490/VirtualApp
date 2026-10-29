@@ -46,6 +46,17 @@
     <!-- 容器微信(Android14+)注册截屏检测回调需要，以宿主身份申请 -->
     <uses-permission android:name="android.permission.DETECT_SCREEN_CAPTURE" />
 
+    <!-- 应用可见性（Android 11+ / HarmonyOS）：鸿蒙 2/3/4 起对第三方 App 也按
+         「已安装应用列表」过滤 getPackageInfo/getInstalledPackages——即使 targetSdk 26。
+         号库需要查询原生游戏做克隆、查询容器微信版本，故显式声明 <queries>。
+         注意：鸿蒙原生版（HAP）应用不在 Android PackageManager 里，本声明也查不到，
+         那类情况由 GameCloneGuide 引导用户导入安卓版 APK（2026-10-29 鸿蒙兼容）。 -->
+    <queries>
+        <package android:name="com.gof.china" />
+        <package android:name="com.gof.global" />
+        <package android:name="com.tencent.mm" />
+    </queries>
+
     <application
         android:appComponentFactory="androidx.core.app.CoreComponentFactory"
         android:requestLegacyExternalStorage="true"
