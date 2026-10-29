@@ -378,11 +378,14 @@ public class FunctionActivity extends Activity {
         toggle = new UiStyle.Switch(this, autoOn,
                 () -> {
                     boolean isChecked = swRef[0].isOn();
+                    // Phase2C 修复（2026-10-30）：显式按当前角色 uid 读写，避免同服双角色时
+                    // 旧 active 键只记 sid → 解析到另一个角色、把开关串写到别的角色。
+                    long uidNow = RoleStore.currentRoleUid(FunctionActivity.this, account.fpid);
                     // 写入前先补齐为完整配置，避免稀疏 map 整包上传把其它开关冲掉
                     Map<String, Boolean> c = configStore.effectiveRoleConfig(
-                            account.fpid, serverid, DailyTasks.all());
+                            account.fpid, serverid, uidNow, DailyTasks.all());
                     c.put(fn.id, isChecked);
-                    configStore.saveRoleConfig(account.fpid, serverid, c);
+                    configStore.saveRoleConfig(account.fpid, serverid, uidNow, c);
                     com.carlos.vault.VaultSync.onAccountsChanged(FunctionActivity.this);
                     toast(isChecked ? "已加入自动化任务并同步服务器" : "已从自动化任务移除");
                 });

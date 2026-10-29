@@ -23,7 +23,8 @@ public final class FnParams {
      */
     private static long currentUid(Context ctx, String fpid) {
         try {
-            return RoleStore.activeRoleUid(ctx, fpid);
+            // Phase2C 修复（2026-10-30）：同 DailyConfigStore，鲁棒解析当前角色 uid（防同服双角色串写）。
+            return RoleStore.currentRoleUid(ctx, fpid);
         } catch (Throwable t) {
             return 0L;
         }

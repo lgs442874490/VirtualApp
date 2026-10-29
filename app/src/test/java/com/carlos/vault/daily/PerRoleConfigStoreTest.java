@@ -78,6 +78,13 @@ public class PerRoleConfigStoreTest {
         prefs("daily_roles").data.put("active2:" + FPID, SID + ":" + uid);
     }
 
+    /** 模拟旧格式 active 键（只记 sid、无 uid）+ 角色选择器写入的 home:current_role。 */
+    private void legacyActiveWithHomeCurrentRole(long homeUid) {
+        prefs("daily_roles").data.remove("active2:" + FPID);
+        prefs("daily_roles").data.put("active:" + FPID, String.valueOf(SID));
+        prefs("home").data.put("current_role", FPID + ":" + SID + ":" + homeUid);
+    }
+
     // ==================== FnParams：参数按 uid ====================
 
     @Test
@@ -173,5 +180,29 @@ public class PerRoleConfigStoreTest {
         assertEquals("p:1:888:35371154:mail", FnParams.key("1", 888L, 35371154L, "mail"));
         assertEquals("p:1:888:mail", FnParams.key("1", 888L, 0L, "mail"));
         assertEquals("mod:1:888:35371154:mail", FnParams.modKey("1", 888L, 35371154L, "mail"));
+    }
+
+    // ==================== Phase2C 修复（2026-10-30）：currentRoleUid 鲁棒解析 ====================
+
+    @Test
+    public void currentRoleUid_fallsBackToHomeCurrentRoleWhenActiveKeyLegacy() {
+        // daily_roles:active2 缺失、只有旧 active(sid)；home:current_role 带 uid
+        legacyActiveWithHomeCurrentRole(UID_B);
+        assertEquals("旧 active 键 + home:current_role → 取 home 的 uid",
+                UID_B, RoleStore.currentRoleUid(ctx, FPID));
+    }
+
+    @Test
+    public void saveRoleConfig_usesResolvedUid_notLegacySidKey() {
+        // 旧 active 键（无 uid）+ home:current_role=UID_B：保存必须落到 B 的 uid 键
+        legacyActiveWithHomeCurrentRole(UID_B);
+        DailyConfigStore store = new DailyConfigStore(ctx);
+        Map<String, Boolean> cfg = new LinkedHashMap<>();
+        cfg.put("login_rewards", false);
+        store.saveRoleConfig(FPID, SID, cfg);
+        assertTrue("写入当前角色（B）的 uid 键", prefs("daily_config").data.containsKey(
+                "acc:" + FPID + ":" + SID + ":" + UID_B));
+        assertFalse("不得写旧 sid 键（否则兄弟角色继承串写）", prefs("daily_config").data.containsKey(
+                "acc:" + FPID + ":" + SID));
     }
 }
