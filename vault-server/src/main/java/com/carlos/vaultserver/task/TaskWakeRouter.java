@@ -82,6 +82,37 @@ public final class TaskWakeRouter {
     }
 
     /**
+     * R2 Phase 2（2026-10-29）：按角色唤醒。cadence 键写角色级
+     * {@code srv:cad:<fpid>:<sid>:<uid>:<fn>}，节流键 {@code fpid|sid|uid|fn}，
+     * 同服双角色各自唤醒、互不覆盖；uid&lt;=0 时退回旧键（兼容）。
+     */
+    public void onNotify(String fpid, long sid, long uid, String proto) {
+        onNotifyAt(fpid, sid, uid, proto, clock.getAsLong());
+    }
+
+    /** 可注入时间的按角色实现（包级可见便于单测）。 */
+    int onNotifyAt(String fpid, long sid, long uid, String proto, long now) {
+        if (fpid == null || fpid.trim().isEmpty() || sid <= 0L || proto == null || proto.isEmpty()) {
+            return 0;
+        }
+        Set<String> taskIds = tasksForProtocol(proto);
+        if (taskIds.isEmpty()) return 0;
+        RoleKey role = new RoleKey(fpid, sid, uid);
+        String throttleKey = role.key();
+        int written = 0;
+        for (String fn : taskIds) {
+            if (!claimWakeSlot(throttleKey, fn, now)) continue;
+            stateStore.putLong(StateKeys.cadence(role, fn), 0L);
+            written++;
+            if (wakeLogged.add(throttleKey + "|" + fn)) {
+                FileLog.info("推送唤醒 role={} fn={} proto={}（cadence=0，节流 {}s）",
+                        throttleKey, fn, proto, String.valueOf(THROTTLE_MILLIS / 1000L));
+            }
+        }
+        return written;
+    }
+
+    /**
      * 可注入时间的实现（包级可见便于单测）。
      *
      * @return 实际写入 cadence 键的任务数（0 = 未知协议 / 参数非法 / 全部被节流）
@@ -193,6 +224,18 @@ public final class TaskWakeRouter {
         // ===== 竞技场（网页版 task/arena/ArenaTaskModule.java:33：notify_arena_init 等；
         //       审计 §6.3 补 notify_arena_report 结算推送）=====
         prefixes.add(new PrefixRule("notify_arena_", "arena"));
+
+        // ===== 兵营训练（2026-10-28 修复「练兵不会自动续」的服务端节奏缺口）=====
+        // 网页版 town 模块 interestedProtocols 含 notify_barrack_init/update 等；旧映射表完全没有
+        // barrack 家族 → 训练/收兵完成推送到达后要等 60s 节奏，且上轮 SKIPPED 退避还可能压到 180s，
+        // 用户侧表现为"训练完了不自动续"。这里补前缀唤醒（只改节奏，不改业务判定）。
+        prefixes.add(new PrefixRule("notify_barrack_", "barracks"));
+
+        // ===== 军医所（2026-10-28 医院循环治疗配套）=====
+        // 网页版 DailyHospitalState 的 acceptContent 消费 notify_hospital_init / _wound_soldiers /
+        // _heal_finish / _heal_speed_up；治疗完成推送到达即应重评（续疗下一批 + 联盟求助），
+        // 否则要等 60s 节奏。任务侧遇到"上批治疗中(2301)"会立刻 SKIP，不会放大请求。
+        prefixes.add(new PrefixRule("notify_hospital_", "medic"));
 
         // ===== 联盟总动员（网页版 task/alliancemobilization/AllianceMobilizationTaskModule.java:21：
         //       notify_mobilization_init/activity_update/position_update/score_update/quest_update/…）=====

@@ -506,4 +506,122 @@ public class HealthMonitorTest {
         store.putLong("srv:cad:" + FPID + ":" + SID + ":mail", t0 + 60_000L);
         assertEquals(0, monitor.runOnce(t0 + 5L * 60_000L));
     }
+
+    // ===================================================================
+    // 7) 2026-10-28：同轮 stagnant + cadence_stall 合并为一条推送
+    // ===================================================================
+
+    @Test
+    public void planPushTexts_mergesStagnantAndCadenceStallIntoSinglePush() {
+        long now = bj(2026, 10, 28, 8, 5);
+        HealthMonitor.Alert stag = new HealthMonitor.Alert(
+                HealthMonitor.KIND_STAGNANT, FPID, "节奏停滞", "小鹿(48460403)",
+                "最近 31 分钟无任务完成（阈值 30 分钟）",
+                "检查任务开关/节奏调度是否开启", now);
+        HealthMonitor.Alert stall = HealthMonitor.cadenceStallAlert(
+                8207L, "当日跳过 Top: min_gap 21141 / wartime 4578；当前战时让位: 48460403|888(33min)", now);
+        List<HealthMonitor.Alert> due = new ArrayList<>(List.of(stag, stall));
+
+        List<String> texts = HealthMonitor.planPushTexts(due);
+
+        assertEquals("同轮两条同源告警必须合并为 1 条推送", 1, texts.size());
+        String text = texts.get(0);
+        assertTrue("合并标题，实际=" + text, text.contains("派单停滞+节奏停滞"));
+        assertTrue("保留全局派单信息", text.contains("30 分钟无派单") && text.contains("当日累计 8207"));
+        assertTrue("保留跳过 Top/战时让位", text.contains("min_gap 21141") && text.contains("战时让位"));
+        assertTrue("追加账号停滞摘要", text.contains("账号停滞") && text.contains(FPID));
+        assertTrue("账号停滞指标可见", text.contains("最近 31 分钟无任务完成"));
+    }
+
+    @Test
+    public void planPushTexts_singleKindUnchanged() {
+        long now = bj(2026, 10, 28, 8, 5);
+        HealthMonitor.Alert stag = new HealthMonitor.Alert(
+                HealthMonitor.KIND_STAGNANT, FPID, "节奏停滞", "小鹿(48460403)",
+                "最近 31 分钟无任务完成", "检查任务开关", now);
+        List<String> onlyStag = HealthMonitor.planPushTexts(new ArrayList<>(List.of(stag)));
+        assertEquals(1, onlyStag.size());
+        assertTrue("只命中 stagnant 时行为不变", onlyStag.get(0).contains("【自动化告警】节奏停滞"));
+
+        HealthMonitor.Alert stall = HealthMonitor.cadenceStallAlert(8207L, "", now);
+        List<String> onlyStall = HealthMonitor.planPushTexts(new ArrayList<>(List.of(stall)));
+        assertEquals(1, onlyStall.size());
+        assertTrue("只命中 cadence_stall 时行为不变", onlyStall.get(0).contains("【自动化告警】派单停滞"));
+    }
+
+    @Test
+    public void planPushTexts_otherKindsNotMerged() {
+        long now = bj(2026, 10, 28, 8, 5);
+        HealthMonitor.Alert offline = new HealthMonitor.Alert(
+                HealthMonitor.KIND_OFFLINE, "999", "会话离线", "另一个账号",
+                "已离线 20 分钟", "检查网络", now);
+        HealthMonitor.Alert stag = new HealthMonitor.Alert(
+                HealthMonitor.KIND_STAGNANT, FPID, "节奏停滞", "小鹿(48460403)",
+                "最近 31 分钟无任务完成", "检查任务开关", now);
+        HealthMonitor.Alert stall = HealthMonitor.cadenceStallAlert(8207L, "", now);
+
+        List<String> texts = HealthMonitor.planPushTexts(
+                new ArrayList<>(List.of(offline, stag, stall)));
+
+        assertEquals("离线 + 合并后的停滞 = 2 条", 2, texts.size());
+        assertTrue(texts.get(0).contains("【自动化告警】会话离线"));
+        assertTrue(texts.get(1).contains("派单停滞+节奏停滞"));
+    }
+
+    @Test
+    public void runOnce_mergesStagnantAndCadenceStallIntoOneWecomPush() {
+        long t0 = bj(2026, 10, 28, 8, 5);
+        StateStore store = new StateStore(tmp.getRoot().toPath());
+        // 有节奏键 → 不触发“节奏键缺失(cadence)”告警
+        store.putLong("srv:cad:" + FPID + ":" + SID + ":mail", t0 + 60_000L);
+        // 当日派单统计：dispatch=0 且起点已超 30 分钟 → cadence_stall 命中
+        String day = com.carlos.vaultserver.Beijing.fmt("yyyy-MM-dd")
+                .format(new java.util.Date(t0));
+        org.json.JSONObject stats = new org.json.JSONObject();
+        stats.put("dispatch", 0);
+        stats.put("firstAt", t0 - 31L * 60_000L);
+        stats.put("globalMax", 20);
+        stats.put("minuteDispatch", 0);
+        stats.put("skip", new org.json.JSONObject().put("wartime", 30L));
+        store.putString(HealthMonitor.CADENCE_STATS_PREFIX + day, stats.toString());
+
+        VaultStore vault = vault(account(FPID, true, "小鹿"));
+        vault.updateWatchConfig(true, true, "http://127.0.0.1:1/hook", 300, -1, 8);
+        CountingNotifier notifier = new CountingNotifier();
+        HealthMonitor monitor = new HealthMonitor(vault, store, notifier,
+                () -> statuses(FPID, "online"));
+
+        // 在线、auto、无任务日志 → stagnant；当日 dispatch=0 超 30min → cadence_stall；两者同轮命中
+        assertEquals("同轮同源告警只推 1 条", 1, monitor.runOnce(t0));
+        assertEquals("企微只收到 1 条", 1, notifier.sends);
+        assertTrue("合并标题，实际=" + notifier.lastText,
+                notifier.lastText.contains("派单停滞+节奏停滞"));
+        assertTrue("保留账号停滞摘要", notifier.lastText.contains(FPID));
+
+        // state 节流键保持各自独立（不影响后续节流语义）
+        assertNotNull("stagnant 节流键独立落盘",
+                store.snapshot().get("srv:alert:stagnant:" + FPID + ":2026-10-28"));
+        assertNotNull("cadence_stall 节流键独立落盘",
+                store.snapshot().get("srv:alert:cadence_stall:global:2026-10-28"));
+
+        // 下一拍：两类都在 6h 节流窗 → 0 条、不再推送
+        assertEquals(0, monitor.runOnce(t0 + 5L * 60_000L));
+        assertEquals(1, notifier.sends);
+    }
+
+    @Test
+    public void snapshot_roleScopedLogKeysAggregatePerAccount() {
+        long now = System.currentTimeMillis();
+        StateStore store = new StateStore(tmp.getRoot().toPath());
+        // 同服双角色各自的角色键：必须都计入账号级统计（旧实现 split(":",4) 会把 uid 当 fn 前缀→漏计）。
+        // seedLog 的 fn 参数可含冒号：fn="<uid>:<task>" 即生成 log:<fpid>:<sid>:<uid>:<task> 角色键。
+        seedLog(store, FPID, SID, "35371154:login_rewards", now - 60_000L, "CLAIMED", "角色A领取");
+        seedLog(store, FPID, SID, "88280792:login_rewards", now - 30_000L, "CLAIMED", "角色B领取");
+
+        VaultStore vault = vault(account(FPID, true, "小鹿"));
+        List<HealthMonitor.AccountHealth> hs = HealthMonitor.snapshot(vault, store,
+                () -> statuses(FPID, "online"), now, new LinkedHashMap<>());
+        assertEquals(1, hs.size());
+        assertEquals("两个角色的 CLAIMED 都要计入账号", 2, hs.get(0).claimed2h);
+    }
 }

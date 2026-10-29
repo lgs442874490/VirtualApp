@@ -47,6 +47,15 @@ public final class Main {
         // v4.1.8：昵称解析接线（WarNotify 只在自己的 name/wecom 线程回调，绝不占推送线程）
         war.setNameResolver(keeper::resolvePlayerName);
 
+        // 观察点（2026-10-27 MVP）：地图范围查询轮询——监视敌方 80 级炉子 / 保护友盟聚集地 / 迁城定位。
+        // 只发告警（企业微信），不发日报/汇总；默认关闭，需 VAULT_WATCHPOINT=on 且 data/watchpoint.json enabled=true。
+        com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore =
+                new com.carlos.vaultserver.watchpoint.WatchPointStore(config.dataDir);
+        com.carlos.vaultserver.watchpoint.WatchPointEngine watchPoint =
+                new com.carlos.vaultserver.watchpoint.WatchPointEngine(
+                        keeper, watchPointStore, store, new WeComNotifier());
+        watchPoint.start();
+
         com.carlos.vaultserver.task.RoundScheduler scheduler =
                 new com.carlos.vaultserver.task.RoundScheduler(store, stateStore, keeper);
         scheduler.start();
@@ -90,6 +99,7 @@ public final class Main {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             FileLog.info("vault-server 停止");
             health.stop();
+            watchPoint.stop();
             digest.stop();
             api.stop();
             cadence.stop();

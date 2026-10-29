@@ -2,7 +2,9 @@ package com.carlos.vaultserver;
 
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
+import com.carlos.vaultserver.task.RoleKey;
 import com.carlos.vaultserver.task.ServerNotifyHistory;
+import com.carlos.vaultserver.task.StateKeys;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -21,6 +23,11 @@ import java.util.Set;
  * 全量状态采集（移植自 App 端 DailyRunner.captureAll / FieldTasks.bear / DailyTasks.captureSupplyState）：
  * 等关键 notify → 任务进度/日历/资源/集结/巨熊/补给/燃霜，写入 StateStore（键型与 App daily_state 一致）。
  * 解析逻辑与 App 端逐行对齐，改动须两侧同步。
+ *
+ * <p>R2 Phase 2（2026-10-29）：同账号同服多角色各自采集，状态键按角色 uid 隔离
+ * （{@link StateKeys} 角色键）；App 仍读的旧键（{@code res:<fpid>:<sid>} 等）只由
+ * <b>active 角色镜像写</b>（{@code activeWriter}）。旧 4 参签名等价 uid=0/active=true，
+ * 行为与 Phase 2 之前 100% 一致。
  */
 public final class CaptureTasks {
 
@@ -32,28 +39,41 @@ public final class CaptureTasks {
     private CaptureTasks() {
     }
 
-    /** 全量采集（须在会话线程调用，引擎在线）。返回错误描述或 null。 */
+    /** 全量采集（须在会话线程调用，引擎在线）。返回错误描述或 null。旧签名（uid=0 兼容路径）。 */
     public static String captureAll(WjdrEngine engine, StateStore store, String fpid, long sid) {
+        return captureAll(engine, store, fpid, sid, 0L, true);
+    }
+
+    /**
+     * 全量采集（R2 Phase 2 按角色）。
+     *
+     * @param uid          角色 uid（&gt;0 时状态键按角色隔离；0=旧/兼容路径）
+     * @param activeWriter 是否 App 当前选中角色（仅它镜像写旧键，App 显示链路不变）
+     * @return 错误描述或 null
+     */
+    public static String captureAll(WjdrEngine engine, StateStore store, String fpid, long sid,
+                                    long uid, boolean activeWriter) {
+        RoleKey role = new RoleKey(fpid, sid, uid);
         try {
             for (int i = 0; i < 10; i++) {
                 if (engine.notifyContent("notify_dailyquests") != null
                         && engine.notifyContent("notify_recover_resource_init") != null) break;
                 engine.collectNotifies(500);
             }
-            captureQuestState(engine, store, fpid, sid);
-            captureCalendar(engine, store, fpid, sid);
-            saveResources(engine, store, fpid, sid);
-            saveRallies(engine, store, fpid, sid);
+            captureQuestState(engine, store, role, activeWriter);
+            captureCalendar(engine, store, role, activeWriter);
+            saveResources(engine, store, role, activeWriter);
+            saveRallies(engine, store, role, activeWriter);
             try {
-                bear(engine, store, fpid, sid);
+                bear(engine, store, role, activeWriter);
             } catch (Throwable ignored) {
             }
             try {
-                captureSupplyState(engine, store, fpid, sid);
+                captureSupplyState(engine, store, role, activeWriter);
             } catch (Throwable ignored) {
             }
             try {
-                captureFrostfire(engine, store, fpid, sid);
+                captureFrostfire(engine, store, role, activeWriter);
             } catch (Throwable ignored) {
             }
             return null;
@@ -62,9 +82,47 @@ public final class CaptureTasks {
         }
     }
 
+    // ---------------- 键型辅助（R2 Phase 2） ----------------
+
+    /** 写角色键；active 角色额外镜像旧键（App 显示链路）。uid&lt;=0 时两者同键，只写一次。 */
+    private static void putRoleString(StateStore store, RoleKey role, String family, String rest,
+                                      String value, boolean activeWriter) {
+        store.putString(StateKeys.role(family, role, rest), value);
+        if (activeWriter && role.roleScoped()) {
+            store.putString(StateKeys.legacy(family, role, rest), value);
+        }
+    }
+
+    private static void putRoleLong(StateStore store, RoleKey role, String family, String rest,
+                                    long value, boolean activeWriter) {
+        store.putLong(StateKeys.role(family, role, rest), value);
+        if (activeWriter && role.roleScoped()) {
+            store.putLong(StateKeys.legacy(family, role, rest), value);
+        }
+    }
+
+    /** 读角色 mod 状态；active 角色 miss 时回退旧键（迁移兼容）。 */
+    private static JSONObject readRoleMod(StateStore store, RoleKey role, String sub,
+                                          boolean activeWriter) {
+        String raw = store.getString(StateKeys.role("mod", role, sub));
+        if (raw == null && activeWriter && role.roleScoped()) {
+            raw = store.getString(StateKeys.legacy("mod", role, sub));
+        }
+        try {
+            return raw == null ? new JSONObject() : new JSONObject(raw);
+        } catch (Throwable t) {
+            return new JSONObject();
+        }
+    }
+
     // ---------------- 每日任务（notify_dailyquests → questprog/questdone/act/boxes/questts） ----------------
 
     static void captureQuestState(WjdrEngine engine, StateStore store, String fpid, long sid) {
+        captureQuestState(engine, store, new RoleKey(fpid, sid, 0L), true);
+    }
+
+    static void captureQuestState(WjdrEngine engine, StateStore store, RoleKey role,
+                                  boolean activeWriter) {
         try {
             Map<String, Object> q = engine.notifyData("notify_dailyquests");
             if (q == null) return;
@@ -103,18 +161,17 @@ public final class CaptureTasks {
             for (int t : BOX_THRESHOLDS) {
                 if (integral >= t) boxes++;
             }
-            String suffix = fpid + ":" + sid;
             JSONObject p = new JSONObject();
             for (Map.Entry<Long, Integer> e : prog.entrySet()) {
                 p.put(String.valueOf(e.getKey()), e.getValue().intValue());
             }
             JSONArray done = new JSONArray();
             for (Long qid : claimed) done.put(qid.longValue());
-            store.putString("questprog:" + suffix, p.toString());
-            store.putString("questdone:" + suffix, done.toString());
-            store.putLong("questts:" + suffix, System.currentTimeMillis());
-            store.putLong("act:" + suffix, integral);
-            store.putLong("boxes:" + suffix, boxes);
+            putRoleString(store, role, "questprog", null, p.toString(), activeWriter);
+            putRoleString(store, role, "questdone", null, done.toString(), activeWriter);
+            putRoleLong(store, role, "questts", null, System.currentTimeMillis(), activeWriter);
+            putRoleLong(store, role, "act", null, integral, activeWriter);
+            putRoleLong(store, role, "boxes", null, boxes, activeWriter);
         } catch (Throwable ignored) {
         }
     }
@@ -122,6 +179,11 @@ public final class CaptureTasks {
     // ---------------- 活动日历（req_activity_calendar_get_data → todo: + 各活动 mod.open） ----------------
 
     static void captureCalendar(WjdrEngine engine, StateStore store, String fpid, long sid) {
+        captureCalendar(engine, store, new RoleKey(fpid, sid, 0L), true);
+    }
+
+    static void captureCalendar(WjdrEngine engine, StateStore store, RoleKey role,
+                                boolean activeWriter) {
         try {
             Map content = null;
             try {
@@ -137,7 +199,7 @@ public final class CaptureTasks {
             // 总量 2000 条/4MB 预算/不可变深拷贝），让 C5 活动日历门控在长在线无 notify 推送时仍有
             // 新鲜数据；不新增网络请求（复用上面的 req_activity_calendar_get_data）。失败不影响主流程。
             try {
-                ServerNotifyHistory.syncActivityCalendar(fpid, content);
+                ServerNotifyHistory.syncActivityCalendar(role.fpid, content);
             } catch (Throwable ignored) {
             }
             Object dataObj = content.get("data");
@@ -210,17 +272,16 @@ public final class CaptureTasks {
                     todos.put(t);
                     if (fn != null) {
                         try {
-                            String key = "mod:" + fpid + ":" + sid + ":" + fn;
-                            JSONObject mod = readMod(store, key);
+                            JSONObject mod = readRoleMod(store, role, fn, activeWriter);
                             mod.put("open", text);
                             mod.put("open_ts", System.currentTimeMillis());
-                            store.putString(key, mod.toString());
+                            putRoleString(store, role, "mod", fn, mod.toString(), activeWriter);
                         } catch (Throwable ignored3) {
                         }
                     }
                 }
             }
-            store.putString("todo:" + fpid + ":" + sid, todos.toString());
+            putRoleString(store, role, "todo", null, todos.toString(), activeWriter);
         } catch (Throwable ignored) {
         }
     }
@@ -228,12 +289,16 @@ public final class CaptureTasks {
     // ---------------- 资源（notify_recover_resource_init → res:） ----------------
 
     static void saveResources(WjdrEngine engine, StateStore store, String fpid, long sid) {
+        saveResources(engine, store, new RoleKey(fpid, sid, 0L), true);
+    }
+
+    static void saveResources(WjdrEngine engine, StateStore store, RoleKey role, boolean activeWriter) {
         try {
             Map<String, Object> ri = engine.notifyData("notify_recover_resource_init");
             if (ri == null) return;
             JSONObject out = new JSONObject();
             collectCounts(ri, out, 0);
-            store.putString("res:" + fpid + ":" + sid, out.toString());
+            putRoleString(store, role, "res", null, out.toString(), activeWriter);
         } catch (Throwable ignored) {
         }
     }
@@ -269,13 +334,17 @@ public final class CaptureTasks {
     // ---------------- 集结（notify_world_alliance_situation_* → rallies:） ----------------
 
     static void saveRallies(WjdrEngine engine, StateStore store, String fpid, long sid) {
+        saveRallies(engine, store, new RoleKey(fpid, sid, 0L), true);
+    }
+
+    static void saveRallies(WjdrEngine engine, StateStore store, RoleKey role, boolean activeWriter) {
         try {
             JSONArray arr = new JSONArray();
             Map<String, Object> init = engine.notifyData("notify_world_alliance_situation_init");
             if (init != null) collectRallyLines(init, arr, 0);
             Map<String, Object> act = engine.notifyContent("notify_world_alliance_situation_activity");
             if (act != null) collectRallyLines(act, arr, 0);
-            store.putString("rallies:" + fpid + ":" + sid, arr.toString());
+            putRoleString(store, role, "rallies", null, arr.toString(), activeWriter);
         } catch (Throwable ignored) {
         }
     }
@@ -302,6 +371,22 @@ public final class CaptureTasks {
     // ---------------- 巨熊（req_alliance_trap_info → mod:bear） ----------------
 
     public static void bear(WjdrEngine engine, StateStore store, String fpid, long sid) {
+        bear(engine, store, new RoleKey(fpid, sid, 0L), true);
+    }
+
+    /**
+     * 巨熊采集（R2 Phase 2B 按角色）：状态键 {@code mod:<fpid>:<sid>:<uid>:bear}；
+     * activeWriter 时额外镜像旧键 {@code mod:<fpid>:<sid>:bear}（App 显示链路）。
+     *
+     * @param uid          角色 uid（&gt;0 时按角色隔离；0=旧/兼容路径）
+     * @param activeWriter 是否 App 当前选中角色（仅它镜像写旧键）
+     */
+    public static void bear(WjdrEngine engine, StateStore store, String fpid, long sid,
+                            long uid, boolean activeWriter) {
+        bear(engine, store, new RoleKey(fpid, sid, uid), activeWriter);
+    }
+
+    static void bear(WjdrEngine engine, StateStore store, RoleKey role, boolean activeWriter) {
         try {
             GameMessage trap = engine.request("req_alliance_trap_info", null);
             if (trap == null || trap.getContent() == null) return;
@@ -322,7 +407,7 @@ public final class CaptureTasks {
             if (massStart > 1_700_000_000L && massStart < 2_000_000_000L) mod.put("start", massStart);
             if (massEnd > 1_700_000_000L && massEnd < 2_000_000_000L) mod.put("end", massEnd);
             if (coolEnd > 1_700_000_000L && coolEnd < 2_000_000_000L) mod.put("cool", coolEnd);
-            store.putString("mod:" + fpid + ":" + sid + ":bear", mod.toString());
+            putRoleString(store, role, "mod", "bear", mod.toString(), activeWriter);
         } catch (Throwable ignored) {
         }
     }
@@ -330,6 +415,23 @@ public final class CaptureTasks {
     // ---------------- 仓库补给（notify_recover_resource_init 时间字段 → mod:supply） ----------------
 
     public static void captureSupplyState(WjdrEngine engine, StateStore store, String fpid, long sid) {
+        captureSupplyState(engine, store, new RoleKey(fpid, sid, 0L), true);
+    }
+
+    /**
+     * 仓库补给采集（R2 Phase 2B 按角色）：状态键 {@code mod:<fpid>:<sid>:<uid>:supply}；
+     * activeWriter 时额外镜像旧键 {@code mod:<fpid>:<sid>:supply}（App 显示链路）。
+     *
+     * @param uid          角色 uid（&gt;0 时按角色隔离；0=旧/兼容路径）
+     * @param activeWriter 是否 App 当前选中角色（仅它镜像写旧键）
+     */
+    public static void captureSupplyState(WjdrEngine engine, StateStore store, String fpid, long sid,
+                                          long uid, boolean activeWriter) {
+        captureSupplyState(engine, store, new RoleKey(fpid, sid, uid), activeWriter);
+    }
+
+    static void captureSupplyState(WjdrEngine engine, StateStore store, RoleKey role,
+                                   boolean activeWriter) {
         try {
             Map<String, Object> ri = engine.notifyData("notify_recover_resource_init");
             if (ri == null) return;
@@ -354,7 +456,7 @@ public final class CaptureTasks {
                 out.put("spec_end", specEnd);
             }
             if (out.length() > 0) {
-                store.putString("mod:" + fpid + ":" + sid + ":supply", out.toString());
+                putRoleString(store, role, "mod", "supply", out.toString(), activeWriter);
             }
         } catch (Throwable ignored) {
         }
@@ -386,6 +488,11 @@ public final class CaptureTasks {
     // ---------------- 燃霜矿区（notify_frostfire_war_info → mod:frostfire） ----------------
 
     static void captureFrostfire(WjdrEngine engine, StateStore store, String fpid, long sid) {
+        captureFrostfire(engine, store, new RoleKey(fpid, sid, 0L), true);
+    }
+
+    static void captureFrostfire(WjdrEngine engine, StateStore store, RoleKey role,
+                                 boolean activeWriter) {
         try {
             Map<String, Object> c = engine.notifyContent("notify_frostfire_war_info");
             if (c == null) return;
@@ -397,7 +504,7 @@ public final class CaptureTasks {
             JSONObject mod = new JSONObject();
             mod.put("index", idx);
             mod.put("ts", ts);
-            store.putString("mod:" + fpid + ":" + sid + ":frostfire", mod.toString());
+            putRoleString(store, role, "mod", "frostfire", mod.toString(), activeWriter);
         } catch (Throwable ignored) {
         }
     }
@@ -449,15 +556,6 @@ public final class CaptureTasks {
     }
 
     // ---------------- 取值辅助（与 App 端同风格：形状防御式） ----------------
-
-    private static JSONObject readMod(StateStore store, String key) {
-        try {
-            String raw = store.getString(key);
-            return raw == null ? new JSONObject() : new JSONObject(raw);
-        } catch (Throwable t) {
-            return new JSONObject();
-        }
-    }
 
     static Object toJavaJson(Object v) {
         if (v instanceof Map) {

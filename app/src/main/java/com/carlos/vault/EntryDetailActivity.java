@@ -40,6 +40,8 @@ import com.carlos.vault.daily.RoleDisplay;
 import com.carlos.vault.daily.RoleStore;
 import com.carlos.vault.gameupdate.GameApkDownloader;
 import com.carlos.vault.gameupdate.GameApkVerifier;
+import com.carlos.vault.gameupdate.GameCloneFallback;
+import com.carlos.vault.gameupdate.GameCloneGuide;
 import com.carlos.vault.gameupdate.GameClientUpdateConfig;
 import com.carlos.vault.gameupdate.GameRecloneFlow;
 import com.carlos.vault.gameupdate.GameVersionCheck;
@@ -289,6 +291,8 @@ public class EntryDetailActivity extends Activity {
         lclp.setMargins(0, dp(14), 0, 0);
         loginCard.setLayoutParams(lclp);
         loginCard.addView(sectionTitle("登录数据"));
+        loginCard.addView(actionRow(UiStyle.Icon.SEARCH, "微信扫码登录",
+                "手机微信扫码 → 自动回填号 ID + token（无需容器登录）", this::openWechatQrLogin));
         loginCard.addView(actionRow(UiStyle.Icon.USER, "设置 token",
                 "粘贴：号 ID----token", this::showTokenDialog));
         loginCard.addView(actionRow(UiStyle.Icon.CLOUD, "从服务器恢复登录",
@@ -987,6 +991,12 @@ public class EntryDetailActivity extends Activity {
                 if (err == null) {
                     toast("克隆完成，继续启动…");
                     doLaunch();
+                } else if (GameCloneFallback.isMissingGuide(err)
+                        || GameCloneFallback.isNativePackageMissing(err)) {
+                    // 2026-10-29 鸿蒙：应用市场下发的是鸿蒙版（HAP），安卓容器看不到。
+                    // 给原因 + 「选择本地 APK / 下载安卓版」两条出路，而不是一句找不到安装包。
+                    GameCloneGuide.showMissingDialog(EntryDetailActivity.this, err, engine,
+                            EntryDetailActivity.this::doLaunch);
                 } else {
                     // 本方法就是克隆流程，失败一律归 CLONE（原文保留）
                     showLaunchFailure(new VaultEngine.Diagnostic(
@@ -1184,6 +1194,11 @@ public class EntryDetailActivity extends Activity {
                     toast("重新克隆完成：分身已同步原生 " + engine.installedGameVersionName()
                             + "(" + vc + ")" + (dataKept ? "，游戏数据已保留" : ""));
                     doLaunch();   // 重新拉起游戏（版本闸门此时应放行）
+                } else if (GameCloneFallback.isMissingGuide(err)
+                        || GameCloneFallback.isNativePackageMissing(err)) {
+                    // 鸿蒙原生版不可克隆 → 引导用本地安卓 APK（保数据覆盖装入）
+                    GameCloneGuide.showMissingDialog(EntryDetailActivity.this, err, engine,
+                            EntryDetailActivity.this::doLaunch);
                 } else {
                     showLaunchFailure(new VaultEngine.Diagnostic(
                             VaultEngine.categorizeFailure(err), err));
@@ -1312,6 +1327,13 @@ public class EntryDetailActivity extends Activity {
             return;
         }
         continueLocalApkUpdate();
+    }
+
+    /** 鸿蒙兼容（2026-10-29）：克隆引导弹窗里「选择本地 APK」的选包结果 → 校验并装入容器。 */
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        GameCloneGuide.handlePickResult(this, requestCode, resultCode, data, engine, this::doLaunch);
     }
 
     @Override
@@ -1509,6 +1531,18 @@ public class EntryDetailActivity extends Activity {
     }
 
     // ---------- token ----------
+
+    /** 打开微信扫码登录，并把扫码结果回填到本入口（fpid/token）。 */
+    private void openWechatQrLogin() {
+        try {
+            android.content.Intent it = new android.content.Intent(
+                    this, com.carlos.vault.wechat.WechatQrLoginActivity.class);
+            it.putExtra(com.carlos.vault.wechat.WechatQrLoginActivity.EXTRA_ENTRY_ID, acc.id);
+            startActivity(it);
+        } catch (Throwable t) {
+            toast("打开扫码登录失败：" + t.getMessage());
+        }
+    }
 
     private void showTokenDialog() {
         String prefill = (acc.fpid != null && !acc.fpid.isEmpty()) ? acc.fpid + "----" : "";

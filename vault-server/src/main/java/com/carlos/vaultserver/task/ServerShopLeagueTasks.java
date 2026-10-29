@@ -2153,12 +2153,15 @@ public final class ServerShopLeagueTasks {
 
     public static TaskOutcome allianceHelp(TaskContext tc) {
         // 常驻互助（ServerHelpResponder）接管中：它 30s 轮询持续刷新 help_all_ts，
-        // 3 分钟内有过响应/巡检即视为已覆盖，跳过本轮重复请求（服务器上整轮仅在常驻会话跑，此跳过常态生效）
+        // 3 分钟内有过响应/巡检即视为已覆盖，跳过本轮重复请求（服务器上整轮仅在常驻会话跑，此跳过常态生效）。
+        // P0 2026-10-28：SKIP 文案带上常驻响应器的真实状态，避免用户把“跳过本轮”误读成“不执行互助”。
         try {
             long ts = tc.modState("alliance_help").optLong("help_all_ts", 0);
             if (ts > 0 && System.currentTimeMillis() - ts < 180_000L) {
+                String state = tc.modState("alliance_help").optString("help_all", "").trim();
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
-                        "常驻互助接管中，跳过本轮");
+                        "常驻响应器已接管自动互助，本轮跳过"
+                                + (state.isEmpty() ? "" : "（" + state + "）"));
             }
         } catch (Throwable ignored) {
         }
@@ -2172,9 +2175,15 @@ public final class ServerShopLeagueTasks {
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.CLAIMED,
                         "已一键帮助全盟（服务器常驻秒级响应主力）");
             }
-            if (code == 75 || code == 2 || code == 1536) {
+            if (code == 1536) {
+                // 1536 = 服务端此刻没有可响应的互助请求（瞬时），不是每日上限：
+                // 不落盘、不跨天；下一轮/下一次推送继续尝试。
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
-                        code == 1536 ? "今日帮助次数已用完或无请求" : "当前无互助请求或不可用");
+                        "当前没有可互助请求（码1536），下一轮继续尝试");
+            }
+            if (code == 75 || code == 2) {
+                return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED,
+                        "当前没有可互助请求（码" + code + "），下一轮继续尝试");
             }
             if (code == 16873) {
                 return new TaskOutcome("alliance_help", "联盟互助", TaskOutcome.Category.SKIPPED, "无联盟");

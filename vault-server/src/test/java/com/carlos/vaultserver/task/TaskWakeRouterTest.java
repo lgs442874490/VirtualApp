@@ -180,7 +180,10 @@ public class TaskWakeRouterTest {
                 "alliance_help", "arena", "gather", "intel", "act_endless", "login_rewards",
                 "red_packet", "achievement_claim", "chapter_quest", "backpack",
                 // 批次4 C3 配套：巨熊预约/场次/集结推送、专家推送也纳入唤醒
-                "bear", "expert"));
+                "bear", "expert",
+                // 2026-10-28 城镇域功能型 bug：训练完成即续训（notify_barrack_*）、
+                // 治疗完成即续疗（notify_hospital_*）
+                "barracks", "medic"));
         assertEquals(expected, new HashSet<>(TaskWakeRouter.mappedTaskIds()));
         for (String fn : TaskWakeRouter.mappedTaskIds()) {
             assertTrue("映射任务必须在 TaskCadence 节奏表中：" + fn, TaskCadence.contains(fn));

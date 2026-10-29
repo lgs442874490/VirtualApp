@@ -33,6 +33,44 @@ public final class VaultStore {
         return (sid == null ? "" : sid) + ":" + (uid == null ? "" : uid);
     }
 
+    /** 按角色 uid 的配置表键（{@code roleConfigByUid/roleParamsByUid}）：{@code <sid>:<uid>}。 */
+    public static String roleUidConfigKey(long sid, long uid) {
+        return sid + ":" + uid;
+    }
+
+    /**
+     * 角色**生效**任务开关（R2 Phase 2）：uid&gt;0 时按 uid 表优先 → 旧 sid 表（区服默认，兼容旧 App）
+     * → null（调用方按任务目录默认值处理）。uid&lt;=0 时等价旧 sid 表。
+     */
+    public static Map<String, Boolean> roleConfigOf(Account acc, long sid, long uid) {
+        if (acc == null) return null;
+        if (uid > 0L) {
+            Map<String, Boolean> byUid = acc.roleConfigByUid.get(roleUidConfigKey(sid, uid));
+            if (byUid != null && !byUid.isEmpty()) return byUid;
+        }
+        return acc.roleConfig.get(String.valueOf(sid));
+    }
+
+    /** 角色**生效**任务参数（R2 Phase 2）：规则同 {@link #roleConfigOf}。 */
+    public static Map<String, String> roleParamsOf(Account acc, long sid, long uid) {
+        if (acc == null) return null;
+        if (uid > 0L) {
+            Map<String, String> byUid = acc.roleParamsByUid.get(roleUidConfigKey(sid, uid));
+            if (byUid != null && !byUid.isEmpty()) return byUid;
+        }
+        return acc.roleParams.get(String.valueOf(sid));
+    }
+
+    /** 生效配置来源：{@code uid} / {@code sid} / {@code default}（可观测/测试用）。 */
+    public static String roleConfigScope(Account acc, long sid, long uid) {
+        if (acc == null) return "default";
+        if (uid > 0L) {
+            Map<String, Boolean> byUid = acc.roleConfigByUid.get(roleUidConfigKey(sid, uid));
+            if (byUid != null && !byUid.isEmpty()) return "uid";
+        }
+        return acc.roleConfig.containsKey(String.valueOf(sid)) ? "sid" : "default";
+    }
+
     /**
      * 账号池角色条目（M1 2026-10-21；2026-10-21 多角色并行修订）：服务器侧每角色持久化意图态。
      *
@@ -107,6 +145,13 @@ public final class VaultStore {
         public final Map<String, Map<String, Boolean>> roleConfig = new LinkedHashMap<>();
         /** 每角色任务参数：sid → {fnId:参数JSON串}。 */
         public final Map<String, Map<String, String>> roleParams = new LinkedHashMap<>();
+        /**
+         * R2 Phase 2（2026-10-29）：同服多角色的**按 uid**任务开关/参数。
+         * 键 {@code <sid>:<uid>}；读取优先级：本表 → 旧 sid 表（继承默认）→ 任务目录默认。
+         * 旧表保留作为“该区服默认配置”，旧 App/回滚继续可用；本表由 sync 按角色 uid 落库。
+         */
+        public final Map<String, Map<String, Boolean>> roleConfigByUid = new LinkedHashMap<>();
+        public final Map<String, Map<String, String>> roleParamsByUid = new LinkedHashMap<>();
         /** 账号池角色条目：roleKey(sid:uid) → 条目（M1 2026-10-21，服务器侧意图态）。 */
         public final Map<String, RoleEntry> roles = new LinkedHashMap<>();
         // ---------- 顶号恢复策略（P1 2026-10-21，账号级，作用于该账号全部角色） ----------
@@ -328,6 +373,36 @@ public final class VaultStore {
                                 a.roleParams.put(prmSid, pp);
                             }
                         }
+                        // R2 Phase 2：按角色 uid 的开关/参数（键 sid:uid；旧表保留为区服默认）
+                        JSONObject cfgsUid = o.optJSONObject("roleConfigByUid");
+                        if (cfgsUid != null) {
+                            for (Iterator<String> it = cfgsUid.keys(); it.hasNext(); ) {
+                                String key = it.next();
+                                JSONObject cm = cfgsUid.optJSONObject(key);
+                                if (cm == null) continue;
+                                Map<String, Boolean> cfg = new LinkedHashMap<>();
+                                for (Iterator<String> ck = cm.keys(); ck.hasNext(); ) {
+                                    String fn = ck.next();
+                                    cfg.put(fn, cm.optBoolean(fn, false));
+                                }
+                                a.roleConfigByUid.put(key, cfg);
+                            }
+                        }
+                        JSONObject prmsUid = o.optJSONObject("roleParamsByUid");
+                        if (prmsUid != null) {
+                            for (Iterator<String> it = prmsUid.keys(); it.hasNext(); ) {
+                                String key = it.next();
+                                JSONObject pm = prmsUid.optJSONObject(key);
+                                if (pm == null) continue;
+                                Map<String, String> pp = new LinkedHashMap<>();
+                                for (Iterator<String> pk = pm.keys(); pk.hasNext(); ) {
+                                    String fn = pk.next();
+                                    pp.put(fn, pm.optJSONObject(fn) == null
+                                            ? "" : pm.optJSONObject(fn).toString());
+                                }
+                                a.roleParamsByUid.put(key, pp);
+                            }
+                        }
                         JSONObject rls = o.optJSONObject("roles");
                         if (rls != null) {
                             for (Iterator<String> it = rls.keys(); it.hasNext(); ) {
@@ -445,6 +520,30 @@ public final class VaultStore {
                     prms.put(e.getKey(), pm);
                 }
                 o.put("roleParams", prms);
+                // R2 Phase 2：按角色 uid 的开关/参数（仅写非空，vault.json 兼容旧读方忽略未知字段）
+                JSONObject cfgsUid = new JSONObject();
+                for (Map.Entry<String, Map<String, Boolean>> e : a.roleConfigByUid.entrySet()) {
+                    JSONObject cm = new JSONObject();
+                    for (Map.Entry<String, Boolean> ce : e.getValue().entrySet()) {
+                        cm.put(ce.getKey(), ce.getValue());
+                    }
+                    cfgsUid.put(e.getKey(), cm);
+                }
+                o.put("roleConfigByUid", cfgsUid);
+                JSONObject prmsUid = new JSONObject();
+                for (Map.Entry<String, Map<String, String>> e : a.roleParamsByUid.entrySet()) {
+                    JSONObject pm = new JSONObject();
+                    for (Map.Entry<String, String> pe : e.getValue().entrySet()) {
+                        if (!pe.getValue().isEmpty()) {
+                            try {
+                                pm.put(pe.getKey(), new JSONObject(pe.getValue()));
+                            } catch (Throwable ignored) {
+                            }
+                        }
+                    }
+                    prmsUid.put(e.getKey(), pm);
+                }
+                o.put("roleParamsByUid", prmsUid);
                 JSONObject rls = new JSONObject();
                 for (Map.Entry<String, RoleEntry> e : a.roles.entrySet()) {
                     RoleEntry r = e.getValue();
@@ -550,6 +649,13 @@ public final class VaultStore {
                 merged.roleIdentity.putAll(in.roleIdentity);
                 merged.roleConfig.putAll(in.roleConfig);
                 merged.roleParams.putAll(in.roleParams);
+                // R2 Phase 2：按 uid 表——旧 App（不带）不覆盖服务器已有；新 App 按角色覆盖。
+                if (prev != null) {
+                    merged.roleConfigByUid.putAll(prev.roleConfigByUid);
+                    merged.roleParamsByUid.putAll(prev.roleParamsByUid);
+                }
+                merged.roleConfigByUid.putAll(in.roleConfigByUid);
+                merged.roleParamsByUid.putAll(in.roleParamsByUid);
                 mergeRolesLocked(prev, merged, in);
                 accounts.add(merged);
             }
@@ -605,6 +711,10 @@ public final class VaultStore {
                 && (!nz(prev.activeSid).equals(nz(merged.activeSid))
                     || !nz(prev.activeUid).equals(nz(merged.activeUid)));
         long now = System.currentTimeMillis();
+        // R2 Phase 2（2026-10-29，用户决策「切换角色不停兄弟角色」）：VAULT_PER_ROLE=on 时，
+        // App 切换当前角色（activeUid 变化）不再连带停止其它已 desired 的角色会话——
+        // 双角色各自持续自动化；off（默认）保持旧「sync 切角色 = 单会话收敛」语义不变。
+        boolean perRole = perRoleMode();
         for (RoleEntry m : merged.roles.values()) {
             boolean isActive = activeKnown
                     && m.sid.equals(merged.activeSid) && m.uid.equals(merged.activeUid);
@@ -617,7 +727,7 @@ public final class VaultStore {
                 // 已 desired 的保留 runState（RUNNING/PAUSED 都不因 sync 抹掉）
                 m.desiredOnline = true;
             } else if (!merged.keep
-                    || (activeSwitched && m.desiredOnline && !isActive)) {
+                    || (!perRole && activeSwitched && m.desiredOnline && !isActive)) {
                 if (m.desiredOnline || !RUN_STOPPED.equals(m.runState)) m.runState = RUN_STOPPED;
                 m.desiredOnline = false;
             }
@@ -626,6 +736,26 @@ public final class VaultStore {
 
     private static String nz(String s) {
         return s == null ? "" : s;
+    }
+
+    /**
+     * Phase 2 灰度开关（与 task.RoundScheduler.perRoleEnabled 同源语义）：
+     * on = 全任务按角色并行；此时 App 切换当前角色不连带停止其它已 desired 的角色会话。
+     * 测试可用 {@link #setPerRoleModeForTest(Boolean)} 注入。
+     */
+    private static volatile Boolean perRoleOverrideForTest = null;
+
+    static boolean perRoleMode() {
+        Boolean o = perRoleOverrideForTest;
+        if (o != null) return o;
+        String v = System.getenv("VAULT_PER_ROLE");
+        return v != null && ("on".equalsIgnoreCase(v) || "1".equals(v)
+                || "true".equalsIgnoreCase(v));
+    }
+
+    /** 测试注入（null=恢复读 env）。 */
+    static void setPerRoleModeForTest(Boolean v) {
+        perRoleOverrideForTest = v;
     }
 
     /** 解析可寻址角色：精确 (sid,uid) 匹配；回落 active 角色（自动建条目）。找不到返回 null。 */
@@ -1152,6 +1282,12 @@ public final class VaultStore {
                 }
                 for (Map.Entry<String, Map<String, String>> e : a.roleParams.entrySet()) {
                     c.roleParams.put(e.getKey(), new LinkedHashMap<>(e.getValue()));
+                }
+                for (Map.Entry<String, Map<String, Boolean>> e : a.roleConfigByUid.entrySet()) {
+                    c.roleConfigByUid.put(e.getKey(), new LinkedHashMap<>(e.getValue()));
+                }
+                for (Map.Entry<String, Map<String, String>> e : a.roleParamsByUid.entrySet()) {
+                    c.roleParamsByUid.put(e.getKey(), new LinkedHashMap<>(e.getValue()));
                 }
                 for (Map.Entry<String, RoleEntry> e : a.roles.entrySet()) {
                     c.roles.put(e.getKey(), e.getValue().copy());

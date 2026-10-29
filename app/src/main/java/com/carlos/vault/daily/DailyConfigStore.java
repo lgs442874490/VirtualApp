@@ -24,9 +24,33 @@ public class DailyConfigStore {
     private static final String SHIELD_ID = "battle_shield";
 
     private final SharedPreferences prefs;
+    private final Context context;
 
     public DailyConfigStore(Context context) {
+        this.context = context;
         prefs = context.getSharedPreferences("daily_config", Context.MODE_PRIVATE);
+    }
+
+    /**
+     * 当前选中角色 uid（R2 Phase 2）：同服双角色的任务开关按 uid 隔离。
+     * 返回 0 = 角色未知（加载早期/旧数据）→ 读写退回旧键，行为与 Phase 2 前一致。
+     */
+    private long currentUid(String fpid) {
+        try {
+            return RoleStore.activeRoleUid(context, fpid);
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    /**
+     * 角色配置键：{@code acc:<fpid>:<sid>:<uid>}（uid&gt;0）；
+     * uid&lt;=0 退化为旧键 {@code acc:<fpid>:<sid>}（旧数据/回滚兼容）。
+     */
+    static String roleConfigKey(String fpid, long serverid, long uid) {
+        return uid > 0L
+                ? "acc:" + fpid + ":" + serverid + ":" + uid
+                : "acc:" + fpid + ":" + serverid;
     }
 
     /** 读取元配置（模板）。null → 用全任务默认值初始化。 */
@@ -47,22 +71,108 @@ public class DailyConfigStore {
         return readJson("acc:" + fpid);
     }
 
-    /** 角色（区服）维度配置：acc:<fpid>:<serverid>，互不覆盖。 */
-    public Map<String, Boolean> roleConfig(String fpid, long serverid) {
-        Map<String, Boolean> role = readJson("acc:" + fpid + ":" + serverid);
-        if (role != null) return role;
-        // 迁移：旧整号配置作为默认；否则用元配置模板初始化
-        Map<String, Boolean> legacy = readJson("acc:" + fpid);
-        if (legacy == null) {
-            legacy = readJson("meta");
-            if (legacy == null) return null;
+    /**
+     * 有效配置（纯函数）：以本地已存配置为底，用全部已知任务 id 补齐缺失键，
+     * 缺省值取 {@link DailyTasks.TaskDef#enabledByDefault}。
+     *
+     * <p>背景（2026-10-28 功能型 bug）：服务器执行依据是 App 全量上传的
+     * {@code roles[].config}；历史配置可能是稀疏 map（如只有 {@code {"gather":true}}），
+     * 整包上传后服务端读不到 barracks/intel/arena 等键 → 判「配置未启用」，
+     * 而 App 里开关却显示为开。本函数把「本地生效配置」对齐成完整项，App 显示、
+     * 服务器上传、能力判断三处统一读它。
+     *
+     * <p>不修改入参；返回顺序 = 入参已有键序（保留未知/旧键，非破坏性）+ 缺失任务按
+     * {@code defs} 顺序追加；对完整配置幂等（返回值与入参等值）。
+     *
+     * @param sparse 本地配置（可为 null）
+     * @param defs   全部已知任务（通常 {@link DailyTasks#all()}）
+     */
+    public static Map<String, Boolean> fillMissing(Map<String, Boolean> sparse,
+                                                   List<DailyTasks.TaskDef> defs) {
+        Map<String, Boolean> out = new LinkedHashMap<>();
+        if (sparse != null) out.putAll(sparse);
+        if (defs != null) {
+            for (DailyTasks.TaskDef d : defs) {
+                if (d == null || d.id == null) continue;
+                if (!out.containsKey(d.id)) out.put(d.id, d.enabledByDefault);
+            }
         }
-        writeJson("acc:" + fpid + ":" + serverid, legacy);
+        return out;
+    }
+
+    /** 任务默认开关（DailyTasks.TaskDef.enabledByDefault；未知 id → false）。 */
+    public static boolean defaultOn(String fnId) {
+        if (fnId == null) return false;
+        for (DailyTasks.TaskDef d : DailyTasks.all()) {
+            if (d.id.equals(fnId)) return d.enabledByDefault;
+        }
+        return false;
+    }
+
+    /**
+     * 有效开关口径（纯函数，UI 显示与服务器执行同源）：显式配置值优先；
+     * 未配置（null/缺键）时回落到 {@code implemented && TaskDef.enabledByDefault}，
+     * 与日常页 HomeActivity.fnOn 完全一致。
+     */
+    public static boolean effectiveOn(Map<String, Boolean> cfg, FnRegistry.Fn fn) {
+        if (fn == null) return false;
+        Boolean on = cfg == null ? null : cfg.get(fn.id);
+        return on == null ? (fn.implemented && defaultOn(fn.id)) : on;
+    }
+
+    /**
+     * 有效角色配置（Android 读盘版）：{@link #roleConfig} 读出的稀疏/旧配置补齐为
+     * 完整配置后回写本地并返回。
+     *
+     * <p>读取链路保持原样（含 acc:&lt;fpid&gt; / meta 的历史迁移，见 {@link #roleConfig}）；
+     * 仅在补齐前后不一致时写盘，避免每次读都触发 SharedPreferences 写。
+     */
+    public Map<String, Boolean> effectiveRoleConfig(String fpid, long serverid,
+                                                    List<DailyTasks.TaskDef> defs) {
+        return effectiveRoleConfig(fpid, serverid, currentUid(fpid), defs);
+    }
+
+    /** 角色 uid 维度的有效配置（稀疏/旧配置补齐为全量后写回**该 uid 键**）。 */
+    public Map<String, Boolean> effectiveRoleConfig(String fpid, long serverid, long uid,
+                                                    List<DailyTasks.TaskDef> defs) {
+        Map<String, Boolean> raw = roleConfig(fpid, serverid, uid);
+        Map<String, Boolean> filled = fillMissing(raw, defs);
+        if (raw == null || !raw.equals(filled)) {
+            writeJson(roleConfigKey(fpid, serverid, uid > 0L ? uid : currentUid(fpid)), filled);
+        }
+        return filled;
+    }
+
+    /** 角色（区服）维度配置：acc:<fpid>:<serverid>（uid 维度由当前选中角色解析）。 */
+    public Map<String, Boolean> roleConfig(String fpid, long serverid) {
+        return roleConfig(fpid, serverid, currentUid(fpid));
+    }
+
+    /**
+     * 角色配置（R2 Phase 2）：优先 {@code acc:<fpid>:<sid>:<uid>}；miss 时按
+     * 旧 sid 键 → 整号键 → 元模板 依次回退，并**惰性迁移**到 uid 键（旧键保留供回滚/旧版）。
+     */
+    public Map<String, Boolean> roleConfig(String fpid, long serverid, long uid) {
+        String key = roleConfigKey(fpid, serverid, uid);
+        Map<String, Boolean> role = readJson(key);
+        if (role != null) return role;
+        // 迁移：旧 sid 键（同服多角色共享的旧配置）→ 旧整号 → 元模板
+        Map<String, Boolean> legacy = null;
+        if (uid > 0L) legacy = readJson(roleConfigKey(fpid, serverid, 0L));
+        if (legacy == null) legacy = readJson("acc:" + fpid);
+        if (legacy == null) legacy = readJson("meta");
+        if (legacy == null) return null;
+        writeJson(key, legacy);
         return legacy;
     }
 
     public void saveRoleConfig(String fpid, long serverid, Map<String, Boolean> config) {
-        writeJson("acc:" + fpid + ":" + serverid, config);
+        saveRoleConfig(fpid, serverid, currentUid(fpid), config);
+    }
+
+    /** 保存某角色 uid 的配置（uid&lt;=0 → 旧键，行为不变）。 */
+    public void saveRoleConfig(String fpid, long serverid, long uid, Map<String, Boolean> config) {
+        writeJson(roleConfigKey(fpid, serverid, uid), config);
     }
 
     /**
@@ -71,15 +181,24 @@ public class DailyConfigStore {
      */
     public void migrateRole(String fpid, long fromSid, long toSid) {
         if (fpid == null || fpid.isEmpty() || fromSid == toSid) return;
-        Map<String, Boolean> from = readJson("acc:" + fpid + ":" + fromSid);
-        if (from == null || from.isEmpty()) return;
-        Map<String, Boolean> to = readJson("acc:" + fpid + ":" + toSid);
-        if (to == null) to = new LinkedHashMap<>();
-        for (Map.Entry<String, Boolean> e : from.entrySet()) {
-            if (!to.containsKey(e.getKey())) to.put(e.getKey(), e.getValue());
+        String fromPrefix = "acc:" + fpid + ":" + fromSid;
+        String toPrefix = "acc:" + fpid + ":" + toSid;
+        java.util.Map<String, ?> all = prefs.getAll();
+        android.content.SharedPreferences.Editor ed = prefs.edit();
+        boolean changed = false;
+        for (java.util.Map.Entry<String, ?> e : all.entrySet()) {
+            String k = e.getKey();
+            if (k == null) continue;
+            // 旧 sid 键（acc:fpid:sid）与 uid 子键（acc:fpid:sid:uid）都迁到新 sid，保留 uid 段
+            if (!k.equals(fromPrefix) && !k.startsWith(fromPrefix + ":")) continue;
+            String target = toPrefix + k.substring(fromPrefix.length());
+            if (!all.containsKey(target) && e.getValue() instanceof String) {
+                ed.putString(target, (String) e.getValue());
+            }
+            ed.remove(k);
+            changed = true;
         }
-        writeJson("acc:" + fpid + ":" + toSid, to);
-        prefs.edit().remove("acc:" + fpid + ":" + fromSid).apply();
+        if (changed) ed.apply();
     }
 
     public void saveAccountConfig(String fpid, Map<String, Boolean> config) {
@@ -105,7 +224,7 @@ public class DailyConfigStore {
      */
     public SyncReport syncRoleToMeta(String fpid, long serverid, Map<String, Boolean> meta) {
         SyncReport r = new SyncReport();
-        Map<String, Boolean> acc = readJson("acc:" + fpid + ":" + serverid);
+        Map<String, Boolean> acc = roleConfig(fpid, serverid);
         if (acc == null) acc = new LinkedHashMap<>();
         Map<String, Boolean> result = new LinkedHashMap<>();
         for (Map.Entry<String, Boolean> e : meta.entrySet()) {
@@ -118,7 +237,7 @@ public class DailyConfigStore {
             if (!meta.containsKey(key)) r.removed++;
         }
         saveRoleConfig(fpid, serverid, result);
-        Map<String, Boolean> verify = readJson("acc:" + fpid + ":" + serverid);
+        Map<String, Boolean> verify = roleConfig(fpid, serverid);
         r.valid = verify != null && verify.equals(meta);
         if (!r.valid) r.invalidReason = "同步后校验不一致，请重试";
         return r;

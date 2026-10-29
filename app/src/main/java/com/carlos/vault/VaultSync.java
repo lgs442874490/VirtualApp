@@ -1103,7 +1103,13 @@ public final class VaultSync {
                     if (r.serverid <= 0) continue;
                     String rid = store.getRoleSettings(a.fpid, r.serverid);
                     // 任务开关（服务器按角色执行整轮的依据）
-                    Map<String, Boolean> cfg = cfgStore.roleConfig(a.fpid, r.serverid);
+                    // 有效配置（2026-10-28 功能型 bug A/B）：稀疏/旧 map 必须用全部任务默认值
+                    // 补齐后再整包上传，否则服务端读不到 barracks/intel/arena 等键会判「配置未启用」，
+                    // 而 App 侧开关按默认值显示为开，形成“开了却不生效”的错觉。
+                    // R2 Phase 2：按该角色 uid 取本地配置（同服双角色各自上传，不再同一 sid 覆盖）
+                    Map<String, Boolean> cfg = cfgStore.effectiveRoleConfig(
+                            a.fpid, r.serverid, r.uid,
+                            com.carlos.vault.daily.DailyTasks.all());
                     // 角色行 JSON 由纯函数组装（M2b 新增 name/level/power/enabled 账号池
                     // 元数据；旧服务器忽略未知字段，前向兼容；旧字段键序/格式不变）
                     JSONObject ro = new JSONObject(roleFields(r, rid, cfg));
@@ -1112,7 +1118,7 @@ public final class VaultSync {
                     for (com.carlos.vault.daily.FnRegistry.Fn fn
                             : com.carlos.vault.daily.FnRegistry.all()) {
                         JSONObject p = com.carlos.vault.daily.FnParams
-                                .params(ctx, a.fpid, r.serverid, fn.id);
+                                .params(ctx, a.fpid, r.serverid, r.uid, fn.id);
                         if (p.length() > 0) prm.put(fn.id, p);
                     }
                     // 批次10/11：统一编队库作为角色保留参数随 params 上传（字符串 JSON）。

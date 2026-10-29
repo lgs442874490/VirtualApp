@@ -232,15 +232,26 @@ public final class VaultHttpApi {
                     for (String fn : cfg.keySet()) {
                         cfgMap.put(fn, cfg.optBoolean(fn, false));
                     }
-                    a.roleConfig.put(rsid, cfgMap);
                     JSONObject prm = r.optJSONObject("params");
+                    java.util.Map<String, String> prmMap = null;
                     if (prm != null) {
-                        java.util.Map<String, String> prmMap = new java.util.LinkedHashMap<>();
+                        prmMap = new java.util.LinkedHashMap<>();
                         for (String fn : prm.keySet()) {
                             JSONObject p = prm.optJSONObject(fn);
                             if (p != null && p.length() > 0) prmMap.put(fn, p.toString());
                         }
-                        a.roleParams.put(rsid, prmMap);
+                    }
+                    // R2 Phase 2：带 uid 的角色行写 per-uid 表（同服双角色各自独立）；
+                    // 旧 App（无 uid）仍写 sid 表=该区服默认，保持继承语义。
+                    long rsidNum = parseSid(rsid);
+                    long ruidNum = parseSid(ruid);
+                    if (ruidNum > 0L && rsidNum > 0L) {
+                        String uidKey = VaultStore.roleUidConfigKey(rsidNum, ruidNum);
+                        a.roleConfigByUid.put(uidKey, cfgMap);
+                        if (prmMap != null) a.roleParamsByUid.put(uidKey, prmMap);
+                    } else {
+                        a.roleConfig.put(rsid, cfgMap);
+                        if (prmMap != null) a.roleParams.put(rsid, prmMap);
                     }
                 }
             }
@@ -333,14 +344,91 @@ public final class VaultHttpApi {
         String wantFpid = str(fields, "fpid");
         JSONObject data = new JSONObject();
         data.put("accounts", statusAccountsJson(wantFpid));
+        // R2 Phase 2（2026-10-29）：状态键内部按角色 uid 隔离，但 App 契约不变——
+        // 把「App 当前选中角色（activeUid）」的角色级任务状态投影成旧键（fpid:sid）返回；
+        // 其它角色的任务状态不下发（App 只展示当前角色；切角色后 activeUid 变化自动切换投影）。
+        // srv:* 等新契约键（asset/formation 已按 uid）保持原样下发。
+        Map<String, Long> activeUids = activeUidByFpid(wantFpid);
         JSONObject states = new JSONObject();
         for (Map.Entry<String, Object> e : stateStore.snapshot().entrySet()) {
+            String key = e.getKey();
             if (wantFpid != null && !wantFpid.isEmpty()
-                    && !e.getKey().contains(":" + wantFpid + ":")) continue;
-            states.put(e.getKey(), e.getValue());
+                    && !key.contains(":" + wantFpid + ":")) continue;
+            String projected = projectRoleStateKey(key, activeUids);
+            if (projected == null) {
+                states.put(key, e.getValue());          // 非角色级键：原样下发
+            } else if (!projected.isEmpty()) {
+                states.put(projected, e.getValue());    // active 角色：投影为旧键
+            }
+            // 空串 = 非 active 角色的任务状态：不下发（切角色后再生效）
         }
         data.put("states", states);
         return data;
+    }
+
+    /** App 可消费的“任务状态”family（按角色 uid 隔离，需要投影给 App）。 */
+    private static final java.util.Set<String> ROLE_STATE_FAMILIES = new java.util.HashSet<>(
+            java.util.Arrays.asList("mod", "log", "st", "todo", "res", "rallies",
+                    "questprog", "questdone", "questts", "summary", "act", "boxes"));
+
+    /** fpid（可空=全部）→ activeUid（0=未知）。 */
+    private Map<String, Long> activeUidByFpid(String wantFpid) {
+        Map<String, Long> out = new java.util.LinkedHashMap<>();
+        try {
+            for (SessionControl.SessionStatus s : keeper.status()) {
+                if (wantFpid != null && !wantFpid.isEmpty() && !wantFpid.equals(s.fpid)) continue;
+                long uid = 0L;
+                try {
+                    String a = s.activeUid == null ? "" : s.activeUid.trim();
+                    if (!a.isEmpty()) uid = Long.parseLong(a);
+                } catch (Throwable ignored) {
+                }
+                out.put(s.fpid, uid);
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /**
+     * 角色级任务状态键 → 旧键投影。
+     *
+     * @return null=非角色级键（原样下发）；空串=属于非 active 角色（不下发）；其它=投影后的旧键
+     */
+    static String projectRoleStateKey(String key, Map<String, Long> activeUids) {
+        if (key == null || key.isEmpty() || activeUids == null || activeUids.isEmpty()) return null;
+        String[] p = key.split(":");
+        if (p.length < 4) return null;
+        String family = p[0];
+        if (!ROLE_STATE_FAMILIES.contains(family)) return null;
+        int idx;                    // fpid 的位置
+        if ("st".equals(family)) {
+            idx = 2;                // st:<day>:<fpid>:<sid>:<uid>:<fn…>
+        } else {
+            idx = 1;                // <family>:<fpid>:<sid>:<uid>:<rest…>
+        }
+        if (p.length < idx + 3) return null;    // 没有 uid 段 = 旧键，原样下发
+        String fpid = p[idx];
+        Long activeUid = activeUids.get(fpid);
+        long uid = parseUidSafe(p[idx + 2]);
+        if (uid <= 0L || activeUid == null || activeUid <= 0L) return null;
+        if (uid != activeUid) return "";
+        StringBuilder legacy = new StringBuilder();
+        int skip = idx + 2;     // 去掉 uid 段
+        for (int i = 0; i < p.length; i++) {
+            if (i == skip) continue;
+            if (legacy.length() > 0) legacy.append(':');
+            legacy.append(p[i]);
+        }
+        return legacy.toString();
+    }
+
+    private static long parseUidSafe(String s) {
+        try {
+            return s == null ? 0L : Long.parseLong(s.trim());
+        } catch (Throwable t) {
+            return 0L;
+        }
     }
 
     private JSONArray statusAccountsJson(String wantFpid) {
@@ -367,9 +455,10 @@ public final class VaultHttpApi {
             // M1 扩展（契约 §3.5）：每账号角色运行态 + 角色池 roles（旧字段保留，App v4.1.4 不受影响）。
             // 注意：旧 state 是字符串（引擎态），不能被同名对象覆盖 —— 新对象用 roleState 键。
             o.put("roleState", roleStateJson(keeper.roleRuntime(s.fpid, s.sid, s.activeUid)));
-            // P7：战争状态摘要（无实例/未挂载 = null，App 端按未知处理）
+            // P7：战争状态摘要（Phase2B 按 active 角色实例；无实例/未挂载 = null，App 端按未知处理）
             try {
-                JSONObject war = ServerWarState.summaryJson(s.fpid, parseSid(s.sid));
+                JSONObject war = ServerWarState.summaryJson(s.fpid, parseSid(s.sid),
+                        parseUidSafe(s.activeUid));
                 o.put("warState", war == null ? JSONObject.NULL : war);
             } catch (Throwable t) {
                 o.put("warState", JSONObject.NULL);
@@ -484,7 +573,10 @@ public final class VaultHttpApi {
             data.put("state", sessionStateOf(acc.fpid));
             Object last = stateStore.snapshot().get("srv:lastrun:" + acc.fpid);
             data.put("lastRun", last instanceof Number ? ((Number) last).longValue() : 0L);
-            Map<String, Boolean> cfg = acc.roleConfig.get(sid);
+            // R2 Phase 2：按 active 角色返回生效配置（uid 优先 → 旧 sid 表回退 → 任务默认）。
+            long sidNum = parseSid(sid);
+            long uidNum = parseSid(acc.activeUid);
+            Map<String, Boolean> cfg = VaultStore.roleConfigOf(acc, sidNum, uidNum);
             JSONObject config = new JSONObject();
             if (cfg != null) {
                 for (Map.Entry<String, Boolean> e : cfg.entrySet()) {
@@ -492,7 +584,8 @@ public final class VaultHttpApi {
                 }
             }
             data.put("config", config);
-            Map<String, String> prm = acc.roleParams.get(sid);
+            data.put("configScope", VaultStore.roleConfigScope(acc, sidNum, uidNum));
+            Map<String, String> prm = VaultStore.roleParamsOf(acc, sidNum, uidNum);
             JSONObject params = new JSONObject();
             if (prm != null) {
                 for (Map.Entry<String, String> e : prm.entrySet()) {
@@ -545,17 +638,18 @@ public final class VaultHttpApi {
         JSONArray arr = new JSONArray();
         java.util.LinkedHashSet<String> emitted = new java.util.LinkedHashSet<>();
         for (VaultStore.RoleEntry r : a.roles.values()) {
-            arr.put(roleJson(a.fpid, r));
+            arr.put(roleJson(a, r));
             emitted.add(VaultStore.roleKey(r.sid, r.uid));
         }
         if (arr.length() == 0 && a.activeSid != null && !a.activeSid.isEmpty()) {
-            arr.put(roleJson(a.fpid,
+            arr.put(roleJson(a,
                     new VaultStore.RoleEntry(a.activeSid, a.activeUid == null ? "" : a.activeUid)));
         }
         return arr;
     }
 
-    private JSONObject roleJson(String fpid, VaultStore.RoleEntry r) {
+    /** 角色池行（R2 Phase 2 追加 config/configScope 有效配置；旧 App 忽略未知字段）。 */
+    private JSONObject roleJson(VaultStore.Account a, VaultStore.RoleEntry r) {
         JSONObject o = new JSONObject();
         o.put("sid", r.sid);
         o.put("uid", r.uid);
@@ -565,7 +659,21 @@ public final class VaultHttpApi {
         o.put("enabled", r.enabled);
         o.put("antibanEnabled", r.antibanEnabled);   // P1：防封保护开关
         o.put("pause_resume_at", isoOrNull(r.pauseResumeAt));   // P1：暂停自动恢复时刻（ISO-8601，可空）
-        o.put("state", roleStateJson(keeper.roleRuntime(fpid, r.sid, r.uid)));
+        o.put("state", roleStateJson(keeper.roleRuntime(a == null ? "" : a.fpid, r.sid, r.uid)));
+        // R2 Phase 2：按角色返回生效任务开关（uid 优先 → 旧 sid 表回退），供 App 角色管理展示。
+        if (a != null) {
+            long rsid = parseSid(r.sid);
+            long ruid = parseSid(r.uid);
+            Map<String, Boolean> eff = VaultStore.roleConfigOf(a, rsid, ruid);
+            JSONObject cfg = new JSONObject();
+            if (eff != null) {
+                for (Map.Entry<String, Boolean> e : eff.entrySet()) {
+                    cfg.put(e.getKey(), Boolean.TRUE.equals(e.getValue()));
+                }
+            }
+            o.put("config", cfg);
+            o.put("configScope", VaultStore.roleConfigScope(a, rsid, ruid));
+        }
         return o;
     }
 

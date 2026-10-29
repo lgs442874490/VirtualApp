@@ -1235,6 +1235,11 @@ public class AccountVaultActivity extends Activity {
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
         if (resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        // 鸿蒙兼容（2026-10-29）：克隆页「选择本地 APK」选包结果 → 校验并装入容器
+        if (com.carlos.vault.gameupdate.GameCloneGuide.handlePickResult(
+                this, requestCode, resultCode, data, engine, this::refresh)) {
+            return;
+        }
         Uri uri = data.getData();
         if (requestCode == REQ_IMPORT_FILE) {
             String text = readText(uri);
@@ -1578,7 +1583,18 @@ public class AccountVaultActivity extends Activity {
                     @Override protected String doInBackground(Void... p) { return engine.installGameFromSystem(); }
                     @Override protected void onPostExecute(String err) {
                         cloning.dismiss();
-                        toast(err == null ? "克隆完成 ✓" : ("克隆失败：" + err));
+                        if (err == null) {
+                            toast("克隆完成 ✓");
+                        } else if (com.carlos.vault.gameupdate.GameCloneFallback.isMissingGuide(err)
+                                || com.carlos.vault.gameupdate.GameCloneFallback.isNativePackageMissing(err)) {
+                            // 2026-10-29 鸿蒙：应用市场装的是鸿蒙版（HAP），安卓容器看不到。
+                            // 不再丢一句「找不到安装包」，给出原因 + 选择本地 APK / 下载安卓版两条出路。
+                            com.carlos.vault.gameupdate.GameCloneGuide.showMissingDialog(
+                                    AccountVaultActivity.this, err, engine,
+                                    AccountVaultActivity.this::refresh);
+                        } else {
+                            toast("克隆失败：" + err);
+                        }
                         refresh();
                     }
                 }.execute();

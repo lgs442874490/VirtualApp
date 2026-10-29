@@ -8,7 +8,10 @@ import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
 import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vaultserver.monitor.TaskTrace;
 import com.carlos.vaultserver.task.AssetStateProjector;
+import com.carlos.vaultserver.task.RoleKey;
 import com.carlos.vaultserver.task.ServerNotifyHistory;
+import com.carlos.vaultserver.task.ServerTasks;
+import com.carlos.vaultserver.task.TaskContext;
 import com.carlos.vaultserver.task.TaskWakeRouter;
 
 import org.json.JSONObject;
@@ -74,6 +77,11 @@ public final class SessionKeeper implements SessionControl,
     /** 资产库 state 投影最小写间隔（≤1 次/秒；节流器只写最后一帧）。 */
     private static final long ASSET_PROJECTION_MIN_INTERVAL_MS = 1000L;
 
+    /** Phase 1（2026-10-29）：兄弟角色（非主控）联盟科技捐献节拍，与主控节奏 alliance_donate=30s 对齐。 */
+    static final long ROLE_DONATE_INTERVAL_MILLIS = 30_000L;
+    /** 与 TaskCadenceScheduler.INIT_GRACE_MILLIS 对齐：登录后 20s 内不派任务（等 init 推送）。 */
+    static long ROLE_INIT_GRACE_MILLIS = 20_000L;
+
     /**
      * 资产库 state 投影调度器（全进程单线程 daemon）：监听回调在 engine inbound 线程上，
      * 不阻塞也不做 IO；节流到期后由本线程把「最新快照」写入 StateStore。
@@ -111,6 +119,19 @@ public final class SessionKeeper implements SessionControl,
     static String sessionKey(String fpid, String sid, String uid) {
         long u = parseUid(uid);
         return fpid + "|" + (sid == null ? "" : sid) + "|" + (u > 0 ? String.valueOf(u) : "");
+    }
+
+    /**
+     * 角色级任务开关（Phase 1 2026-10-29；与 {@code TaskCadenceScheduler.enabledTaskIds} 同口径的轻量版）：
+     * roleConfig 显式值优先，缺省回退任务目录默认。用于兄弟角色按角色跑联盟科技捐献前的门控。
+     */
+    static boolean roleTaskEnabled(VaultStore.Account acc, long sid, String fn) {
+        if (acc == null || fn == null || fn.isEmpty()) return false;
+        Map<String, Boolean> cfg = acc.roleConfig.get(String.valueOf(sid));
+        Boolean explicit = cfg == null ? null : cfg.get(fn);
+        if (explicit != null) return explicit;
+        ServerTasks.TaskDef def = ServerTasks.byId(fn);
+        return def != null && def.enabledByDefault;
     }
 
     private static String norm(String s) {
@@ -317,6 +338,8 @@ public final class SessionKeeper implements SessionControl,
         volatile long nextWarCfgAt;
         /** 下次全量采集时刻（登录后 3s 首采，之后每 10 分钟）。 */
         volatile long nextCaptureAt;
+        /** Phase 1（2026-10-29）：兄弟角色（非主控）下次联盟科技捐献时刻。 */
+        volatile long nextRoleDonateAt;
         volatile long stateSince = System.currentTimeMillis();
         volatile String state = WjdrEngine.STATE_OFFLINE;
         /**
@@ -428,7 +451,9 @@ public final class SessionKeeper implements SessionControl,
                 if (!wantOnline || !WjdrEngine.STATE_ONLINE.equals(eng.sessionState())) return;
                 long sd = resolveSid();
                 if (sd <= 0L) return;   // 登录未落地：sid 未知，跳过（不写任何状态）
-                wakeRouter.onNotify(fp, sd, proto);
+                // R2 Phase 2：唤醒键按角色 uid 隔离（同服双角色各自唤醒，不互相覆盖）。
+                long uid = roleUid > 0L ? roleUid : wantUid;
+                wakeRouter.onNotify(fp, sd, uid, proto);
             });
             FileLog.info("推送唤醒钩子已挂载 {}", key);
         }
@@ -696,9 +721,11 @@ public final class SessionKeeper implements SessionControl,
                     } catch (Throwable ignored) {
                     }
                     // W9：战争/驻防事实迁移——资产库联盟域行军作为第二事实源（与原始推送幂等去重）
+                    // Phase2B：按角色实例同步（同服双角色各自一份战争态，互不覆盖）
                     try {
-                        com.carlos.vaultserver.ServerWarState.syncAssets(fpid, resolveSid(), lib,
-                                engine.lastUid());
+                        long warUid = roleUid > 0L ? roleUid : wantUid;
+                        com.carlos.vaultserver.ServerWarState.syncAssets(fpid, resolveSid(), warUid,
+                                lib, engine.lastUid());
                     } catch (Throwable ignored) {
                     }
                 });
@@ -870,55 +897,99 @@ public final class SessionKeeper implements SessionControl,
                     // 联盟态势推送只会到达"在该联盟视野内"的角色会话，兄弟角色会话也必须监听，
                     // 否则会出现「目标一直在打人但没有任何通知」。attachWarHook 幂等（每会话至多一个）。
                     attachWarHook();
-                    // 同 fpid 多会话（M1d）：App 消费的 state 键（res:/todo:/mod:… 均为
-                    // fpid:sid 键型，/state 契约不变）只由 active 角色会话写入——
-                    // 兄弟角色会话保持「占位在线」（连接/心跳/重连），不执行任务，
-                    // 避免同区服多角色互相覆盖采集状态。
-                    if (!isActiveRoleWriter()) break;
-                    // 互助/开盾惰性挂载（成为写入方才挂；按真实 sid，默认角色登录时固化实际区服）
-                    if (help == null) {
-                        help = new ServerHelpResponder(fpid, resolveSid(), stateStore);
-                        help.attach(engine);
+                    // 互助响应器：所有在线角色会话各自挂载（Phase 1 起状态键按角色 uid 隔离）。
+                    ensureHelp(engine);
+                    // R2 Phase 2（2026-10-29）：VAULT_PER_ROLE=on 时所有在线角色各自跑整轮/节奏/采集；
+                    // off（默认）保持现网“只 active 角色执行、兄弟角色占位在线 + 联盟互助/捐献”行为。
+                    boolean active = isActiveRoleWriter();
+                    boolean perRole = com.carlos.vaultserver.task.RoundScheduler.perRoleEnabled();
+                    if (!perRole && !active) {
+                        ServerHelpResponder siblingHelp = help;
+                        if (siblingHelp != null) siblingHelp.tick(engine);
+                        roleScopedDonateTick(engine);
+                        break;
                     }
-                    if (shield == null) {
-                        shield = new ServerShieldResponder(fpid, resolveSid(), stateStore, store);
-                        shield.attach(engine);
+                    long uidForRole = roleUid > 0L ? roleUid : wantUid;
+                    // R2 Phase 2B：开盾按角色独立（每个角色自己城市受攻击各自开盾；键带 uid，
+                    // 主控镜像 App 旧键）；perRole=off 时仍只主控角色，保持现网行为。
+                    if (perRole || active) {
+                        // 开盾惰性挂载（按真实 sid + 角色 uid；主控角色双写 App 旧键）
+                        if (shield == null) {
+                            shield = new ServerShieldResponder(fpid, resolveSid(), uidForRole,
+                                    stateStore, store, this::isActiveRoleWriter);
+                            shield.attach(engine);
+                        }
+                        // 反应式开盾优先于采集/互助：攻击行军按分钟计，开盾早一秒是一秒
+                        ServerShieldResponder s = shield;
+                        if (s != null) s.tick(engine);
                     }
-                    // P7 战争状态对等：推送钩子 + 退出判定 + p:war.* 参数热载（60s 一次）
-                    if (war == null) {
-                        war = ServerWarState.forRole(fpid, resolveSid());
-                        war.attach(engine);
+                    // 战争态（WARTIME 让位）：用户口径（2026-10-29）——**只有开启守护盟友且实盘
+                    // （enabled && !dry_run，需要用行军队列去驻防盟友）的账号才触发**，且只在守护宿主
+                    // （主控角色）上实例化；未开守护/演练/兄弟角色一律不进入战争态，避免被联盟战场
+                    // 推送无谓地推入战时让位、把日常任务停掉。
+                    boolean warWanted = active
+                            && com.carlos.vaultserver.guardian.ServerGuardianEngine.queueDefenseActive(
+                                    store.find(fpid), resolveSid(), uidForRole);
+                    if (warWanted) {
+                        if (war == null) {
+                            war = ServerWarState.forRole(fpid, resolveSid(), uidForRole);
+                            war.attach(engine);
+                            FileLog.info("战争态实例挂载 role={}（守护盟友实盘，需要队列驻防）", key);
+                        }
+                        long nowMs = System.currentTimeMillis();
+                        ServerWarState w = war;
+                        if (w != null) {
+                            if (nowMs >= nextWarCfgAt) {
+                                VaultStore.Account warAcc = store.find(fpid);
+                                if (warAcc != null) {
+                                    ServerWarState.configure(warAcc, resolveSid(), uidForRole);
+                                }
+                                nextWarCfgAt = nowMs + 60_000L;
+                            }
+                            w.tick(nowMs);
+                        }
+                    } else if (war != null) {
+                        // 守护未开启/演练/非宿主：注销战争态实例，任务不再被战时让位（可随时再开）
+                        ServerWarState w = war;
+                        war = null;
+                        try {
+                            ServerWarState.unregister(fpid, resolveSid(), uidForRole);
+                        } catch (Throwable ignored) {
+                        }
+                        FileLog.info("战争态实例注销 role={}（守护盟友未实盘开启/非宿主，不触发战争态）",
+                                key);
                     }
-                    long nowMs = System.currentTimeMillis();
-                    if (nowMs >= nextWarCfgAt) {
-                        VaultStore.Account warAcc = store.find(fpid);
-                        if (warAcc != null) ServerWarState.configure(warAcc, resolveSid());
-                        nextWarCfgAt = nowMs + 60_000L;
+                    // 守护盟友 P0（批次9）：账号级单实例（同一联盟战场只驻防一次），仅主控角色运行；
+                    // 状态键按角色 uid（主控镜像旧键，App 展示不变）。
+                    if (active) {
+                        if (guardian == null) {
+                            guardian = new com.carlos.vaultserver.guardian.ServerGuardianEngine(
+                                    fpid, resolveSid(), uidForRole, stateStore, store,
+                                    this::isActiveRoleWriter);
+                            guardian.attach(engine);
+                        }
+                        com.carlos.vaultserver.guardian.ServerGuardianEngine g = guardian;
+                        if (g != null) g.tick(engine);
                     }
-                    war.tick(nowMs);
-                    // 反应式开盾优先于采集/互助：攻击行军按分钟计，开盾早一秒是一秒
-                    ServerShieldResponder s = shield;
-                    if (s != null) s.tick(engine);
-                    // 守护盟友 P0（批次9）：钩子只入账（默认关，零请求）；tick 做配置热载/内存清理
-                    if (guardian == null) {
-                        guardian = new com.carlos.vaultserver.guardian.ServerGuardianEngine(
-                                fpid, resolveSid(), stateStore, store);
-                        guardian.attach(engine);
-                    }
-                    com.carlos.vaultserver.guardian.ServerGuardianEngine g = guardian;
-                    if (g != null) g.tick(engine);
-                    ServerHelpResponder h = help;
                     long now = System.currentTimeMillis();
                     if (now >= nextCaptureAt) {
                         long captureSid = resolveSid();
-                        String err = CaptureTasks.captureAll(engine, stateStore, fpid, captureSid);
-                        if (err != null) FileLog.warn("采集失败 fpid={}：{}", fpid, err);
+                        // Phase 2：按角色 uid 采集（active 角色镜像旧键，App 契约不变）
+                        String err = CaptureTasks.captureAll(engine, stateStore, fpid, captureSid,
+                                uidForRole, active);
+                        if (err != null) FileLog.warn("采集失败 fpid={} role={}：{}", fpid,
+                                String.valueOf(uidForRole), err);
                         // 统一编队目录 v2（契约 §3.1/§3.2）：与周期采集一起刷新（只读、幂等），
                         // 带 uid 新键 + 旧键双写；空快照不覆盖好目录（审计 P0-6）。
                         persistFormationCatalog(this);
-                        nextCaptureAt = System.currentTimeMillis() + CaptureTasks.CAPTURE_INTERVAL_MILLIS;
+                        // 角色错峰：两个角色采集周期错开（按 uid 取 0-59s 偏移），避免同秒请求尖峰
+                        long jitter = uidForRole > 0L ? (uidForRole % 60L) * 1000L : 0L;
+                        nextCaptureAt = System.currentTimeMillis()
+                                + CaptureTasks.CAPTURE_INTERVAL_MILLIS + jitter;
                         stateStore.flush();
                     }
+                    // 互助响应（状态键按角色 uid 隔离；主控角色双写 App 旧键；开盾后执行保持原优先级）
+                    ServerHelpResponder h = help;
                     if (h != null) h.tick(engine);
                     break;
                 case WjdrEngine.STATE_RECOVERING:
@@ -938,6 +1009,56 @@ public final class SessionKeeper implements SessionControl,
                 }
                 default:
                     // logging：登录进行中；need_token：等 token 补给（token API 触发重启）
+            }
+        }
+
+        /**
+         * 互助响应器惰性挂载（Phase 1 2026-10-29）：所有在线角色会话各自挂载，
+         * 状态键按角色 uid 隔离（{@link ServerHelpResponder} 内部处理），
+         * 主控角色额外双写 App 今日页读取的旧键。挂载失败只记日志，不影响会话主流程。
+         */
+        private void ensureHelp(WjdrEngine engine) {
+            if (help != null) return;
+            try {
+                help = new ServerHelpResponder(fpid, resolveSid(), roleUid, stateStore,
+                        this::isActiveRoleWriter);
+                help.attach(engine);
+            } catch (Throwable t) {
+                FileLog.warn("互助响应器挂载失败 {}：{}", key, String.valueOf(t));
+            }
+        }
+
+        /**
+         * 非主控角色（兄弟会话）的联盟科技捐献节拍（Phase 1 2026-10-29）：
+         * 主控角色仍由 {@link com.carlos.vaultserver.task.TaskCadenceScheduler} 以旧键路径派单；
+         * 兄弟角色按角色 uid 键独立捐献，使同账号多角色的免费科技捐献次数都能被消耗
+         * （修复「非主控角色免费次数只涨不花，游戏内长期 24/25」）。
+         *
+         * <p>与节奏调度同款安全闸：登录初始化保护、账号 auto 开关、角色任务开关、战时让位；
+         * 异常吞掉只记日志，绝不影响兄弟会话的心跳/重连。
+         */
+        private void roleScopedDonateTick(WjdrEngine engine) {
+            // Phase 2（VAULT_PER_ROLE=on）：联盟科技捐献由节奏调度按角色派单（每人一份 cad 键），
+            // 这里不再重复执行，避免同一角色一轮内被捐两次。
+            if (com.carlos.vaultserver.task.RoundScheduler.perRoleEnabled()) return;
+            if (roleUid <= 0L) return;                       // 角色身份未落地：下一拍再试
+            long now = System.currentTimeMillis();
+            if (now < nextRoleDonateAt) return;
+            nextRoleDonateAt = now + ROLE_DONATE_INTERVAL_MILLIS;
+            // C4 登录初始化保护：刚上线的 20s 内服务端关键 init 推送（含 recover_resource）可能还没到
+            if (onlineSince <= 0L || now - onlineSince < ROLE_INIT_GRACE_MILLIS) return;
+            VaultStore.Account acc = store.find(fpid);
+            if (acc == null || !acc.auto) return;            // 未开启自动：保持手动语义
+            long sidNow = resolveSid();
+            if (sidNow <= 0L) return;
+            if (!roleTaskEnabled(acc, sidNow, "alliance_donate")) return;
+            if (SessionKeeper.this.wartimeYield(fpid)) return;   // P7 战时让位
+            try {
+                TaskContext tc = new TaskContext(engine, fpid, sidNow, stateStore,
+                        java.util.Collections.emptyMap(), "角色", null, roleUid);
+                ServerTasks.runAllianceDonate(tc);
+            } catch (Throwable t) {
+                FileLog.warn("兄弟角色科技捐献异常 {}：{}", key, String.valueOf(t));
             }
         }
 
@@ -1317,7 +1438,8 @@ public final class SessionKeeper implements SessionControl,
             ServerWarState w = war;
             war = null;
             if (w != null) {
-                ServerWarState.unregister(fpid, w.sid);
+                // Phase2B：按角色注销（不再误删兄弟角色实例）
+                ServerWarState.unregister(fpid, w.sid, roleUid > 0L ? roleUid : wantUid);
             }
             try {
                 engine.close();
@@ -1894,6 +2016,17 @@ public final class SessionKeeper implements SessionControl,
             sessions.remove(cur.key);
         }
         store.removeRole(fpid, role.sid, role.uid);
+        // R2 Phase 2B：角色被移除时清理其角色级状态键（防孤儿键堆积/串读）；旧键/兄弟角色键不动。
+        try {
+            long sidNum = Long.parseLong(role.sid == null ? "" : role.sid.trim());
+            long uidNum = parseUid(role.uid);
+            int removed = stateStore.removeRoleKeys(fpid, sidNum, uidNum);
+            if (removed > 0) {
+                FileLog.info("角色状态键已清理 {}：{} 个键", sessionKey(fpid, role.sid, role.uid),
+                        String.valueOf(removed));
+            }
+        } catch (Throwable ignored) {
+        }
         FileLog.info("角色移除 {}（仅工具内移除，游戏内角色未删除）",
                 sessionKey(fpid, role.sid, role.uid));
         RoleOpResult r = RoleOpResult.ok(VaultStore.RUN_STOPPED);
@@ -2100,23 +2233,47 @@ public final class SessionKeeper implements SessionControl,
         return null;
     }
 
-    /** 提交整轮（fn=null）或单任务到该账号 active 角色会话线程；返回是否受理。 */
+    /**
+     * 提交整轮（fn=null）或单任务到该账号**当前 active 角色**会话线程（旧 API 兼容）；
+     * Phase 2 起内部转成按角色寻址（{@link #submitRound(RoleKey, String, String)}）。
+     */
     public boolean submitRound(String fpid, String fn, String trigger) {
-        LiveSession ls = sessionForAccount(fpid);
+        RoleKey role = activeRole(fpid);
+        if (role == null) {
+            // 无 activeUid 的旧数据/未登录落地：保持旧语义（任意会话）
+            LiveSession ls = sessionForAccount(fpid);
+            if (ls == null) return false;
+            return submitRound(new RoleKey(fpid, ls.resolveSid(), ls.roleUid), fn, trigger);
+        }
+        return submitRound(role, fn, trigger);
+    }
+
+    /**
+     * 提交整轮（fn=null）或单任务到**指定角色**会话线程（R2 Phase 2）。
+     * 角色会话不存在/未期望在线/非 RUNNING → false，**不再 fallback 兄弟角色**（避免任务派错人）。
+     */
+    @Override
+    public boolean submitRound(RoleKey role, String fn, String trigger) {
+        if (role == null || !role.valid()) return false;
+        LiveSession ls = findRoleSession(role);
         if (ls == null || !ls.wantOnline) return false;
         if (!VaultStore.RUN_RUNNING.equals(ls.runState)) return false;   // 暂停：不执行任务
+        final RoleKey target = role;
         ls.exec.execute(() -> {
             ls.inFlight.incrementAndGet();
             try {
                 if (!WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
-                    FileLog.warn("整轮跳过 fpid={}（会话不在线）", fpid);
+                    FileLog.warn("整轮跳过 role={}（会话不在线）", target.key());
                     return;
                 }
-                VaultStore.Account acc = store.find(fpid);
+                VaultStore.Account acc = store.find(role.fpid);
                 if (acc == null) return;
                 long sid = ls.resolveSid();
                 java.util.Map<String, org.json.JSONObject> params = new java.util.LinkedHashMap<>();
-                java.util.Map<String, String> raw = acc.roleParams.get(String.valueOf(sid));
+                // Phase 2：优先按角色 uid 取参数；缺省回退该 sid 旧配置（迁移/旧 App 兼容）。
+                java.util.Map<String, String> raw = acc.roleParamsByUid != null
+                        ? acc.roleParamsByUid.get(sid + ":" + target.uid) : null;
+                if (raw == null || raw.isEmpty()) raw = acc.roleParams.get(String.valueOf(sid));
                 if (raw != null) {
                     for (java.util.Map.Entry<String, String> e : raw.entrySet()) {
                         if (e.getValue() != null && !e.getValue().isEmpty()) {
@@ -2127,15 +2284,17 @@ public final class SessionKeeper implements SessionControl,
                         }
                     }
                 }
+                // Phase 2：按角色执行（uid/active 传入 runner；旧签名保留兜底）
+                boolean active = ls.isActiveRoleWriter();
                 if ("1".equals(System.getenv("VAULT_LEGACY_ROUND"))) {
                     com.carlos.vaultserver.task.RoundRunner.runRound(
-                            ls.engine, acc, sid, stateStore, params, fn, trigger);
+                            ls.engine, acc, sid, stateStore, params, fn, trigger, target.uid, active);
                 } else {
                     com.carlos.vaultserver.task.ModularRoundRunner.runRound(
-                            ls.engine, acc, sid, stateStore, params, fn, trigger);
+                            ls.engine, acc, sid, stateStore, params, fn, trigger, target.uid, active);
                 }
             } catch (Throwable t) {
-                FileLog.warn("整轮异常 fpid={}：{}", fpid, String.valueOf(t));
+                FileLog.warn("整轮异常 role={}：{}", target.key(), String.valueOf(t));
             } finally {
                 ls.inFlight.decrementAndGet();
             }
@@ -2143,11 +2302,83 @@ public final class SessionKeeper implements SessionControl,
         return true;
     }
 
+    /** 按角色键找会话（fpid|sid|uid）；uid<=0 退回旧 active 语义。 */
+    private LiveSession findRoleSession(RoleKey role) {
+        if (role == null) return null;
+        if (role.uid > 0L) {
+            LiveSession ls = sessions.get(sessionKey(role.fpid, String.valueOf(role.sid),
+                    String.valueOf(role.uid)));
+            if (ls != null) return ls;
+        }
+        return sessionForAccount(role.fpid);
+    }
+
     /** 该账号会话线程是否正在执行任务（节奏调度防堆积用）。 */
     @Override
     public boolean executorBusy(String fpid) {
         LiveSession ls = sessionForAccount(fpid);
         return ls != null && ls.inFlight.get() > 0;
+    }
+
+    // ---------------- R2 Phase 2：按角色寻址（RoundScheduler.KeeperFacade v2） ----------------
+
+    /** 该账号所有已注册会话对应的角色（含离线/登录中；调度器再逐角色判在线）。 */
+    @Override
+    public java.util.List<RoleKey> rolesOf(String fpid) {
+        java.util.List<RoleKey> out = new java.util.ArrayList<>();
+        if (fpid == null || fpid.isEmpty()) return out;
+        for (LiveSession ls : sessions.values()) {
+            try {
+                if (!fpid.equals(ls.fpid)) continue;
+                long sid = ls.resolveSid();
+                long uid = ls.roleUid > 0L ? ls.roleUid : ls.wantUid;
+                if (sid <= 0L) continue;
+                out.add(new RoleKey(fpid, sid, uid));
+            } catch (Throwable ignored) {
+                // 单会话异常不影响其它角色
+            }
+        }
+        return out;
+    }
+
+    /** App 当前选中角色（activeSid/activeUid 优先；无会话返回 null）。 */
+    @Override
+    public RoleKey activeRole(String fpid) {
+        LiveSession ls = sessionForAccount(fpid);
+        if (ls == null) return null;
+        long sid = ls.resolveSid();
+        if (sid <= 0L) return null;
+        return new RoleKey(fpid, sid, ls.roleUid > 0L ? ls.roleUid : ls.wantUid);
+    }
+
+    /** 指定角色会话是否在线。 */
+    @Override
+    public boolean sessionOnline(RoleKey role) {
+        LiveSession ls = findRoleSession(role);
+        return ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState());
+    }
+
+    /** 指定角色登录初始化就绪时刻（0=未知/离线）。 */
+    @Override
+    public long sessionOnlineSince(RoleKey role) {
+        LiveSession ls = findRoleSession(role);
+        return ls == null ? 0L : ls.onlineSince;
+    }
+
+    /** 指定角色会话线程是否忙。 */
+    @Override
+    public boolean executorBusy(RoleKey role) {
+        LiveSession ls = findRoleSession(role);
+        return ls != null && ls.inFlight.get() > 0;
+    }
+
+    /**
+     * 指定角色是否处于战争让位态（Phase 2B 起按角色实例 fpid|sid|uid；兄弟角色互不影响）。
+     */
+    @Override
+    public boolean wartimeYield(RoleKey role) {
+        if (role == null) return true;
+        return ServerWarState.wartimeYield(role.fpid, role.sid, role.uid);
     }
 
     /** 账号当前 active 角色会话 sid（无会话 0）。 */
@@ -2189,6 +2420,27 @@ public final class SessionKeeper implements SessionControl,
         ls.yieldProbeAt = System.currentTimeMillis() + Math.max(0, probeMillis);
         FileLog.info("让位指令 {}，{}ms 后回连", ls.key, String.valueOf(probeMillis));
         return true;
+    }
+
+    /**
+     * 观察点/地图扫描用：所有处于 {@link WjdrEngine#STATE_ONLINE} 的角色会话引擎快照（只读）。
+     *
+     * <p>返回的是引擎引用，调用方只应做两件事：{@code addMessageHook} 收推送、
+     * {@code sendFireAndForget} 发地图查询；不得调用 request/close 等会改变会话语义的方法。
+     * 会话掉线/重连时引擎实例保持不变，钩子仍有效。
+     */
+    public java.util.List<WjdrEngine> onlineEngines() {
+        java.util.List<WjdrEngine> out = new java.util.ArrayList<>();
+        for (LiveSession ls : sessions.values()) {
+            try {
+                if (ls.engine != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+                    out.add(ls.engine);
+                }
+            } catch (Throwable ignored) {
+                // 单个会话异常不影响其它会话
+            }
+        }
+        return out;
     }
 
     @Override

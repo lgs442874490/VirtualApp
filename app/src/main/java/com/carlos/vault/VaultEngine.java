@@ -4,6 +4,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
+import android.os.Build;
 import android.util.Xml;
 
 import android.net.Uri;
@@ -13,6 +14,10 @@ import com.lody.virtual.remote.InstalledAppInfo;
 import com.lody.virtual.remote.VAppInstallerParams;
 import com.lody.virtual.remote.VAppInstallerResult;
 
+import com.carlos.vault.gameupdate.GameApkVerifier;
+import com.carlos.vault.gameupdate.GameCloneFallback;
+import com.carlos.vault.gameupdate.GameClientUpdateConfig;
+import com.carlos.vault.gameupdate.LocalApkScanner;
 import com.carlos.vault.license.LicenseManager;
 
 import java.io.File;
@@ -143,9 +148,115 @@ public class VaultEngine {
         return -1;
     }
 
-    /** 从系统已装的原版游戏克隆进容器（引用源APK，不复制大文件） */
+    /**
+     * 从系统已装的原版游戏克隆进容器（引用源APK，不复制大文件）。
+     *
+     * <p>2026-10-29 鸿蒙兼容：鸿蒙手机应用市场下发的是「鸿蒙版」（HAP 原生应用），
+     * 不在 Android PackageManager 可见范围内，系统查询必然失败。此时不再直接报
+     * 「未找到已安装的无尽冬日」，而是：
+     * <ol>
+     *   <li>先尝试「下载」目录里最新的官方 APK（wjdr*.apk）直接装入容器；</li>
+     *   <li>没有可用的本地包时返回带原因的引导文案（{@link GameCloneFallback}），
+     *       UI 据此弹「选择本地 APK / 下载安卓版」引导。</li>
+     * </ol>
+     */
     public String installGameFromSystem() {
-        return cloneFromSystem(GAME_PKG, "无尽冬日");
+        String err = cloneFromSystem(GAME_PKG, "无尽冬日");
+        if (err == null) return null;
+        if (!GameCloneFallback.shouldUseLocalApkFallback(err)) return err;
+        return cloneFromLocalApkFallback(err);
+    }
+
+    /**
+     * 「系统里看不到安卓版游戏」兜底：优先用「下载」目录里最新的 wjdr*.apk 克隆；
+     * 找不到可用的本地包时返回引导文案（{@link GameCloneFallback#isMissingGuide} 为 true），
+     * 交由 UI 提供 SAF 选包/官方下载入口。
+     */
+    private String cloneFromLocalApkFallback(String primaryError) {
+        File apk = null;
+        try {
+            apk = LocalApkScanner.scanDownloads();
+            if (apk == null) {
+                // Android 10+ 兜底：直接读失败/为空时查 MediaStore.Downloads
+                apk = LocalApkScanner.queryMediaStoreDownloads(
+                        ctx.getContentResolver(), ctx.getCacheDir());
+            }
+        } catch (Throwable ignored) {
+        }
+        if (apk == null) {
+            return GameCloneFallback.guideWithDetail(isHuaweiLikeDevice(), primaryError);
+        }
+        String localErr = installGameFromLocalApk(apk);
+        if (localErr == null) {
+            android.util.Log.i("GAMEUPD", "系统包不可见，已用「下载」目录的本地 APK 完成克隆: "
+                    + apk.getName() + "（" + apk.length() + "B）");
+            deleteCacheCopy(apk);
+            return null;
+        }
+        return "本地安装包克隆失败：" + localErr;
+    }
+
+    /**
+     * 用本地 APK 装入容器（首次克隆 = 全量安装；容器已有游戏 = 保数据覆盖）。
+     *
+     * <p>安装前过 {@link GameApkVerifier}：包名必须是 {@link #GAME_PKG}、versionCode 必须
+     * 高于容器内已装版（容器没装时只要求包名合法）、签名读得到时必须一致。
+     * 本地渠道包大小/sha256 与 CDN 配置不一定一致，因此只校验包名/版本/签名。
+     *
+     * @return null = 成功；否则为可直接展示的失败原因
+     */
+    public String installGameFromLocalApk(File apk) {
+        if (apk == null || !apk.isFile() || apk.length() <= 0) {
+            return "安装包不存在或为空";
+        }
+        String engErr = ensureEngineReady();
+        if (engErr != null) return engErr;
+        long installedVc = installedGameVersionCode();
+        GameClientUpdateConfig cfg = GameClientUpdateConfig.defaults();
+        cfg.sizeBytes = 0;   // 本地渠道包大小与 CDN 配置不比对
+        cfg.sha256 = "";
+        GameApkVerifier.Result vr = GameApkVerifier.verify(
+                ctx, apk, cfg, installedVc, installedGameSignature());
+        if (!vr.ok()) return vr.summary();
+        try {
+            VAppInstallerParams params = new VAppInstallerParams();
+            if (installedVc > 0) {
+                // 容器已有游戏：保数据覆盖（不 wipe）
+                params.setMode(VAppInstallerParams.MODE_INHERIT_EXISTING);
+                params.addInstallFlags(VAppInstallerParams.FLAG_INSTALL_OVERRIDE_NO_CHECK
+                        | VAppInstallerParams.FLAG_INSTALL_OVERRIDE_SKIP_ODEX);
+            }
+            VAppInstallerResult r = VirtualCore.get().installPackage(Uri.fromFile(apk), params);
+            if (r == null || r.status != VAppInstallerResult.STATUS_SUCCESS) {
+                return "安装失败: status=" + (r == null ? "null" : r.status);
+            }
+            if (!isGameInstalled()) {
+                return "安装后回读失败：容器里仍没有游戏";
+            }
+            android.util.Log.i("GAMEUPD", "本地 APK 已装入容器: " + apk.getName()
+                    + "，容器版本 " + installedGameVersionName() + "(" + installedGameVersionCode() + ")");
+            return null;
+        } catch (Throwable t) {
+            return "安装异常:" + t.getMessage();
+        }
+    }
+
+    /** MediaStore 兜底复制进 cache 的临时包，装完即删（下载目录原文件不动）。 */
+    private void deleteCacheCopy(File apk) {
+        try {
+            File cacheDir = ctx.getCacheDir();
+            if (apk != null && cacheDir != null
+                    && apk.getAbsolutePath().startsWith(cacheDir.getAbsolutePath())) {
+                //noinspection ResultOfMethodCallIgnored
+                apk.delete();
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 华为/鸿蒙机型（鸿蒙机型仍上报 HUAWEI/HONOR），用于区分引导文案。 */
+    private boolean isHuaweiLikeDevice() {
+        return GameCloneFallback.isHuaweiLike(Build.MANUFACTURER, Build.BRAND);
     }
 
     /**
@@ -358,7 +469,12 @@ public class VaultEngine {
                     com.carlos.vault.gameupdate.GameRecloneFlow.recloneBlock(
                             isNativeGameInstalled(), nativeGameVersionCode());
             if (block != com.carlos.vault.gameupdate.GameRecloneFlow.RecloneBlock.NONE) {
-                return com.carlos.vault.gameupdate.GameRecloneFlow.blockText(block);
+                // 2026-10-29 鸿蒙兼容：鸿蒙版游戏不在安卓 PackageManager 里，原生包不可见/
+                // 版本读不到时同样退到「下载」目录的本地 APK（保数据覆盖装），再不行给引导文案。
+                String localErr = cloneFromLocalApkFallback(
+                        com.carlos.vault.gameupdate.GameRecloneFlow.blockText(block));
+                if (localErr == null) return null;
+                return localErr;
             }
             String engErr = ensureEngineReady();
             if (engErr != null) return engErr;

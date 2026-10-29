@@ -73,6 +73,11 @@ public class FunctionActivity extends Activity {
     private UiStyle.Switch toggle;
     /** 采集卡副标题（配置摘要）：保存采集设置返回本页时原位刷新，无需整页重建。 */
     private TextView gatherSummaryView;
+    /** 军医所设置卡：每批治疗数量输入框（失焦/退出页面自动保存并下发）。 */
+    private EditText medicHealEt;
+    private TextView medicSummaryView;
+    /** 输入框是否有未保存改动（onPause 兜底保存用）。 */
+    private boolean medicHealDirty;
     // 每日任务专属（原日常页模块迁移）
     private LinearLayout extraBox;
     private TextView actTitle, actSub;
@@ -119,11 +124,20 @@ public class FunctionActivity extends Activity {
                     runOnUiThread(() -> {
                         try {
                             if (isFinishing() || code != 0) return;
+                            // 用户正在输入医院批量数量时不重建（会把输入框内容冲掉）
+                            if (medicHealEt != null && medicHealEt.hasFocus()) return;
                             setContentView(buildUi());
                         } catch (Throwable ignored) {
                         }
                     }));
         }
+    }
+
+    @Override
+    protected void onPause() {
+        super.onPause();
+        // 数字输入不随每次击键下发：仅用户改过时在失焦/退出页面保存（含非法回退 400）
+        saveMedicHealIfNeeded();
     }
 
     @Override
@@ -220,6 +234,15 @@ public class FunctionActivity extends Activity {
         LinearLayout root = UiComponents.pageRoot(this);
         root.addView(UiComponents.topBar(this, "功能详情", null, this::finish));
 
+        // 生效开关（口径统一，2026-10-28 功能型 bug A/C）：未配置时回落
+        // DailyTasks.TaskDef.enabledByDefault（barracks/intel/arena 等默认关），与日常页
+        // HomeActivity.fnOn 一致；读取走「有效配置」（稀疏 map 补齐全部任务键再回写）。
+        Map<String, Boolean> rawCfg = configStore.roleConfig(account.fpid, serverid);
+        Map<String, Boolean> cfg = configStore.effectiveRoleConfig(
+                account.fpid, serverid, DailyTasks.all());
+        final boolean autoOn = com.carlos.vault.daily.DailyConfigStore.effectiveOn(cfg, fn);
+        final boolean autoExplicit = rawCfg != null && rawCfg.containsKey(fn.id);
+
         // 功能 Hero：图标 + 名称/描述 + 今日状态
         LinearLayout info = UiComponents.card(this);
         info.setOrientation(LinearLayout.HORIZONTAL);
@@ -266,10 +289,14 @@ public class FunctionActivity extends Activity {
         stRow.addView(UiStyle.badge(this, stType, "● " + stText));
         long nextAt = com.carlos.vault.daily.RoleStore.schedule(this, account.fpid).nextRunAt;
         TextView next = new TextView(this);
-        next.setText(com.carlos.vault.VaultSync.isServerMode(this) ? "执行：服务器调度"
-                : nextAt > 0 ? "下次自动："
-                + new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
-                .format(new java.util.Date(nextAt)) : "下次自动：未开启");
+        // 服务器模式下明确区分“服务器自动执行 / 仅手动”：未加入自动化时不再笼统写“服务器调度”
+        if (com.carlos.vault.VaultSync.isServerMode(this)) {
+            next.setText(autoOn ? "执行：服务器调度" : "执行：仅手动（未加入自动化）");
+        } else {
+            next.setText(nextAt > 0 ? "下次自动："
+                    + new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
+                    .format(new java.util.Date(nextAt)) : "下次自动：未开启");
+        }
         next.setTextSize(11);
         next.setTextColor(UiStyle.INK2);
         next.setPadding(dp(8), 0, 0, 0);
@@ -288,9 +315,7 @@ public class FunctionActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
         root.addView(UiComponents.contentHost(this, btnRow));
 
-        // 加入自动日常
-        Map<String, Boolean> cfg = configStore.roleConfig(account.fpid, serverid);
-        Boolean on = cfg == null ? null : cfg.get(fn.id);
+        // 加入自动日常：显示口径 = 有效默认值（见上方 autoOn/autoExplicit 计算）
         LinearLayout enableRow = UiComponents.card(this);
         enableRow.setOrientation(LinearLayout.HORIZONTAL);
         enableRow.setGravity(Gravity.CENTER_VERTICAL);
@@ -317,18 +342,30 @@ public class FunctionActivity extends Activity {
         enableSub.setTextColor(UiStyle.INK2);
         enableSub.setPadding(0, dp(3), 0, 0);
         enableCol.addView(enableSub);
+        // 默认值/生效口径灰字提示（避免“看起来开着但服务器没跑”的误解）
+        TextView enableHint = new TextView(this);
+        enableHint.setText(!autoOn
+                ? (autoExplicit ? "已关闭 · 服务器不会自动执行（可随时手动执行）"
+                : "默认关闭 · 打开后服务器按节奏自动执行")
+                : (autoExplicit ? "已开启 · 服务器按节奏自动执行"
+                : "默认开启 · 可在日常页随时关闭"));
+        enableHint.setTextSize(10.5f);
+        enableHint.setTextColor(autoOn ? UiStyle.BRAND_TEXT : UiStyle.INK3);
+        enableHint.setPadding(0, dp(2), 0, 0);
+        enableCol.addView(enableHint);
         enableRow.addView(enableCol, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         final UiStyle.Switch[] swRef = new UiStyle.Switch[1];
-        toggle = new UiStyle.Switch(this, on == null || on,
+        toggle = new UiStyle.Switch(this, autoOn,
                 () -> {
                     boolean isChecked = swRef[0].isOn();
-                    Map<String, Boolean> c = configStore.roleConfig(account.fpid, serverid);
-                    if (c == null) c = configStore.metaConfig(DailyTasks.all());
+                    // 写入前先补齐为完整配置，避免稀疏 map 整包上传把其它开关冲掉
+                    Map<String, Boolean> c = configStore.effectiveRoleConfig(
+                            account.fpid, serverid, DailyTasks.all());
                     c.put(fn.id, isChecked);
                     configStore.saveRoleConfig(account.fpid, serverid, c);
                     com.carlos.vault.VaultSync.onAccountsChanged(FunctionActivity.this);
-                    toast(isChecked ? "已加入自动化任务" : "已从自动化任务移除");
+                    toast(isChecked ? "已加入自动化任务并同步服务器" : "已从自动化任务移除");
                 });
         swRef[0] = toggle;
         enableRow.addView(toggle);
@@ -475,6 +512,12 @@ public class FunctionActivity extends Activity {
         // 打开页面即刷新：借常驻会话收取该功能最新状态（只读，不执行任务动作），
         // 完成后原位重建子项卡（旧快照常停留在上次成功执行的时刻）。
         refreshOnOpen(subCard);
+
+        // 军医所专属设置卡（2026-10-28 bug3）：每批治疗数量（heal_count）+ 治疗后联盟求助
+        // （request_help）——服务端 MedicService 循环治疗按这两个 params 顶层键读取，键名不可改。
+        if ("medic".equals(fn.id)) {
+            scrollBox.addView(buildMedicConfigCard());
+        }
 
         // 狩猎专属参数卡（子项卡片之后）：等级区间 + 出击次数，纯下拉/选项，无 JSON 输入。
         // 键与执行侧 FieldTasks.hunt 及服务器狩猎引擎一致（level_min/level_max/max_times），
@@ -1650,6 +1693,174 @@ public class FunctionActivity extends Activity {
             return Math.max(0, Long.parseLong(s));
         } catch (Throwable t) {
             return 0;
+        }
+    }
+
+    // ================= 军医所设置（medic，2026-10-28 bug3） =================
+    //
+    // 服务端 MedicService.heal(tc, maxCount, immediate, requestHelp) 从角色 params 的
+    // medic 顶层键读取（键名契约锁定，不可改名/嵌套到 sub）：
+    //   heal_count   每批最多治疗数量（默认 400；范围 1-10000；服务端 0=全部，App 始终下发正数）
+    //   request_help 治疗成功后是否向联盟求助 req_queue_ask_for_help（默认 true）
+    //   immediate    保持原状，本卡不改
+    // 「自动治疗」(medic.sub.heal) 与「治疗后联盟求助」(medic 子项 help → 写顶层
+    // request_help，SubCardUi 特殊处理) 两个子开关统一在执行参数卡里切换；本卡只做数字
+    // 输入，避免同一设置出现两个编辑面导致状态互相覆盖。
+
+    /** 医院设置卡：每批治疗数量（数字输入）+ 说明（两个子开关在执行参数卡里）。 */
+    private LinearLayout buildMedicConfigCard() {
+        final JSONObject p = FnParams.params(this, account.fpid, serverid, "medic");
+        final int heal = FnParams.medicHealCount(p);
+        // 只展示默认值：打开页面不修改任何参数（服务端对缺省 heal_count 的默认值由服务端
+        // 侧统一为 400，App 不静默写配置；仅用户改动/点保存时才落库下发）。
+
+        LinearLayout card = UiStyle.card(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setPadding(dp(16), dp(14), dp(16), dp(14));
+
+        TextView title = new TextView(this);
+        title.setText("医院设置");
+        title.setTextSize(14);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.INK);
+        card.addView(title);
+
+        medicSummaryView = new TextView(this);
+        medicSummaryView.setText(medicSummaryText(heal));
+        medicSummaryView.setTextSize(12);
+        medicSummaryView.setTypeface(Typeface.DEFAULT_BOLD);
+        medicSummaryView.setTextColor(UiStyle.BRAND_TEXT);
+        medicSummaryView.setPadding(0, dp(4), 0, dp(2));
+        card.addView(medicSummaryView);
+
+        TextView tip = new TextView(this);
+        tip.setText("按每批数量治疗伤兵（1-10000，默认 400）；循环治疗直到伤兵清零或资源不足。"
+                + "「治疗后联盟求助」在上方「执行参数」里切换（默认开）。");
+        tip.setTextSize(10.5f);
+        tip.setTextColor(UiStyle.INK2);
+        tip.setPadding(0, 0, 0, dp(6));
+        card.addView(tip);
+
+        // ① 每批治疗数量：规范数字输入框（失焦/退出页面保存并下发；非法回退 400）
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(0, dp(6), 0, dp(2));
+        TextView label = new TextView(this);
+        label.setText("每批治疗数量");
+        label.setTextSize(12.5f);
+        label.setTypeface(Typeface.DEFAULT_BOLD);
+        label.setTextColor(UiStyle.INK);
+        row.addView(label, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        medicHealEt = UiStyle.searchInput(this, "1-10000");
+        medicHealEt.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        medicHealEt.setSingleLine(true);
+        medicHealEt.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        medicHealEt.setImeOptions(android.view.inputmethod.EditorInfo.IME_ACTION_DONE);
+        medicHealEt.setText(String.valueOf(heal));
+        medicHealEt.setSelection(medicHealEt.getText().length());
+        medicHealEt.addTextChangedListener(new android.text.TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int st, int c, int a) {
+            }
+
+            @Override
+            public void onTextChanged(CharSequence s, int st, int b, int c) {
+            }
+
+            @Override
+            public void afterTextChanged(android.text.Editable s) {
+                medicHealDirty = true;
+            }
+        });
+        // 保留 UiStyle.searchInput 自带的聚焦描边逻辑（自定义 listener 会覆盖它），再追加保存
+        final View.OnFocusChangeListener baseFocus = medicHealEt.getOnFocusChangeListener();
+        medicHealEt.setOnFocusChangeListener((v, hasFocus) -> {
+            if (baseFocus != null) baseFocus.onFocusChange(v, hasFocus);
+            if (!hasFocus) saveMedicHealIfNeeded();
+        });
+        medicHealEt.setOnEditorActionListener((v, actionId, event) -> {
+            if (actionId == android.view.inputmethod.EditorInfo.IME_ACTION_DONE) {
+                saveMedicHealCount(true);
+                hideKeyboard(v);
+                v.clearFocus();
+                return true;
+            }
+            return false;
+        });
+        row.addView(medicHealEt, new LinearLayout.LayoutParams(dp(120), dp(44)));
+        card.addView(row);
+
+        // ② 保存按钮（失焦/退出页面会自动保存，这里给显式入口）
+        TextView save = UiStyle.primaryBtn(this, "保存医院设置", () -> {
+            saveMedicHealCount(true);
+            hideKeyboard(medicHealEt);
+            if (medicHealEt != null) medicHealEt.clearFocus();
+        });
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+        slp.topMargin = dp(10);
+        card.addView(save, slp);
+        return card;
+    }
+
+    /** 失焦/退出页面时保存输入框：仅用户改过（medicHealDirty）才写盘，打开页面不写配置。 */
+    private void saveMedicHealIfNeeded() {
+        if (!medicHealDirty || medicHealEt == null || account == null) return;
+        saveMedicHealCount(false);
+    }
+
+    /** 规范输入框值并写入 medic.heal_count（putTopLevel 内部触发 notifySettingsChanged 下发）。 */
+    private void saveMedicHealCount(boolean showToast) {
+        if (medicHealEt == null || account == null) return;
+        String typed = medicHealEt.getText().toString().trim();
+        int v = FnParams.parseMedicHealCount(typed);
+        int typedNum;
+        try {
+            typedNum = Integer.parseInt(typed);
+        } catch (Throwable t) {
+            typedNum = Integer.MIN_VALUE;   // 非数字（空/字母）→ 视为非法
+        }
+        boolean fellBack = typedNum != v;
+        if (fellBack) {
+            // 非法/越界 → 回退默认 400 并回填输入框，保证“看到的=保存的”
+            medicHealEt.setText(String.valueOf(v));
+            medicHealEt.setSelection(medicHealEt.getText().length());
+        } else if (!String.valueOf(v).equals(typed)) {
+            // 合法但有前导零（如 0400）→ 静默规范显示，不提示错误
+            medicHealEt.setText(String.valueOf(v));
+            medicHealEt.setSelection(medicHealEt.getText().length());
+        }
+        FnParams.putTopLevel(this, account.fpid, serverid, "medic", "heal_count", v);
+        medicHealDirty = false;
+        refreshMedicSummary();
+        if (showToast) {
+            toast(fellBack ? "输入不合法，已回退 400 并保存"
+                    : "医院设置已保存并同步服务器（每批 " + v + "）");
+        }
+    }
+
+    /** 刷新医院设置摘要（当前每批数量）。 */
+    private void refreshMedicSummary() {
+        if (medicSummaryView == null) return;
+        int heal = FnParams.parseMedicHealCount(
+                medicHealEt == null ? null : medicHealEt.getText().toString());
+        medicSummaryView.setText(medicSummaryText(heal));
+    }
+
+    private static String medicSummaryText(int heal) {
+        return "每批 " + heal + " 个 · 循环治疗至伤兵清零/资源不足";
+    }
+
+    /** 收起软键盘（数字输入完成/保存后，避免键盘挡住下方卡片）。 */
+    private void hideKeyboard(View v) {
+        try {
+            android.view.inputmethod.InputMethodManager imm =
+                    (android.view.inputmethod.InputMethodManager)
+                            getSystemService(INPUT_METHOD_SERVICE);
+            if (imm != null && v != null) imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
+        } catch (Throwable ignored) {
         }
     }
 

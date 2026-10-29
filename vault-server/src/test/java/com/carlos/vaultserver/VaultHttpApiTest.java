@@ -2,6 +2,7 @@ package com.carlos.vaultserver;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 import org.json.JSONArray;
@@ -407,5 +408,112 @@ public class VaultHttpApiTest {
         JSONObject rsp = post("/v1/vault/automation", "vaultAutomation", f);
         assertEquals("888", rsp.getJSONObject("data").getString("sid"));
         assertEquals("88280792", rsp.getJSONObject("data").getString("activeUid"));
+    }
+
+    // ==================== R2 Phase 2：配置按角色 uid ====================
+
+    private static JSONObject roleRow(String sid, String uid, Map<String, Object> cfg,
+                                      Map<String, Object> params) {
+        JSONObject r = new JSONObject();
+        r.put("sid", sid);
+        r.put("uid", uid);
+        r.put("identity", "");
+        JSONObject c = new JSONObject();
+        for (Map.Entry<String, Object> e : cfg.entrySet()) c.put(e.getKey(), e.getValue());
+        r.put("config", c);
+        if (params != null) {
+            JSONObject p = new JSONObject();
+            for (Map.Entry<String, Object> e : params.entrySet()) p.put(e.getKey(), e.getValue());
+            r.put("params", p);
+        }
+        return r;
+    }
+
+    @Test
+    public void sync_perRoleUidConfig_storedAndEffectivePerRole() throws Exception {
+        JSONArray accounts = new JSONArray();
+        JSONObject acc = new JSONObject();
+        acc.put("fpid", "80971192");
+        acc.put("token", "tk");
+        acc.put("keep", true);
+        acc.put("auto", true);
+        acc.put("activeSid", "888");
+        acc.put("activeUid", "35371154");
+        JSONArray roles = new JSONArray();
+        roles.put(roleRow("888", "35371154",
+                Map.of("gather", true, "mail", true), Map.of("mail", Map.of("x", 1))));
+        roles.put(roleRow("888", "88280792",
+                Map.of("gather", false, "mail", false), Map.of("mail", Map.of("y", 2))));
+        acc.put("roles", roles);
+        accounts.put(acc);
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("pkg", "com.carlos.vault");
+        f.put("accountsJson", accounts.toString());
+        assertEquals(0, post("/v1/vault/sync", "vaultSync", f).getInt("code"));
+
+        VaultStore.Account stored = store.find("80971192");
+        assertEquals("888:35371154", VaultStore.roleUidConfigKey(888L, 35371154L));
+        assertEquals(Boolean.TRUE, stored.roleConfigByUid.get("888:35371154").get("gather"));
+        assertEquals(Boolean.FALSE, stored.roleConfigByUid.get("888:88280792").get("gather"));
+        assertTrue("带 uid 的角色行不得写旧 sid 表", stored.roleConfig.isEmpty());
+        assertEquals("{\"x\":1}", stored.roleParamsByUid.get("888:35371154").get("mail"));
+        assertEquals("{\"y\":2}", stored.roleParamsByUid.get("888:88280792").get("mail"));
+
+        // automation read：按 activeUid 返回生效配置
+        Map<String, Object> af = new LinkedHashMap<>();
+        af.put("action", "read");
+        af.put("fpid", "80971192");
+        JSONObject auto = post("/v1/vault/automation", "vaultAutomation", af);
+        assertEquals(0, auto.getInt("code"));
+        JSONObject data = auto.getJSONObject("data");
+        assertEquals("uid", data.getString("configScope"));
+        assertTrue(data.getJSONObject("config").getBoolean("gather"));
+        // 参数值口径与旧实现一致：JSON 字符串（App 端自行解析）
+        assertEquals(1, new JSONObject(
+                data.getJSONObject("params").getString("mail")).getInt("x"));
+
+        // accounts：每个角色行回传各自有效配置
+        Map<String, Object> of = new LinkedHashMap<>();
+        JSONObject accountsRsp = post("/v1/vault/accounts", "vaultAccounts", of);
+        assertEquals(0, accountsRsp.getInt("code"));
+        JSONArray outRoles = accountsRsp.getJSONObject("data").getJSONArray("accounts")
+                .getJSONObject(0).getJSONArray("roles");
+        JSONObject r1 = null, r2 = null;
+        for (int i = 0; i < outRoles.length(); i++) {
+            JSONObject o = outRoles.getJSONObject(i);
+            if ("35371154".equals(o.getString("uid"))) r1 = o;
+            if ("88280792".equals(o.getString("uid"))) r2 = o;
+        }
+        assertNotNull(r1);
+        assertNotNull(r2);
+        assertEquals("uid", r1.getString("configScope"));
+        assertTrue(r1.getJSONObject("config").getBoolean("gather"));
+        assertFalse(r2.getJSONObject("config").getBoolean("gather"));
+    }
+
+    @Test
+    public void sync_oldAppWithoutUid_keepsSidDefaultAndInheritance() throws Exception {
+        JSONArray accounts = new JSONArray();
+        JSONObject acc = new JSONObject();
+        acc.put("fpid", "22222222");
+        acc.put("token", "tk");
+        acc.put("activeSid", "724");
+        JSONArray roles = new JSONArray();
+        JSONObject r = new JSONObject();
+        r.put("sid", "724");
+        JSONObject c = new JSONObject();
+        c.put("gather", true);
+        r.put("config", c);
+        roles.put(r);
+        acc.put("roles", roles);
+        accounts.put(acc);
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("pkg", "com.carlos.vault");
+        f.put("accountsJson", accounts.toString());
+        assertEquals(0, post("/v1/vault/sync", "vaultSync", f).getInt("code"));
+        VaultStore.Account stored = store.find("22222222");
+        assertTrue("旧 App（无 uid）写 sid 表", stored.roleConfig.containsKey("724"));
+        assertTrue("新角色继承区服默认", VaultStore.roleConfigOf(stored, 724L, 999L).get("gather"));
+        assertEquals("sid", VaultStore.roleConfigScope(stored, 724L, 999L));
     }
 }

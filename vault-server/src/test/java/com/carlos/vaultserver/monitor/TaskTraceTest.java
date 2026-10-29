@@ -85,6 +85,38 @@ public class TaskTraceTest {
     }
 
     @Test
+    public void beginWithUid_writesUidOnTaskStartAndEnd() {
+        // R2 Phase 2B：同服多角色的任务事件带 uid，监控可区分兄弟角色
+        TaskTrace.Context c = TaskTrace.begin("48460403", 888L, 1001L,
+                "login_rewards", "登录好礼", "节奏");
+        c.end(new TaskOutcome("login_rewards", "登录好礼",
+                TaskOutcome.Category.CLAIMED, "已领取"));
+
+        List<JSONObject> events = events();
+        assertEquals(2, events.size());
+        assertEquals("task.start", events.get(0).optString("kind"));
+        assertEquals("1001", events.get(0).optString("uid"));
+        assertEquals("task.end", events.get(1).optString("kind"));
+        assertEquals("1001", events.get(1).optString("uid"));
+    }
+
+    @Test
+    public void beginWithoutUid_writesEmptyUidKeepingLegacyShape() {
+        // 旧签名（无角色上下文）：uid 落空串（与 sid 未知时同款），事件形状只增不改
+        TaskTrace.Context c = TaskTrace.begin("f1", 7L, "fn_a", "功能A", "整轮");
+        c.end(null);
+
+        List<JSONObject> events = events();
+        assertEquals(2, events.size());
+        for (JSONObject e : events) {
+            assertTrue(e.has("uid"));
+            assertEquals("", e.optString("uid"));
+            assertEquals("f1", e.optString("fpid"));
+            assertEquals("7", e.optString("sid"));
+        }
+    }
+
+    @Test
     public void close_withoutOutcome_writesEmptyCategory() {
         TaskTrace.Context c = TaskTrace.begin("f1", 7L, "fn_a", "功能A", "整轮");
         c.close();

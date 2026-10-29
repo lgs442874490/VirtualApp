@@ -134,14 +134,11 @@ public final class ServerTownTasks {
     // ---------- 军医所：治疗伤兵 + 联盟求助 ----------
 
     public static TaskOutcome medic(TaskContext tc) {
-        // 伤兵统计/治疗/援助统一收敛到 MedicService：
-        // 合并 notify_hospital_init + notify_hospital_wound_soldiers（及跨服军医所），
-        // 按兵种取 max 防漏计/重复计；heal_count/request_help 从 medic 参数读取。
-        JSONObject p = tc.params("medic");
-        return new MedicService().heal(tc,
-                p.optInt("heal_count", 0),
-                p.optBoolean("immediate", false),
-                p.optBoolean("request_help", true));
+        // 伤兵统计/治疗/援助统一收敛到 MedicService：合并 notify_hospital_init +
+        // notify_hospital_wound_soldiers（及跨服军医所），按兵种取 max 防漏计/重复计；
+        // 参数契约（heal_count 缺省 400 / immediate / request_help）唯一事实源见
+        // MedicService.healFromParams（Modules.medic 入口同源）。
+        return MedicService.healFromParams(tc);
     }
 
     // ---------- 兵营训练：三营独立收兵/训练 + 实时状态 ----------
@@ -153,8 +150,10 @@ public final class ServerTownTasks {
             captureBarrackState(tc);
             String[] collectIds = {"", "collect_shield", "collect_spear", "collect_bow"};
             long[] bids = {0, 321, 322, 323};
+            int subAttempt = 0;
             for (int line = 1; line <= 3; line++) {
                 if (!tc.subOn("barracks", collectIds[line], true)) continue;
+                subAttempt++;
                 GameMessage rsp = tc.engine.request("req_barrack_recruit_soldier",
                         Exec.args("arr_bid", java.util.Collections.singletonList(bids[line])));
                 int code = Exec.codeOf(rsp);
@@ -182,6 +181,8 @@ public final class ServerTownTasks {
                     if (line >= 1 && line <= 3 && idx > maxTier[line]) maxTier[line] = idx;
                 }
             }
+            // 真实三营建筑等级（[0]=熔炉，[1..3]=盾/矛/弓）：用于 cap_lv_*（升级后清 cap 重探）与状态排查
+            long[] barrackLv = barrackBuildingLevels(tc.engine);
             try {
                 JSONObject ms = tc.modState("barracks");
                 ms.put("max_shield", maxTier[1]);
@@ -189,59 +190,141 @@ public final class ServerTownTasks {
                 ms.put("max_bow", maxTier[3]);
                 ms.put("batch", batch);
                 ms.put("tier_src", tierSource);
+                ms.put("furnace_lv", barrackLv[0]);
+                ms.put("lv_shield", barrackLv[1]);
+                ms.put("lv_spear", barrackLv[2]);
+                ms.put("lv_bow", barrackLv[3]);
                 tc.store.putString("mod:" + tc.fpid + ":" + tc.sid + ":barracks", ms.toString());
             } catch (Exception ignored) {
             }
             String[] trainIds = {"", "train_shield", "train_spear", "train_bow"};
+            String[] capKeys = {"", "cap_shield", "cap_spear", "cap_bow"};
+            String[] capLvKeys = {"", "cap_lv_shield", "cap_lv_spear", "cap_lv_bow"};
+            JSONObject capState = tc.modState("barracks");
+            // 本轮训练响应体里带回的队列完成时刻（line → epoch millis）：
+            // 收尾 captureBarrackState 优先用它们，避免旧 notify_barrack_init 把状态覆盖回"空闲"。
+            Map<Integer, Long> freshTrainEnds = new LinkedHashMap<>();
             StringBuilder trNote = new StringBuilder();
             int trOk = 0;
             for (int line = 1; line <= 3; line++) {
                 if (!tc.subOn("barracks", trainIds[line], true)) continue;
+                subAttempt++;
                 String sel = tc.strategy("barracks", trainIds[line], "auto");
                 int parsed = 0;
                 if (!"auto".equals(sel)) {
                     try {
                         parsed = Integer.parseInt(sel.trim());
                     } catch (NumberFormatException nfe) {
+                        // 历史脏数据（曾把 map 串写进 strategy）→ 回退 auto，不再抛异常中断整个兵营任务
                         parsed = 0;
                     }
                 }
-                int useTier = parsed > 0 ? Math.min(parsed, maxTier[line] == 0 ? 12 : maxTier[line])
-                        : maxTier[line];
-                if (useTier <= 0) {
-                    trNote.append("盾矛弓".charAt(line - 1)).append("无兵力数据 ");
-                    m.subSkip(trainIds[line], "无兵力数据");
+                int derived = barrackTrainTier(parsed, maxTier[line], 12);
+                int curLv = (int) Math.max(0L, Math.min(barrackLv[line], Integer.MAX_VALUE));
+                int cap = capState.optInt(capKeys[line], 0);
+                int capLv = capState.optInt(capLvKeys[line], 0);
+                int chosen = effectiveTrainTier(derived, cap, capLv, curLv);
+                if (chosen <= 0) {
+                    // 2026-10-28 修复：缺熔炉/兵营/士兵推送时无法推导已解锁档位，
+                    // 旧代码只写"无兵力数据"难以定位；改为明确文案，不静默也不盲发未解锁档。
+                    String why = "无解锁档位数据（缺熔炉/兵营/士兵推送）";
+                    trNote.append("盾矛弓".charAt(line - 1)).append(why).append(' ');
+                    m.subSkip(trainIds[line], why);
                     continue;
                 }
-                long id = line * 10000L + useTier * 100L;
-                GameMessage rsp = tc.engine.request("req_barrack_train_soldier",
-                        Exec.args("soldier_id", id, "soldier_num", batch, "immediate", false));
-                int code = Exec.codeOf(rsp);
-                if (Exec.ok(rsp)) {
-                    trOk++;
-                    trNote.append("盾矛弓".charAt(line - 1)).append("T").append(useTier).append("×").append(batch).append(" ");
-                    m.subOk(trainIds[line], "续训T" + useTier + "×" + batch);
-                } else if (code == 2103) {
-                    trNote.append("盾矛弓".charAt(line - 1)).append("容量满 ");
-                    m.subSkip(trainIds[line], "兵营容量满");
-                } else if (code == 2104) {
-                    m.subSkip(trainIds[line], "无可收兵");
-                } else if (code == 2101) {
-                    trNote.append("盾矛弓".charAt(line - 1)).append("训练中 ");
-                    m.subSkip(trainIds[line], "上批训练中");
-                } else if (code == 2106) {
-                    m.subSkip(trainIds[line], "该档未解锁");
-                } else if (code == 2107) {
-                    m.subSkip(trainIds[line], "兵营升级中");
-                } else if (code == 2105) {
-                    m.subSkip(trainIds[line], "兵营类型不匹配");
-                } else {
-                    trNote.append("盾矛弓".charAt(line - 1)).append("码").append(code).append(" ");
-                    m.subFail(trainIds[line], "训练码" + code);
+                int[] attempts = barrackTierAttempts(chosen);
+                int trained = 0;
+                int downgrades = 0;
+                int stopCode = 0;
+                boolean stopOther = false;
+                for (int attempt : attempts) {
+                    GameMessage rsp = tc.engine.request("req_barrack_train_soldier",
+                            Exec.args("soldier_id", line * 10000L + attempt * 100L,
+                                    "soldier_num", batch, "immediate", false));
+                    int code = Exec.codeOf(rsp);
+                    if (Exec.ok(rsp)) {
+                        trained = attempt;
+                        // 2026-10-28 task-7：训练响应体自带新队列
+                        // {barrack:{bid,soldier_id,soldier_num,finish_ts,total_time,qid}}
+                        // （网页版 DailyBarrackState.markTrainSuccess:73-81 → rememberQueue 同款）。
+                        // 立即写"训练中 · HH:mm可收"，并登记本轮 freshTrainEnds，防收尾旧 notify 覆盖。
+                        long endMs = barrackQueueEndMillis(rsp.getContent(), System.currentTimeMillis());
+                        if (endMs > 0L) {
+                            int rowLine = barrackQueueLine(rsp.getContent(), line);
+                            freshTrainEnds.put(rowLine, endMs);
+                            String row = barrackQueueStatusText(endMs);
+                            if (row != null) tc.saveModText("barracks", collectIds[rowLine], row);
+                        }
+                        break;
+                    }
+                    if (code == 2106) {
+                        // 该档未解锁 → 降一档重试（游戏真实口径与参考表有偏差时的兜底）
+                        downgrades++;
+                        stopCode = 2106;
+                        continue;
+                    }
+                    // 非 2106 的码：正常状态分类，不再降档
+                    stopCode = code;
+                    stopOther = true;
+                    if (code == 2103) {
+                        trNote.append("盾矛弓".charAt(line - 1)).append("容量满 ");
+                        m.subSkip(trainIds[line], "兵营容量满");
+                    } else if (code == 2104) {
+                        m.subSkip(trainIds[line], "无可收兵");
+                    } else if (code == 2101) {
+                        trNote.append("盾矛弓".charAt(line - 1)).append("训练中 ");
+                        m.subSkip(trainIds[line], "上批训练中");
+                    } else if (code == 2107) {
+                        m.subSkip(trainIds[line], "兵营升级中");
+                    } else if (code == 2105) {
+                        m.subSkip(trainIds[line], "兵营类型不匹配");
+                    } else {
+                        trNote.append("盾矛弓".charAt(line - 1)).append("码").append(code).append(" ");
+                        m.subFail(trainIds[line], "训练码" + code);
+                    }
+                    break;
                 }
+                if (trained > 0) {
+                    trOk++;
+                    trNote.append("盾矛弓".charAt(line - 1)).append("T").append(trained).append("×").append(batch)
+                            .append(downgrades > 0 ? "(↓" + downgrades + ")" : "").append(' ');
+                    m.subOk(trainIds[line], "续训T" + trained + "×" + batch
+                            + (downgrades > 0 ? "（2106降档" + downgrades + "次）" : ""));
+                    // 记录可训练上限 + 发现时的兵营等级：后续轮次 min(推导档, cap)，升级后自动重探
+                    capState.put(capKeys[line], trained);
+                    capState.put(capLvKeys[line], curLv);
+                } else if (!stopOther && stopCode == 2106) {
+                    // 本轮降档尝试全部 2106：把探测起点压到更低一档，跨轮继续收敛（不再永远撞同一档）
+                    int lowest = attempts[attempts.length - 1];
+                    int next = Math.max(1, lowest - 1);
+                    capState.put(capKeys[line], next);
+                    capState.put(capLvKeys[line], curLv);
+                    trNote.append("盾矛弓".charAt(line - 1)).append("该档未解锁(已降至T").append(lowest).append(") ");
+                    m.subSkip(trainIds[line], "该档未解锁（T" + derived + "→T" + lowest
+                            + " 均 2106，下轮从 T" + next + " 探测）");
+                }
+            }
+            // cap_* 落盘（供后续轮次收敛与 App 排查；max_* 已在上面按建筑等级写入）
+            try {
+                JSONObject ms = tc.modState("barracks");
+                for (int line = 1; line <= 3; line++) {
+                    if (capState.has(capKeys[line])) ms.put(capKeys[line], capState.getInt(capKeys[line]));
+                    if (capState.has(capLvKeys[line])) ms.put(capLvKeys[line], capState.getInt(capLvKeys[line]));
+                }
+                tc.store.putString("mod:" + tc.fpid + ":" + tc.sid + ":barracks", ms.toString());
+            } catch (Exception ignored) {
             }
             if (trOk > 0) m.claimed("训练" + trNote.toString().trim());
             else if (trNote.length() > 0) m.skip("训练未成：" + trNote.toString().trim());
+            else if (subAttempt == 0) m.skip("兵营收兵/训练子项均未启用");
+            // 收发动作会改变兵营队列，服务端会推新 notify_barrack_init——补捕一次刷新状态行
+            // （与 App 端 TownTasks.barracks 收尾同款），避免状态行停留在上一轮。
+            // 本轮训练响应带回的 freshTrainEnds 优先级更高：不会被旧 notify 覆盖回"空闲"。
+            try {
+                tc.engine.collectNotifies(800);
+                captureBarrackState(tc, freshTrainEnds);
+            } catch (Throwable ignored) {
+            }
         } catch (Exception e) {
             if (sessionLost(e)) return ServerTasks.classifyException(e, "兵营训练");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
@@ -249,55 +332,168 @@ public final class ServerTownTasks {
         return Exec.result(m, "barracks", "兵营训练");
     }
 
-    // ================= 兵营可训练档位（与 App 端一致） =================
+    /**
+     * 训练档位判定（纯函数，App 端 TownTasks.barracks 同款口径）：
+     * <ul>
+     *   <li>策略显式 Tn（{@code strategyTier>0}）→ min(Tn, 已解锁最高档)；解锁数据缺失时按
+     *       {@code fallbackTier} 保守放行（App 端同样允许显式指定）；</li>
+     *   <li>策略 auto（{@code strategyTier<=0}）→ 已解锁最高档；</li>
+     *   <li>返回 0 = 无任何可训练档位，调用方必须写可读 SKIP，不能静默也不该盲发。</li>
+     * </ul>
+     */
+    static int barrackTrainTier(int strategyTier, int maxTier, int fallbackTier) {
+        int best = Math.max(0, Math.min(maxTier, 12));
+        if (strategyTier <= 0) return best;
+        int cap = maxTier > 0 ? best : Math.max(1, Math.min(fallbackTier, 12));
+        return Math.max(0, Math.min(strategyTier, cap));
+    }
 
+    /**
+     * 2106 降档尝试序列（纯函数，2026-10-28 生产兜底）：
+     * 首选档返回 2106「该档未解锁」时按 T-1、T-2… 逐级重试，单营单轮最多 3 次（防请求风暴），
+     * 最低 T1。这样即使游戏真实解锁口径与参考表有偏差也能找出可训练档，不再"永远空转"。
+     */
+    static int[] barrackTierAttempts(int preferredTier) {
+        int p = Math.max(1, Math.min(preferredTier, 12));
+        int n = Math.min(3, p);
+        int[] out = new int[n];
+        for (int i = 0; i < n; i++) out[i] = p - i;
+        return out;
+    }
+
+    /**
+     * 有效训练档（纯函数）：把"按兵营等级推导档"与"历史探测到的可训练上限 cap"合成。
+     * <ul>
+     *   <li>cap≤0（未探测过）→ 用推导档；推导档未知但 cap 已知 → 用 cap；</li>
+     *   <li>兵营已升级（当前等级 &gt; cap 记录时等级）→ cap 失效，重新探测（用推导档）；</li>
+     *   <li>否则 min(推导档, cap)，避免每轮都用已知不可训练的档去撞 2106。</li>
+     * </ul>
+     */
+    static int effectiveTrainTier(int derivedTier, int capTier, int capLevel, int currentLevel) {
+        int derived = Math.max(0, Math.min(derivedTier, 12));
+        int cap = Math.max(0, Math.min(capTier, 12));
+        if (derived <= 0) return cap;
+        if (cap <= 0) return derived;
+        if (capLevel > 0 && currentLevel > capLevel) return derived;   // 兵营升级 → 清 cap 重探
+        return Math.min(derived, cap);
+    }
+
+    // ================= 兵营可训练档位（与 App/网页版一致） =================
+
+    /** 网页版 DailyBarrackCatalog.BARRACK_LEVELS：T1~T10 所需<b>本营建筑等级</b>。 */
     private static final int[] BARRACK_TIER_LEVELS = {1, 4, 7, 11, 13, 16, 19, 22, 26, 30};
     private static final long[] TIER11_TECH = {7007, 8007, 9007};
     private static final long[] TIER12_TECH = {10006, 11006, 12006};
+    /** 大熔炉建筑 id（301）：只在兵营等级缺失时作为回退口径，绝不覆盖兵营等级。 */
+    private static final long FURNACE_BID = 301L;
 
     static int[] barrackUnlockTiers(WjdrEngine engine) {
         return barrackUnlockTiers(engine, null);
     }
 
+    /** 三营建筑等级 + 熔炉等级：[0]=熔炉(301)，[1..3]=盾/矛/弓(321/322/323)；缺失记 0。 */
+    static long[] barrackBuildingLevels(WjdrEngine engine) {
+        try {
+            Map<String, Object> shelter = engine.notifyData("notify_shelter_info");
+            return parseBarrackBuildingLevels(shelter == null ? null : shelter.get("building_info"));
+        } catch (Throwable t) {
+            return new long[4];
+        }
+    }
+
     /**
-     * 兵种 T 级解锁判定（实证修正 2026-10-09）：
-     * T1~T10 由<b>大熔炉（bid 301）</b>等级按阈值表解锁——兵营建筑（321~323）等级不决定 T 级
-     * （原实现误用兵营等级，熔炉 13 级账号被误判 T4，实际 T5）。熔炉数据缺失时回退兵营等级（旧行为）。
-     * T11/T12 仍由 spar/refine 科技门控。
+     * 纯函数：解析 building_info → 建筑等级表。
+     * 形状兼容 {bid→{base:{lv}}} Map / [{bid,lv}] List / 单条建筑本体；bid 缺失时兼容 id 键。
+     *
+     * @return 长度 4：[0]=熔炉(301)，[1..3]=盾(321)/矛(322)/弓(323)；缺失=0（区分"未知"与 1 级）
+     */
+    static long[] parseBarrackBuildingLevels(Object buildingInfo) {
+        long[] levels = new long[4];
+        if (buildingInfo == null) return levels;
+        List<Object> entries = new ArrayList<>();
+        if (buildingInfo instanceof Map) {
+            entries.addAll(((Map<?, ?>) buildingInfo).values());
+        } else if (buildingInfo instanceof List) {
+            entries.addAll((List<?>) buildingInfo);
+        } else {
+            Map<String, Object> single = Exec.mapOf(buildingInfo);
+            if (single == null) return levels;
+            entries.add(single);
+        }
+        for (Object raw : entries) {
+            Map<String, Object> b = Exec.mapOf(raw);
+            if (b == null) continue;
+            long bid = Exec.longOf(b.get("bid"));
+            if (bid <= 0L) bid = Exec.longOf(b.get("id"));       // 兼容 id 键
+            Map<String, Object> base = Exec.mapOf(b.get("base"));
+            Object lvObj = base != null && base.get("lv") != null ? base.get("lv") : b.get("lv");
+            long lv = Exec.longOf(lvObj);
+            if (lv <= 0L) continue;
+            if (bid == FURNACE_BID) {
+                if (lv > levels[0]) levels[0] = lv;
+            } else if (bid >= 321L && bid <= 323L) {
+                int idx = (int) (bid - 320L);
+                if (lv > levels[idx]) levels[idx] = lv;
+            }
+        }
+        return levels;
+    }
+
+    /**
+     * 纯函数：由建筑等级推导三营可训练档位（1:1 网页版
+     * {@code DailyBarrackState.availableOptions:357-368} + {@code DailyBarrackCatalog.minimumBarrackLevel}）。
+     *
+     * <p><b>2026-10-28 口径修正</b>：每营用<b>自己</b>的建筑等级（321盾/322矛/323弓）对照
+     * {@link #BARRACK_TIER_LEVELS}，<b>不再用大熔炉(301)等级覆盖</b>——旧实现把熔炉 13 级当成
+     * 三营 13 级去训练 T5(10500)，被游戏服以 2106「该档未解锁」拒绝（生产实证），导致永远不训练。
+     * 兵营等级缺失(≤0)时才回退熔炉等级，并标注 {@code furnace-fallback} 便于排查。
+     *
+     * @param raw    [0]=熔炉，[1..3]=盾/矛/弓建筑等级（0=缺失）
+     * @param srcOut 可选：回填口径 "barrack" / "furnace-fallback"
+     * @return 档位 [1..3]；无任何建筑数据返回 null（调用方回退"已拥有士兵最高档"）
+     */
+    static int[] barrackTiersFromLevels(long[] raw, Map<Long, Long> spar,
+                                        Map<Long, Long> refine, String[] srcOut) {
+        long[] r = raw == null ? new long[4] : raw;
+        long furnace = r.length > 0 ? Math.max(0L, r[0]) : 0L;
+        long[] effective = new long[4];
+        boolean anyBarrack = false;
+        boolean fallback = false;
+        for (int line = 1; line <= 3; line++) {
+            long lv = r.length > line ? r[line] : 0L;
+            if (lv > 0L) {
+                effective[line] = lv;
+                anyBarrack = true;
+            } else if (furnace > 0L) {
+                effective[line] = furnace;
+                fallback = true;
+            }
+        }
+        if (!anyBarrack && furnace <= 0L) return null;
+        if (srcOut != null && srcOut.length > 0) {
+            srcOut[0] = fallback ? "furnace-fallback" : "barrack";
+        }
+        return computeUnlockTiers(effective, spar, refine);
+    }
+
+    /**
+     * 兵种 T 级解锁判定（2026-10-28 按网页版 1:1 修正口径）：
+     * <ul>
+     *   <li>T1~T10：<b>各营自己的建筑等级</b> ≥ BARRACK_LEVELS[T-1]（网页版
+     *       DailyBarrackState.availableOptions + DailyBarrackCatalog.minimumBarrackLevel）；</li>
+     *   <li>T11/T12：另需 spar(7007/8007/9007) / refine(10006/11006/12006) 科技，且本营等级 ≥30；</li>
+     *   <li>兵营等级缺失才回退熔炉等级（tier_src=furnace-fallback）。</li>
+     * </ul>
      */
     static int[] barrackUnlockTiers(WjdrEngine engine, String[] sourceOut) {
         try {
             Map<String, Object> shelter = engine.notifyData("notify_shelter_info");
             if (shelter == null) return null;
-            Object bi = shelter.get("building_info");
-            List<Object> entries = new ArrayList<>();
-            if (bi instanceof Map) entries.addAll(((Map<?, ?>) bi).values());
-            else if (bi instanceof List) entries.addAll((List<?>) bi);
-            long[] levels = new long[4];
-            long furnace = 0;
-            for (Object raw : entries) {
-                Map<String, Object> b = Exec.mapOf(raw);
-                if (b == null) continue;
-                long bid = Exec.longOf(b.get("bid"));
-                Map<String, Object> base = Exec.mapOf(b.get("base"));
-                long lv = Exec.longOf(base != null ? base.get("lv") : b.get("lv"));
-                if (bid == 301 && lv > furnace) furnace = lv;
-                if (bid >= 321 && bid <= 323 && lv > levels[(int) (bid - 320)]) {
-                    levels[(int) (bid - 320)] = lv;
-                }
-            }
-            if (furnace <= 0 && levels[1] <= 0 && levels[2] <= 0 && levels[3] <= 0) return null;
-            String src = "barracks";
-            if (furnace > 0) {
-                src = "furnace";
-                levels[1] = furnace;
-                levels[2] = furnace;
-                levels[3] = furnace;
-            }
-            if (sourceOut != null && sourceOut.length > 0) sourceOut[0] = src;
+            long[] raw = parseBarrackBuildingLevels(shelter.get("building_info"));
+            if (raw[0] <= 0L && raw[1] <= 0L && raw[2] <= 0L && raw[3] <= 0L) return null;
             Map<Long, Long> spar = researchLevels(engine, "notify_spar_science_all_research");
             Map<Long, Long> refine = researchLevels(engine, "notify_refine_science_all_research");
-            // 诊断日志：解锁规则实证（熔炉/兵营等级 + 全量科技等级 + 兵营init + 已有士兵），用于校正 T 级判定
+            // 诊断日志：解锁规则实证（熔炉/真实三营等级 + 全量科技等级 + 兵营init + 已有士兵），用于校正 T 级判定
             StringBuilder tech = new StringBuilder();
             try {
                 Map<String, Object> ar = engine.notifyData("notify_all_research");
@@ -322,11 +518,19 @@ public final class ServerTownTasks {
             } catch (Throwable t) {
                 tech.append("dump失败:").append(t);
             }
-            FileLog.info("兵营T级 熔炉lv{} 兵营[{},{},{}] 口径={} spar科技{}条 refine科技{}条",
-                    furnace, levels[1], levels[2], levels[3], src,
+            String[] srcRef = new String[1];
+            int[] tiers = barrackTiersFromLevels(raw, spar, refine, srcRef);
+            if (tiers == null) return null;
+            String src = srcRef[0];
+            if (sourceOut != null && sourceOut.length > 0) sourceOut[0] = src;
+            // 打印<b>真实</b>三营等级与推导档位：部署后可直接核对
+            // （例：兵营T级 熔炉lv13 兵营[11,11,11] 口径=barrack → 盾T4/矛T4/弓T4）
+            FileLog.info("兵营T级 熔炉lv{} 兵营[{},{},{}] 口径={} → 盾T{} 矛T{} 弓T{} spar科技{}条 refine科技{}条",
+                    raw[0], raw[1], raw[2], raw[3], src,
+                    tiers[1], tiers[2], tiers[3],
                     String.valueOf(spar == null ? 0 : spar.size()),
                     String.valueOf(refine == null ? 0 : refine.size()));
-            return computeUnlockTiers(levels, spar, refine);
+            return tiers;
         } catch (Throwable t) {
             return null;
         }
@@ -375,25 +579,121 @@ public final class ServerTownTasks {
 
     /** 三兵营实时状态：notify_barrack_init 逐营解析。 */
     static void captureBarrackState(TaskContext tc) {
+        captureBarrackState(tc, null);
+    }
+
+    /**
+     * 三兵营状态刷新（2026-10-28 task-7 增强）：
+     * 除登录/推送的 notify_barrack_init 外，接受本轮<b>训练响应体回灌</b>的队列完成时刻。
+     * 训练刚成功时旧 notify 往往还是"空闲"快照，若直接覆盖会把用户刚看到的状态打回原形。
+     *
+     * @param freshEnds line(1盾/2矛/3弓) → 队列完成时刻（epoch millis）；非空时该营优先用 fresh 值
+     */
+    static void captureBarrackState(TaskContext tc, Map<Integer, Long> freshEnds) {
         try {
             Map<String, Object> bi = tc.engine.notifyData("notify_barrack_init");
-            if (bi == null) return;
+            Map<Integer, Long> fresh = freshEnds == null
+                    ? java.util.Collections.emptyMap() : freshEnds;
+            if (bi == null && fresh.isEmpty()) return;
             long now = System.currentTimeMillis() / 1000L;
-            java.text.SimpleDateFormat hm = com.carlos.vaultserver.Beijing.fmt("HH:mm");
             String[] collectIds = {"", "collect_shield", "collect_spear", "collect_bow"};
             for (int line = 1; line <= 3; line++) {
-                long bidWant = 320 + line;
-                long best = scanBarrackEnd(bi, bidWant, now, 0);
-                if (best > now) {
-                    tc.saveModText("barracks", collectIds[line],
-                            "训练中 · " + hm.format(new java.util.Date(best * 1000)) + "可收");
-                } else {
-                    tc.saveModText("barracks", collectIds[line],
-                            best > 0 ? "有完工批次可收" : "空闲（无训练队列数据）");
-                }
+                Long freshEnd = fresh.get(line);
+                if (bi == null && freshEnd == null) continue;
+                long best = bi == null ? 0L : scanBarrackEnd(bi, 320 + line, now, 0);
+                String row = barrackStateRow(freshEnd, best, now);
+                if (row != null) tc.saveModText("barracks", collectIds[line], row);
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    /**
+     * 单营状态行（纯函数）：训练响应带回的队列完成时刻 <b>优先于</b> notify 扫描结果。
+     *
+     * @param freshEndMillis 本轮训练响应里的完成时刻（epoch millis；null=无）
+     * @param notifyEndSec   notify_barrack_init 扫描到的完成时刻（秒；0=无队列数据）
+     * @param nowSec         当前时刻（秒）
+     * @return 状态行；null=不写（保持既有文案）
+     */
+    static String barrackStateRow(Long freshEndMillis, long notifyEndSec, long nowSec) {
+        if (freshEndMillis != null && freshEndMillis > 0L) {
+            String row = barrackQueueStatusText(freshEndMillis);
+            if (row != null) return row;
+        }
+        if (notifyEndSec > nowSec) return barrackQueueStatusText(notifyEndSec * 1000L);
+        return notifyEndSec > 0L ? "有完工批次可收" : "空闲（无训练队列数据）";
+    }
+
+    // ---------- 训练响应体里的兵营队列（task-7，网页版 markTrainSuccess 同款） ----------
+
+    /**
+     * 从 req_barrack_train_soldier 响应 content 取队列完成时刻（epoch millis；0=响应未带队列）。
+     * 实证形状：{@code {"code":0,"barrack":{"bid":321,"finish_ts":1791896497,"total_time":10319,...}}}；
+     * finish_ts 缺失/已过期时用 {@code now + total_time} 兜底；兼容毫秒时间戳。
+     */
+    static long barrackQueueEndMillis(Map<String, Object> content, long nowMillis) {
+        Map<String, Object> barrack = barrackQueueOf(content);
+        if (barrack == null) return 0L;
+        long nowSec = nowMillis / 1000L;
+        long finish = Exec.longOf(barrack.get("finish_ts"));
+        long total = Exec.longOf(barrack.get("total_time"));
+        long endSec = 0L;
+        if (finish > 100_000_000_000L) {
+            endSec = finish / 1000L;                 // 毫秒时间戳兼容
+        } else if (finish > nowSec) {
+            endSec = finish;
+        }
+        if (endSec <= nowSec && total > 0L) endSec = nowSec + total;   // finish_ts 缺失/过期 → total_time 兜底
+        if (endSec <= nowSec) return 0L;
+        return endSec * 1000L;
+    }
+
+    /** 状态行文案："训练中 · HH:mm可收"（北京时区）；endMillis<=0 返回 null。 */
+    static String barrackQueueStatusText(long endMillis) {
+        if (endMillis <= 0L) return null;
+        return "训练中 · " + com.carlos.vaultserver.Beijing.fmt("HH:mm")
+                .format(new java.util.Date(endMillis)) + "可收";
+    }
+
+    /** 训练响应队列所属营（1盾/2矛/3弓）：取 barrack.bid(321~323)，识别不到用请求行兜底。 */
+    static int barrackQueueLine(Map<String, Object> content, int fallbackLine) {
+        Map<String, Object> barrack = barrackQueueOf(content);
+        long bid = barrack == null ? 0L : Exec.longOf(barrack.get("bid"));
+        if (bid >= 321L && bid <= 323L) return (int) (bid - 320L);
+        return fallbackLine >= 1 && fallbackLine <= 3 ? fallbackLine : 0;
+    }
+
+    /** 是否像兵营队列本体（含 bid 且含完成时间字段）。 */
+    private static boolean isBarrackQueueBody(Map<String, Object> m) {
+        return m != null && m.containsKey("bid")
+                && (m.containsKey("finish_ts") || m.containsKey("total_time"));
+    }
+
+    /**
+     * 从训练响应 content 取 barrack 队列 Map（纯函数）：
+     * 兼容 {barrack:{...}} 包裹、已解包内层（content 本身是队列）、{barrack:[{...}]} 多营 List（取首条）。
+     */
+    static Map<String, Object> barrackQueueOf(Map<String, Object> content) {
+        if (content == null) return null;
+        Object raw = content.get("barrack");
+        Map<String, Object> data = Exec.mapOf(content.get("data"));
+        if (raw == null && data != null) raw = data.get("barrack");   // {data:{barrack:{...}}} 兼容
+        if (raw == null) {
+            // 响应已被解包成"队列本体"的兜底（含 data 内层）
+            if (isBarrackQueueBody(content)) return content;
+            if (data != null && isBarrackQueueBody(data)) return data;
+            return null;
+        }
+        Map<String, Object> single = Exec.mapOf(raw);
+        if (single != null) return single;
+        for (Map<String, Object> m : Exec.mapsOf(raw)) {
+            if (m != null && (m.containsKey("bid")
+                    || m.containsKey("finish_ts") || m.containsKey("total_time"))) {
+                return m;
+            }
+        }
+        return null;
     }
 
     private static long scanBarrackEnd(Object v, long bidWant, long now, int depth) {
@@ -1038,8 +1338,11 @@ public final class ServerTownTasks {
             throws Exception {
         GameMessage opp = tc.engine.request("req_arena_get_opponent", null);
         if (!Exec.ok(opp)) {
-            m.skip("竞技场未解锁(码" + Exec.codeOf(opp) + ")");
-            m.subSkip("fight", "未解锁");
+            // 2026-10-28 修复"竞技场从来没执行过"的服务端静默：旧文案一律"未解锁"，
+            // 分不清"次数用完/对手失效/请求过频"，用户侧看起来就是没跑。按码给可读原因。
+            String why = arenaOpponentSkipNote(Exec.codeOf(opp));
+            m.skip(why);
+            m.subSkip("fight", why);
             return;
         }
         List<Map<String, Object>> list = new ArrayList<>();
@@ -1054,10 +1357,17 @@ public final class ServerTownTasks {
         }
         list.sort((a, b) -> Long.compare(powerOf(a), powerOf(b)));
         List<Long> heroes = squadHeroes(tc.engine);
+        // 缺英雄推送/布阵数据时旧代码会直接跳过循环、产出空 Multi（SKIPPED 无文案）=
+        // 用户看到"从来没执行过"。显式判定并写可读 SKIP。
+        if (!arenaHasFightableHeroes(heroes)) {
+            m.skip("无出征英雄数据，未发起挑战");
+            m.subSkip("fight", "无英雄编队数据");
+            return;
+        }
         int fights = 0, wins = 0, losses = 0, unknownWins = 0;
         StringBuilder failCodes = new StringBuilder();
         for (Map<String, Object> o : list) {
-            if (fights >= budget || heroes.isEmpty()
+            if (fights >= budget
                     || day.fightsSent >= arenaDailyFightCap(day.boughtTimes)) break;
             long oid = Exec.longOf(o.get("uid"));
             if (oid <= 0) oid = Exec.longOf(o.get("id"));
@@ -1110,7 +1420,28 @@ public final class ServerTownTasks {
         } else if (failCodes.length() > 0) {
             m.skip("挑战失败码" + failCodes.toString().trim());
             m.subSkip("fight", "失败码" + failCodes.toString().trim());
+        } else {
+            // 兜底：不产出空 Multi（空聚合 = SKIPPED 无文案，等价"从来没执行过"）。
+            m.skip("本轮未发起挑战（对手/次数不可用）");
+            m.subSkip("fight", "本轮未挑战");
         }
+    }
+
+    /** 竞技场是否有可出战英雄（缺 notify_hero_init / 布阵数据时整轮静默的最直接原因）。 */
+    static boolean arenaHasFightableHeroes(List<Long> heroes) {
+        return heroes != null && !heroes.isEmpty();
+    }
+
+    /**
+     * 拉取对手失败的可读原因（网页版 DailyArenaService 同族码口径）：
+     * 2901/2902=次数用完 → 等次日；2920/2921=对手失效 → 下一轮刷新；2903=请求过频 → 退避一拍。
+     * 其余归"未解锁/不可用"，把码写进状态行便于排查（旧实现一律"未解锁"）。
+     */
+    static String arenaOpponentSkipNote(int code) {
+        if (code == 2901 || code == 2902) return "挑战次数已用完(码" + code + ")";
+        if (code == 2920 || code == 2921) return "对手数据已失效(码" + code + ")·下一轮刷新";
+        if (code == 2903) return "请求过于频繁(码2903)·待下一轮";
+        return "竞技场未解锁/不可用(码" + code + ")";
     }
 
     /**

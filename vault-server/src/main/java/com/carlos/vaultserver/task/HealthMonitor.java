@@ -42,6 +42,10 @@ import java.util.function.Supplier;
  * {@code srv:cad:*} 键数、{@link VaultStore} 账号 keep/auto/label、{@link SessionControl.SessionStatus}
  * 在线态；<b>0 游戏协议</b>，副作用仅：企微 webhook（可选）+ 节流 state 键 + 日志。
  *
+ * <p><b>同源合并（2026-10-28）</b>：同一轮同时命中 {@code stagnant}（按账号）与
+ * {@code cadence_stall}（全局）时合并为 <b>1 条</b>企微推送（标题「派单停滞+节奏停滞」），
+ * 避免用户收到两条“30 分钟无任务”；日志仍逐条记录、6h 节流 state 键保持各自独立。
+ *
  * <p><b>发送/节流</b>：复用 {@link WeComNotifier} + {@code VaultStore.watchConfig()}（enabled &&
  * wecomEnabled && webhookUrl 非空）；无 webhook 或未启用 → 只 {@link FileLog#warn}。
  * 同类告警 6 小时节流，state 键 {@code srv:alert:{kind}:{fpid}:{yyyy-MM-dd}}（跨日看昨天键，保证窗口正确）
@@ -315,9 +319,10 @@ public final class HealthMonitor {
     /** 解析一条 {@code log:{fpid}:{sid}:{fn}}（子项 fn 含冒号；计数只取顶层，lastLog 含全部）。 */
     private static void collectLog(Map<String, LogStats> stats, String key, Object raw,
                                    long from2h, long from1h, long nowMillis) {
-        String[] parts = key.split(":", 4);
-        if (parts.length < 4) return;
-        String fpid = parts[1];
+        // R2 Phase 2：兼容 log:<fpid>:<sid>[:<uid>]:<fn...>（uid 段存在时正确取 fn；fn 可含冒号）。
+        String[] parts = StateKeys.splitRoleKey("log", key);
+        if (parts == null) return;
+        String fpid = parts[0];
         String fn = parts[3];
         if (fpid.isEmpty() || fn.isEmpty()) return;
         LogStats ls = stats.computeIfAbsent(fpid, k -> new LogStats());
@@ -620,6 +625,61 @@ public final class HealthMonitor {
     }
 
     // =======================================================================
+    // 同轮同源合并（2026-10-28：stagnant + cadence_stall 不再推两条）
+    // =======================================================================
+
+    /**
+     * 规划本轮企微推送文本（纯函数）：同一轮里 {@code stagnant}（按账号“节奏停滞”）与
+     * {@code cadence_stall}（全局“派单停滞”）是同一现象的两条视图，合并成 <b>1 条</b>推送。
+     *
+     * <p>合并规则：以信息更全的 cadence_stall 为主（含全局派单/跳过 Top/战时让位），
+     * metric 追加各账号 stagnant 摘要，标题改为「派单停滞+节奏停滞」；其余类型告警不合并、原样保留。
+     * 未同时命中时行为完全不变（逐条 format）。
+     */
+    static List<String> planPushTexts(List<Alert> due) {
+        List<String> out = new ArrayList<>();
+        if (due == null || due.isEmpty()) return out;
+        Alert stall = null;
+        List<Alert> stagnants = new ArrayList<>();
+        for (Alert a : due) {
+            if (a == null) continue;
+            if (KIND_CADENCE_STALL.equals(a.kind) && stall == null) stall = a;
+            else if (KIND_STAGNANT.equals(a.kind)) stagnants.add(a);
+        }
+        boolean merge = stall != null && !stagnants.isEmpty();
+        for (Alert a : due) {
+            if (a == null) continue;
+            if (merge && KIND_STAGNANT.equals(a.kind)) continue;      // 已并入 cadence_stall
+            if (merge && a == stall) {
+                out.add(format(mergedStallAlert(stall, stagnants)));
+                continue;
+            }
+            out.add(format(a));
+        }
+        return out;
+    }
+
+    /** 合并后的「派单停滞+节奏停滞」告警（纯函数）：保留全局信息 + 追加各账号停滞摘要。 */
+    static Alert mergedStallAlert(Alert stall, List<Alert> stagnants) {
+        if (stall == null) return null;
+        StringBuilder metric = new StringBuilder(stall.metric);
+        StringBuilder accounts = new StringBuilder();
+        if (stagnants != null) {
+            for (Alert s : stagnants) {
+                if (s == null) continue;
+                if (accounts.length() > 0) accounts.append("；");
+                accounts.append("账号停滞: ").append(s.account).append("（").append(s.fpid).append("）")
+                        .append(s.metric);
+            }
+        }
+        if (accounts.length() > 0) metric.append("；").append(accounts);
+        String advice = stall.advice
+                + "；账号停滞与派单停滞多为同一根因（战时让位/任务全跳过），按上条处理即可";
+        return new Alert(KIND_CADENCE_STALL, stall.fpid, "派单停滞+节奏停滞", stall.account,
+                metric.toString(), advice, stall.atMillis);
+    }
+
+    // =======================================================================
     // 文本（纯函数）
     // =======================================================================
 
@@ -720,19 +780,31 @@ public final class HealthMonitor {
             if (alerts.isEmpty()) return 0;
             Map<String, Object> snap = stateStore == null ? Collections.emptyMap()
                     : stateStore.snapshot();
-            int dispatched = 0;
+            // 逐条过 6h 节流（state 键保持各自独立，合并推送不影响后续节流语义）
+            List<Alert> due = new ArrayList<>();
             for (Alert a : alerts) {
                 if (throttled(stateStore, lastAlertMemory, snap, a.kind, a.fpid, nowMillis)) {
                     FileLog.info("健康告警节流（6h 内同类已发）kind={} fpid={}", a.kind, a.fpid);
                     continue;
                 }
-                boolean sent = trySend(format(a));
-                markAlert(stateStore, lastAlertMemory, a.kind, a.fpid, nowMillis);
-                FileLog.warn("健康告警[{}] {}：{}（{}）", a.kind, a.fpid, a.metric,
-                        sent ? "已推送企微" : "仅日志（无可用 webhook）");
-                dispatched++;
+                due.add(a);
             }
-            return dispatched;
+            if (due.isEmpty()) return 0;
+            // 2026-10-28：同轮同源告警合并推送（stagnant + cadence_stall 是同一现象的两条视图，
+            // 生产 08:05 同时命中导致用户收到“两次 30 分钟无任务”；这里合成 1 条企微）。
+            List<String> pushes = planPushTexts(due);
+            boolean anySent = false;
+            for (String text : pushes) {
+                if (trySend(text)) anySent = true;
+            }
+            String note = pushes.size() == 1 && due.size() > 1
+                    ? "已合并推送企微（本轮 " + due.size() + " 条合 1 条）"
+                    : (anySent ? "已推送企微" : "仅日志（无可用 webhook）");
+            for (Alert a : due) {
+                markAlert(stateStore, lastAlertMemory, a.kind, a.fpid, nowMillis);
+                FileLog.warn("健康告警[{}] {}：{}（{}）", a.kind, a.fpid, a.metric, note);
+            }
+            return pushes.size();
         } catch (Throwable t) {
             FileLog.warn("健康告警评估失败（忽略，不影响任务/会话）：{}",
                     t.getMessage() == null ? String.valueOf(t) : t.getMessage());

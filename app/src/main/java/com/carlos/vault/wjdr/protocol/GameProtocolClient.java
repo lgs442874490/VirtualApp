@@ -17,6 +17,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -53,6 +54,10 @@ public class GameProtocolClient {
     private final Config config;
     private final SprotoCodec sprotoCodec;
     private final AtomicInteger sessionCounter = new AtomicInteger();
+    /** 只发不等（地图查询）用过的 session：响应帧没有 pending future，静默丢弃，避免刷 debug 日志。 */
+    private final Set<Integer> fireAndForgetSessions = ConcurrentHashMap.newKeySet();
+    /** 未匹配消息的调试日志节流：同一 type|proto 每 60s 最多一条（地图扫描会产生海量 notify 推送）。 */
+    private final ConcurrentHashMap<String, Long> unmatchedLogAt = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<Integer, CompletableFuture<GameMessage>> pendingResponses = new ConcurrentHashMap();
     private final CopyOnWriteArrayList<Consumer<GameMessage>> inboundListeners = new CopyOnWriteArrayList();
     private final ConcurrentHashMap<String, Long> listenerFailureWarnedAt = new ConcurrentHashMap();
@@ -174,6 +179,23 @@ public class GameProtocolClient {
         this.sendRequestFrame(proto, args, session);
     }
 
+    /**
+     * 指定 session 的「只发不等」发送：地图范围查询（req_world_map_info）等协议专用。
+     *
+     * <p>这类协议不走 请求/响应 对账，而是发请求后由服务端以 notify 推送回数据（推送里带
+     * 请求时使用的 session）。调用方自行约定 session 号段（地图查询实测约定 1e8~4e8），
+     * 用 {@link #addInboundListener} 或引擎消息钩子按 content.session 对账。
+     *
+     * <p>复用固定 session（同一矩形每次同号）可避免 codec 会话表无限增长；发送本身在
+     * ioLock 内串行写帧，线程安全。
+     */
+    public void sendFireAndForget(String proto, Map<String, Object> args, int session) {
+        this.requireCodecAvailable();
+        this.connect();
+        this.fireAndForgetSessions.add(session);
+        this.sendRequestFrame(proto, args, session);
+    }
+
     private void requireCodecAvailable() {
         if (!this.isCodecAvailable()) {
             throw new IllegalStateException("\u6e38\u620f\u534f\u8bae\u7ed3\u6784\u5c1a\u672a\u52a0\u8f7d\uff0c\u8bf7\u5148\u521d\u59cb\u5316\u534f\u8bae\u5ba2\u6237\u7aef");
@@ -283,11 +305,27 @@ public class GameProtocolClient {
             this.disconnect();
             return;
         }
+        if ("RESPONSE".equals(message.getType()) && this.fireAndForgetSessions.contains(message.getSession())) {
+            return;   // 地图查询（req_world_map_info）的响应只有 code，数据走 notify；静默丢弃不刷日志
+        }
         if (message.getContent() != null && message.getContent().containsKey("_unknown_proto_tag")) {
-            WjdrLog.d("Ignored unknown server protocol proto={} session={} content={}", new Object[]{message.getProto(), message.getSession(), message.getContent()});
+            logUnmatchedThrottled("unknown|" + message.getProto(),
+                    "Ignored unknown server protocol proto={} session={} content={}",
+                    new Object[]{message.getProto(), message.getSession(), message.getContent()});
             return;
         }
-        WjdrLog.d("Unmatched protocol message type={} proto={} session={}", new Object[]{message.getType(), message.getProto(), message.getSession()});
+        logUnmatchedThrottled("unmatched|" + message.getType() + "|" + message.getProto(),
+                "Unmatched protocol message type={} proto={} session={}",
+                new Object[]{message.getType(), message.getProto(), message.getSession()});
+    }
+
+    /** 未匹配协议日志节流：同 key 每 60s 最多一条，避免地图扫描/高频推送刷爆服务器日志。 */
+    private void logUnmatchedThrottled(String key, String pattern, Object[] args) {
+        long now = System.currentTimeMillis();
+        Long prev = this.unmatchedLogAt.get(key);
+        if (prev != null && now - prev < 60_000L) return;
+        this.unmatchedLogAt.put(key, now);
+        WjdrLog.d(pattern, args);
     }
 
     private void notifyInboundListeners(GameMessage message) {

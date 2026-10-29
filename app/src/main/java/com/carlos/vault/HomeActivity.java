@@ -153,28 +153,25 @@ public class HomeActivity extends AccountVaultActivity {
         // 口径统一：日常页一切读写跟随「全局当前角色」（与 refreshTasks 状态徽章同源），
         // 不走 activeSid——否则切换角色后开关仍读写旧角色配置（配置残留/串写）。
         long sid = configSid(taskAccount);
+        // 有效配置（2026-10-28 功能型 bug A/B）：稀疏/旧 map 用全部任务默认值补齐后再判开关，
+        // 与服务器上传口径（VaultSync.syncFields）同源；未配置 = TaskDef.enabledByDefault。
         Map<String, Boolean> cfg = new com.carlos.vault.daily.DailyConfigStore(this)
-                .roleConfig(taskAccount.fpid, sid);
-        Boolean on = cfg == null ? null : cfg.get(fn.id);
-        return on == null ? (fn.implemented && defOn(fn.id)) : on;
+                .effectiveRoleConfig(taskAccount.fpid, sid,
+                        com.carlos.vault.daily.DailyTasks.all());
+        return com.carlos.vault.daily.DailyConfigStore.effectiveOn(cfg, fn);
     }
     private void setFnOn(FnRegistry.Fn fn, boolean on) {
         if (taskAccount == null) return;
         long sid = configSid(taskAccount);
         com.carlos.vault.daily.DailyConfigStore cs = new com.carlos.vault.daily.DailyConfigStore(this);
-        Map<String, Boolean> cfg = cs.roleConfig(taskAccount.fpid, sid);
-        if (cfg == null) cfg = new java.util.LinkedHashMap<>();
+        // 写前先补齐为完整配置，避免把稀疏 map 整包上传后其它开关“丢失/不生效”
+        Map<String, Boolean> cfg = cs.effectiveRoleConfig(taskAccount.fpid, sid,
+                com.carlos.vault.daily.DailyTasks.all());
         cfg.put(fn.id, on);
         cs.saveRoleConfig(taskAccount.fpid, sid, cfg);
         // 关键：服务端执行依据是上传后的 roleConfig；不调用会等下一次全量同步，
         // 表现为“App 里开了，服务器整轮仍按旧配置跑”。
         VaultSync.onAccountsChanged(this);
-    }
-    private boolean defOn(String fnId) {
-        for (com.carlos.vault.daily.DailyTasks.TaskDef d : com.carlos.vault.daily.DailyTasks.all()) {
-            if (d.id.equals(fnId)) return d.enabledByDefault;
-        }
-        return true;
     }
 
     // 我的页
@@ -3177,7 +3174,14 @@ public class HomeActivity extends AccountVaultActivity {
         refreshAccounts();
     }
 
-    /** 账号分组框：头行=备注名+登录方式(原生/token)+⚙；框内=已入工作区的角色独立入口卡。 */
+    /**
+     * 账号分组框：头行=备注名+登录方式(原生/token)+⚙；框内=已入工作区的角色独立入口卡。
+     *
+     * <p>点击口径（2026-10-28 用户新 bug）：<b>整卡/角色行=进入账号详情</b>（showAccountDetail），
+     * 只有右上⚙「角色管理」才弹 {@link #showRoleManager}；批量模式下整卡=勾选切换；
+     * 长按整卡=账号菜单。子控件（勾选框/恢复设置/齿轮/角色行动作按钮/防封开关）各自消费点击，
+     * 不会被整卡点击抢占。
+     */
     private android.view.View accountGroupCard(final AccountStore.Account a, final String[] st,
                                                final List<RoleStore.Role> roles,
                                                final java.util.Map<String, int[]> roleStats,
@@ -3277,7 +3281,7 @@ public class HomeActivity extends AccountVaultActivity {
             head.addView(recPill, rplp);
         }
 
-        // ⚙ 角色管理：唯一的管理入口之一（另一个 = 点角色行）。卡片其它区域不响应，避免误触弹层。
+        // ⚙ 角色管理：唯一打开角色管理弹层的入口（用户口径：点卡片其它区域/角色行 = 进账号详情）。
         // 图标为程序化矢量 Icon（文本字符会随机型字体异形）。
         LinearLayout gear = headerPill("角色管理", UiStyle.Icon.GEAR,
                 UiStyle.BRAND_TEXT, UiStyle.BRAND_50, UiStyle.BRAND_200);
@@ -3349,7 +3353,7 @@ public class HomeActivity extends AccountVaultActivity {
                         roleStats.get(a.fpid + ":" + r.serverid),
                         roleLast.containsKey(a.fpid + ":" + r.serverid)
                                 ? roleLast.get(a.fpid + ":" + r.serverid) : 0L,
-                        roleOnlineLabel(a, r, accOn, actSid, actUid, isLiveAcc, liveUid), accOn, roles,
+                        roleOnlineLabel(a, r, accOn, actSid, actUid, isLiveAcc, liveUid),
                         com.carlos.vault.AccountPoolCache.stateOfRole(poolRole), poolRole,
                         poolBusy.contains(a.fpid + ":" + r.serverid + ":" + r.uid), nowMs));
             }
@@ -3375,8 +3379,14 @@ public class HomeActivity extends AccountVaultActivity {
             }
             box.addView(tipBox);
         }
-        // 长按账号框 = 账号菜单（批量/登录并运行/启动游戏/角色管理/排序，与简单卡片一致）
+        // 点击账号框 = 进入账号详情（卡片视图 tile 同款；2026-10-28 用户新 bug：不再弹角色管理）；
+        // 批量模式下整卡点击 = 勾选切换（与卡片视图一致）。子控件自带点击消费，不受影响。
         UiStyle.press(box);
+        box.setOnClickListener(v -> {
+            if (batchMode) toggleBatch(a);
+            else showAccountDetail(a);
+        });
+        // 长按账号框 = 账号菜单（批量/登录并运行/启动游戏/角色管理/排序，与简单卡片一致）
         box.setOnLongClickListener(v -> {
             if (!batchMode) accountMenu(a);
             return true;
@@ -3402,13 +3412,13 @@ public class HomeActivity extends AccountVaultActivity {
      * P1 扩展（契约 §三）：「防封」列 = UiStyle.Switch（状态来自 pool 数据
      * {@code roles[].antibanEnabled}，开启前确认弹窗）；「已暂停·待恢复」态附
      * pause_resume_at 倒计时；长按行 = 角色动作菜单（重命名/移除/启用收纳）。
-     * 点<b>行</b> = 打开角色管理；动作按钮走 role-action（进行中禁点，失败 toast 服务端
+     * 点<b>行</b>（非动作按钮区域）= 进入账号详情（2026-10-28 用户口径；角色管理只走卡片右上⚙）；
+     * 动作按钮走 role-action（进行中禁点，失败 toast 服务端
      * message，成功后立即刷新）。点「上线」直接 role-action login（M2d：同账号
      * 多角色并行在线，服务端不再互斥，无前置确认弹窗）。
      */
     private android.view.View roleEntryCard(final AccountStore.Account a, final RoleStore.Role r,
-                                            int[] dayStats, long lastTs, String[] onlineKind, boolean accOn,
-                                            final List<RoleStore.Role> allRoles,
+                                            int[] dayStats, long lastTs, String[] onlineKind,
                                             final com.carlos.vault.daily.RoleRuntimeState poolState,
                                             final org.json.JSONObject poolRole,
                                             final boolean roleBusy, final long nowMs) {
@@ -3599,10 +3609,14 @@ public class HomeActivity extends AccountVaultActivity {
             }
         }
 
-        // 点角色行 = 角色管理（与齿轮同一入口）；长按 = P1 角色动作菜单
+        // 点角色行（非动作按钮区域）= 进入账号详情（用户口径：不再弹角色管理，齿轮才是角色管理入口）；
+        // 批量模式下与整卡一致走勾选切换，避免误进详情；长按 = P1 角色动作菜单
         // （重命名/移除/启用收纳——池数据可用才挂，旧服务端走角色管理本地开关）
         UiStyle.press(row);
-        row.setOnClickListener(v -> showRoleManager(a, allRoles, accOn));
+        row.setOnClickListener(v -> {
+            if (batchMode) toggleBatch(a);
+            else showAccountDetail(a);
+        });
         if (poolRole != null && poolState != null && !poolState.degraded) {
             row.setOnLongClickListener(v -> {
                 PoolRoleActions.showMenu(HomeActivity.this, a, r,
@@ -4559,15 +4573,16 @@ public class HomeActivity extends AccountVaultActivity {
         long sid = configSid(taskAccount);
         LogStore ls = new LogStore(this);
         com.carlos.vault.daily.DailyConfigStore cfgStore = new com.carlos.vault.daily.DailyConfigStore(this);
-        Map<String, Boolean> cfg = cfgStore.roleConfig(taskAccount.fpid, sid);
+        // 有效配置（补齐全部任务键；未配置 = TaskDef.enabledByDefault），与开关显示/服务器上传同源
+        Map<String, Boolean> cfg = cfgStore.effectiveRoleConfig(taskAccount.fpid, sid,
+                com.carlos.vault.daily.DailyTasks.all());
 
         // 顶栏 caption：N 项功能 · 已启用 M；横幅：工作区角色数 + 自动日常开关态
         // 批次7：先按等级过滤（守护盟友=T3），无权限的功能不计入总数/不渲染
         List<FnRegistry.Fn> allVisibleFns = gateFns(FnRegistry.all());
         int total = allVisibleFns.size(), enabled = 0;
         for (FnRegistry.Fn fn : allVisibleFns) {
-            Boolean on = cfg == null ? null : cfg.get(fn.id);
-            if (on == null ? (fn.implemented && defOn(fn.id)) : on) enabled++;
+            if (com.carlos.vault.daily.DailyConfigStore.effectiveOn(cfg, fn)) enabled++;
         }
         String roleName = "";
         try {

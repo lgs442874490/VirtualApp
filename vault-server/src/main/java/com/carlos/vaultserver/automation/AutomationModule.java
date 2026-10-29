@@ -49,7 +49,7 @@ public interface AutomationModule {
             // 真机监控（2026-10-25）：每个 action 前后 task.start/task.end，只观测不改变结果/控制流
             TaskContext traceTask = ctx.task();
             TaskTrace.Context trace = TaskTrace.begin(traceTask.fpid, traceTask.sid,
-                    action.id, action.name, traceTask.trigger);
+                    traceTask.roleUid, action.id, action.name, traceTask.trigger);
             try {
                 try {
                     outcome = action.execute(traceTask);

@@ -3,6 +3,8 @@ package com.carlos.vault.daily;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.carlos.vault.VaultSync;
+
 import org.json.JSONObject;
 
 /**
@@ -15,22 +17,74 @@ public final class FnParams {
     private static final String PREFS = "daily_params";
     private static final String KEY_TEMPLATE = "template";
 
+    /**
+     * 当前选中角色 uid（R2 Phase 2）：同服双角色的开关/参数按 uid 隔离。
+     * 返回 0 = 角色未知（旧数据/加载早期）→ 所有读写退回旧键，行为与 Phase 2 前一致。
+     */
+    private static long currentUid(Context ctx, String fpid) {
+        try {
+            return RoleStore.activeRoleUid(ctx, fpid);
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
     public static JSONObject params(Context ctx, String fpid, long sid, String fnId) {
+        return params(ctx, fpid, sid, currentUid(ctx, fpid), fnId);
+    }
+
+    /**
+     * 读取某角色 uid 的任务参数：优先 {@code p:fpid:sid:uid:fn}；miss 时回退旧键
+     * {@code p:fpid:sid:fn} 并**惰性迁移**到 uid 键（旧键保留供回滚/旧版本读取）。
+     */
+    public static JSONObject params(Context ctx, String fpid, long sid, long uid, String fnId) {
         SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         try {
-            String raw = sp.getString(key(fpid, sid, fnId), null);
-            return raw == null ? new JSONObject() : new JSONObject(raw);
+            String raw = sp.getString(key(fpid, sid, uid, fnId), null);
+            if (raw == null && uid > 0L) {
+                String legacy = sp.getString(key(fpid, sid, 0L, fnId), null);
+                if (legacy != null) {
+                    sp.edit().putString(key(fpid, sid, uid, fnId), legacy).apply();
+                    raw = legacy;
+                }
+            }
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
         } catch (Exception e) {
             return new JSONObject();
         }
     }
 
     public static void saveParams(Context ctx, String fpid, long sid, String fnId, JSONObject p) {
+        saveParams(ctx, fpid, sid, currentUid(ctx, fpid), fnId, p);
+    }
+
+    public static void saveParams(Context ctx, String fpid, long sid, long uid, String fnId, JSONObject p) {
+        boolean saved = false;
         try {
             ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                    .putString(key(fpid, sid, fnId), p.toString())
+                    .putString(key(fpid, sid, uid, fnId), p.toString())
                     .apply();
+            saved = true;
         } catch (Exception ignored) {
+        }
+        // 用户设置写盘后立即触发下发（saveSubOn/saveStrategy/saveSelSet/putTopLevel 内部都经
+        // 本方法落盘，无需各处重复接线）；失败不影响本地保存。
+        if (saved) notifySettingsChanged(ctx);
+    }
+
+    /**
+     * 用户设置写盘后的轻量下发钩子（2026-10-28 功能型 bug）：训练等级、医院每批治疗数量
+     * 这类「设置」此前只写本地，最长要等 10 分钟全量同步才到服务器，用户感知「设置了也
+     * 无效」。
+     *
+     * <p>服务器模式下调用 {@link VaultSync#onAccountsChanged(Context)} 把上行窗口压到约 3 秒
+     * （该方法内部自带 3s 去抖，连续调用不会放大请求量）；非服务器模式或无 Context 时
+     * no-op；任何异常一律吞掉，绝不因同步失败影响本地保存/页面交互。
+     */
+    public static void notifySettingsChanged(Context ctx) {
+        try {
+            if (ctx != null && VaultSync.isServerMode(ctx)) VaultSync.onAccountsChanged(ctx);
+        } catch (Throwable ignored) {
         }
     }
 
@@ -150,6 +204,50 @@ public final class FnParams {
         }
     }
 
+    // ================= 军医所批量治疗参数（2026-10-28 功能型 bug3） =================
+    //
+    // 服务端 MedicService.heal(tc, maxCount, immediate, requestHelp) 从角色 params 的
+    // medic 顶层键读取：heal_count（>0=每批最多治疗该数量，0=全部）与 request_help
+    // （治疗后是否 req_queue_ask_for_help 联盟求助，缺省 true）。键名由服务端契约锁定，
+    // App 侧不得改名/嵌套到 sub。
+
+    /** 每批治疗数量默认值（用户可改 1-10000）。 */
+    public static final int MEDIC_HEAL_COUNT_DEFAULT = 400;
+    /** 每批治疗数量下限。 */
+    public static final int MEDIC_HEAL_COUNT_MIN = 1;
+    /** 每批治疗数量上限。 */
+    public static final int MEDIC_HEAL_COUNT_MAX = 10000;
+    /** 治疗后联盟求助默认值（与服务端缺省 true 同口径）。 */
+    public static final boolean MEDIC_REQUEST_HELP_DEFAULT = true;
+
+    /** 规范化每批治疗数量（纯函数）：范围 1-10000，非法/越界回退默认 400。 */
+    public static int normalizeMedicHealCount(int value) {
+        return value >= MEDIC_HEAL_COUNT_MIN && value <= MEDIC_HEAL_COUNT_MAX
+                ? value : MEDIC_HEAL_COUNT_DEFAULT;
+    }
+
+    /** 解析输入框文本（纯函数）：空/非数字/越界回退默认 400。 */
+    public static int parseMedicHealCount(String text) {
+        if (text == null) return MEDIC_HEAL_COUNT_DEFAULT;
+        try {
+            return normalizeMedicHealCount(Integer.parseInt(text.trim()));
+        } catch (Throwable ignored) {
+            return MEDIC_HEAL_COUNT_DEFAULT;
+        }
+    }
+
+    /** 读 medic 参数里的每批治疗数量（缺失/非法/越界 → 默认 400）。 */
+    public static int medicHealCount(JSONObject p) {
+        if (p == null) return MEDIC_HEAL_COUNT_DEFAULT;
+        return normalizeMedicHealCount(p.optInt("heal_count", MEDIC_HEAL_COUNT_DEFAULT));
+    }
+
+    /** 读 medic 参数里的「治疗后联盟求助」(request_help，缺省 true)。 */
+    public static boolean medicRequestHelp(JSONObject p) {
+        return p == null ? MEDIC_REQUEST_HELP_DEFAULT
+                : p.optBoolean("request_help", MEDIC_REQUEST_HELP_DEFAULT);
+    }
+
     /** 自定义策略分钟数。 */
     public static int strategyMinutes(Context ctx, String fpid, long sid, String fnId, String subId, int def) {
         try {
@@ -160,12 +258,21 @@ public final class FnParams {
         }
     }
 
-    /** 模块状态行（daily_state mod:fpid:sid:fnId JSON：subId→文案）。 */
+    /** 模块状态行（daily_state mod:fpid:sid[:uid]:fnId JSON：subId→文案）。 */
     public static JSONObject modState(Context ctx, String fpid, long sid, String fnId) {
+        return modState(ctx, fpid, sid, currentUid(ctx, fpid), fnId);
+    }
+
+    /**
+     * 按角色 uid 读模块状态行：优先 {@code mod:fpid:sid:uid:fn}，miss 回退旧键
+     * {@code mod:fpid:sid:fn}（服务端 /state 会同时投影旧键给 active 角色，双读兼容）。
+     */
+    public static JSONObject modState(Context ctx, String fpid, long sid, long uid, String fnId) {
         try {
-            String raw = ctx.getSharedPreferences("daily_state", Context.MODE_PRIVATE)
-                    .getString("mod:" + fpid + ":" + sid + ":" + fnId, null);
-            return raw == null ? new JSONObject() : new JSONObject(raw);
+            SharedPreferences sp = ctx.getSharedPreferences("daily_state", Context.MODE_PRIVATE);
+            String raw = sp.getString(modKey(fpid, sid, uid, fnId), null);
+            if (raw == null && uid > 0L) raw = sp.getString(modKey(fpid, sid, 0L, fnId), null);
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
         } catch (Exception e) {
             return new JSONObject();
         }
@@ -184,15 +291,33 @@ public final class FnParams {
     }
 
     public static void saveModState(Context ctx, String fpid, long sid, String fnId, JSONObject o) {
+        saveModState(ctx, fpid, sid, currentUid(ctx, fpid), fnId, o);
+    }
+
+    public static void saveModState(Context ctx, String fpid, long sid, long uid, String fnId,
+                                    JSONObject o) {
         try {
             ctx.getSharedPreferences("daily_state", Context.MODE_PRIVATE).edit()
-                    .putString("mod:" + fpid + ":" + sid + ":" + fnId, o.toString()).apply();
+                    .putString(modKey(fpid, sid, uid, fnId), o.toString()).apply();
         } catch (Exception ignored) {
         }
     }
 
-    private static String key(String fpid, long sid, String fnId) {
-        return "p:" + fpid + ":" + sid + ":" + fnId;
+    /**
+     * 参数键（R2 Phase 2）：{@code p:<fpid>:<sid>:<uid>:<fn>}（uid&gt;0）；
+     * uid&lt;=0 退化为旧键 {@code p:<fpid>:<sid>:<fn>}（旧数据/回滚兼容）。
+     */
+    static String key(String fpid, long sid, long uid, String fnId) {
+        return uid > 0L
+                ? "p:" + fpid + ":" + sid + ":" + uid + ":" + fnId
+                : "p:" + fpid + ":" + sid + ":" + fnId;
+    }
+
+    /** 模块状态键（R2 Phase 2）：{@code mod:<fpid>:<sid>:<uid>:<fn>}；uid&lt;=0 → 旧键。 */
+    static String modKey(String fpid, long sid, long uid, String fnId) {
+        return uid > 0L
+                ? "mod:" + fpid + ":" + sid + ":" + uid + ":" + fnId
+                : "mod:" + fpid + ":" + sid + ":" + fnId;
     }
 
     // ================= 守护盟友配置（批次11；1:1 服务器 ServerGuardianEngine.parseConfig） =================
@@ -535,10 +660,13 @@ public final class FnParams {
                 SharedPreferences.Editor ed = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit();
                 for (FnRegistry.Fn fn : FnRegistry.all()) {
                     JSONObject p = params.optJSONObject(fn.id);
-                    ed.putString(key(fpid, sid, fn.id), p == null ? "" : p.toString());
+                    ed.putString(key(fpid, sid, currentUid(ctx, fpid), fn.id),
+                            p == null ? "" : p.toString());
                 }
                 ed.apply();
             }
+            // 模板套用同时改开关与参数，直接触发一次下发（与 saveParams 同口径）
+            notifySettingsChanged(ctx);
             return true;
         } catch (Exception e) {
             return false;

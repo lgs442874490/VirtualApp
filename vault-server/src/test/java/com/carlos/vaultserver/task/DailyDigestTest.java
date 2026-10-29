@@ -159,8 +159,11 @@ public class DailyDigestTest {
 
     @Test
     public void envDigestTimeAndSwitch() {
-        // 缺省
+        // 缺省：日报关闭（2026-10-27 起企微只发告警）
         assertEquals("09:00", DailyDigest.digestTime());
+        assertFalse(DailyDigest.enabled());
+        // 显式开启
+        System.setProperty(DailyDigest.ENV_ENABLED, "on");
         assertTrue(DailyDigest.enabled());
         // VAULT_DIGEST_TIME 覆盖
         System.setProperty(DailyDigest.ENV_TIME, "07:15");
@@ -176,6 +179,8 @@ public class DailyDigestTest {
         System.setProperty(DailyDigest.ENV_ENABLED, "0");
         assertFalse(DailyDigest.enabled());
         System.setProperty(DailyDigest.ENV_ENABLED, "");
+        assertFalse(DailyDigest.enabled());
+        System.setProperty(DailyDigest.ENV_ENABLED, "1");
         assertTrue(DailyDigest.enabled());
     }
 
@@ -411,5 +416,37 @@ public class DailyDigestTest {
         store.putString(DailyDigest.STATE_PREFIX + "2026-10-23", "日报");
         assertFalse(DailyDigest.shouldSend(store, now));
         assertTrue("次日应重新发送", DailyDigest.shouldSend(store, bj(2026, 10, 24, 9, 30)));
+    }
+
+    @Test
+    public void collect_roleScopedLogKeysAggregatePerAccountRole() {
+        StateStore store = new StateStore(tmp.getRoot().toPath());
+        long now = System.currentTimeMillis();
+        org.json.JSONArray a = new org.json.JSONArray();
+        org.json.JSONObject e1 = new org.json.JSONObject();
+        e1.put("ts", now - 60_000L);
+        e1.put("cat", "CLAIMED");
+        e1.put("reason", "角色A领取");
+        e1.put("detail", "钻石×10");
+        a.put(e1);
+        store.putString("log:" + FPID + ":" + SID + ":35371154:login_rewards", a.toString());
+        org.json.JSONArray b = new org.json.JSONArray();
+        org.json.JSONObject e2 = new org.json.JSONObject();
+        e2.put("ts", now - 30_000L);
+        e2.put("cat", "CLAIMED");
+        e2.put("reason", "角色B领取");
+        e2.put("detail", "邮件×2");
+        b.put(e2);
+        store.putString("log:" + FPID + ":" + SID + ":88280792:mail", b.toString());
+
+        DailyDigest.DigestData d = DailyDigest.collect(store, now, DailyDigest.WINDOW_MILLIS, 1);
+        assertEquals("两个角色各 1 次运行 → 账号内区服口径合计", 2, d.totalRuns);
+        assertEquals(2, d.totalClaimed);
+        assertEquals(1, d.roleCount);
+        DailyDigest.RoleDigest rd = d.roles.get(0);
+        assertEquals(FPID + ":" + SID, rd.label());
+        assertEquals(2, rd.runs);
+        assertTrue(rd.rewards.contains("钻石×10"));
+        assertTrue(rd.rewards.contains("邮件×2"));
     }
 }

@@ -1,11 +1,16 @@
 package com.carlos.vaultserver.guardian;
 
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.HeroCatalog;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.ServerWarState;
 import com.carlos.vaultserver.StateStore;
 import com.carlos.vaultserver.VaultStore;
+import com.carlos.vaultserver.formation.FormationCatalog;
+import com.carlos.vaultserver.formation.FormationResolver;
+import com.carlos.vaultserver.formation.HeroAvailability;
+import com.carlos.vaultserver.formation.ResolvedFormation;
 import com.carlos.vaultserver.task.Exec;
 
 import org.json.JSONArray;
@@ -21,6 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * 守护盟友 P0（服务端化，批次9 2026-10-23）：盟友主城被敌方进攻时，由服务器会话自动发起
@@ -333,6 +339,18 @@ public final class ServerGuardianEngine {
     /** 目标级进行中标记（"t:{uid}" / "p:{x},{y}"）。 */
     private final Set<String> activeTargets = ConcurrentHashMap.newKeySet();
     /**
+     * 2026-10-28：发射失败（415 编队超限 / 406 士兵超限）后的目标级冷却
+     * （targetKey → 截止毫秒）。冷却期内同目标新威胁只记账不发射，防 415/406 重试风暴。
+     */
+    static final long LAUNCH_FAIL_COOLDOWN_MS = 45_000L;
+    /** 同一 target+code 的 WARN/writeMod 日志节流窗口（60s；不再每个威胁刷一条）。 */
+    static final long FAIL_LOG_THROTTLE_MS = 60_000L;
+    private final Map<String, Long> targetCooldowns = new ConcurrentHashMap<>();
+    /** {@code targetKey|code → 上次失败日志时刻}（节流用）。 */
+    private final Map<String, Long> failLogAt = new ConcurrentHashMap<>();
+    /** 最近一次自动编队摘要（英雄/容量/兵力比；供 launched 账本文案，2026-10-28 需求）。 */
+    private volatile String lastAutoFormationSummary = "";
+    /**
      * P1：每个敌方行军已处理的「压缩态」endtime（敌方 marchId → 最近一次触发加速的敌 endSec）。
      * 同一压缩态重复推送只处理一次（幂等，防请求风暴）；敌方再次压缩（endSec 更小）→ 新一轮最小响应。
      */
@@ -354,17 +372,69 @@ public final class ServerGuardianEngine {
     private volatile long lastPushAt;
     private volatile String lastProto = "";
     private volatile boolean stopped;
+    /** R2 Phase 2B：角色 uid（>0 时守护账本/状态键按角色隔离；0=旧/兼容路径）。 */
+    private final long roleUid;
+    /** 当前会话是否为 active 角色写入方（supplier 由 SessionKeeper 提供；异常按 false）。 */
+    private final Supplier<Boolean> activeRole;
 
+    /** 旧构造器（P0/兼容路径）：roleUid=0、activeRole=null，键型与行为完全不变。 */
     public ServerGuardianEngine(String fpid, long sid, StateStore store, VaultStore vault) {
+        this(fpid, sid, 0L, store, vault, null);
+    }
+
+    /**
+     * R2 Phase 2B（2026-10-29）：按角色隔离守护账本/状态键。
+     *
+     * <p>键规则：roleUid&gt;0 → {@code srv:guardian:<fpid>:<sid>:<uid>:ledger} /
+     * {@code mod:<fpid>:<sid>:<uid>:guardian}；activeRole.get()==true 时**双写旧键**
+     * （App 今日页/FnDetail 展示不变），兄弟角色只写角色键；读优先角色键、缺失回退旧键。
+     * roleUid&lt;=0 时等价旧构造器（只写旧键）。
+     *
+     * @param roleUid    真实会话角色 uid（测试/兼容可传 0）
+     * @param activeRole 是否 active 角色写入方；null 视为 false，get() 抛异常按 false
+     */
+    public ServerGuardianEngine(String fpid, long sid, long roleUid, StateStore store,
+                                VaultStore vault, Supplier<Boolean> activeRole) {
         this.fpid = fpid == null ? "" : fpid;
         this.sid = sid;
+        this.roleUid = roleUid;
         this.store = store;
         this.vault = vault;
+        this.activeRole = activeRole;
         this.guardExec = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "guardian-" + this.fpid + "-" + sid);
+            Thread t = new Thread(r, "guardian-" + this.fpid + "-" + sid
+                    + (roleUid > 0L ? "-" + roleUid : ""));
             t.setDaemon(true);
             return t;
         });
+    }
+
+    /** 当前会话是否 active 角色写入方（旧路径恒 true；supplier 异常按 false）。 */
+    private boolean isActiveRole() {
+        if (roleUid <= 0L) return true;
+        if (activeRole == null) return false;
+        try {
+            return Boolean.TRUE.equals(activeRole.get());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 读状态：角色键优先，缺失回退旧键（迁移/兼容；roleUid<=0 时两键相同）。 */
+    private String readState(String roleKey, String legacyKey) {
+        if (store == null) return null;
+        String raw = store.getString(roleKey);
+        if (raw == null && !roleKey.equals(legacyKey)) raw = store.getString(legacyKey);
+        return raw;
+    }
+
+    /** 写状态：写角色键；active 角色额外双写旧键（App 展示链路不变），兄弟角色不覆盖旧键。 */
+    private void writeState(String roleKey, String legacyKey, String value) {
+        if (store == null) return;
+        store.putString(roleKey, value);
+        if (roleUid > 0L && !roleKey.equals(legacyKey) && isActiveRole()) {
+            store.putString(legacyKey, value);
+        }
     }
 
     // =====================================================================
@@ -435,6 +505,10 @@ public final class ServerGuardianEngine {
                 }
                 return true;
             });
+            // 2026-10-28：清理过期目标冷却/失败日志节流表（防长期累积）
+            targetCooldowns.entrySet().removeIf(en -> en.getValue() == null || en.getValue() <= nowMs);
+            failLogAt.entrySet().removeIf(en -> en.getValue() == null
+                    || nowMs - en.getValue() > FAIL_LOG_THROTTLE_MS * 4L);
         } catch (Throwable ignored) {
         }
     }
@@ -606,6 +680,16 @@ public final class ServerGuardianEngine {
             return;
         }
         String targetKey = targetKey(t);
+        // 2026-10-28：同目标 415/406 失败后的冷却期内，新威胁只记账不发射（防重试风暴/日志刷屏）
+        Long coolUntil = targetCooldowns.get(targetKey);
+        if (coolUntil != null) {
+            if (inLaunchCooldown(coolUntil, nowMs)) {
+                ledger("skip_cooldown", t, null, "同目标发射失败冷却中（剩 "
+                        + Math.max(0L, (coolUntil - nowMs + 999L) / 1000L) + "s），本威胁只记账不发射");
+                return;
+            }
+            targetCooldowns.remove(targetKey);
+        }
         if (!activeTargets.add(targetKey) || missions.size() >= MAX_CONCURRENT_MISSIONS) {
             activeTargets.remove(targetKey);
             ledger("skip_busy", t, null,
@@ -644,20 +728,43 @@ public final class ServerGuardianEngine {
             }
             ServerGuardianLauncher.LaunchResult r = launcher.launch(engine, pt[0], pt[1], formation, t.targetUid);
             if (r.ok) {
+                // P0-5 同款：成功发射复位 415 英雄上限/406 兵力缩放（自适应必须能恢复）
+                HeroAvailability.markSuccess(engine);
                 missions.put(targetKey, new Mission(t.marchId, r.marchId, r.endtimeSec, nowMs));
                 long nowS = nowSec(engine);
                 long ahead = t.endEpochSec > 0 && r.endtimeSec > 0 ? t.endEpochSec - r.endtimeSec : 0L;
+                String autoNote = lastAutoFormationSummary;
                 String text = "已发射 type=5 驻防 marchId=" + r.marchId + " endtime=" + r.endtimeSec
                         + "（敌 endtime=" + t.endEpochSec + (ahead != 0 ? "，我方" + (ahead >= 0 ? "先于敌 " : "晚于敌 ") + Math.abs(ahead) + "s" : "")
-                        + "）目标" + targetText(t, pt);
+                        + "）目标" + targetText(t, pt)
+                        + (autoNote == null || autoNote.isEmpty() ? "" : "｜" + autoNote);
                 FileLog.info("守护盟友发射 {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("launched", t, r, text);
                 writeMod("🛡" + text);
             } else {
-                String text = "发射失败 code=" + r.code + "（" + r.text + "），不重试";
-                FileLog.warn("守护盟友发射失败 {}:{} {}", fpid, String.valueOf(sid), text);
-                ledger("launch_failed", t, r, text);
-                writeMod("⚠ " + text);
+                // 2026-10-28：415（编队人数/配置超限）/406（士兵超限）自适应 + 目标冷却 + 日志节流。
+                // 本次生产事故：无编队参数时 Exec.formation 取客户端 5 英雄 → 该号每队上限 3 → 每个威胁 415，
+                // 一天 930 次失败且无降噪；现在失败后下调英雄上限/兵力缩放，下一威胁即生效。
+                String adapt = onLaunchFailure(engine, r.code, formation, targetKey, nowMs);
+                if (adapt != null) {
+                    String text = "发射失败 " + adapt + "（本目标冷却 "
+                            + (LAUNCH_FAIL_COOLDOWN_MS / 1000L) + "s，不重试本威胁）";
+                    long nowFail = System.currentTimeMillis();
+                    String logKey = targetKey + "|" + r.code;
+                    Long last = failLogAt.get(logKey);
+                    if (failureLogDue(last == null ? 0L : last, nowFail, FAIL_LOG_THROTTLE_MS)) {
+                        failLogAt.put(logKey, nowFail);
+                        FileLog.warn("守护盟友发射失败 {}:{} code={}（{}）",
+                                fpid, String.valueOf(sid), String.valueOf(r.code), adapt);
+                        writeMod("⚠ " + text);
+                    }
+                    ledger("launch_failed", t, r, text);
+                } else {
+                    String text = "发射失败 code=" + r.code + "（" + r.text + "），不重试";
+                    FileLog.warn("守护盟友发射失败 {}:{} {}", fpid, String.valueOf(sid), text);
+                    ledger("launch_failed", t, r, text);
+                    writeMod("⚠ " + text);
+                }
             }
         } finally {
             activeTargets.remove(targetKey);
@@ -1030,6 +1137,11 @@ public final class ServerGuardianEngine {
     // 配置读取（roleParams `guardian`，默认关）
     // =====================================================================
 
+    /** 当前生效配置快照（包可见：单测/诊断用；返回只读引用）。 */
+    Config configSnapshot() {
+        return config;
+    }
+
     /** 配置热载（10s 节流；force=启动时立即读）。任何异常 → 关闭（fail-closed）。 */
     void reloadConfig(boolean force) {
         long now = System.currentTimeMillis();
@@ -1039,7 +1151,10 @@ public final class ServerGuardianEngine {
             VaultStore.Account acc = vault == null ? null : vault.find(fpid);
             Map<String, String> raw = acc == null ? null : acc.roleParams.get(String.valueOf(sid));
             String json = raw == null ? null : raw.get(FN_ID);
-            Config parsed = json == null || json.isEmpty() ? Config.disabled() : parseConfig(new JSONObject(json));
+            // 无 App 参数时也必须走 parseConfig(null) 以应用 env 实盘/灰度覆盖（VAULT_GUARDIAN_*）；
+            // 无 env 时 parseConfig(null) 等价 Config.disabled()（默认关，零行为变化）。
+            Config parsed = json == null || json.isEmpty()
+                    ? parseConfig(null) : parseConfig(new JSONObject(json));
             // 批次10：编队库可能由 App 同步在独立 formation fn 参数里（与 FormationResolver.libraryFor 同口径兜底）
             if (parsed.formationLibraryJson.isEmpty() && raw != null) {
                 try {
@@ -1053,6 +1168,32 @@ public final class ServerGuardianEngine {
             config = parsed;
         } catch (Throwable t) {
             config = Config.disabled();
+        }
+    }
+
+    /**
+     * 该角色是否处于「需要队列驻防盟友」的守护实盘状态（R2 Phase2B，2026-10-29 用户口径）：
+     * {@code enabled && !dryRun}（parseConfig 已合并 env 覆盖）。
+     *
+     * <p>用途：战争态（WARTIME 让位）只对这类角色触发——只有守护盟友实盘需要占用行军队列
+     * 去驻防盟友，才需要在战时让位自动化任务；未开守护或演练（dry_run）的账号/角色不应
+     * 被联盟战场推送无谓地推入战争态。
+     *
+     * @param acc 账号（null → false）
+     * @param sid 区服 id
+     * @param uid 角色 uid（优先按 uid 取参数；缺失回退该 sid 参数=区服默认）
+     */
+    public static boolean queueDefenseActive(VaultStore.Account acc, long sid, long uid) {
+        if (acc == null) return false;
+        try {
+            java.util.Map<String, String> raw = VaultStore.roleParamsOf(acc, sid, uid);
+            String json = raw == null ? null : raw.get(FN_ID);
+            // 无 App 参数时也必须走 parseConfig(null) 以应用 env 灰度覆盖（实盘开关）
+            Config c = json == null || json.isEmpty()
+                    ? parseConfig(null) : parseConfig(new JSONObject(json));
+            return c.enabled && !c.dryRun;
+        } catch (Throwable t) {
+            return false;
         }
     }
 
@@ -1602,14 +1743,186 @@ public final class ServerGuardianEngine {
                 FileLog.info("守护盟友统一编队 {}:{}：{}", fpid, String.valueOf(sid), resolved.label);
                 return resolved.payload;
             }
+            // 2026-10-28 415 修复：旧路径直接用客户端整队英雄（实证 5 个）→ 该号每队上限 3 → 永远 415。
+            // 英雄数统一夹到 HeroAvailability.autoHeroLimit（默认 3；415 后 3→2→1），
+            // 并按 soldierScalePercent 缩放兵力（406 自适应）。
+            int heroLimit = HeroAvailability.autoHeroLimit(engine);
+            int scale = HeroAvailability.soldierScalePercent(engine);
             if (cfg != null && cfg.heroIds != null && !cfg.heroIds.isEmpty()) {
-                return Exec.formationWithHeroes(engine, cfg.heroIds);
+                return scaleFormationSoldiers(
+                        Exec.formationWithHeroes(engine, clampFormationHeroes(cfg.heroIds, heroLimit)),
+                        scale);
             }
-            int squad = cfg == null || cfg.squadIndex <= 0 ? 1 : cfg.squadIndex;
-            return Exec.formation(engine, squad);
+            // 2026-10-28 用户需求：无任何显式编队参数时，不再用客户端编队（可能 5 英雄 → 415），
+            // 改为「最强空闲盾/矛/弓各一名 + 盾50%/矛20%/弓30% 按出征上限带兵」的 AUTO 编队。
+            lastAutoFormationSummary = "";
+            AutoFormation auto = guardianAutoFormation(engine);
+            if (auto == null) return null;
+            lastAutoFormationSummary = auto.summary;
+            return auto.payload;
         } catch (Throwable t) {
             return null;
         }
+    }
+
+    // =====================================================================
+    // AUTO 最强空闲英雄编队（2026-10-28 用户需求）
+    // 盾:矛:弓 = 50:20:30，按出征容量夹取；复用 FormationResolver.autoProfessionHeroes /
+    // autoOutcome（已含在城/黑名单/415 限档/406 缩放/容量夹取），不重复实现选人/分配逻辑。
+    // =====================================================================
+
+    /** 自动编队结果：payload + 可读摘要（日志/账本/单测用）。 */
+    static final class AutoFormation {
+        final Map<String, Object> payload;
+        final String summary;
+
+        AutoFormation(Map<String, Object> payload, String summary) {
+            this.payload = payload;
+            this.summary = summary == null ? "" : summary;
+        }
+    }
+
+    /** 守护盟友 AUTO 编队比例（用户需求）：盾 50% / 矛 20% / 弓 30%。 */
+    static Map<String, Long> guardianAutoRatio() {
+        Map<String, Long> r = new LinkedHashMap<>();
+        r.put("infantry", 50L);
+        r.put("lancer", 20L);
+        r.put("marksman", 30L);
+        return r;
+    }
+
+    /** 英雄职业数摘要（纯函数）：盾x/矛y/弓z（职业未知不计）。 */
+    static String heroProfessionSummary(List<Long> heroIds) {
+        int shield = 0, spear = 0, bow = 0;
+        if (heroIds != null) {
+            for (Long id : heroIds) {
+                if (id == null || id <= 0L) continue;
+                int p = HeroCatalog.profession(id);
+                if (p == 1) shield++;
+                else if (p == 2) spear++;
+                else if (p == 3) bow++;
+            }
+        }
+        return "盾" + shield + "/矛" + spear + "/弓" + bow;
+    }
+
+    /**
+     * AUTO 最强空闲英雄编队：
+     * <ol>
+     *   <li>英雄：{@link FormationResolver#autoProfessionHeroes} —— 最强盾/矛/弓各一，
+     *       已含在城/黑名单/前序占用过滤，并受 415 限档（3→2→1）；</li>
+     *   <li>容量：{@link FormationCatalog#capacityForHeroes}（出征上限；0=未知 → 传 0 走库存/5万兜底）；</li>
+     *   <li>配兵：{@link FormationResolver#autoOutcome} 按 {@link #guardianAutoRatio()} 50:20:30
+     *       分配并按容量夹取（406 缩放/415 提示由 Resolver 内部消费）。</li>
+     * </ol>
+     *
+     * @return payload + 摘要；英雄/库存未同步 → null（上层 skip_no_formation，可读原因见日志）
+     */
+    AutoFormation guardianAutoFormation(WjdrEngine engine) {
+        if (engine == null) return null;
+        List<Long> heroes = FormationResolver.autoProfessionHeroes(engine);
+        if (heroes.isEmpty()) {
+            FileLog.info("守护盟友自动编队不可用 {}:{}：英雄目录未同步/无可用英雄（notify_hero_init）",
+                    fpid, String.valueOf(sid));
+            return null;
+        }
+        long capacity = FormationCatalog.capacityForHeroes(engine, heroes);
+        String capText = capacity > 0L ? String.valueOf(capacity) : "未知(兜底库存)";
+        FormationResolver.ResolveOutcome out =
+                FormationResolver.autoOutcome(engine, guardianAutoRatio(), Math.max(0L, capacity));
+        if (!out.ready()) {
+            FileLog.info("守护盟友自动编队不可用 {}:{}：{}（英雄{} 容量={}）",
+                    fpid, String.valueOf(sid), out.reason, heroProfessionSummary(heroes), capText);
+            return null;
+        }
+        ResolvedFormation rf = out.formation;
+        String summary = "自动编队 英雄[" + heroProfessionSummary(rf.heroIds) + "]"
+                + " 容量=" + capText
+                + " 兵力=盾" + rf.infantry + "/矛" + rf.lancer + "/弓" + rf.marksman
+                + " 比例50:20:30（" + out.reason + "）";
+        FileLog.info("守护盟友 {}", summary);
+        return new AutoFormation(rf.toFormationPayload(), summary);
+    }
+
+    // =====================================================================
+    // 415/406 自适应（2026-10-28 生产事故：无编队参数取 5 英雄 → 该号上限 3 → 永远 415）
+    // =====================================================================
+
+    /** 英雄数夹取（纯函数）：最多 limit 个；limit&lt;=0 视为默认 3。 */
+    static List<Long> clampFormationHeroes(List<Long> heroes, int limit) {
+        List<Long> out = new ArrayList<>();
+        if (heroes == null) return out;
+        int cap = limit > 0 ? limit : HeroAvailability.DEFAULT_AUTO_HEROES;
+        for (Long id : heroes) {
+            if (out.size() >= cap) break;
+            if (id != null && id > 0L) out.add(id);
+        }
+        return out;
+    }
+
+    /**
+     * 兵力缩放（纯函数；406 自适应）：{@code formation.soldier=[{k,v}]} 每项 v 按 percent 缩放（≥1）。
+     * percent&lt;100 且存在 soldier 时才生成新 payload；其余原样返回。
+     */
+    static Map<String, Object> scaleFormationSoldiers(Map<String, Object> formation, int percent) {
+        if (formation == null || percent >= 100 || percent <= 0) return formation;
+        Object raw = formation.get("soldier");
+        if (!(raw instanceof List)) return formation;
+        List<Map<String, Object>> scaled = new ArrayList<>();
+        for (Object o : (List<?>) raw) {
+            Map<String, Object> pair = Exec.mapOf(o);
+            if (pair == null) continue;
+            Map<String, Object> copy = new LinkedHashMap<>(pair);
+            long v = Exec.longOf(pair.get("v"));
+            if (v > 0L) copy.put("v", Math.max(1L, v * percent / 100L));
+            scaled.add(copy);
+        }
+        Map<String, Object> out = new LinkedHashMap<>(formation);
+        out.put("soldier", scaled);
+        return out;
+    }
+
+    /** 冷却期判定（纯函数）：until&gt;0 且 now&lt;until。 */
+    static boolean inLaunchCooldown(long untilMs, long nowMs) {
+        return untilMs > 0L && nowMs < untilMs;
+    }
+
+    /** 失败日志节流判定（纯函数）：距上次 ≥window 才再记（时钟回拨按可记）。 */
+    static boolean failureLogDue(long lastAtMs, long nowMs, long windowMs) {
+        if (lastAtMs <= 0L) return true;
+        long delta = nowMs - lastAtMs;
+        return delta < 0L || delta >= windowMs;
+    }
+
+    /**
+     * 发射失败自适应（415/406）：下调英雄上限/兵力缩放 + 设置目标冷却，返回可读文案；其它码返回 null。
+     * <ul>
+     *   <li>415：{@link HeroAvailability#noteHeroCountRejected}(实际英雄数) → 下一威胁按更低上限重试；</li>
+     *   <li>406：{@link HeroAvailability#noteSoldierLimitRejected} → 下一威胁按更低兵力缩放。</li>
+     * </ul>
+     */
+    String onLaunchFailure(WjdrEngine engine, long code, Map<String, Object> formation,
+                           String targetKey, long nowMs) {
+        if (code != 415L && code != 406L) return null;
+        String text;
+        if (code == 415L) {
+            int used = HeroAvailability.heroIdsOf(formation).size();
+            int next = HeroAvailability.noteHeroCountRejected(engine, used);
+            text = "编队人数超限(415，英雄" + used + ")，已下调至 " + next + " 英雄重试";
+        } else {
+            int scale = HeroAvailability.noteSoldierLimitRejected(engine);
+            text = "士兵超限(406)，兵力已缩放至 " + scale + "%重试";
+        }
+        if (targetKey != null && !targetKey.isEmpty()) {
+            targetCooldowns.put(targetKey, nowMs + LAUNCH_FAIL_COOLDOWN_MS);
+        }
+        return text;
+    }
+
+    /** 测试/诊断：某目标当前是否处于 415/406 失败冷却期。 */
+    boolean targetInCooldown(String targetKey, long nowMs) {
+        Long until = targetKey == null ? null : targetCooldowns.get(targetKey);
+        return until != null && inLaunchCooldown(until, nowMs);
     }
 
     // =====================================================================
@@ -1831,12 +2144,13 @@ public final class ServerGuardianEngine {
         }
     }
 
-    /** 账本前置写入（最新在前、上限 {@link #LEDGER_CAP}；异常静默）。 */
-    private void prependLedger(JSONObject e) {
+    /** 账本前置写入（最新在前、上限 {@link #LEDGER_CAP}；异常静默）。包内可见便于单测。 */
+    void prependLedger(JSONObject e) {
         try {
-            String key = ledgerKey(fpid, sid);
+            String legacy = ledgerKey(fpid, sid);
+            String key = ledgerKey();
             JSONArray arr = new JSONArray();
-            String raw = store == null ? null : store.getString(key);
+            String raw = readState(key, legacy);
             if (raw != null) {
                 try {
                     arr = new JSONArray(raw);
@@ -1847,20 +2161,21 @@ public final class ServerGuardianEngine {
             out.put(e);
             for (int i = 0; i < arr.length() && i < LEDGER_CAP - 1; i++) out.put(arr.get(i));
             if (store != null) {
-                store.putString(key, out.toString());
+                writeState(key, legacy, out.toString());
                 store.flush();
             }
         } catch (Throwable ignored) {
         }
     }
 
-    /** 写 `mod:{fpid}:{sid}:guardian`（App FnDetail/今日页同键展示）。 */
+    /** 写 `mod:{fpid}:{sid}[:{uid}]:guardian`（App FnDetail/今日页读旧键，active 角色双写）。 */
     void writeMod(String text) {
         try {
             if (store == null) return;
-            String key = modKey(fpid, sid);
+            String legacy = modKey(fpid, sid);
+            String key = modKey();
             JSONObject o = new JSONObject();
-            String raw = store.getString(key);
+            String raw = readState(key, legacy);
             if (raw != null) {
                 try {
                     o = new JSONObject(raw);
@@ -1870,10 +2185,24 @@ public final class ServerGuardianEngine {
             o.put("last", clip(text, 400));
             o.put("last_ts", System.currentTimeMillis());
             o.put("last_trg", "守护");
-            store.putString(key, o.toString());
+            writeState(key, legacy, o.toString());
             store.flush();
         } catch (Throwable ignored) {
         }
+    }
+
+    /** 本实例账本键（Phase 2B）：uid&gt;0 → 角色键 `srv:guardian:<fpid>:<sid>:<uid>:ledger`；否则旧键。 */
+    String ledgerKey() {
+        return roleUid > 0L
+                ? "srv:guardian:" + fpid + ":" + sid + ":" + roleUid + ":ledger"
+                : ledgerKey(fpid, sid);
+    }
+
+    /** 本实例状态键（Phase 2B）：uid&gt;0 → `mod:<fpid>:<sid>:<uid>:guardian`；否则旧键。 */
+    String modKey() {
+        return roleUid > 0L
+                ? "mod:" + fpid + ":" + sid + ":" + roleUid + ":" + FN_ID
+                : modKey(fpid, sid);
     }
 
     static String ledgerKey(String fpid, long sid) {
