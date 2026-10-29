@@ -145,46 +145,15 @@ public class EntryDetailActivity extends Activity {
                     android.view.View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         } catch (Throwable ignored) {
         }
-        ScrollView scroll = new ScrollView(this);
-        scroll.setBackgroundColor(UiStyle.BG_V2);
-
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(0, 0, 0, dp(24));
-
-        // 顶部标题栏
-        LinearLayout topBar = new LinearLayout(this);
-        topBar.setOrientation(LinearLayout.HORIZONTAL);
-        topBar.setGravity(Gravity.CENTER_VERTICAL);
-        topBar.setPadding(dp(16), dp(14), dp(14), dp(8));
-        android.widget.FrameLayout backWrap = new android.widget.FrameLayout(this);
-        backWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.BRAND_TEXT, 22),
-                new android.widget.FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(backWrap);
-        backWrap.setOnClickListener(v -> finish());
-        topBar.addView(backWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
-
-        TextView title = new TextView(this);
-        title.setText("账号详情");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        title.setPadding(dp(6), 0, 0, 0);
-        topBar.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-
-        android.widget.FrameLayout moreWrap = new android.widget.FrameLayout(this);
-        moreWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.MORE, UiStyle.INK2, 20),
-                new android.widget.FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
-        UiStyle.press(moreWrap);
-        moreWrap.setOnClickListener(v -> new AlertDialog.Builder(this,
-                AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setItems(new String[]{"移动到分组", "删除本入口"}, (d, w) -> {
-                    if (w == 0) showMoveToGroupDialog();
-                    else confirmDelete();
-                }).show());
-        topBar.addView(moreWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        root.addView(topBar);
+        android.widget.FrameLayout moreWrap = UiComponents.iconButton(this, UiStyle.Icon.MORE,
+                "更多操作", () -> new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                        .setItems(new String[]{"移动到分组", "删除本入口"}, (d, w) -> {
+                            if (w == 0) showMoveToGroupDialog();
+                            else confirmDelete();
+                        }).show());
+        UiComponents.Page page = UiComponents.scrollPage(
+                this, "账号详情", null, this::finish, 24, moreWrap);
+        LinearLayout root = page.body;
 
         // 资料卡
         LinearLayout headCard = new LinearLayout(this);
@@ -194,7 +163,7 @@ public class EntryDetailActivity extends Activity {
         headCard.setPadding(dp(16), dp(16), dp(16), dp(16));
         LinearLayout.LayoutParams hclp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        hclp.setMargins(dp(18), dp(6), dp(18), 0);
+        hclp.setMargins(0, dp(6), 0, 0);
         headCard.setLayoutParams(hclp);
         headCard.addView(UiStyle.snowAvatar(this, 64, acc.id),
                 new LinearLayout.LayoutParams(dp(64), dp(64)));
@@ -231,7 +200,7 @@ public class EntryDetailActivity extends Activity {
         launchBtn.setPadding(0, dp(15), 0, dp(15));
         LinearLayout.LayoutParams lblp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lblp.setMargins(dp(18), dp(14), dp(18), 0);
+        lblp.setMargins(0, dp(14), 0, 0);
         launchBtn.setLayoutParams(lblp);
         launchBtn.addView(new UiStyle.Icon(this, UiStyle.Icon.PLAY, UiStyle.WHITE, 18),
                 new LinearLayout.LayoutParams(dp(18), dp(18)));
@@ -262,7 +231,7 @@ public class EntryDetailActivity extends Activity {
         autoBtn.setPadding(0, dp(13), 0, dp(13));
         LinearLayout.LayoutParams ablp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        ablp.setMargins(dp(18), dp(10), dp(18), 0);
+        ablp.setMargins(0, dp(10), 0, 0);
         autoBtn.setLayoutParams(ablp);
         autoBtn.addView(new UiStyle.Icon(this, UiStyle.Icon.LIGHTNING, UiStyle.BRAND_TEXT, 18),
                 new LinearLayout.LayoutParams(dp(18), dp(18)));
@@ -278,12 +247,12 @@ public class EntryDetailActivity extends Activity {
         root.addView(autoBtn);
 
         // 角色卡
-        LinearLayout roleCard = UiStyle.outlineCard(this);
+        LinearLayout roleCard = UiComponents.card(this);
         roleCard.setOrientation(LinearLayout.VERTICAL);
         roleCard.setPadding(dp(16), dp(14), dp(16), dp(8));
         LinearLayout.LayoutParams rclp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rclp.setMargins(dp(18), dp(14), dp(18), 0);
+        rclp.setMargins(0, dp(14), 0, 0);
         roleCard.setLayoutParams(rclp);
         LinearLayout roleHead = new LinearLayout(this);
         roleHead.setOrientation(LinearLayout.HORIZONTAL);
@@ -312,12 +281,12 @@ public class EntryDetailActivity extends Activity {
         root.addView(roleCard);
 
         // 登录数据
-        LinearLayout loginCard = UiStyle.outlineCard(this);
+        LinearLayout loginCard = UiComponents.card(this);
         loginCard.setOrientation(LinearLayout.VERTICAL);
         loginCard.setPadding(dp(16), dp(14), dp(16), dp(8));
         LinearLayout.LayoutParams lclp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lclp.setMargins(dp(18), dp(14), dp(18), 0);
+        lclp.setMargins(0, dp(14), 0, 0);
         loginCard.setLayoutParams(lclp);
         loginCard.addView(sectionTitle("登录数据"));
         loginCard.addView(actionRow(UiStyle.Icon.USER, "设置 token",
@@ -331,12 +300,12 @@ public class EntryDetailActivity extends Activity {
         root.addView(loginCard);
 
         // 入口管理
-        LinearLayout mgmtCard = UiStyle.outlineCard(this);
+        LinearLayout mgmtCard = UiComponents.card(this);
         mgmtCard.setOrientation(LinearLayout.VERTICAL);
         mgmtCard.setPadding(dp(16), dp(14), dp(16), dp(8));
         LinearLayout.LayoutParams mclp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        mclp.setMargins(dp(18), dp(14), dp(18), 0);
+        mclp.setMargins(0, dp(14), 0, 0);
         mgmtCard.setLayoutParams(mclp);
         mgmtCard.addView(sectionTitle("入口管理"));
         mgmtCard.addView(actionRow(UiStyle.Icon.DOC, "修改备注名", "", this::showRenameDialog));
@@ -346,9 +315,7 @@ public class EntryDetailActivity extends Activity {
                 this::confirmDelete));
         root.addView(mgmtCard);
 
-        scroll.addView(root, new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        setContentView(scroll);
+        setContentView(page.root);
         refreshInfo();
     }
 
@@ -1732,7 +1699,7 @@ public class EntryDetailActivity extends Activity {
     }
 
     private void toast(String s) {
-        Toast.makeText(this, s, Toast.LENGTH_LONG).show();
+        UiStyle.toast(this, s, Toast.LENGTH_LONG);
     }
 
     private int dp(int v) {

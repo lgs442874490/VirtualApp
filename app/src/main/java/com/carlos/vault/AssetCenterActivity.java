@@ -229,49 +229,12 @@ public class AssetCenterActivity extends Activity {
     // ==================== UI ====================
 
     private View buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(UiStyle.BG_V2);
-        root.addView(topBar());
-        ScrollView scroll = new ScrollView(this);
-        scrollView = scroll;
-        box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(4), dp(18), dp(40));
-        scroll.addView(box);
-        root.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-        return root;
-    }
-
-    private View topBar() {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(14), dp(16), dp(8));
-        android.widget.FrameLayout back = new android.widget.FrameLayout(this);
-        back.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.INK, 22),
-                new android.widget.FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(back);
-        back.setOnClickListener(v -> finish());
-        bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView title = new TextView(this);
-        title.setText("资产中心");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        title.setPadding(dp(6), 0, 0, 0);
-        bar.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView refresh = new TextView(this);
-        refresh.setText("刷新");
-        refresh.setTextSize(14);
-        refresh.setTypeface(Typeface.DEFAULT_BOLD);
-        refresh.setTextColor(UiStyle.BRAND_TEXT);
-        UiStyle.press(refresh);
-        refresh.setOnClickListener(v -> refreshFromServer());
-        bar.addView(refresh);
-        return bar;
+        TextView refresh = UiComponents.compactSecondaryButton(this, "刷新", this::refreshFromServer);
+        UiComponents.Page page = UiComponents.scrollPage(
+                this, "资产中心", null, this::finish, 40, refresh);
+        scrollView = page.scroll;
+        box = page.body;
+        return page.root;
     }
 
     private void renderContent() {
@@ -296,7 +259,7 @@ public class AssetCenterActivity extends Activity {
     }
 
     private View healthCard(boolean ready, int version) {
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title("数据健康", 15));
         card.addView(hint("角色键 " + fpid + ":" + serverid + (uid > 0L ? ":" + uid : "")
                 + (uid > 0L ? "（按 uid 独立投影）" : "（旧键，可能同服多角色覆盖）")));
@@ -321,7 +284,7 @@ public class AssetCenterActivity extends Activity {
     private View roleCard() {
         JSONObject meta = projection.optJSONObject("meta");
         JSONObject city = projection.optJSONObject("city");
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title("角色", 15));
         if (meta == null) {
             card.addView(hint("角色信息未同步"));
@@ -343,7 +306,7 @@ public class AssetCenterActivity extends Activity {
     }
 
     private View kingdomCard() {
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title("王国", 15));
         int day = projection.optInt("kingdomDay", 0);
         int maxLevel = projection.optInt("maxResourceLevel", 0);
@@ -355,7 +318,7 @@ public class AssetCenterActivity extends Activity {
 
     private View queueCard() {
         JSONObject q = projection.optJSONObject("queue");
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title("队列", 15));
         if (q == null) {
             card.addView(hint("队列未同步"));
@@ -382,7 +345,7 @@ public class AssetCenterActivity extends Activity {
     private View resourceCard() {
         JSONObject r = projection.optJSONObject("resources");
         JSONObject st = projection.optJSONObject("stamina");
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title("资源", 15));
         if (r != null) {
             card.addView(kv("钻石", fmtNum(r.optLong("diamond", 0))));
@@ -402,7 +365,7 @@ public class AssetCenterActivity extends Activity {
 
     private View intelCard() {
         JSONObject i = projection.optJSONObject("intel");
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title("情报", 15));
         if (i == null) {
             card.addView(hint("情报未同步"));
@@ -437,7 +400,7 @@ public class AssetCenterActivity extends Activity {
     private View behemothBearCard() {
         JSONObject b = projection.optJSONObject("behemoth");
         JSONObject bear = projection.optJSONObject("bear");
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title("巨兽 / 巨熊", 15));
         if (b != null) {
             card.addView(kv("巨兽", "最高 " + b.optLong("monsterMaxLv", 0) + " 级 · 可加入 "
@@ -459,7 +422,7 @@ public class AssetCenterActivity extends Activity {
     private View warGuardianCard() {
         JSONObject war = projection.optJSONObject("war");
         JSONObject g = projection.optJSONObject("guardian");
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title("战争 / 驻防", 15));
         if (war != null) {
             card.addView(kv("态势行军", "联盟域 " + war.optInt("allianceMarches", 0)
@@ -497,7 +460,7 @@ public class AssetCenterActivity extends Activity {
     private View calendarBackpackCard() {
         JSONObject cal = projection.optJSONObject("calendar");
         JSONObject bp = projection.optJSONObject("backpack");
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title("活动 / 背包", 15));
         if (cal != null) {
             card.addView(kv("活动", "活跃 " + cal.optInt("active", 0)
@@ -515,7 +478,7 @@ public class AssetCenterActivity extends Activity {
     }
 
     private View emptyCard(String title, String message) {
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.addView(title(title, 16));
         card.addView(hint(message));
         return card;
@@ -524,21 +487,13 @@ public class AssetCenterActivity extends Activity {
     // ==================== 小工具 ====================
 
     private TextView title(String text, int size) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(size);
-        tv.setTypeface(Typeface.DEFAULT_BOLD);
-        tv.setTextColor(UiStyle.INK);
+        TextView tv = UiComponents.text(this, text, size, UiStyle.INK, true);
         tv.setPadding(0, 0, 0, dp(6));
         return tv;
     }
 
     private TextView hint(String text) {
-        TextView tv = new TextView(this);
-        tv.setText(text);
-        tv.setTextSize(12.5f);
-        tv.setTextColor(UiStyle.INK2);
-        tv.setLineSpacing(dp(2), 1f);
+        TextView tv = UiComponents.text(this, text, 12.5f, UiStyle.INK2, false);
         tv.setPadding(0, dp(1), 0, dp(3));
         return tv;
     }
@@ -553,11 +508,7 @@ public class AssetCenterActivity extends Activity {
         k.setTextColor(UiStyle.INK3);
         row.addView(k, new LinearLayout.LayoutParams(dp(92),
                 ViewGroup.LayoutParams.WRAP_CONTENT));
-        TextView v = new TextView(this);
-        v.setText(value);
-        v.setTextSize(13f);
-        v.setTextColor(UiStyle.INK);
-        v.setTypeface(Typeface.DEFAULT_BOLD);
+        TextView v = UiComponents.numeric(this, value, 13f, UiStyle.INK, true);
         row.addView(v, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         return row;

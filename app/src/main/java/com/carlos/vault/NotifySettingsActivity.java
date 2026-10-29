@@ -86,22 +86,13 @@ public class NotifySettingsActivity extends Activity {
     // ================================= UI 构建 =================================
 
     private View buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(UiStyle.BG_V2);
-        root.addView(topBar());
-
-        ScrollView sc = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(6), dp(18), dp(30));
-        sc.addView(box);
-        root.addView(sc, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        UiComponents.Page page = UiComponents.scrollPage(
+                this, "战争通知", null, this::finish, 30);
+        LinearLayout box = page.body;
 
         // —— 监视账号 ——
         box.addView(UiStyle.sectionTitle(this, "监视账号"));
-        LinearLayout accCard = UiStyle.outlineCard(this);
+        LinearLayout accCard = UiComponents.card(this);
         accCard.setOrientation(LinearLayout.HORIZONTAL);
         accCard.setGravity(Gravity.CENTER_VERTICAL);
         accCard.setPadding(dp(12), dp(12), dp(12), dp(12));
@@ -129,7 +120,7 @@ public class NotifySettingsActivity extends Activity {
                 + "目标攻击视野外的其他联盟时游戏客户端不会收到该数据，无法产生通知。"));
 
         // —— 监视总开关 ——
-        LinearLayout masterCard = UiStyle.outlineCard(this);
+        LinearLayout masterCard = UiComponents.card(this);
         masterCard.setOrientation(LinearLayout.HORIZONTAL);
         masterCard.setGravity(Gravity.CENTER_VERTICAL);
         masterCard.setPadding(dp(12), dp(8), dp(4), dp(8));
@@ -150,7 +141,7 @@ public class NotifySettingsActivity extends Activity {
 
         // —— 企业微信机器人 ——
         box.addView(UiStyle.sectionTitle(this, "企业微信机器人"));
-        LinearLayout wc = UiStyle.outlineCard(this);
+        LinearLayout wc = UiComponents.card(this);
         wc.setOrientation(LinearLayout.VERTICAL);
         wc.setPadding(dp(12), dp(12), dp(12), dp(12));
         LinearLayout wcHead = new LinearLayout(this);
@@ -186,7 +177,7 @@ public class NotifySettingsActivity extends Activity {
 
         // —— 短信通知 ——
         box.addView(UiStyle.sectionTitle(this, "短信通知"));
-        LinearLayout sms = UiStyle.outlineCard(this);
+        LinearLayout sms = UiComponents.card(this);
         sms.setOrientation(LinearLayout.VERTICAL);
         sms.setPadding(dp(12), dp(12), dp(12), dp(12));
         LinearLayout smsHead = new LinearLayout(this);
@@ -229,7 +220,7 @@ public class NotifySettingsActivity extends Activity {
 
         // —— 高级 ——
         box.addView(UiStyle.sectionTitle(this, "节流与静默"));
-        LinearLayout adv = UiStyle.outlineCard(this);
+        LinearLayout adv = UiComponents.card(this);
         adv.setOrientation(LinearLayout.VERTICAL);
         adv.setPadding(dp(12), dp(12), dp(12), dp(12));
         cooldownEt = field(adv, "同目标同动作冷却（秒，60~3600）", "默认 300");
@@ -248,45 +239,16 @@ public class NotifySettingsActivity extends Activity {
         box.addView(eventsBox);
         box.addView(hint("展示服务器最近记录（环形 200 条，含行为/发起人/兵力/结算）；点条目查看详情。下拉刷新重新拉取。"));
 
-        return root;
-    }
-
-    private View topBar() {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(14), dp(16), dp(6));
-        FrameLayout backWrap = new FrameLayout(this);
-        backWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.BRAND_TEXT, 22),
-                new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(backWrap);
-        backWrap.setOnClickListener(v -> finish());
-        bar.addView(backWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView title = new TextView(this);
-        title.setText("战争通知");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        title.setPadding(dp(6), 0, 0, 0);
-        bar.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        return bar;
+        return page.root;
     }
 
     /** 标题/副题竖排（卡片头）。 */
     private View colText(String title, String sub) {
         LinearLayout mid = new LinearLayout(this);
         mid.setOrientation(LinearLayout.VERTICAL);
-        TextView t = new TextView(this);
-        t.setText(title);
-        t.setTextSize(13.5f);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setTextColor(UiStyle.INK);
+        TextView t = UiComponents.text(this, title, 13.5f, UiStyle.INK, true);
         mid.addView(t);
-        TextView s = new TextView(this);
-        s.setText(sub);
-        s.setTextSize(11.5f);
-        s.setTextColor(UiStyle.INK2);
+        TextView s = UiComponents.caption(this, sub, UiStyle.INK2);
         mid.addView(s);
         return mid;
     }
@@ -310,17 +272,14 @@ public class NotifySettingsActivity extends Activity {
     }
 
     private TextView hint(String text) {
-        TextView h = new TextView(this);
-        h.setText(text);
-        h.setTextSize(11.5f);
-        h.setTextColor(UiStyle.INK3);
+        TextView h = UiComponents.caption(this, text, UiStyle.INK3);
         h.setPadding(dp(4), dp(6), dp(4), 0);
         return h;
     }
 
     /** 添加监视行卡片。 */
     private View addCard() {
-        LinearLayout card = UiStyle.outlineCard(this);
+        LinearLayout card = UiComponents.card(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(12), dp(12), dp(12), dp(12));
         addUidEt = field(card, "敌人 uid（必填）", "游戏内玩家 uid，纯数字");
@@ -410,7 +369,7 @@ public class NotifySettingsActivity extends Activity {
         if (d.isEmpty()) d = "uid " + uid;
         final String display = d;
 
-        LinearLayout row = UiStyle.outlineCard(this);
+        LinearLayout row = UiComponents.card(this);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(12), dp(8), dp(4), dp(8));
@@ -475,7 +434,7 @@ public class NotifySettingsActivity extends Activity {
                     if (e == null) continue;
                     JSONObject ep = e.optJSONObject("endpoint");
                     boolean hasXY = ep != null;
-                    LinearLayout row = UiStyle.outlineCard(this);
+                    LinearLayout row = UiComponents.card(this);
                     row.setOrientation(LinearLayout.VERTICAL);
                     row.setPadding(dp(12), dp(8), dp(12), dp(8));
                     LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(

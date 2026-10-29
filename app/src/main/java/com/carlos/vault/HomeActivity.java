@@ -235,10 +235,9 @@ public class HomeActivity extends AccountVaultActivity {
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
         View nav = buildBottomNav();
+        int navWidth = Math.min(getResources().getDisplayMetrics().widthPixels - dp(24), dp(640));
         FrameLayout.LayoutParams nlp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(64), Gravity.BOTTOM);
-        nlp.leftMargin = dp(12);
-        nlp.rightMargin = dp(12);
+                navWidth, dp(64), Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         nlp.bottomMargin = dp(12);
         root.addView(nav, nlp);
 
@@ -501,8 +500,8 @@ public class HomeActivity extends AccountVaultActivity {
         ScrollView sc = new ScrollView(this);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(12), dp(18), dp(110));
-        sc.addView(box);
+        box.setPadding(0, dp(12), 0, dp(110));
+        sc.addView(UiComponents.contentHost(this, box));
         pages[0].addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -2145,9 +2144,12 @@ public class HomeActivity extends AccountVaultActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(12), dp(18), dp(16));
+        box.setPadding(0, dp(12), 0, dp(16));
+        int accountContentWidth = UiLayoutRules.contentWidthPx(
+                getResources().getDisplayMetrics().widthPixels,
+                getResources().getDisplayMetrics().density);
         pageRoot.addView(box, new android.widget.FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                accountContentWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL));
 
         // 顶栏：账号 + 账号/工作区/在线统计 + 批量管理
         LinearLayout top = new LinearLayout(this);
@@ -4068,8 +4070,7 @@ public class HomeActivity extends AccountVaultActivity {
             final String warnF = warn;
             runOnUiThread(() -> {
                 pd.dismiss();
-                if (warnF != null) android.widget.Toast.makeText(this, warnF,
-                        android.widget.Toast.LENGTH_LONG).show();
+                if (warnF != null) UiStyle.toast(this, warnF, android.widget.Toast.LENGTH_LONG);
                 // 启动阶段提示角色名（含区服/uid），不再显示账号备注名
                 String roleName = (role.name == null || role.name.isEmpty() ? acc.label : role.name)
                         + "·K" + role.serverid + (role.uid > 0 ? "·" + role.uid : "");
@@ -4137,8 +4138,8 @@ public class HomeActivity extends AccountVaultActivity {
         ScrollView sc = taskScroll;
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(12), dp(18), dp(110));
-        sc.addView(box);
+        box.setPadding(0, dp(12), 0, dp(110));
+        sc.addView(UiComponents.contentHost(this, box));
         pages[2].addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -4992,8 +4993,8 @@ public class HomeActivity extends AccountVaultActivity {
         ScrollView sc = new ScrollView(this);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(12), dp(18), dp(110));
-        sc.addView(box);
+        box.setPadding(0, dp(12), 0, dp(110));
+        sc.addView(UiComponents.contentHost(this, box));
         pages[3].addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
@@ -5970,48 +5971,25 @@ public class HomeActivity extends AccountVaultActivity {
         root.setBackgroundColor(UiStyle.BG_V2);
 
         // 顶栏
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(14), dp(14), dp(6));
-        FrameLayout back = new FrameLayout(this);
-        back.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.INK, 22),
-                new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(back);
-        back.setOnClickListener(v -> dlg.dismiss());
-        bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView title = new TextView(this);
-        title.setText("自动日常运行");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        title.setPadding(dp(6), 0, 0, 0);
-        bar.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        FrameLayout more = new FrameLayout(this);
-        more.addView(new UiStyle.Icon(this, UiStyle.Icon.MORE, UiStyle.INK2, 20),
-                new FrameLayout.LayoutParams(dp(20), dp(20), Gravity.CENTER));
-        UiStyle.press(more);
-        more.setOnClickListener(v -> new AlertDialog.Builder(this,
-                AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setItems(new String[]{"后台运行", "停止本轮"}, (dd, w) -> {
-                    if (w == 0) {
-                        RUN.attacher = null;
-                        dlg.dismiss();
-                    } else if (RUN.running) {
-                        if (runEndedAt == 0) runEndedAt = System.currentTimeMillis();
-                        RUN.running = false;
-                        RUN.log("→ 用户停止");
-                    }
-                }).show());
-        bar.addView(more, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        root.addView(bar);
+        FrameLayout more = UiComponents.iconButton(this, UiStyle.Icon.MORE, "运行选项",
+                () -> new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                        .setItems(new String[]{"后台运行", "停止本轮"}, (dd, w) -> {
+                            if (w == 0) {
+                                RUN.attacher = null;
+                                dlg.dismiss();
+                            } else if (RUN.running) {
+                                if (runEndedAt == 0) runEndedAt = System.currentTimeMillis();
+                                RUN.running = false;
+                                RUN.log("→ 用户停止");
+                            }
+                        }).show());
+        root.addView(UiComponents.topBar(this, "自动日常运行", null, dlg::dismiss, more));
 
         ScrollView sc = new ScrollView(this);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(6), dp(18), dp(20));
-        sc.addView(box);
+        box.setPadding(0, dp(6), 0, dp(20));
+        sc.addView(UiComponents.contentHost(this, box));
         root.addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
@@ -6053,22 +6031,14 @@ public class HomeActivity extends AccountVaultActivity {
         heroMid.setOrientation(LinearLayout.HORIZONTAL);
         heroMid.setGravity(Gravity.BOTTOM);
         heroMid.setPadding(0, dp(8), 0, 0);
-        final TextView pct = new TextView(this);
-        pct.setTextSize(42);
-        pct.setTypeface(Typeface.DEFAULT_BOLD);
-        pct.setTextColor(UiStyle.WHITE);
+        final TextView pct = UiComponents.numeric(this, "", 42, UiStyle.WHITE, true);
         heroMid.addView(pct);
         LinearLayout heroInfo = new LinearLayout(this);
         heroInfo.setOrientation(LinearLayout.VERTICAL);
         heroInfo.setPadding(dp(14), 0, 0, dp(6));
-        final TextView cnt = new TextView(this);
-        cnt.setTextSize(13);
-        cnt.setTypeface(Typeface.DEFAULT_BOLD);
-        cnt.setTextColor(UiStyle.WHITE);
+        final TextView cnt = UiComponents.numeric(this, "", 13, UiStyle.WHITE, true);
         heroInfo.addView(cnt);
-        final TextView elapsed = new TextView(this);
-        elapsed.setTextSize(11);
-        elapsed.setTextColor(UiStyle.BRAND_100);
+        final TextView elapsed = UiComponents.numeric(this, "", 11, UiStyle.BRAND_100, false);
         elapsed.setPadding(0, dp(4), 0, 0);
         heroInfo.addView(elapsed);
         heroMid.addView(heroInfo, new LinearLayout.LayoutParams(0,
@@ -6254,7 +6224,7 @@ public class HomeActivity extends AccountVaultActivity {
         LinearLayout foot = new LinearLayout(this);
         foot.setOrientation(LinearLayout.HORIZONTAL);
         foot.setGravity(Gravity.CENTER_VERTICAL);
-        foot.setPadding(dp(18), dp(12), dp(18), dp(16));
+        foot.setPadding(0, dp(12), 0, dp(16));
         foot.setBackgroundColor(UiStyle.WHITE);
         TextView bgBtn = new TextView(this);
         bgBtn.setText("后台运行");
@@ -6279,7 +6249,9 @@ public class HomeActivity extends AccountVaultActivity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1);
         slp.leftMargin = dp(10);
         foot.addView(stopBtn, slp);
-        root.addView(foot);
+        FrameLayout footHost = UiComponents.contentHost(this, foot);
+        footHost.setBackgroundColor(UiStyle.WHITE);
+        root.addView(footHost);
 
         final Runnable update = () -> {
             float p = RUN.total <= 0 ? 0f : RUN.done / (float) RUN.total;

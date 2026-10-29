@@ -57,7 +57,7 @@ public class ToolBoxActivity extends Activity {
     }
 
     private void toast(String s) {
-        android.widget.Toast.makeText(this, s, android.widget.Toast.LENGTH_SHORT).show();
+        UiStyle.toast(this, s);
     }
 
     @Override
@@ -84,38 +84,9 @@ public class ToolBoxActivity extends Activity {
     // ================= UI =================
 
     private View buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(UiStyle.BG_V2);
-
-        // 顶栏：‹ + 标题
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(14), dp(16), dp(6));
-        FrameLayout backWrap = new FrameLayout(this);
-        backWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.BRAND_TEXT, 22),
-                new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(backWrap);
-        backWrap.setOnClickListener(v -> finish());
-        bar.addView(backWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView title = new TextView(this);
-        title.setText("工具箱");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        title.setPadding(dp(6), 0, 0, 0);
-        bar.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        root.addView(bar);
-
-        ScrollView sc = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(6), dp(18), dp(24));
-        sc.addView(box);
-        root.addView(sc, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
+        UiComponents.Page page = UiComponents.scrollPage(
+                this, "工具箱", null, this::finish, 24);
+        LinearLayout box = page.body;
 
         // ===== 批次7 功能门控（单一事实源 FeatureGate，2026-10-23） =====
         // 原则：① 无权限功能不显示；② 未开发/未立项功能一律隐藏（历史“规划中 · 14”整段下架，
@@ -220,64 +191,17 @@ public class ToolBoxActivity extends Activity {
             box.addView(note);
         }
 
-        return root;
+        return page.root;
     }
 
     /** 分区标题行：左主标题 + 右提示。 */
     private LinearLayout sectionRow(String title, String hint) {
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(dp(2), dp(16), dp(2), dp(8));
-        TextView t = new TextView(this);
-        t.setText(title);
-        t.setTextSize(16);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setTextColor(UiStyle.INK);
-        row.addView(t, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView h = new TextView(this);
-        h.setText(hint);
-        h.setTextSize(11);
-        h.setTextColor(UiStyle.INK3);
-        row.addView(h);
-        return row;
+        return UiComponents.sectionHeader(this, title, hint);
     }
 
-    /** 工具行卡：图标盒 + 标题/副题 + （调用方追加开关）。点卡片=回调由调用方定。 */
+    /** 工具行卡：统一图标卡；开关、箭头及点击回调仍由本页绑定。 */
     private LinearLayout toolCard(int iconType, String title, String sub, int iconBg) {
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.HORIZONTAL);
-        card.setGravity(Gravity.CENTER_VERTICAL);
-        card.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 16, UiStyle.LINE));
-        card.setPadding(dp(14), dp(14), dp(14), dp(14));
-        LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        clp.bottomMargin = dp(10);
-        card.setLayoutParams(clp);
-
-        card.addView(UiStyle.iconTile(this, iconType, UiStyle.BRAND_TEXT, iconBg, 40, 20, 12),
-                new LinearLayout.LayoutParams(dp(40), dp(40)));
-
-        LinearLayout col = new LinearLayout(this);
-        col.setOrientation(LinearLayout.VERTICAL);
-        col.setPadding(dp(12), 0, dp(8), 0);
-        card.addView(col, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView t = new TextView(this);
-        t.setText(title);
-        t.setTextSize(15);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setTextColor(UiStyle.INK);
-        col.addView(t);
-        TextView s = new TextView(this);
-        s.setText(sub);
-        s.setTextSize(11.5f);
-        s.setTextColor(UiStyle.INK2);
-        s.setPadding(0, dp(3), 0, 0);
-        s.setTag("sub");
-        col.addView(s);
-        return card;
+        return UiComponents.iconCard(this, iconType, title, sub, iconBg);
     }
 
     /** 卡片副题文案刷新（tag=sub 的 TextView）。 */

@@ -19,6 +19,7 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 
+import com.carlos.vault.UiComponents;
 import com.carlos.vault.UiStyle;
 import com.carlos.vault.VaultSync;
 
@@ -166,33 +167,11 @@ public class MonitorActivity extends Activity {
     }
 
     private View buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(UiStyle.BG_V2);
-
-        // ---- 顶栏：‹ + 标题 ----
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(14), dp(16), dp(6));
-        FrameLayout backWrap = new FrameLayout(this);
-        backWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.BRAND_TEXT, 22),
-                new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(backWrap);
-        backWrap.setOnClickListener(v -> finish());
-        bar.addView(backWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView title = new TextView(this);
-        title.setText("真机监控");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        title.setPadding(dp(6), 0, 0, 0);
-        bar.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        root.addView(bar);
+        LinearLayout root = UiComponents.pageRoot(this);
+        root.addView(UiComponents.topBar(this, "真机监控", null, this::finish));
 
         // ---- 状态卡：状态行 + 自动刷新/刷新 ----
-        LinearLayout statusCard = UiStyle.card(this);
+        LinearLayout statusCard = UiComponents.card(this);
         statusView = new TextView(this);
         statusView.setTextSize(12);
         statusView.setTextColor(UiStyle.INK2);
@@ -228,19 +207,19 @@ public class MonitorActivity extends Activity {
             updateStatus();
             poll(true);
         });
-        ctrl.addView(refresh, new LinearLayout.LayoutParams(dp(88), dp(40)));
+        ctrl.addView(refresh, new LinearLayout.LayoutParams(dp(88), dp(44)));
         statusCard.addView(ctrl);
-        root.addView(statusCard);
+        root.addView(UiComponents.contentHost(this, statusCard));
 
         // ---- 过滤 chips（横向可滚动，窄屏不挤压）----
         HorizontalScrollView chipScroll = new HorizontalScrollView(this);
         chipScroll.setHorizontalScrollBarEnabled(false);
         chipsRow = new LinearLayout(this);
         chipsRow.setOrientation(LinearLayout.HORIZONTAL);
-        chipsRow.setPadding(dp(16), dp(8), dp(16), 0);
+        chipsRow.setPadding(0, dp(8), 0, 0);
         chipScroll.addView(chipsRow, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        root.addView(chipScroll, new LinearLayout.LayoutParams(
+        root.addView(UiComponents.contentHost(this, chipScroll), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         buildChips();
 
@@ -249,8 +228,8 @@ public class MonitorActivity extends Activity {
         eventScroll.setVerticalScrollBarEnabled(true);
         eventBox = new LinearLayout(this);
         eventBox.setOrientation(LinearLayout.VERTICAL);
-        eventBox.setPadding(dp(16), dp(8), dp(16), dp(16));
-        eventScroll.addView(eventBox, new FrameLayout.LayoutParams(
+        eventBox.setPadding(0, dp(8), 0, dp(16));
+        eventScroll.addView(UiComponents.contentHost(this, eventBox), new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(eventScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
@@ -260,14 +239,16 @@ public class MonitorActivity extends Activity {
         LinearLayout bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.HORIZONTAL);
         bottom.setBackgroundColor(UiStyle.CARD);
-        bottom.setPadding(dp(16), dp(10), dp(16), dp(10));
+        bottom.setPadding(0, dp(10), 0, dp(10));
         TextView markBtn = UiStyle.secondaryBtn(this, "打点", this::onMark);
         LinearLayout.LayoutParams mlp = new LinearLayout.LayoutParams(0, dp(44), 1f);
         mlp.rightMargin = dp(10);
         bottom.addView(markBtn, mlp);
         TextView exportBtn = UiStyle.secondaryBtn(this, "导出", this::onExport);
         bottom.addView(exportBtn, new LinearLayout.LayoutParams(0, dp(44), 1f));
-        root.addView(bottom);
+        FrameLayout bottomHost = UiComponents.contentHost(this, bottom);
+        bottomHost.setBackgroundColor(UiStyle.CARD);
+        root.addView(bottomHost);
 
         return root;
     }

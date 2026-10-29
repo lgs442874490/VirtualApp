@@ -25,6 +25,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.carlos.vault.AccountStore;
+import com.carlos.vault.UiComponents;
 import com.carlos.vault.UiStyle;
 import com.carlos.vault.VaultSync;
 import com.carlos.vault.daily.gather.GatherConfigV2;
@@ -215,38 +216,18 @@ public class FunctionActivity extends Activity {
         }
     }
 
-    private View buildUi() {        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(UiStyle.BG_V2);
-
-        // 顶栏
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(14), dp(14), dp(6));
-        android.widget.FrameLayout backWrap = new android.widget.FrameLayout(this);
-        backWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.INK, 22),
-                new android.widget.FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(backWrap);
-        backWrap.setOnClickListener(v -> finish());
-        bar.addView(backWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView title = new TextView(this);
-        title.setText("功能详情");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        title.setPadding(dp(6), 0, 0, 0);
-        bar.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        root.addView(bar);
+    private View buildUi() {
+        LinearLayout root = UiComponents.pageRoot(this);
+        root.addView(UiComponents.topBar(this, "功能详情", null, this::finish));
 
         // 功能 Hero：图标 + 名称/描述 + 今日状态
-        LinearLayout info = UiStyle.outlineCard(this);
+        LinearLayout info = UiComponents.card(this);
         info.setOrientation(LinearLayout.HORIZONTAL);
         info.setGravity(Gravity.CENTER_VERTICAL);
         info.setPadding(dp(16), dp(16), dp(16), dp(16));
         LinearLayout.LayoutParams infoLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        infoLp.setMargins(dp(18), dp(6), dp(18), 0);
+        infoLp.setMargins(0, dp(6), 0, 0);
         info.setLayoutParams(infoLp);
         int fnIcon = "login_rewards".equals(fn.id) ? UiStyle.Icon.GIFT : UiStyle.Icon.DOC;
         info.addView(UiStyle.iconTile(this, fnIcon, UiStyle.BRAND_TEXT,
@@ -296,27 +277,27 @@ public class FunctionActivity extends Activity {
         infoCol.addView(stRow);
         info.addView(infoCol, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        root.addView(info);
+        root.addView(UiComponents.contentHost(this, info));
 
         // 立即执行（规范主按钮：52dp · 品牌实心 · 按压反馈；未开放置灰）
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
-        btnRow.setPadding(dp(18), dp(14), dp(18), 0);
+        btnRow.setPadding(0, dp(14), 0, 0);
         TextView run = actionButton(fn.implemented ? "立即执行一次" : "功能待开放", fn.implemented);
         btnRow.addView(run, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
-        root.addView(btnRow);
+        root.addView(UiComponents.contentHost(this, btnRow));
 
         // 加入自动日常
         Map<String, Boolean> cfg = configStore.roleConfig(account.fpid, serverid);
         Boolean on = cfg == null ? null : cfg.get(fn.id);
-        LinearLayout enableRow = UiStyle.outlineCard(this);
+        LinearLayout enableRow = UiComponents.card(this);
         enableRow.setOrientation(LinearLayout.HORIZONTAL);
         enableRow.setGravity(Gravity.CENTER_VERTICAL);
         enableRow.setPadding(dp(14), dp(14), dp(14), dp(14));
         LinearLayout.LayoutParams erlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        erlp.setMargins(dp(18), dp(14), dp(18), 0);
+        erlp.setMargins(0, dp(14), 0, 0);
         enableRow.setLayoutParams(erlp);
         enableRow.addView(UiStyle.iconTile(this, UiStyle.Icon.LIGHTNING, UiStyle.BRAND_TEXT,
                 UiStyle.BRAND_50, 40, 20, 12),
@@ -351,18 +332,18 @@ public class FunctionActivity extends Activity {
                 });
         swRef[0] = toggle;
         enableRow.addView(toggle);
-        root.addView(enableRow);
+        root.addView(UiComponents.contentHost(this, enableRow));
 
         // 批次12：采集改为独立「采集设置」页（6 队列 × 资源/等级/编队/兵量，GatherConfigV2 单一事实源），
         // 原弹窗降级为设置页底部「旧版参数（兼容）」，本卡片不再直接弹窗。
         if ("gather".equals(fn.id)) {
-            LinearLayout pick = UiStyle.outlineCard(this);
+            LinearLayout pick = UiComponents.card(this);
             pick.setOrientation(LinearLayout.HORIZONTAL);
             pick.setGravity(Gravity.CENTER_VERTICAL);
             pick.setPadding(dp(14), dp(14), dp(14), dp(14));
             LinearLayout.LayoutParams plp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            plp.setMargins(dp(18), dp(10), dp(18), 0);
+            plp.setMargins(0, dp(10), 0, 0);
             pick.setLayoutParams(plp);
             pick.addView(UiStyle.iconTile(this, UiStyle.Icon.LIGHTNING, UiStyle.BRAND_TEXT,
                     UiStyle.BRAND_50, 40, 20, 12),
@@ -401,7 +382,7 @@ public class FunctionActivity extends Activity {
                 }
             });
             refreshGatherSummary();
-            root.addView(pick);
+            root.addView(UiComponents.contentHost(this, pick));
         }
 
         // 用户侧不再提供任何 JSON 参数输入：参数一律由功能专属卡片的开关/下拉完成
@@ -412,7 +393,7 @@ public class FunctionActivity extends Activity {
         LinearLayout scrollBox = new LinearLayout(this);
         scrollBox.setOrientation(LinearLayout.VERTICAL);
         scrollBox.setPadding(0, 0, 0, dp(16));
-        scroll.addView(scrollBox);
+        scroll.addView(UiComponents.contentHost(this, scrollBox));
 
         // ⓪ 批次10（2026-10-23）：队列类功能统一编队（英雄/兵种/比例，随角色 params 同步服务器）。
         // 采集/情报/狩猎/巨兽/巨熊/守护盟友按此编队出征（服务器 FormationResolver 消费）。
@@ -452,7 +433,7 @@ public class FunctionActivity extends Activity {
         }
         // ⓪ 每日任务专属：活跃度 + 任务组进度/分档领取（原日常页每日任务模块迁移）
         if ("daily_mission".equals(fn.id)) {
-            LinearLayout actCard = UiStyle.card(this);
+            LinearLayout actCard = UiComponents.card(this);
             actCard.setOrientation(LinearLayout.VERTICAL);
             actCard.setPadding(dp(16), dp(12), dp(16), dp(12));
             actTitle = new TextView(this);
@@ -479,27 +460,15 @@ public class FunctionActivity extends Activity {
             boxRow.setPadding(0, dp(8), 0, 0);
             actCard.addView(boxRow);
             scrollBox.addView(actCard);
-            TextView qTitle = new TextView(this);
-            qTitle.setText("任务进度 · 点「待领取」行可手动领");
-            qTitle.setTextSize(14);
-            qTitle.setTypeface(Typeface.DEFAULT_BOLD);
-            qTitle.setTextColor(UiStyle.INK);
-            qTitle.setPadding(dp(20), dp(14), dp(16), dp(6));
-            scrollBox.addView(qTitle);
+            scrollBox.addView(UiComponents.sectionHeader(this, "任务进度", "点「待领取」行可手动领"));
             questBox = new LinearLayout(this);
             questBox.setOrientation(LinearLayout.VERTICAL);
             scrollBox.addView(questBox);
         }
 
         // ① 子项实时状态与配置（含 每子项实时状态行/✓今日/上次动作/开关/策略）
-        TextView subTitle = new TextView(this);
-        subTitle.setText("执行参数");
-        subTitle.setTextSize(14);
-        subTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        subTitle.setTextColor(UiStyle.INK);
-        subTitle.setPadding(dp(20), dp(14), dp(16), dp(6));
-        scrollBox.addView(subTitle);
-        LinearLayout subCard = UiStyle.card(this);
+        scrollBox.addView(UiComponents.sectionHeader(this, "执行参数", null));
+        LinearLayout subCard = UiComponents.card(this);
         subCard.setPadding(dp(10), dp(8), dp(10), dp(8));
         subCard.addView(SubCardUi.build(this, account.fpid, serverid, fn.id));
         scrollBox.addView(subCard);
@@ -515,14 +484,8 @@ public class FunctionActivity extends Activity {
         }
 
         // ② 领取内容（从运行记录提取成功领取条目）
-        TextView claimTitle = new TextView(this);
-        claimTitle.setText("执行明细");
-        claimTitle.setTextSize(14);
-        claimTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        claimTitle.setTextColor(UiStyle.INK);
-        claimTitle.setPadding(dp(20), dp(16), dp(16), dp(6));
-        scrollBox.addView(claimTitle);
-        LinearLayout claimCard = UiStyle.card(this);
+        scrollBox.addView(UiComponents.sectionHeader(this, "执行明细", null));
+        LinearLayout claimCard = UiComponents.card(this);
         claimCard.setPadding(dp(14), dp(10), dp(14), dp(10));
         claimView = new TextView(this);
         claimView.setTextSize(12);
@@ -530,14 +493,8 @@ public class FunctionActivity extends Activity {
         scrollBox.addView(claimCard);
 
         // ③ 运行记录（功能级，最近50条）
-        TextView logTitle = new TextView(this);
-        logTitle.setText("最近执行");
-        logTitle.setTextSize(14);
-        logTitle.setTypeface(Typeface.DEFAULT_BOLD);
-        logTitle.setTextColor(UiStyle.INK);
-        logTitle.setPadding(dp(20), dp(16), dp(16), dp(6));
-        scrollBox.addView(logTitle);
-        LinearLayout logCard = UiStyle.card(this);
+        scrollBox.addView(UiComponents.sectionHeader(this, "最近执行", null));
+        LinearLayout logCard = UiComponents.card(this);
         logCard.setPadding(dp(14), dp(10), dp(14), dp(10));
         logView = new TextView(this);
         logView.setTextSize(12);
@@ -622,7 +579,7 @@ public class FunctionActivity extends Activity {
             final QuestCatalog.Tier fClaim = claimTier;
             final long fProg = groupProg;
 
-            LinearLayout card = UiStyle.card(this);
+            LinearLayout card = UiComponents.card(this);
             card.setOrientation(LinearLayout.VERTICAL);
             card.setPadding(dp(14), dp(11), dp(14), dp(11));
             LinearLayout.LayoutParams clp = new LinearLayout.LayoutParams(
@@ -1056,7 +1013,7 @@ public class FunctionActivity extends Activity {
         long ts = parseTimeIn(online);
         themeBanner("仓库补给", online.isEmpty() ? "普通+限时体力（打开今日页自动同步）"
                 : "普通补给 " + (ts > 0 ? remainText(ts) : online));
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(12), dp(16), dp(12));
         addKV(card, "普通补给", ts > 0 ? online + "（" + remainText(ts) + "）"
@@ -1103,7 +1060,7 @@ public class FunctionActivity extends Activity {
         else if ("1800".equals(strat)) stratName = "攒够 30 分钟才领";
         themeBanner("探险挂机 · 产量随时间线性累积",
                 hang.isEmpty() ? "约 10 分钟一领" : (ts > 0 ? "满格倒计时 " + remainText(ts) : hang));
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
         TextView big = new TextView(this);
@@ -1140,7 +1097,7 @@ public class FunctionActivity extends Activity {
         int st = logStore.status(account.fpid, serverid, fn.id);
         boolean done = st == LogStore.ST_DONE;
         themeBanner("统帅礼包 · 每日一份免费", done ? "今日已领取 ✓" : "今日尚未领取");
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
         TextView t = new TextView(this);
         t.setText(done ? "✓ 今日已领取，明日刷新" : "今日的免费统帅礼包还没领，点上方「立即执行」领取");
@@ -1161,7 +1118,7 @@ public class FunctionActivity extends Activity {
         }
         themeBanner("无尽征程 · 里程碑积分", ms.isEmpty() ? "积分未同步（打开今日页同步）"
                 : "当前积分 " + integral);
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setGravity(Gravity.CENTER);
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
@@ -1471,7 +1428,7 @@ public class FunctionActivity extends Activity {
 
     /** 只读状态卡：生效配置 + mod 最近状态 + 服务端账本统计。 */
     private LinearLayout buildGuardianStatusCard() {
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         TextView title = new TextView(this);
         title.setText("守护盟友 · 状态");
         title.setTextSize(14);
@@ -1511,7 +1468,7 @@ public class FunctionActivity extends Activity {
     /** 配置卡：总开关/演练-实发/盟友与目标/提前量/撤退；保存写 params 并同步。 */
     private LinearLayout buildGuardianConfigCard() {
         final FnParams.GuardianCfg cfg = FnParams.loadGuardianCfg(this, account.fpid, serverid);
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         TextView title = new TextView(this);
         title.setText("守护盟友 · 配置");
         title.setTextSize(14);
@@ -1706,7 +1663,7 @@ public class FunctionActivity extends Activity {
 
     /** 狩猎设置卡：创建后由 {@link #fillHuntCard} 填充，选择变更时就地重绘。 */
     private LinearLayout buildHuntConfigCard() {
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         fillHuntCard(card);
         return card;
     }
