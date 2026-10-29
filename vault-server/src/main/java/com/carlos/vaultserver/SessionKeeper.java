@@ -910,9 +910,8 @@ public final class SessionKeeper implements SessionControl,
                         break;
                     }
                     long uidForRole = roleUid > 0L ? roleUid : wantUid;
-                    // R2 Phase 2B（2026-10-29）：开盾/战争态按角色独立。
-                    // - VAULT_PER_ROLE=on：每个在线角色各自开盾、各自战争态（键带 uid，主控镜像 App 旧键）；
-                    // - off（默认）：仅 active 角色挂载，保持现网行为。
+                    // R2 Phase 2B：开盾按角色独立（每个角色自己城市受攻击各自开盾；键带 uid，
+                    // 主控镜像 App 旧键）；perRole=off 时仍只主控角色，保持现网行为。
                     if (perRole || active) {
                         // 开盾惰性挂载（按真实 sid + 角色 uid；主控角色双写 App 旧键）
                         if (shield == null) {
@@ -923,10 +922,19 @@ public final class SessionKeeper implements SessionControl,
                         // 反应式开盾优先于采集/互助：攻击行军按分钟计，开盾早一秒是一秒
                         ServerShieldResponder s = shield;
                         if (s != null) s.tick(engine);
-                        // P7 战争状态对等（按角色实例：fpid|sid|uid；各自 gate/yield，互不影响）
+                    }
+                    // 战争态（WARTIME 让位）：用户口径（2026-10-29）——**只有开启守护盟友且实盘
+                    // （enabled && !dry_run，需要用行军队列去驻防盟友）的账号才触发**，且只在守护宿主
+                    // （主控角色）上实例化；未开守护/演练/兄弟角色一律不进入战争态，避免被联盟战场
+                    // 推送无谓地推入战时让位、把日常任务停掉。
+                    boolean warWanted = active
+                            && com.carlos.vaultserver.guardian.ServerGuardianEngine.queueDefenseActive(
+                                    store.find(fpid), resolveSid(), uidForRole);
+                    if (warWanted) {
                         if (war == null) {
                             war = ServerWarState.forRole(fpid, resolveSid(), uidForRole);
                             war.attach(engine);
+                            FileLog.info("战争态实例挂载 role={}（守护盟友实盘，需要队列驻防）", key);
                         }
                         long nowMs = System.currentTimeMillis();
                         ServerWarState w = war;
@@ -940,6 +948,16 @@ public final class SessionKeeper implements SessionControl,
                             }
                             w.tick(nowMs);
                         }
+                    } else if (war != null) {
+                        // 守护未开启/演练/非宿主：注销战争态实例，任务不再被战时让位（可随时再开）
+                        ServerWarState w = war;
+                        war = null;
+                        try {
+                            ServerWarState.unregister(fpid, resolveSid(), uidForRole);
+                        } catch (Throwable ignored) {
+                        }
+                        FileLog.info("战争态实例注销 role={}（守护盟友未实盘开启/非宿主，不触发战争态）",
+                                key);
                     }
                     // 守护盟友 P0（批次9）：账号级单实例（同一联盟战场只驻防一次），仅主控角色运行；
                     // 状态键按角色 uid（主控镜像旧键，App 展示不变）。

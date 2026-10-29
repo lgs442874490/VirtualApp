@@ -1171,6 +1171,32 @@ public final class ServerGuardianEngine {
         }
     }
 
+    /**
+     * 该角色是否处于「需要队列驻防盟友」的守护实盘状态（R2 Phase2B，2026-10-29 用户口径）：
+     * {@code enabled && !dryRun}（parseConfig 已合并 env 覆盖）。
+     *
+     * <p>用途：战争态（WARTIME 让位）只对这类角色触发——只有守护盟友实盘需要占用行军队列
+     * 去驻防盟友，才需要在战时让位自动化任务；未开守护或演练（dry_run）的账号/角色不应
+     * 被联盟战场推送无谓地推入战争态。
+     *
+     * @param acc 账号（null → false）
+     * @param sid 区服 id
+     * @param uid 角色 uid（优先按 uid 取参数；缺失回退该 sid 参数=区服默认）
+     */
+    public static boolean queueDefenseActive(VaultStore.Account acc, long sid, long uid) {
+        if (acc == null) return false;
+        try {
+            java.util.Map<String, String> raw = VaultStore.roleParamsOf(acc, sid, uid);
+            String json = raw == null ? null : raw.get(FN_ID);
+            // 无 App 参数时也必须走 parseConfig(null) 以应用 env 灰度覆盖（实盘开关）
+            Config c = json == null || json.isEmpty()
+                    ? parseConfig(null) : parseConfig(new JSONObject(json));
+            return c.enabled && !c.dryRun;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     /** 解析 roleParams `guardian` JSON（纯函数；缺省/异常一律关闭+dry_run；env 灰度可覆盖）。 */
     static Config parseConfig(JSONObject p) {
         Config c = Config.disabled();
