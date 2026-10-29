@@ -125,9 +125,10 @@ public final class SessionKeeper implements SessionControl,
      * 角色级任务开关（Phase 1 2026-10-29；与 {@code TaskCadenceScheduler.enabledTaskIds} 同口径的轻量版）：
      * roleConfig 显式值优先，缺省回退任务目录默认。用于兄弟角色按角色跑联盟科技捐献前的门控。
      */
-    static boolean roleTaskEnabled(VaultStore.Account acc, long sid, String fn) {
+    static boolean roleTaskEnabled(VaultStore.Account acc, long sid, long uid, String fn) {
         if (acc == null || fn == null || fn.isEmpty()) return false;
-        Map<String, Boolean> cfg = acc.roleConfig.get(String.valueOf(sid));
+        // R2 Phase2C：uid 优先（角色独立开关）→ 旧 sid 默认 → 任务目录默认
+        Map<String, Boolean> cfg = VaultStore.roleConfigOf(acc, sid, uid);
         Boolean explicit = cfg == null ? null : cfg.get(fn);
         if (explicit != null) return explicit;
         ServerTasks.TaskDef def = ServerTasks.byId(fn);
@@ -1051,7 +1052,7 @@ public final class SessionKeeper implements SessionControl,
             if (acc == null || !acc.auto) return;            // 未开启自动：保持手动语义
             long sidNow = resolveSid();
             if (sidNow <= 0L) return;
-            if (!roleTaskEnabled(acc, sidNow, "alliance_donate")) return;
+            if (!roleTaskEnabled(acc, sidNow, roleUid, "alliance_donate")) return;
             if (SessionKeeper.this.wartimeYield(fpid)) return;   // P7 战时让位
             try {
                 TaskContext tc = new TaskContext(engine, fpid, sidNow, stateStore,

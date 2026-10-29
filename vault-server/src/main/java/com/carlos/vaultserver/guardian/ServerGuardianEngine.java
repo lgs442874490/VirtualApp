@@ -1149,7 +1149,9 @@ public final class ServerGuardianEngine {
         lastConfigLoadAt = now;
         try {
             VaultStore.Account acc = vault == null ? null : vault.find(fpid);
-            Map<String, String> raw = acc == null ? null : acc.roleParams.get(String.valueOf(sid));
+            // R2 Phase2C（2026-10-30）：守护参数按角色 uid 优先（roleParamsByUid → 旧 sid 默认），
+            // 使同服双角色可以分别配置守护盟友（此前只读 sid 表，两角色共用一套）。
+            Map<String, String> raw = acc == null ? null : VaultStore.roleParamsOf(acc, sid, roleUid);
             String json = raw == null ? null : raw.get(FN_ID);
             // 无 App 参数时也必须走 parseConfig(null) 以应用 env 实盘/灰度覆盖（VAULT_GUARDIAN_*）；
             // 无 env 时 parseConfig(null) 等价 Config.disabled()（默认关，零行为变化）。

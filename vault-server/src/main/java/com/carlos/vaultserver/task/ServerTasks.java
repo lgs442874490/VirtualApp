@@ -2099,6 +2099,9 @@ public final class ServerTasks {
             case 3601: case 3602: case 6101:
             case 1510: case 1511: case 1528: case 1545:
             case 1570: case 1571: case 1574: case 1576: case 1577: case 1579: case 1580: case 1581:
+            // 2026-10-30 生产实证：米娅许愿屋 req_fortune_card_get_daily_free_gift 返回 10151
+            // （每日免费礼物已领/今日不可领）。旧实现记 ERROR 并每 ~6 分钟重试；归一为“不可用/已领”。
+            case 10151:
                 return true;
             default:
                 return false;
@@ -2110,6 +2113,7 @@ public final class ServerTasks {
         switch (code) {
             case 21: case 61: case 7501: case 40032: case 40034: case 40611: case 7602: case 4502:
             case 1507:   // 联盟发展/排名奖励「今日已捐献」（生产 state 实证）
+            case 10151:  // 米娅许愿屋每日免费礼物「今日已领」（生产实证；写台账后当天不再请求）
                 return true;
             default:
                 return false;
