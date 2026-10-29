@@ -721,9 +721,11 @@ public final class SessionKeeper implements SessionControl,
                     } catch (Throwable ignored) {
                     }
                     // W9：战争/驻防事实迁移——资产库联盟域行军作为第二事实源（与原始推送幂等去重）
+                    // Phase2B：按角色实例同步（同服双角色各自一份战争态，互不覆盖）
                     try {
-                        com.carlos.vaultserver.ServerWarState.syncAssets(fpid, resolveSid(), lib,
-                                engine.lastUid());
+                        long warUid = roleUid > 0L ? roleUid : wantUid;
+                        com.carlos.vaultserver.ServerWarState.syncAssets(fpid, resolveSid(), warUid,
+                                lib, engine.lastUid());
                     } catch (Throwable ignored) {
                     }
                 });
@@ -908,33 +910,44 @@ public final class SessionKeeper implements SessionControl,
                         break;
                     }
                     long uidForRole = roleUid > 0L ? roleUid : wantUid;
-                    // 开盾/守护盟友：Phase 2A 仍只由主控角色执行（其状态键仍为 fpid:sid，
-                    // 双角色共享同一联盟战场视图；按角色拆键/独立开盾留 Phase 2B）。
-                    if (active) {
-                        // 开盾惰性挂载（成为写入方才挂；按真实 sid，默认角色登录时固化实际区服）
+                    // R2 Phase 2B（2026-10-29）：开盾/战争态按角色独立。
+                    // - VAULT_PER_ROLE=on：每个在线角色各自开盾、各自战争态（键带 uid，主控镜像 App 旧键）；
+                    // - off（默认）：仅 active 角色挂载，保持现网行为。
+                    if (perRole || active) {
+                        // 开盾惰性挂载（按真实 sid + 角色 uid；主控角色双写 App 旧键）
                         if (shield == null) {
-                            shield = new ServerShieldResponder(fpid, resolveSid(), stateStore, store);
+                            shield = new ServerShieldResponder(fpid, resolveSid(), uidForRole,
+                                    stateStore, store, this::isActiveRoleWriter);
                             shield.attach(engine);
                         }
-                        // P7 战争状态对等：推送钩子 + 退出判定 + p:war.* 参数热载（60s 一次）
-                        if (war == null) {
-                            war = ServerWarState.forRole(fpid, resolveSid());
-                            war.attach(engine);
-                        }
-                        long nowMs = System.currentTimeMillis();
-                        if (nowMs >= nextWarCfgAt) {
-                            VaultStore.Account warAcc = store.find(fpid);
-                            if (warAcc != null) ServerWarState.configure(warAcc, resolveSid());
-                            nextWarCfgAt = nowMs + 60_000L;
-                        }
-                        war.tick(nowMs);
                         // 反应式开盾优先于采集/互助：攻击行军按分钟计，开盾早一秒是一秒
                         ServerShieldResponder s = shield;
                         if (s != null) s.tick(engine);
-                        // 守护盟友 P0（批次9）：钩子只入账（默认关，零请求）；tick 做配置热载/内存清理
+                        // P7 战争状态对等（按角色实例：fpid|sid|uid；各自 gate/yield，互不影响）
+                        if (war == null) {
+                            war = ServerWarState.forRole(fpid, resolveSid(), uidForRole);
+                            war.attach(engine);
+                        }
+                        long nowMs = System.currentTimeMillis();
+                        ServerWarState w = war;
+                        if (w != null) {
+                            if (nowMs >= nextWarCfgAt) {
+                                VaultStore.Account warAcc = store.find(fpid);
+                                if (warAcc != null) {
+                                    ServerWarState.configure(warAcc, resolveSid(), uidForRole);
+                                }
+                                nextWarCfgAt = nowMs + 60_000L;
+                            }
+                            w.tick(nowMs);
+                        }
+                    }
+                    // 守护盟友 P0（批次9）：账号级单实例（同一联盟战场只驻防一次），仅主控角色运行；
+                    // 状态键按角色 uid（主控镜像旧键，App 展示不变）。
+                    if (active) {
                         if (guardian == null) {
                             guardian = new com.carlos.vaultserver.guardian.ServerGuardianEngine(
-                                    fpid, resolveSid(), stateStore, store);
+                                    fpid, resolveSid(), uidForRole, stateStore, store,
+                                    this::isActiveRoleWriter);
                             guardian.attach(engine);
                         }
                         com.carlos.vaultserver.guardian.ServerGuardianEngine g = guardian;
@@ -1407,7 +1420,8 @@ public final class SessionKeeper implements SessionControl,
             ServerWarState w = war;
             war = null;
             if (w != null) {
-                ServerWarState.unregister(fpid, w.sid);
+                // Phase2B：按角色注销（不再误删兄弟角色实例）
+                ServerWarState.unregister(fpid, w.sid, roleUid > 0L ? roleUid : wantUid);
             }
             try {
                 engine.close();
@@ -1984,6 +1998,17 @@ public final class SessionKeeper implements SessionControl,
             sessions.remove(cur.key);
         }
         store.removeRole(fpid, role.sid, role.uid);
+        // R2 Phase 2B：角色被移除时清理其角色级状态键（防孤儿键堆积/串读）；旧键/兄弟角色键不动。
+        try {
+            long sidNum = Long.parseLong(role.sid == null ? "" : role.sid.trim());
+            long uidNum = parseUid(role.uid);
+            int removed = stateStore.removeRoleKeys(fpid, sidNum, uidNum);
+            if (removed > 0) {
+                FileLog.info("角色状态键已清理 {}：{} 个键", sessionKey(fpid, role.sid, role.uid),
+                        String.valueOf(removed));
+            }
+        } catch (Throwable ignored) {
+        }
         FileLog.info("角色移除 {}（仅工具内移除，游戏内角色未删除）",
                 sessionKey(fpid, role.sid, role.uid));
         RoleOpResult r = RoleOpResult.ok(VaultStore.RUN_STOPPED);
@@ -2330,13 +2355,12 @@ public final class SessionKeeper implements SessionControl,
     }
 
     /**
-     * 指定角色是否处于战争让位态（Phase 2 起按角色；当前战争态键仍按 fpid:sid，
-     * 同服双角色共享同一联盟战场态势，Phase 2B 再拆 uid）。
+     * 指定角色是否处于战争让位态（Phase 2B 起按角色实例 fpid|sid|uid；兄弟角色互不影响）。
      */
     @Override
     public boolean wartimeYield(RoleKey role) {
         if (role == null) return true;
-        return ServerWarState.wartimeYield(role.fpid);
+        return ServerWarState.wartimeYield(role.fpid, role.sid, role.uid);
     }
 
     /** 账号当前 active 角色会话 sid（无会话 0）。 */

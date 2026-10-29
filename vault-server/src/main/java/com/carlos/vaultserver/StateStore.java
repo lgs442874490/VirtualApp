@@ -7,7 +7,9 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -99,6 +101,72 @@ public final class StateStore {
                 dirtyAt = System.currentTimeMillis();
             }
         }
+    }
+
+    /**
+     * Phase 2B（2026-10-29）：角色级键前缀白名单（删除角色时只清这些 family）。
+     *
+     * <p>只允许命中**带 uid 段**的角色键；旧（无 uid）键、账号级键（summary/lastrun/alert/digest…）、
+     * 全局键（srv:cad:stats）一律不在白名单或无法命中角色段，绝不误删。
+     */
+    private static final String[] ROLE_KEY_PREFIXES = {
+            "mod:", "log:", "st:", "res:", "todo:", "rallies:", "questprog:", "questdone:",
+            "questts:", "act:", "boxes:", "summary:", "ledger:", "war:",
+            "srv:cad:", "srv:cadlast:", "srv:lastrun:", "srv:supplyfire:", "srv:guardian:",
+            "srv:alliance_science:", "srv:alliance_help:", "srv:asset:", "srv:formation:"
+    };
+
+    /**
+     * 删除某角色（{@code fpid + sid + uid}）的全部**角色级**键，返回删除条数。
+     *
+     * <p>命中规则：键属于 {@link #ROLE_KEY_PREFIXES} 白名单 family，且包含完整角色段
+     * {@code :<fpid>:<sid>:<uid>}（左右边界为 {@code :} 或键首尾）。兼容两种形状：
+     * <ul>
+     *   <li>{@code <family>:<fpid>:<sid>:<uid>[:<rest>]}（mod/log/res/ledger/srv:* …）；</li>
+     *   <li>{@code st:<yyyy-MM-dd>:<fpid>:<sid>:<uid>[:<fn>]}（按日键，跨天全部清理）。</li>
+     * </ul>
+     *
+     * <p><b>安全约束</b>：{@code fpid} 空/空白或 {@code uid<=0} 直接返回 0（0 = 旧/兼容路径，
+     * 绝不删旧键、账号级键或整表）；只删本角色 uid 的键，兄弟角色/旧键/全局键保留。
+     * 线程安全；有删除才标脏。
+     */
+    public int removeRoleKeys(String fpid, long sid, long uid) {
+        if (fpid == null || fpid.trim().isEmpty() || uid <= 0L) return 0;
+        String marker = fpid + ":" + sid + ":" + uid;
+        int removed = 0;
+        synchronized (lock) {
+            List<String> targets = new ArrayList<>();
+            for (String k : states.keySet()) {
+                if (matchesRoleKey(k, marker)) targets.add(k);
+            }
+            for (String k : targets) {
+                if (states.remove(k) != null) removed++;
+            }
+            if (removed > 0) dirtyAt = System.currentTimeMillis();
+        }
+        return removed;
+    }
+
+    /** 键是否为“白名单 family + 完整角色段 marker”形态（纯函数，供单测）。 */
+    private static boolean matchesRoleKey(String key, String marker) {
+        if (key == null || marker == null || marker.isEmpty()) return false;
+        boolean family = false;
+        for (String p : ROLE_KEY_PREFIXES) {
+            if (key.startsWith(p)) {
+                family = true;
+                break;
+            }
+        }
+        if (!family) return false;
+        int idx = key.indexOf(marker);
+        while (idx >= 0) {
+            boolean leftOk = idx == 0 || key.charAt(idx - 1) == ':';
+            int end = idx + marker.length();
+            boolean rightOk = end == key.length() || key.charAt(end) == ':';
+            if (leftOk && rightOk) return true;
+            idx = key.indexOf(marker, idx + 1);
+        }
+        return false;
     }
 
     /**

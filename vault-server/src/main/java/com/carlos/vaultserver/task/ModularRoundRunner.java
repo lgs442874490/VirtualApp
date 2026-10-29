@@ -73,7 +73,7 @@ public final class ModularRoundRunner {
         Map<String, Boolean> roleConfig = RoundRunner.configForRole(acc, sid, roleUid);
         // 2026-10-25 P0：启用任务集合带进上下文（采集×情报让位判定需要知道 intel 是否在跑）
         TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger,
-                TaskContext.enabledPredicate(roleConfig), roleUid);
+                TaskContext.enabledPredicate(roleConfig), roleUid, activeWriter);
         ModuleRegistry reg = registry();
 
         AutomationConfig config = AutomationConfig.fromLegacy(
@@ -81,9 +81,10 @@ public final class ModularRoundRunner {
         AutomationContext ctx = new AutomationContext(tc, config.module("legacy"),
                 AutomationServices.defaults());
 
-        // P7 战时任务闸（E1 对等）：战争态整轮让位——allowlist 内动作照跑，其余逐动作合成
-        // SKIPPED("战时暂停")；本轮不烧 srv:lastrun（退出战争态后窗口逻辑立即补跑）。
-        String yieldNote = com.carlos.vaultserver.ServerWarState.roundYieldNote(fpid, sid, fnOnly);
+        // P7 战时任务闸（E1 对等，Phase2B 按角色实例）：战争态整轮让位——allowlist 内动作照跑，
+        // 其余逐动作合成 SKIPPED("战时暂停")；本轮不烧 srv:lastrun（退出战争态后窗口逻辑立即补跑）。
+        String yieldNote = com.carlos.vaultserver.ServerWarState.roundYieldNote(fpid, sid, roleUid,
+                fnOnly);
         boolean wartimeYield = yieldNote != null;
 
         List<ModuleResult> results = new ArrayList<>();
@@ -98,7 +99,8 @@ public final class ModularRoundRunner {
                     ModuleResult r = new ModuleResult(m.id());
                     for (ActionDefinition a : m.actions()) {
                         if (!mc.actionEnabled(a.id, a.defaultEnabled)) continue;
-                        if (com.carlos.vaultserver.ServerWarState.gateNote(fpid, sid, a.id) == null) {
+                        if (com.carlos.vaultserver.ServerWarState.gateNote(fpid, sid, roleUid,
+                                a.id) == null) {
                             // allowlist 内（battle_shield/medic 等不占队列战斗支援）：照常执行
                             results.add(reg.runAction(a.id, ctx, config));
                         } else {

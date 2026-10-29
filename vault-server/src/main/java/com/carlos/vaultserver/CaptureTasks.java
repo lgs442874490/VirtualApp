@@ -374,6 +374,18 @@ public final class CaptureTasks {
         bear(engine, store, new RoleKey(fpid, sid, 0L), true);
     }
 
+    /**
+     * 巨熊采集（R2 Phase 2B 按角色）：状态键 {@code mod:<fpid>:<sid>:<uid>:bear}；
+     * activeWriter 时额外镜像旧键 {@code mod:<fpid>:<sid>:bear}（App 显示链路）。
+     *
+     * @param uid          角色 uid（&gt;0 时按角色隔离；0=旧/兼容路径）
+     * @param activeWriter 是否 App 当前选中角色（仅它镜像写旧键）
+     */
+    public static void bear(WjdrEngine engine, StateStore store, String fpid, long sid,
+                            long uid, boolean activeWriter) {
+        bear(engine, store, new RoleKey(fpid, sid, uid), activeWriter);
+    }
+
     static void bear(WjdrEngine engine, StateStore store, RoleKey role, boolean activeWriter) {
         try {
             GameMessage trap = engine.request("req_alliance_trap_info", null);
@@ -404,6 +416,18 @@ public final class CaptureTasks {
 
     public static void captureSupplyState(WjdrEngine engine, StateStore store, String fpid, long sid) {
         captureSupplyState(engine, store, new RoleKey(fpid, sid, 0L), true);
+    }
+
+    /**
+     * 仓库补给采集（R2 Phase 2B 按角色）：状态键 {@code mod:<fpid>:<sid>:<uid>:supply}；
+     * activeWriter 时额外镜像旧键 {@code mod:<fpid>:<sid>:supply}（App 显示链路）。
+     *
+     * @param uid          角色 uid（&gt;0 时按角色隔离；0=旧/兼容路径）
+     * @param activeWriter 是否 App 当前选中角色（仅它镜像写旧键）
+     */
+    public static void captureSupplyState(WjdrEngine engine, StateStore store, String fpid, long sid,
+                                          long uid, boolean activeWriter) {
+        captureSupplyState(engine, store, new RoleKey(fpid, sid, uid), activeWriter);
     }
 
     static void captureSupplyState(WjdrEngine engine, StateStore store, RoleKey role,

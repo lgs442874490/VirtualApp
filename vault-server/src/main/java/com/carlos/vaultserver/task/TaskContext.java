@@ -35,16 +35,26 @@ public final class TaskContext {
      */
     public final long roleUid;
 
+    /**
+     * 是否为该账号当前 App 选中角色（active writer，Phase 2B，默认 true=旧路径）：
+     * <ul>
+     *   <li>true：本角色的写入同时镜像旧键（{@code mod:<fpid>:<sid>:<fn>} 等），App 显示链路不变；</li>
+     *   <li>false：兄弟角色（非 App 选中）只写角色键，绝不覆盖旧键，避免 App 旧镜像短暂显示兄弟角色数据。</li>
+     * </ul>
+     * roleUid&lt;=0 时该字段无实际意义（角色键即旧键）。
+     */
+    public final boolean activeWriter;
+
     public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
                        java.util.Map<String, JSONObject> params, String trigger) {
-        this(engine, fpid, sid, store, params, trigger, null, 0L);
+        this(engine, fpid, sid, store, params, trigger, null, 0L, true);
     }
 
     /** 带启用任务判定的构造（整轮/单任务执行器传入；见 {@link #enabledPredicate}）。 */
     public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
                        java.util.Map<String, JSONObject> params, String trigger,
                        java.util.function.Predicate<String> enabledTasks) {
-        this(engine, fpid, sid, store, params, trigger, enabledTasks, 0L);
+        this(engine, fpid, sid, store, params, trigger, enabledTasks, 0L, true);
     }
 
     /**
@@ -53,6 +63,19 @@ public final class TaskContext {
     public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
                        java.util.Map<String, JSONObject> params, String trigger,
                        java.util.function.Predicate<String> enabledTasks, long roleUid) {
+        this(engine, fpid, sid, store, params, trigger, enabledTasks, roleUid, true);
+    }
+
+    /**
+     * Phase 2B：带角色 uid + activeWriter 的构造（整轮/单任务执行器按角色传入）。
+     *
+     * @param roleUid      角色 uid（&gt;0 时任务状态键按角色隔离；0=旧/兼容路径）
+     * @param activeWriter 是否 App 当前选中角色（仅它镜像写旧键）；true 等价 Phase 2B 之前的全部构造
+     */
+    public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
+                       java.util.Map<String, JSONObject> params, String trigger,
+                       java.util.function.Predicate<String> enabledTasks, long roleUid,
+                       boolean activeWriter) {
         this.engine = engine;
         this.fpid = fpid;
         this.sid = sid;
@@ -61,6 +84,7 @@ public final class TaskContext {
         this.trigger = trigger == null ? "服务器" : trigger;
         this.enabledTasks = enabledTasks;
         this.roleUid = roleUid;
+        this.activeWriter = activeWriter;
     }
 
     /**

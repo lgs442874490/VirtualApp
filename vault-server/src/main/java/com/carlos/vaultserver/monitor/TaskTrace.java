@@ -68,11 +68,25 @@ public final class TaskTrace {
      * @param trigger 触发来源（节奏|手动|服务器|整轮）
      */
     public static Context begin(String fpid, long sid, String fn, String name, String trigger) {
+        return begin(fpid, sid, 0L, fn, name, trigger);
+    }
+
+    /**
+     * R2 Phase 2B：带角色 uid 的任务观测（同服多角色监控可按 uid 区分角色）。
+     *
+     * <p>只做观测（契约第 1 条）：额外落 {@code uid} 字段，事件形状/判定/控制流全部不变。
+     * task.start/task.end 均带 {@code uid}（{@code uid<=0} 落空串，与 {@code sid} 未知时同款）。
+     *
+     * @param uid 角色 uid（0=旧/未知）
+     */
+    public static Context begin(String fpid, long sid, long uid, String fn, String name,
+                                String trigger) {
         MonitorStore store = MonitorStore.get();
         if (store == null || !store.isEnabled()) return Context.NOOP;
         Context ctx = null;
         try {
-            ctx = new Context(store, fpid, sid, fn, name, trigger, System.nanoTime(), CURRENT.get());
+            ctx = new Context(store, fpid, sid, uid, fn, name, trigger, System.nanoTime(),
+                    CURRENT.get());
             CURRENT.set(ctx);
             ctx.writeStart();
             return ctx;
@@ -90,11 +104,13 @@ public final class TaskTrace {
     public static final class Context implements AutoCloseable {
 
         /** 未启用时共享的空上下文（不入 ThreadLocal）。 */
-        static final Context NOOP = new Context(null, null, 0L, null, null, null, 0L, null);
+        static final Context NOOP = new Context(null, null, 0L, 0L, null, null, null, 0L, null);
 
         private final MonitorStore store;
         private final String fpid;
         private final String sidText;
+        /** 角色 uid 文本（Phase 2B；uid&lt;=0 落空串，与 sid 未知时同款）。 */
+        private final String uidText;
         private final String fn;
         private final String name;
         private final String trigger;
@@ -102,11 +118,12 @@ public final class TaskTrace {
         private final Context parent;
         private boolean ended;
 
-        Context(MonitorStore store, String fpid, long sid, String fn, String name, String trigger,
-                long startedNanos, Context parent) {
+        Context(MonitorStore store, String fpid, long sid, long uid, String fn, String name,
+                String trigger, long startedNanos, Context parent) {
             this.store = store;
             this.fpid = nullToEmpty(fpid);
             this.sidText = sid > 0L ? String.valueOf(sid) : "";
+            this.uidText = uid > 0L ? String.valueOf(uid) : "";
             this.fn = nullToEmpty(fn);
             this.name = nullToEmpty(name);
             this.trigger = nullToEmpty(trigger);
@@ -125,6 +142,7 @@ public final class TaskTrace {
                 e.put("kind", "task.end");
                 e.put("fpid", fpid);
                 e.put("sid", sidText);
+                e.put("uid", uidText);
                 e.put("fn", fn);
                 e.put("name", name);
                 e.put("trigger", trigger);
@@ -159,6 +177,7 @@ public final class TaskTrace {
                 e.put("kind", "task.start");
                 e.put("fpid", fpid);
                 e.put("sid", sidText);
+                e.put("uid", uidText);
                 e.put("fn", fn);
                 e.put("name", name);
                 e.put("trigger", trigger);

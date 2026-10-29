@@ -36,12 +36,15 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li><b>/status 摘要</b>：{@link #summaryJson} 供 VaultHttpApi 暴露 warState 概要。</li>
  * </ul>
  *
- * <p>实例键 = (fpid, sid)：与 App 一致按角色实例独立计分；推送数据缺失（无推送/形状变化）
+ * <p>实例键 = (fpid, sid, uid)（Phase 2B 2026-10-29）：同账号同服双角色各自独立战争态，
+ * 互不覆盖；uid&lt;=0 为旧/兼容路径（旧签名委托 uid=0）。App 显示链路不变：active 角色由
+ * SessionKeeper 用 {@link #summaryJson(String,long,long)} 读取，账号级聚合语义
+ * （{@link #wartimeYield(String)}）保留供运维/旧调度。推送数据缺失（无推送/形状变化）
  * 自然降级——判定机收不到信号即停在 NORMAL，任务闸不拦截（不会因失明误伤日常）。
  */
 public final class ServerWarState {
 
-    /** (fpid,sid) → 实例。 */
+    /** (fpid|sid|uid) → 实例（uid=0 为旧/聚合兼容实例）。 */
     private static final ConcurrentHashMap<String, ServerWarState> REGISTRY = new ConcurrentHashMap<>();
 
     /** 服务器侧 ALERT 同步让位的可选出征类任务（与 App ALERT_FIELD_TASKS 同集）。 */
@@ -51,6 +54,8 @@ public final class ServerWarState {
 
     final String fpid;
     final long sid;
+    /** Phase 2B：角色 uid（0=旧/兼容实例）。 */
+    final long uid;
     final WarState core = new WarState();
     /** 在途敌情行军（侦查+进攻）：marchId → [type, owner, endServerSec]（del 分类依赖）。 */
     private final Map<String, long[]> tracked = new ConcurrentHashMap<>();
@@ -59,27 +64,39 @@ public final class ServerWarState {
     /** 服务器侧压缩计数：owner → 次数（≥3 触发锁存）。 */
     private final Map<Long, Integer> compressCount = new ConcurrentHashMap<>();
 
-    private ServerWarState(String fpid, long sid) {
+    private ServerWarState(String fpid, long sid, long uid) {
         this.fpid = fpid;
         this.sid = sid;
+        this.uid = uid;
     }
 
     // ---------------- 实例管理 ----------------
 
-    static String key(String fpid, long sid) {
-        return (fpid == null ? "" : fpid) + "|" + sid;
+    /** 角色实例键：{@code fpid|sid|uid}（uid<=0 旧槽位）。 */
+    static String key(String fpid, long sid, long uid) {
+        return (fpid == null ? "" : fpid) + "|" + sid + "|" + uid;
     }
 
-    /** get-or-create（SessionKeeper 会话挂载时；测试可直接 register）。 */
+    /** 旧实例键（uid=0），保留供既有调用/测试。 */
+    static String key(String fpid, long sid) {
+        return key(fpid, sid, 0L);
+    }
+
+    /** 旧 get-or-create（uid=0 兼容实例）。 */
     public static ServerWarState forRole(String fpid, long sid) {
-        String k = key(fpid, sid);
+        return forRole(fpid, sid, 0L);
+    }
+
+    /** Phase 2B get-or-create：同账号同服双角色各自实例（uid 必填；SessionKeeper 挂载时调用）。 */
+    public static ServerWarState forRole(String fpid, long sid, long uid) {
+        String k = key(fpid, sid, uid);
         ServerWarState w = REGISTRY.get(k);
         if (w == null) {
             synchronized (REGISTRY) {
                 w = REGISTRY.get(k);
                 if (w == null) {
-                    w = new ServerWarState(fpid, sid);
-                    w.core.setListener(loggingListener(fpid, sid));
+                    w = new ServerWarState(fpid, sid, uid);
+                    w.core.setListener(loggingListener(fpid, sid, uid));
                     REGISTRY.put(k, w);
                 }
             }
@@ -91,9 +108,18 @@ public final class ServerWarState {
         return forRole(fpid, sid);
     }
 
-    /** 移除实例（会话关闭/角色切换时调用；避免旧角色战时态残留并继续拦截整账号）。 */
+    static ServerWarState register(String fpid, long sid, long uid) {
+        return forRole(fpid, sid, uid);
+    }
+
+    /** 旧注销（uid=0 兼容实例）。 */
     public static void unregister(String fpid, long sid) {
-        REGISTRY.remove(key(fpid, sid));
+        unregister(fpid, sid, 0L);
+    }
+
+    /** Phase 2B：只移除目标角色实例（兄弟角色实例保留）。 */
+    public static void unregister(String fpid, long sid, long uid) {
+        REGISTRY.remove(key(fpid, sid, uid));
     }
 
     // ---------------- 全局节拍 / 运维解卡 / 告警取数（2026-10-25 战时卡死修复） ----------------
@@ -125,7 +151,7 @@ public final class ServerWarState {
         tickerStarted = true;
         Thread t = new Thread(() -> {
             long maxMin = maxWartimeMinutesByEnv();
-            FileLog.info("战争态全局节拍已启动：{}ms（对全部已注册角色实例判退出/上限，不再只依赖 active 角色会话），战时上限={}",
+            FileLog.info("战争态全局节拍已启动：{}ms（对全部已注册角色实例判退出/上限，含同服多角色 uid 实例），战时上限={}",
                     String.valueOf(TICKER_INTERVAL_MILLIS),
                     maxMin <= 0 ? "不限" : (maxMin + "min"));
             while (!Thread.currentThread().isInterrupted()) {
@@ -183,8 +209,9 @@ public final class ServerWarState {
             ServerWarState w = e.getValue();
             if (w == null || !w.core.wartime()) continue;
             if (sb.length() > 0) sb.append(' ');
-            sb.append(w.fpid).append('|').append(w.sid)
-                    .append('(').append(w.core.durationMs(now) / 60_000L).append("min)");
+            sb.append(w.fpid).append('|').append(w.sid);
+            if (w.uid > 0L) sb.append('|').append(w.uid);
+            sb.append('(').append(w.core.durationMs(now) / 60_000L).append("min)");
         }
         return sb.toString();
     }
@@ -222,32 +249,39 @@ public final class ServerWarState {
     }
 
     /** 进出日志监听：战争态进入/退出/提醒落 FileLog（原来无任何埋点，事故只能靠 skip 计数反推）。 */
-    private static WarState.Listener loggingListener(final String fpid, final long sid) {
+    private static WarState.Listener loggingListener(final String fpid, final long sid, final long uid) {
         return new WarState.ListenerAdapter() {
             @Override
             public void onWarEnter(WarState.Trigger trigger, String detail) {
-                FileLog.info("战争态进入 fpid={} sid={} 触发={} {}",
-                        fpid, String.valueOf(sid), trigger == null ? "?" : trigger.name(), detail);
+                FileLog.info("战争态进入 fpid={} sid={} uid={} 触发={} {}",
+                        fpid, String.valueOf(sid), String.valueOf(uid),
+                        trigger == null ? "?" : trigger.name(), detail);
             }
 
             @Override
             public void onWarExit(String reason, String detail) {
-                FileLog.info("战争态退出 fpid={} sid={} 原因={} {}",
-                        fpid, String.valueOf(sid), reason, detail);
+                FileLog.info("战争态退出 fpid={} sid={} uid={} 原因={} {}",
+                        fpid, String.valueOf(sid), String.valueOf(uid), reason, detail);
             }
 
             @Override
             public void onNotice(String text) {
-                FileLog.info("战争态提醒 fpid={} sid={} {}", fpid, String.valueOf(sid), text);
+                FileLog.info("战争态提醒 fpid={} sid={} uid={} {}",
+                        fpid, String.valueOf(sid), String.valueOf(uid), text);
             }
         };
     }
 
-    /** p:war.* 参数热载（App 同步的 roleParams JSON；缺省=全默认）。 */
+    /** 旧 p:war.* 参数热载（uid=0 兼容实例）。 */
     public static void configure(VaultStore.Account acc, long sid) {
-        ServerWarState w = REGISTRY.get(key(acc == null ? "" : acc.fpid, sid));
+        configure(acc, sid, 0L);
+    }
+
+    /** Phase 2B：按角色 uid 热载 p:war.*（roleParamsByUid 优先，回退旧 sid 参数）。 */
+    public static void configure(VaultStore.Account acc, long sid, long uid) {
+        ServerWarState w = REGISTRY.get(key(acc == null ? "" : acc.fpid, sid, uid));
         if (w == null) return;
-        w.core.configure(configOf(acc, sid));
+        w.core.configure(configOf(acc, sid, uid));
     }
 
     /** 挂引擎消息钩子（推送线程只解析入账；幂等由引擎 hook 容器保证）。 */
@@ -376,9 +410,15 @@ public final class ServerWarState {
         }
     }
 
-    /** SessionKeeper 资产库钩子调用：不为未注册角色创建状态；已注册才同步。 */
+    /** 旧 SessionKeeper 资产库钩子调用（uid=0 兼容实例）；不为未注册角色创建状态。 */
     public static void syncAssets(String fpid, long sid, CoreAssetLibrary lib, long ownUidNow) {
-        ServerWarState w = REGISTRY.get(key(fpid, sid));
+        syncAssets(fpid, sid, 0L, lib, ownUidNow);
+    }
+
+    /** Phase 2B：按角色 uid 同步资产库战争事实（未注册该角色则跳过）。 */
+    public static void syncAssets(String fpid, long sid, long uid,
+                                  CoreAssetLibrary lib, long ownUidNow) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
         if (w == null) return;
         w.syncFromAssets(lib, ownUidNow);
     }
@@ -427,8 +467,14 @@ public final class ServerWarState {
      * 任务闸：null=放行；否则 SKIPPED 理由。WARTIME 看 war.allowlist；
      * ALERT 停可选出征类（与 App ALERT_FIELD_TASKS 同集）。实例不存在=null（未挂载不拦截）。
      */
+    /** 旧任务闸（uid=0 兼容实例）。 */
     public static String gateNote(String fpid, long sid, String taskId) {
-        ServerWarState w = REGISTRY.get(key(fpid, sid));
+        return gateNote(fpid, sid, 0L, taskId);
+    }
+
+    /** Phase 2B：按角色 uid 的任务闸（各角色自己的战争态）。 */
+    public static String gateNote(String fpid, long sid, long uid, String taskId) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
         if (w == null) return null;
         WarState core = w.core;
         if (core.wartime()) {
@@ -442,8 +488,14 @@ public final class ServerWarState {
     }
 
     /** 整轮让位判定：null=正常跑；否则整轮合成 SKIPPED（不烧 srv:lastrun）。 */
+    /** 旧整轮让位判定（uid=0 兼容实例）。 */
     public static String roundYieldNote(String fpid, long sid, String fnOnly) {
-        ServerWarState w = REGISTRY.get(key(fpid, sid));
+        return roundYieldNote(fpid, sid, 0L, fnOnly);
+    }
+
+    /** Phase 2B：按角色 uid 的整轮让位判定（各角色独立战争态）。 */
+    public static String roundYieldNote(String fpid, long sid, long uid, String fnOnly) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
         if (w == null || !w.core.wartime()) return null;
         if (fnOnly == null || fnOnly.isEmpty()) {
             return "战时整轮让位（" + reasonText(w.core) + "）";
@@ -452,7 +504,15 @@ public final class ServerWarState {
         return w.core.dailyTaskGated(fnOnly) ? "战时暂停（" + reasonText(w.core) + "）" : null;
     }
 
-    /** RoundScheduler 让位：该账号任一角色处于战争态 → 自动整轮延后（退出后窗口补跑）。 */
+    /**
+     * Phase 2B：按角色 uid 的让位判定（Phase2 调度应使用本方法，互不拖累）。
+     */
+    public static boolean wartimeYield(String fpid, long sid, long uid) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
+        return w != null && w.core.wartime();
+    }
+
+    /** 账号级聚合让位：该账号任一角色处于战争态 → true（运维/旧调度兼容，保留）。 */
     public static boolean wartimeYield(String fpid) {
         if (fpid == null) return false;
         for (Map.Entry<String, ServerWarState> e : REGISTRY.entrySet()) {
@@ -468,11 +528,10 @@ public final class ServerWarState {
     // ---------------- /status 摘要 ----------------
 
     /**
-     * warState 摘要（/status /accounts 暴露）：无实例返回 null。
-     * sid 查不到时回退该 fpid 任一实例（多角色/旧数据兜底）。
+     * 旧 warState 摘要（uid=0；/status /accounts 旧调用）：sid 查不到时回退该 fpid 任一实例。
      */
     public static JSONObject summaryJson(String fpid, long sid) {
-        ServerWarState w = REGISTRY.get(key(fpid, sid));
+        ServerWarState w = REGISTRY.get(key(fpid, sid, 0L));
         if (w == null) {
             for (Map.Entry<String, ServerWarState> e : REGISTRY.entrySet()) {
                 if (e.getKey().startsWith((fpid == null ? "" : fpid) + "|")) {
@@ -481,7 +540,20 @@ public final class ServerWarState {
                 }
             }
         }
-        if (w == null) return null;
+        return w == null ? null : summaryOf(w);
+    }
+
+    /**
+     * Phase 2B：按角色 uid 的摘要（/status 用 active 角色）。uid&gt;0 时只查精确角色实例、
+     * 不做 fpid 兜底（避免把兄弟角色的战争态显示成本角色）；uid&lt;=0 走旧兜底语义。
+     */
+    public static JSONObject summaryJson(String fpid, long sid, long uid) {
+        if (uid <= 0L) return summaryJson(fpid, sid);
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
+        return w == null ? null : summaryOf(w);
+    }
+
+    private static JSONObject summaryOf(ServerWarState w) {
         WarState core = w.core;
         long now = System.currentTimeMillis();
         JSONObject o = new JSONObject();
@@ -515,11 +587,16 @@ public final class ServerWarState {
      * 仅当显式配置 {@code VAULT_WARTIME_MAX_MIN}（分钟）时作为运维兜底生效。</p>
      */
     static WarState.Config configOf(VaultStore.Account acc, long sid) {
+        return configOf(acc, sid, 0L);
+    }
+
+    /** Phase 2B：按角色 uid 装配 p:war.*（roleParamsByUid 优先 → 旧 sid 参数 → 默认）。 */
+    static WarState.Config configOf(VaultStore.Account acc, long sid, long uid) {
         WarState.Config c = new WarState.Config();
         c.maxWartimeMs = maxWartimeMinutesByEnv() * 60_000L;             // 服务器侧兜底：战时上限
         try {
             if (acc == null) return c;
-            Map<String, String> raw = acc.roleParams.get(String.valueOf(sid));
+            Map<String, String> raw = VaultStore.roleParamsOf(acc, sid, uid);
             String s = raw == null ? null : raw.get("war");
             if (s == null || s.isEmpty()) return c;
             JSONObject p = new JSONObject(s);

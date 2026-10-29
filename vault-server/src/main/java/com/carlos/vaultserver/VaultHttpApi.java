@@ -455,9 +455,10 @@ public final class VaultHttpApi {
             // M1 扩展（契约 §3.5）：每账号角色运行态 + 角色池 roles（旧字段保留，App v4.1.4 不受影响）。
             // 注意：旧 state 是字符串（引擎态），不能被同名对象覆盖 —— 新对象用 roleState 键。
             o.put("roleState", roleStateJson(keeper.roleRuntime(s.fpid, s.sid, s.activeUid)));
-            // P7：战争状态摘要（无实例/未挂载 = null，App 端按未知处理）
+            // P7：战争状态摘要（Phase2B 按 active 角色实例；无实例/未挂载 = null，App 端按未知处理）
             try {
-                JSONObject war = ServerWarState.summaryJson(s.fpid, parseSid(s.sid));
+                JSONObject war = ServerWarState.summaryJson(s.fpid, parseSid(s.sid),
+                        parseUidSafe(s.activeUid));
                 o.put("warState", war == null ? JSONObject.NULL : war);
             } catch (Throwable t) {
                 o.put("warState", JSONObject.NULL);

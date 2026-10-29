@@ -6,7 +6,9 @@ import com.carlos.vault.wjdr.asset.AssetSnapshot;
 import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
 import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vaultserver.task.Exec;
+import com.carlos.vaultserver.task.RoleKey;
 import com.carlos.vaultserver.task.ServerTasks;
+import com.carlos.vaultserver.task.StateKeys;
 import com.carlos.vaultserver.task.TaskContext;
 import com.carlos.vaultserver.task.TaskOutcome;
 
@@ -22,6 +24,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.LongSupplier;
+import java.util.function.Supplier;
 
 /**
  * 反应式开盾（P1-2 服务器补位，承接 App DailySchedulerService.onGameEvent 改 no-op 后的缺口）：
@@ -53,7 +56,8 @@ import java.util.function.LongSupplier;
  *     积压的事件自然过期，回连后不为旧攻击补盾（eta_sec&gt;0 的挂起风险不受此限）；</li>
  *   <li>让位保护：tick 只在会话 online 时执行（LiveSession 亦只在 online 分支调用），人玩期间
  *     服务器不发任何请求，不互踢；</li>
- *   <li>留痕：FileLog + mod:fpid:sid:battle_shield（reactive 子项，App FnDetail/今日页同键展示，
+ *   <li>留痕：FileLog + mod:&lt;fpid&gt;:&lt;sid&gt;:&lt;uid&gt;:battle_shield（Phase 2B 按角色；
+ *     active 角色额外镜像写旧键 mod:fpid:sid:battle_shield，App FnDetail/今日页同键展示不变，
  *     文案区分 总开关关闭/兵力不足/等待卡秒/已触发）。</li>
  * </ul>
  */
@@ -154,6 +158,10 @@ public final class ServerShieldResponder {
 
     private final String fpid;
     private final long sid;
+    /** Phase 2B：角色 uid（0=旧/兼容路径，状态只写旧键）。 */
+    private final long roleUid;
+    /** Phase 2B：本角色是否 App 当前选中角色（true 时状态双写旧键；null/false=不镜像）。 */
+    private final Supplier<Boolean> activeSupplier;
     private final StateStore store;
     private final VaultStore vault;
 
@@ -189,18 +197,41 @@ public final class ServerShieldResponder {
     /** 最近一次事件类型 WAR/RECON（包可见：单测断言）。 */
     volatile String lastEventKind = "";
 
+    /** 旧构造（Phase 2B 前）：roleUid=0，状态只写旧键，行为完全不变。 */
     ServerShieldResponder(String fpid, long sid, StateStore store, VaultStore vault) {
-        this(fpid, sid, store, vault, System::currentTimeMillis, null);
+        this(fpid, sid, 0L, store, vault, null, System::currentTimeMillis, null);
     }
 
     /**
-     * 单测构造重载：注入本机毫秒与服务器秒时间源（生产用上一个构造，等价于
-     * nowMs=System.currentTimeMillis、服务器秒优先 engine.serverClock()）。
+     * 单测构造重载：注入本机毫秒与服务器秒时间源（roleUid=0，旧行为）。
      */
     ServerShieldResponder(String fpid, long sid, StateStore store, VaultStore vault,
                           LongSupplier nowMs, LongSupplier serverNowSec) {
+        this(fpid, sid, 0L, store, vault, null, nowMs, serverNowSec);
+    }
+
+    /**
+     * Phase 2B 公开构造（SessionKeeper 按角色挂载时使用）：
+     * roleUid&gt;0 时状态键按角色隔离 {@code mod:<fpid>:<sid>:<uid>:battle_shield}；
+     * {@code activeSupplier} 返回 true（App 当前选中角色）时额外镜像写旧键，App 显示链路不变。
+     * roleUid&lt;=0 等价旧构造（只写旧键）。
+     */
+    public ServerShieldResponder(String fpid, long sid, long roleUid,
+                                 StateStore store, VaultStore vault,
+                                 Supplier<Boolean> activeSupplier) {
+        this(fpid, sid, roleUid, store, vault, activeSupplier,
+                System::currentTimeMillis, null);
+    }
+
+    /** 完整注入构造（单测：roleUid + activeSupplier + 时间源）。 */
+    ServerShieldResponder(String fpid, long sid, long roleUid,
+                          StateStore store, VaultStore vault,
+                          Supplier<Boolean> activeSupplier,
+                          LongSupplier nowMs, LongSupplier serverNowSec) {
         this.fpid = fpid;
         this.sid = sid;
+        this.roleUid = roleUid;
+        this.activeSupplier = activeSupplier;
         this.store = store;
         this.vault = vault;
         this.nowMs = nowMs == null ? System::currentTimeMillis : nowMs;
@@ -282,7 +313,7 @@ public final class ServerShieldResponder {
             saveState(null, "自动化未开启，未反应式开盾");
             return true;
         }
-        TaskContext tc = new TaskContext(engine, fpid, sid, store, paramsOf(acc, sid), "反应式");
+        TaskContext tc = taskContext(engine, acc);
         // 门控链（设计 §2.2）：总开关 → reactive → 账号自动化
         if (!tc.subOn("battle_shield", "enabled", true)) {
             clearRisk(r);
@@ -399,7 +430,7 @@ public final class ServerShieldResponder {
             saveStateText(null, "gather", "自动化未开启，未处理采集告警");
             return true;
         }
-        TaskContext tc = new TaskContext(engine, fpid, sid, store, paramsOf(acc, sid), "反应式");
+        TaskContext tc = taskContext(engine, acc);
         if (!tc.subOn("battle_shield", "enabled", true)) {
             saveStateText(tc, "gather", "总开关已关闭（App 设置页可开）");
             return true;
@@ -552,7 +583,7 @@ public final class ServerShieldResponder {
         VaultStore.Account acc = vault.find(fpid);
         if (acc == null) return false;
         // 只读配置：engine 传 null 安全（TaskContext 的开关/策略读取不触碰 engine）
-        TaskContext tc = new TaskContext(null, fpid, sid, store, paramsOf(acc, sid), "反应式");
+        TaskContext tc = taskContext(null, acc);
         if (!tc.subOn("battle_shield", "enabled", true)) return false;
         if (!tc.subOn("battle_shield", "reactive", true)) return false;
         if (!tc.subOn("battle_shield", "force_online", false)) return false;
@@ -609,34 +640,82 @@ public final class ServerShieldResponder {
         }
     }
 
-    /** 写 mod:fpid:sid:battle_shield 的 reactive 子项（App FnDetail/今日页同键展示）。 */
+    /** 写 battle_shield 的 reactive 子项（App FnDetail/今日页同键展示）。 */
     private void saveState(TaskContext tc, String text) {
         saveStateText(tc, "reactive", text);
     }
 
-    /** 写 mod:fpid:sid:battle_shield 的指定子项（reactive=开盾 / gather=采集点遭袭）。 */
+    /**
+     * 写 battle_shield 的指定子项（reactive=开盾 / gather=采集点遭袭）。
+     *
+     * <p>Phase 2B 键型：roleUid&gt;0 → {@code mod:<fpid>:<sid>:<uid>:battle_shield}；active 角色
+     * 额外镜像写旧键 {@code mod:<fpid>:<sid>:battle_shield}（App 显示链路不变）；roleUid&lt;=0
+     * 只写旧键（旧构造路径行为完全不变）。读取优先角色键、缺失回退旧键。
+     */
     private void saveStateText(TaskContext tc, String subId, String text) {
         try {
-            if (tc != null) {
-                tc.saveModText("battle_shield", subId, text);
+            JSONObject mod = readShieldState();
+            mod.put(subId, text);
+            mod.put(subId + "_ts", System.currentTimeMillis());
+            mod.put(subId + "_trg", "反应式");
+            String json = mod.toString();
+            if (roleUid > 0L) {
+                store.putString(shieldStateKey(), json);
+                if (mirrorLegacy()) store.putString(shieldStateLegacyKey(), json);
             } else {
-                JSONObject mod = new JSONObject();
-                String raw = store.getString("mod:" + fpid + ":" + sid + ":battle_shield");
-                if (raw != null) mod = new JSONObject(raw);
-                mod.put(subId, text);
-                mod.put(subId + "_ts", System.currentTimeMillis());
-                mod.put(subId + "_trg", "反应式");
-                store.putString("mod:" + fpid + ":" + sid + ":battle_shield", mod.toString());
+                store.putString(shieldStateLegacyKey(), json);
             }
             store.flush();
         } catch (Throwable ignored) {
         }
     }
 
-    /** 角色任务参数（App FnParams p:fpid:sid:fn 的同步副本）→ TaskContext 形状。 */
-    private static Map<String, JSONObject> paramsOf(VaultStore.Account acc, long sid) {
+    /** battle_shield 角色状态键（roleUid<=0 时即旧键）。 */
+    String shieldStateKey() {
+        return StateKeys.role("mod", new RoleKey(fpid, sid, roleUid), "battle_shield");
+    }
+
+    /** battle_shield 旧状态键（App 今日页/FnDetail 读取）。 */
+    String shieldStateLegacyKey() {
+        return StateKeys.legacy("mod", new RoleKey(fpid, sid, roleUid), "battle_shield");
+    }
+
+    /** 读当前状态：角色键优先，缺失回退旧键（惰性迁移读）。 */
+    private JSONObject readShieldState() {
+        String raw = null;
+        if (roleUid > 0L) raw = store.getString(shieldStateKey());
+        if (raw == null) raw = store.getString(shieldStateLegacyKey());
+        if (raw == null || raw.isEmpty()) return new JSONObject();
+        try {
+            return new JSONObject(raw);
+        } catch (Throwable t) {
+            return new JSONObject();
+        }
+    }
+
+    /** 是否镜像写旧键：仅 roleUid&gt;0 且本角色是 App 当前选中角色。 */
+    private boolean mirrorLegacy() {
+        if (roleUid <= 0L || activeSupplier == null) return false;
+        try {
+            return Boolean.TRUE.equals(activeSupplier.get());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 本角色 TaskContext：Phase 2 配置按 roleUid 生效（roleParamsByUid/roleConfigByUid 优先，
+     * 回退旧 sid 配置）；roleUid 同时用于任务内的 mod 键型。
+     */
+    private TaskContext taskContext(WjdrEngine engine, VaultStore.Account acc) {
+        return new TaskContext(engine, fpid, sid, store, paramsOf(acc, sid, roleUid), "反应式",
+                TaskContext.enabledPredicate(VaultStore.roleConfigOf(acc, sid, roleUid)), roleUid);
+    }
+
+    /** 角色任务参数（Phase 2：roleParamsByUid 优先 → 旧 sid 参数）→ TaskContext 形状。 */
+    private static Map<String, JSONObject> paramsOf(VaultStore.Account acc, long sid, long roleUid) {
         Map<String, JSONObject> params = new LinkedHashMap<>();
-        Map<String, String> raw = acc.roleParams.get(String.valueOf(sid));
+        Map<String, String> raw = VaultStore.roleParamsOf(acc, sid, roleUid);
         if (raw != null) {
             for (Map.Entry<String, String> e : raw.entrySet()) {
                 if (e.getValue() == null || e.getValue().isEmpty()) continue;

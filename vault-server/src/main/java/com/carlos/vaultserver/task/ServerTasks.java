@@ -1023,7 +1023,9 @@ public final class ServerTasks {
                 sb.append("体力补给已关; ");
             }
             // 补领后立即刷新补给状态（顺延下一次唤醒的依据）
-            CaptureTasks.captureSupplyState(tc.engine, tc.store, tc.fpid, tc.sid);
+            // R2 Phase 2B：按角色键写 mod:<fpid>:<sid>:<uid>:supply，仅 active 角色镜像旧键。
+            CaptureTasks.captureSupplyState(tc.engine, tc.store, tc.fpid, tc.sid,
+                    tc.roleUid, tc.activeWriter);
             // C3（批次4；TaskOutcome.nextWakeAtMillis 契约见 TaskOutcome.java:26-35，
             // 单任务模式由 RoundRunner.applyNextWake:190-208 落盘 srv:cad:{fpid}:{sid}:{fn}）：
             // 补给按 recovery next_calc_ts 精确唤醒，避免 60s 白跑；返回 0 时 Runner 不写、沿用节奏间隔。
@@ -5297,7 +5299,8 @@ public final class ServerTasks {
 
     static TaskOutcome bear(TaskContext tc) throws Exception {
         try {
-            CaptureTasks.bear(tc.engine, tc.store, tc.fpid, tc.sid);
+            // R2 Phase 2B：按角色键写 mod:<fpid>:<sid>:<uid>:bear，仅 active 角色镜像旧键。
+            CaptureTasks.bear(tc.engine, tc.store, tc.fpid, tc.sid, tc.roleUid, tc.activeWriter);
             org.json.JSONObject mod = tc.modState("bear");
             String trap = mod.optString("trap", "");
             if (trap.isEmpty()) {

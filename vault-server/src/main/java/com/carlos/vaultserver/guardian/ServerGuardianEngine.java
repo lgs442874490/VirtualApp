@@ -26,6 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.Supplier;
 
 /**
  * 守护盟友 P0（服务端化，批次9 2026-10-23）：盟友主城被敌方进攻时，由服务器会话自动发起
@@ -371,17 +372,69 @@ public final class ServerGuardianEngine {
     private volatile long lastPushAt;
     private volatile String lastProto = "";
     private volatile boolean stopped;
+    /** R2 Phase 2B：角色 uid（>0 时守护账本/状态键按角色隔离；0=旧/兼容路径）。 */
+    private final long roleUid;
+    /** 当前会话是否为 active 角色写入方（supplier 由 SessionKeeper 提供；异常按 false）。 */
+    private final Supplier<Boolean> activeRole;
 
+    /** 旧构造器（P0/兼容路径）：roleUid=0、activeRole=null，键型与行为完全不变。 */
     public ServerGuardianEngine(String fpid, long sid, StateStore store, VaultStore vault) {
+        this(fpid, sid, 0L, store, vault, null);
+    }
+
+    /**
+     * R2 Phase 2B（2026-10-29）：按角色隔离守护账本/状态键。
+     *
+     * <p>键规则：roleUid&gt;0 → {@code srv:guardian:<fpid>:<sid>:<uid>:ledger} /
+     * {@code mod:<fpid>:<sid>:<uid>:guardian}；activeRole.get()==true 时**双写旧键**
+     * （App 今日页/FnDetail 展示不变），兄弟角色只写角色键；读优先角色键、缺失回退旧键。
+     * roleUid&lt;=0 时等价旧构造器（只写旧键）。
+     *
+     * @param roleUid    真实会话角色 uid（测试/兼容可传 0）
+     * @param activeRole 是否 active 角色写入方；null 视为 false，get() 抛异常按 false
+     */
+    public ServerGuardianEngine(String fpid, long sid, long roleUid, StateStore store,
+                                VaultStore vault, Supplier<Boolean> activeRole) {
         this.fpid = fpid == null ? "" : fpid;
         this.sid = sid;
+        this.roleUid = roleUid;
         this.store = store;
         this.vault = vault;
+        this.activeRole = activeRole;
         this.guardExec = Executors.newSingleThreadExecutor(r -> {
-            Thread t = new Thread(r, "guardian-" + this.fpid + "-" + sid);
+            Thread t = new Thread(r, "guardian-" + this.fpid + "-" + sid
+                    + (roleUid > 0L ? "-" + roleUid : ""));
             t.setDaemon(true);
             return t;
         });
+    }
+
+    /** 当前会话是否 active 角色写入方（旧路径恒 true；supplier 异常按 false）。 */
+    private boolean isActiveRole() {
+        if (roleUid <= 0L) return true;
+        if (activeRole == null) return false;
+        try {
+            return Boolean.TRUE.equals(activeRole.get());
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 读状态：角色键优先，缺失回退旧键（迁移/兼容；roleUid<=0 时两键相同）。 */
+    private String readState(String roleKey, String legacyKey) {
+        if (store == null) return null;
+        String raw = store.getString(roleKey);
+        if (raw == null && !roleKey.equals(legacyKey)) raw = store.getString(legacyKey);
+        return raw;
+    }
+
+    /** 写状态：写角色键；active 角色额外双写旧键（App 展示链路不变），兄弟角色不覆盖旧键。 */
+    private void writeState(String roleKey, String legacyKey, String value) {
+        if (store == null) return;
+        store.putString(roleKey, value);
+        if (roleUid > 0L && !roleKey.equals(legacyKey) && isActiveRole()) {
+            store.putString(legacyKey, value);
+        }
     }
 
     // =====================================================================
@@ -2065,12 +2118,13 @@ public final class ServerGuardianEngine {
         }
     }
 
-    /** 账本前置写入（最新在前、上限 {@link #LEDGER_CAP}；异常静默）。 */
-    private void prependLedger(JSONObject e) {
+    /** 账本前置写入（最新在前、上限 {@link #LEDGER_CAP}；异常静默）。包内可见便于单测。 */
+    void prependLedger(JSONObject e) {
         try {
-            String key = ledgerKey(fpid, sid);
+            String legacy = ledgerKey(fpid, sid);
+            String key = ledgerKey();
             JSONArray arr = new JSONArray();
-            String raw = store == null ? null : store.getString(key);
+            String raw = readState(key, legacy);
             if (raw != null) {
                 try {
                     arr = new JSONArray(raw);
@@ -2081,20 +2135,21 @@ public final class ServerGuardianEngine {
             out.put(e);
             for (int i = 0; i < arr.length() && i < LEDGER_CAP - 1; i++) out.put(arr.get(i));
             if (store != null) {
-                store.putString(key, out.toString());
+                writeState(key, legacy, out.toString());
                 store.flush();
             }
         } catch (Throwable ignored) {
         }
     }
 
-    /** 写 `mod:{fpid}:{sid}:guardian`（App FnDetail/今日页同键展示）。 */
+    /** 写 `mod:{fpid}:{sid}[:{uid}]:guardian`（App FnDetail/今日页读旧键，active 角色双写）。 */
     void writeMod(String text) {
         try {
             if (store == null) return;
-            String key = modKey(fpid, sid);
+            String legacy = modKey(fpid, sid);
+            String key = modKey();
             JSONObject o = new JSONObject();
-            String raw = store.getString(key);
+            String raw = readState(key, legacy);
             if (raw != null) {
                 try {
                     o = new JSONObject(raw);
@@ -2104,10 +2159,24 @@ public final class ServerGuardianEngine {
             o.put("last", clip(text, 400));
             o.put("last_ts", System.currentTimeMillis());
             o.put("last_trg", "守护");
-            store.putString(key, o.toString());
+            writeState(key, legacy, o.toString());
             store.flush();
         } catch (Throwable ignored) {
         }
+    }
+
+    /** 本实例账本键（Phase 2B）：uid&gt;0 → 角色键 `srv:guardian:<fpid>:<sid>:<uid>:ledger`；否则旧键。 */
+    String ledgerKey() {
+        return roleUid > 0L
+                ? "srv:guardian:" + fpid + ":" + sid + ":" + roleUid + ":ledger"
+                : ledgerKey(fpid, sid);
+    }
+
+    /** 本实例状态键（Phase 2B）：uid&gt;0 → `mod:<fpid>:<sid>:<uid>:guardian`；否则旧键。 */
+    String modKey() {
+        return roleUid > 0L
+                ? "mod:" + fpid + ":" + sid + ":" + roleUid + ":" + FN_ID
+                : modKey(fpid, sid);
     }
 
     static String ledgerKey(String fpid, long sid) {

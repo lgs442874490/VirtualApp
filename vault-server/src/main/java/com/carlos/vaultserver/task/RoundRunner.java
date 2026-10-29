@@ -52,7 +52,7 @@ public final class RoundRunner {
         Map<String, Boolean> config = configForRole(acc, sid, roleUid);
         // 2026-10-25 P0：启用任务集合带进上下文（采集×情报让位判定需要知道 intel 是否在跑）
         TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger,
-                TaskContext.enabledPredicate(config), roleUid);
+                TaskContext.enabledPredicate(config), roleUid, activeWriter);
         StringBuilder summary = new StringBuilder();
         int done = 0, claimed = 0, skipped = 0, abnormal = 0;
         List<ServerTasks.TaskDef> defs = ServerTasks.all();
@@ -61,8 +61,9 @@ public final class RoundRunner {
             Boolean enabled = config == null ? null : config.get(def.id);
             boolean on = enabled == null ? def.enabledByDefault : enabled;
             TaskOutcome r = null;
-            // P7 战时任务闸（E1 对等）：allowlist 外任务一律 SKIPPED（不消耗游戏内次数）
-            String warNote = on ? com.carlos.vaultserver.ServerWarState.gateNote(fpid, sid, def.id) : null;
+            // P7 战时任务闸（E1 对等，Phase2B 按角色实例）：allowlist 外任务一律 SKIPPED（不消耗游戏内次数）
+            String warNote = on ? com.carlos.vaultserver.ServerWarState.gateNote(fpid, sid, roleUid,
+                    def.id) : null;
             if (!on) {
                 r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED, "配置未启用");
             } else if (warNote != null) {
@@ -70,7 +71,9 @@ public final class RoundRunner {
             } else {
                 long t0 = System.currentTimeMillis();
                 // 真机监控（2026-10-25）：legacy 整轮每个 def 前后 task.start/task.end，只观测不改控制流
-                TaskTrace.Context trace = TaskTrace.begin(fpid, sid, def.id, def.name, tc.trigger);
+                // R2 Phase 2B：监控事件带角色 uid，同服多角色的任务流可区分。
+                TaskTrace.Context trace = TaskTrace.begin(fpid, sid, roleUid, def.id, def.name,
+                        tc.trigger);
                 try {
                     try {
                         r = def.executor.run(tc);

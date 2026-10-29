@@ -146,6 +146,7 @@ public final class ModuleRegistry {
             TaskTrace.Context trace = TaskTrace.begin(
                     traceTask == null ? "" : traceTask.fpid,
                     traceTask == null ? 0L : traceTask.sid,
+                    traceTask == null ? 0L : traceTask.roleUid,
                     a.id, a.name, traceTask == null ? "" : traceTask.trigger);
             TaskOutcome outcome = null;
             try {

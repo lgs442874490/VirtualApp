@@ -193,4 +193,69 @@ public class CaptureTasksPerRoleTest {
         assertNull(store.getString("todo:111:913:0"));
         assertNull(store.getString("questprog:111:913:0"));
     }
+
+    // ---------------- Phase 2B：公共 6 参重载（bear / captureSupplyState） ----------------
+
+    /** 巨熊响应：code=0 + reserve_time 属合法纪元秒 → 会写 mod:…:bear。 */
+    private static Map<String, Object> trap() {
+        Map<String, Object> trap = new HashMap<>();
+        trap.put("code", 0);
+        trap.put("reserve_time", System.currentTimeMillis() / 1000L + 3600L);
+        return trap;
+    }
+
+    /** 未来合法纪元秒的补给时间字段 → 会写 mod:….supply。 */
+    private static Map<String, Object> supplyNotify() {
+        Map<String, Object> ri = new HashMap<>();
+        ri.put("online_time", System.currentTimeMillis() / 1000L + 1800L);
+        return ri;
+    }
+
+    @Test
+    public void bearOverload_roleScopedAndActiveMirrorsLegacy() {
+        CaptureTasksTest.FakeEngine e = new CaptureTasksTest.FakeEngine();
+        e.responses.put("req_alliance_trap_info", msg(trap()));
+
+        CaptureTasks.bear(e, store, FPID, SID, UID_A, false);
+        assertNotNull("兄弟角色写角色 mod:bear 键", store.getString("mod:111:913:1001:bear"));
+        assertNull("非 active 角色不写旧 mod:bear", store.getString("mod:111:913:bear"));
+
+        CaptureTasks.bear(e, store, FPID, SID, UID_B, true);
+        assertNotNull(store.getString("mod:111:913:2002:bear"));
+        assertEquals("active 角色角色键 + 旧键一致镜像",
+                store.getString("mod:111:913:2002:bear"), store.getString("mod:111:913:bear"));
+        assertNotNull("兄弟角色键不被 active 角色覆盖", store.getString("mod:111:913:1001:bear"));
+    }
+
+    @Test
+    public void captureSupplyStateOverload_roleScopedAndActiveMirrorsLegacy() {
+        CaptureTasksTest.FakeEngine e = new CaptureTasksTest.FakeEngine();
+        e.notifies.put("notify_recover_resource_init", supplyNotify());
+
+        CaptureTasks.captureSupplyState(e, store, FPID, SID, UID_A, false);
+        assertNotNull(store.getString("mod:111:913:1001:supply"));
+        assertNull(store.getString("mod:111:913:supply"));
+
+        CaptureTasks.captureSupplyState(e, store, FPID, SID, UID_B, true);
+        assertNotNull(store.getString("mod:111:913:2002:supply"));
+        assertEquals(store.getString("mod:111:913:2002:supply"),
+                store.getString("mod:111:913:supply"));
+        assertNotNull(store.getString("mod:111:913:1001:supply"));
+    }
+
+    @Test
+    public void legacySignatures_bearAndSupply_writeLegacyKeysOnly() {
+        CaptureTasksTest.FakeEngine e = new CaptureTasksTest.FakeEngine();
+        e.responses.put("req_alliance_trap_info", msg(trap()));
+        e.notifies.put("notify_recover_resource_init", supplyNotify());
+
+        CaptureTasks.bear(e, store, FPID, SID);
+        CaptureTasks.captureSupplyState(e, store, FPID, SID);
+
+        assertNotNull(store.getString("mod:111:913:bear"));
+        assertNotNull(store.getString("mod:111:913:supply"));
+        // uid=0 旧签名不产生角色键（App 现网链路 100% 不变）
+        assertNull(store.getString("mod:111:913:0:bear"));
+        assertNull(store.getString("mod:111:913:0:supply"));
+    }
 }
