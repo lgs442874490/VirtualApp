@@ -90,6 +90,8 @@ import java.util.function.Supplier;
  * speedup_margin_s(默认2) max_speedups_per_march(默认0=不限) diamond_max_per_march(默认3，0=不限)
  * catch_up(默认true) catch_up_margin_s(默认2) catch_up_max_rounds(默认20，0=不限，上限100)
  *   // 批次 D：我方晚到就主动追到先到；env VAULT_GUARDIAN_CATCHUP=off 回旧行为
+ * preempt_gather(默认true) preempt_cooldown_ms(默认60000) preempt_max_per_minute(默认2)
+ *   // 批次 G2：队列满时召回 1 队 type=4 采集腾位；env VAULT_GUARDIAN_PREEMPT=off 回旧行为
  * </pre>
  *
  * <p>威胁档位：复用批次11 的 {@code troops_min}（敌方兵力下限，已接线 {@link #decide}；App 的
@@ -219,9 +221,18 @@ public final class ServerGuardianEngine {
         long fireMarginSec = DEFAULT_FIRE_MARGIN_SEC;
         // ---- 批次 C-A6 多目标并发（批次 D 默认 3；clamp 1..6） ----
         int maxConcurrent = DEFAULT_MAX_CONCURRENT_MISSIONS;
+        // ---- 批次 G：要求目标必须是盟友坐标反查命中的 uid（默认 true；false=旧行为） ----
+        boolean requireAlly = true;
         // ---- 批次 F：队列无位有界重试（默认 12 次 × 5s；0=旧行为） ----
         int queueRetryMax = DEFAULT_QUEUE_RETRY_MAX;
         long queueRetryIntervalMs = DEFAULT_QUEUE_RETRY_INTERVAL_MS;
+        // ---- 批次 G2：队列满时召回采集队腾位（2026-10-31；核心仍是驻防成功） ----
+        /** 队列满时是否允许召回 type=4 采集队（默认 true；env VAULT_GUARDIAN_PREEMPT=off 关闭）。 */
+        boolean preemptGather = true;
+        /** 两次召回之间的最小间隔（毫秒；默认 60000，防抖）。 */
+        long preemptCooldownMs = 60_000L;
+        /** 全局每分钟最多召回队列数（默认 2；0=关闭）。 */
+        int preemptMaxPerMinute = 2;
         // ---- 批次 E：实盘时为守护预留行军队列（采集让位；默认 1，clamp 0..2） ----
         int reserveSlots = DEFAULT_RESERVE_SLOTS;
         // ---- 批次 D 追赶加速（2026-10-31）：核心是驻防成功；我方晚到就主动追到先到 ----
@@ -265,6 +276,10 @@ public final class ServerGuardianEngine {
                     + " reserve_slots=" + reserveSlots
                     + " queue_retry_max=" + queueRetryMax
                     + " queue_retry_interval_ms=" + queueRetryIntervalMs
+                    + " require_ally=" + requireAlly
+                    + " preempt_gather=" + preemptGather
+                    + " preempt_cooldown=" + preemptCooldownMs + "ms"
+                    + " preempt_max_per_minute=" + preemptMaxPerMinute
                     + " attack_types=" + attackTypes
                     + " catch_up=" + catchUp + " catchup_margin=" + catchUpMarginS + "s"
                     + " catchup_rounds=" + (catchUpMaxRounds <= 0 ? "unlimited" : String.valueOf(catchUpMaxRounds));
@@ -454,6 +469,22 @@ public final class ServerGuardianEngine {
     private final Map<Long, Long> queueRetryDeadlines = new ConcurrentHashMap<>();
     /** marchId → 上次队列等待账本时刻（≤1 条/分钟）。 */
     private final Map<Long, Long> queueRetryNotesAt = new ConcurrentHashMap<>();
+    /** 批次 G：盟友坐标表最近一次更新时间（0=从未收到成员坐标）。 */
+    private volatile long alliesUpdatedAtMs;
+    /** 批次 G：marchId → 上次 skip_allies_unknown 账本时刻（≤1 条/分钟）。 */
+    private final Map<Long, Long> alliesUnknownNotesAt = new ConcurrentHashMap<>();
+    /** 批次 G2：敌方 marchId → 已召回采集队时刻（每威胁最多 1 队）。 */
+    private final Map<Long, Long> preemptedByThreat = new ConcurrentHashMap<>();
+    /** 批次 G2：最近 60s 召回时刻（每分钟上限；访问需持 preemptLock）。 */
+    private final java.util.ArrayDeque<Long> preemptRecentMs = new java.util.ArrayDeque<>();
+    /** 批次 G2：上次召回尝试时刻（冷却防抖；失败也计入，防重试风暴）。 */
+    private volatile long lastPreemptAtMs = 0L;
+    /** 批次 G2：preempt 选择/预算登记锁。 */
+    private final Object preemptLock = new Object();
+    /** 批次 G2：marchId → 上次 preempt_none 账本时刻（≤1 条/分钟防刷）。 */
+    private final Map<Long, Long> preemptNoneAt = new ConcurrentHashMap<>();
+    /** 批次 G2：marchId → 召回后 5s 重试任务。 */
+    private final Map<Long, ScheduledFuture<?>> preemptRetryTasks = new ConcurrentHashMap<>();
     private final AtomicBoolean attached = new AtomicBoolean(false);
     private volatile Config config = Config.disabled();
     private volatile long lastConfigLoadAt;
@@ -604,6 +635,7 @@ public final class ServerGuardianEngine {
                 return m.endtimeSec > 0 && nowS - m.endtimeSec > MISSION_KEEP_AFTER_END_SEC;
             });
             thresholdNotes.keySet().removeIf(id -> !threats.containsKey(id));
+            alliesUnknownNotesAt.keySet().removeIf(id -> !threats.containsKey(id));
             // P1：清理已消失行军的加速幂等/记账（防长期累积）
             speedupRounds.keySet().removeIf(id -> !threats.containsKey(id));
             speedupUsedByMarch.keySet().removeIf(id -> {
@@ -622,6 +654,11 @@ public final class ServerGuardianEngine {
             targetCooldowns.entrySet().removeIf(en -> en.getValue() == null || en.getValue() <= nowMs);
             failLogAt.entrySet().removeIf(en -> en.getValue() == null
                     || nowMs - en.getValue() > FAIL_LOG_THROTTLE_MS * 4L);
+            // 批次 G2：清理过期召回登记/节流（防长期累积）
+            preemptedByThreat.entrySet().removeIf(en -> en.getValue() == null
+                    || nowMs - en.getValue() > 10L * 60_000L);
+            preemptNoneAt.entrySet().removeIf(en -> en.getValue() == null
+                    || nowMs - en.getValue() > 60_000L);
         } catch (Throwable ignored) {
         }
         // 批次 C-A3 安全兜底：tick 也做到期自检（定时器丢失时最迟一个 tick 内自愈）
@@ -653,6 +690,15 @@ public final class ServerGuardianEngine {
         queueRetryCounts.clear();
         queueRetryDeadlines.clear();
         queueRetryNotesAt.clear();
+        for (ScheduledFuture<?> f : preemptRetryTasks.values()) {
+            try {
+                f.cancel(false);
+            } catch (Throwable ignored) {
+            }
+        }
+        preemptRetryTasks.clear();
+        preemptedByThreat.clear();
+        preemptNoneAt.clear();
         catchups.clear();
         try {
             fireSched.shutdownNow();
@@ -731,7 +777,10 @@ public final class ServerGuardianEngine {
         // 盟友坐标表（P1 距离标定用；P0 仅存内存，供 target_point 回退）
         if (PROTO_ALLIANCE_POS_INFO.equals(proto) || PROTO_ALLIANCE_POS_UPDATE.equals(proto)) {
             Map<Long, long[]> parsed = parseMemberPos(content);
-            if (!parsed.isEmpty()) allies.putAll(parsed);
+            if (!parsed.isEmpty()) {
+                allies.putAll(parsed);
+                alliesUpdatedAtMs = clockMs.getAsLong();
+            }
             return;
         }
 
@@ -936,6 +985,7 @@ public final class ServerGuardianEngine {
         boolean hadFire = fireTasks.containsKey(marchId);
         boolean hadQueueRetry = queueRetryTasks.containsKey(marchId);
         cancelFire(marchId);
+        cancelPreemptRetry(marchId);
         clearQueueRetry(marchId);
         finishCatchup(marchId, t, "threat_gone");
         timingNotes.remove(marchId);
@@ -1004,6 +1054,32 @@ public final class ServerGuardianEngine {
         String lateTag = remainS <= 0L
                 ? "late_reinforce（已落地 " + Math.max(0L, -remainS) + "s，补驻防）→ " : "";
         String targetKey = targetKey(t);
+        // 批次 G：targetUid=0（type=102 集结常见）→ 按盟友坐标反查 uid 供 launcher 的 target_uid 变体；
+        // 反查不到/坐标表为空则不发射（防 2810 风暴），可 require_ally=false/env off 回旧行为。
+        long resolvedTargetUid = t.targetUid;
+        if (cfg.requireAlly && resolvedTargetUid <= 0L) {
+            if (allies.isEmpty()) {
+                noteAlliesUnknown(t, nowMs);
+                clearQueueRetry(marchId);
+                attempted.remove(marchId);   // 成员坐标稍后同步时，update 推送可再试
+                return;
+            }
+            if (!t.hasXY || t.x <= 0 || t.y <= 0) {
+                ledger("skip_no_ally", t, null, "目标坐标未知且 target_uid=0（require_ally=true，不发射）");
+                clearQueueRetry(marchId);
+                return;
+            }
+            resolvedTargetUid = allyUidByPoint(t.x, t.y);
+            if (resolvedTargetUid <= 0L) {
+                ledger("skip_no_ally", t, null, "目标坐标(" + t.x + "," + t.y
+                        + ")未匹配盟友（require_ally=true，避免 2810 风暴）");
+                clearQueueRetry(marchId);
+                return;
+            }
+            FileLog.info("守护盟友坐标反查 {}:{} marchId={} ({},{}) → uid={}",
+                    fpid, String.valueOf(sid), String.valueOf(marchId), String.valueOf(t.x),
+                    String.valueOf(t.y), String.valueOf(resolvedTargetUid));
+        }
         // 2026-10-28：同目标 415/406 失败后的冷却期内，新威胁只记账不发射（防重试风暴/日志刷屏）
         Long coolUntil = targetCooldowns.get(targetKey);
         if (coolUntil != null) {
@@ -1035,14 +1111,14 @@ public final class ServerGuardianEngine {
                 String text = lateTag + "命中威胁 " + t.kind() + " march=" + t.marchId + " owner=" + t.ownerUid
                         + " 敌方兵力=" + t.troopsText()
                         + (t.power > 0 ? " 战力=" + t.power : "")
-                        + " → 目标" + (t.targetUid > 0 ? " uid" + t.targetUid : "")
+                        + " → 目标" + (resolvedTargetUid > 0 ? " uid" + resolvedTargetUid : "")
                         + (t.hasXY ? "(" + t.x + "," + t.y + ")" : "")
                         + " ETA " + Math.max(0, eta) + "s，D=" + cfg.dSec + "s，warYield="
                         + warYieldNote()
                         + (cfg.timingEnabled ? "，卡秒 fireAt=" + fireAtSec(t, cfg) : "")
                         + "（dry_run 只记录不发射）";
                 FileLog.info("守护盟友[DRY] {}:{} {}", fpid, String.valueOf(sid), text);
-                ledger("dry_run", t, null, text);
+                ledger("dry_run", t, null, text, resolvedTargetUid);
                 writeMod("🛡[DRY] " + text);
                 clearQueueRetry(marchId);
                 return;
@@ -1063,6 +1139,11 @@ public final class ServerGuardianEngine {
             }
             int free = freeMarchSlots(engine);
             if (free <= 0) {
+                // 批次 G2：队列满且允许抢占 → 召回 1 队 type=4 采集腾位，成功则 5s 后重试发射
+                if (tryPreemptGather(engine, t, cfg, nowMs)) {
+                    attempted.remove(marchId);   // 视为“本轮未终态”，5s 后重试
+                    return;
+                }
                 // 批次 F：队列无位 → 释放 attempted + 5s 有界重试（默认 12 次，截止敌 end+60s）
                 if (cfg.queueRetryMax > 0) {
                     int retry = scheduleQueueRetry(engine, t, cfg, nowMs, free);
@@ -1083,7 +1164,7 @@ public final class ServerGuardianEngine {
                 ledger("skip_no_formation", t, null, "编队不可用（hero/兵种数据缺失）");
                 return;
             }
-            ServerGuardianLauncher.LaunchResult r = launcher.launch(engine, pt[0], pt[1], formation, t.targetUid);
+            ServerGuardianLauncher.LaunchResult r = launcher.launch(engine, pt[0], pt[1], formation, resolvedTargetUid);
             if (r.ok) {
                 // P0-5 同款：成功发射复位 415 英雄上限/406 兵力缩放（自适应必须能恢复）
                 HeroAvailability.markSuccess(engine);
@@ -1096,10 +1177,11 @@ public final class ServerGuardianEngine {
                 String text = lateTag + "已发射 type=5 驻防 marchId=" + r.marchId + " endtime=" + r.endtimeSec
                         + "（敌 endtime=" + t.endEpochSec + (ahead != 0 ? "，我方" + (ahead >= 0 ? "先于敌 " : "晚于敌 ") + Math.abs(ahead) + "s" : "")
                         + "）目标" + targetText(t, pt)
+                        + (resolvedTargetUid > 0 ? "｜盟友uid=" + resolvedTargetUid : "")
                         + (cfg.timingEnabled ? "｜卡秒 fireAt=" + fireAtSec(t, cfg) : "")
                         + (autoNote == null || autoNote.isEmpty() ? "" : "｜" + autoNote);
                 FileLog.info("守护盟友发射 {}:{} {}", fpid, String.valueOf(sid), text);
-                ledger("launched", t, r, text);
+                ledger("launched", t, r, text, resolvedTargetUid);
                 writeMod("🛡" + text);
                 // 批次 D：我方晚于敌（含 margin 内）→ 立即进入追赶（异步，不阻塞 guardExec）
                 maybeStartCatchup(engine, t, mission, cfg);
@@ -1121,11 +1203,11 @@ public final class ServerGuardianEngine {
                                 fpid, String.valueOf(sid), String.valueOf(r.code), adapt);
                         writeMod("⚠ " + text);
                     }
-                    ledger("launch_failed", t, r, text);
+                    ledger("launch_failed", t, r, text, resolvedTargetUid);
                 } else {
                     String text = "发射失败 code=" + r.code + "（" + r.text + "），不重试";
                     FileLog.warn("守护盟友发射失败 {}:{} {}", fpid, String.valueOf(sid), text);
-                    ledger("launch_failed", t, r, text);
+                    ledger("launch_failed", t, r, text, resolvedTargetUid);
                     writeMod("⚠ " + text);
                 }
             }
@@ -1138,6 +1220,11 @@ public final class ServerGuardianEngine {
     // 批次 F：队列等待重试（skip_queue → 5s 后重查 free，最多 queue_retry_max 次）
     // 调度在 fireSched（单线程），执行回 guardExec（不 sleep）；与 A3 fireTasks 分离。
     // =====================================================================
+
+    /** 批次 G2：召回采集队后重试发射的延迟（毫秒）。 */
+    static final long PREEMPT_RETRY_DELAY_MS = 5_000L;
+    /** 批次 G2：只召回普通采集行军 type=4（绝不碰保护类）。 */
+    static final long PREEMPT_GATHER_TYPE = 4L;
 
     static final int QUEUE_RETRY_NOT_HANDLED = 0;
     static final int QUEUE_RETRY_SCHEDULED = 1;
@@ -1266,6 +1353,255 @@ public final class ServerGuardianEngine {
         queueRetryCounts.remove(marchId);
         queueRetryDeadlines.remove(marchId);
         queueRetryNotesAt.remove(marchId);
+    }
+
+    // =====================================================================
+    // 批次 G2：队列满时召回采集队腾位（preempt）
+    // 生产实证（2026-10-31）：队列 3/3、6/6 被采集/情报长期占满，守护 12 次重试后 giveup。
+    // 口径：核心是驻防成功 → 允许主动召回 1 队 type=4 采集；绝不召回保护类
+    // （type=5 驻防 / 99 上车 / 102 集结 / 411 巨熊等一律不动）。每次威胁最多 1 队，
+    // 全局 60s 冷却 + 每分钟最多 2 队；成功后 5s 重试发射（与批次 F 重试链协同）。
+    // =====================================================================
+
+    /** 我方在途/驻扎行军摘要（选择召回候选用）。 */
+    static final class OwnMarch {
+        final long id;
+        final long type;
+        final long state;
+        final long endSec;
+        final long owner;
+
+        OwnMarch(long id, long type, long state, long endSec, long owner) {
+            this.id = id;
+            this.type = type;
+            this.state = state;
+            this.endSec = endSec;
+            this.owner = owner;
+        }
+    }
+
+    /**
+     * 队列满时尝试召回 1 队采集行军（guardExec 线程调用；同步 request 一次）。
+     *
+     * @return true=已成功召回并安排 5s 重试（调用方释放 attempted）；
+     *         false=未召回（调用方继续批次 F 重试 / skip_queue）
+     */
+    boolean tryPreemptGather(WjdrEngine engine, Threat t, Config cfg, long nowMs) {
+        if (stopped || t == null || cfg == null) return false;
+        if (!cfg.preemptGather || cfg.dryRun || cfg.preemptMaxPerMinute <= 0) return false;
+        if (preemptedByThreat.containsKey(t.marchId)) return false;   // 每威胁最多 1 队（静默）
+        long ownUid = engine == null ? 0L : engine.lastUid();
+        OwnMarch cand = chooseGatherMarch(engine, ownUid, nowMs);
+        if (cand == null) {
+            notePreemptNone(t, nowMs, "无 type=4 采集行军（保护类不召回）");
+            return false;
+        }
+        synchronized (preemptLock) {
+            if (nowMs - lastPreemptAtMs < cfg.preemptCooldownMs) {
+                long remainS = Math.max(0L,
+                        (cfg.preemptCooldownMs - (nowMs - lastPreemptAtMs) + 999L) / 1000L);
+                notePreemptNone(t, nowMs, "召回冷却中（剩 " + remainS + "s）");
+                return false;
+            }
+            prunePreemptBudget(nowMs);
+            if (preemptRecentMs.size() >= cfg.preemptMaxPerMinute) {
+                notePreemptNone(t, nowMs, "每分钟召回上限 " + cfg.preemptMaxPerMinute + " 队已达");
+                return false;
+            }
+            lastPreemptAtMs = nowMs;
+            preemptRecentMs.addLast(nowMs);
+            preemptedByThreat.put(t.marchId, nowMs);
+        }
+        long nowS = nowMs / 1000L;
+        long remain = cand.endSec > 0L ? Math.max(0L, cand.endSec - nowS) : 0L;
+        ledger("preempt_recall", t, null, "队列满 → 召回采集队 marchId=" + cand.id
+                + " type=" + cand.type + " state=" + cand.state
+                + (remain > 0L ? " 剩余约 " + remain + "s" : "")
+                + "（保全驻防优先）");
+        FileLog.info("守护盟友队列抢占 {}:{} 召回采集队 marchId={} type={} state={} 剩余≈{}s",
+                fpid, String.valueOf(sid), String.valueOf(cand.id), String.valueOf(cand.type),
+                String.valueOf(cand.state), String.valueOf(remain));
+        int code;
+        try {
+            GameMessage rsp = engine.request(ServerGuardianLauncher.PROTO_MARCH_RECALL,
+                    ServerGuardianLauncher.buildMarchIdArgs(cand.id));
+            code = Exec.codeOf(rsp);
+        } catch (Throwable ex) {
+            code = -1;
+            FileLog.warn("守护盟友队列抢占召回异常 {}:{} marchId={}：{}",
+                    fpid, String.valueOf(sid), String.valueOf(cand.id), brief(String.valueOf(ex)));
+        }
+        if (code == 0) {
+            ledger("preempt_ok", t, null, "采集队已召回 marchId=" + cand.id + "，5s 后重试发射");
+            schedulePreemptRetry(engine, t.marchId);
+            return true;
+        }
+        ledger("preempt_failed", t, null, "召回失败 marchId=" + cand.id + " code=" + code
+                + "（不重试本威胁）");
+        FileLog.warn("守护盟友队列抢占失败 {}:{} marchId={} code={}",
+                fpid, String.valueOf(sid), String.valueOf(cand.id), String.valueOf(code));
+        return false;
+    }
+
+    /** 选择采集候选：只 type=4、状态在途/驻扎、我方 owner；优先剩余时间最长，其次 marchId 小。 */
+    OwnMarch chooseGatherMarch(WjdrEngine engine, long ownUid, long nowMs) {
+        OwnMarch best = null;
+        for (OwnMarch m : ownMarches(engine, ownUid)) {
+            if (m == null || m.id <= 0L) continue;
+            if (m.type != PREEMPT_GATHER_TYPE) continue;                 // 绝不碰保护类
+            if (m.state != 2L && m.state != 3L) continue;                // 只召回在途/驻扎
+            if (m.owner > 0L && ownUid > 0L && m.owner != ownUid) continue;   // 只召回我方
+            if (best == null || m.endSec > best.endSec
+                    || (m.endSec == best.endSec && m.id < best.id)) {
+                best = m;
+            }
+        }
+        return best;
+    }
+
+    /** 本角色在途行军：优先资产库 queue().marches，回退 PROTO_MARCH_DETAIL 请求解析。 */
+    java.util.List<OwnMarch> ownMarches(WjdrEngine engine, long ownUid) {
+        java.util.List<OwnMarch> out = new java.util.ArrayList<>();
+        if (engine == null) return out;
+        try {
+            if (assetLibraryEnabled()) {
+                com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                        com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(engine);
+                if (lib != null && lib.ready() && lib.queue() != null
+                        && lib.queue().marches != null) {
+                    for (com.carlos.vault.wjdr.asset.AssetSnapshot.QueueMarch q : lib.queue().marches) {
+                        if (q == null) continue;
+                        out.add(new OwnMarch(q.id, q.type, q.state, q.endTime, q.owner));
+                    }
+                    if (!out.isEmpty()) return out;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            GameMessage rsp = engine.request(PROTO_MARCH_DETAIL,
+                    Exec.args("owner", ownUid, "kid", engine.lastServerId()), 5);
+            if (Exec.codeOf(rsp) == 0 && rsp.getContent() != null) {
+                collectOwnMarches(rsp.getContent(), ownUid, out, 0);
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /** 递归解析行军明细（含 id+state+type 的 map；owner 缺失按我方队列域处理）。 */
+    static void collectOwnMarches(Object node, long ownUid, java.util.List<OwnMarch> out, int depth) {
+        if (node == null || depth > 6 || out.size() >= 200) return;
+        if (node instanceof List) {
+            for (Object o : (List<?>) node) collectOwnMarches(o, ownUid, out, depth + 1);
+            return;
+        }
+        if (!(node instanceof Map)) return;
+        Map<?, ?> m = (Map<?, ?>) node;
+        long id = Exec.longOf(m.get("id"));
+        long state = Exec.longOf(m.get("state"));
+        long type = Exec.longOf(m.get("type"));
+        long owner = Exec.longOf(m.get("owner"));
+        long end = Exec.longOf(m.get("endtime"));
+        if (end <= 0L) end = Exec.longOf(m.get("end_time"));
+        if (id > 0L && state > 0L && type > 0L
+                && (owner <= 0L || ownUid <= 0L || owner == ownUid)) {
+            out.add(new OwnMarch(id, type, state, end, owner));
+        }
+        for (Object v : m.values()) {
+            if (v instanceof Map || v instanceof List) collectOwnMarches(v, ownUid, out, depth + 1);
+        }
+    }
+
+    private void prunePreemptBudget(long nowMs) {
+        while (!preemptRecentMs.isEmpty() && nowMs - preemptRecentMs.peekFirst() > 60_000L) {
+            preemptRecentMs.pollFirst();
+        }
+    }
+
+    /** preempt_none 账本（同威胁 ≤1 条/分钟，防 skip 刷屏）。 */
+    private void notePreemptNone(Threat t, long nowMs, String reason) {
+        if (t == null) return;
+        Long last = preemptNoneAt.get(t.marchId);
+        if (last != null && nowMs - last < 60_000L) return;
+        preemptNoneAt.put(t.marchId, nowMs);
+        ledger("preempt_none", t, null, "未召回采集队：" + reason);
+    }
+
+    /** 召回成功后 5s 重试发射（fireSched 单线程；到期回 guardExec 重跑 decide/队列检查）。 */
+    private void schedulePreemptRetry(WjdrEngine engine, long marchId) {
+        if (stopped || preemptRetryTasks.containsKey(marchId)) return;
+        final ScheduledFuture<?>[] holder = new ScheduledFuture<?>[1];
+        try {
+            holder[0] = fireSched.schedule(() -> {
+                try {
+                    preemptRetryTasks.remove(marchId, holder[0]);
+                    preemptRetryFire(engine, marchId);
+                } catch (Throwable ex) {
+                    FileLog.warn("守护盟友抢占重试异常 {}:{} marchId={}：{}",
+                            fpid, String.valueOf(sid), String.valueOf(marchId),
+                            brief(String.valueOf(ex)));
+                }
+            }, PREEMPT_RETRY_DELAY_MS, TimeUnit.MILLISECONDS);
+            preemptRetryTasks.put(marchId, holder[0]);
+        } catch (Throwable ex) {
+            preemptRetryTasks.remove(marchId);
+            FileLog.warn("守护盟友抢占重试注册失败 {}:{} marchId={}：{}",
+                    fpid, String.valueOf(sid), String.valueOf(marchId), brief(String.valueOf(ex)));
+        }
+    }
+
+    /** 抢占重试到期（fireSched 线程；单测可直接调用）：复核后提交 guardExec。 */
+    void preemptRetryFire(WjdrEngine engine, long marchId) {
+        if (stopped) {
+            cancelPreemptRetry(marchId);
+            return;
+        }
+        Threat t = threats.get(marchId);
+        if (t == null) {
+            cancelPreemptRetry(marchId);
+            return;
+        }
+        Config cfg = config;
+        if (!cfg.enabled || cfg.dryRun || !cfg.preemptGather) {
+            cancelPreemptRetry(marchId);
+            return;
+        }
+        if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) {
+            cancelPreemptRetry(marchId);
+            ledger("preempt_cancel", t, null, "会话离线，取消抢占后重试");
+            return;
+        }
+        submitNow(engine, marchId);
+    }
+
+    private void cancelPreemptRetry(long marchId) {
+        ScheduledFuture<?> f = preemptRetryTasks.remove(marchId);
+        if (f != null) {
+            try {
+                f.cancel(false);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** 单测/观测：在途抢占重试任务数。 */
+    int preemptRetryTaskCountForTest() {
+        return preemptRetryTasks.size();
+    }
+
+    /** 单测/观测：某威胁是否已召回（0=未召回）。 */
+    long preemptedAtForTest(long enemyMarchId) {
+        Long v = preemptedByThreat.get(enemyMarchId);
+        return v == null ? 0L : v;
+    }
+
+    /** 单测/观测：当前分钟窗口内已召回次数。 */
+    int preemptRecentCountForTest() {
+        synchronized (preemptLock) {
+            prunePreemptBudget(System.currentTimeMillis());
+            return preemptRecentMs.size();
+        }
     }
 
     /** 单测/观测：当前已安排的重试次数（无=0）。 */
@@ -2183,6 +2519,7 @@ public final class ServerGuardianEngine {
             long reserve = num(sub, st, p, "reserve_slots", DEFAULT_RESERVE_SLOTS);
             c.reserveSlots = (int) Math.max(0L, Math.min(MAX_RESERVE_SLOTS, reserve));
             // 批次 F：队列无位重试（0=关闭回旧行为；间隔 1..30s）
+            c.requireAlly = bool(sub, st, p, "require_ally", true);
             long qrMax = num(sub, st, p, "queue_retry_max", DEFAULT_QUEUE_RETRY_MAX);
             c.queueRetryMax = (int) Math.max(0L, Math.min(MAX_QUEUE_RETRY, qrMax));
             long qrInterval = num(sub, st, p, "queue_retry_interval_ms",
@@ -2190,6 +2527,13 @@ public final class ServerGuardianEngine {
             if (qrInterval < 1_000L || qrInterval > 30_000L) {
                 qrInterval = DEFAULT_QUEUE_RETRY_INTERVAL_MS;
             }
+            // 批次 G2：队列满时召回采集队（默认 true；冷却/上限界外回落安全值）
+            c.preemptGather = bool(sub, st, p, "preempt_gather", true);
+            long preemptCooldown = num(sub, st, p, "preempt_cooldown_ms", 60_000L);
+            if (preemptCooldown < 0L) preemptCooldown = 60_000L;
+            c.preemptCooldownMs = Math.min(600_000L, preemptCooldown);
+            long preemptMax = num(sub, st, p, "preempt_max_per_minute", 2L);
+            c.preemptMaxPerMinute = (int) Math.max(0L, Math.min(10L, preemptMax));
             c.queueRetryIntervalMs = qrInterval;
             Object rd = first(sub, st, p, "recall_distance");
             if (rd != null) c.recallDistance = Math.max(0d, Exec.longOf(rd));
@@ -2261,6 +2605,8 @@ public final class ServerGuardianEngine {
      *   <li>{@code VAULT_GUARDIAN_DIAMOND=1|0}：钻石购买开关（真实花钻石，慎用）</li>
      *   <li>{@code VAULT_GUARDIAN_TIMING=1|0|off}：卡秒发射开关（批次 D 起默认关；on/1=启用）</li>
      *   <li>{@code VAULT_GUARDIAN_QUEUE_RETRY=off|0}：队列无位重试开关（off/0=旧行为，只记一次 skip_queue）</li>
+     *   <li>{@code VAULT_GUARDIAN_REQUIRE_ALLY=off|0}：关闭盟友坐标反查强校验（off/0=坐标直发旧行为）</li>
+     *   <li>{@code VAULT_GUARDIAN_PREEMPT=off|0}：队列满召回采集队腾位开关（off/0=旧行为）</li>
      * </ul>
      * 目标（盟友 uid / 坐标）无需配置：威胁目标由联盟/世界 push 自动解析
      * （{@code decide} 的 ally_uid/target_uid/target_point 均为 0 时不过滤、{@code resolveTargetPoint}
@@ -2282,6 +2628,10 @@ public final class ServerGuardianEngine {
         if (timing != null) c.timingEnabled = timing;
         Boolean queueRetry = envBool("VAULT_GUARDIAN_QUEUE_RETRY");
         if (queueRetry != null && !queueRetry) c.queueRetryMax = 0;   // env off=旧行为
+        Boolean requireAlly = envBool("VAULT_GUARDIAN_REQUIRE_ALLY");
+        if (requireAlly != null) c.requireAlly = requireAlly;         // off/0=旧行为（坐标直发）
+        Boolean preempt = envBool("VAULT_GUARDIAN_PREEMPT");
+        if (preempt != null) c.preemptGather = preempt;               // env off=旧行为
         String troops = setting("VAULT_GUARDIAN_TROOPS_MIN");
         if (troops != null) {
             try {
@@ -2764,6 +3114,47 @@ public final class ServerGuardianEngine {
                 && ownCity[0] == target[0] && ownCity[1] == target[1];
     }
 
+    /**
+     * 批次 G：按坐标精确反查盟友 uid（容差 0）。同坐标多 uid 取第一个；
+     * 若配置了 ally_uid 且命中则优先返回它。无命中返回 0。
+     */
+    long allyUidByPoint(int x, int y) {
+        if (x <= 0 || y <= 0 || allies.isEmpty()) return 0L;
+        long first = 0L;
+        long preferred = config != null ? config.allyUid : 0L;
+        int dup = 0;
+        for (Map.Entry<Long, long[]> e : allies.entrySet()) {
+            long[] xy = e.getValue();
+            if (xy == null || xy.length < 2) continue;
+            if ((int) xy[0] != x || (int) xy[1] != y) continue;
+            long uid = e.getKey();
+            if (preferred > 0L && uid == preferred) return uid;
+            if (first == 0L) first = uid;
+            else dup++;
+        }
+        if (dup > 0) {
+            FileLog.info("守护盟友坐标 ({},{}) 匹配到多个 uid，取第一个 {}（重复 {} 个）",
+                    String.valueOf(x), String.valueOf(y), String.valueOf(first), String.valueOf(dup));
+        }
+        return first;
+    }
+
+    /** 批次 G：盟友坐标表为空 → skip_allies_unknown（同威胁 ≤1 条/分钟）+ 最后更新时间诊断。 */
+    private void noteAlliesUnknown(Threat t, long nowMs) {
+        if (t == null) return;
+        Long last = alliesUnknownNotesAt.get(t.marchId);
+        if (last != null && nowMs - last < 60_000L) return;
+        alliesUnknownNotesAt.put(t.marchId, nowMs);
+        long ageS = alliesUpdatedAtMs > 0L ? Math.max(0L, (nowMs - alliesUpdatedAtMs) / 1000L) : -1L;
+        ledger("skip_allies_unknown", t, null, "盟友坐标表为空（require_ally=true；最后更新 "
+                + (ageS < 0L ? "从未同步" : ageS + "s 前") + "），暂不发射");
+    }
+
+    /** 批次 G：盟友坐标表最近更新时间（0=从未；诊断/测试）。 */
+    long alliesUpdatedAt() {
+        return alliesUpdatedAtMs;
+    }
+
     private static String targetKey(Threat t) {
         if (t == null) return "unknown";
         return t.targetUid > 0 ? "t:" + t.targetUid
@@ -3099,6 +3490,13 @@ public final class ServerGuardianEngine {
 
     /** 本次动作的账本记录（最新在前，上限 {@link #LEDGER_CAP}）。 */
     void ledger(String event, Threat t, ServerGuardianLauncher.LaunchResult r, String note) {
+        ledger(event, t, r, note, 0L);
+    }
+
+    /** 同 {@link #ledger(String, Threat, ServerGuardianLauncher.LaunchResult, String)}；
+     * resolvedTargetUid&gt;0 时覆盖账本 targetUid（批次 G 坐标反查复盘用）。 */
+    void ledger(String event, Threat t, ServerGuardianLauncher.LaunchResult r, String note,
+                long resolvedTargetUid) {
         try {
             JSONObject e = new JSONObject();
             e.put("ts", System.currentTimeMillis());
@@ -3108,7 +3506,7 @@ public final class ServerGuardianEngine {
                 e.put("owner", t.ownerUid);
                 e.put("type", t.type);
                 e.put("endSec", t.endEpochSec);
-                e.put("targetUid", t.targetUid);
+                e.put("targetUid", resolvedTargetUid > 0L ? resolvedTargetUid : t.targetUid);
                 if (t.hasXY) {
                     e.put("x", t.x);
                     e.put("y", t.y);
@@ -3306,7 +3704,10 @@ public final class ServerGuardianEngine {
         long ago = lastPushAt > 0 ? (System.currentTimeMillis() - lastPushAt) : -1L;
         return "guardian{fpid=" + fpid + ", sid=" + sid + ", " + config.describe()
                 + ", threats=" + threats.size() + ", missions=" + missions.size()
-                + ", allies=" + allies.size() + ", lastProto=" + lastProto
+                + ", allies=" + allies.size()
+                + ", alliesUpdatedAgoMs=" + (alliesUpdatedAtMs > 0L
+                ? Math.max(0L, clockMs.getAsLong() - alliesUpdatedAtMs) : -1L)
+                + ", lastProto=" + lastProto
                 + ", lastPushAgoMs=" + ago + (stopped ? ", stopped" : "") + "}";
     }
 

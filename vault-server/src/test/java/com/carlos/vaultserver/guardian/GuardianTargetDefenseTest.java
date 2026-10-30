@@ -259,6 +259,7 @@ public class GuardianTargetDefenseTest {
     private static String liveCfg(int maxConcurrent) {
         return "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":false},"
                 + "\"strategy\":{\"max_concurrent\":" + maxConcurrent + ","
+                + "\"require_ally\":false,"
                 + "\"formation\":{\"hero_ids\":[1]}}}";
     }
 
@@ -332,7 +333,8 @@ public class GuardianTargetDefenseTest {
         assertFalse("批次 D：卡秒默认关", cfg.timingEnabled);
         assertEquals(3, cfg.maxConcurrent);
 
-        accountWithParams(liveCfg(3));
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
+                + "\"strategy\":{\"require_ally\":false,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueue(e, 5);
         presetSoldiers(e);
