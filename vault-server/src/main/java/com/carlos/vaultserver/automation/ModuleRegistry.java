@@ -3,6 +3,8 @@ package com.carlos.vaultserver.automation;
 import com.carlos.vaultserver.monitor.TaskTrace;
 import com.carlos.vaultserver.task.ServerTasks;
 import com.carlos.vaultserver.task.TaskContext;
+import com.carlos.vaultserver.task.ArenaGate;
+import com.carlos.vaultserver.task.RoleKey;
 import com.carlos.vaultserver.task.TaskOutcome;
 
 import java.util.ArrayList;
@@ -143,6 +145,13 @@ public final class ModuleRegistry {
             long t0 = System.currentTimeMillis();
             // 真机监控（2026-10-25）：动作前后 task.start/task.end，只观测不改变结果/控制流
             TaskContext traceTask = base == null ? null : base.task();
+            // 批次 B：竞技场独占窗内，本角色非白名单单任务让位
+            if (traceTask != null && ArenaGate.blocks(
+                    new RoleKey(traceTask.fpid, traceTask.sid, traceTask.roleUid), actionId)) {
+                r.add(actionId, new TaskOutcome(actionId, a.name,
+                        TaskOutcome.Category.SKIPPED, "竞技场独占中，本任务让位"));
+                return r;
+            }
             TaskTrace.Context trace = TaskTrace.begin(
                     traceTask == null ? "" : traceTask.fpid,
                     traceTask == null ? 0L : traceTask.sid,

@@ -502,6 +502,52 @@ public class PerRoleCadenceSchedulerTest {
                 && skipByRole.getJSONObject(MAIN.key()).optLong("busy", 0L) >= 1L);
     }
 
+    // ======================= 9. 竞技场独占窗（批次 B） =======================
+
+    @Test
+    public void onMode_arenaGateBlocksGatedRoleOnly() {
+        VaultStore.Account acc = seed(true, null);
+        // 关掉白名单任务，确保主控在独占窗内没有任何可派任务
+        acc.roleConfigByUid.put(SID + ":" + UID_MAIN,
+                new LinkedHashMap<>(Map.of("battle_shield", false, "medic", false)));
+        TaskCadenceScheduler scheduler = scheduler(true, 20, 0);
+        long now = bj(2026, 10, 30, 12, 0);
+        ArenaGate.enterActive(MAIN, now);
+        try {
+            scheduler.tick(now);
+            assertEquals("独占中的主控不应派单", 1, keeper.submittedRoles.size());
+            assertEquals("兄弟角色不受影响", ALT.key(), keeper.submittedRoles.get(0).key());
+            scheduler.publishStats(now);
+            assertTrue("统计记录 arena_exclusive",
+                    stats(now).getJSONObject("skip").optLong("arena_exclusive", 0L) >= 1L);
+            for (String k : cadKeys()) {
+                assertFalse("被阻塞角色不得写 cad 键: " + k, k.contains("|" + UID_MAIN + "|"));
+            }
+        } finally {
+            ArenaGate.clear(MAIN);
+        }
+    }
+
+    @Test
+    public void onMode_arenaGateDoesNotBlockSafetyWhitelist() {
+        VaultStore.Account acc = seed(false, null);   // 仅主控在线
+        acc.roleConfigByUid.put(SID + ":" + UID_MAIN,
+                new LinkedHashMap<>(Map.of("battle_shield", true, "medic", true)));
+        TaskCadenceScheduler scheduler = scheduler(true, 20, 0);
+        long now = bj(2026, 10, 30, 12, 0);
+        ArenaGate.enterActive(MAIN, now);
+        try {
+            scheduler.tick(now);
+            assertEquals("独占窗内白名单任务仍可派", 1, keeper.submittedRoles.size());
+            assertEquals(MAIN.key(), keeper.submittedRoles.get(0).key());
+            String fn = keeper.submittedFns.get(0);
+            assertTrue("独占窗内只放行安全白名单: " + fn,
+                    "battle_shield".equals(fn) || "medic".equals(fn));
+        } finally {
+            ArenaGate.clear(MAIN);
+        }
+    }
+
     // ======================= 假实现 =======================
 
     private static final class FakeKeeper implements RoundScheduler.KeeperFacade {

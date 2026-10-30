@@ -71,6 +71,8 @@ public final class ModularRoundRunner {
         String fpid = acc.fpid;
         RoleKey role = new RoleKey(fpid, sid, roleUid);
         Map<String, Boolean> roleConfig = RoundRunner.configForRole(acc, sid, roleUid);
+        // 批次 B：竞技场任务未启用 → 清理可能残留的独占窗（TTL 之外的主动安全）
+        ArenaGate.releaseIfArenaTaskDisabled(role, roleConfig);
         // 2026-10-25 P0：启用任务集合带进上下文（采集×情报让位判定需要知道 intel 是否在跑）
         TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger,
                 TaskContext.enabledPredicate(roleConfig), roleUid, activeWriter);

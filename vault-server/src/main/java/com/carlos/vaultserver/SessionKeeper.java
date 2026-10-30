@@ -1442,6 +1442,13 @@ public final class SessionKeeper implements SessionControl,
                 // Phase2B：按角色注销（不再误删兄弟角色实例）
                 ServerWarState.unregister(fpid, w.sid, roleUid > 0L ? roleUid : wantUid);
             }
+            // 批次B：会话关闭 → 释放竞技场独占门（否则该角色其它任务最多被挡 30min 由 TTL 兜底）
+            try {
+                long gateSid = w != null ? w.sid : resolveSid();
+                long gateUid = roleUid > 0L ? roleUid : wantUid;
+                com.carlos.vaultserver.task.ArenaGate.clear(fpid, gateSid, gateUid);
+            } catch (Throwable ignored) {
+            }
             try {
                 engine.close();
             } catch (Throwable ignored) {

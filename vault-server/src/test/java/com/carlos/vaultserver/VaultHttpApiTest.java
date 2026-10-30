@@ -36,6 +36,7 @@ public class VaultHttpApiTest {
     private FakeKeeper keeper;
     private StateStore stateStore;
     private VaultStore store;
+    private com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore;
     private String base;
 
     static final class FakeKeeper implements SessionControl {
@@ -75,8 +76,9 @@ public class VaultHttpApiTest {
         stateStore = new StateStore(dataDir);
         stateStore.load();
         keeper = new FakeKeeper();
+        watchPointStore = new com.carlos.vaultserver.watchpoint.WatchPointStore(dataDir);
         VaultConfig config = new VaultConfig("127.0.0.1:0", dataDir, SECRET, null, "human_first");
-        api = new VaultHttpApi(config, store, keeper, stateStore);
+        api = new VaultHttpApi(config, store, keeper, stateStore, null, null, watchPointStore);
         api.start();
         int port = api.server().getAddress().getPort();
         base = "http://127.0.0.1:" + port;
@@ -515,5 +517,109 @@ public class VaultHttpApiTest {
         assertTrue("旧 App（无 uid）写 sid 表", stored.roleConfig.containsKey("724"));
         assertTrue("新角色继承区服默认", VaultStore.roleConfigOf(stored, 724L, 999L).get("gather"));
         assertEquals("sid", VaultStore.roleConfigScope(stored, 724L, 999L));
+    }
+
+    // ==================== 批次 B：观察点配置 API ====================
+
+    private static Map<String, Object> wp(String action) {
+        Map<String, Object> f = new LinkedHashMap<>();
+        f.put("action", action);
+        return f;
+    }
+
+    @Test
+    public void watchpoint_get_returnsSnapshot() throws Exception {
+        JSONObject rsp = post("/v1/vault/watchpoint", "vaultWatchpoint", wp("get"));
+        assertEquals(0, rsp.getInt("code"));
+        JSONObject data = rsp.getJSONObject("data");
+        assertTrue(data.has("enabled"));
+        assertTrue(data.has("envEnabled"));
+        assertTrue(data.has("updatedAt"));
+        assertTrue("默认配置应含监视目标", data.getJSONArray("monitorTargets").length() > 0);
+        assertTrue("默认配置应含保护矩形", data.getJSONArray("protectRects").length() > 0);
+        assertNotNull(data.getJSONArray("alertTypes"));
+        assertNotNull(data.getJSONArray("friendAids"));
+    }
+
+    @Test
+    public void watchpoint_setThenGet_andInvalidFailClosed() throws Exception {
+        Map<String, Object> f = wp("set");
+        f.put("enabled", true);
+        f.put("kid", "913");
+        f.put("monitorTargetsJson", "[{\"uid\":123,\"nick\":\"敌A\",\"x\":10,\"y\":20}]");
+        f.put("protectRectsJson", "[{\"name\":\"A\",\"x1\":100,\"y1\":100,\"x2\":155,\"y2\":155}]");
+        f.put("alertTypes", "1,2,102");
+        f.put("friendAids", "555,666");
+        f.put("wecomEnabled", false);
+        JSONObject rsp = post("/v1/vault/watchpoint", "vaultWatchpoint", f);
+        assertEquals(0, rsp.getInt("code"));
+        JSONObject data = rsp.getJSONObject("data");
+        assertEquals(913L, data.getLong("kid"));
+        assertEquals(1, data.getJSONArray("monitorTargets").length());
+        assertEquals(123L, data.getJSONArray("monitorTargets").getJSONObject(0).getLong("uid"));
+        assertEquals(3, data.getJSONArray("alertTypes").length());
+        assertFalse(data.getBoolean("wecomEnabled"));
+
+        String before = new String(java.nio.file.Files.readAllBytes(
+                watchPointStore.file()), java.nio.charset.StandardCharsets.UTF_8);
+        Map<String, Object> bad = wp("set");
+        bad.put("monitorTargetsJson", "[{\"uid\":0,\"nick\":\"bad\",\"x\":1,\"y\":1}]");
+        JSONObject badRsp = post("/v1/vault/watchpoint", "vaultWatchpoint", bad);
+        assertEquals("非法 uid 应返回业务码 3002", 3002, badRsp.getInt("code"));
+        assertTrue(badRsp.getString("message").contains("uid"));
+        String after = new String(java.nio.file.Files.readAllBytes(
+                watchPointStore.file()), java.nio.charset.StandardCharsets.UTF_8);
+        assertEquals("fail-closed：旧文件不得被改写", before, after);
+
+        Map<String, Object> rectBad = wp("set");
+        rectBad.put("protectRectsJson", "[{\"name\":\"B\",\"x1\":0,\"y1\":0,\"x2\":56,\"y2\":10}]");
+        JSONObject spanRsp = post("/v1/vault/watchpoint", "vaultWatchpoint", rectBad);
+        assertEquals(3002, spanRsp.getInt("code"));
+        assertTrue(spanRsp.getString("message").contains("跨度"));
+    }
+
+    @Test
+    public void watchpoint_enableDisable_togglesOnlyEnabled() throws Exception {
+        JSONObject off = post("/v1/vault/watchpoint", "vaultWatchpoint", wp("disable"));
+        assertEquals(0, off.getInt("code"));
+        assertFalse(off.getJSONObject("data").getBoolean("enabled"));
+        // 其他配置不受影响（仍保留监视目标）
+        assertTrue(off.getJSONObject("data").getJSONArray("monitorTargets").length() > 0);
+
+        JSONObject on = post("/v1/vault/watchpoint", "vaultWatchpoint", wp("enable"));
+        assertEquals(0, on.getInt("code"));
+        assertTrue(on.getJSONObject("data").getBoolean("enabled"));
+    }
+
+    @Test
+    public void watchpoint_unknownAction_3002() throws Exception {
+        JSONObject rsp = post("/v1/vault/watchpoint", "vaultWatchpoint", wp("na"));
+        assertEquals(3002, rsp.getInt("code"));
+        assertTrue(rsp.getString("message").contains("action"));
+    }
+
+    @Test
+    public void watchpoint_legacyConstructorWithoutStore_returns3002() throws Exception {
+        VaultConfig config = new VaultConfig("127.0.0.1:0", tmp.getRoot().toPath(), SECRET, null,
+                "human_first");
+        VaultHttpApi legacy = new VaultHttpApi(config, store, keeper, stateStore);
+        legacy.start();
+        try {
+            int port = legacy.server().getAddress().getPort();
+            String body = ApiSign.buildSignedBody(SECRET, "vaultWatchpoint", wp("get"));
+            java.net.HttpURLConnection conn = (java.net.HttpURLConnection)
+                    new java.net.URL("http://127.0.0.1:" + port + "/v1/vault/watchpoint").openConnection();
+            conn.setRequestMethod("POST");
+            conn.setDoOutput(true);
+            conn.setRequestProperty("Content-Type", "application/json; charset=utf-8");
+            try (java.io.OutputStream out = conn.getOutputStream()) {
+                out.write(body.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+            String text = new String(conn.getInputStream().readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            assertEquals("旧构造未接观察点仓库 → 3002", 3002, new JSONObject(text).getInt("code"));
+        } finally {
+            legacy.stop();
+        }
     }
 }

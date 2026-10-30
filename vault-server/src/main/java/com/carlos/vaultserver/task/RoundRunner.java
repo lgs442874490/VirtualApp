@@ -50,6 +50,8 @@ public final class RoundRunner {
         String fpid = acc.fpid;
         RoleKey role = new RoleKey(fpid, sid, roleUid);
         Map<String, Boolean> config = configForRole(acc, sid, roleUid);
+        // 批次 B：竞技场任务未启用 → 清理可能残留的独占窗
+        ArenaGate.releaseIfArenaTaskDisabled(role, config);
         // 2026-10-25 P0：启用任务集合带进上下文（采集×情报让位判定需要知道 intel 是否在跑）
         TaskContext tc = new TaskContext(engine, fpid, sid, store, params, trigger,
                 TaskContext.enabledPredicate(config), roleUid, activeWriter);
@@ -64,8 +66,13 @@ public final class RoundRunner {
             // P7 战时任务闸（E1 对等，Phase2B 按角色实例）：allowlist 外任务一律 SKIPPED（不消耗游戏内次数）
             String warNote = on ? com.carlos.vaultserver.ServerWarState.gateNote(fpid, sid, roleUid,
                     def.id) : null;
+            // 批次 B：竞技场独占窗（按角色）——非白名单任务整轮也不抢
+            boolean arenaBlocked = on && ArenaGate.blocks(role, def.id);
             if (!on) {
                 r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED, "配置未启用");
+            } else if (arenaBlocked) {
+                r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED,
+                        "竞技场独占中，本任务让位");
             } else if (warNote != null) {
                 r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED, warNote);
             } else {

@@ -130,7 +130,7 @@ public final class TaskCadenceScheduler {
      * }
      * }</pre>
      * skip 原因取值：{@code no_token/auto_off/offline/init_grace/no_sid/wartime/window/busy/
-     * min_gap/no_task/no_due/unaccepted/global_budget/account_budget/error}。
+     * min_gap/no_task/no_due/unaccepted/global_budget/account_budget/arena_exclusive/error}。
      */
     static final String STATS_KEY_PREFIX = "srv:cad:stats:";
     /** 慢任务（间隔 ≥ 该值）提交时打 info 日志，快任务靠单任务轮次日志观测。 */
@@ -479,19 +479,24 @@ public final class TaskCadenceScheduler {
             skip(role, "no_task");
             return null;
         }
-
         Map<String, Object> snap = stateStore.snapshot();
         String dueFn = null;
         long dueAt = Long.MAX_VALUE;
+        boolean arenaExclusive = false;
         for (String fn : enabled) {
             long at = nextAt(snap, acc, role, fn);
             if (at <= now && at < dueAt) {
+                // 批次 B：竞技场独占窗内，本角色非白名单任务让位（不写 cad 键，下一拍再看）
+                if (ArenaGate.blocks(role, fn, now)) {
+                    arenaExclusive = true;
+                    continue;
+                }
                 dueAt = at;
                 dueFn = fn;
             }
         }
-        if (dueFn == null) {                                     // 所有任务都还没到点
-            skip(role, "no_due");
+        if (dueFn == null) {                                     // 所有任务都还没到点/被独占窗挡住
+            skip(role, arenaExclusive ? "arena_exclusive" : "no_due");
             return null;
         }
         return new RoleCandidate(acc, role, dueFn);

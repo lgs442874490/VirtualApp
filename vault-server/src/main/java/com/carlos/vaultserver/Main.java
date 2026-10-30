@@ -73,7 +73,9 @@ public final class Main {
                 new com.carlos.vaultserver.task.TaskCadenceScheduler(store, stateStore, keeper);
         cadence.start();
 
-        VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war);
+        // 批次 B：观察点配置端点（get/set/enable）——写 data/watchpoint.json，引擎按 mtime 5s 热载
+        VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war,
+                watchPointStore);
         api.start();
 
         // 每日自动化日报（批次5）：北京时间定点（默认 09:00，VAULT_DIGEST_TIME=HH:mm 覆盖）汇总近 24h

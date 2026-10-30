@@ -125,6 +125,7 @@ public class ToolBoxActivity extends Activity {
         final int tier = FeatureGate.currentTier(this);
         final boolean canWatch = FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, tier, debugBuild);      // T3 高阶
         final boolean canMonitor = FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, tier, debugBuild);    // T3 高阶（正式包可见）
+        final boolean canWatchpoint = FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, tier, debugBuild);   // T3 高阶
         final boolean canProto = FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, tier, debugBuild); // 仅调试包
         final int toolCount = FeatureGate.visibleToolCount(tier, debugBuild);
         if (toolCount > 0) {
@@ -165,6 +166,16 @@ public class ToolBoxActivity extends Activity {
                 // 点卡片主体 = 打开配置（开关只承担开关，避免误触）
                 watchCard.setOnClickListener(v -> showWatchConfig());
                 box.addView(watchCard);
+            }
+            // 观察点（批次 B 2026-10-30）：App 内可视化编辑服务器 data/watchpoint.json（get/set/enable）。
+            if (canWatchpoint) {
+                LinearLayout wpCard = toolCard(UiStyle.Icon.EYE, "观察点",
+                        "监视敌方城/保护友盟聚集地（告警配置，保存即热载）", UiStyle.BRAND_50);
+                wpCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
+                        UiStyle.INK3, 18));
+                wpCard.setOnClickListener(v -> startActivity(
+                        new Intent(this, com.carlos.vault.WatchpointActivity.class)));
+                box.addView(wpCard);
             }
             // 真机监控（T3 高级会员，2026-10-25）：服务端任务级协议监控只读页，点击进入。
             // 服务端未部署该接口时页内提示「服务端未升级」，入口照常（先装 App 等部署）。

@@ -1279,6 +1279,15 @@ public final class ServerTownTasks {
             long now = System.currentTimeMillis();
             boolean inWindow = arenaInDailyRewardWindow(now);
             day = ArenaDay.load(tc, now);
+            // 批次 B：竞技场独占窗（按角色）。自动挑战开启且未进结算窗时先进入 PREPARING；
+            // 本轮结束按剩余场次提升为 ACTIVE 或释放，异常路径释放（TTL 另有 30 分钟兜底）。
+            RoleKey arenaRole = new RoleKey(tc.fpid, tc.sid, tc.roleUid);
+            // 安全口径（2026-10-30）：只有「已知还有场次」或「本轮确实派出过战斗」才进入独占窗；
+            // 数据未知（knownCompleted<0 且 fightsSent=0）时不得假设有 5 场余量——否则会误锁其它任务 30 分钟。
+            boolean arenaGateAllowed = onFight && !inWindow
+                    && (day.knownCompleted() >= 0 || day.fightsSent > 0);
+            if (arenaGateAllowed) ArenaGate.enterPreparing(arenaRole, now);
+            else ArenaGate.release(arenaRole);
             // 登录推送 notify_arena_init 的 base 只在“当日尚无更权威计数”时采用（见 mergeInitBase）：
             // ① 只在 last_reset_ts 属于今天时才当权威（网页版 resetDailyStateIfNeeded 同口径，DailyArenaState.java:246-261）；
             // ② 一旦拿到过今天 fight 响应的 base，就不再回灌登录时旧快照（否则每轮把今日已打计数覆盖回 0，
@@ -1333,7 +1342,15 @@ public final class ServerTownTasks {
                     ? "今日每日奖励已处理 · 待次日重新统计"
                     : "待结算窗(23:10-24:00) · 已完成"
                     + (completedForText >= 0 ? completedForText : day.fightsSent) + "/5");
+            // 批次 B：还有剩余场次且可推进 → 保持 ACTIVE（其它任务让位，直到打完/结算窗/TTL）
+            if (arenaGateAllowed && arenaGateRemaining(day, onFight, inWindow) > 0L) {
+                ArenaGate.enterActive(arenaRole, now);
+            } else {
+                ArenaGate.release(arenaRole);
+            }
         } catch (Exception e) {
+            // 异常/断线：释放独占窗（TTL 兜底之外的主动安全），避免其它任务被卡住
+            ArenaGate.release(new RoleKey(tc.fpid, tc.sid, tc.roleUid));
             // 断线/异常也要保住当日已发场次与领奖状态，避免重连后按 0 重算再打一遍
             if (day != null) day.save(tc);
             if (sessionLost(e)) return ServerTasks.classifyException(e, "竞技场");
@@ -1349,7 +1366,9 @@ public final class ServerTownTasks {
         if (!Exec.ok(opp)) {
             // 2026-10-28 修复"竞技场从来没执行过"的服务端静默：旧文案一律"未解锁"，
             // 分不清"次数用完/对手失效/请求过频"，用户侧看起来就是没跑。按码给可读原因。
-            String why = arenaOpponentSkipNote(Exec.codeOf(opp));
+            int opCode = Exec.codeOf(opp);
+            if (opCode == 2901 || opCode == 2902) day.exhausted = true;   // 服务端判次数用完 → 独占窗释放
+            String why = arenaOpponentSkipNote(opCode);
             m.skip(why);
             m.subSkip("fight", why);
             return;
@@ -1398,6 +1417,7 @@ public final class ServerTownTasks {
                 else unknownWins++;
             } else if (code == 2901 || code == 2902) {
                 // 挑战次数已用完/不可购买：本轮到此为止，等次日（本轮不做买次数）
+                day.exhausted = true;
                 day.mergeBase(arenaBaseOf(f.getContent()), now);
                 m.skip("挑战次数已用完(码" + code + ")");
                 break;
@@ -1540,6 +1560,17 @@ public final class ServerTownTasks {
     /** 当日总挑战上限 = 每日奖励目标 5 + 已购买次数（网页版打到 totalRemaining=0）。 */
     static int arenaDailyFightCap(int boughtTimes) {
         return ARENA_DAILY_REWARD_CHALLENGES + Math.max(0, boughtTimes);
+    }
+
+    /**
+     * 竞技场独占窗剩余场次（批次 B 纯函数，与 {@link #arenaFightBudget} 同口径）：
+     * 自动挑战关闭/结算窗/服务端判次数用完 → 0（释放独占窗）；否则 cap - max(本地已发, 服务端已完成)。
+     */
+    static long arenaGateRemaining(ArenaDay day, boolean onFight, boolean inWindow) {
+        if (day == null || !onFight || inWindow || day.exhausted) return 0L;
+        int cap = arenaDailyFightCap(day.boughtTimes);
+        int used = Math.max(Math.max(0, day.fightsSent), Math.max(0, day.knownCompleted()));
+        return Math.max(0L, (long) cap - used);
     }
 
     /**
@@ -1915,6 +1946,8 @@ public final class ServerTownTasks {
         int buyTimes;
         int leftTimes;
         boolean baseKnown;
+        /** 服务端明确判"挑战次数已用完"（2901/2902）：独占窗立即释放，不再阻塞其它任务。 */
+        boolean exhausted;
         long lastResetTs;
         boolean rewardSettled;
         boolean rewardClaimed;
@@ -1942,6 +1975,7 @@ public final class ServerTownTasks {
                         d.buyTimes = o.optInt("buy_times", 0);
                         d.leftTimes = o.optInt("left_times", 0);
                         d.baseKnown = o.optBoolean("base_known", false);
+                        d.exhausted = o.optBoolean("exhausted", false);
                         d.lastResetTs = o.optLong("last_reset_ts", 0L);
                         d.rewardSettled = o.optBoolean("reward_settled", false);
                         d.rewardClaimed = o.optBoolean("reward_claimed", false);
@@ -1972,6 +2006,7 @@ public final class ServerTownTasks {
                 o.put("buy_times", buyTimes);
                 o.put("left_times", leftTimes);
                 o.put("base_known", baseKnown);
+                o.put("exhausted", exhausted);
                 o.put("last_reset_ts", lastResetTs);
                 o.put("reward_settled", rewardSettled);
                 o.put("reward_claimed", rewardClaimed);
