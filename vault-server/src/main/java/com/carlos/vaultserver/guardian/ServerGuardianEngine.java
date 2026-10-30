@@ -123,6 +123,11 @@ public final class ServerGuardianEngine {
     static final String PROTO_ALLIANCE_DEL = "notify_world_alliance_situation_del";
     static final String PROTO_ALLIANCE_POS_INFO = "notify_alliance_member_pos_info";
     static final String PROTO_ALLIANCE_POS_UPDATE = "notify_alliance_member_pos_update";
+    static final String PROTO_ALLIANCE_POS_ADD = "notify_alliance_member_pos_add";
+    static final String PROTO_ALLIANCE_POS_DEL = "notify_alliance_member_pos_del";
+    static final Set<String> ALLIANCE_POS_PROTOS = Set.of(
+            PROTO_ALLIANCE_POS_INFO, PROTO_ALLIANCE_POS_UPDATE,
+            PROTO_ALLIANCE_POS_ADD, PROTO_ALLIANCE_POS_DEL);
     static final String PROTO_WORLD_PLAYER_INIT = "notify_world_player_init";
     /** 战斗/防守战报邮件推送（first_type=30；批次 C A4 只记账，不撤防）。 */
     static final String PROTO_NEW_MAIL = "notify_new_mail_syn";
@@ -473,6 +478,10 @@ public final class ServerGuardianEngine {
     private volatile long alliesUpdatedAtMs;
     /** 批次 G：marchId → 上次 skip_allies_unknown 账本时刻（≤1 条/分钟）。 */
     private final Map<Long, Long> alliesUnknownNotesAt = new ConcurrentHashMap<>();
+    /** 批次 H：最近一条成员坐标协议名（describe 诊断）。 */
+    private volatile String alliesLastProto = "";
+    /** 批次 H：allies 解析为空诊断节流（≤1 条/10 分钟）。 */
+    private volatile long alliesParseEmptyLogAt;
     /** 批次 G2：敌方 marchId → 已召回采集队时刻（每威胁最多 1 队）。 */
     private final Map<Long, Long> preemptedByThreat = new ConcurrentHashMap<>();
     /** 批次 G2：最近 60s 召回时刻（每分钟上限；访问需持 preemptLock）。 */
@@ -774,12 +783,22 @@ public final class ServerGuardianEngine {
             return;
         }
 
-        // 盟友坐标表（P1 距离标定用；P0 仅存内存，供 target_point 回退）
-        if (PROTO_ALLIANCE_POS_INFO.equals(proto) || PROTO_ALLIANCE_POS_UPDATE.equals(proto)) {
+        // 盟友坐标表（批次 H：兼容 add/update/info 各包装；del 删除）
+        if (ALLIANCE_POS_PROTOS.contains(proto)) {
+            alliesLastProto = proto;
+            if (PROTO_ALLIANCE_POS_DEL.equals(proto)) {
+                java.util.Set<Long> removed = parseMemberPosDeleted(content);
+                for (Long uid : removed) {
+                    if (uid != null && uid > 0L) allies.remove(uid);
+                }
+                return;
+            }
             Map<Long, long[]> parsed = parseMemberPos(content);
             if (!parsed.isEmpty()) {
                 allies.putAll(parsed);
                 alliesUpdatedAtMs = clockMs.getAsLong();
+            } else {
+                logAlliesParseEmpty(proto, content);
             }
             return;
         }
@@ -2798,29 +2817,205 @@ public final class ServerGuardianEngine {
         }
     }
 
-    /** 解析盟友坐标推送（`member_list` map/list 或 `member_pos` 单条）→ uid → (x,y)。 */
+    /** 批次 H：成员坐标常见包装键（顶层/嵌套都兼容；只按 key 展开，不猜值）。 */
+    private static final String[] POS_WRAPPER_KEYS = {
+            "member_pos", "member_list", "member_pos_list", "members", "member",
+            "list", "data", "info", "content", "alliance_members", "pos_info"};
+
+    /**
+     * 解析盟友坐标推送 → uid → (x,y)（批次 H 兼容真实形状）：
+     * <ul>
+     *   <li>顶层包装：member_list / members / list / data / info / content / member_pos；</li>
+     *   <li>容器：List（元素）或 Map（key→元素，value 为条目）；</li>
+     *   <li>uid：uid / id / player_id；坐标：x/y、pos{x,y}、city_pos{x,y}、point{x,y}、
+     *       {@code "x,y"} 字符串、[x,y] 数组；数值兼容字符串。</li>
+     * </ul>
+     * 纯函数；同 uid 后者覆盖前者。
+     */
     static Map<Long, long[]> parseMemberPos(Map<String, Object> content) {
         Map<Long, long[]> out = new LinkedHashMap<>();
-        if (content == null) return out;
-        Object single = content.get("member_pos");
-        if (single instanceof Map) collectMemberPos((Map<?, ?>) single, out);
-        Object list = content.get("member_list");
-        if (list instanceof Map) {
-            for (Object v : ((Map<?, ?>) list).values()) collectMemberPos(v, out);
-        } else if (list instanceof List) {
-            for (Object v : (List<?>) list) collectMemberPos(v, out);
-        }
-        if (out.isEmpty() && content.containsKey("uid")) collectMemberPos(content, out);
+        collectMemberPosAny(content, out, 0);
         return out;
     }
 
-    private static void collectMemberPos(Object node, Map<Long, long[]> out) {
+    private static void collectMemberPosAny(Object node, Map<Long, long[]> out, int depth) {
+        if (node == null || depth > MAX_DEPTH || out.size() >= 512) return;
+        if (node instanceof List) {
+            for (Object v : (List<?>) node) collectMemberPosAny(v, out, depth + 1);
+            return;
+        }
+        if (node instanceof Object[]) {
+            for (Object v : (Object[]) node) collectMemberPosAny(v, out, depth + 1);
+            return;
+        }
         if (!(node instanceof Map)) return;
         Map<?, ?> m = (Map<?, ?>) node;
-        long uid = Exec.longOf(m.get("uid"));
-        long x = Exec.longOf(m.get("x"));
-        long y = Exec.longOf(m.get("y"));
-        if (uid > 0 && x > 0 && y > 0) out.put(uid, new long[]{x, y});
+        long uid = memberUidOf(m);
+        int[] pt = memberPointOf(m);
+        if (uid > 0L && pt != null) {
+            out.put(uid, new long[]{pt[0], pt[1]});
+        }
+        boolean expanded = false;
+        for (String key : POS_WRAPPER_KEYS) {
+            if (m.containsKey(key)) {
+                expanded = true;
+                collectMemberPosAny(m.get(key), out, depth + 1);
+            }
+        }
+        // 未知容器（如 {"2001":{...}}）：没有已知包装键且自身不是条目时，继续按 value 展开
+        if (!expanded && uid <= 0L) {
+            for (Map.Entry<?, ?> e : m.entrySet()) {
+                Object v = e.getValue();
+                // 兼容 {"2001":{"x":..,"y":..}} 形状：Map key=uid、value=坐标（value 自身无 uid）
+                long keyUid = longAny(e.getKey());
+                if (keyUid > 0L && v instanceof Map) {
+                    Map<?, ?> vm = (Map<?, ?>) v;
+                    int[] kp = memberPointOf(vm);
+                    if (kp != null && memberUidOf(vm) <= 0L) {
+                        out.put(keyUid, new long[]{kp[0], kp[1]});
+                    }
+                }
+                if (v instanceof Map || v instanceof List || v instanceof Object[]) {
+                    collectMemberPosAny(v, out, depth + 1);
+                }
+            }
+        }
+    }
+
+    /** 条目 uid：uid / id / player_id（字符串数字兼容）。 */
+    private static long memberUidOf(Map<?, ?> m) {
+        for (String key : new String[]{"uid", "id", "player_id", "role_id"}) {
+            long v = longAny(m.get(key));
+            if (v > 0L) return v;
+        }
+        return 0L;
+    }
+
+    /** 条目坐标：x/y 优先，其次 pos/city_pos/point/location/coordinate（Map/List/"x,y"）。 */
+    private static int[] memberPointOf(Map<?, ?> m) {
+        long x = longAny(m.get("x"));
+        long y = longAny(m.get("y"));
+        if (x > 0L && y > 0L) return new int[]{(int) x, (int) y};
+        for (String key : new String[]{"pos", "city_pos", "point", "location", "coordinate", "xy"}) {
+            int[] pt = pointAny(m.get(key));
+            if (pt != null) return pt;
+        }
+        return null;
+    }
+
+    private static int[] pointAny(Object v) {
+        if (v == null) return null;
+        if (v instanceof Map) {
+            Map<?, ?> p = (Map<?, ?>) v;
+            long x = longAny(p.get("x"));
+            long y = longAny(p.get("y"));
+            return x > 0L && y > 0L ? new int[]{(int) x, (int) y} : null;
+        }
+        if (v instanceof List) {
+            List<?> l = (List<?>) v;
+            if (l.size() >= 2) {
+                long x = longAny(l.get(0));
+                long y = longAny(l.get(1));
+                return x > 0L && y > 0L ? new int[]{(int) x, (int) y} : null;
+            }
+            return null;
+        }
+        if (v instanceof Object[]) {
+            Object[] a = (Object[]) v;
+            if (a.length >= 2) {
+                long x = longAny(a[0]);
+                long y = longAny(a[1]);
+                return x > 0L && y > 0L ? new int[]{(int) x, (int) y} : null;
+            }
+            return null;
+        }
+        if (v instanceof String) {
+            String[] parts = ((String) v).trim().split("[,，;；\\s]+");
+            if (parts.length >= 2) {
+                long x = longAny(parts[0]);
+                long y = longAny(parts[1]);
+                return x > 0L && y > 0L ? new int[]{(int) x, (int) y} : null;
+            }
+        }
+        return null;
+    }
+
+    private static long longAny(Object v) {
+        if (v instanceof Number) return ((Number) v).longValue();
+        if (v instanceof String) {
+            String s = ((String) v).trim();
+            if (s.isEmpty()) return 0L;
+            try {
+                return Long.parseLong(s);
+            } catch (NumberFormatException ignored) {
+                try {
+                    return (long) Double.parseDouble(s);
+                } catch (Throwable ignored2) {
+                    return 0L;
+                }
+            }
+        }
+        return 0L;
+    }
+
+    /** 删除推送解析：收集 uid/id/player_id（List/Map/包装层；元素为数字也接受）。 */
+    static java.util.Set<Long> parseMemberPosDeleted(Map<String, Object> content) {
+        java.util.Set<Long> out = new java.util.LinkedHashSet<>();
+        collectDeletedMemberUids(content, out, 0);
+        return out;
+    }
+
+    private static void collectDeletedMemberUids(Object node, java.util.Set<Long> out, int depth) {
+        if (node == null || depth > MAX_DEPTH) return;
+        if (node instanceof List) {
+            for (Object v : (List<?>) node) collectDeletedMemberUids(v, out, depth + 1);
+            return;
+        }
+        if (!(node instanceof Map)) return;
+        Map<?, ?> m = (Map<?, ?>) node;
+        long uid = memberUidOf(m);
+        if (uid > 0L) out.add(uid);
+        for (String key : POS_WRAPPER_KEYS) {
+            if (m.containsKey(key)) collectDeletedMemberUids(m.get(key), out, depth + 1);
+        }
+        if (out.isEmpty() && uid <= 0L) {
+            for (Object v : m.values()) {
+                if (v instanceof Map || v instanceof List) collectDeletedMemberUids(v, out, depth + 1);
+            }
+        }
+    }
+
+    /** 解析为空诊断：只打印键名（不含值/PII），同进程 ≤1 条/10 分钟。 */
+    private void logAlliesParseEmpty(String proto, Map<String, Object> content) {
+        long now = clockMs.getAsLong();
+        if (alliesParseEmptyLogAt > 0L && now - alliesParseEmptyLogAt < 600_000L) return;
+        alliesParseEmptyLogAt = now;
+        String keys = content == null ? "[]" : content.keySet().toString();
+        String firstKeys = firstElementKeys(content);
+        FileLog.info("守护盟友[allies] 解析为空 proto={} keys={} firstKeys={}",
+                proto, keys, firstKeys);
+    }
+
+    private static String firstElementKeys(Map<String, Object> content) {
+        if (content == null) return "[]";
+        Object first = null;
+        for (String key : POS_WRAPPER_KEYS) {
+            Object v = content.get(key);
+            if (v instanceof List && !((List<?>) v).isEmpty()) {
+                first = ((List<?>) v).get(0);
+                break;
+            }
+            if (v instanceof Map) {
+                Map<?, ?> mm = (Map<?, ?>) v;
+                if (!mm.isEmpty()) {
+                    first = mm.values().iterator().next();
+                    break;
+                }
+            }
+        }
+        if (first instanceof Map) return ((Map<?, ?>) first).keySet().toString();
+        if (first == null && content.containsKey("uid")) return content.keySet().toString();
+        return first == null ? "[]" : first.getClass().getSimpleName();
     }
 
     /**
@@ -3707,6 +3902,7 @@ public final class ServerGuardianEngine {
                 + ", allies=" + allies.size()
                 + ", alliesUpdatedAgoMs=" + (alliesUpdatedAtMs > 0L
                 ? Math.max(0L, clockMs.getAsLong() - alliesUpdatedAtMs) : -1L)
+                + ", alliesLastProto=" + alliesLastProto
                 + ", lastProto=" + lastProto
                 + ", lastPushAgoMs=" + ago + (stopped ? ", stopped" : "") + "}";
     }
