@@ -36,6 +36,8 @@ public final class Main {
 
         StateStore stateStore = new StateStore(config.dataDir);
         stateStore.load();
+        // 2026-10-30 批次 A：状态保留（st:<day> 默认保留 7 天；可用 VAULT_STATE_RETENTION=off 关闭）
+        StateRetention.start(stateStore);
 
         // 战争通知（敌人监视 + 企微机器人）：事件环形缓冲 + 推送中枢，接线会话与 API
         WatchEventStore watchEvents = new WatchEventStore(config.dataDir);

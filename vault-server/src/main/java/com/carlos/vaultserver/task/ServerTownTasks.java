@@ -766,7 +766,16 @@ public final class ServerTownTasks {
             if (pp2.optBoolean("alliance_chest", true)) {
                 GameMessage ab = tc.engine.request("req_pet_adventure_batch_take_alliance_reward", null);
                 if (Exec.ok(ab)) { m.claimed("联盟寻宝宝箱"); m.subOk("alliance_chest", "宝箱已领"); }
-                else { m.skip("联盟宝箱无可领(码" + Exec.codeOf(ab) + ")"); m.subSkip("alliance_chest", "码" + Exec.codeOf(ab)); }
+                else {
+                    // 2026-10-30：网页版 DailyPetAdventureService.NO_ALLIANCE_REWARD_CODES
+                    // = {11790,11792,11794,11795,11796,11797,11799,11803} → 暂无可领（非异常）。
+                    int abCode = Exec.codeOf(ab);
+                    boolean noReward = abCode == 11790 || abCode == 11792 || abCode == 11794
+                            || abCode == 11795 || abCode == 11796 || abCode == 11797
+                            || abCode == 11799 || abCode == 11803;
+                    m.skip(noReward ? "联盟宝箱暂无可领" : ("联盟宝箱不可领(码" + abCode + ")"));
+                    m.subSkip("alliance_chest", noReward ? "暂无可领" : ("码" + abCode));
+                }
             }
             Map<String, Object> adv = tc.engine.notifyContent("notify_pet_adventure_info");
             Map<String, Object> petInfo = tc.engine.notifyData("notify_pet_info");
