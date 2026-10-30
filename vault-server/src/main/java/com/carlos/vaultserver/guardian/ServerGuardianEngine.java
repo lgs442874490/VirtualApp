@@ -595,6 +595,12 @@ public final class ServerGuardianEngine {
     public void attach(WjdrEngine engine) {
         if (engine == null || !attached.compareAndSet(false, true)) return;
         try {
+            // 批次 L：成员坐标常在登录推送里一次性下发（之后不再推），而引擎在登录后才挂载 →
+            // 从引擎的 notifies 缓存立刻补一次，避免 allies 永久为空。
+            try {
+                hydrateAlliesFromNotify(engine);
+            } catch (Throwable ignored) {
+            }
             engine.addMessageHook((proto, content) -> {
                 try {
                     onPush(engine, proto, content);
@@ -1077,6 +1083,10 @@ public final class ServerGuardianEngine {
         // 反查不到/坐标表为空则不发射（防 2810 风暴），可 require_ally=false/env off 回旧行为。
         long resolvedTargetUid = t.targetUid;
         if (cfg.requireAlly && resolvedTargetUid <= 0L) {
+            if (allies.isEmpty()) {
+                // 批次 L：登录缓存里通常已经有成员坐标 → 惰性补一次（30s 节流），仍空才放弃
+                hydrateAlliesFromNotify(engine);
+            }
             if (allies.isEmpty()) {
                 noteAlliesUnknown(t, nowMs);
                 clearQueueRetry(marchId);
@@ -3309,6 +3319,45 @@ public final class ServerGuardianEngine {
                 && ownCity[0] == target[0] && ownCity[1] == target[1];
     }
 
+    /** 批次 L：登录推送缓存补 allies 的最小间隔（30s；避免每个威胁都重解析大 payload）。 */
+    static final long ALLIES_HYDRATE_MIN_INTERVAL_MS = 30_000L;
+    /** 批次 L：上次从 notify 缓存补 allies 的时刻。 */
+    private volatile long alliesHydrateAtMs;
+
+    /**
+     * 批次 L（2026-10-31）：从引擎的登录推送缓存（{@code engine.notifyData}）补盟友坐标。
+     *
+     * <p>生产实证：{@code notify_alliance_member_pos_info} 只在登录握手阶段随 notifies 一次性下发，
+     * 而守护引擎在登录完成后才 attach → 消息钩子永远收不到，{@code allies} 恒空。
+     * 这里直接读缓存（info/update/add），解析成功即刷新 alliesUpdatedAtMs；30s 内不重复。
+     */
+    void hydrateAlliesFromNotify(WjdrEngine engine) {
+        if (engine == null) return;
+        long now = clockMs.getAsLong();
+        if (alliesHydrateAtMs > 0L && now - alliesHydrateAtMs < ALLIES_HYDRATE_MIN_INTERVAL_MS) return;
+        alliesHydrateAtMs = now;
+        int added = 0;
+        for (String proto : new String[]{PROTO_ALLIANCE_POS_INFO, PROTO_ALLIANCE_POS_UPDATE,
+                PROTO_ALLIANCE_POS_ADD}) {
+            try {
+                Map<String, Object> content = engine.notifyData(proto);
+                if (content == null || content.isEmpty()) continue;
+                Map<Long, long[]> parsed = parseMemberPos(content);
+                if (!parsed.isEmpty()) {
+                    allies.putAll(parsed);
+                    added += parsed.size();
+                    alliesUpdatedAtMs = now;
+                    alliesLastProto = proto;
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        if (added > 0) {
+            FileLog.info("守护盟友[allies] 从登录推送补齐 {} 人（共 {}，proto={}）",
+                    String.valueOf(added), String.valueOf(allies.size()), alliesLastProto);
+        }
+    }
+
     /**
      * 批次 G：按坐标精确反查盟友 uid（容差 0）。同坐标多 uid 取第一个；
      * 若配置了 ally_uid 且命中则优先返回它。无命中返回 0。
@@ -3346,6 +3395,11 @@ public final class ServerGuardianEngine {
     }
 
     /** 批次 G：盟友坐标表最近更新时间（0=从未；诊断/测试）。 */
+    /** 批次 L：当前盟友坐标表人数（诊断/测试）。 */
+    int alliesCount() {
+        return allies.size();
+    }
+
     long alliesUpdatedAt() {
         return alliesUpdatedAtMs;
     }
