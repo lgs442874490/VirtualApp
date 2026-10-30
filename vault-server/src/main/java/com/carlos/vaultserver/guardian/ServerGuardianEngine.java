@@ -88,6 +88,8 @@ import java.util.function.Supplier;
  * d_sec(默认38)  // P0 仅用于日志/D 展示，不参与排程（立即发射）
  * speedup_enabled(默认false) diamond_speedup_enabled(默认false)
  * speedup_margin_s(默认2) max_speedups_per_march(默认0=不限) diamond_max_per_march(默认3，0=不限)
+ * catch_up(默认true) catch_up_margin_s(默认2) catch_up_max_rounds(默认20，0=不限，上限100)
+ *   // 批次 D：我方晚到就主动追到先到；env VAULT_GUARDIAN_CATCHUP=off 回旧行为
  * </pre>
  *
  * <p>威胁档位：复用批次11 的 {@code troops_min}（敌方兵力下限，已接线 {@link #decide}；App 的
@@ -129,14 +131,24 @@ public final class ServerGuardianEngine {
 
     // ---------------- 行为常量 ----------------
 
-    /** 进攻类行军（type=2 target_type=1 攻玩家城；type=1 为侦查，P0 不驻防）。 */
+    /** 单人进攻类行军 type（兼容常量；批次 D 起攻击集合可配，默认含 2/102）。 */
     static final long MARCH_TYPE_ATTACK = 2L;
+    /** 批次 D：默认攻击类型集合（2=单人进攻、102=联盟集结进攻；type=1 侦查仍不驻防）。 */
+    static final Set<Long> DEFAULT_ATTACK_TYPES = Set.of(2L, 102L);
+    /** 批次 D：敌方已落地多久内仍补驻防（秒；超过则不再追）。 */
+    static final long LATE_REINFORCE_WINDOW_SEC = 60L;
     /** 默认行军时长 D（秒；设计 §3.5：P0 仅用于日志，立即发射；P1 再标定）。 */
     static final long DEFAULT_D_SEC = 38L;
     /** 批次 C-A3：卡秒发射的提前余量（秒；fireAt = 敌 endSec - dSec - margin）。 */
     static final long DEFAULT_FIRE_MARGIN_SEC = 5L;
-    /** ETA 过近（<3s）不再追（物理上无解；P1 卡秒/加速才处理）。 */
+    /** 旧 ETA 过近阈值（批次 D 起不再用于拒绝：落地 60s 内仍补驻防；保留常量兼容旧引用）。 */
     static final long MIN_ETA_SEC = 3L;
+    /** 批次 D 追赶：每发之间的间隔（毫秒；串行调度，避免请求风暴）。 */
+    static final long CATCHUP_ROUND_INTERVAL_MS = 250L;
+    /** 批次 D 追赶：敌方已落地超过该秒数后不再追（追也无意义）。 */
+    static final long CATCHUP_LANDED_GRACE_SEC = 30L;
+    /** 批次 D 追赶：追赶发数硬上限（params 上限，防配置笔误无限追）。 */
+    static final int CATCHUP_MAX_ROUNDS_HARD = 100;
     /** 敌召回/到达判定阈值（A-11 实证：endtime−now >2s 判召回）。 */
     static final long RECALL_THRESHOLD_SEC = 2L;
     /** 配置热载间隔（同 ServerWarState 60s 热载纪律，这里 10s 更快响应开关）。 */
@@ -147,8 +159,10 @@ public final class ServerGuardianEngine {
     static final long STALE_NO_ETA_THREAT_MILLIS = 10 * 60_000L;
     /** 任务表保留：endtime 之后保留 10 分钟（等战报/敌情结束；P0 不主动撤已驻扎）。 */
     static final long MISSION_KEEP_AFTER_END_SEC = 600L;
-    /** 默认同角色最多同时 1 个在途驻防任务（批次 C-A6 可配 max_concurrent=2）。 */
-    static final int MAX_CONCURRENT_MISSIONS = 1;
+    /** 批次 D：默认同角色最多同时 3 个在途驻防任务（多目标同时被攻）；上限 6。 */
+    static final int DEFAULT_MAX_CONCURRENT_MISSIONS = 3;
+    static final int MAX_CONCURRENT_MISSIONS = DEFAULT_MAX_CONCURRENT_MISSIONS;
+    static final int MAX_CONCURRENT_CAP = 6;
     /** 账本上限。 */
     static final int LEDGER_CAP = 50;
     /** 解析深度/候选上限（防异常 payload）。 */
@@ -187,12 +201,22 @@ public final class ServerGuardianEngine {
         List<Long> heroIds = new ArrayList<>();
         double recallDistance = 0d;          // 预留
         long dSec = DEFAULT_D_SEC;
-        // ---- 批次 C-A3 卡秒发射（2026-10-31；默认开，env/params 可关回旧行为） ----
+        // ---- 批次 D（2026-10-31 用户口径）：攻击类型集合默认 2/102；卡秒改可选（默认关） ----
+        /** 允许驻防的攻击 type 集合（默认 {2,102}；其它 type 拒绝）。 */
+        Set<Long> attackTypes = new LinkedHashSet<>(DEFAULT_ATTACK_TYPES);
+        // ---- 批次 C-A3 卡秒发射（批次 D 改为默认关；timing=true / env on 才启用） ----
         /** 发射时刻 = 敌 endSec - dSec - fireMarginSec。 */
-        boolean timingEnabled = true;
+        boolean timingEnabled = false;
         long fireMarginSec = DEFAULT_FIRE_MARGIN_SEC;
-        // ---- 批次 C-A6 多目标并发（默认 1=线上不变；上限 2） ----
-        int maxConcurrent = MAX_CONCURRENT_MISSIONS;
+        // ---- 批次 C-A6 多目标并发（批次 D 默认 3；clamp 1..6） ----
+        int maxConcurrent = DEFAULT_MAX_CONCURRENT_MISSIONS;
+        // ---- 批次 D 追赶加速（2026-10-31）：核心是驻防成功；我方晚到就主动追到先到 ----
+        /** 追赶总开关（默认 true；env VAULT_GUARDIAN_CATCHUP=off 或 params catch_up=false 回旧行为）。 */
+        boolean catchUp = true;
+        /** 追赶先至余量（秒；默认 2，与 speedup_margin_s 独立）。 */
+        long catchUpMarginS = 2L;
+        /** 追赶最大发数（默认 20；0=不限；上限 100，防请求风暴）。 */
+        int catchUpMaxRounds = 20;
         // ---- 批次10 统一编队（task-32；缺省=旧行为零变化） ----
         /** 原始 roleParams（JSONObject→Map 深转换；FormationResolver 契约入参）。 */
         Map<String, Object> rawParams = new LinkedHashMap<>();
@@ -223,7 +247,10 @@ public final class ServerGuardianEngine {
                     + " speedup_margin=" + speedupMarginS + "s"
                     + " max_speedups=" + (maxSpeedupsPerMarch <= 0 ? "unlimited" : String.valueOf(maxSpeedupsPerMarch))
                     + " timing=" + timingEnabled + " fire_margin=" + fireMarginSec + "s"
-                    + " max_concurrent=" + maxConcurrent;
+                    + " max_concurrent=" + maxConcurrent
+                    + " attack_types=" + attackTypes
+                    + " catch_up=" + catchUp + " catchup_margin=" + catchUpMarginS + "s"
+                    + " catchup_rounds=" + (catchUpMaxRounds <= 0 ? "unlimited" : String.valueOf(catchUpMaxRounds));
         }
     }
 
@@ -392,6 +419,10 @@ public final class ServerGuardianEngine {
     private final ExecutorService guardExec;
     /** 批次 C-A3：一次性延迟调度器（单线程 daemon；绝不在 guardExec 内 sleep）。 */
     private final ScheduledExecutorService fireSched;
+    /** 批次 D：追赶调度（独立单线程；两发之间延迟，不占用 guardExec/卡秒线程）。 */
+    private final ScheduledExecutorService catchupSched;
+    /** 批次 D：敌方 marchId → 追赶状态（同一威胁只追一条链）。 */
+    private final Map<Long, Catchup> catchups = new ConcurrentHashMap<>();
     /** marchId → 待发射定时任务（威胁更新重排/消失/stop 时取消）。 */
     private final Map<Long, ScheduledFuture<?>> fireTasks = new ConcurrentHashMap<>();
     /** marchId → 当前计划的发射服务器秒（观测/测试）。 */
@@ -451,6 +482,12 @@ public final class ServerGuardianEngine {
         });
         this.fireSched = Executors.newSingleThreadScheduledExecutor(r -> {
             Thread t = new Thread(r, "guardian-fire-" + this.fpid + "-" + sid
+                    + (roleUid > 0L ? "-" + roleUid : ""));
+            t.setDaemon(true);
+            return t;
+        });
+        this.catchupSched = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "guardian-catchup-" + this.fpid + "-" + sid
                     + (roleUid > 0L ? "-" + roleUid : ""));
             t.setDaemon(true);
             return t;
@@ -580,8 +617,13 @@ public final class ServerGuardianEngine {
         fireTasks.clear();
         fireAtSecs.clear();
         timingNotes.clear();
+        catchups.clear();
         try {
             fireSched.shutdownNow();
+        } catch (Throwable ignored) {
+        }
+        try {
+            catchupSched.shutdownNow();
         } catch (Throwable ignored) {
         }
         try {
@@ -676,6 +718,9 @@ public final class ServerGuardianEngine {
             threats.put(cur.marchId, cur);
             // P1：敌方加速（endtime 前移/压缩）→ 若我方驻防已发射且在途 → 异步对等加速
             if (prev != null) maybeSubmitSpeedup(engine, prev, cur, cfg, nowMs);
+            // 批次 D：敌人再次压缩把我方压到晚到 → 继续追赶（与 speedup_enabled 解耦）
+            Mission cm = missions.get(targetKey(cur));
+            if (cm != null && cm.enemyMarchId == cur.marchId) maybeStartCatchup(engine, cur, cm, cfg);
             Decision d = decide(cur, cfg, nowMs);
             if (!d.hit) {
                 noteThresholdReject(cur, d, cfg);
@@ -854,6 +899,7 @@ public final class ServerGuardianEngine {
         if (t == null) return;
         boolean hadFire = fireTasks.containsKey(marchId);
         cancelFire(marchId);
+        finishCatchup(marchId, t, "threat_gone");
         timingNotes.remove(marchId);
         attempted.remove(marchId);
         submitted.remove(marchId);
@@ -913,6 +959,10 @@ public final class ServerGuardianEngine {
             attempted.remove(marchId);
             return;
         }
+        // 批次 D：已落地 0..60s 的补驻防在账本文案标记 late_reinforce（决定已放行）
+        long remainS = t.endEpochSec - nowMs / 1000L;
+        String lateTag = remainS <= 0L
+                ? "late_reinforce（已落地 " + Math.max(0L, -remainS) + "s，补驻防）→ " : "";
         String targetKey = targetKey(t);
         // 2026-10-28：同目标 415/406 失败后的冷却期内，新威胁只记账不发射（防重试风暴/日志刷屏）
         Long coolUntil = targetCooldowns.get(targetKey);
@@ -933,7 +983,13 @@ public final class ServerGuardianEngine {
         try {
             if (cfg.dryRun) {
                 long eta = t.endEpochSec - nowSec(engine);
-                String text = "命中威胁 " + t.kind() + " march=" + t.marchId + " owner=" + t.ownerUid
+                int[] dryPt = resolveTargetPoint(t, cfg);
+                if (isSelfCity(ownCityPoint(engine), dryPt)) {
+                    ledger("skip_self", t, null, "目标坐标(" + dryPt[0] + "," + dryPt[1]
+                            + ")=我方城市，不向自己派增援");
+                    return;
+                }
+                String text = lateTag + "命中威胁 " + t.kind() + " march=" + t.marchId + " owner=" + t.ownerUid
                         + " 敌方兵力=" + t.troopsText()
                         + (t.power > 0 ? " 战力=" + t.power : "")
                         + " → 目标" + (t.targetUid > 0 ? " uid" + t.targetUid : "")
@@ -947,14 +1003,21 @@ public final class ServerGuardianEngine {
                 writeMod("🛡[DRY] " + text);
                 return;
             }
-            int free = freeMarchSlots(engine);
-            if (free <= 0) {
-                ledger("skip_queue", t, null, free < 0 ? "队列容量/占用未知（宁可不发）" : "队列无空位 free=" + free);
-                return;
-            }
+            // 批次 D：先解析目标并跳过"目标=自己城"（避免阵队查询/误派增援），再查队列空位
             int[] pt = resolveTargetPoint(t, cfg);
             if (pt == null || pt[0] <= 0 || pt[1] <= 0) {
                 ledger("skip_no_point", t, null, "目标坐标未知（无 endpoint/盟友坐标/target_point）");
+                return;
+            }
+            int[] ownCity = ownCityPoint(engine);
+            if (isSelfCity(ownCity, pt)) {
+                ledger("skip_self", t, null, "目标坐标(" + pt[0] + "," + pt[1]
+                        + ")=我方城市，不向自己派增援");
+                return;
+            }
+            int free = freeMarchSlots(engine);
+            if (free <= 0) {
+                ledger("skip_queue", t, null, free < 0 ? "队列容量/占用未知（宁可不发）" : "队列无空位 free=" + free);
                 return;
             }
             Map<String, Object> formation = formationOf(engine, cfg);
@@ -966,11 +1029,12 @@ public final class ServerGuardianEngine {
             if (r.ok) {
                 // P0-5 同款：成功发射复位 415 英雄上限/406 兵力缩放（自适应必须能恢复）
                 HeroAvailability.markSuccess(engine);
-                missions.put(targetKey, new Mission(t.marchId, r.marchId, r.endtimeSec, nowMs));
+                Mission mission = new Mission(t.marchId, r.marchId, r.endtimeSec, nowMs);
+                missions.put(targetKey, mission);
                 long nowS = nowSec(engine);
                 long ahead = t.endEpochSec > 0 && r.endtimeSec > 0 ? t.endEpochSec - r.endtimeSec : 0L;
                 String autoNote = lastAutoFormationSummary;
-                String text = "已发射 type=5 驻防 marchId=" + r.marchId + " endtime=" + r.endtimeSec
+                String text = lateTag + "已发射 type=5 驻防 marchId=" + r.marchId + " endtime=" + r.endtimeSec
                         + "（敌 endtime=" + t.endEpochSec + (ahead != 0 ? "，我方" + (ahead >= 0 ? "先于敌 " : "晚于敌 ") + Math.abs(ahead) + "s" : "")
                         + "）目标" + targetText(t, pt)
                         + (cfg.timingEnabled ? "｜卡秒 fireAt=" + fireAtSec(t, cfg) : "")
@@ -978,6 +1042,8 @@ public final class ServerGuardianEngine {
                 FileLog.info("守护盟友发射 {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("launched", t, r, text);
                 writeMod("🛡" + text);
+                // 批次 D：我方晚于敌（含 margin 内）→ 立即进入追赶（异步，不阻塞 guardExec）
+                maybeStartCatchup(engine, t, mission, cfg);
             } else {
                 // 2026-10-28：415（编队人数/配置超限）/406（士兵超限）自适应 + 目标冷却 + 日志节流。
                 // 本次生产事故：无编队参数时 Exec.formation 取客户端 5 英雄 → 该号每队上限 3 → 每个威胁 415，
@@ -1090,6 +1156,299 @@ public final class ServerGuardianEngine {
             }
         } catch (Throwable ignored) {
         }
+    }
+
+    // =====================================================================
+    // 批次 D 追赶加速（catch-up，2026-10-31）
+    // 用户口径：核心是驻防成功；我方比敌人晚到就主动加速追到「先到」，卡秒只是省道具。
+    // 触发：发射成功后 ownEnd >= enemyEnd - margin；敌人再次压缩把我方压晚也续追。
+    // 执行：独立 catchupSched 单线程串行调度（每发间隔 250ms）→ 实际请求回 guardExec，
+    //       绝不 sleep/阻塞 guardExec 或卡秒线程。失败只记 ledger，不重试风暴。
+    // 停止：先到 / 无道具（钻石关或超预算）/ 达 max_rounds / 敌已落地 >30s / 威胁或任务消失。
+    // =====================================================================
+
+    /** 一条追赶链状态（同一敌方 marchId 唯一）。 */
+    static final class Catchup {
+        final long enemyMarchId;
+        final long missionMarchId;
+        volatile long enemyEndSec;
+        int rounds;
+        boolean done;
+
+        Catchup(long enemyMarchId, long missionMarchId, long enemyEndSec) {
+            this.enemyMarchId = enemyMarchId;
+            this.missionMarchId = missionMarchId;
+            this.enemyEndSec = enemyEndSec;
+        }
+    }
+
+    /** 敌人是否已落地超过宽限（纯函数；enemyEnd<=0 → false=未知，不据此中止）。 */
+    static boolean catchupExpired(long enemyEndSec, long nowSec) {
+        return enemyEndSec > 0L && nowSec - enemyEndSec > CATCHUP_LANDED_GRACE_SEC;
+    }
+
+    /** 追赶是否应启动（纯函数）：ownEnd 不早于 enemyEnd - margin（含 margin 内都算晚）。 */
+    static boolean catchupWanted(long ownEndSec, long enemyEndSec, long marginSec) {
+        if (ownEndSec <= 0L || enemyEndSec <= 0L) return false;
+        long margin = Math.max(0L, marginSec);
+        return ownEndSec * 1000L >= enemyEndSec * 1000L - margin * 1000L;
+    }
+
+    /**
+     * 尝试启动追赶（推送线程/guardExec 均可调用；只记账+登记调度，不发请求）。
+     * 已有一条未结束的追赶链时不重复启动（敌人再压缩由链内轮次读最新 endtime 自适应）。
+     */
+    void maybeStartCatchup(WjdrEngine engine, Threat t, Mission m, Config cfg) {
+        try {
+            if (stopped || t == null || m == null || cfg == null) return;
+            if (!cfg.catchUp) return;                          // 默认 true；关=旧行为
+            if (cfg.dryRun) return;                            // dry_run 不发请求（发射阶段已只记录）
+            if (t.endEpochSec <= 0L || m.endtimeSec <= 0L) return;
+            if (!catchupWanted(m.endtimeSec, t.endEpochSec, cfg.catchUpMarginS)) return;
+            Catchup existing = catchups.get(t.marchId);
+            if (existing != null && !existing.done) return;
+            long nowS = nowSec(engine);
+            if (catchupExpired(t.endEpochSec, nowS)) return;   // 敌已落地 >30s：不追
+            Catchup c = new Catchup(t.marchId, m.marchId, t.endEpochSec);
+            catchups.put(t.marchId, c);
+            long lateS = m.endtimeSec - t.endEpochSec;
+            String note = "追赶开始：我方 end=" + m.endtimeSec + " 敌 end=" + t.endEpochSec
+                    + "（晚 " + Math.max(0L, lateS) + "s，margin=" + cfg.catchUpMarginS
+                    + "s，max_rounds=" + (cfg.catchUpMaxRounds <= 0 ? "unlimited"
+                    : String.valueOf(cfg.catchUpMaxRounds)) + "）";
+            ledger("catchup_start", t, null, note);
+            FileLog.info("守护盟友追赶开始 {}:{} {}", fpid, String.valueOf(sid), note);
+            scheduleCatchupRound(engine, t.marchId, 0L);
+        } catch (Throwable ex) {
+            FileLog.warn("守护盟友追赶启动异常 {}:{} {}", fpid, String.valueOf(sid), brief(String.valueOf(ex)));
+        }
+    }
+
+    /** 调度下一发追赶（catchupSched 单线程延迟 → 实际请求切回 guardExec 串行执行）。 */
+    private void scheduleCatchupRound(WjdrEngine engine, long enemyMarchId, long delayMs) {
+        if (stopped) return;
+        Catchup c = catchups.get(enemyMarchId);
+        if (c == null || c.done) return;
+        try {
+            catchupSched.schedule(() -> {
+                try {
+                    if (stopped) return;
+                    guardExec.execute(() -> {
+                        try {
+                            executeCatchupRound(engine, enemyMarchId);
+                        } catch (Throwable ex) {
+                            FileLog.warn("守护盟友追赶轮次异常 {}:{} {}",
+                                    fpid, String.valueOf(sid), brief(String.valueOf(ex)));
+                            finishCatchup(enemyMarchId, threats.get(enemyMarchId), "error");
+                        }
+                    });
+                } catch (Throwable ignored) {
+                }
+            }, Math.max(0L, delayMs), TimeUnit.MILLISECONDS);
+        } catch (Throwable ex) {
+            FileLog.warn("守护盟友追赶调度失败 {}:{} {}",
+                    fpid, String.valueOf(sid), brief(String.valueOf(ex)));
+            finishCatchup(enemyMarchId, threats.get(enemyMarchId), "scheduler_error");
+        }
+    }
+
+    /**
+     * 执行一发追赶（guardExec 单线程）：重读威胁/任务/库存 → planner 选档 → 发加速 →
+     * 用响应 endtime 更新任务 → 判定先到/继续/放弃。
+     */
+    void executeCatchupRound(WjdrEngine engine, long enemyMarchId) {
+        if (stopped) return;
+        Catchup c = catchups.get(enemyMarchId);
+        if (c == null || c.done) return;
+        Config cfg = config;
+        if (cfg == null || !cfg.catchUp) {
+            finishCatchup(enemyMarchId, threats.get(enemyMarchId), "config_off");
+            return;
+        }
+        Threat t = threats.get(enemyMarchId);
+        if (t == null) {
+            finishCatchup(enemyMarchId, null, "threat_gone");
+            return;
+        }
+        Mission m = missions.get(targetKey(t));
+        if (m == null || m.enemyMarchId != enemyMarchId) {
+            finishCatchup(enemyMarchId, t, "mission_gone");
+            return;
+        }
+        if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) {
+            finishCatchup(enemyMarchId, t, "offline");
+            return;
+        }
+        long nowMs = serverNowMs(engine);
+        long nowS = nowMs / 1000L;
+        long enemyEnd = t.endEpochSec > 0L ? t.endEpochSec : c.enemyEndSec;
+        c.enemyEndSec = enemyEnd;
+        if (catchupExpired(enemyEnd, nowS)) {
+            finishCatchup(enemyMarchId, t, "landed");
+            return;
+        }
+        if (cfg.catchUpMaxRounds > 0 && c.rounds >= cfg.catchUpMaxRounds) {
+            finishCatchup(enemyMarchId, t, "rounds");
+            return;
+        }
+        long marginMs = Math.max(0L, cfg.catchUpMarginS) * 1000L;
+        long ourRemain = m.endtimeSec * 1000L - nowMs;
+        long enemyRemain = enemyEnd * 1000L - nowMs;
+        if (ourRemain > 0L && enemyRemain > 0L && ourRemain <= enemyRemain - marginMs) {
+            finishCatchup(enemyMarchId, t, "done");
+            return;
+        }
+        refreshStock(engine);
+        int usedMarch = speedupUsedByMarch.getOrDefault(m.marchId, 0);
+        GuardianSpeedupPlanner.Step step = GuardianSpeedupPlanner.next(
+                new GuardianSpeedupPlanner.Input(ourRemain, enemyRemain, marginMs,
+                        stock25, stock50, usedMarch, cfg.maxSpeedupsPerMarch, c.rounds,
+                        cfg.diamondSpeedupEnabled));
+        long itemId;
+        if (step.action == GuardianSpeedupPlanner.Action.NEED_DIAMOND) {
+            // 钻石路径沿用 diamond_speedup_enabled（默认 false=零钻石）；catch-up 不发无预算购买
+            if (!cfg.diamondSpeedupEnabled) {
+                finishCatchup(enemyMarchId, t, "no_item");
+                return;
+            }
+            if (stock25 < 0L || stock50 < 0L) {
+                finishCatchup(enemyMarchId, t, "no_item");
+                return;
+            }
+            int bought = diamondBoughtByMarch.getOrDefault(m.marchId, 0);
+            if (cfg.diamondMaxPerMarch > 0 && bought >= cfg.diamondMaxPerMarch) {
+                finishCatchup(enemyMarchId, t, "no_item");
+                return;
+            }
+            ServerGuardianLauncher.QuickBuyResult br =
+                    launcher.quickBuy(engine, GuardianSpeedupPlanner.ITEM_SPEEDUP_50, 1);
+            c.rounds++;
+            if (!br.ok) {
+                ledgerDiamond("speedup_diamond_buy_failed", t, m, br.itemId, 0L, bought,
+                        stock25, stock50, "catchup", br.text, br.code, -1L);
+                finishCatchup(enemyMarchId, t, "no_item");
+                return;
+            }
+            diamondBoughtByMarch.put(m.marchId, bought + 1);
+            stock50 = Math.max(0L, stock50) + 1L;
+            ledgerDiamond("speedup_diamond_buy", t, m, br.itemId, 1L, bought + 1,
+                    stock25, stock50, "catchup", br.text, br.code, -1L);
+            itemId = GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
+        } else if (!step.usesItem()) {
+            if (ourRemain > 0L && enemyRemain > 0L && ourRemain <= enemyRemain - marginMs) {
+                finishCatchup(enemyMarchId, t, "done");
+            } else if ("stock_insufficient".equals(step.reasonCode)
+                    || "diamond_disabled".equals(step.reasonCode)) {
+                finishCatchup(enemyMarchId, t, "no_item");
+            } else {
+                finishCatchup(enemyMarchId, t, step.reasonCode == null ? "none" : step.reasonCode);
+            }
+            return;
+        } else {
+            itemId = step.itemId;
+        }
+
+        long beforeEnd = m.endtimeSec;
+        ServerGuardianLauncher.SpeedupResult r = launcher.speedup(engine, m.marchId, itemId);
+        c.rounds++;
+        speedupUsedByMarch.put(m.marchId, usedMarch + 1);
+        String tier = itemId == GuardianSpeedupPlanner.ITEM_SPEEDUP_25 ? "25%" : "50%";
+        if (r.code == ServerGuardianLauncher.CODE_ITEM_SHORTAGE) {
+            if (itemId == GuardianSpeedupPlanner.ITEM_SPEEDUP_50) stock50 = 0L;
+            else stock25 = 0L;
+            stockLoadedAtMs = System.currentTimeMillis();
+            FileLog.warn("守护盟友追赶道具不足 {}:{} itemid={}（2827），清零该档后重选",
+                    fpid, String.valueOf(sid), String.valueOf(itemId));
+            ledger("catchup_round", t, null, catchupRoundNote(c, tier, beforeEnd, m.endtimeSec,
+                    enemyEnd, "item_shortage"));
+            if (isCatchupRoundLimitReached(c, cfg)) finishCatchup(enemyMarchId, t, "rounds");
+            else scheduleCatchupRound(engine, enemyMarchId, CATCHUP_ROUND_INTERVAL_MS);
+            return;
+        }
+        if (!r.ok) {
+            FileLog.warn("守护盟友追赶失败 {}:{} ownMarchId={} itemid={} code={}（{}）",
+                    fpid, String.valueOf(sid), String.valueOf(m.marchId), String.valueOf(itemId),
+                    String.valueOf(r.code), r.text);
+            ledger("catchup_round", t, null, catchupRoundNote(c, tier, beforeEnd, m.endtimeSec,
+                    enemyEnd, "code_" + r.code));
+            finishCatchup(enemyMarchId, t, "error");
+            return;
+        }
+        // code=0：道具已消耗，扣本地库存（不信过期快照）
+        if (itemId == GuardianSpeedupPlanner.ITEM_SPEEDUP_50) {
+            stock50 = Math.max(0L, stock50 - 1L);
+        } else {
+            stock25 = Math.max(0L, stock25 - 1L);
+        }
+        long afterEnd = r.endtimeSec;
+        boolean moved = afterEnd > 0L && afterEnd < beforeEnd;
+        if (moved) m.endtimeSec = afterEnd;
+        String result = moved ? "ok" : "no_move";
+        ledger("catchup_round", t, null, catchupRoundNote(c, tier, beforeEnd, m.endtimeSec,
+                enemyEnd, result));
+        FileLog.info("守护盟友追赶 {}:{} 第{}发[{}] {} ownEnd={}→{} enemyEnd={} stock25={} stock50={}",
+                fpid, String.valueOf(sid), String.valueOf(c.rounds), tier,
+                moved ? "生效✅" : "无前移", String.valueOf(beforeEnd),
+                moved ? String.valueOf(afterEnd) : "?", String.valueOf(enemyEnd),
+                String.valueOf(stock25), String.valueOf(stock50));
+        if (moved) {
+            long now2 = serverNowMs(engine);
+            long our2 = m.endtimeSec * 1000L - now2;
+            long enemy2 = enemyEnd * 1000L - now2;
+            if (our2 > 0L && enemy2 > 0L && our2 <= enemy2 - marginMs) {
+                finishCatchup(enemyMarchId, t, "done");
+                return;
+            }
+        } else {
+            finishCatchup(enemyMarchId, t, "no_move");
+            return;
+        }
+        if (isCatchupRoundLimitReached(c, cfg)) {
+            finishCatchup(enemyMarchId, t, "rounds");
+            return;
+        }
+        scheduleCatchupRound(engine, enemyMarchId, CATCHUP_ROUND_INTERVAL_MS);
+    }
+
+    private boolean isCatchupRoundLimitReached(Catchup c, Config cfg) {
+        return cfg.catchUpMaxRounds > 0 && c != null && c.rounds >= cfg.catchUpMaxRounds;
+    }
+
+    private static String catchupRoundNote(Catchup c, String tier, long before, long after,
+                                           long enemyEnd, String result) {
+        long round = c == null ? 0L : c.rounds;
+        return "追赶第" + round + "发[" + tier + "]：我方 end " + before + "→" + after
+                + "（敌 " + enemyEnd + "）结果=" + result;
+    }
+
+    /**
+     * 结束追赶链（幂等）：done→catchup_done；其它原因→catchup_giveup（reason 可读）。
+     * 只记账/写 mod/日志，不撤防、不发请求。
+     */
+    void finishCatchup(long enemyMarchId, Threat t, String reason) {
+        Catchup c = catchups.remove(enemyMarchId);
+        if (c == null || c.done) return;
+        c.done = true;
+        Mission m = t == null ? null : missions.get(targetKey(t));
+        long ownEnd = m == null ? 0L : m.endtimeSec;
+        long enemyEnd = t != null && t.endEpochSec > 0L ? t.endEpochSec : c.enemyEndSec;
+        if ("done".equals(reason)) {
+            String note = "追赶成功：我方 end=" + ownEnd + " 先于敌 " + enemyEnd
+                    + "（共 " + c.rounds + " 发）";
+            ledger("catchup_done", t, null, note);
+            writeMod("🛡" + note);
+            FileLog.info("守护盟友追赶完成 {}:{} {}", fpid, String.valueOf(sid), note);
+        } else {
+            String note = "追赶放弃（" + reason + "）：我方 end=" + ownEnd + " 敌 end=" + enemyEnd
+                    + "（已发 " + c.rounds + " 发）";
+            ledger("catchup_giveup", t, null, note);
+            FileLog.info("守护盟友追赶放弃 {}:{} {}", fpid, String.valueOf(sid), note);
+        }
+    }
+
+    /** 当前追赶链数量（观测/测试）。 */
+    int catchupCount() {
+        return catchups.size();
     }
 
     /**
@@ -1456,6 +1815,66 @@ public final class ServerGuardianEngine {
         }
     }
 
+    /**
+     * 解析 attack_types（纯函数）：null/空/非法 → 默认 {2,102}；支持 JSONArray、集合/数组、
+     * 逗号/空白/中文逗号分隔字符串、单个数字；只接受正整数，部分合法时保留合法项。
+     */
+    static Set<Long> parseAttackTypes(Object raw) {
+        Set<Long> out = new LinkedHashSet<>();
+        if (raw == null) return new LinkedHashSet<>(DEFAULT_ATTACK_TYPES);
+        try {
+            if (raw instanceof Number) {
+                long v = ((Number) raw).longValue();
+                if (v > 0L) out.add(v);
+            } else if (raw instanceof JSONArray) {
+                JSONArray arr = (JSONArray) raw;
+                for (int i = 0; i < arr.length(); i++) {
+                    long v = parseTypeValue(arr.opt(i));
+                    if (v > 0L) out.add(v);
+                }
+            } else if (raw instanceof Object[]) {
+                for (Object o : (Object[]) raw) {
+                    long v = parseTypeValue(o);
+                    if (v > 0L) out.add(v);
+                }
+            } else if (raw instanceof java.util.Collection) {
+                for (Object o : (java.util.Collection<?>) raw) {
+                    long v = parseTypeValue(o);
+                    if (v > 0L) out.add(v);
+                }
+            } else if (raw instanceof String) {
+                for (String part : String.valueOf(raw).split("[,，\\s]+")) {
+                    if (part.trim().isEmpty()) continue;
+                    try {
+                        long v = Long.parseLong(part.trim());
+                        if (v > 0L) out.add(v);
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            } else if (raw instanceof Map) {
+                // 兼容 {"0":2,"1":102} 形状（App 某些 JSON 序列化）
+                for (Object v : ((Map<?, ?>) raw).values()) {
+                    long type = parseTypeValue(v);
+                    if (type > 0L) out.add(type);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return out.isEmpty() ? new LinkedHashSet<>(DEFAULT_ATTACK_TYPES) : out;
+    }
+
+    private static long parseTypeValue(Object raw) {
+        if (raw instanceof Number) return ((Number) raw).longValue();
+        if (raw instanceof String) {
+            try {
+                return Long.parseLong(((String) raw).trim());
+            } catch (Throwable ignored) {
+                return 0L;
+            }
+        }
+        return 0L;
+    }
+
     /** 解析 roleParams `guardian` JSON（纯函数；缺省/异常一律关闭+dry_run；env 灰度可覆盖）。 */
     static Config parseConfig(JSONObject p) {
         Config c = Config.disabled();
@@ -1484,6 +1903,14 @@ public final class ServerGuardianEngine {
             c.speedupMarginS = marginS;
             long maxSpeedups = num(sub, st, p, "max_speedups_per_march", 0L);
             c.maxSpeedupsPerMarch = maxSpeedups <= 0L ? 0 : (int) Math.min(Integer.MAX_VALUE, maxSpeedups);
+            // 批次 D 追赶加速（默认开：核心是驻防成功；catch_up=false / env off 回旧行为）
+            c.catchUp = bool(sub, st, p, "catch_up", true);
+            long catchMargin = num(sub, st, p, "catch_up_margin_s", 2L);
+            if (catchMargin < 0L || catchMargin > 60L) catchMargin = 2L;
+            c.catchUpMarginS = catchMargin;
+            long catchRounds = num(sub, st, p, "catch_up_max_rounds", 20L);
+            if (catchRounds < 0L) catchRounds = 20L;
+            c.catchUpMaxRounds = (int) Math.min(CATCHUP_MAX_ROUNDS_HARD, catchRounds);
             // 批次11：强制上线查询开关 + 敌方兵力下限（0=不限；兼容别名 min_enemy_troops）
             c.forceOnline = bool(sub, st, p, "force_online", false);
             long troopsMin = num(sub, st, p, "troops_min", -1L);
@@ -1538,14 +1965,16 @@ public final class ServerGuardianEngine {
             }
             long d = num(sub, st, p, "d_sec", DEFAULT_D_SEC);
             if (d >= 10L && d <= 600L) c.dSec = d;   // 界外值忽略（防配置错误把 D 当 0）
-            // 批次 C-A3：卡秒发射（默认开；timing=false 回旧立即发射）+ 提前余量
-            c.timingEnabled = bool(sub, st, p, "timing", true);
+            // 批次 D：攻击类型集合（默认 {2,102}；逗号字符串/数组/数字；非法回落默认）
+            c.attackTypes = parseAttackTypes(first(sub, st, p, "attack_types"));
+            // 批次 D：卡秒改为可选优化（默认关=立即发射；timing=true 或 env on 才启用）
+            c.timingEnabled = bool(sub, st, p, "timing", false);
             long marginSec = num(sub, st, p, "fire_margin_sec", DEFAULT_FIRE_MARGIN_SEC);
             if (marginSec < 0L || marginSec > 60L) marginSec = DEFAULT_FIRE_MARGIN_SEC;
             c.fireMarginSec = marginSec;
-            // 批次 C-A6：多目标并发（默认 1=线上不变；上限 2）
-            long maxConc = num(sub, st, p, "max_concurrent", MAX_CONCURRENT_MISSIONS);
-            c.maxConcurrent = (int) Math.max(1L, Math.min(2L, maxConc));
+            // 批次 D：多目标并发默认 3（clamp 1..6；运行时再被空闲队列 freeMarchSlots 夹取）
+            long maxConc = num(sub, st, p, "max_concurrent", DEFAULT_MAX_CONCURRENT_MISSIONS);
+            c.maxConcurrent = (int) Math.max(1L, Math.min(MAX_CONCURRENT_CAP, maxConc));
             Object rd = first(sub, st, p, "recall_distance");
             if (rd != null) c.recallDistance = Math.max(0d, Exec.longOf(rd));
         } catch (Throwable ignored) {
@@ -1628,6 +2057,8 @@ public final class ServerGuardianEngine {
         if (dryRun != null) c.dryRun = dryRun;
         Boolean speedup = envBool("VAULT_GUARDIAN_SPEEDUP");
         if (speedup != null) c.speedupEnabled = speedup;
+        Boolean catchUp = envBool("VAULT_GUARDIAN_CATCHUP");
+        if (catchUp != null) c.catchUp = catchUp;
         Boolean diamond = envBool("VAULT_GUARDIAN_DIAMOND");
         if (diamond != null) c.diamondSpeedupEnabled = diamond;
         Boolean timing = envBool("VAULT_GUARDIAN_TIMING");
@@ -1990,14 +2421,24 @@ public final class ServerGuardianEngine {
     // 规则判定 / 目标解析（纯函数）
     // =====================================================================
 
-    /** P0 规则：type=2 进攻 + ETA 够 + 目标匹配（单盟友白名单）。 */
+    /**
+     * 批次 D 规则：按敌情目标驻防——攻击 type ∈ {@link Config#attackTypes}（默认 2/102）即可；
+     * ETA 不再因"太近"直接放弃：只要敌方落地不超过 {@link #LATE_REINFORCE_WINDOW_SEC} 秒
+     * 都发射补驻防（用户口径：核心是驻防成功，2 秒也要尽量发）。
+     */
     static Decision decide(Threat t, Config cfg, long nowMs) {
         if (t == null) return Decision.no("no_threat");
         if (cfg == null || !cfg.enabled) return Decision.no("disabled");
-        if (t.type != MARCH_TYPE_ATTACK) return Decision.no("not_attack（type=" + t.type + " 不驻防）");
+        if (cfg.attackTypes == null || !cfg.attackTypes.contains(t.type)) {
+            return Decision.no("not_attack（type=" + t.type + " 不在 attack_types=" + cfg.attackTypes + "）");
+        }
         long nowS = nowMs / 1000L;
         if (t.endEpochSec <= 0) return Decision.no("no_eta");
-        if (t.endEpochSec - nowS < MIN_ETA_SEC) return Decision.no("eta_too_close（剩余 " + (t.endEpochSec - nowS) + "s）");
+        long remainS = t.endEpochSec - nowS;
+        if (remainS < -LATE_REINFORCE_WINDOW_SEC) {
+            return Decision.no("eta_too_close（已落地 " + (-remainS) + "s > "
+                    + LATE_REINFORCE_WINDOW_SEC + "s，不再补驻防）");
+        }
         // 单盟友过滤：ally_uid 优先；target_uid/target_point 为可选精确过滤
         if (cfg.allyUid > 0 && t.targetUid > 0 && t.targetUid != cfg.allyUid) {
             return Decision.no("not_ally（targetUid=" + t.targetUid + " != ally_uid=" + cfg.allyUid + "）");
@@ -2044,6 +2485,64 @@ public final class ServerGuardianEngine {
             if (xy != null) return new int[]{(int) xy[0], (int) xy[1]};
         }
         return null;
+    }
+
+    /**
+     * 我方城市坐标（批次 D：用于跳过"目标=自己城"的伪威胁）：
+     * 资产库 meta.cityX/Y 优先（notify_world_player_init 的 city_point 已入 META 域）；
+     * 回退直接解析 notify_world_player_init 里的 city_point{x,y}；未知返回 null（不跳过）。
+     */
+    int[] ownCityPoint(WjdrEngine engine) {
+        try {
+            com.carlos.vault.wjdr.asset.CoreAssetLibrary lib =
+                    com.carlos.vault.wjdr.asset.CoreAssetRegistry.global().get(engine);
+            if (lib != null && lib.ready()) {
+                com.carlos.vault.wjdr.asset.AssetSnapshot.Meta meta = lib.meta();
+                if (meta != null && meta.cityX > 0L && meta.cityY > 0L) {
+                    return new int[]{(int) meta.cityX, (int) meta.cityY};
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            Map<String, Object> init = engine == null ? null : engine.notifyData(PROTO_WORLD_PLAYER_INIT);
+            return findCityPoint(init, 0);
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /** 递归找 city_point{x,y}（防御式；找不到 null）。 */
+    private static int[] findCityPoint(Object node, int depth) {
+        if (node == null || depth > MAX_DEPTH) return null;
+        if (node instanceof Map) {
+            Map<?, ?> m = (Map<?, ?>) node;
+            Object cp = m.get("city_point");
+            if (cp instanceof Map) {
+                Map<?, ?> city = (Map<?, ?>) cp;
+                Object x = city.get("x");
+                Object y = city.get("y");
+                long px = x instanceof Number ? ((Number) x).longValue() : 0L;
+                long py = y instanceof Number ? ((Number) y).longValue() : 0L;
+                if (px > 0L && py > 0L) return new int[]{(int) px, (int) py};
+            }
+            for (Object v : m.values()) {
+                int[] got = findCityPoint(v, depth + 1);
+                if (got != null) return got;
+            }
+        } else if (node instanceof List) {
+            for (Object v : (List<?>) node) {
+                int[] got = findCityPoint(v, depth + 1);
+                if (got != null) return got;
+            }
+        }
+        return null;
+    }
+
+    /** 目标坐标是否=我方城市（任一未知 → false，不跳过）。 */
+    private static boolean isSelfCity(int[] ownCity, int[] target) {
+        return ownCity != null && target != null
+                && ownCity[0] == target[0] && ownCity[1] == target[1];
     }
 
     private static String targetKey(Threat t) {

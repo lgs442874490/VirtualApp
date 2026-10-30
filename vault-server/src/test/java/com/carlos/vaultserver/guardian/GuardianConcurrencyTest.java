@@ -22,9 +22,9 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 /**
- * 批次 C-A6：守护多目标并发（max_concurrent 默认 1，上限 2）+ 同批威胁按 ETA（endSec）升序优先。
+ * 批次 C-A6/D：守护多目标并发（批次 D 默认 3，上限 6）+ 同批威胁按 ETA（endSec）升序优先。
  *
- * <p>覆盖：配置解析与 clamp、默认 1 时第二威胁 skip_busy、max_concurrent=2 时双发射、
+ * <p>覆盖：配置解析与 clamp、max_concurrent=1 时第二威胁 skip_busy、max_concurrent=2 时双发射、
  * 同目标仍被队列/互斥拦住、同批多威胁按 endSec 升序下单。
  */
 public class GuardianConcurrencyTest {
@@ -203,12 +203,12 @@ public class GuardianConcurrencyTest {
     public void parseConfig_maxConcurrent_defaultAndClamp() {
         ServerGuardianEngine.Config def = ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"sub\":{\"enabled\":true}}"));
-        assertEquals("默认 1（线上行为不变）", 1, def.maxConcurrent);
-        assertTrue(def.describe().contains("max_concurrent=1"));
+        assertEquals("批次 D 默认 3（多目标同时被攻）", 3, def.maxConcurrent);
+        assertTrue(def.describe().contains("max_concurrent=3"));
 
         assertEquals(2, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"strategy\":{\"max_concurrent\":2}}")).maxConcurrent);
-        assertEquals("上限 2", 2, ServerGuardianEngine.parseConfig(
+        assertEquals("上限 6", 6, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"strategy\":{\"max_concurrent\":9}}")).maxConcurrent);
         assertEquals("下限 1", 1, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"strategy\":{\"max_concurrent\":0}}")).maxConcurrent);

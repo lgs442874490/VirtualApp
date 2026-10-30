@@ -217,9 +217,14 @@ public class GuardianTimingTest {
         return n;
     }
 
-    private static final String LIVE_CFG = "{\"sub\":{\"enabled\":true,\"dry_run\":false},"
-            + "\"strategy\":{\"formation\":{\"hero_ids\":[1]}}}";
-    private static final String DRY_CFG = "{\"sub\":{\"enabled\":true,\"dry_run\":true}}";
+    /** 批次 D：timing 默认已改 false（核心是驻防成功）；本类验证 A3 卡秒故显式开启。
+     *  同时显式关闭 catch_up：卡秒用例只测发射时序，避免追赶账本干扰断言。 */
+    private static final String LIVE_CFG = "{\"sub\":{\"enabled\":true,\"dry_run\":false,"
+            + "\"catch_up\":false},"
+            + "\"strategy\":{\"timing\":true,\"formation\":{\"hero_ids\":[1]}}}";
+    private static final String DRY_CFG = "{\"sub\":{\"enabled\":true,\"dry_run\":true,"
+            + "\"catch_up\":false},"
+            + "\"strategy\":{\"timing\":true}}";
 
     // ---------------- 纯函数：fireAt / 配置默认与关闭 ----------------
 
@@ -227,10 +232,13 @@ public class GuardianTimingTest {
     public void fireAt_pureFunction_andConfigDefaults() {
         ServerGuardianEngine.Config def = ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"sub\":{\"enabled\":true}}"));
-        assertTrue("A3 默认开启", def.timingEnabled);
+        assertFalse("批次 D：卡秒默认关闭（立即发射优先）", def.timingEnabled);
         assertEquals("默认 fire margin=5s", 5L, def.fireMarginSec);
-        assertEquals("A6 默认并发=1", 1, def.maxConcurrent);
-        assertTrue(def.describe().contains("timing=true"));
+        assertEquals("批次 D：默认并发=3", 3, def.maxConcurrent);
+        assertTrue("默认攻击类型含 2/102", def.attackTypes.contains(2L)
+                && def.attackTypes.contains(102L));
+        assertTrue(def.describe().contains("timing=false"));
+        assertTrue(def.describe().contains("max_concurrent=3"));
 
         ServerGuardianEngine.Threat t = new ServerGuardianEngine.Threat(
                 1L, ENEMY_UID, 2L, OWN_UID, 674, 684, true, 1000L, clock.get());
@@ -249,7 +257,7 @@ public class GuardianTimingTest {
         ServerGuardianEngine.Config clamp = ServerGuardianEngine.parseConfig(new JSONObject(
                 "{\"strategy\":{\"fire_margin_sec\":999,\"max_concurrent\":9}}"));
         assertEquals(ServerGuardianEngine.DEFAULT_FIRE_MARGIN_SEC, clamp.fireMarginSec);
-        assertEquals("max_concurrent 上限 2", 2, clamp.maxConcurrent);
+        assertEquals("max_concurrent 上限 6", 6, clamp.maxConcurrent);
         assertEquals("0 → 下限 1", 1, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"strategy\":{\"max_concurrent\":0}}")).maxConcurrent);
     }

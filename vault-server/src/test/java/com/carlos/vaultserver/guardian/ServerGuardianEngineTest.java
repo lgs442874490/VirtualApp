@@ -54,6 +54,8 @@ public class ServerGuardianEngineTest {
     private static final class TestEngine extends WjdrEngine {
         final Map<String, Map<String, Object>> notifies = new HashMap<>();
         final Map<String, GameMessage> responses = new HashMap<>();
+        /** 批次 D：同一 proto 的连续响应队列（多发追赶需要逐发不同 endtime）。 */
+        final Map<String, java.util.Deque<GameMessage>> queues = new HashMap<>();
         final List<String> requested = new ArrayList<>();
         final List<Map<String, Object>> argLog = new ArrayList<>();
         boolean online = true;
@@ -108,6 +110,8 @@ public class ServerGuardianEngineTest {
         public GameMessage request(String proto, Map<String, Object> args, int timeoutSec) {
             requested.add(proto);
             argLog.add(args);
+            java.util.Deque<GameMessage> q = queues.get(proto);
+            if (q != null && !q.isEmpty()) return q.pollFirst();
             return responses.get(proto);
         }
     }
@@ -631,10 +635,15 @@ public class ServerGuardianEngineTest {
 
         assertFalse("type=1 侦查不驻防",
                 ServerGuardianEngine.decide(threat(2L, 1L, 1001L, end, 674, 684), cfg, now).hit);
-        assertFalse("已过期（ETA<=0）拒绝",
+        // 批次 D（用户口径）：ETA 太近/刚落地不再直接放弃 → 落地 60s 内仍补驻防
+        assertTrue("已落地 5s（-5s）仍补驻防",
                 ServerGuardianEngine.decide(threat(3L, 2L, 1001L, now / 1000L - 5, 674, 684), cfg, now).hit);
-        assertFalse("ETA<3s 过近拒绝（P0 追不上）",
+        assertTrue("ETA 1s（加速压秒）仍尽量驻防",
                 ServerGuardianEngine.decide(threat(4L, 2L, 1001L, now / 1000L + 1, 674, 684), cfg, now).hit);
+        assertFalse("已落地 >60s 不再补驻防",
+                ServerGuardianEngine.decide(threat(6L, 2L, 1001L, now / 1000L - 61, 674, 684), cfg, now).hit);
+        assertFalse("已落地 90s 拒绝",
+                ServerGuardianEngine.decide(threat(7L, 2L, 1001L, now / 1000L - 90, 674, 684), cfg, now).hit);
         assertFalse("非白名单盟友拒绝",
                 ServerGuardianEngine.decide(threat(5L, 2L, 2002L, end, 674, 684), cfg, now).hit);
 
@@ -775,7 +784,7 @@ public class ServerGuardianEngineTest {
 
     @Test
     public void enabled_launchesType5AndRecordsMission() {
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1106,7 +1115,8 @@ public class ServerGuardianEngineTest {
     }
 
     private static final String SPEEDUP_CFG =
-            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true},"
+            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true,"
+                    + "\"catch_up\":false},"   // 批次 D：本组用例只测 P1 压缩对等加速，关闭追赶
                     + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}";
 
     /** 发射一单 type=5 驻防（enemyEnd 已入威胁表、mission 已在册）。 */
@@ -1134,7 +1144,8 @@ public class ServerGuardianEngineTest {
         assertTrue(def.describe().contains("diamond_max=3"));
 
         ServerGuardianEngine.Config on = ServerGuardianEngine.parseConfig(new JSONObject(
-                "{\"sub\":{\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                "{\"sub\":{\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                         + "\"strategy\":{\"speedup_margin_s\":3,\"max_speedups_per_march\":4,"
                         + "\"diamond_max_per_march\":5}}"));
         assertTrue(on.speedupEnabled);
@@ -1167,8 +1178,8 @@ public class ServerGuardianEngineTest {
 
     @Test
     public void speedupDisabled_compressionNoSpeedupRequest() {
-        // 默认 speedup_enabled=false：即使敌加速、道具充足，也必须零加速请求（零行为变化）
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
+        // speedup_enabled=false 且 catch_up=false（批次 D 旧行为）：即使敌加速、道具充足，也必须零加速请求
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1284,7 +1295,8 @@ public class ServerGuardianEngineTest {
     public void diamondSwitchOn_buysThenUses50Percent() {
         // 开关打开 + 道具 0 + 购买成功：请求序列必须是 quick_buy(301901,count=1) → speedup(301901)
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
-                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1327,7 +1339,8 @@ public class ServerGuardianEngineTest {
     @Test
     public void diamondBuyFailure_terminatesChainWithoutSpeedup() {
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
-                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1358,7 +1371,8 @@ public class ServerGuardianEngineTest {
     public void diamondMaxPerMarch_one_stopsBeforeSecondBuy() {
         // 一颗 50% 不足以先到（我方 120s vs 敌 10s）：第一次购买后使用，第二次需要购买时止损不超买
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
-                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]},"
                 + "\"diamond_max_per_march\":1}}");
         TestEngine e = new TestEngine();
@@ -1390,7 +1404,8 @@ public class ServerGuardianEngineTest {
     public void diamondSwitchOn_25PercentPreferred_noBuy() {
         // 有 25% 道具时优先 25%（成本优先），绝不触发钻石购买
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
-                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1416,7 +1431,8 @@ public class ServerGuardianEngineTest {
 
     @Test
     public void speedupMaxPerMarch_capsRequests() {
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true},"
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]},"
                 + "\"max_speedups_per_march\":1}}");
         TestEngine e = new TestEngine();
@@ -1915,5 +1931,236 @@ public class ServerGuardianEngineTest {
         engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9201L, "重复"));
         engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9201L, "重复"));
         assertEquals("同 mailId 重复推送只记 1 次", 1, ledgerEventCount("report_win"));
+    }
+
+    // =======================================================================
+    // 批次 D：追赶加速（catch-up，2026-10-31）
+    // 核心口径：驻防成功优先；我方晚到就主动追到先到；卡秒只是省道具。
+    // =======================================================================
+
+    /** 追赶默认开；仅 formation/ally 配置，不依赖 speedup_enabled/P1。 */
+    private static final String CATCHUP_CFG =
+            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":true},"
+                    + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}";
+
+    private static final String CATCHUP_CFG_OFF =
+            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":false},"
+                    + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}";
+
+    /** 等待追赶链跑完（轮次有 250ms 间隔；同时等 guardExec 队列清空）。 */
+    private void awaitCatchup(ServerGuardianEngine engine, long timeoutMs) {
+        long end = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < end) {
+            engine.awaitIdleForTest(200);
+            if (engine.catchupCount() == 0) return;
+            try {
+                Thread.sleep(20L);
+            } catch (InterruptedException ignored) {
+                return;
+            }
+        }
+    }
+
+    @Test
+    public void parseConfig_catchupKeys_defaultOn_cappedAndEnvOff() {
+        ServerGuardianEngine.Config def = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"sub\":{\"enabled\":true}}"));
+        assertTrue("catch_up 默认开（核心是驻防成功）", def.catchUp);
+        assertEquals("catch_up_margin_s 默认 2s", 2L, def.catchUpMarginS);
+        assertEquals("catch_up_max_rounds 默认 20", 20, def.catchUpMaxRounds);
+        assertTrue(def.describe().contains("catch_up=true"));
+
+        ServerGuardianEngine.Config off = ServerGuardianEngine.parseConfig(new JSONObject(
+                "{\"sub\":{\"catch_up\":false},"
+                        + "\"strategy\":{\"catch_up_margin_s\":3,\"catch_up_max_rounds\":5}}"));
+        assertFalse(off.catchUp);
+        assertEquals(3L, off.catchUpMarginS);
+        assertEquals(5, off.catchUpMaxRounds);
+
+        ServerGuardianEngine.Config capped = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"catch_up_max_rounds\":\"999\"}"));
+        assertEquals("轮数硬上限 100（防配置笔误风暴）", 100, capped.catchUpMaxRounds);
+
+        System.setProperty("VAULT_GUARDIAN_CATCHUP", "off");
+        try {
+            assertFalse("env off 可回旧行为",
+                    ServerGuardianEngine.parseConfig(new JSONObject("{\"sub\":{\"enabled\":true}}")).catchUp);
+        } finally {
+            System.clearProperty("VAULT_GUARDIAN_CATCHUP");
+        }
+    }
+
+    @Test
+    public void catchup_lateLaunch_oneShotReachesAhead_withLedger() {
+        accountWithParams(CATCHUP_CFG);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 10);
+        long nowS = System.currentTimeMillis() / 1000L;
+        // 我方 130s vs 敌 120s（晚 10s）→ 一发 25% 后 ~97.5s，先到
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+        assertEquals("驻防已在册", 1, engine.missionCount());
+
+        awaitCatchup(engine, 3_000L);
+
+        assertEquals("只发 1 发即先到（25% 够用不升 50%）", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        Map<String, Object> args = lastArgsOf(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP);
+        assertNotNull(args);
+        assertEquals(555L, ((Number) args.get("id")).longValue());
+        assertEquals(301900L, ((Number) args.get("itemid")).longValue());
+        assertEquals("默认零钻石", 0, requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+
+        JSONObject start = ledgerEvent("catchup_start");
+        assertNotNull("必须有 catchup_start 账本", start);
+        assertTrue("start note 含我方/敌方 end 与晚到差",
+                start.optString("note").contains("我方 end=130")
+                        && start.optString("note").contains("敌 end=120")
+                        || start.optString("note").contains("晚 10s"));
+        JSONObject round = ledgerEvent("catchup_round");
+        assertNotNull("必须有 catchup_round 账本", round);
+        assertTrue("round note 含 before/after/结果", round.optString("note").contains("追赶第1发"));
+        JSONObject done = ledgerEvent("catchup_done");
+        assertNotNull("先到必须记 catchup_done", done);
+        assertTrue(done.optString("note").contains("追赶成功"));
+        assertEquals("追赶链已结束", 0, engine.catchupCount());
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_noItem_giveupNoItem_zeroRequests() {
+        accountWithParams(CATCHUP_CFG);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 0, 0);          // 道具耗尽
+        long nowS = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+
+        awaitCatchup(engine, 2_000L);
+
+        assertEquals("无道具 → 零加速请求", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        assertEquals("钻石默认关 → 零 quick_buy", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+        JSONObject giveup = ledgerEvent("catchup_giveup");
+        assertNotNull(giveup);
+        assertTrue("原因应为 no_item：" + giveup.optString("note"),
+                giveup.optString("note").contains("no_item"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_disabled_zeroRequestsOldBehavior() {
+        accountWithParams(CATCHUP_CFG_OFF);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 10);
+        long nowS = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+
+        awaitCatchup(engine, 1_000L);
+
+        assertEquals("catch_up=false → 零加速请求（旧行为）", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        assertNull("不产生 catchup_start", ledgerEvent("catchup_start"));
+        assertEquals(0, engine.catchupCount());
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_enemyLandedOver30s_noCatchup() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        assertTrue("敌已落地 40s → 过期", ServerGuardianEngine.catchupExpired(nowS - 40L, nowS));
+        assertFalse("敌落地 10s → 仍在宽限", ServerGuardianEngine.catchupExpired(nowS - 10L, nowS));
+        assertFalse("无 endtime → 不判过期", ServerGuardianEngine.catchupExpired(0L, nowS));
+
+        // 先以 catch_up=false 发射（避免 0ms 首轮先跑掉），再把敌 end 推到过去并开启追赶触发
+        accountWithParams(CATCHUP_CFG_OFF);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 10);
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+        assertEquals(1, engine.missionCount());
+
+        accountWithParams(CATCHUP_CFG);
+        engine.reloadConfig(true);
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS - 40L, 679, 686));
+        engine.awaitIdleForTest(1_000L);
+
+        assertEquals("敌已落地 >30s → 不追（零加速请求）", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        assertEquals(0, engine.catchupCount());
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_maxRounds_giveupRounds() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]},"
+                + "\"catch_up_max_rounds\":2}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 10);
+        long nowS = System.currentTimeMillis() / 1000L;
+        // 两发都只前移到「仍晚」：130→129→128（敌 120，margin 2 → 需 ≤118）
+        java.util.Deque<GameMessage> q = new java.util.ArrayDeque<>();
+        q.add(speedupOk(nowS + 129L));
+        q.add(speedupOk(nowS + 128L));
+        e.queues.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, q);
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+
+        awaitCatchup(engine, 3_000L);
+
+        assertEquals("max_rounds=2 → 最多 2 发", 2,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        JSONObject giveup = ledgerEvent("catchup_giveup");
+        assertNotNull(giveup);
+        assertTrue("原因应为 rounds：" + giveup.optString("note"),
+                giveup.optString("note").contains("rounds"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_diamondEnabled_buysThenUses50Percent() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":true,"
+                + "\"diamond_speedup_enabled\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 0, 0);
+        long nowS = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, msg(0));
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+
+        awaitCatchup(engine, 3_000L);
+
+        List<String> seq = new ArrayList<>();
+        for (String p : e.requested) {
+            if (ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY.equals(p)
+                    || ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP.equals(p)) seq.add(p);
+        }
+        assertEquals("钻石路径=先买后加速；实际=" + seq, 2, seq.size());
+        assertEquals(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, seq.get(0));
+        assertEquals(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, seq.get(1));
+        Map<String, Object> sp = lastArgsOf(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP);
+        assertNotNull(sp);
+        assertEquals("买入 301901 立即使用", 301901L, ((Number) sp.get("itemid")).longValue());
+        JSONObject buy = ledgerEvent("speedup_diamond_buy");
+        assertNotNull(buy);
+        assertEquals("catchup", buy.getString("reason"));
+        assertNotNull(ledgerEvent("catchup_done"));
+        engine.shutdown();
     }
 }
