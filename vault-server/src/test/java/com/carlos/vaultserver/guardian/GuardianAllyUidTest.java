@@ -439,4 +439,37 @@ public class GuardianAllyUidTest {
         assertTrue(engine.describe().contains("allies=0"));
         assertTrue(engine.describe().contains("alliesUpdatedAgoMs=-1"));
     }
+
+    /** 2026-10-31：endpoint 与成员坐标存在 ±1 取整差时，默认容差 1 命中。 */
+    @Test
+    public void toleranceOne_matchesNeighborCoordinate() {
+        com.carlos.vaultserver.VaultStore.Account a = new com.carlos.vaultserver.VaultStore.Account(FPID);
+        a.token = "tk";
+        a.auto = true;
+        a.activeSid = String.valueOf(SID);
+        java.util.Map<String, String> params = new java.util.LinkedHashMap<>();
+        params.put(ServerGuardianEngine.FN_ID,
+                "{\"sub\":{\"enabled\":true,\"ally_match_tolerance\":1}}");
+        a.roleParams.put(String.valueOf(SID), params);
+        java.util.List<com.carlos.vaultserver.VaultStore.Account> in = new java.util.ArrayList<>();
+        in.add(a);
+        vault.replaceAll(in);
+        ServerGuardianEngine g = new ServerGuardianEngine(FPID, SID, state, vault);
+        try {
+            java.util.List<Object> members = new java.util.ArrayList<>();
+            java.util.Map<String, Object> m = new java.util.LinkedHashMap<>();
+            m.put("uid", 2001L);
+            m.put("x", 500L);
+            m.put("y", 600L);
+            members.add(m);
+            java.util.Map<String, Object> content = new java.util.LinkedHashMap<>();
+            content.put("member_list", members);
+            g.onPush(null, ServerGuardianEngine.PROTO_ALLIANCE_POS_INFO, content);
+            assertEquals("坐标差 1 格默认容差 1 命中", 2001L, g.allyUidByPoint(501, 600));
+            assertEquals("容差内另一方向命中", 2001L, g.allyUidByPoint(500, 599));
+            assertEquals("容差 1 时差 2 格不匹配", 0L, g.allyUidByPoint(502, 600));
+        } finally {
+            g.shutdown();
+        }
+    }
 }

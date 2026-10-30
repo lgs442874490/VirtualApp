@@ -243,6 +243,8 @@ public final class ServerGuardianEngine {
         int maxConcurrent = DEFAULT_MAX_CONCURRENT_MISSIONS;
         // ---- 批次 G：要求目标必须是盟友坐标反查命中的 uid（默认 true；false=旧行为） ----
         boolean requireAlly = true;
+        /** 盟友坐标匹配容差（曼哈顿距离；默认 0=严格相等，clamp 0..3；1 可吸收 ±1 取整差）。 */
+        long allyMatchTolerance = 0L;
         // ---- 批次 F：队列无位有界重试（默认 12 次 × 5s；0=旧行为） ----
         int queueRetryMax = DEFAULT_QUEUE_RETRY_MAX;
         long queueRetryIntervalMs = DEFAULT_QUEUE_RETRY_INTERVAL_MS;
@@ -305,7 +307,7 @@ public final class ServerGuardianEngine {
                     + " reserve_slots=" + reserveSlots
                     + " queue_retry_max=" + queueRetryMax
                     + " queue_retry_interval_ms=" + queueRetryIntervalMs
-                    + " require_ally=" + requireAlly
+                    + " require_ally=" + requireAlly + " ally_tol=" + allyMatchTolerance
                     + " rally=" + rallyEnabled + " rally_wait=" + rallyWaitSec + "s"
                     + " rally_early_speedup=" + rallyEarlySpeedup
                     + " rally_full_ratio=" + rallyFullTroopsRatio
@@ -3624,6 +3626,8 @@ public final class ServerGuardianEngine {
             c.reserveSlots = (int) Math.max(0L, Math.min(MAX_RESERVE_SLOTS, reserve));
             // 批次 F：队列无位重试（0=关闭回旧行为；间隔 1..30s）
             c.requireAlly = bool(sub, st, p, "require_ally", true);
+            c.allyMatchTolerance = Math.max(0L, Math.min(3L,
+                    num(sub, st, p, "ally_match_tolerance", 0L)));
             // 批次 I 集结规则（默认：开启/300s/允许出发秒−25%/满兵/要求有人满兵上车）
             c.rallyEnabled = bool(sub, st, p, "rally_enabled", true);
             long rallyWait = num(sub, st, p, "rally_wait_sec", DEFAULT_RALLY_WAIT_SEC);
@@ -4470,18 +4474,45 @@ public final class ServerGuardianEngine {
         long first = 0L;
         long preferred = config != null ? config.allyUid : 0L;
         int dup = 0;
+        // 2026-10-31：威胁 endpoint 与成员坐标可能存在 ±1 的取整差（端点取城中心/格子口径不同）；
+        // tolerance 默认 1（params ally_match_tolerance 可调 0..3），命中/近失配均记账便于复盘。
+        int tol = config != null ? (int) Math.max(0L, Math.min(3L, config.allyMatchTolerance)) : 0;
+        int bestDist = Integer.MAX_VALUE;
+        long bestUid = 0L, bestX = 0L, bestY = 0L;
         for (Map.Entry<Long, long[]> e : allies.entrySet()) {
             long[] xy = e.getValue();
             if (xy == null || xy.length < 2) continue;
-            if ((int) xy[0] != x || (int) xy[1] != y) continue;
+            int dist = Math.abs((int) xy[0] - x) + Math.abs((int) xy[1] - y);
+            if (dist > tol) {
+                if (dist < bestDist) {
+                    bestDist = dist; bestUid = e.getKey(); bestX = xy[0]; bestY = xy[1];
+                }
+                continue;
+            }
             long uid = e.getKey();
             if (preferred > 0L && uid == preferred) return uid;
-            if (first == 0L) first = uid;
-            else dup++;
+            if (first == 0L) {
+                first = uid; bestDist = dist; bestX = xy[0]; bestY = xy[1];
+            } else {
+                dup++;
+            }
         }
-        if (dup > 0) {
-            FileLog.info("守护盟友坐标 ({},{}) 匹配到多个 uid，取第一个 {}（重复 {} 个）",
-                    String.valueOf(x), String.valueOf(y), String.valueOf(first), String.valueOf(dup));
+        if (first > 0L) {
+            if (bestDist > 0) {
+                FileLog.info("守护盟友坐标匹配（容差{}）：威胁({},{}) → 盟友 {} 坐标({},{}) 距离{}",
+                        String.valueOf(tol), String.valueOf(x), String.valueOf(y),
+                        String.valueOf(first), String.valueOf(bestX), String.valueOf(bestY),
+                        String.valueOf(bestDist));
+            }
+            if (dup > 0) {
+                FileLog.info("守护盟友坐标 ({},{}) 容差内匹配多个 uid，取第一个 {}（重复 {} 个）",
+                        String.valueOf(x), String.valueOf(y), String.valueOf(first), String.valueOf(dup));
+            }
+        } else if (bestUid > 0L && bestDist <= 5) {
+            FileLog.info("守护盟友坐标未命中：威胁({},{}) 最近盟友 {} 在({},{}) 距离{}（容差{}）",
+                    String.valueOf(x), String.valueOf(y), String.valueOf(bestUid),
+                    String.valueOf(bestX), String.valueOf(bestY), String.valueOf(bestDist),
+                    String.valueOf(tol));
         }
         return first;
     }
