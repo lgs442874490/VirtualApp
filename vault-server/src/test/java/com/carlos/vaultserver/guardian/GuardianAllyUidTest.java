@@ -258,6 +258,7 @@ public class GuardianAllyUidTest {
     private static String liveCfg(boolean requireAlly) {
         return "{\"sub\":{\"enabled\":true,\"dry_run\":false},"
                 + "\"strategy\":{\"require_ally\":" + requireAlly + ","
+                + "\"rally_enabled\":false,"
                 + "\"formation\":{\"hero_ids\":[1]}}}";
     }
 

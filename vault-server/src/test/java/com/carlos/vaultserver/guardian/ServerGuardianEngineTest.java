@@ -311,7 +311,8 @@ public class ServerGuardianEngineTest {
             System.setProperty("VAULT_GUARDIAN_DIAMOND", "on");
             ServerGuardianEngine.Config gray = ServerGuardianEngine.parseConfig(p);
             assertTrue("env 灰度开启对等加速", gray.speedupEnabled);
-            assertTrue("env 灰度开启钻石（慎用）", gray.diamondSpeedupEnabled);
+            assertFalse("批次 K：env=1 不再强制开钻石，以用户 params 为准", gray.diamondSpeedupEnabled);
+            assertFalse("env=1 不是硬关", gray.diamondHardOff);
 
             // 无 roleParams 时也能靠 env 实盘开启（目标由 push 自动解析，无需配置盟友/坐标）
             System.setProperty("VAULT_GUARDIAN_ENABLED", "1");
@@ -321,6 +322,14 @@ public class ServerGuardianEngineTest {
             assertTrue("env 实盘：无 roleParams 也可开守护", live.enabled);
             assertFalse("env 实盘：dry_run=0", live.dryRun);
             assertEquals("env 兵力档位", 50000L, live.troopsMin);
+
+            // 批次 K：env=0/off 是全局硬关（忽略用户开关）
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "0");
+            ServerGuardianEngine.Config hard = ServerGuardianEngine.parseConfig(new JSONObject(
+                    "{\"sub\":{\"enabled\":true,\"diamond_speedup_enabled\":true}}"));
+            assertFalse("env=0 → 硬关，用户开也不生效", hard.diamondSpeedupEnabled);
+            assertTrue("env=0 → diamond_hard_off 诊断字段", hard.diamondHardOff);
+            assertTrue(hard.describe().contains("diamond_hard_off=true"));
 
             System.setProperty("VAULT_GUARDIAN_TROOPS_MIN", "abc");
             ServerGuardianEngine.Config badTroops = ServerGuardianEngine.parseConfig(null);
@@ -2154,13 +2163,169 @@ public class ServerGuardianEngineTest {
         assertEquals("钻石路径=先买后加速；实际=" + seq, 2, seq.size());
         assertEquals(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, seq.get(0));
         assertEquals(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, seq.get(1));
+        Map<String, Object> buyArgs = lastArgsOf(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY);
+        assertNotNull(buyArgs);
+        assertEquals("批次 K：优先买 25% 道具 301900", 301900L,
+                ((Number) buyArgs.get("id")).longValue());
         Map<String, Object> sp = lastArgsOf(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP);
         assertNotNull(sp);
-        assertEquals("买入 301901 立即使用", 301901L, ((Number) sp.get("itemid")).longValue());
+        assertEquals("买入 301900 立即使用", 301900L, ((Number) sp.get("itemid")).longValue());
         JSONObject buy = ledgerEvent("speedup_diamond_buy");
         assertNotNull(buy);
         assertEquals("catchup", buy.getString("reason"));
+        assertEquals(301900L, buy.getLong("itemid"));
         assertNotNull(ledgerEvent("catchup_done"));
         engine.shutdown();
+    }
+
+    // =======================================================================
+    // 批次 K：钻石加速用户开关 + 25%/50% 经济换算
+    // =======================================================================
+
+    @Test
+    public void parseConfig_diamondHardOffSemantics() {
+        try {
+            System.clearProperty("VAULT_GUARDIAN_DIAMOND");
+            ServerGuardianEngine.Config userOn = ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"diamond_speedup_enabled\":true}}"));
+            assertTrue("未设 env：用户开=生效", userOn.diamondSpeedupEnabled);
+            assertFalse(userOn.diamondHardOff);
+
+            ServerGuardianEngine.Config userOff = ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"enabled\":true}}"));
+            assertFalse("未设 env：用户关=关（默认）", userOff.diamondSpeedupEnabled);
+
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "1");
+            assertFalse("env=1 不强制开（以用户为准）", ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"enabled\":true}}")).diamondSpeedupEnabled);
+            assertTrue("env=1 + 用户开 → 生效", ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"diamond_speedup_enabled\":true}}"))
+                    .diamondSpeedupEnabled);
+
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "0");
+            ServerGuardianEngine.Config hard = ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"diamond_speedup_enabled\":true}}"));
+            assertFalse("env=0 → 硬关（忽略用户开）", hard.diamondSpeedupEnabled);
+            assertTrue(hard.diamondHardOff);
+            assertTrue(hard.describe().contains("diamond_hard_off=true"));
+
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "off");
+            assertTrue(ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"diamond_speedup_enabled\":true}}")).diamondHardOff);
+        } finally {
+            System.clearProperty("VAULT_GUARDIAN_DIAMOND");
+        }
+    }
+
+    @Test
+    public void burstMode_thresholds() {
+        assertFalse(ServerGuardianEngine.burstMode(3, 4));
+        assertTrue("1s 内 ≥4 次 → 梭哈", ServerGuardianEngine.burstMode(4, 4));
+        assertTrue("累计 >4 次 → 梭哈", ServerGuardianEngine.burstMode(0, 5));
+        assertFalse(ServerGuardianEngine.burstMode(0, 4));
+    }
+
+    @Test
+    public void pickSpeedupStep_25PreferredAndStacked() {
+        long margin = 2_000L;
+        // 130s vs 120s：一发 25% 后 ≈97.5s，先到 → 25% 优先
+        GuardianSpeedupPlanner.Step s1 = ServerGuardianEngine.pickSpeedupStep(
+                130_000L, 120_000L, 10, 10, 0, 0, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.USE_25, s1.action);
+        assertEquals(301900L, s1.itemId);
+
+        // 200s vs 100s：2 发 25%（≈112.5s→84.4s）可达；50% 库存也有，仍应选 25%
+        GuardianSpeedupPlanner.Step s2 = ServerGuardianEngine.pickSpeedupStep(
+                200_000L, 100_000L, 10, 10, 0, 0, 0, 0, 0, false, margin);
+        assertEquals("2×25% 更便宜，不升 50%", GuardianSpeedupPlanner.Action.USE_25, s2.action);
+    }
+
+    @Test
+    public void pickSpeedupStep_burstForces25EvenWhenUpgradeWouldBeUsed() {
+        long margin = 2_000L;
+        // 无 25% 库存时普通 planner 会用 50%；梭哈模式有 25% 就必须连续 25%
+        GuardianSpeedupPlanner.Step normal = GuardianSpeedupPlanner.next(
+                new GuardianSpeedupPlanner.Input(2_000_000L, 100_000L, margin, 0, 10,
+                        0, 0, 0, false));
+        assertEquals(GuardianSpeedupPlanner.Action.USE_50, normal.action);
+
+        GuardianSpeedupPlanner.Step burst = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 10, 10, 4, 4, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.USE_25, burst.action);
+        assertEquals("burst_25", burst.reasonCode);
+
+        // 累计 >4 也触发（1s 窗口 0 次）
+        GuardianSpeedupPlanner.Step cum = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 10, 10, 0, 5, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.USE_25, cum.action);
+
+        // 梭哈无 25 有 50 → 用 50
+        GuardianSpeedupPlanner.Step use50 = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 0, 10, 4, 4, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.USE_50, use50.action);
+
+        // 梭哈无道具：钻石开→NEED_DIAMOND；钻石关→诚实止损
+        GuardianSpeedupPlanner.Step needDia = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 0, 0, 4, 4, 0, 0, 0, true, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NEED_DIAMOND, needDia.action);
+        GuardianSpeedupPlanner.Step none = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 0, 0, 4, 4, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NONE, none.action);
+        assertEquals("stock_insufficient", none.reasonCode);
+
+        // 上限优先于梭哈
+        GuardianSpeedupPlanner.Step limit = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 10, 0, 4, 4, 2, 2, 0, true, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NONE, limit.action);
+        assertEquals("burst_march_limit", limit.reasonCode);
+    }
+
+    @Test
+    public void diamondBuyItem_prefers25WhenReachableElse50() {
+        long margin = 2_000L;
+        GuardianSpeedupPlanner.Step need = ServerGuardianEngine.pickSpeedupStep(
+                130_000L, 120_000L, 0, 0, 0, 0, 0, 0, 0, true, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NEED_DIAMOND, need.action);
+        assertEquals("再买 1 颗 25% 可达 → 优先 301900", 301900L,
+                ServerGuardianEngine.diamondBuyItem(need, false, 130_000L, 120_000L,
+                        0, 0, 0, 0, 0, true, margin));
+
+        GuardianSpeedupPlanner.Step need50 = ServerGuardianEngine.pickSpeedupStep(
+                120_000L, 80_000L, 0, 0, 0, 0, 0, 0, 0, true, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NEED_DIAMOND, need50.action);
+        assertEquals("25% 不达 → 买 301901", 301901L,
+                ServerGuardianEngine.diamondBuyItem(need50, false, 120_000L, 80_000L,
+                        0, 0, 0, 0, 0, true, margin));
+        assertEquals("梭哈必买 301900", 301900L,
+                ServerGuardianEngine.diamondBuyItem(need50, true, 120_000L, 80_000L,
+                        0, 0, 0, 0, 0, true, margin));
+    }
+
+    @Test
+    public void recordEnemyCompression_countsBurstAndTotal() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false}}");
+        ServerGuardianEngine engine = engine();
+        long nowMs = System.currentTimeMillis();
+        long nowS = nowMs / 1000L;
+        // 4 次 −50% 压缩（endtime 剩余减半）→ 1s 窗口 4 次 + 累计 4
+        for (int i = 0; i < 4; i++) {
+            ServerGuardianEngine.Threat prev = new ServerGuardianEngine.Threat(
+                    9001L, 9L, 102L, 0L, 0, 0, false, nowS + 100L - i, nowMs);
+            ServerGuardianEngine.Threat cur = new ServerGuardianEngine.Threat(
+                    9001L, 9L, 102L, 0L, 0, 0, false, nowS + 50L - i, nowMs);
+            engine.recordEnemyCompression(prev, cur, nowMs);
+        }
+        assertEquals(4, engine.enemy50TotalFor(9001L));
+        assertEquals(4, engine.enemy50BurstCount(9001L, nowMs));
+        assertTrue(ServerGuardianEngine.burstMode(
+                engine.enemy50BurstCount(9001L, nowMs), engine.enemy50TotalFor(9001L)));
+
+        // 25% 压缩（剩余 ×0.75）不计入 50%
+        ServerGuardianEngine.Threat p2 = new ServerGuardianEngine.Threat(
+                9002L, 9L, 102L, 0L, 0, 0, false, nowS + 100L, nowMs);
+        ServerGuardianEngine.Threat c2 = new ServerGuardianEngine.Threat(
+                9002L, 9L, 102L, 0L, 0, 0, false, nowS + 75L, nowMs);
+        engine.recordEnemyCompression(p2, c2, nowMs);
+        assertEquals(0, engine.enemy50TotalFor(9002L));
     }
 }

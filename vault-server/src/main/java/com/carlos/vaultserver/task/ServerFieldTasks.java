@@ -43,6 +43,12 @@ public final class ServerFieldTasks {
      * </ul>
      */
     public static TaskOutcome gather(TaskContext tc) {
+        // 批次 J（2026-10-31 用户长期规则第 3 条）：守护战争态直接停派采集——6 个行军队列
+        // 全部留给对盟友驻防；退出战争态（无在途威胁 60s）后本闸自动放行，恢复正常采集。
+        if (GuardianReserve.gatherBlocked(tc)) {
+            return new TaskOutcome("gather", "野外采集", TaskOutcome.Category.SKIPPED,
+                    "战争态停派采集（队列全部留给守护驻防）");
+        }
         JSONObject gatherParams = null;
         try {
             gatherParams = tc.params("gather");

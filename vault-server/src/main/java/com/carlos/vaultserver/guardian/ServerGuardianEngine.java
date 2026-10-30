@@ -131,6 +131,10 @@ public final class ServerGuardianEngine {
     static final String PROTO_WORLD_PLAYER_INIT = "notify_world_player_init";
     /** 战斗/防守战报邮件推送（first_type=30；批次 C A4 只记账，不撤防）。 */
     static final String PROTO_NEW_MAIL = "notify_new_mail_syn";
+    /** 批次 I：集结/大规模行军推送（WarNotify 已解析；真伪/倒计时用）。 */
+    static final String PROTO_MASS_ADD = "notify_mass_march_add";
+    static final String PROTO_MASS_UPDATE = "notify_mass_march_update";
+    static final String PROTO_MASS_DEL = "notify_mass_march_del";
     static final String PROTO_MARCH_DETAIL = "req_world_march_detail_4_player_situation";
 
     static final Set<String> ALLIANCE_MARCH_PROTOS = Set.of(
@@ -140,8 +144,8 @@ public final class ServerGuardianEngine {
 
     /** 单人进攻类行军 type（兼容常量；批次 D 起攻击集合可配，默认含 2/102）。 */
     static final long MARCH_TYPE_ATTACK = 2L;
-    /** 批次 D：默认攻击类型集合（2=单人进攻、102=联盟集结进攻；type=1 侦查仍不驻防）。 */
-    static final Set<Long> DEFAULT_ATTACK_TYPES = Set.of(2L, 102L);
+    /** 默认攻击类型集合（2=单人进攻、100/102=集结进攻；type=1 侦查仍不驻防）。 */
+    static final Set<Long> DEFAULT_ATTACK_TYPES = Set.of(2L, 100L, 102L);
     /** 批次 D：敌方已落地多久内仍补驻防（秒；超过则不再追）。 */
     static final long LATE_REINFORCE_WINDOW_SEC = 60L;
     /** 批次 E：守护实盘时为驻防预留的世界行军队列数（默认 1；clamp 0..2）。 */
@@ -152,6 +156,15 @@ public final class ServerGuardianEngine {
     static final long DEFAULT_QUEUE_RETRY_INTERVAL_MS = 5_000L;
     /** 同一威胁 skip_queue 账本节流（≤1 条/分钟）。 */
     static final long QUEUE_RETRY_NOTE_THROTTLE_MS = 60_000L;
+    /** 批次 I：集结威胁类型（集结主体 type=100/102）。 */
+    static final Set<Long> RALLY_THREAT_TYPES = Set.of(100L, 102L);
+    /** 批次 I：mass_march 里可代表集结的 type（WarNotify 实证 501=集结行军；100/102 兼容）。 */
+    static final Set<Long> RALLY_MASS_TYPES = Set.of(100L, 102L, 501L);
+    /** 批次 I：集结等待期默认 300s（clamp 0..600）。 */
+    static final long DEFAULT_RALLY_WAIT_SEC = 300L;
+    static final long MAX_RALLY_WAIT_SEC = 600L;
+    /** 批次 I：出发秒前置 −25% 道具（301900）最多补几发（防配置笔误）。 */
+    static final int RALLY_EARLY_SPEEDUP_MAX = 6;
     static final int MAX_RESERVE_SLOTS = 2;
     /** 默认行军时长 D（秒；设计 §3.5：P0 仅用于日志，立即发射；P1 再标定）。 */
     static final long DEFAULT_D_SEC = 38L;
@@ -198,6 +211,8 @@ public final class ServerGuardianEngine {
         // ---- P1 对等加速（2026-10-25；缺省=旧行为零变化） ----
         /** 道具不足时是否允许钻石加速（默认 false=硬约束零钻石；打开后走 req_shop_quick_buy 真实购买）。 */
         boolean diamondSpeedupEnabled = false;
+        /** 批次 K：env {@code VAULT_GUARDIAN_DIAMOND=0/off} 的全局硬关（忽略用户开关）。 */
+        boolean diamondHardOff = false;
         /** 本行军最多购买几颗钻石道具（默认 3；0=不限；超限止损，防钻石风暴）。 */
         int diamondMaxPerMarch = 3;
         /** 先至余量（秒；默认 2，对齐 P1 验收「我方 endtime ≤ 敌 endtime −1s」）。 */
@@ -231,6 +246,14 @@ public final class ServerGuardianEngine {
         // ---- 批次 F：队列无位有界重试（默认 12 次 × 5s；0=旧行为） ----
         int queueRetryMax = DEFAULT_QUEUE_RETRY_MAX;
         long queueRetryIntervalMs = DEFAULT_QUEUE_RETRY_INTERVAL_MS;
+        // ---- 批次 I：集结真伪 + 5 分钟等待 + 出发秒 −25% 前置（规则 1） ----
+        boolean rallyEnabled = true;
+        long rallyWaitSec = DEFAULT_RALLY_WAIT_SEC;
+        boolean rallyEarlySpeedup = true;
+        double rallyFullTroopsRatio = 1.0d;
+        boolean rallyRequireJoinFull = true;
+        /** 集结兵力直接判真阈值（默认 300000；>该值 → 真，不看满兵/上车）。 */
+        long rallyTroopsMin = 300_000L;
         // ---- 批次 G2：队列满时召回采集队腾位（2026-10-31；核心仍是驻防成功） ----
         /** 队列满时是否允许召回 type=4 采集队（默认 true；env VAULT_GUARDIAN_PREEMPT=off 关闭）。 */
         boolean preemptGather = true;
@@ -273,6 +296,7 @@ public final class ServerGuardianEngine {
                     + " force_online=" + forceOnline + " troops_min=" + troopsMin
                     + " speedup=" + speedupEnabled
                     + " diamond_speedup=" + diamondSpeedupEnabled
+                    + " diamond_hard_off=" + diamondHardOff
                     + " diamond_max=" + (diamondMaxPerMarch <= 0 ? "unlimited" : String.valueOf(diamondMaxPerMarch))
                     + " speedup_margin=" + speedupMarginS + "s"
                     + " max_speedups=" + (maxSpeedupsPerMarch <= 0 ? "unlimited" : String.valueOf(maxSpeedupsPerMarch))
@@ -282,6 +306,11 @@ public final class ServerGuardianEngine {
                     + " queue_retry_max=" + queueRetryMax
                     + " queue_retry_interval_ms=" + queueRetryIntervalMs
                     + " require_ally=" + requireAlly
+                    + " rally=" + rallyEnabled + " rally_wait=" + rallyWaitSec + "s"
+                    + " rally_early_speedup=" + rallyEarlySpeedup
+                    + " rally_full_ratio=" + rallyFullTroopsRatio
+                    + " rally_require_join_full=" + rallyRequireJoinFull
+                    + " rally_troops_min=" + rallyTroopsMin
                     + " preempt_gather=" + preemptGather
                     + " preempt_cooldown=" + preemptCooldownMs + "ms"
                     + " preempt_max_per_minute=" + preemptMaxPerMinute
@@ -364,19 +393,72 @@ public final class ServerGuardianEngine {
         }
     }
 
+    /** 批次 I：敌方集结（notify_mass_march_*）的真伪/倒计时状态。 */
+    static final class Rally {
+        final long marchId;
+        volatile long ownerUid;
+        volatile long type;
+        volatile long targetUid;
+        volatile int x;
+        volatile int y;
+        volatile boolean hasXY;
+        volatile long startAtMs;
+        volatile long departAtSec;
+        volatile boolean cancelled;
+        volatile long memberMax;
+        volatile long memberCount;
+        volatile long soldierMax;
+        volatile long soldierCount;
+        volatile boolean hasSoldierInfo;
+        volatile boolean hasJoinInfo;
+        volatile boolean someoneFull;
+        volatile long firstSeenMs;
+        volatile String lastProto = "";
+
+        Rally(long marchId, long firstSeenMs) {
+            this.marchId = marchId;
+            this.firstSeenMs = firstSeenMs;
+            this.startAtMs = firstSeenMs;
+        }
+    }
+
+    /** 集结真伪判定结果。 */
+    static enum RallyTruth { TRUE, FAKE, UNKNOWN, CANCELLED }
+
     /** 一次已发射的驻防任务（targetKey → Mission）。 */
     static final class Mission {
         final long enemyMarchId;
         final long marchId;
         /** 我方到达时刻（服务器秒）；P1 加速成功后随响应 endtime 更新（volatile 供推送/执行线程读）。 */
         volatile long endtimeSec;
+        /** 敌方到达时刻（服务器秒；威胁更新时同步，批次 J garrison_done 用）。 */
+        volatile long enemyEndSec;
         final long launchedAtMs;
+        /** 目标标识（批次 J：无后续在途敌方出征判定用）。 */
+        final long targetUid;
+        final int x;
+        final int y;
+        final boolean hasPoint;
+        /** 批次 J：已记账 garrison_done（本次驻防完成，不重复记账）。 */
+        volatile boolean garrisonDone;
+        /** 批次 J：目标最近一次确认「无在途敌方行军」的起始时刻（0=有在途）。 */
+        volatile long targetIdleSinceMs;
+        /** 批次 J：已提交召回（防重复召回风暴）；失败会复位以便 60s 后重试。 */
+        volatile boolean recallSubmitted;
+        /** 批次 J：上次召回提交时刻（失败重试节流）。 */
+        volatile long lastRecallAttemptMs;
 
-        Mission(long enemyMarchId, long marchId, long endtimeSec, long launchedAtMs) {
+        Mission(long enemyMarchId, long marchId, long endtimeSec, long enemyEndSec,
+                long launchedAtMs, long targetUid, int x, int y, boolean hasPoint) {
             this.enemyMarchId = enemyMarchId;
             this.marchId = marchId;
             this.endtimeSec = endtimeSec;
+            this.enemyEndSec = enemyEndSec;
             this.launchedAtMs = launchedAtMs;
+            this.targetUid = targetUid;
+            this.x = x;
+            this.y = y;
+            this.hasPoint = hasPoint;
         }
     }
 
@@ -440,6 +522,10 @@ public final class ServerGuardianEngine {
     private final Map<Long, Integer> speedupUsedByMarch = new ConcurrentHashMap<>();
     /** P1 钻石路径：每个我方驻防行军已购买钻石道具数（我方 marchId → 次数；diamond_max_per_march 记账）。 */
     private final Map<Long, Integer> diamondBoughtByMarch = new ConcurrentHashMap<>();
+    /** 批次 K：敌方 marchId → 最近 1s 内判定为“敌方 −50%”的压缩时刻（梭哈判定）。 */
+    private final Map<Long, java.util.ArrayDeque<Long>> enemy50Times = new ConcurrentHashMap<>();
+    /** 批次 K：敌方 marchId → 敌方 −50% 累计次数（>4 触发梭哈）。 */
+    private final Map<Long, Integer> enemy50Total = new ConcurrentHashMap<>();
     /** 批次 C A4：战报码表（配置热载时重解析；默认内置码表）。 */
     private volatile GuardReportCodes.Mapping reportCodes = new GuardReportCodes.Mapping();
     /** 战报邮件去重（mailId 优先；防一次 infolist 同步重复记账），cap 防膨胀。 */
@@ -460,6 +546,52 @@ public final class ServerGuardianEngine {
     private final ScheduledExecutorService catchupSched;
     /** 批次 D：敌方 marchId → 追赶状态（同一威胁只追一条链）。 */
     private final Map<Long, Catchup> catchups = new ConcurrentHashMap<>();
+    /** 批次 I：集结表（mass march id → Rally）与等待/诊断状态。 */
+    private final Map<Long, Rally> rallies = new ConcurrentHashMap<>();
+    private final Map<Long, ScheduledFuture<?>> rallyTasks = new ConcurrentHashMap<>();
+    private final Map<Long, Long> rallyWaitNotesAt = new ConcurrentHashMap<>();
+    private final Map<Long, Long> rallyUnknownNotesAt = new ConcurrentHashMap<>();
+    /** 最近一次成功发射的实测单程秒数（我方 endtime − 发射时刻），用于出发秒评估。 */
+    private volatile long lastTravelSec;
+
+    /** 集结出发时刻（服务器秒）：优先 mass endtime（5 分钟倒计时到 0），否则首次识别 + rally_wait_sec。 */
+    static long rallyDepartureSec(Rally r, Config cfg) {
+        if (r == null) return 0L;
+        if (r.departAtSec > 0L) return r.departAtSec;
+        long wait = cfg == null ? DEFAULT_RALLY_WAIT_SEC : cfg.rallyWaitSec;
+        return r.startAtMs / 1000L + Math.max(0L, wait);
+    }
+
+    /** 估算我方单程秒数（最近实测优先，未知 dSec）。 */
+    long estimateTravelSec(Config cfg) {
+        long measured = lastTravelSec;
+        if (measured > 0L) return measured;
+        return cfg == null ? DEFAULT_D_SEC : Math.max(1L, cfg.dSec);
+    }
+
+    /** 出发秒是否赶不上（我方估到达 > 敌到达−1s）→ 需要前置 −25%。 */
+    static boolean rallyNeedsEarlySpeedup(long estArrivalSec, long enemyEndSec) {
+        return enemyEndSec > 0L && estArrivalSec > 0L && estArrivalSec > enemyEndSec - 1L;
+    }
+
+    /**
+     * 真伪判定（纯函数）：
+     * 取消 → CANCELLED；兵力信息缺失 → UNKNOWN；兵力未达 soldier_max*ratio → FAKE；
+     * require_join_full 时无人满兵上车/无法证明 → UNKNOWN/FAKE。
+     */
+    static RallyTruth evaluateRally(Rally r, Config cfg) {
+        if (r == null) return RallyTruth.UNKNOWN;
+        if (r.cancelled) return RallyTruth.CANCELLED;
+        long threshold = cfg == null ? 300_000L : cfg.rallyTroopsMin;
+        if (r.hasSoldierInfo && r.soldierCount > threshold) return RallyTruth.TRUE;   // 兵力>30万直接真
+        if (!r.hasSoldierInfo || r.soldierMax <= 0L || r.soldierCount < 0L) return RallyTruth.UNKNOWN;
+        double ratio = cfg == null ? 1.0d : cfg.rallyFullTroopsRatio;
+        if (ratio <= 0d || ratio > 1.0d) ratio = 1.0d;
+        if (r.soldierCount * 1.0d < r.soldierMax * ratio) return RallyTruth.FAKE;
+        if (cfg != null && !cfg.rallyRequireJoinFull) return RallyTruth.TRUE;
+        if (!r.hasJoinInfo) return RallyTruth.UNKNOWN;
+        return r.someoneFull ? RallyTruth.TRUE : RallyTruth.FAKE;
+    }
     /** marchId → 待发射定时任务（威胁更新重排/消失/stop 时取消）。 */
     private final Map<Long, ScheduledFuture<?>> fireTasks = new ConcurrentHashMap<>();
     /** marchId → 当前计划的发射服务器秒（观测/测试）。 */
@@ -641,6 +773,7 @@ public final class ServerGuardianEngine {
                         submitted.remove(t.marchId);
                         cancelFire(t.marchId);
                         clearQueueRetry(t.marchId);
+                        cancelRallyWait(t.marchId);
                         timingNotes.remove(t.marchId);
                     }
                 }
@@ -651,6 +784,13 @@ public final class ServerGuardianEngine {
             });
             thresholdNotes.keySet().removeIf(id -> !threats.containsKey(id));
             alliesUnknownNotesAt.keySet().removeIf(id -> !threats.containsKey(id));
+            // 批次 I：集结表清理（取消/超 30 分钟；防累积）
+            rallies.entrySet().removeIf(en -> {
+                Rally rr = en.getValue();
+                if (rr == null) return true;
+                if (rr.cancelled) return nowMs - rr.firstSeenMs > 10 * 60_000L;
+                return nowMs - rr.firstSeenMs > 30 * 60_000L;
+            });
             // P1：清理已消失行军的加速幂等/记账（防长期累积）
             speedupRounds.keySet().removeIf(id -> !threats.containsKey(id));
             speedupUsedByMarch.keySet().removeIf(id -> {
@@ -674,11 +814,19 @@ public final class ServerGuardianEngine {
                     || nowMs - en.getValue() > 10L * 60_000L);
             preemptNoneAt.entrySet().removeIf(en -> en.getValue() == null
                     || nowMs - en.getValue() > 60_000L);
+            // 批次 K：清理已消失威胁的敌方 50% 计数
+            enemy50Times.keySet().removeIf(id -> !threats.containsKey(id));
+            enemy50Total.keySet().removeIf(id -> !threats.containsKey(id));
         } catch (Throwable ignored) {
         }
         // 批次 C-A3 安全兜底：tick 也做到期自检（定时器丢失时最迟一个 tick 内自愈）
         try {
             fireDueNow(engine, config, clockMs.getAsLong());
+        } catch (Throwable ignored) {
+        }
+        // 批次 J（2026-10-31 用户长期规则第 3 条）：守护战争态（侦查触发 → 召回采集/驻防召回）
+        try {
+            warTick(engine);
         } catch (Throwable ignored) {
         }
     }
@@ -712,9 +860,17 @@ public final class ServerGuardianEngine {
             }
         }
         preemptRetryTasks.clear();
+        for (ScheduledFuture<?> f : rallyTasks.values()) {
+            try { f.cancel(false); } catch (Throwable ignored) { }
+        }
+        rallyTasks.clear();
+        rallyWaitNotesAt.clear();
+        rallyUnknownNotesAt.clear();
+        rallies.clear();
         preemptedByThreat.clear();
         preemptNoneAt.clear();
         catchups.clear();
+        warRecalledMarches.clear();
         try {
             fireSched.shutdownNow();
         } catch (Throwable ignored) {
@@ -727,6 +883,271 @@ public final class ServerGuardianEngine {
             guardExec.shutdownNow();
         } catch (Throwable ignored) {
         }
+    }
+
+    // =====================================================================
+    // 批次 J（2026-10-31 用户长期规则第 3 条，design/守护盟友-长期生效约束-20261031.md）：
+    // 守护战争态（侦查触发 → 召回全部采集 / 暂停占队任务 / 队列全留驻防 / 先到+战报=驻防完成）
+    //
+    // 判定源：ServerWarState（按角色 uid 的 WARTIME，侦查 type=1 即入，无在途威胁 60s 自动退出）。
+    // 本类只做动作（请求在 guardExec 串行；会话线程 tick 只判定/入队）：
+    //  1) 入战时：立即召回全部 type=4 采集行军（逐队 req_world_march_recall，失败不影响其它队）；
+    //  2) 战争态期间：目标已无后续在途敌方出征持续 war_exit_idle_sec → 召回我方驻防行军；
+    //  3) 战报邮件 first_type=30 且我方先到（ownEnd < enemyEnd）→ 账本 garrison_done。
+    // 安全：守护未实盘/演练(dry_run)/VAULT_GUARDIAN_WAR=off → 零请求零状态写入（完全回旧行为）。
+    // =====================================================================
+
+    /** 战争态采集召回重扫间隔（入战时立即一次；期间每 30s 补扫一次，兜底迟到推送）。 */
+    static final long WAR_RECALL_SWEEP_MS = 30_000L;
+    /** 战报邮件与敌方到达时刻的最大关联窗口（秒；超窗视为无关战报，不记 garrison_done）。 */
+    static final long GARRISON_MAIL_WINDOW_SEC = 600L;
+    /** 驻防召回失败后的重试节流（毫秒）。 */
+    static final long WAR_GARRISON_RECALL_RETRY_MS = 60_000L;
+
+    /** 上一次 tick 是否处于守护战争态（进入/退出边沿记账用）。 */
+    private volatile boolean warModeActive;
+    private volatile long warEnteredAtMs;
+    private volatile long lastWarRecallSweepMs;
+    /** 本次战争态已发起召回请求的采集 marchId（每场战争每条只发一次，防重试风暴）。 */
+    private final Set<Long> warRecalledMarches = ConcurrentHashMap.newKeySet();
+    /** G2：战争态采集召回尝试次数（每队上限 3 次，失败可补扫重试；成功即不再加）。 */
+    static final int WAR_RECALL_MAX_ATTEMPTS = 3;
+    private final Map<Long, Integer> warRecallAttempts = new ConcurrentHashMap<>();
+
+    /**
+     * 驻防并发上限：守护战争态下「可用队列全部留给驻防（最多 6 队）」→ {@link #MAX_CONCURRENT_CAP}；
+     * 平时沿用 params {@code max_concurrent}（默认 3）。纯查询。
+     */
+    int effectiveMaxConcurrent(Config cfg) {
+        int base = cfg == null ? DEFAULT_MAX_CONCURRENT_MISSIONS : cfg.maxConcurrent;
+        try {
+            if (ServerWarState.guardianWarActive(fpid, sid, roleUid)) return MAX_CONCURRENT_CAP;
+        } catch (Throwable ignored) {
+        }
+        return Math.max(1, Math.min(MAX_CONCURRENT_CAP, base));
+    }
+
+    /**
+     * 战争态节拍（会话线程 1s 调用；只判定/入队，请求在 guardExec 串行执行）。
+     * 包可见便于单测直接驱动（生产经 {@link #tick(WjdrEngine)}）。
+     */
+    void warTick(WjdrEngine engine) {
+        if (stopped || engine == null) return;
+        Config cfg = config;
+        VaultStore.Account acc = vault == null ? null : vault.find(fpid);
+        GuardianWar.Settings ws = GuardianWar.resolve(acc, sid, roleUid);
+        boolean active = cfg != null && cfg.enabled && !cfg.dryRun && ws.enabled
+                && ServerWarState.guardianWarActive(fpid, sid, roleUid);
+        long nowMs = clockMs.getAsLong();
+        if (active && !warModeActive) {
+            warModeActive = true;
+            warEnteredAtMs = nowMs;
+            lastWarRecallSweepMs = nowMs;
+            warRecalledMarches.clear();
+            warRecallAttempts.clear();
+            String reason = ServerWarState.guardianWarTrigger(fpid, sid, roleUid);
+            String note = "战争态进入（" + (reason == null || reason.isEmpty() ? "?" : reason) + "）："
+                    + (ws.recallGather ? "召回全部采集队；" : "")
+                    + "暂停占队任务，6 队列全部留给驻防";
+            ledger("war_enter", null, null, note);
+            FileLog.info("守护战争态进入 {}:{} uid={} {}", fpid, String.valueOf(sid),
+                    String.valueOf(roleUid), note);
+            if (ws.recallGather) recallAllGathers(engine, ws);
+            return;
+        }
+        if (!active) {
+            // G4：战争态已退出但仍有驻防任务 → 允许继续收尾召回（目标仍无后续在途时）
+            if (!missions.isEmpty()) warGarrisonRecallTick(engine, ws);
+            if (warModeActive) {
+                warModeActive = false;
+                long sec = Math.max(0L, (nowMs - warEnteredAtMs) / 1000L);
+                String note = "战争态退出（持续 " + sec + "s）：恢复采集/日常派队";
+                ledger("war_exit", null, null, note);
+                FileLog.info("守护战争态退出 {}:{} uid={} {}", fpid, String.valueOf(sid),
+                        String.valueOf(roleUid), note);
+            }
+            return;
+        }
+        // 战争态维护：补扫新出现的采集队（入战前已在途的迟到推送/召回失败重试）
+        if (ws.recallGather && nowMs - lastWarRecallSweepMs >= WAR_RECALL_SWEEP_MS) {
+            lastWarRecallSweepMs = nowMs;
+            recallAllGathers(engine, ws);
+        }
+        // 目标已无后续在途敌方出征 ≥N 秒 → 立即召回我方驻防行军（取代旧「战报不撤防」口径）
+        warGarrisonRecallTick(engine, ws);
+    }
+
+    /** 单测/诊断：当前是否处于守护战争态。 */
+    boolean warModeActiveForTest() {
+        return warModeActive;
+    }
+
+    /** 单测/诊断：本次战争态已发过召回请求的采集队数。 */
+    int warRecalledCountForTest() {
+        return warRecalledMarches.size();
+    }
+
+    /** 投递一次「召回全部采集队」到 guardExec（会话线程不阻塞）。 */
+    private void recallAllGathers(WjdrEngine engine, GuardianWar.Settings ws) {
+        try {
+            guardExec.execute(() -> executeWarRecallGathers(engine, ws));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 召回全部 type=4 采集行军（guardExec 线程；逐队独立，失败不影响其它队）。
+     * 包可见便于单测直接驱动（不经 guardExec）。
+     */
+    void executeWarRecallGathers(WjdrEngine engine, GuardianWar.Settings ws) {
+        if (stopped || engine == null || ws == null) return;
+        if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) return;
+        int recalled = 0, failed = 0, skipped = 0;
+        try {
+            long ownUid = engine.lastUid();
+            java.util.List<OwnMarch> marches = ownMarches(engine, ownUid);
+            for (OwnMarch m : marches) {
+                if (m == null || m.id <= 0L) continue;
+                if (m.type != PREEMPT_GATHER_TYPE) continue;             // 只召回普通采集，保护类不动
+                if (m.state != 2L && m.state != 3L) continue;            // 在途/驻扎
+                if (m.owner > 0L && ownUid > 0L && m.owner != ownUid) continue;
+                int attempt = warRecallAttempts.merge(m.id, 1, Integer::sum);
+                if (attempt > WAR_RECALL_MAX_ATTEMPTS) {
+                    skipped++;
+                    continue;
+                }
+                if (!warRecalledMarches.add(m.id)) {
+                    skipped++;
+                    continue;
+                }
+                int code;
+                try {
+                    GameMessage rsp = engine.request(ServerGuardianLauncher.PROTO_MARCH_RECALL,
+                            ServerGuardianLauncher.buildMarchIdArgs(m.id));
+                    code = Exec.codeOf(rsp);
+                } catch (Throwable ex) {
+                    code = -1;
+                    FileLog.warn("守护战争态召回采集异常 {}:{} marchId={}：{}",
+                            fpid, String.valueOf(sid), String.valueOf(m.id),
+                            brief(String.valueOf(ex)));
+                }
+                if (code == 0) {
+                    recalled++;
+                } else {
+                    // G2：失败允许下一轮补扫重试（上限 WAR_RECALL_MAX_ATTEMPTS），避免占队整场
+                    warRecalledMarches.remove(m.id);
+                    failed++;
+                }
+                ledger("war_recall_gather", null, null, "战争态召回采集队 marchId=" + m.id
+                        + " type=" + m.type + " state=" + m.state + " code=" + code
+                        + "（逐队独立，失败不影响其它队）");
+            }
+        } catch (Throwable t) {
+            FileLog.warn("守护战争态召回采集异常 {}:{} {}", fpid, String.valueOf(sid),
+                    brief(String.valueOf(t)));
+        }
+        String note = "战争态召回采集队：成功" + recalled + " 失败" + failed + " 已处理" + skipped;
+        ledger("war_recall_all", null, null, note);
+        FileLog.info("守护战争态 {}:{} uid={} {}", fpid, String.valueOf(sid),
+                String.valueOf(roleUid), note);
+    }
+
+    /**
+     * 战争态驻防召回：目标已无后续在途敌方行军持续 war_exit_idle_sec → 召回我方驻防行军。
+     * 只在「无后续在途」时召回（用户长期规则第 3 条第 4 点）；失败 60s 后重试一次。
+     */
+    private void warGarrisonRecallTick(WjdrEngine engine, GuardianWar.Settings ws) {
+        Config cfg = config;
+        // G1（2026-10-31 复核）：战争态「目标无后续在途 → 召回驻防」是用户规则 3 的收尾动作，
+        // 不受 `recall`（敌人召回时是否撤防）开关影响，否则用户关 recall 会导致驻防整场不撤。
+        if (cfg == null || cfg.dryRun || ws == null) return;
+        long nowMs = clockMs.getAsLong();
+        long nowS = nowMs / 1000L;
+        long idleMs = Math.max(5_000L, ws.exitIdleSec * 1000L);
+        for (Mission m : new java.util.ArrayList<Mission>(missions.values())) {
+            if (m == null || m.recallSubmitted) continue;
+            if (m.enemyEndSec <= 0L) continue;                       // 敌方到达未知：不擅自撤防
+            if (nowMs - m.lastRecallAttemptMs < WAR_GARRISON_RECALL_RETRY_MS) continue;
+            if (hasIncomingThreat(m, nowS)) {
+                m.targetIdleSinceMs = 0L;
+                continue;
+            }
+            if (m.targetIdleSinceMs == 0L) {
+                m.targetIdleSinceMs = nowMs;
+                continue;
+            }
+            if (nowMs - m.targetIdleSinceMs < idleMs) continue;
+            m.recallSubmitted = true;
+            m.lastRecallAttemptMs = nowMs;
+            final Mission target = m;
+            try {
+                guardExec.execute(() -> {
+                    if (executeRecall(engine, target,
+                            "目标无后续在途敌方出征 ≥" + (idleMs / 1000L) + "s")) {
+                        ledger("garrison_recall", null, null, "无后续在途 → 召回驻防 marchId="
+                                + target.marchId + "（enemyMarchId=" + target.enemyMarchId + "）");
+                    } else {
+                        target.recallSubmitted = false;              // 失败允许 60s 后重试
+                    }
+                });
+            } catch (Throwable ignored) {
+                m.recallSubmitted = false;
+            }
+        }
+    }
+
+    /** 目标是否仍有在途敌方出征（threat 表内同目标且 endtime 未到）。 */
+    private boolean hasIncomingThreat(Mission m, long nowS) {
+        if (m == null) return false;
+        for (Threat t : threats.values()) {
+            if (t == null || t.endEpochSec <= 0L) continue;
+            if (t.endEpochSec <= nowS - RECALL_THRESHOLD_SEC) continue;   // 已落地/过期
+            if (sameTarget(m, t)) return true;
+        }
+        return false;
+    }
+
+    /** 目标匹配：uid 相同优先；无 uid 时按坐标（x,y）相同。纯函数。 */
+    static boolean sameTarget(Mission m, Threat t) {
+        if (m == null || t == null) return false;
+        if (m.targetUid > 0L && t.targetUid > 0L && m.targetUid == t.targetUid) return true;
+        return m.hasPoint && t.hasXY && m.x == t.x && m.y == t.y;
+    }
+
+    /**
+     * 驻防完成判定（批次 J）：战报/驻防邮件 {@code first_type=30} 且我方先到
+     * （{@code ownEnd < enemyEnd}）→ 账本 {@code garrison_done}。
+     *
+     * <p>邮件与敌方到达时刻按「最近一次敌方到达 ≤10min」关联；同一任务只记一次。
+     * 只在守护战争态口径（guardian 实盘 + 未回滚）下记账，旧「战报只记账」语义不变。
+     */
+    void maybeNoteGarrisonDone(GuardReportCodes.ReportMail mail, Config cfg) {
+        if (mail == null || cfg == null || !cfg.enabled) return;
+        VaultStore.Account acc = vault == null ? null : vault.find(fpid);
+        GuardianWar.Settings ws = GuardianWar.resolve(acc, sid, roleUid);
+        if (!ws.enabled) return;
+        long nowS = clockMs.getAsLong() / 1000L;
+        Mission best = null;
+        long bestGap = Long.MAX_VALUE;
+        for (Mission m : missions.values()) {
+            if (m == null || m.garrisonDone || m.endtimeSec <= 0L || m.enemyEndSec <= 0L) continue;
+            if (m.endtimeSec >= m.enemyEndSec) continue;             // 我方不早于敌到达 → 非有效驻防
+            long gap = Math.abs(nowS - m.enemyEndSec);
+            if (gap > GARRISON_MAIL_WINDOW_SEC) continue;            // 超窗：无关战报，不误记
+            if (gap < bestGap) {
+                bestGap = gap;
+                best = m;
+            }
+        }
+        if (best == null) return;
+        best.garrisonDone = true;
+        String note = "驻防完成（先到+战报）：我方 end=" + best.endtimeSec + " < 敌 end="
+                + best.enemyEndSec + " ownMarchId=" + best.marchId
+                + " enemyMarchId=" + best.enemyMarchId
+                + " mail=" + mail.firstType + "/" + mail.secondType;
+        ledger("garrison_done", null, null, note);
+        FileLog.info("守护驻防完成 {}:{} uid={} {}", fpid, String.valueOf(sid),
+                String.valueOf(roleUid), note);
     }
 
     // =====================================================================
@@ -767,6 +1188,347 @@ public final class ServerGuardianEngine {
     // 推送入口
     // =====================================================================
 
+    // =====================================================================
+    // 批次 I：集结推送解析（真伪字段、5 分钟倒计时、取消）
+    // =====================================================================
+
+    /** 处理 notify_mass_march_add/update/del（只读解析+重估，不发请求）。 */
+    void handleMassMarch(WjdrEngine engine, String proto, Map<String, Object> content, long nowMs) {
+        try {
+            if (PROTO_MASS_DEL.equals(proto)) {
+                for (long id : massIds(content)) {
+                    Rally r = rallies.get(id);
+                    if (r != null) {
+                        r.cancelled = true;
+                        r.lastProto = proto;
+                        cancelRallyWait(id);
+                    }
+                }
+                resubmitRallyThreats(engine);
+                return;
+            }
+            if (PROTO_MASS_ADD.equals(proto)) {
+                Rally parsed = parseRally(content, nowMs);
+                if (parsed == null) return;
+                Rally prev = rallies.get(parsed.marchId);
+                if (prev != null) {
+                    mergeRally(prev, parsed);
+                    prev.lastProto = proto;
+                } else {
+                    parsed.lastProto = proto;
+                    rallies.put(parsed.marchId, parsed);
+                }
+                resubmitRallyThreats(engine);
+                return;
+            }
+            // update：patch {id,type,change{...}} 或完整 march
+            long id = firstLong(content, "id", "march_id", "mass_id");
+            Rally r = id > 0L ? rallies.get(id) : null;
+            if (r == null) {
+                Rally parsed = parseRally(content, nowMs);
+                if (parsed != null) {
+                    parsed.lastProto = proto;
+                    rallies.put(parsed.marchId, parsed);
+                }
+                resubmitRallyThreats(engine);
+                return;
+            }
+            Map<String, Object> change = firstMap(content, "change", "data", "info");
+            if (change != null) mergeRallyPatch(r, change);
+            mergeRallyPatch(r, content);
+            r.lastProto = proto;
+            long state = firstLong(content, "state");
+            if (state == 4L || state == 0L || firstLong(content, "cancelled", "canceled", "cancel") > 0L) {
+                r.cancelled = true;
+                cancelRallyWait(id);
+            }
+            resubmitRallyThreats(engine);
+        } catch (Throwable ex) {
+            FileLog.warn("守护盟友集结解析异常 {}:{} {}",
+                    fpid, String.valueOf(sid), brief(String.valueOf(ex)));
+        }
+    }
+
+    /** 解析 add 帧 → Rally（type 仅 100/102；其它 mass_march 如巨兽 99/501 忽略）。 */
+    static Rally parseRally(Map<String, Object> content, long nowMs) {
+        if (content == null) return null;
+        Map<String, Object> data = unwrapMap(content);
+        Map<String, Object> march = firstMap(data, "march", "mass_march");
+        if (march == null || march.isEmpty()) march = data;
+        long id = firstLong(march, "id", "march_id", "mass_id");
+        long type = firstLong(march, "type");
+        if (id <= 0L || !RALLY_MASS_TYPES.contains(type)) return null;
+        Rally r = new Rally(id, nowMs);
+        r.type = type;
+        r.ownerUid = firstLong(march, "owner", "uid");
+        r.targetUid = firstLong(march, "target_uid", "targetid", "target_id");
+        int[] pt = pointOfAny(march, "endpoint", "target", "map_city", "end_point");
+        if (pt != null) {
+            r.x = pt[0];
+            r.y = pt[1];
+            r.hasXY = true;
+        }
+        long start = firstLong(march, "starttime", "start_time", "start_at");
+        if (start > 0L) r.startAtMs = start > 1_000_000_000_000L ? start : start * 1000L;
+        long end = firstLong(march, "endtime", "end_time", "depart_at");
+        if (end > 0L) r.departAtSec = end;
+        mergeRallyMass(r, march);
+        return r;
+    }
+
+    /** 合并 mass_* 字段（满兵/上车/成员数）；缺字段 → has*Info=false（保守未知）。 */
+    static void mergeRallyMass(Rally r, Map<String, Object> march) {
+        if (r == null || march == null) return;
+        Map<String, Object> mass = firstMap(march,
+                "mass_master", "mass_alliance_trap", "mass_boss", "mass", "mass_info", "extra");
+        Map<String, Object> src = mass == null ? march : mass;
+        long memberMax = firstLong(src, "max", "member_max", "max_member", "member_limit");
+        if (memberMax <= 0L) memberMax = firstLong(march, "max", "member_max", "member_limit");
+        if (memberMax > 0L) r.memberMax = memberMax;
+        Object uids = src.get("uids");
+        if (uids == null) uids = src.get("member_uids");
+        java.util.List<?> uidList = uids instanceof java.util.List ? (java.util.List<?>) uids
+                : (uids instanceof Map ? new java.util.ArrayList<>(((Map<?, ?>) uids).values()) : null);
+        if (uidList != null) r.memberCount = uidList.size();
+        long mc = firstLong(src, "member_count", "join_count", "count", "num");
+        if (mc > 0L) r.memberCount = mc;
+
+        long soldierMax = firstLong(src, "soldier_max", "max_soldier", "troop_max",
+                "max_troop", "soldier_limit");
+        if (soldierMax <= 0L) soldierMax = firstLong(march, "soldier_max", "max_soldier", "troop_max");
+        long soldierCount = firstLong(src, "soldier_count", "count_soldier", "total_soldier",
+                "soldiers", "troops", "soldier_num");
+        if (soldierCount < 0L) soldierCount = 0L;
+        if (soldierMax > 0L || soldierCount > 0L) {
+            r.soldierMax = soldierMax;
+            r.soldierCount = soldierCount;
+            r.hasSoldierInfo = true;
+        }
+
+        Object rawMembers = src.get("members");
+        if (rawMembers == null) rawMembers = src.get("member_list");
+        if (rawMembers == null) rawMembers = src.get("join_list");
+        if (rawMembers == null) rawMembers = src.get("mass_slaves");
+        if (rawMembers == null) rawMembers = src.get("slave_list");
+        if (rawMembers == null) rawMembers = src.get("joiners");
+        java.util.List<Map<String, Object>> members = new java.util.ArrayList<>();
+        if (rawMembers instanceof java.util.List) {
+            for (Object o : (java.util.List<?>) rawMembers) {
+                Map<String, Object> m = Exec.mapOf(o);
+                if (m != null) members.add(m);
+            }
+        } else if (rawMembers instanceof Map) {
+            for (Object o : ((Map<?, ?>) rawMembers).values()) {
+                Map<String, Object> m = Exec.mapOf(o);
+                if (m != null) members.add(m);
+            }
+        }
+        if (!members.isEmpty()) {
+            r.hasJoinInfo = true;
+            for (Map<String, Object> m : members) {
+                if (Boolean.TRUE.equals(m.get("full")) || Boolean.TRUE.equals(m.get("is_full"))) {
+                    r.someoneFull = true;
+                }
+                long soldier = firstLong(m, "soldier", "soldiers", "troop", "troops",
+                        "count", "soldier_count");
+                long limit = firstLong(m, "soldier_max", "max_soldier", "troop_limit", "limit", "max");
+                if (limit > 0L && soldier > 0L) {
+                    if (soldier >= limit) r.someoneFull = true;
+                } else if (soldier > 0L && r.soldierMax > 0L && soldier >= r.soldierMax) {
+                    r.someoneFull = true;
+                }
+            }
+        } else if (r.memberCount > 0L) {
+            // 有成员数但没有逐成员兵力 → 无法证明"有人满兵上车"
+            r.hasJoinInfo = false;
+        }
+    }
+
+    static void mergeRally(Rally dst, Rally src) {
+        if (dst == null || src == null) return;
+        if (src.ownerUid > 0L) dst.ownerUid = src.ownerUid;
+        if (src.type > 0L) dst.type = src.type;
+        if (src.targetUid > 0L) dst.targetUid = src.targetUid;
+        if (src.hasXY) { dst.x = src.x; dst.y = src.y; dst.hasXY = true; }
+        if (src.departAtSec > 0L) dst.departAtSec = src.departAtSec;
+        if (src.startAtMs > 0L && dst.startAtMs <= 0L) dst.startAtMs = src.startAtMs;
+        if (src.soldierMax > 0L) { dst.soldierMax = src.soldierMax; dst.soldierCount = src.soldierCount; dst.hasSoldierInfo = true; }
+        if (src.memberMax > 0L) dst.memberMax = src.memberMax;
+        if (src.memberCount > 0L) dst.memberCount = src.memberCount;
+        if (src.hasJoinInfo) { dst.hasJoinInfo = true; dst.someoneFull = dst.someoneFull || src.someoneFull; }
+        if (src.cancelled) dst.cancelled = true;
+    }
+
+    /** update 帧 patch（endtime/state/兵力/成员）。 */
+    static void mergeRallyPatch(Rally r, Map<String, Object> patch) {
+        if (r == null || patch == null || patch.isEmpty()) return;
+        long end = firstLong(patch, "endtime", "end_time", "depart_at");
+        if (end > 0L) r.departAtSec = end;
+        long type = firstLong(patch, "type");
+        if (type > 0L) r.type = type;
+        long owner = firstLong(patch, "owner", "uid");
+        if (owner > 0L) r.ownerUid = owner;
+        long tu = firstLong(patch, "target_uid", "targetid", "target_id");
+        if (tu > 0L) r.targetUid = tu;
+        int[] pt = pointOfAny(patch, "endpoint", "target", "map_city");
+        if (pt != null) { r.x = pt[0]; r.y = pt[1]; r.hasXY = true; }
+        mergeRallyMass(r, patch);
+    }
+
+    private static java.util.List<Long> massIds(Map<String, Object> content) {
+        java.util.Set<Long> ids = new java.util.LinkedHashSet<>();
+        collectMassIds(content, ids, 0);
+        return new java.util.ArrayList<>(ids);
+    }
+
+    private static void collectMassIds(Object node, java.util.Set<Long> out, int depth) {
+        if (node == null || depth > MAX_DEPTH) return;
+        if (node instanceof java.util.List) {
+            for (Object o : (java.util.List<?>) node) collectMassIds(o, out, depth + 1);
+            return;
+        }
+        if (!(node instanceof Map)) return;
+        Map<?, ?> m = (Map<?, ?>) node;
+        long id = firstLongMap(m, "id", "march_id", "mass_id");
+        if (id > 0L) out.add(id);
+        for (Object v : m.values()) {
+            if (v instanceof Map || v instanceof java.util.List) collectMassIds(v, out, depth + 1);
+        }
+    }
+
+    /** 把集结状态变化通知已入账威胁（真伪重估/等待重排）。 */
+    void resubmitRallyThreats(WjdrEngine engine) {
+        for (Threat t : threats.values()) {
+            if (t == null || !RALLY_THREAT_TYPES.contains(t.type)) continue;
+            Rally r = rallyFor(t);
+            if (r == null) continue;
+            if (r.cancelled) {
+                ledger("rally_cancelled", t, null, "集结已取消/解散（mass_march_del），不驻防");
+                attempted.add(t.marchId);
+                cancelRallyWait(t.marchId);
+                continue;
+            }
+            attempted.remove(t.marchId);
+            submitNow(engine, t.marchId);
+        }
+    }
+
+    /** 威胁 ↔ 集结关联：先按 marchId（同一 master id），再按 owner+target/坐标。 */
+    Rally rallyFor(Threat t) {
+        if (t == null) return null;
+        Rally direct = rallies.get(t.marchId);
+        if (direct != null) return direct;
+        Rally best = null;
+        for (Rally r : rallies.values()) {
+            if (r == null || r.ownerUid != t.ownerUid) continue;
+            if (t.targetUid > 0L && r.targetUid == t.targetUid) return r;
+            if (t.hasXY && r.hasXY && t.x == r.x && t.y == r.y) {
+                if (best == null || r.marchId > best.marchId) best = r;
+            }
+        }
+        return best;
+    }
+
+    private static Map<String, Object> unwrapMap(Map<String, Object> content) {
+        Map<String, Object> data = content;
+        for (String key : new String[]{"data", "info", "content"}) {
+            Map<String, Object> inner = Exec.mapOf(data.get(key));
+            if (inner != null && !inner.isEmpty()) { data = inner; break; }
+        }
+        return data;
+    }
+
+    private static Map<String, Object> firstMap(Map<String, Object> m, String... keys) {
+        if (m == null) return null;
+        for (String key : keys) {
+            Map<String, Object> v = Exec.mapOf(m.get(key));
+            if (v != null && !v.isEmpty()) return v;
+        }
+        return null;
+    }
+
+    private static long firstLongMap(Map<?, ?> m, String... keys) {
+        if (m == null) return 0L;
+        for (String key : keys) {
+            long v = longAny(m.get(key));
+            if (v > 0L) return v;
+        }
+        return 0L;
+    }
+
+    /** 坐标：endpoint/target/map_city 的 x/y（Map 或 pointAny 兼容）。 */
+    private static int[] pointOfAny(Map<String, Object> m, String... keys) {
+        if (m == null) return null;
+        for (String key : keys) {
+            int[] pt = pointAny(m.get(key));
+            if (pt != null) return pt;
+        }
+        return null;
+    }
+
+    /** 集结等待期：注册一次性延迟任务（fireSched；等待期内零请求）。 */
+    private void scheduleRallyWait(WjdrEngine engine, Threat t, Rally r, long departSec, long nowMs) {
+        long marchId = t.marchId;
+        if (rallyTasks.containsKey(marchId)) return;
+        long delay = Math.max(50L, departSec * 1000L - nowMs);
+        noteRallyWait(t, r, departSec, nowMs);
+        final ScheduledFuture<?>[] holder = new ScheduledFuture<?>[1];
+        try {
+            holder[0] = fireSched.schedule(() -> {
+                try {
+                    rallyTasks.remove(marchId, holder[0]);
+                    if (!stopped) submitNow(engine, marchId);
+                } catch (Throwable ex) {
+                    FileLog.warn("守护盟友集结等待任务异常 {}:{} marchId={}：{}",
+                            fpid, String.valueOf(sid), String.valueOf(marchId), String.valueOf(ex));
+                }
+            }, delay, TimeUnit.MILLISECONDS);
+            rallyTasks.put(marchId, holder[0]);
+        } catch (Throwable ex) {
+            rallyTasks.remove(marchId);
+            FileLog.warn("守护盟友集结等待注册失败 {}:{} marchId={}：{}",
+                    fpid, String.valueOf(sid), String.valueOf(marchId), String.valueOf(ex));
+        }
+    }
+
+    private void cancelRallyWait(long marchId) {
+        ScheduledFuture<?> f = rallyTasks.remove(marchId);
+        if (f != null) {
+            try { f.cancel(false); } catch (Throwable ignored) { }
+        }
+        rallyWaitNotesAt.remove(marchId);
+    }
+
+    /** 等待账本（同一 march+出发时刻 ≤1 条）。 */
+    private void noteRallyWait(Threat t, Rally r, long departSec, long nowMs) {
+        if (t == null) return;
+        long prev = rallyWaitNotesAt.getOrDefault(t.marchId, Long.MIN_VALUE);
+        if (prev == departSec) return;
+        rallyWaitNotesAt.put(t.marchId, departSec);
+        long wait = Math.max(0L, departSec - nowMs / 1000L);
+        String note = "集结等待：约 " + wait + "s 后出发（depart=" + departSec
+                + "，type=" + t.type
+                + (r != null && r.hasSoldierInfo
+                ? "，兵力=" + r.soldierCount + "/" + r.soldierMax : "，兵力未知")
+                + "，阈值=" + config.rallyTroopsMin
+                + "）；等待期不发射/不加速";
+        ledger("rally_wait", t, null, note);
+        writeMod("⏳" + note);
+    }
+
+    private void noteRallyUnknown(Threat t, long nowMs) {
+        if (t == null) return;
+        Long last = rallyUnknownNotesAt.get(t.marchId);
+        if (last != null && nowMs - last < QUEUE_RETRY_NOTE_THROTTLE_MS) return;
+        rallyUnknownNotesAt.put(t.marchId, nowMs);
+        Rally r = rallyFor(t);
+        String army = r != null && r.hasSoldierInfo
+                ? "兵力=" + r.soldierCount + "/" + r.soldierMax : "兵力未知";
+        ledger("rally_unknown", t, null,
+                "skip_rally_unknown：集结无法判定真伪（" + army + "，阈值=" + config.rallyTroopsMin
+                        + "；缺 mass 兵力/上车字段）→ 保守不发射");
+    }
+
     /** 推送入口（钩子线程；包级可见便于单测直接驱动）。 */
     void onPush(WjdrEngine engine, String proto, Map<String, Object> content) {
         onPushAt(engine, proto, content, clockMs.getAsLong());
@@ -786,6 +1548,13 @@ public final class ServerGuardianEngine {
         // 批次 C A4：防守战报判定（只记账/告警；**绝不触发撤防、不改 missions**）
         if (PROTO_NEW_MAIL.equals(proto)) {
             handleMailReports(content, cfg);
+            return;
+        }
+
+        // 批次 I：集结推送（真伪/5 分钟倒计时/取消）
+        if (PROTO_MASS_ADD.equals(proto) || PROTO_MASS_UPDATE.equals(proto)
+                || PROTO_MASS_DEL.equals(proto)) {
+            handleMassMarch(engine, proto, content, nowMs);
             return;
         }
 
@@ -826,6 +1595,13 @@ public final class ServerGuardianEngine {
             Threat prev = threats.get(t.marchId);
             Threat cur = prev == null ? t : prev.merge(t);
             threats.put(cur.marchId, cur);
+            // 批次 K：记录敌方压缩档位（endtime 比值≈0.5=敌方 −50%；25%=0.75）→ 梭哈判定
+            if (prev != null) recordEnemyCompression(prev, cur, nowMs);
+            // 批次 J：同步我方驻防任务的敌方到达时刻（garrison_done/召回判定以最新威胁为准）
+            Mission wm = missions.get(targetKey(cur));
+            if (wm != null && wm.enemyMarchId == cur.marchId && cur.endEpochSec > 0L) {
+                wm.enemyEndSec = cur.endEpochSec;
+            }
             // P1：敌方加速（endtime 前移/压缩）→ 若我方驻防已发射且在途 → 异步对等加速
             if (prev != null) maybeSubmitSpeedup(engine, prev, cur, cfg, nowMs);
             // 批次 D：敌人再次压缩把我方压到晚到 → 继续追赶（与 speedup_enabled 解耦）
@@ -1011,7 +1787,10 @@ public final class ServerGuardianEngine {
         boolean hadQueueRetry = queueRetryTasks.containsKey(marchId);
         cancelFire(marchId);
         cancelPreemptRetry(marchId);
+        enemy50Times.remove(marchId);
+        enemy50Total.remove(marchId);
         clearQueueRetry(marchId);
+        cancelRallyWait(marchId);
         finishCatchup(marchId, t, "threat_gone");
         timingNotes.remove(marchId);
         attempted.remove(marchId);
@@ -1059,8 +1838,35 @@ public final class ServerGuardianEngine {
         long nowMs = clockMs.getAsLong();
         Decision d = decide(t, cfg, nowMs);
         if (!d.hit) return;
-        // 批次 C-A3：定时器可能早到/威胁 endtime 被刷新推迟 → 重新卡秒（不提前发射）
-        if (cfg.timingEnabled) {
+        // 批次 I：集结单独成链（真伪 → 5 分钟等待 → 出发秒评估）；等待期零请求、卡秒不生效
+        boolean rally = cfg.rallyEnabled && RALLY_THREAT_TYPES.contains(t.type);
+        if (rally) {
+            Rally r = rallyFor(t);
+            RallyTruth truth = evaluateRally(r, cfg);
+            if (truth == RallyTruth.CANCELLED) {
+                ledger("rally_cancelled", t, null, "集结已取消/解散 → 不驻防");
+                cancelRallyWait(marchId);
+                return;
+            }
+            if (truth == RallyTruth.UNKNOWN) {
+                noteRallyUnknown(t, nowMs);
+                return;
+            }
+            if (truth == RallyTruth.FAKE) {
+                ledger("rally_fake", t, null, "集结判假（未满兵/无人满兵上车/已取消）→ 不驻防"
+                        + (r != null && r.hasSoldierInfo
+                        ? "（兵力=" + r.soldierCount + "/" + r.soldierMax + "）" : ""));
+                cancelRallyWait(marchId);
+                return;
+            }
+            long depart = rallyDepartureSec(r, cfg);
+            if (depart > 0L && nowMs / 1000L < depart) {
+                scheduleRallyWait(engine, t, r, depart, nowMs);
+                return;
+            }
+        }
+        // 批次 C-A3：定时器可能早到/威胁 endtime 被刷新推迟 → 重新卡秒（不提前发射；集结不适用）
+        if (!rally && cfg.timingEnabled) {
             long fireAt = fireAtSec(t, cfg);
             if (fireAt > 0L && nowMs / 1000L < fireAt) {
                 scheduleFire(engine, t, cfg, fireAt, nowMs);
@@ -1120,10 +1926,12 @@ public final class ServerGuardianEngine {
             }
             targetCooldowns.remove(targetKey);
         }
-        if (!activeTargets.add(targetKey) || missions.size() >= cfg.maxConcurrent) {
+        int maxConcurrent = effectiveMaxConcurrent(cfg);
+        if (!activeTargets.add(targetKey) || missions.size() >= maxConcurrent) {
             activeTargets.remove(targetKey);
             ledger("skip_busy", t, null,
-                    "已有驻防任务在跑（missions=" + missions.size() + "）");
+                    "已有驻防任务在跑（missions=" + missions.size()
+                            + "/" + maxConcurrent + "）");
             clearQueueRetry(marchId);
             return;
         }
@@ -1197,9 +2005,14 @@ public final class ServerGuardianEngine {
             if (r.ok) {
                 // P0-5 同款：成功发射复位 415 英雄上限/406 兵力缩放（自适应必须能恢复）
                 HeroAvailability.markSuccess(engine);
-                Mission mission = new Mission(t.marchId, r.marchId, r.endtimeSec, nowMs);
+                Mission mission = new Mission(t.marchId, r.marchId, r.endtimeSec, t.endEpochSec,
+                        nowMs, t.targetUid, t.x, t.y, t.hasXY);
                 missions.put(targetKey, mission);
                 clearQueueRetry(marchId);
+                cancelRallyWait(marchId);
+                // 批次 I：记录最近实测单程，供集结出发秒/后续威胁估算
+                lastTravelSec = Math.max(1L, r.endtimeSec > 0L
+                        ? r.endtimeSec - nowMs / 1000L : cfg.dSec);
                 long nowS = nowSec(engine);
                 long ahead = t.endEpochSec > 0 && r.endtimeSec > 0 ? t.endEpochSec - r.endtimeSec : 0L;
                 String autoNote = lastAutoFormationSummary;
@@ -1212,8 +2025,28 @@ public final class ServerGuardianEngine {
                 FileLog.info("守护盟友发射 {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("launched", t, r, text, resolvedTargetUid);
                 writeMod("🛡" + text);
-                // 批次 D：我方晚于敌（含 margin 内）→ 立即进入追赶（异步，不阻塞 guardExec）
-                maybeStartCatchup(engine, t, mission, cfg);
+                if (rally) {
+                    // 集结：出发秒评估；赶不上 → 优先 −25% 连续加速到先到/资源耗尽；不走单人 catch-up
+                    long enemyEnd = t.endEpochSec;
+                    int shots = 0;
+                    if (cfg.rallyEarlySpeedup && enemyEnd > 0L
+                            && mission.endtimeSec > 0L && mission.endtimeSec > enemyEnd - 1L) {
+                        shots = applyRallyEarlySpeedup(engine, t, mission, enemyEnd, cfg);
+                    }
+                    long est = nowMs / 1000L + estimateTravelSec(cfg);
+                    Rally ri = rallyFor(t);
+                    ledger("rally_go", t, null, "集结出发秒：我方 end=" + mission.endtimeSec
+                            + " 敌 end=" + enemyEnd + "，估到达=" + est
+                            + "，赶得上=" + (est <= enemyEnd - 1L)
+                            + "，前置加速=" + (shots > 0 ? shots + "发" : "无")
+                            + "（估单程 " + estimateTravelSec(cfg) + "s"
+                            + (ri != null && ri.hasSoldierInfo
+                            ? "，兵力=" + ri.soldierCount + "，阈值=" + cfg.rallyTroopsMin : "")
+                            + "）");
+                } else {
+                    // 批次 D：我方晚于敌（含 margin 内）→ 立即进入追赶（异步，不阻塞 guardExec）
+                    maybeStartCatchup(engine, t, mission, cfg);
+                }
             } else {
                 clearQueueRetry(marchId);
                 // 2026-10-28：415（编队人数/配置超限）/406（士兵超限）自适应 + 目标冷却 + 日志节流。
@@ -1643,12 +2476,89 @@ public final class ServerGuardianEngine {
         return queueRetryTasks.size();
     }
 
-    /** 执行一次撤防（在途→recall；已驻扎→off_work；dry_run 不发）。 */
-    void executeRecall(WjdrEngine engine, Mission mission, String reason) {
-        if (stopped || mission == null) return;
+    /**
+     * 批次 I：集结出发秒前置加速（只针对已发射的我方驻防）：优先 −25%（301900），
+     * 其次 −50%（301901），钻石按用户开关/预算购买后使用；直到先到或资源耗尽。
+     *
+     * @return 实际加速发数
+     */
+    int applyRallyEarlySpeedup(WjdrEngine engine, Threat t, Mission m, long enemyEndSec, Config cfg) {
+        if (engine == null || m == null || enemyEndSec <= 0L || cfg == null
+                || !cfg.rallyEarlySpeedup || cfg.dryRun) return 0;
+        int shots = 0;
+        int max = cfg.maxSpeedupsPerMarch > 0 ? cfg.maxSpeedupsPerMarch : 24;
+        max = Math.max(1, Math.min(CATCHUP_MAX_ROUNDS_HARD, max));
+        try {
+            refreshStock(engine);
+            while (shots < max && m.endtimeSec > 0L && m.endtimeSec > enemyEndSec - 1L) {
+                long item;
+                int bought = diamondBoughtByMarch.getOrDefault(m.marchId, 0);
+                if (stock25 > 0L) {
+                    item = GuardianSpeedupPlanner.ITEM_SPEEDUP_25;
+                } else if (stock50 > 0L) {
+                    item = GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
+                } else if (cfg.diamondSpeedupEnabled
+                        && (cfg.diamondMaxPerMarch <= 0 || bought < cfg.diamondMaxPerMarch)) {
+                    ServerGuardianLauncher.QuickBuyResult br =
+                            launcher.quickBuy(engine, GuardianSpeedupPlanner.ITEM_SPEEDUP_50, 1L);
+                    if (!br.ok) {
+                        ledger("rally_speedup_buy_failed", t, null,
+                                "集结前置加速：钻石购买失败 code=" + br.code + "（" + br.text + "）");
+                        break;
+                    }
+                    diamondBoughtByMarch.put(m.marchId, bought + 1);
+                    stock50 = Math.max(0L, stock50) + 1L;
+                    item = GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
+                    ledger("rally_speedup_buy", t, null, "集结前置加速：钻石购买 301901 成功（已买 "
+                            + (bought + 1) + "/" + (cfg.diamondMaxPerMarch <= 0 ? "unlimited"
+                            : String.valueOf(cfg.diamondMaxPerMarch)) + "）");
+                } else {
+                    ledger("rally_speedup_no_item", t, null,
+                            "集结前置加速：道具/预算耗尽（我方 end=" + m.endtimeSec
+                                    + " 敌 end=" + enemyEndSec + "）");
+                    break;
+                }
+                long before = m.endtimeSec;
+                ServerGuardianLauncher.SpeedupResult sr = launcher.speedup(engine, m.marchId, item);
+                shots++;
+                if (sr.code == ServerGuardianLauncher.CODE_ITEM_SHORTAGE) {
+                    if (item == GuardianSpeedupPlanner.ITEM_SPEEDUP_25) stock25 = 0L;
+                    else stock50 = 0L;
+                    ledger("rally_speedup_round", t, null,
+                            "集结前置加速第" + shots + "发道具不足（2827），换档重试");
+                    continue;
+                }
+                if (!sr.ok) {
+                    ledger("rally_speedup_round", t, null,
+                            "集结前置加速第" + shots + "发失败 code=" + sr.code + "（" + sr.text + "）");
+                    break;
+                }
+                if (item == GuardianSpeedupPlanner.ITEM_SPEEDUP_25) stock25 = Math.max(0L, stock25 - 1L);
+                else stock50 = Math.max(0L, stock50 - 1L);
+                if (sr.endtimeSec > 0L && sr.endtimeSec < m.endtimeSec) {
+                    m.endtimeSec = sr.endtimeSec;
+                }
+                String tier = item == GuardianSpeedupPlanner.ITEM_SPEEDUP_25 ? "25%" : "50%";
+                ledger("rally_speedup_round", t, null, "集结前置加速第" + shots + "发[" + tier
+                        + "]：我方 end " + before + "→" + m.endtimeSec + "（敌 " + enemyEndSec + "）");
+            }
+        } catch (Throwable ex) {
+            FileLog.warn("守护盟友集结前置加速异常 {}:{} {}",
+                    fpid, String.valueOf(sid), brief(String.valueOf(ex)));
+        }
+        return shots;
+    }
+
+    /**
+     * 执行一次撤防（在途→recall；已驻扎→off_work；dry_run 不发）。
+     *
+     * @return true=请求成功（code=0）；false=未发/失败（批次 J 目标空闲召回据此 60s 后重试）
+     */
+    boolean executeRecall(WjdrEngine engine, Mission mission, String reason) {
+        if (stopped || mission == null) return false;
         Config cfg = config;
-        if (!cfg.enabled || cfg.dryRun) return;
-        if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) return;
+        if (!cfg.enabled || cfg.dryRun) return false;
+        if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) return false;
         try {
             long nowS = nowSec(engine);
             boolean inFlight = ServerGuardianLauncher.inFlightAt(mission.endtimeSec, nowS);
@@ -1662,14 +2572,159 @@ public final class ServerGuardianEngine {
                 FileLog.info("守护盟友撤防 {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("recalled", null, null, text);
                 writeMod("🧹" + text);
+                return true;
             } else {
                 FileLog.warn("守护盟友撤防失败 {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("recall_failed", null, null, text);
+                return false;
             }
         } catch (Throwable t) {
             FileLog.warn("守护盟友撤防异常 {}:{} {}", fpid, String.valueOf(sid), String.valueOf(t));
             ledger("recall_error", null, null, "撤防异常：" + brief(t.getMessage()));
+            return false;
         }
+    }
+
+    // =====================================================================
+    // 批次 K：钻石加速用户开关 + 25%/50% 经济换算（2026-10-31）
+    // 价格：−25%(301900)≈400 钻；−50%(301901)≈2000 钻；1×50% ≡ 2×25%（用户口径）；
+    // 选档：道具优先，25% 能用就用（等价效果 2×25% 更便宜），25% 库存/发数内不可达才升 50%；
+    // 敌方 −50% 在 1s 内 ≥4 次或累计 >4 次 → 梭哈 25%（连续 25% 直到先到/无资源/达上限）；
+    // 钻石：道具→不足才 quick_buy（优先买 301900）→立即使用；受 diamond_max_per_march 与用户开关。
+    // =====================================================================
+
+    /** 钻石路径是否允许（用户开关开 且 env 未硬关）。 */
+    static boolean diamondAllowed(Config cfg) {
+        return cfg != null && cfg.diamondSpeedupEnabled && !cfg.diamondHardOff;
+    }
+
+    /** 敌方 50% 密集判定（纯函数）：1s 内 ≥4 次 或 累计 >4 次 → 梭哈 25%。 */
+    static boolean burstMode(int enemy50BurstCount, int enemy50Total) {
+        return enemy50BurstCount >= 4 || enemy50Total > 4;
+    }
+
+    /** 记录敌方压缩档位：endtime 剩余比值 ≤0.55 视为敌方 −50%（25%≈0.75），累计+1s 窗口计数。 */
+    void recordEnemyCompression(Threat prev, Threat cur, long nowMs) {
+        if (prev == null || cur == null || prev.endEpochSec <= 0L || cur.endEpochSec <= 0L) return;
+        if (cur.endEpochSec >= prev.endEpochSec) return;
+        long oldRemain = prev.endEpochSec * 1000L - nowMs;
+        long newRemain = cur.endEpochSec * 1000L - nowMs;
+        if (oldRemain <= 0L || newRemain <= 0L) return;
+        double ratio = (double) newRemain / (double) oldRemain;
+        if (ratio > 0.55d) return;                                   // 25% 档，不计入 50% 梭哈
+        long id = cur.marchId;
+        java.util.ArrayDeque<Long> dq = enemy50Times.computeIfAbsent(id,
+                k -> new java.util.ArrayDeque<>());
+        synchronized (dq) {
+            dq.addLast(nowMs);
+            while (!dq.isEmpty() && nowMs - dq.peekFirst() > 1_000L) dq.pollFirst();
+        }
+        enemy50Total.merge(id, 1, Integer::sum);
+        FileLog.info("守护盟友敌方加速档 {}:{} marchId={} end {}→{}（≈{}%，累计50%×{}）",
+                fpid, String.valueOf(sid), String.valueOf(id),
+                String.valueOf(prev.endEpochSec), String.valueOf(cur.endEpochSec),
+                String.valueOf(Math.round(ratio * 100)), String.valueOf(enemy50TotalFor(id)));
+    }
+
+    /** 近 1s 内敌方 −50% 次数（观测/梭哈判定）。 */
+    int enemy50BurstCount(long enemyMarchId, long nowMs) {
+        java.util.ArrayDeque<Long> dq = enemy50Times.get(enemyMarchId);
+        if (dq == null) return 0;
+        synchronized (dq) {
+            while (!dq.isEmpty() && nowMs - dq.peekFirst() > 1_000L) dq.pollFirst();
+            return dq.size();
+        }
+    }
+
+    /** 敌方 −50% 累计次数。 */
+    int enemy50TotalFor(long enemyMarchId) {
+        Integer v = enemy50Total.get(enemyMarchId);
+        return v == null ? 0 : v;
+    }
+
+    /**
+     * 选档纯函数（批次 K）：普通情况委托 planner（25% 优先、不可达才升 50%）；
+     * 梭哈模式强制连续 25%（不因“25% 发数多”升 50），无 25 才用 50，钻石开启才建议购买。
+     */
+    static GuardianSpeedupPlanner.Step pickSpeedupStep(long ourRemainMs, long enemyRemainMs,
+                                                       long stock25, long stock50,
+                                                       int enemy50BurstCount, int enemy50Total,
+                                                       int usedThisMarch, int maxPerMarch,
+                                                       int usedThisRound, boolean diamondAllowed,
+                                                       long marginMs) {
+        boolean burst = burstMode(enemy50BurstCount, enemy50Total);
+        if (!burst) {
+            return GuardianSpeedupPlanner.next(new GuardianSpeedupPlanner.Input(
+                    ourRemainMs, enemyRemainMs, marginMs, stock25, stock50,
+                    usedThisMarch, maxPerMarch, usedThisRound, diamondAllowed));
+        }
+        long required = Math.max(1L, marginMs);
+        long aheadBefore = enemyRemainMs - ourRemainMs;
+        if (ourRemainMs > 0L && enemyRemainMs > 0L && ourRemainMs <= enemyRemainMs - marginMs) {
+            return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.NONE, 0L,
+                    ourRemainMs, enemyRemainMs, marginMs, required, aheadBefore,
+                    ourRemainMs, stock25, stock50, "burst_done", "已先到（梭哈25%模式）");
+        }
+        if (ourRemainMs <= GuardianSpeedupPlanner.MIN_REMAIN_MS) {
+            return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.NONE, 0L,
+                    ourRemainMs, enemyRemainMs, marginMs, required, aheadBefore,
+                    ourRemainMs, stock25, stock50, "burst_min_remain",
+                    "末端安全余量（我方剩余≤2s），梭哈终止");
+        }
+        if (maxPerMarch > 0 && usedThisMarch >= maxPerMarch) {
+            return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.NONE, 0L,
+                    ourRemainMs, enemyRemainMs, marginMs, required, aheadBefore,
+                    ourRemainMs, stock25, stock50, "burst_march_limit",
+                    "已达 max_speedups_per_march=" + maxPerMarch + "，梭哈终止");
+        }
+        if (usedThisRound >= GuardianSpeedupPlanner.MAX_SHOTS_PER_ROUND) {
+            return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.NONE, 0L,
+                    ourRemainMs, enemyRemainMs, marginMs, required, aheadBefore,
+                    ourRemainMs, stock25, stock50, "burst_round_limit",
+                    "单轮链达 " + GuardianSpeedupPlanner.MAX_SHOTS_PER_ROUND + " 发，梭哈终止");
+        }
+        if (stock25 > 0L) {
+            return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.USE_25,
+                    GuardianSpeedupPlanner.ITEM_SPEEDUP_25, ourRemainMs, enemyRemainMs, marginMs,
+                    required, aheadBefore, (long) (ourRemainMs * GuardianSpeedupPlanner.FACTOR_25),
+                    stock25, stock50, "burst_25",
+                    "敌方 50% 密集（1s " + enemy50BurstCount + " 次/累计 " + enemy50Total
+                            + " 次）→ 连续 25% 梭哈");
+        }
+        if (stock50 > 0L) {
+            return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.USE_50,
+                    GuardianSpeedupPlanner.ITEM_SPEEDUP_50, ourRemainMs, enemyRemainMs, marginMs,
+                    required, aheadBefore, (long) (ourRemainMs * GuardianSpeedupPlanner.FACTOR_50),
+                    stock25, stock50, "burst_50", "25% 道具耗尽，使用 50% 继续梭哈");
+        }
+        if (diamondAllowed) {
+            return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.NEED_DIAMOND, 0L,
+                    ourRemainMs, enemyRemainMs, marginMs, required, aheadBefore,
+                    ourRemainMs, stock25, stock50, "burst_need_diamond",
+                    "梭哈 25% 但道具耗尽 → 钻石路径（优先买 301900）");
+        }
+        return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.NONE, 0L,
+                ourRemainMs, enemyRemainMs, marginMs, required, aheadBefore,
+                ourRemainMs, stock25, stock50, "stock_insufficient",
+                "梭哈 25% 但无道具且钻石关闭，诚实止损");
+    }
+
+    /**
+     * 钻石购买道具选择（经济换算）：梭哈模式必买 301900；普通模式先探测“再买 1 颗 25%”是否可达，
+     * 可达→301900（2×25≈1×50，成本约 800 vs 2000），否则才买 301901。
+     */
+    static long diamondBuyItem(GuardianSpeedupPlanner.Step step, boolean burst,
+                               long ourRemainMs, long enemyRemainMs, long stock25, long stock50,
+                               int usedThisMarch, int maxPerMarch, int usedThisRound,
+                               boolean diamondAllowed, long marginMs) {
+        if (burst) return GuardianSpeedupPlanner.ITEM_SPEEDUP_25;
+        GuardianSpeedupPlanner.Step probe = GuardianSpeedupPlanner.next(
+                new GuardianSpeedupPlanner.Input(ourRemainMs, enemyRemainMs, marginMs,
+                        Math.max(0L, stock25) + 1L, Math.max(0L, stock50),
+                        usedThisMarch, maxPerMarch, usedThisRound, diamondAllowed));
+        return probe.action == GuardianSpeedupPlanner.Action.USE_25
+                ? GuardianSpeedupPlanner.ITEM_SPEEDUP_25
+                : GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
     }
 
     // =====================================================================
@@ -1770,6 +2825,7 @@ public final class ServerGuardianEngine {
     void maybeStartCatchup(WjdrEngine engine, Threat t, Mission m, Config cfg) {
         try {
             if (stopped || t == null || m == null || cfg == null) return;
+            if (RALLY_THREAT_TYPES.contains(t.type)) return;   // 集结走前置连续加速，不用单人 catch-up
             if (!cfg.catchUp) return;                          // 默认 true；关=旧行为
             if (cfg.dryRun) return;                            // dry_run 不发请求（发射阶段已只记录）
             if (t.endEpochSec <= 0L || m.endtimeSec <= 0L) return;
@@ -1869,14 +2925,17 @@ public final class ServerGuardianEngine {
         }
         refreshStock(engine);
         int usedMarch = speedupUsedByMarch.getOrDefault(m.marchId, 0);
-        GuardianSpeedupPlanner.Step step = GuardianSpeedupPlanner.next(
-                new GuardianSpeedupPlanner.Input(ourRemain, enemyRemain, marginMs,
-                        stock25, stock50, usedMarch, cfg.maxSpeedupsPerMarch, c.rounds,
-                        cfg.diamondSpeedupEnabled));
+        int burstCnt = enemy50BurstCount(enemyMarchId, nowMs);
+        int burstTotal = enemy50TotalFor(enemyMarchId);
+        boolean burst = burstMode(burstCnt, burstTotal);
+        boolean diamondOk = diamondAllowed(cfg);
+        GuardianSpeedupPlanner.Step step = pickSpeedupStep(ourRemain, enemyRemain,
+                stock25, stock50, burstCnt, burstTotal, usedMarch, cfg.maxSpeedupsPerMarch,
+                c.rounds, diamondOk, marginMs);
         long itemId;
         if (step.action == GuardianSpeedupPlanner.Action.NEED_DIAMOND) {
-            // 钻石路径沿用 diamond_speedup_enabled（默认 false=零钻石）；catch-up 不发无预算购买
-            if (!cfg.diamondSpeedupEnabled) {
+            // 批次 K：用户开关开且 env 未硬关才买；道具不足才买，优先 301900（25%）
+            if (!diamondOk) {
                 finishCatchup(enemyMarchId, t, "no_item");
                 return;
             }
@@ -1889,8 +2948,9 @@ public final class ServerGuardianEngine {
                 finishCatchup(enemyMarchId, t, "no_item");
                 return;
             }
-            ServerGuardianLauncher.QuickBuyResult br =
-                    launcher.quickBuy(engine, GuardianSpeedupPlanner.ITEM_SPEEDUP_50, 1);
+            long buyItem = diamondBuyItem(step, burst, ourRemain, enemyRemain, stock25, stock50,
+                    usedMarch, cfg.maxSpeedupsPerMarch, c.rounds, diamondOk, marginMs);
+            ServerGuardianLauncher.QuickBuyResult br = launcher.quickBuy(engine, buyItem, 1);
             c.rounds++;
             if (!br.ok) {
                 ledgerDiamond("speedup_diamond_buy_failed", t, m, br.itemId, 0L, bought,
@@ -1899,10 +2959,14 @@ public final class ServerGuardianEngine {
                 return;
             }
             diamondBoughtByMarch.put(m.marchId, bought + 1);
-            stock50 = Math.max(0L, stock50) + 1L;
+            if (buyItem == GuardianSpeedupPlanner.ITEM_SPEEDUP_25) {
+                stock25 = Math.max(0L, stock25) + 1L;
+            } else {
+                stock50 = Math.max(0L, stock50) + 1L;
+            }
             ledgerDiamond("speedup_diamond_buy", t, m, br.itemId, 1L, bought + 1,
                     stock25, stock50, "catchup", br.text, br.code, -1L);
-            itemId = GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
+            itemId = buyItem;
         } else if (!step.usesItem()) {
             if (ourRemain > 0L && enemyRemain > 0L && ourRemain <= enemyRemain - marginMs) {
                 finishCatchup(enemyMarchId, t, "done");
@@ -2063,15 +3127,18 @@ public final class ServerGuardianEngine {
             long ourRemain = m.endtimeSec * 1000L - nowMs;
             long enemyRemain = enemyEnd * 1000L - nowMs;
             refreshStock(engine);
-            GuardianSpeedupPlanner.Step step = GuardianSpeedupPlanner.next(
-                    new GuardianSpeedupPlanner.Input(ourRemain, enemyRemain, marginMs,
-                            stock25, stock50, usedMarch, cfg.maxSpeedupsPerMarch, usedRound,
-                            cfg.diamondSpeedupEnabled));
+            int burstCnt = enemy50BurstCount(enemyMarchId, nowMs);
+            int burstTotal = enemy50TotalFor(enemyMarchId);
+            boolean burst = burstMode(burstCnt, burstTotal);
+            boolean diamondOk = diamondAllowed(cfg);
+            GuardianSpeedupPlanner.Step step = pickSpeedupStep(ourRemain, enemyRemain,
+                    stock25, stock50, burstCnt, burstTotal, usedMarch, cfg.maxSpeedupsPerMarch,
+                    usedRound, diamondOk, marginMs);
             long itemId;
             if (step.action == GuardianSpeedupPlanner.Action.NEED_DIAMOND) {
-                // ---- P1 钻石路径（只有 diamond_speedup_enabled=true 才可能到这里）----
-                // 安全闸 1：开关双保险（planner 已按开关返回，这里防配置热载竞态）
-                if (!cfg.diamondSpeedupEnabled) {
+                // ---- 批次 K 钻石路径（用户开关开 + env 未硬关才可能到这里）----
+                // 安全闸 1：开关双保险（planner 已按开关返回，这里防配置热载竞态/env 硬关）
+                if (!diamondOk) {
                     FileLog.info("守护盟友加速决策 {}:{} R3 未出手 enemyMarchId={} ownMarchId={} "
                                     + "action={} reason=diamond_disabled（planner 意图但开关已关，不发）",
                             fpid, String.valueOf(sid), enemyMarchId, m.marchId, step.action);
@@ -2101,28 +3168,35 @@ public final class ServerGuardianEngine {
                     return;
                 }
                 long buyAtMs = serverNowMs(engine);
-                ServerGuardianLauncher.QuickBuyResult br = launcher.quickBuy(
-                        engine, GuardianSpeedupPlanner.ITEM_SPEEDUP_50, 1L);
+                long buyItem = diamondBuyItem(step, burst, ourRemain, enemyRemain,
+                        stock25, stock50, usedMarch, cfg.maxSpeedupsPerMarch, usedRound,
+                        diamondOk, marginMs);
+                ServerGuardianLauncher.QuickBuyResult br =
+                        launcher.quickBuy(engine, buyItem, 1L);
                 long buyLatencyMs = buyAtMs - compressAtMs;
                 if (!br.ok) {
                     // 单发不重试；不设冷却（供应链/余额问题，下次压缩事件可再尝试）
-                    FileLog.warn("守护盟友钻石购买失败 {}:{} ownMarchId={} code={}（{}），链终止不重试",
-                            fpid, String.valueOf(sid), m.marchId, br.code, br.text);
+                    FileLog.warn("守护盟友钻石购买失败 {}:{} ownMarchId={} itemid={} code={}（{}），链终止不重试",
+                            fpid, String.valueOf(sid), String.valueOf(m.marchId),
+                            String.valueOf(buyItem), String.valueOf(br.code), br.text);
                     ledgerDiamond("speedup_diamond_buy_failed", t, m, br.itemId, 0L, bought,
                             stock25, stock50, "code_" + br.code, br.text, br.code, buyLatencyMs);
                     return;
                 }
                 diamondBoughtByMarch.put(m.marchId, bought + 1);
-                stock50 = Math.max(0L, stock50) + 1L;   // 301901 已入背包 → 本地库存记账 +1
+                if (buyItem == GuardianSpeedupPlanner.ITEM_SPEEDUP_25) {
+                    stock25 = Math.max(0L, stock25) + 1L;
+                } else {
+                    stock50 = Math.max(0L, stock50) + 1L;
+                }
                 FileLog.info("守护盟友钻石购买 {}:{} 成功 ownMarchId={} itemid={} count=1 "
-                                + "diamondBought={} stock50={} latencyMs={}",
+                                + "diamondBought={} stock25={} stock50={} latencyMs={}",
                         fpid, String.valueOf(sid), m.marchId, br.itemId,
-                        bought + 1, stock50, buyLatencyMs);
+                        bought + 1, stock25, stock50, buyLatencyMs);
                 ledgerDiamond("speedup_diamond_buy", t, m, br.itemId, 1L, bought + 1,
                         stock25, stock50, "need_diamond", br.text, br.code, buyLatencyMs);
-                // 与 App 同序（GuardianLaunch.java:996-1010）：买完立即在同一轮用 301901 发加速；
-                // 「购买+使用」算本次链动作 1 次（与直接用道具同口径，不放宽单轮 6 发上限）。
-                itemId = GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
+                // 买完立即使用同一道具（购买+使用算链动作 1 次，不放宽单轮上限）。
+                itemId = buyItem;
             } else if (!step.usesItem()) {
                 FileLog.info("守护盟友加速决策 {}:{} R3 未出手 enemyMarchId={} ownMarchId={} "
                                 + "ourEnd={} enemyEnd={} ourRemain={}ms enemyRemain={}ms ahead={}ms "
@@ -2465,6 +3539,7 @@ public final class ServerGuardianEngine {
             c.speedupEnabled = bool(sub, st, p, "speedup_enabled", false);   // P1 对等加速总开关
             // P1 对等加速参数（默认全关/安全值；缺键=旧行为）
             c.diamondSpeedupEnabled = bool(sub, st, p, "diamond_speedup_enabled", false);
+            c.diamondHardOff = false;   // env 硬关只在 applyEnvOverrides 置位
             long diamondMax = num(sub, st, p, "diamond_max_per_march", 3L);
             c.diamondMaxPerMarch = diamondMax < 0L ? 3 : (int) Math.min(Integer.MAX_VALUE, diamondMax);
             long marginS = num(sub, st, p, "speedup_margin_s", 2L);
@@ -2549,6 +3624,23 @@ public final class ServerGuardianEngine {
             c.reserveSlots = (int) Math.max(0L, Math.min(MAX_RESERVE_SLOTS, reserve));
             // 批次 F：队列无位重试（0=关闭回旧行为；间隔 1..30s）
             c.requireAlly = bool(sub, st, p, "require_ally", true);
+            // 批次 I 集结规则（默认：开启/300s/允许出发秒−25%/满兵/要求有人满兵上车）
+            c.rallyEnabled = bool(sub, st, p, "rally_enabled", true);
+            long rallyWait = num(sub, st, p, "rally_wait_sec", DEFAULT_RALLY_WAIT_SEC);
+            c.rallyWaitSec = Math.max(0L, Math.min(MAX_RALLY_WAIT_SEC, rallyWait));
+            c.rallyEarlySpeedup = bool(sub, st, p, "rally_early_speedup", true);
+            double ratio = 1.0d;
+            Object ratioRaw = first(sub, st, p, "rally_full_troops_ratio");
+            if (ratioRaw instanceof Number) ratio = ((Number) ratioRaw).doubleValue();
+            else if (ratioRaw instanceof String) {
+                try { ratio = Double.parseDouble(((String) ratioRaw).trim()); }
+                catch (Throwable ignored) { }
+            }
+            if (ratio <= 0d || ratio > 1.0d) ratio = 1.0d;
+            c.rallyFullTroopsRatio = ratio;
+            c.rallyRequireJoinFull = bool(sub, st, p, "rally_require_join_full", true);
+            c.rallyTroopsMin = Math.max(0L, Math.min(10_000_000L,
+                    num(sub, st, p, "rally_troops_min", 300_000L)));
             long qrMax = num(sub, st, p, "queue_retry_max", DEFAULT_QUEUE_RETRY_MAX);
             c.queueRetryMax = (int) Math.max(0L, Math.min(MAX_QUEUE_RETRY, qrMax));
             long qrInterval = num(sub, st, p, "queue_retry_interval_ms",
@@ -2631,7 +3723,8 @@ public final class ServerGuardianEngine {
      *   <li>{@code VAULT_GUARDIAN_DRY_RUN=1|0}：演练开关（实盘需 0）</li>
      *   <li>{@code VAULT_GUARDIAN_TROOPS_MIN=N}：敌方兵力下限（0=不限）</li>
      *   <li>{@code VAULT_GUARDIAN_SPEEDUP=1|0}：P1 对等加速总开关</li>
-     *   <li>{@code VAULT_GUARDIAN_DIAMOND=1|0}：钻石购买开关（真实花钻石，慎用）</li>
+     *   <li>{@code VAULT_GUARDIAN_DIAMOND=0|off}：钻石加速**全局硬关**（忽略用户开关）；
+     *       {@code =1}/{@code 未设}：以用户 params {@code diamond_speedup_enabled} 为准（真实花钻）</li>
      *   <li>{@code VAULT_GUARDIAN_TIMING=1|0|off}：卡秒发射开关（批次 D 起默认关；on/1=启用）</li>
      *   <li>{@code VAULT_GUARDIAN_QUEUE_RETRY=off|0}：队列无位重试开关（off/0=旧行为，只记一次 skip_queue）</li>
      *   <li>{@code VAULT_GUARDIAN_REQUIRE_ALLY=off|0}：关闭盟友坐标反查强校验（off/0=坐标直发旧行为）</li>
@@ -2651,8 +3744,16 @@ public final class ServerGuardianEngine {
         if (speedup != null) c.speedupEnabled = speedup;
         Boolean catchUp = envBool("VAULT_GUARDIAN_CATCHUP");
         if (catchUp != null) c.catchUp = catchUp;
+        // 批次 K：env=0/off 只做硬关；env=1/未设 以用户 params 为准（不再单方面强制开启）
         Boolean diamond = envBool("VAULT_GUARDIAN_DIAMOND");
-        if (diamond != null) c.diamondSpeedupEnabled = diamond;
+        if (diamond != null) {
+            if (!diamond) {
+                c.diamondSpeedupEnabled = false;
+                c.diamondHardOff = true;
+            } else {
+                c.diamondHardOff = false;
+            }
+        }
         Boolean timing = envBool("VAULT_GUARDIAN_TIMING");
         if (timing != null) c.timingEnabled = timing;
         Boolean queueRetry = envBool("VAULT_GUARDIAN_QUEUE_RETRY");
@@ -2720,6 +3821,8 @@ public final class ServerGuardianEngine {
             String dedupe = mailKey(mail);
             if (dedupe != null && !seenReportKeys.add(dedupe)) continue;   // 同邮件重复推送
             if (seenReportKeys.size() > 500) seenReportKeys.clear();
+            // 批次 J：我方先到 + 战报/驻防邮件（first_type=30）→ 账本 garrison_done
+            maybeNoteGarrisonDone(mail, cfg);
             String verdict = mapping.verdictOf(mail.firstType, mail.secondType);
             String title = clip(mail.title, 80);
             String note = "first=" + mail.firstType + " second=" + mail.secondType
@@ -3958,7 +5061,10 @@ public final class ServerGuardianEngine {
                 ? Math.max(0L, clockMs.getAsLong() - alliesUpdatedAtMs) : -1L)
                 + ", alliesLastProto=" + alliesLastProto
                 + ", lastProto=" + lastProto
-                + ", lastPushAgoMs=" + ago + (stopped ? ", stopped" : "") + "}";
+                + ", lastPushAgoMs=" + ago
+                + ", warActive=" + warModeActive
+                + ", warRecalledGathers=" + warRecalledMarches.size()
+                + (stopped ? ", stopped" : "") + "}";
     }
 
     /** 配置快照（单测/诊断）。 */

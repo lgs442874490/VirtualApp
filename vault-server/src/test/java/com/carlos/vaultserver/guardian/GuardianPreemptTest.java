@@ -249,7 +249,8 @@ public class GuardianPreemptTest {
     /** 本类用坐标型威胁（targetUid=0）验证抢占；显式关 require_ally 以免被盟友反查拦截。 */
     private static String cfg(boolean preempt, int queueRetryMax, boolean dryRun) {
         return "{\"sub\":{\"enabled\":true,\"dry_run\":" + dryRun + ",\"preempt_gather\":"
-                + preempt + ",\"require_ally\":false},\"strategy\":{\"queue_retry_max\":" + queueRetryMax
+                + preempt + ",\"require_ally\":false,\"rally_enabled\":false},"
+                + "\"strategy\":{\"queue_retry_max\":" + queueRetryMax
                 + ",\"formation\":{\"hero_ids\":[1]}}}";
     }
 
@@ -396,7 +397,7 @@ public class GuardianPreemptTest {
             e.ownMarches.add(ownMarch(1100L + i, 4L, 2L, nowS + 600L, OWN_UID));
         }
         String json = "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"preempt_gather\":true,"
-                + "\"require_ally\":false},"
+                + "\"require_ally\":false,\"rally_enabled\":false},"
                 + "\"strategy\":{\"queue_retry_max\":0,\"preempt_cooldown_ms\":0,"
                 + "\"preempt_max_per_minute\":2,\"formation\":{\"hero_ids\":[1]}}}";
         accountWithParams(json);

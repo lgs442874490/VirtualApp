@@ -238,7 +238,7 @@ public class GuardianQueueRetryTest {
     private static String cfg(int retryMax) {
         return "{\"sub\":{\"enabled\":true,\"dry_run\":false},"
                 + "\"strategy\":{\"queue_retry_max\":" + retryMax
-                + ",\"require_ally\":false"
+                + ",\"require_ally\":false,\"rally_enabled\":false"
                 + ",\"formation\":{\"hero_ids\":[1]}}}";
     }
 

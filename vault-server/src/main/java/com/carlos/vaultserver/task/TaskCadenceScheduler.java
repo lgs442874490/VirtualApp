@@ -499,6 +499,11 @@ public final class TaskCadenceScheduler {
             skip(role, arenaExclusive ? "arena_exclusive" : "no_due");
             return null;
         }
+        // G7（2026-10-31 用户口径）：守护战争态只暂停「占队任务」；其它任务照常派单。
+        if (keeper.wartimeYield(role, dueFn)) {
+            skip(role, "wartime");
+            return null;
+        }
         return new RoleCandidate(acc, role, dueFn);
     }
 

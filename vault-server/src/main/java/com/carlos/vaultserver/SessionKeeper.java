@@ -2389,6 +2389,12 @@ public final class SessionKeeper implements SessionControl,
         return ServerWarState.wartimeYield(role.fpid, role.sid, role.uid);
     }
 
+    /** G7：按任务粒度让位（守护战争态只暂停占队任务）。 */
+    public boolean wartimeYield(RoleKey role, String fnId) {
+        if (role == null) return true;
+        return ServerWarState.wartimeYield(role.fpid, role.sid, role.uid, fnId);
+    }
+
     /** 账号当前 active 角色会话 sid（无会话 0）。 */
     public long sessionSid(String fpid) {
         LiveSession ls = sessionForAccount(fpid);

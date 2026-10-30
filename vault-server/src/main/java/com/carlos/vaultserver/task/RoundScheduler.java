@@ -131,6 +131,11 @@ public final class RoundScheduler {
             return role == null || wartimeYield(role.fpid);
         }
 
+        /** G7：按任务粒度的战时让位（默认退回整角色口径；SessionKeeper 覆盖为占队清单）。 */
+        default boolean wartimeYield(RoleKey role, String fnId) {
+            return wartimeYield(role);
+        }
+
         /** 该账号当前 App 选中角色（activeUid 优先）；无会话返回 null。 */
         default RoleKey activeRole(String fpid) {
             return null;
