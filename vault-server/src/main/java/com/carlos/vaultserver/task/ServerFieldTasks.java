@@ -8,6 +8,7 @@ import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
 import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.FileLog;
+import com.carlos.vaultserver.guardian.GuardianReserve;
 import com.carlos.vaultserver.formation.FormationLibrary;
 import com.carlos.vaultserver.formation.HeroAvailability;
 import com.carlos.vaultserver.formation.FormationResolver;
@@ -65,7 +66,10 @@ public final class ServerFieldTasks {
             tc.engine.collectNotifies(2500);
             JSONObject p = tc.params("gather");
             int minLevel = Math.max(1, Math.min(6, p.optInt("min_level", 5)));
-            int maxQueues = Math.max(1, Math.min(5, p.optInt("max_queues", 3)));
+            // 批次 E：守护实盘 → 采集让出 reserve_slots 队（默认 1，clamp 0..2，至少保留 1 队采集）
+            int guardReserve = GuardianReserve.reserveSlots(tc);
+            int rawMaxQueues = Math.max(1, Math.min(5, p.optInt("max_queues", 3)));
+            int maxQueues = GuardianReserve.effectiveMaxQueues(rawMaxQueues, guardReserve);
             List<Integer> resList = new ArrayList<>();
             org.json.JSONArray named = p.optJSONArray("resources_named");
             if (named != null && named.length() > 0) {
@@ -127,7 +131,8 @@ public final class ServerFieldTasks {
             int regularCapacity = Math.max(0, capacity - (mineReserved ? 1 : 0));
             int slots = Math.max(0, regularCapacity - active);
             if (slots == 0) {
-                m.skip("采集队列已满(" + active + "/" + capacity + ")");
+                m.skip("采集队列已满(" + active + "/" + capacity + ")"
+                        + (guardReserve > 0 ? "（为守护预留 " + guardReserve + " 队）" : ""));
             } else {
                 int sent = 0;
                 for (int res : resList) {
@@ -163,7 +168,8 @@ public final class ServerFieldTasks {
                 if (sent > 0) {
                     m.claimed("派出采集×" + sent);
                     tc.saveModText("gather", "send",
-                            "上轮派出 " + sent + " 队（队列 " + active + "/" + capacity + "）");
+                            "上轮派出 " + sent + " 队（队列 " + active + "/" + capacity + "）"
+                                    + (guardReserve > 0 ? "；为守护预留 " + guardReserve + " 队" : ""));
                 } else m.skip("附近未搜到资源点");
             }
         } catch (Exception e) {
@@ -1044,8 +1050,11 @@ public final class ServerFieldTasks {
                                          Exec.Multi m) throws Exception {
         GatherConfigV2 cfg = GatherConfigV2.parse(gatherParams);
         AssetSnapshot.Queue queue = lib.queue() == null ? AssetSnapshot.Queue.empty() : lib.queue();
-        FileLog.info("gather queue: capacity={} occupied={} idle={} special={} limit={}",
-                queue.capacity, queue.occupied, queue.idle, specialQueueCount(queue), queue.limitReached);
+        // 批次 E：守护实盘时预留行军队列（采集让位；默认 1，clamp 0..2）
+        int guardReserve = GuardianReserve.reserveSlots(tc);
+        FileLog.info("gather queue: capacity={} occupied={} idle={} special={} limit={} reserve={}",
+                queue.capacity, queue.occupied, queue.idle, specialQueueCount(queue),
+                queue.limitReached, guardReserve);
 
         long now = System.currentTimeMillis();
         long backoffUntil = stateLongOf(tc, gatherBackoffKey(tc));
@@ -1118,10 +1127,12 @@ public final class ServerFieldTasks {
             }
         }
         int slots = Math.max(0, slotCount(cfg, queue.idle, unbound, queue.capacity,
-                queue.limitReached) - allianceMineReserved);
+                queue.limitReached, guardReserve) - allianceMineReserved);
         if (queue.limitReached || slots <= 0) {
             String text = "采集队列已满(capacity=" + queue.capacity + " occupied=" + queue.occupied
-                    + " idle=" + queue.idle + " unbound=" + unbound + ")";
+                    + " idle=" + queue.idle + " unbound=" + unbound
+                    + (guardReserve > 0 ? " reserve=" + guardReserve : "") + ")"
+                    + (guardReserve > 0 ? "（为守护预留 " + guardReserve + " 队）" : "");
             m.skip(text);
             tc.saveModText("gather", "send", text);
             writeQueueMapping(tc, mapping);
@@ -1253,6 +1264,7 @@ public final class ServerFieldTasks {
         } else {
             m.skip("本轮未派出采集队");
         }
+        if (guardReserve > 0) statuses.add("为守护预留 " + guardReserve + " 队");
         String text = statuses.isEmpty() ? "无可派采集队列" : String.join("；", statuses);
         tc.saveModText("gather", "send", text);
     }
@@ -1538,8 +1550,20 @@ public final class ServerFieldTasks {
      */
     static int slotCount(GatherConfigV2 cfg, int idle, int unboundEnabledQueues,
                          int worldCapacity, boolean limitReached) {
+        return slotCount(cfg, idle, unboundEnabledQueues, worldCapacity, limitReached, 0);
+    }
+
+    /**
+     * 批次 E：在容量/启用数/空闲夹取后，再扣掉守护预留（采集让位；下限保留 1 队采集）。
+     * reserve&gt;0 且有效上限&gt;0 时 {@code effective = max(1, effective - reserve)}。
+     */
+    static int slotCount(GatherConfigV2 cfg, int idle, int unboundEnabledQueues,
+                         int worldCapacity, boolean limitReached, int reserve) {
         if (cfg == null || limitReached) return 0;
         int effective = cfg.effectiveQueueLimit(worldCapacity, 0);
+        if (reserve > 0 && effective > 0) {
+            effective = Math.max(1, effective - Math.max(0, Math.min(2, reserve)));
+        }
         int slots = Math.min(Math.max(0, idle), Math.max(0, unboundEnabledQueues));
         return Math.max(0, Math.min(slots, effective));
     }

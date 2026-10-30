@@ -137,6 +137,9 @@ public final class ServerGuardianEngine {
     static final Set<Long> DEFAULT_ATTACK_TYPES = Set.of(2L, 102L);
     /** 批次 D：敌方已落地多久内仍补驻防（秒；超过则不再追）。 */
     static final long LATE_REINFORCE_WINDOW_SEC = 60L;
+    /** 批次 E：守护实盘时为驻防预留的世界行军队列数（默认 1；clamp 0..2）。 */
+    static final int DEFAULT_RESERVE_SLOTS = 1;
+    static final int MAX_RESERVE_SLOTS = 2;
     /** 默认行军时长 D（秒；设计 §3.5：P0 仅用于日志，立即发射；P1 再标定）。 */
     static final long DEFAULT_D_SEC = 38L;
     /** 批次 C-A3：卡秒发射的提前余量（秒；fireAt = 敌 endSec - dSec - margin）。 */
@@ -210,6 +213,8 @@ public final class ServerGuardianEngine {
         long fireMarginSec = DEFAULT_FIRE_MARGIN_SEC;
         // ---- 批次 C-A6 多目标并发（批次 D 默认 3；clamp 1..6） ----
         int maxConcurrent = DEFAULT_MAX_CONCURRENT_MISSIONS;
+        // ---- 批次 E：实盘时为守护预留行军队列（采集让位；默认 1，clamp 0..2） ----
+        int reserveSlots = DEFAULT_RESERVE_SLOTS;
         // ---- 批次 D 追赶加速（2026-10-31）：核心是驻防成功；我方晚到就主动追到先到 ----
         /** 追赶总开关（默认 true；env VAULT_GUARDIAN_CATCHUP=off 或 params catch_up=false 回旧行为）。 */
         boolean catchUp = true;
@@ -248,6 +253,7 @@ public final class ServerGuardianEngine {
                     + " max_speedups=" + (maxSpeedupsPerMarch <= 0 ? "unlimited" : String.valueOf(maxSpeedupsPerMarch))
                     + " timing=" + timingEnabled + " fire_margin=" + fireMarginSec + "s"
                     + " max_concurrent=" + maxConcurrent
+                    + " reserve_slots=" + reserveSlots
                     + " attack_types=" + attackTypes
                     + " catch_up=" + catchUp + " catchup_margin=" + catchUpMarginS + "s"
                     + " catchup_rounds=" + (catchUpMaxRounds <= 0 ? "unlimited" : String.valueOf(catchUpMaxRounds));
@@ -1975,6 +1981,9 @@ public final class ServerGuardianEngine {
             // 批次 D：多目标并发默认 3（clamp 1..6；运行时再被空闲队列 freeMarchSlots 夹取）
             long maxConc = num(sub, st, p, "max_concurrent", DEFAULT_MAX_CONCURRENT_MISSIONS);
             c.maxConcurrent = (int) Math.max(1L, Math.min(MAX_CONCURRENT_CAP, maxConc));
+            // 批次 E：实盘守护预留 0..2 个世界队列（默认 1；0=不预留）
+            long reserve = num(sub, st, p, "reserve_slots", DEFAULT_RESERVE_SLOTS);
+            c.reserveSlots = (int) Math.max(0L, Math.min(MAX_RESERVE_SLOTS, reserve));
             Object rd = first(sub, st, p, "recall_distance");
             if (rd != null) c.recallDistance = Math.max(0d, Exec.longOf(rd));
         } catch (Throwable ignored) {
