@@ -126,14 +126,30 @@ public class ServerGuardianEngineTest {
         a.token = "tk";
         a.auto = true;
         a.activeSid = String.valueOf(SID);
-        if (guardianJson != null) {
+        String effective = legacyTimingOff(guardianJson);
+        if (effective != null) {
             Map<String, String> params = new LinkedHashMap<>();
-            params.put(ServerGuardianEngine.FN_ID, guardianJson);
+            params.put(ServerGuardianEngine.FN_ID, effective);
             a.roleParams.put(String.valueOf(SID), params);
         }
         List<VaultStore.Account> in = new ArrayList<>();
         in.add(a);
         vault.replaceAll(in);
+    }
+
+    /**
+     * 本类用例写在批次 C-A3 之前，默认按“推送后立即发射”断言；统一注入 timing=false 保持原断言语义。
+     * 卡秒默认开/重排/自愈/取消等新行为由 GuardianTimingTest 覆盖。
+     */
+    private static String legacyTimingOff(String guardianJson) {
+        if (guardianJson == null || guardianJson.trim().isEmpty()) return guardianJson;
+        try {
+            JSONObject p = new JSONObject(guardianJson);
+            if (!p.has("timing")) p.put("timing", false);
+            return p.toString();
+        } catch (Throwable ignored) {
+            return guardianJson;
+        }
     }
 
     private ServerGuardianEngine engine() {
@@ -1801,5 +1817,103 @@ public class ServerGuardianEngineTest {
         assertEquals("显式 hero_ids 保持原行为", 2, heroes.size());
         assertTrue(heroes.contains(50002L) && heroes.contains(50003L));
         assertFalse("显式路径不混入 AUTO 最强英雄", heroes.contains(50001L));
+    }
+
+    // ================= 批次 C A4：防守战报判定（只记账/告警，绝不撤防） =================
+
+    /** notify_new_mail_syn 最小样本（mail_cover_info 形状，与 WarNotify 解析口径一致）。 */
+    private static Map<String, Object> mailPush(long first, long second, long mailId, String title) {
+        Map<String, Object> cover = new LinkedHashMap<>();
+        cover.put("first_type", first);
+        cover.put("second_type", second);
+        cover.put("mailid_new", mailId);
+        cover.put("title", title);
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("mail_cover_info", cover);
+        return c;
+    }
+
+    private int ledgerEventCount(String event) {
+        String raw = state.getString(ServerGuardianEngine.ledgerKey(FPID, SID));
+        if (raw == null) return 0;
+        JSONArray arr;
+        try {
+            arr = new JSONArray(raw);
+        } catch (Throwable t) {
+            return 0;
+        }
+        int n = 0;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o != null && event.equals(o.optString("ev", ""))) n++;
+        }
+        return n;
+    }
+
+    @Test
+    public void mailReport_winLossUnknown_recordedWithoutMissionChanges() {
+        accountWithParams("{\"sub\":{\"enabled\":true},\"strategy\":{\"dry_run\":true}}");
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine engine = engine();
+        int missionsBefore = engine.missionCount();
+        int threatsBefore = engine.threatCount();
+
+        // 胜：first=30 second=5 → report_win
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9001L, "防守胜利"));
+        assertEquals("胜战报记 report_win", 1, ledgerEventCount("report_win"));
+        assertTrue(ledgerEventCount("report_loss") == 0);
+
+        // 败：first=30 second=6 → report_loss + mod 文案
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 6L, 9002L, "防守失败"));
+        assertEquals("败战报记 report_loss", 1, ledgerEventCount("report_loss"));
+        String mod = state.getString(ServerGuardianEngine.modKey(FPID, SID));
+        assertNotNull("败战报应写 mod 文案", mod);
+        assertTrue("mod 应含“防守战报：败”", mod.contains("防守战报：败"));
+
+        // 未收录：second=1 → report_unknown，且每分钟最多 1 条（连续两条只计 1）
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 1L, 9003L, "未校准"));
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 1L, 9004L, "未校准2"));
+        assertEquals("未收录码每分钟最多 1 条 ledger", 1, ledgerEventCount("report_unknown"));
+
+        // 非战报 first（16=普通邮件）忽略
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(16L, 5L, 9005L, "其它邮件"));
+        assertEquals("非战报 first 不记 report_win", 1, ledgerEventCount("report_win"));
+        assertEquals(0, ledgerEventCount("report_loss") - 1);
+
+        // 铁律：战报只记账——不撤防、不改 missions、不发任何游戏协议
+        assertEquals("战报不得改变 missions", missionsBefore, engine.missionCount());
+        assertEquals("战报不得改变威胁表", threatsBefore, engine.threatCount());
+        assertTrue("战报不得发任何游戏协议（撤防/召回/加速）", e.requested.isEmpty());
+    }
+
+    @Test
+    public void mailReport_reportCodesOverride_turnsWinIntoUnknown() {
+        JSONObject strategy = new JSONObject();
+        strategy.put("dry_run", true);
+        JSONObject byFirst = new JSONObject();
+        byFirst.put("30", new JSONObject().put("5", "unknown"));
+        strategy.put("report_codes", new JSONObject().put("by_first", byFirst).toString());
+        JSONObject guardian = new JSONObject();
+        guardian.put("sub", new JSONObject().put("enabled", true));
+        guardian.put("strategy", strategy);
+        accountWithParams(guardian.toString());
+
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine engine = engine();
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9101L, "校准为未知"));
+        assertEquals("params 覆盖：已校准未知 → 不判胜", 0, ledgerEventCount("report_win"));
+        assertEquals(1, ledgerEventCount("report_unknown"));
+        assertEquals(0, engine.missionCount());
+        assertTrue(e.requested.isEmpty());
+    }
+
+    @Test
+    public void mailReport_duplicateMailId_deduped() {
+        accountWithParams("{\"sub\":{\"enabled\":true},\"strategy\":{\"dry_run\":true}}");
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine engine = engine();
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9201L, "重复"));
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9201L, "重复"));
+        assertEquals("同 mailId 重复推送只记 1 次", 1, ledgerEventCount("report_win"));
     }
 }

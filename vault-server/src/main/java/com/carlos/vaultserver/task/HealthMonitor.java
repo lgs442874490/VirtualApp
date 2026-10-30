@@ -17,6 +17,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
 
@@ -89,6 +90,20 @@ public final class HealthMonitor {
     public static final String KIND_CADENCE = "cadence";
     /** 批次10：派单停滞（全局，30 分钟无派单增长）。 */
     public static final String KIND_CADENCE_STALL = "cadence_stall";
+
+    // ===== 批次 C A11（2026-10-31）：守护盟友健康 =====
+    /** 守护已启用且在线，但账本 24h 无事件（INFO，只落日志）。 */
+    public static final String KIND_GUARDIAN_IDLE = "guardian_idle";
+    /** 近 6h launch_failed/recall_failed ≥3（WARN，推企微）。 */
+    public static final String KIND_GUARDIAN_FAIL = "guardian_fail";
+    public static final String SEVERITY_INFO = "INFO";
+    public static final String SEVERITY_WARN = "WARN";
+    public static final long GUARDIAN_IDLE_MILLIS = 24L * 3600_000L;
+    public static final long GUARDIAN_FAIL_WINDOW_MILLIS = 6L * 3600_000L;
+    public static final int GUARDIAN_FAIL_THRESHOLD = 3;
+    static final String GUARDIAN_LEDGER_PREFIX = "srv:guardian:";
+    static final String GUARDIAN_LEDGER_SUFFIX = ":ledger";
+    static final Set<String> GUARDIAN_FAIL_EVENTS = Set.of("launch_failed", "recall_failed");
 
     /** 批次10：派单停滞阈值（30 分钟窗口内 dispatch 无增长）。 */
     public static final long CADENCE_STALL_MILLIS = 30L * 60_000L;
@@ -177,6 +192,13 @@ public final class HealthMonitor {
         /** {@code srv:cad:{fpid}:*} 键数。 */
         public int cadenceKeys;
 
+        /** 批次 C A11：守护是否启用（按角色参数/ env 生效值；只读）。 */
+        public boolean guardianEnabled;
+        /** 守护账本最近事件 ts（0=从未产生）。 */
+        public long guardianLastEventMillis;
+        /** 近 6h {@code launch_failed}/{@code recall_failed} 条数。 */
+        public int guardianFails6h;
+
         /** 展示名：label(fpid:sid)，label 空则 fpid:sid。 */
         public String display() {
             String id = sid == null || sid.isEmpty() ? fpid : fpid + ":" + sid;
@@ -193,9 +215,16 @@ public final class HealthMonitor {
         public final String metric;
         public final String advice;
         public final long atMillis;
+        /** 级别：WARN（默认，推企微）/ INFO（只落日志，同样 6h 节流）。 */
+        public final String severity;
 
         Alert(String kind, String fpid, String title, String account, String metric,
               String advice, long atMillis) {
+            this(kind, fpid, title, account, metric, advice, atMillis, SEVERITY_WARN);
+        }
+
+        Alert(String kind, String fpid, String title, String account, String metric,
+              String advice, long atMillis, String severity) {
             this.kind = kind;
             this.fpid = fpid;
             this.title = title;
@@ -203,6 +232,7 @@ public final class HealthMonitor {
             this.metric = metric;
             this.advice = advice;
             this.atMillis = atMillis;
+            this.severity = severity == null ? SEVERITY_WARN : severity;
         }
     }
 
@@ -230,6 +260,7 @@ public final class HealthMonitor {
         // 日志/节奏键按 fpid 聚合（同账号多角色合并，告警面向账号）
         Map<String, LogStats> stats = new LinkedHashMap<>();
         Map<String, Integer> cadenceByFpid = new LinkedHashMap<>();
+        Map<String, GuardStats> guardStats = new LinkedHashMap<>();
         if (stateStore != null) {
             Map<String, Object> snap = stateStore.snapshot();
             long from2h = nowMillis - ZERO_CLAIM_WINDOW_MILLIS;
@@ -247,6 +278,11 @@ public final class HealthMonitor {
                     if (parts.length >= 4 && !parts[2].isEmpty()) {
                         cadenceByFpid.merge(parts[2], 1, Integer::sum);
                     }
+                } else if (key.startsWith(GUARDIAN_LEDGER_PREFIX)
+                        && key.endsWith(GUARDIAN_LEDGER_SUFFIX)) {
+                    // 批次 C A11：守护账本（角色键 srv:guardian:{fpid}:{sid}:{uid}:ledger；
+                    // 兼容旧键 srv:guardian:{fpid}:{sid}:ledger），按账号聚合
+                    collectGuardianLedger(guardStats, key, e.getValue(), nowMillis);
                 }
             }
         }
@@ -301,6 +337,12 @@ public final class HealthMonitor {
             }
             Integer ck = cadenceByFpid.get(fpid);
             h.cadenceKeys = ck == null ? 0 : ck;
+            GuardStats gs = guardStats.get(fpid);
+            if (gs != null) {
+                h.guardianLastEventMillis = gs.lastEventMillis;
+                h.guardianFails6h = gs.fails6h;
+            }
+            h.guardianEnabled = guardianEnabledForAccount(acc);
             out.add(h);
         }
         return out;
@@ -348,6 +390,63 @@ public final class HealthMonitor {
         }
     }
 
+    /** 批次 C A11：守护账本聚合中间结果（按账号）。 */
+    private static final class GuardStats {
+        long lastEventMillis;
+        int fails6h;
+    }
+
+    /**
+     * 解析一条守护账本 {@code srv:guardian:{fpid}:{sid}[:{uid}]:ledger}：
+     * 最近事件 ts + 近 6h {@code launch_failed}/{@code recall_failed} 条数（纯读）。
+     */
+    private static void collectGuardianLedger(Map<String, GuardStats> stats, String key, Object raw,
+                                              long nowMillis) {
+        String[] p = key.split(":");
+        if (p.length < 5) return;                 // srv guardian fpid sid [uid] ledger
+        String fpid = p[2];
+        if (fpid.isEmpty()) return;
+        GuardStats gs = stats.computeIfAbsent(fpid, k -> new GuardStats());
+        JSONArray arr = jsonArray(raw);
+        long from6h = nowMillis - GUARDIAN_FAIL_WINDOW_MILLIS;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o == null) continue;
+            long ts = o.optLong("ts", 0L);
+            if (ts <= 0L || ts > nowMillis) continue;
+            if (ts > gs.lastEventMillis) gs.lastEventMillis = ts;
+            if (ts >= from6h && GUARDIAN_FAIL_EVENTS.contains(o.optString("ev", ""))) {
+                gs.fails6h++;
+            }
+        }
+    }
+
+    /**
+     * 账号是否有任一角色启用守护（effective enabled，含 env 覆盖）：
+     * 先看当前 activeSid/activeUid，再回退角色池（同服双角色：主控未配但兄弟角色配置了也要能告警）。
+     */
+    static boolean guardianEnabledForAccount(VaultStore.Account acc) {
+        if (acc == null) return false;
+        try {
+            long sid = longOf(acc.activeSid);
+            long uid = longOf(acc.activeUid);
+            if (sid > 0L
+                    && com.carlos.vaultserver.guardian.ServerGuardianEngine
+                    .guardianEnabled(acc, sid, uid)) return true;
+            int checked = 0;
+            for (VaultStore.RoleEntry r : acc.roles.values()) {
+                if (r == null || checked++ >= 10) break;
+                long rsid = longOf(r.sid);
+                long ruid = longOf(r.uid);
+                if (rsid > 0L
+                        && com.carlos.vaultserver.guardian.ServerGuardianEngine
+                        .guardianEnabled(acc, rsid, ruid)) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
     private static JSONArray jsonArray(Object raw) {
         if (raw == null) return new JSONArray();
         try {
@@ -374,6 +473,8 @@ public final class HealthMonitor {
             addIfNotNull(out, checkZeroClaim(h, nowMillis));
             addIfNotNull(out, checkErrorRate(h, nowMillis));
             addIfNotNull(out, checkCadence(h, nowMillis, cadenceSchedulerEnabled));
+            addIfNotNull(out, checkGuardianIdle(h, nowMillis));
+            addIfNotNull(out, checkGuardianFail(h, nowMillis));
         }
         return out;
     }
@@ -435,6 +536,36 @@ public final class HealthMonitor {
         return new Alert(KIND_CADENCE, h.fpid, "节奏键缺失", h.display(),
                 "在线但 srv:cad:* 键数为 0（节奏调度可能未启动/被关闭）",
                 "确认 VAULT_TASK_CADENCE 未关闭、TaskCadenceScheduler 正常派单", nowMillis);
+    }
+
+    // =======================================================================
+    // 批次 C A11：守护盟友健康（纯函数；只读 state/参数快照）
+    // =======================================================================
+
+    /** 守护 24h 无账本事件（INFO）：已启用 + 在线 + 最近事件超 24h（或从未产生）。 */
+    public static Alert checkGuardianIdle(AccountHealth h, long nowMillis) {
+        if (h == null || !h.online || !h.guardianEnabled) return null;
+        if (h.guardianLastEventMillis > 0L
+                && nowMillis - h.guardianLastEventMillis < GUARDIAN_IDLE_MILLIS) return null;
+        String metric = h.guardianLastEventMillis <= 0L
+                ? "守护已启用但从未产生账本事件（阈值 24h）"
+                : "最近 " + Math.max(0L,
+                (nowMillis - h.guardianLastEventMillis) / 3600_000L)
+                + " 小时无守护账本事件（阈值 24h）";
+        return new Alert(KIND_GUARDIAN_IDLE, h.fpid, "守护 24h 无事件", h.display(), metric,
+                "检查守护开关/盟友与目标配置、联盟态势推送是否到达、会话是否长期让位",
+                nowMillis, SEVERITY_INFO);
+    }
+
+    /** 守护连续失败（WARN）：已启用 + 在线 + 近 6h launch_failed/recall_failed ≥3。 */
+    public static Alert checkGuardianFail(AccountHealth h, long nowMillis) {
+        if (h == null || !h.online || !h.guardianEnabled) return null;
+        if (h.guardianFails6h < GUARDIAN_FAIL_THRESHOLD) return null;
+        return new Alert(KIND_GUARDIAN_FAIL, h.fpid, "守护连续失败", h.display(),
+                "近 6 小时失败 " + h.guardianFails6h + " 次（launch_failed/recall_failed，阈值 ≥"
+                        + GUARDIAN_FAIL_THRESHOLD + "）",
+                "查看守护账本失败码（队列满/英雄不在城/编队不可用）与游戏内行军队列",
+                nowMillis, SEVERITY_WARN);
     }
 
     // =======================================================================
@@ -777,6 +908,22 @@ public final class HealthMonitor {
             List<Alert> alerts = new ArrayList<>(evaluate(health, nowMillis, cadenceSchedulerEnabled()));
             // 批次10：全局派单停滞告警（预算打满只在 addCadenceAlerts 内记 INFO，不进告警）
             addCadenceAlerts(alerts, nowMillis);
+            // 批次 C A11：INFO（如“守护 24h 无事件”）只落日志并同样 6h 节流，不推企微；WARN 走既有推送。
+            Map<String, Object> infoSnap = stateStore == null ? Collections.emptyMap()
+                    : stateStore.snapshot();
+            List<Alert> warnAlerts = new ArrayList<>();
+            for (Alert a : alerts) {
+                if (a != null && SEVERITY_INFO.equals(a.severity)) {
+                    if (throttled(stateStore, lastAlertMemory, infoSnap, a.kind, a.fpid, nowMillis)) {
+                        continue;
+                    }
+                    markAlert(stateStore, lastAlertMemory, a.kind, a.fpid, nowMillis);
+                    FileLog.info("健康提示[{}] {}：{}（仅日志，不推企微）", a.kind, a.fpid, a.metric);
+                } else {
+                    warnAlerts.add(a);
+                }
+            }
+            alerts = warnAlerts;
             if (alerts.isEmpty()) return 0;
             Map<String, Object> snap = stateStore == null ? Collections.emptyMap()
                     : stateStore.snapshot();
@@ -840,7 +987,7 @@ public final class HealthMonitor {
         }
         if (thread != null && thread.isAlive()) return;
         stopped = false;
-        FileLog.info("自动化健康告警已启用：每 {} 分钟评估（会话离线/节奏停滞/零领取/错误率/节奏键/派单停滞）",
+        FileLog.info("自动化健康告警已启用：每 {} 分钟评估（会话离线/节奏停滞/零领取/错误率/节奏键/派单停滞/守护健康）",
                 String.valueOf(EVAL_INTERVAL_MILLIS / 60_000L));
         Thread t = new Thread(this::loop, "health-monitor");
         t.setDaemon(true);

@@ -25,6 +25,9 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
@@ -117,6 +120,8 @@ public final class ServerGuardianEngine {
     static final String PROTO_ALLIANCE_POS_INFO = "notify_alliance_member_pos_info";
     static final String PROTO_ALLIANCE_POS_UPDATE = "notify_alliance_member_pos_update";
     static final String PROTO_WORLD_PLAYER_INIT = "notify_world_player_init";
+    /** 战斗/防守战报邮件推送（first_type=30；批次 C A4 只记账，不撤防）。 */
+    static final String PROTO_NEW_MAIL = "notify_new_mail_syn";
     static final String PROTO_MARCH_DETAIL = "req_world_march_detail_4_player_situation";
 
     static final Set<String> ALLIANCE_MARCH_PROTOS = Set.of(
@@ -128,6 +133,8 @@ public final class ServerGuardianEngine {
     static final long MARCH_TYPE_ATTACK = 2L;
     /** 默认行军时长 D（秒；设计 §3.5：P0 仅用于日志，立即发射；P1 再标定）。 */
     static final long DEFAULT_D_SEC = 38L;
+    /** 批次 C-A3：卡秒发射的提前余量（秒；fireAt = 敌 endSec - dSec - margin）。 */
+    static final long DEFAULT_FIRE_MARGIN_SEC = 5L;
     /** ETA 过近（<3s）不再追（物理上无解；P1 卡秒/加速才处理）。 */
     static final long MIN_ETA_SEC = 3L;
     /** 敌召回/到达判定阈值（A-11 实证：endtime−now >2s 判召回）。 */
@@ -140,7 +147,7 @@ public final class ServerGuardianEngine {
     static final long STALE_NO_ETA_THREAT_MILLIS = 10 * 60_000L;
     /** 任务表保留：endtime 之后保留 10 分钟（等战报/敌情结束；P0 不主动撤已驻扎）。 */
     static final long MISSION_KEEP_AFTER_END_SEC = 600L;
-    /** 同角色最多同时 1 个在途驻防任务（P0；App 上限 2，服务器先保守 1）。 */
+    /** 默认同角色最多同时 1 个在途驻防任务（批次 C-A6 可配 max_concurrent=2）。 */
     static final int MAX_CONCURRENT_MISSIONS = 1;
     /** 账本上限。 */
     static final int LEDGER_CAP = 50;
@@ -180,11 +187,19 @@ public final class ServerGuardianEngine {
         List<Long> heroIds = new ArrayList<>();
         double recallDistance = 0d;          // 预留
         long dSec = DEFAULT_D_SEC;
+        // ---- 批次 C-A3 卡秒发射（2026-10-31；默认开，env/params 可关回旧行为） ----
+        /** 发射时刻 = 敌 endSec - dSec - fireMarginSec。 */
+        boolean timingEnabled = true;
+        long fireMarginSec = DEFAULT_FIRE_MARGIN_SEC;
+        // ---- 批次 C-A6 多目标并发（默认 1=线上不变；上限 2） ----
+        int maxConcurrent = MAX_CONCURRENT_MISSIONS;
         // ---- 批次10 统一编队（task-32；缺省=旧行为零变化） ----
         /** 原始 roleParams（JSONObject→Map 深转换；FormationResolver 契约入参）。 */
         Map<String, Object> rawParams = new LinkedHashMap<>();
         /** formation_library JSON（先取 guardian 自身，其次 formation fn 参数）。 */
         String formationLibraryJson = "";
+        /** 战报码表覆盖 JSON（params guardian.strategy.report_codes；空=内置默认）。 */
+        String reportCodesJson = "";
 
         static Config disabled() {
             return new Config();
@@ -206,7 +221,9 @@ public final class ServerGuardianEngine {
                     + " diamond_speedup=" + diamondSpeedupEnabled
                     + " diamond_max=" + (diamondMaxPerMarch <= 0 ? "unlimited" : String.valueOf(diamondMaxPerMarch))
                     + " speedup_margin=" + speedupMarginS + "s"
-                    + " max_speedups=" + (maxSpeedupsPerMarch <= 0 ? "unlimited" : String.valueOf(maxSpeedupsPerMarch));
+                    + " max_speedups=" + (maxSpeedupsPerMarch <= 0 ? "unlimited" : String.valueOf(maxSpeedupsPerMarch))
+                    + " timing=" + timingEnabled + " fire_margin=" + fireMarginSec + "s"
+                    + " max_concurrent=" + maxConcurrent;
         }
     }
 
@@ -359,6 +376,13 @@ public final class ServerGuardianEngine {
     private final Map<Long, Integer> speedupUsedByMarch = new ConcurrentHashMap<>();
     /** P1 钻石路径：每个我方驻防行军已购买钻石道具数（我方 marchId → 次数；diamond_max_per_march 记账）。 */
     private final Map<Long, Integer> diamondBoughtByMarch = new ConcurrentHashMap<>();
+    /** 批次 C A4：战报码表（配置热载时重解析；默认内置码表）。 */
+    private volatile GuardReportCodes.Mapping reportCodes = new GuardReportCodes.Mapping();
+    /** 战报邮件去重（mailId 优先；防一次 infolist 同步重复记账），cap 防膨胀。 */
+    private final Set<String> seenReportKeys = ConcurrentHashMap.newKeySet();
+    /** 未收录码 ledger 节流（每分钟最多 1 条；抑制计数随下一条带出）。 */
+    private volatile long lastUnknownReportLedgerMs = 0L;
+    private int unknownReportSuppressed = 0;
     /** P1：道具库存本地记账（-1=未知 → 从背包快照初始化；成功后递减；2827 清零该档）。 */
     private volatile long stock25 = -1L;
     private volatile long stock50 = -1L;
@@ -366,12 +390,22 @@ public final class ServerGuardianEngine {
     private volatile long stockLoadedAtMs;
 
     private final ExecutorService guardExec;
+    /** 批次 C-A3：一次性延迟调度器（单线程 daemon；绝不在 guardExec 内 sleep）。 */
+    private final ScheduledExecutorService fireSched;
+    /** marchId → 待发射定时任务（威胁更新重排/消失/stop 时取消）。 */
+    private final Map<Long, ScheduledFuture<?>> fireTasks = new ConcurrentHashMap<>();
+    /** marchId → 当前计划的发射服务器秒（观测/测试）。 */
+    private final Map<Long, Long> fireAtSecs = new ConcurrentHashMap<>();
+    /** marchId → 已记账的 fireAt（同一计划只记一条 timing_wait，防 update 刷屏）。 */
+    private final Map<Long, Long> timingNotes = new ConcurrentHashMap<>();
     private final AtomicBoolean attached = new AtomicBoolean(false);
     private volatile Config config = Config.disabled();
     private volatile long lastConfigLoadAt;
     private volatile long lastPushAt;
     private volatile String lastProto = "";
     private volatile boolean stopped;
+    /** 批次 C-A3：本机毫秒时钟（生产 System::currentTimeMillis；单测注入固定/推进时钟）。 */
+    private final java.util.function.LongSupplier clockMs;
     /** R2 Phase 2B：角色 uid（>0 时守护账本/状态键按角色隔离；0=旧/兼容路径）。 */
     private final long roleUid;
     /** 当前会话是否为 active 角色写入方（supplier 由 SessionKeeper 提供；异常按 false）。 */
@@ -379,7 +413,7 @@ public final class ServerGuardianEngine {
 
     /** 旧构造器（P0/兼容路径）：roleUid=0、activeRole=null，键型与行为完全不变。 */
     public ServerGuardianEngine(String fpid, long sid, StateStore store, VaultStore vault) {
-        this(fpid, sid, 0L, store, vault, null);
+        this(fpid, sid, 0L, store, vault, null, System::currentTimeMillis);
     }
 
     /**
@@ -395,14 +429,28 @@ public final class ServerGuardianEngine {
      */
     public ServerGuardianEngine(String fpid, long sid, long roleUid, StateStore store,
                                 VaultStore vault, Supplier<Boolean> activeRole) {
+        this(fpid, sid, roleUid, store, vault, activeRole, System::currentTimeMillis);
+    }
+
+    /** 批次 C-A3：可注入本机毫秒时钟（单测卡秒/自愈，不真 sleep；生产用上一个构造）。 */
+    ServerGuardianEngine(String fpid, long sid, long roleUid, StateStore store,
+                         VaultStore vault, Supplier<Boolean> activeRole,
+                         java.util.function.LongSupplier clockMs) {
         this.fpid = fpid == null ? "" : fpid;
         this.sid = sid;
         this.roleUid = roleUid;
         this.store = store;
         this.vault = vault;
         this.activeRole = activeRole;
+        this.clockMs = clockMs == null ? System::currentTimeMillis : clockMs;
         this.guardExec = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "guardian-" + this.fpid + "-" + sid
+                    + (roleUid > 0L ? "-" + roleUid : ""));
+            t.setDaemon(true);
+            return t;
+        });
+        this.fireSched = Executors.newSingleThreadScheduledExecutor(r -> {
+            Thread t = new Thread(r, "guardian-fire-" + this.fpid + "-" + sid
                     + (roleUid > 0L ? "-" + roleUid : ""));
             t.setDaemon(true);
             return t;
@@ -469,7 +517,7 @@ public final class ServerGuardianEngine {
         if (stopped) return;
         reloadConfig(false);
         long nowS = nowSec(engine);
-        long nowMs = System.currentTimeMillis();
+        long nowMs = clockMs.getAsLong();
         try {
             for (Map.Entry<Long, Threat> e : threats.entrySet()) {
                 Threat t = e.getValue();
@@ -483,6 +531,8 @@ public final class ServerGuardianEngine {
                     if (threats.remove(e.getKey(), t)) {
                         attempted.remove(t.marchId);
                         submitted.remove(t.marchId);
+                        cancelFire(t.marchId);
+                        timingNotes.remove(t.marchId);
                     }
                 }
             }
@@ -511,11 +561,29 @@ public final class ServerGuardianEngine {
                     || nowMs - en.getValue() > FAIL_LOG_THROTTLE_MS * 4L);
         } catch (Throwable ignored) {
         }
+        // 批次 C-A3 安全兜底：tick 也做到期自检（定时器丢失时最迟一个 tick 内自愈）
+        try {
+            fireDueNow(engine, config, clockMs.getAsLong());
+        } catch (Throwable ignored) {
+        }
     }
 
     /** 停止执行器（会话 shutdown 时调用；不发请求）。 */
     public void shutdown() {
         stopped = true;
+        for (ScheduledFuture<?> f : fireTasks.values()) {
+            try {
+                f.cancel(false);
+            } catch (Throwable ignored) {
+            }
+        }
+        fireTasks.clear();
+        fireAtSecs.clear();
+        timingNotes.clear();
+        try {
+            fireSched.shutdownNow();
+        } catch (Throwable ignored) {
+        }
         try {
             guardExec.shutdownNow();
         } catch (Throwable ignored) {
@@ -562,12 +630,25 @@ public final class ServerGuardianEngine {
 
     /** 推送入口（钩子线程；包级可见便于单测直接驱动）。 */
     void onPush(WjdrEngine engine, String proto, Map<String, Object> content) {
+        onPushAt(engine, proto, content, clockMs.getAsLong());
+    }
+
+    /** 批次 C-A3：可注入 nowMs 的推送入口（单测卡秒逻辑，不真 sleep）。 */
+    void onPushAt(WjdrEngine engine, String proto, Map<String, Object> content, long nowMs) {
         if (stopped || proto == null || content == null) return;
         reloadConfig(false);
         Config cfg = config;
         if (!cfg.enabled) return;                       // 默认关：零副作用（不解析、不写状态）
         lastPushAt = System.currentTimeMillis();
         lastProto = proto;
+        // 安全兜底（A3）：每次入口先做一次“到期自检”，防定时器丢失（自愈）
+        fireDueNow(engine, cfg, nowMs);
+
+        // 批次 C A4：防守战报判定（只记账/告警；**绝不触发撤防、不改 missions**）
+        if (PROTO_NEW_MAIL.equals(proto)) {
+            handleMailReports(content, cfg);
+            return;
+        }
 
         // 盟友坐标表（P1 距离标定用；P0 仅存内存，供 target_point 回退）
         if (PROTO_ALLIANCE_POS_INFO.equals(proto) || PROTO_ALLIANCE_POS_UPDATE.equals(proto)) {
@@ -584,8 +665,11 @@ public final class ServerGuardianEngine {
 
         if (!ALLIANCE_MARCH_PROTOS.contains(proto)) return;
 
-        long nowMs = System.currentTimeMillis();
-        for (Threat t : parseThreats(content)) {
+        // 批次 C-A6：同批多威胁按敌方 endtime 升序（最紧急优先下单），保持 attempted/submitted 去重。
+        List<Threat> parsedThreats = parseThreats(content);
+        parsedThreats.sort(java.util.Comparator.comparingLong(
+                x -> x != null && x.endEpochSec > 0 ? x.endEpochSec : Long.MAX_VALUE));
+        for (Threat t : parsedThreats) {
             if (t.marchId <= 0 || t.ownerUid <= 0) continue;
             Threat prev = threats.get(t.marchId);
             Threat cur = prev == null ? t : prev.merge(t);
@@ -595,19 +679,157 @@ public final class ServerGuardianEngine {
             Decision d = decide(cur, cfg, nowMs);
             if (!d.hit) {
                 noteThresholdReject(cur, d, cfg);
+                cancelFire(cur.marchId);
+                timingNotes.remove(cur.marchId);
                 continue;
             }
-            if (!submitted.add(cur.marchId)) continue;
-            final long marchId = cur.marchId;
+            // 批次 C-A3：未到卡秒时刻 → 注册/重排一次性延迟任务；已到 → 立即提交 guardExec
+            scheduleOrFire(engine, cur, cfg, nowMs);
+        }
+    }
+
+    // =====================================================================
+    // 批次 C-A3：卡秒发射（fireAt = 敌 endSec - dSec - fireMarginSec）
+    // guardExec 单线程只做请求；等待由 fireSched 单线程延迟任务完成（绝不 sleep）。
+    // =====================================================================
+
+    /** 发射时刻（服务器秒；无 ETA 返回 0=立即）。纯函数。 */
+    static long fireAtSec(Threat t, Config cfg) {
+        if (t == null || t.endEpochSec <= 0 || cfg == null) return 0L;
+        return t.endEpochSec - cfg.dSec - cfg.fireMarginSec;
+    }
+
+    /**
+     * 计划本轮动作：到期（now>=fireAt，含 timing 关闭）→ 提交 guardExec；未到期 → 注册/重排定时任务。
+     * 入口调用（onPush/威胁更新）与定时器到期后复核共用。
+     */
+    private void scheduleOrFire(WjdrEngine engine, Threat t, Config cfg, long nowMs) {
+        if (t == null) return;
+        if (!cfg.timingEnabled) {
+            timingNotes.remove(t.marchId);
+            submitNow(engine, t.marchId);
+            return;
+        }
+        long nowS = nowMs / 1000L;
+        long fireAt = fireAtSec(t, cfg);
+        if (fireAt <= 0L || nowS >= fireAt) {
+            timingNotes.remove(t.marchId);
+            submitNow(engine, t.marchId);   // 已到点：立刻发射（绝不比旧的立即发射更晚）
+            return;
+        }
+        scheduleFire(engine, t, cfg, fireAt, nowMs);
+    }
+
+    /** 注册/重排一次性延迟任务（同 marchId 只保留一个）。 */
+    private void scheduleFire(WjdrEngine engine, Threat t, Config cfg, long fireAt, long nowMs) {
+        if (stopped || t == null) return;
+        final long marchId = t.marchId;
+        long delayMs = Math.max(1L, fireAt * 1000L - nowMs);
+        cancelFire(marchId);
+        fireAtSecs.put(marchId, fireAt);
+        final ScheduledFuture<?>[] holder = new ScheduledFuture<?>[1];
+        try {
+            holder[0] = fireSched.schedule(() -> {
+                try {
+                    fireTasks.remove(marchId, holder[0]);
+                    fireAtSecs.remove(marchId);
+                    if (stopped) return;
+                    // 到期 → 回 guardExec 线程重新读取最新 Threat/配置并复核（不在此线程发请求）
+                    submitNow(engine, marchId);
+                } catch (Throwable ex) {
+                    // 定时任务异常只记日志，绝不打死调度线程
+                    FileLog.warn("守护盟友卡秒任务异常 {}:{} marchId={}：{}",
+                            fpid, String.valueOf(sid), String.valueOf(marchId), String.valueOf(ex));
+                }
+            }, delayMs, TimeUnit.MILLISECONDS);
+            fireTasks.put(marchId, holder[0]);
+        } catch (Throwable ex) {
+            fireTasks.remove(marchId);
+            fireAtSecs.remove(marchId);
+            FileLog.warn("守护盟友卡秒注册失败 {}:{} marchId={}：{}",
+                    fpid, String.valueOf(sid), String.valueOf(marchId), String.valueOf(ex));
+            submitNow(engine, marchId);   // 退化为立即发射（安全兜底）
+            return;
+        }
+        noteTimingWait(t, cfg, fireAt, nowMs / 1000L);
+    }
+
+    /** 取消某威胁的待发射定时任务（更新重排/消失/stop/早到复核）。 */
+    private void cancelFire(long marchId) {
+        fireAtSecs.remove(marchId);
+        ScheduledFuture<?> f = fireTasks.remove(marchId);
+        if (f != null) {
             try {
-                guardExec.execute(() -> {
-                    submitted.remove(marchId);
-                    executeThreat(engine, marchId);
-                });
-            } catch (Throwable t2) {
-                submitted.remove(marchId);
+                f.cancel(false);
+            } catch (Throwable ignored) {
             }
         }
+    }
+
+    /** 提交到 guardExec（去重；真正发请求前的最后一步）。 */
+    private void submitNow(WjdrEngine engine, long marchId) {
+        cancelFire(marchId);
+        if (!submitted.add(marchId)) return;
+        try {
+            guardExec.execute(() -> {
+                submitted.remove(marchId);
+                executeThreat(engine, marchId);
+            });
+        } catch (Throwable t) {
+            submitted.remove(marchId);
+        }
+    }
+
+    /**
+     * 安全兜底自愈：扫描威胁表，凡已到 fireAt 且仍满足 decide 的威胁立即提交（防定时器丢失）。
+     * 每次 onPush 入口与 tick 周期都会调用；同 tick 多个到期按 endSec 升序提交。
+     */
+    void fireDueNow(WjdrEngine engine, Config cfg, long nowMs) {
+        if (stopped || cfg == null || !cfg.enabled || !cfg.timingEnabled) return;
+        long nowS = nowMs / 1000L;
+        List<Threat> due = new ArrayList<>();
+        for (Threat t : threats.values()) {
+            if (t == null || attempted.contains(t.marchId) || submitted.contains(t.marchId)) continue;
+            long fireAt = fireAtSec(t, cfg);
+            if (fireAt > 0L && nowS < fireAt) continue;
+            if (decide(t, cfg, nowMs).hit) due.add(t);
+            else {
+                cancelFire(t.marchId);
+                timingNotes.remove(t.marchId);
+            }
+        }
+        due.sort(java.util.Comparator.comparingLong(x -> x.endEpochSec > 0 ? x.endEpochSec : Long.MAX_VALUE));
+        for (Threat t : due) submitNow(engine, t.marchId);
+    }
+
+    /** 单测/自愈入口：用指定 nowMs 触发一次到期自检。 */
+    void selfHealTimingAt(WjdrEngine engine, long nowMs) {
+        fireDueNow(engine, config, nowMs);
+    }
+
+    /** 当前待发射定时任务数（观测/测试）。 */
+    int fireTaskCount() {
+        return fireTasks.size();
+    }
+
+    /** 当前计划的发射时刻（服务器秒；无计划返回 -1；测试/观测）。 */
+    long scheduledFireAtSec(long marchId) {
+        Long v = fireAtSecs.get(marchId);
+        return v == null ? -1L : v;
+    }
+
+    /** 记账 timing_wait（同一 fireAt 只记一次；dry_run 前缀 [DRY]）。 */
+    private void noteTimingWait(Threat t, Config cfg, long fireAt, long nowS) {
+        if (t == null) return;
+        Long prev = timingNotes.get(t.marchId);
+        if (prev != null && prev == fireAt) return;
+        timingNotes.put(t.marchId, fireAt);
+        long wait = Math.max(0L, fireAt - nowS);
+        String note = (cfg.dryRun ? "[DRY] " : "") + "卡秒等待：约 " + wait + "s 后发射（fireAt="
+                + fireAt + "，敌 end=" + t.endEpochSec + "，D=" + cfg.dSec
+                + "s，margin=" + cfg.fireMarginSec + "s）";
+        ledger("timing_wait", t, null, note);
+        writeMod("⏳" + note);
     }
 
     /**
@@ -630,9 +852,13 @@ public final class ServerGuardianEngine {
     private void handleThreatGone(WjdrEngine engine, long marchId) {
         Threat t = threats.remove(marchId);
         if (t == null) return;
+        boolean hadFire = fireTasks.containsKey(marchId);
+        cancelFire(marchId);
+        timingNotes.remove(marchId);
         attempted.remove(marchId);
         submitted.remove(marchId);
         thresholdNotes.remove(marchId);
+        if (hadFire) ledger("timing_cancel", t, null, "威胁消失/召回，取消卡秒等待");
         long nowS = nowSec(engine);
         boolean recalled = t.endEpochSec - nowS > RECALL_THRESHOLD_SEC;
         if (!recalled) {
@@ -670,9 +896,17 @@ public final class ServerGuardianEngine {
         Threat t = threats.get(marchId);
         if (t == null) return;
         Config cfg = config;
-        long nowMs = System.currentTimeMillis();
+        long nowMs = clockMs.getAsLong();
         Decision d = decide(t, cfg, nowMs);
         if (!d.hit) return;
+        // 批次 C-A3：定时器可能早到/威胁 endtime 被刷新推迟 → 重新卡秒（不提前发射）
+        if (cfg.timingEnabled) {
+            long fireAt = fireAtSec(t, cfg);
+            if (fireAt > 0L && nowMs / 1000L < fireAt) {
+                scheduleFire(engine, t, cfg, fireAt, nowMs);
+                return;
+            }
+        }
         if (!attempted.add(marchId)) return;             // P0：每威胁最多 1 次动作
         if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) {
             ledger("skip_offline", t, null, "会话不在线（跳过，不补发旧情）");
@@ -690,7 +924,7 @@ public final class ServerGuardianEngine {
             }
             targetCooldowns.remove(targetKey);
         }
-        if (!activeTargets.add(targetKey) || missions.size() >= MAX_CONCURRENT_MISSIONS) {
+        if (!activeTargets.add(targetKey) || missions.size() >= cfg.maxConcurrent) {
             activeTargets.remove(targetKey);
             ledger("skip_busy", t, null,
                     "已有驻防任务在跑（missions=" + missions.size() + "）");
@@ -705,7 +939,9 @@ public final class ServerGuardianEngine {
                         + " → 目标" + (t.targetUid > 0 ? " uid" + t.targetUid : "")
                         + (t.hasXY ? "(" + t.x + "," + t.y + ")" : "")
                         + " ETA " + Math.max(0, eta) + "s，D=" + cfg.dSec + "s，warYield="
-                        + warYieldNote() + "（dry_run 只记录不发射）";
+                        + warYieldNote()
+                        + (cfg.timingEnabled ? "，卡秒 fireAt=" + fireAtSec(t, cfg) : "")
+                        + "（dry_run 只记录不发射）";
                 FileLog.info("守护盟友[DRY] {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("dry_run", t, null, text);
                 writeMod("🛡[DRY] " + text);
@@ -737,6 +973,7 @@ public final class ServerGuardianEngine {
                 String text = "已发射 type=5 驻防 marchId=" + r.marchId + " endtime=" + r.endtimeSec
                         + "（敌 endtime=" + t.endEpochSec + (ahead != 0 ? "，我方" + (ahead >= 0 ? "先于敌 " : "晚于敌 ") + Math.abs(ahead) + "s" : "")
                         + "）目标" + targetText(t, pt)
+                        + (cfg.timingEnabled ? "｜卡秒 fireAt=" + fireAtSec(t, cfg) : "")
                         + (autoNote == null || autoNote.isEmpty() ? "" : "｜" + autoNote);
                 FileLog.info("守护盟友发射 {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("launched", t, r, text);
@@ -1168,8 +1405,11 @@ public final class ServerGuardianEngine {
                 }
             }
             config = parsed;
+            // 批次 C A4：码表随配置热载重解析（非法覆盖→内置默认，fail-closed）
+            reportCodes = GuardReportCodes.Mapping.parse(parsed.reportCodesJson);
         } catch (Throwable t) {
             config = Config.disabled();
+            reportCodes = new GuardReportCodes.Mapping();
         }
     }
 
@@ -1194,6 +1434,23 @@ public final class ServerGuardianEngine {
             Config c = json == null || json.isEmpty()
                     ? parseConfig(null) : parseConfig(new JSONObject(json));
             return c.enabled && !c.dryRun;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 该角色守护是否启用（只看 enabled，不区分 dry_run；供 HealthMonitor 只读告警判定）。
+     * 参数读取顺序与运行期一致：roleParamsByUid → 旧 sid 表；缺省走 parseConfig(null) 以应用 env。
+     */
+    public static boolean guardianEnabled(VaultStore.Account acc, long sid, long uid) {
+        if (acc == null) return false;
+        try {
+            java.util.Map<String, String> raw = VaultStore.roleParamsOf(acc, sid, uid);
+            String json = raw == null ? null : raw.get(FN_ID);
+            Config c = json == null || json.isEmpty()
+                    ? parseConfig(null) : parseConfig(new JSONObject(json));
+            return c.enabled;
         } catch (Throwable t) {
             return false;
         }
@@ -1281,6 +1538,14 @@ public final class ServerGuardianEngine {
             }
             long d = num(sub, st, p, "d_sec", DEFAULT_D_SEC);
             if (d >= 10L && d <= 600L) c.dSec = d;   // 界外值忽略（防配置错误把 D 当 0）
+            // 批次 C-A3：卡秒发射（默认开；timing=false 回旧立即发射）+ 提前余量
+            c.timingEnabled = bool(sub, st, p, "timing", true);
+            long marginSec = num(sub, st, p, "fire_margin_sec", DEFAULT_FIRE_MARGIN_SEC);
+            if (marginSec < 0L || marginSec > 60L) marginSec = DEFAULT_FIRE_MARGIN_SEC;
+            c.fireMarginSec = marginSec;
+            // 批次 C-A6：多目标并发（默认 1=线上不变；上限 2）
+            long maxConc = num(sub, st, p, "max_concurrent", MAX_CONCURRENT_MISSIONS);
+            c.maxConcurrent = (int) Math.max(1L, Math.min(2L, maxConc));
             Object rd = first(sub, st, p, "recall_distance");
             if (rd != null) c.recallDistance = Math.max(0d, Exec.longOf(rd));
         } catch (Throwable ignored) {
@@ -1294,6 +1559,14 @@ public final class ServerGuardianEngine {
         // 批次10：统一编队参数（无这些键 → isConfigured=false → 旧行为）
         c.rawParams = ServerGuardianLauncher.toParamMap(p);
         c.formationLibraryJson = p.optString("formation_library", "");
+        // 批次 C A4：战报码表覆盖（strategy.report_codes / sub.report_codes / 顶层 report_codes；JSON 字符串）
+        Object rc = null;
+        JSONObject rcStrategy = p.optJSONObject("strategy");
+        JSONObject rcSub = p.optJSONObject("sub");
+        if (rcStrategy != null && rcStrategy.has("report_codes")) rc = rcStrategy.opt("report_codes");
+        else if (rcSub != null && rcSub.has("report_codes")) rc = rcSub.opt("report_codes");
+        else rc = p.opt("report_codes");
+        c.reportCodesJson = rc == null ? "" : String.valueOf(rc).trim();
         return c;
     }
 
@@ -1341,6 +1614,7 @@ public final class ServerGuardianEngine {
      *   <li>{@code VAULT_GUARDIAN_TROOPS_MIN=N}：敌方兵力下限（0=不限）</li>
      *   <li>{@code VAULT_GUARDIAN_SPEEDUP=1|0}：P1 对等加速总开关</li>
      *   <li>{@code VAULT_GUARDIAN_DIAMOND=1|0}：钻石购买开关（真实花钻石，慎用）</li>
+     *   <li>{@code VAULT_GUARDIAN_TIMING=1|0|off}：卡秒发射开关（默认开；off/0=回到立即发射）</li>
      * </ul>
      * 目标（盟友 uid / 坐标）无需配置：威胁目标由联盟/世界 push 自动解析
      * （{@code decide} 的 ally_uid/target_uid/target_point 均为 0 时不过滤、{@code resolveTargetPoint}
@@ -1356,6 +1630,8 @@ public final class ServerGuardianEngine {
         if (speedup != null) c.speedupEnabled = speedup;
         Boolean diamond = envBool("VAULT_GUARDIAN_DIAMOND");
         if (diamond != null) c.diamondSpeedupEnabled = diamond;
+        Boolean timing = envBool("VAULT_GUARDIAN_TIMING");
+        if (timing != null) c.timingEnabled = timing;
         String troops = setting("VAULT_GUARDIAN_TROOPS_MIN");
         if (troops != null) {
             try {
@@ -1394,6 +1670,66 @@ public final class ServerGuardianEngine {
         } catch (Throwable t) {
             return def;
         }
+    }
+
+    // =====================================================================
+    // 批次 C A4：防守战报判定（只记账/告警；战报永不撤防）
+    // =====================================================================
+
+    /**
+     * 处理 {@code notify_new_mail_syn}：first_type=30 战斗邮件按码表判胜/败/未知。
+     *
+     * <p><b>铁律（用户 20261017 裁决）</b>：本方法只写 ledger/mod/FileLog，
+     * <b>绝不调用 {@code handleThreatGone}/不修改 {@code missions}</b>——撤防只由敌情解除驱动。
+     */
+    void handleMailReports(Map<String, Object> content, Config cfg) {
+        List<GuardReportCodes.ReportMail> mails = GuardReportCodes.parseMails(content);
+        if (mails.isEmpty()) return;
+        GuardReportCodes.Mapping mapping = reportCodes;
+        for (GuardReportCodes.ReportMail mail : mails) {
+            if (!mapping.isBattleFirst(mail.firstType)) continue;
+            String dedupe = mailKey(mail);
+            if (dedupe != null && !seenReportKeys.add(dedupe)) continue;   // 同邮件重复推送
+            if (seenReportKeys.size() > 500) seenReportKeys.clear();
+            String verdict = mapping.verdictOf(mail.firstType, mail.secondType);
+            String title = clip(mail.title, 80);
+            String note = "first=" + mail.firstType + " second=" + mail.secondType
+                    + " verdict=" + (verdict == null ? "unknown(未收录)" : verdict)
+                    + (title.isEmpty() ? "" : " title=" + title);
+            if (GuardReportCodes.WIN.equals(verdict)) {
+                ledger("report_win", null, null, note);
+                FileLog.info("守护战报:胜 fpid={} sid={} uid={} {}",
+                        fpid, String.valueOf(sid), String.valueOf(roleUid), note);
+            } else if (GuardReportCodes.LOSS.equals(verdict)) {
+                ledger("report_loss", null, null, note);
+                writeMod("⚠ 防守战报：败（first=" + mail.firstType
+                        + " second=" + mail.secondType + "）");
+                FileLog.warn("守护战报:败 fpid={} sid={} uid={} {}",
+                        fpid, String.valueOf(sid), String.valueOf(roleUid), note);
+            } else {
+                // null=未收录（待校准） / "unknown"=已校准未知：都不判成败、不撤防
+                String why = verdict == null ? "未收录(待校准)" : "已校准未知";
+                long nowMs = System.currentTimeMillis();
+                if (nowMs - lastUnknownReportLedgerMs >= 60_000L) {
+                    lastUnknownReportLedgerMs = nowMs;
+                    String suppress = unknownReportSuppressed > 0
+                            ? "（此前 " + unknownReportSuppressed + " 条已合并）" : "";
+                    ledger("report_unknown", null, null, note + " " + why + suppress);
+                    unknownReportSuppressed = 0;
+                } else {
+                    unknownReportSuppressed++;
+                }
+                FileLog.info("GUARD_REPORT_UNKNOWN first={} second={} mailId={} title={} ({})",
+                        String.valueOf(mail.firstType), String.valueOf(mail.secondType),
+                        String.valueOf(mail.mailId), title, why);
+            }
+        }
+    }
+
+    /** 战报去重键：优先 mailId（infolist 重复同步/多段推送）；无 id → 不用去重（返回 null）。 */
+    private static String mailKey(GuardReportCodes.ReportMail mail) {
+        if (mail == null || mail.mailId <= 0L) return null;
+        return mail.mailId + ":" + mail.firstType + ":" + mail.secondType;
     }
 
     // =====================================================================
