@@ -139,6 +139,12 @@ public final class ServerGuardianEngine {
     static final long LATE_REINFORCE_WINDOW_SEC = 60L;
     /** 批次 E：守护实盘时为驻防预留的世界行军队列数（默认 1；clamp 0..2）。 */
     static final int DEFAULT_RESERVE_SLOTS = 1;
+    /** 批次 F：队列无位重试（默认 12 次 × 5s；截止敌 end+60s；0=旧行为）。 */
+    static final int DEFAULT_QUEUE_RETRY_MAX = 12;
+    static final int MAX_QUEUE_RETRY = 60;
+    static final long DEFAULT_QUEUE_RETRY_INTERVAL_MS = 5_000L;
+    /** 同一威胁 skip_queue 账本节流（≤1 条/分钟）。 */
+    static final long QUEUE_RETRY_NOTE_THROTTLE_MS = 60_000L;
     static final int MAX_RESERVE_SLOTS = 2;
     /** 默认行军时长 D（秒；设计 §3.5：P0 仅用于日志，立即发射；P1 再标定）。 */
     static final long DEFAULT_D_SEC = 38L;
@@ -213,6 +219,9 @@ public final class ServerGuardianEngine {
         long fireMarginSec = DEFAULT_FIRE_MARGIN_SEC;
         // ---- 批次 C-A6 多目标并发（批次 D 默认 3；clamp 1..6） ----
         int maxConcurrent = DEFAULT_MAX_CONCURRENT_MISSIONS;
+        // ---- 批次 F：队列无位有界重试（默认 12 次 × 5s；0=旧行为） ----
+        int queueRetryMax = DEFAULT_QUEUE_RETRY_MAX;
+        long queueRetryIntervalMs = DEFAULT_QUEUE_RETRY_INTERVAL_MS;
         // ---- 批次 E：实盘时为守护预留行军队列（采集让位；默认 1，clamp 0..2） ----
         int reserveSlots = DEFAULT_RESERVE_SLOTS;
         // ---- 批次 D 追赶加速（2026-10-31）：核心是驻防成功；我方晚到就主动追到先到 ----
@@ -254,6 +263,8 @@ public final class ServerGuardianEngine {
                     + " timing=" + timingEnabled + " fire_margin=" + fireMarginSec + "s"
                     + " max_concurrent=" + maxConcurrent
                     + " reserve_slots=" + reserveSlots
+                    + " queue_retry_max=" + queueRetryMax
+                    + " queue_retry_interval_ms=" + queueRetryIntervalMs
                     + " attack_types=" + attackTypes
                     + " catch_up=" + catchUp + " catchup_margin=" + catchUpMarginS + "s"
                     + " catchup_rounds=" + (catchUpMaxRounds <= 0 ? "unlimited" : String.valueOf(catchUpMaxRounds));
@@ -435,6 +446,14 @@ public final class ServerGuardianEngine {
     private final Map<Long, Long> fireAtSecs = new ConcurrentHashMap<>();
     /** marchId → 已记账的 fireAt（同一计划只记一条 timing_wait，防 update 刷屏）。 */
     private final Map<Long, Long> timingNotes = new ConcurrentHashMap<>();
+    /** 批次 F：队列等待重试任务（与 A3 fireTasks 分离，避免卡秒/重试互相取消）。 */
+    private final Map<Long, ScheduledFuture<?>> queueRetryTasks = new ConcurrentHashMap<>();
+    /** marchId → 已安排重试次数（成功/取消/放弃时清理）。 */
+    private final Map<Long, Integer> queueRetryCounts = new ConcurrentHashMap<>();
+    /** marchId → 重试截止墙钟（敌 end+60s）。 */
+    private final Map<Long, Long> queueRetryDeadlines = new ConcurrentHashMap<>();
+    /** marchId → 上次队列等待账本时刻（≤1 条/分钟）。 */
+    private final Map<Long, Long> queueRetryNotesAt = new ConcurrentHashMap<>();
     private final AtomicBoolean attached = new AtomicBoolean(false);
     private volatile Config config = Config.disabled();
     private volatile long lastConfigLoadAt;
@@ -575,6 +594,7 @@ public final class ServerGuardianEngine {
                         attempted.remove(t.marchId);
                         submitted.remove(t.marchId);
                         cancelFire(t.marchId);
+                        clearQueueRetry(t.marchId);
                         timingNotes.remove(t.marchId);
                     }
                 }
@@ -623,6 +643,16 @@ public final class ServerGuardianEngine {
         fireTasks.clear();
         fireAtSecs.clear();
         timingNotes.clear();
+        for (ScheduledFuture<?> f : queueRetryTasks.values()) {
+            try {
+                f.cancel(false);
+            } catch (Throwable ignored) {
+            }
+        }
+        queueRetryTasks.clear();
+        queueRetryCounts.clear();
+        queueRetryDeadlines.clear();
+        queueRetryNotesAt.clear();
         catchups.clear();
         try {
             fireSched.shutdownNow();
@@ -904,13 +934,16 @@ public final class ServerGuardianEngine {
         Threat t = threats.remove(marchId);
         if (t == null) return;
         boolean hadFire = fireTasks.containsKey(marchId);
+        boolean hadQueueRetry = queueRetryTasks.containsKey(marchId);
         cancelFire(marchId);
+        clearQueueRetry(marchId);
         finishCatchup(marchId, t, "threat_gone");
         timingNotes.remove(marchId);
         attempted.remove(marchId);
         submitted.remove(marchId);
         thresholdNotes.remove(marchId);
         if (hadFire) ledger("timing_cancel", t, null, "威胁消失/召回，取消卡秒等待");
+        if (hadQueueRetry) ledger("queue_cancel", t, null, "威胁消失/召回，取消队列等待重试");
         long nowS = nowSec(engine);
         boolean recalled = t.endEpochSec - nowS > RECALL_THRESHOLD_SEC;
         if (!recalled) {
@@ -963,6 +996,7 @@ public final class ServerGuardianEngine {
         if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) {
             ledger("skip_offline", t, null, "会话不在线（跳过，不补发旧情）");
             attempted.remove(marchId);
+            clearQueueRetry(marchId);
             return;
         }
         // 批次 D：已落地 0..60s 的补驻防在账本文案标记 late_reinforce（决定已放行）
@@ -976,6 +1010,7 @@ public final class ServerGuardianEngine {
             if (inLaunchCooldown(coolUntil, nowMs)) {
                 ledger("skip_cooldown", t, null, "同目标发射失败冷却中（剩 "
                         + Math.max(0L, (coolUntil - nowMs + 999L) / 1000L) + "s），本威胁只记账不发射");
+                clearQueueRetry(marchId);
                 return;
             }
             targetCooldowns.remove(targetKey);
@@ -984,6 +1019,7 @@ public final class ServerGuardianEngine {
             activeTargets.remove(targetKey);
             ledger("skip_busy", t, null,
                     "已有驻防任务在跑（missions=" + missions.size() + "）");
+            clearQueueRetry(marchId);
             return;
         }
         try {
@@ -993,6 +1029,7 @@ public final class ServerGuardianEngine {
                 if (isSelfCity(ownCityPoint(engine), dryPt)) {
                     ledger("skip_self", t, null, "目标坐标(" + dryPt[0] + "," + dryPt[1]
                             + ")=我方城市，不向自己派增援");
+                    clearQueueRetry(marchId);
                     return;
                 }
                 String text = lateTag + "命中威胁 " + t.kind() + " march=" + t.marchId + " owner=" + t.ownerUid
@@ -1007,23 +1044,38 @@ public final class ServerGuardianEngine {
                 FileLog.info("守护盟友[DRY] {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("dry_run", t, null, text);
                 writeMod("🛡[DRY] " + text);
+                clearQueueRetry(marchId);
                 return;
             }
             // 批次 D：先解析目标并跳过"目标=自己城"（避免阵队查询/误派增援），再查队列空位
             int[] pt = resolveTargetPoint(t, cfg);
             if (pt == null || pt[0] <= 0 || pt[1] <= 0) {
                 ledger("skip_no_point", t, null, "目标坐标未知（无 endpoint/盟友坐标/target_point）");
+                clearQueueRetry(marchId);
                 return;
             }
             int[] ownCity = ownCityPoint(engine);
             if (isSelfCity(ownCity, pt)) {
                 ledger("skip_self", t, null, "目标坐标(" + pt[0] + "," + pt[1]
                         + ")=我方城市，不向自己派增援");
+                clearQueueRetry(marchId);
                 return;
             }
             int free = freeMarchSlots(engine);
             if (free <= 0) {
+                // 批次 F：队列无位 → 释放 attempted + 5s 有界重试（默认 12 次，截止敌 end+60s）
+                if (cfg.queueRetryMax > 0) {
+                    int retry = scheduleQueueRetry(engine, t, cfg, nowMs, free);
+                    if (retry == QUEUE_RETRY_SCHEDULED) {
+                        attempted.remove(marchId);
+                        return;
+                    }
+                    if (retry == QUEUE_RETRY_GIVEUP) {
+                        return;   // 保留 attempted（终态），避免 update 反复触发
+                    }
+                }
                 ledger("skip_queue", t, null, free < 0 ? "队列容量/占用未知（宁可不发）" : "队列无空位 free=" + free);
+                clearQueueRetry(marchId);
                 return;
             }
             Map<String, Object> formation = formationOf(engine, cfg);
@@ -1037,6 +1089,7 @@ public final class ServerGuardianEngine {
                 HeroAvailability.markSuccess(engine);
                 Mission mission = new Mission(t.marchId, r.marchId, r.endtimeSec, nowMs);
                 missions.put(targetKey, mission);
+                clearQueueRetry(marchId);
                 long nowS = nowSec(engine);
                 long ahead = t.endEpochSec > 0 && r.endtimeSec > 0 ? t.endEpochSec - r.endtimeSec : 0L;
                 String autoNote = lastAutoFormationSummary;
@@ -1051,6 +1104,7 @@ public final class ServerGuardianEngine {
                 // 批次 D：我方晚于敌（含 margin 内）→ 立即进入追赶（异步，不阻塞 guardExec）
                 maybeStartCatchup(engine, t, mission, cfg);
             } else {
+                clearQueueRetry(marchId);
                 // 2026-10-28：415（编队人数/配置超限）/406（士兵超限）自适应 + 目标冷却 + 日志节流。
                 // 本次生产事故：无编队参数时 Exec.formation 取客户端 5 英雄 → 该号每队上限 3 → 每个威胁 415，
                 // 一天 930 次失败且无降噪；现在失败后下调英雄上限/兵力缩放，下一威胁即生效。
@@ -1078,6 +1132,150 @@ public final class ServerGuardianEngine {
         } finally {
             activeTargets.remove(targetKey);
         }
+    }
+
+    // =====================================================================
+    // 批次 F：队列等待重试（skip_queue → 5s 后重查 free，最多 queue_retry_max 次）
+    // 调度在 fireSched（单线程），执行回 guardExec（不 sleep）；与 A3 fireTasks 分离。
+    // =====================================================================
+
+    static final int QUEUE_RETRY_NOT_HANDLED = 0;
+    static final int QUEUE_RETRY_SCHEDULED = 1;
+    static final int QUEUE_RETRY_GIVEUP = 2;
+
+    /**
+     * 队列无位时安排一次有界重试。
+     *
+     * @return {@link #QUEUE_RETRY_SCHEDULED}（已安排，调用方释放 attempted）/
+     *         {@link #QUEUE_RETRY_GIVEUP}（已达上限或过截止，已记 queue_giveup，调用方保留 attempted）/
+     *         {@link #QUEUE_RETRY_NOT_HANDLED}（调度失败，调用方走旧 skip_queue）
+     */
+    private int scheduleQueueRetry(WjdrEngine engine, Threat t, Config cfg, long nowMs, int free) {
+        if (t == null || cfg == null || cfg.queueRetryMax <= 0) return QUEUE_RETRY_NOT_HANDLED;
+        long marchId = t.marchId;
+        int done = queueRetryCounts.getOrDefault(marchId, 0);
+        long deadline = t.endEpochSec > 0L
+                ? t.endEpochSec * 1000L + LATE_REINFORCE_WINDOW_SEC * 1000L
+                : nowMs + QUEUE_RETRY_NOTE_THROTTLE_MS;
+        if (done >= cfg.queueRetryMax) {
+            noteQueueGiveup(t, cfg, "已达最大重试次数 " + cfg.queueRetryMax, done);
+            return QUEUE_RETRY_GIVEUP;
+        }
+        if (nowMs >= deadline || nowMs + cfg.queueRetryIntervalMs > deadline) {
+            noteQueueGiveup(t, cfg, "超过截止（敌 end+" + LATE_REINFORCE_WINDOW_SEC + "s）", done);
+            return QUEUE_RETRY_GIVEUP;
+        }
+        if (queueRetryTasks.containsKey(marchId)) {
+            return QUEUE_RETRY_SCHEDULED;   // 已有在途重试，不重复安排
+        }
+        final int attempt = done + 1;
+        queueRetryCounts.put(marchId, attempt);
+        queueRetryDeadlines.put(marchId, deadline);
+        noteQueueWait(t, cfg, attempt, free, nowMs);
+        final ScheduledFuture<?>[] holder = new ScheduledFuture<?>[1];
+        try {
+            holder[0] = fireSched.schedule(() -> {
+                try {
+                    queueRetryTasks.remove(marchId, holder[0]);
+                    queueRetryFire(engine, marchId);
+                } catch (Throwable ex) {
+                    // 定时任务异常只记日志，不打死调度线程
+                    FileLog.warn("守护盟友队列重试异常 {}:{} marchId={}：{}",
+                            fpid, String.valueOf(sid), String.valueOf(marchId), String.valueOf(ex));
+                }
+            }, cfg.queueRetryIntervalMs, TimeUnit.MILLISECONDS);
+            queueRetryTasks.put(marchId, holder[0]);
+            return QUEUE_RETRY_SCHEDULED;
+        } catch (Throwable ex) {
+            queueRetryTasks.remove(marchId);
+            queueRetryCounts.remove(marchId);
+            queueRetryDeadlines.remove(marchId);
+            FileLog.warn("守护盟友队列重试注册失败 {}:{} marchId={}：{}",
+                    fpid, String.valueOf(sid), String.valueOf(marchId), String.valueOf(ex));
+            return QUEUE_RETRY_NOT_HANDLED;
+        }
+    }
+
+    /** 重试到期（fireSched 线程）：复核威胁/配置/离线/截止后提交 guardExec 重新 decide/查队列。 */
+    void queueRetryFire(WjdrEngine engine, long marchId) {
+        if (stopped) {
+            clearQueueRetry(marchId);
+            return;
+        }
+        Threat t = threats.get(marchId);
+        if (t == null) {
+            clearQueueRetry(marchId);
+            return;
+        }
+        Config cfg = config;
+        if (!cfg.enabled || cfg.queueRetryMax <= 0) {
+            clearQueueRetry(marchId);
+            ledger("queue_cancel", t, null, "守护关闭或队列重试关闭，取消队列等待");
+            return;
+        }
+        if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) {
+            clearQueueRetry(marchId);
+            ledger("queue_cancel", t, null, "会话离线，取消队列等待重试");
+            return;
+        }
+        long nowMs = clockMs.getAsLong();
+        Long deadline = queueRetryDeadlines.get(marchId);
+        if (deadline != null && nowMs >= deadline) {
+            noteQueueGiveup(t, cfg, "超过截止（敌 end+" + LATE_REINFORCE_WINDOW_SEC + "s）",
+                    queueRetryCounts.getOrDefault(marchId, 0));
+            return;
+        }
+        submitNow(engine, marchId);   // executeThreat 重新 decide + 查 free；仍无位则继续 schedule
+    }
+
+    /** 账本 skip_queue：同一威胁 ≤1 条/分钟（note 带重试次数/free/截止）。 */
+    private void noteQueueWait(Threat t, Config cfg, int attempt, int free, long nowMs) {
+        if (t == null) return;
+        Long last = queueRetryNotesAt.get(t.marchId);
+        if (last != null && nowMs - last < QUEUE_RETRY_NOTE_THROTTLE_MS) return;
+        queueRetryNotesAt.put(t.marchId, nowMs);
+        String note = "队列无空位" + (free < 0 ? "（容量/占用未知）" : " free=" + free)
+                + "，每 " + Math.max(1L, cfg.queueRetryIntervalMs / 1000L) + "s 重试（第 "
+                + attempt + "/" + cfg.queueRetryMax + " 次，截止 敌end+"
+                + LATE_REINFORCE_WINDOW_SEC + "s）";
+        ledger("skip_queue", t, null, note);
+    }
+
+    /** 终态放弃：记 queue_giveup 并清理（保留 attempted，防 update 反复触发）。 */
+    private void noteQueueGiveup(Threat t, Config cfg, String reason, int done) {
+        if (t == null) return;
+        ledger("queue_giveup", t, null, "队列等待结束：" + reason
+                + "（已重试 " + done + "/" + cfg.queueRetryMax + " 次）");
+        queueRetryNotesAt.put(t.marchId, clockMs.getAsLong());
+        clearQueueRetry(t.marchId);
+        attempted.add(t.marchId);
+    }
+
+    void cancelQueueRetry(long marchId) {
+        ScheduledFuture<?> f = queueRetryTasks.remove(marchId);
+        if (f != null) {
+            try {
+                f.cancel(false);
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private void clearQueueRetry(long marchId) {
+        cancelQueueRetry(marchId);
+        queueRetryCounts.remove(marchId);
+        queueRetryDeadlines.remove(marchId);
+        queueRetryNotesAt.remove(marchId);
+    }
+
+    /** 单测/观测：当前已安排的重试次数（无=0）。 */
+    int queueRetryCountForTest(long marchId) {
+        return queueRetryCounts.getOrDefault(marchId, 0);
+    }
+
+    /** 单测/观测：在途队列重试任务数。 */
+    int queueRetryTaskCountForTest() {
+        return queueRetryTasks.size();
     }
 
     /** 执行一次撤防（在途→recall；已驻扎→off_work；dry_run 不发）。 */
@@ -1984,6 +2182,15 @@ public final class ServerGuardianEngine {
             // 批次 E：实盘守护预留 0..2 个世界队列（默认 1；0=不预留）
             long reserve = num(sub, st, p, "reserve_slots", DEFAULT_RESERVE_SLOTS);
             c.reserveSlots = (int) Math.max(0L, Math.min(MAX_RESERVE_SLOTS, reserve));
+            // 批次 F：队列无位重试（0=关闭回旧行为；间隔 1..30s）
+            long qrMax = num(sub, st, p, "queue_retry_max", DEFAULT_QUEUE_RETRY_MAX);
+            c.queueRetryMax = (int) Math.max(0L, Math.min(MAX_QUEUE_RETRY, qrMax));
+            long qrInterval = num(sub, st, p, "queue_retry_interval_ms",
+                    DEFAULT_QUEUE_RETRY_INTERVAL_MS);
+            if (qrInterval < 1_000L || qrInterval > 30_000L) {
+                qrInterval = DEFAULT_QUEUE_RETRY_INTERVAL_MS;
+            }
+            c.queueRetryIntervalMs = qrInterval;
             Object rd = first(sub, st, p, "recall_distance");
             if (rd != null) c.recallDistance = Math.max(0d, Exec.longOf(rd));
         } catch (Throwable ignored) {
@@ -2052,7 +2259,8 @@ public final class ServerGuardianEngine {
      *   <li>{@code VAULT_GUARDIAN_TROOPS_MIN=N}：敌方兵力下限（0=不限）</li>
      *   <li>{@code VAULT_GUARDIAN_SPEEDUP=1|0}：P1 对等加速总开关</li>
      *   <li>{@code VAULT_GUARDIAN_DIAMOND=1|0}：钻石购买开关（真实花钻石，慎用）</li>
-     *   <li>{@code VAULT_GUARDIAN_TIMING=1|0|off}：卡秒发射开关（默认开；off/0=回到立即发射）</li>
+     *   <li>{@code VAULT_GUARDIAN_TIMING=1|0|off}：卡秒发射开关（批次 D 起默认关；on/1=启用）</li>
+     *   <li>{@code VAULT_GUARDIAN_QUEUE_RETRY=off|0}：队列无位重试开关（off/0=旧行为，只记一次 skip_queue）</li>
      * </ul>
      * 目标（盟友 uid / 坐标）无需配置：威胁目标由联盟/世界 push 自动解析
      * （{@code decide} 的 ally_uid/target_uid/target_point 均为 0 时不过滤、{@code resolveTargetPoint}
@@ -2072,6 +2280,8 @@ public final class ServerGuardianEngine {
         if (diamond != null) c.diamondSpeedupEnabled = diamond;
         Boolean timing = envBool("VAULT_GUARDIAN_TIMING");
         if (timing != null) c.timingEnabled = timing;
+        Boolean queueRetry = envBool("VAULT_GUARDIAN_QUEUE_RETRY");
+        if (queueRetry != null && !queueRetry) c.queueRetryMax = 0;   // env off=旧行为
         String troops = setting("VAULT_GUARDIAN_TROOPS_MIN");
         if (troops != null) {
             try {
