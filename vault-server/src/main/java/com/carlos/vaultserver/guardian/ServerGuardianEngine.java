@@ -135,6 +135,8 @@ public final class ServerGuardianEngine {
     static final String PROTO_MASS_ADD = "notify_mass_march_add";
     static final String PROTO_MASS_UPDATE = "notify_mass_march_update";
     static final String PROTO_MASS_DEL = "notify_mass_march_del";
+    /** 批次 N：集结/巨兽集结详情（只读；取 soldier_count/soldier_max/成员）。 */
+    static final String PROTO_MASS_DETAIL = "req_world_mass_master_detail";
     static final String PROTO_MARCH_DETAIL = "req_world_march_detail_4_player_situation";
 
     static final Set<String> ALLIANCE_MARCH_PROTOS = Set.of(
@@ -1211,7 +1213,11 @@ public final class ServerGuardianEngine {
             }
             if (PROTO_MASS_ADD.equals(proto)) {
                 Rally parsed = parseRally(content, nowMs);
-                if (parsed == null) return;
+                if (parsed == null) {
+                    logMassKeys(proto, content, "parse_null");
+                    return;
+                }
+                if (!parsed.hasSoldierInfo || !parsed.hasJoinInfo) logMassKeys(proto, content, "no_troop_fields");
                 Rally prev = rallies.get(parsed.marchId);
                 if (prev != null) {
                     mergeRally(prev, parsed);
@@ -1248,6 +1254,42 @@ public final class ServerGuardianEngine {
         } catch (Throwable ex) {
             FileLog.warn("守护盟友集结解析异常 {}:{} {}",
                     fpid, String.valueOf(sid), brief(String.valueOf(ex)));
+        }
+    }
+
+    /** 批次 N：mass 推送键名诊断（只键名不含值；同进程 ≤1 条/10 分钟），用于校准真实字段。 */
+    private volatile long massKeysLogAtMs;
+
+    void logMassKeys(String proto, Map<String, Object> content, String why) {
+        long now = clockMs.getAsLong();
+        if (massKeysLogAtMs > 0L && now - massKeysLogAtMs < 600_000L) return;
+        massKeysLogAtMs = now;
+        try {
+            Map<String, Object> data = unwrapMap(content);
+            Map<String, Object> march = firstMap(data, "march", "mass_march");
+            Map<String, Object> src = march == null ? data : march;
+            StringBuilder sb = new StringBuilder();
+            if (src != null) {
+                int n = 0;
+                for (String k : src.keySet()) {
+                    if (n++ >= 24) break;
+                    Object v = src.get(k);
+                    sb.append(k).append(v instanceof Map ? "{…}" : "").append(',');
+                }
+                Map<String, Object> mass = firstMap(src,
+                        "mass_master", "mass_alliance_trap", "mass_boss", "mass", "mass_info");
+                if (mass != null) {
+                    sb.append(" mass[");
+                    int m = 0;
+                    for (String k : mass.keySet()) {
+                        if (m++ >= 24) break;
+                        sb.append(k).append(',');
+                    }
+                    sb.append(']');
+                }
+            }
+            FileLog.info("守护盟友[mass] 键名诊断 why={} proto={} keys={}", why, proto, sb.toString());
+        } catch (Throwable ignored) {
         }
     }
 
@@ -1831,6 +1873,62 @@ public final class ServerGuardianEngine {
     // 执行（guardExec 单线程：发射 / 撤防；每威胁最多 1 次动作）
     // =====================================================================
 
+    /** 批次 N：集结详情查询节流（massId → 最近查询时刻；60s 内不重复）。 */
+    static final long RALLY_DETAIL_QUERY_MIN_INTERVAL_MS = 60_000L;
+    /** 批次 N：每场集结的详情查询尝试上限（防请求风暴）。 */
+    static final int RALLY_DETAIL_MAX_QUERIES = 3;
+    private final Map<Long, Long> rallyDetailQueriedAt = new ConcurrentHashMap<>();
+    private final Map<Long, Integer> rallyDetailQueries = new ConcurrentHashMap<>();
+
+    /**
+     * 批次 N：集结兵力/上车信息缺失时，查 {@code req_world_mass_master_detail{id,owner,kid}}（只读），
+     * 把返回的 mass 字段合并进 Rally 后重新提交威胁评估（不在此线程发游戏请求）。
+     *
+     * @return true=已提交查询（调用方直接返回，等待重估）
+     */
+    boolean queryRallyDetailIfNeeded(WjdrEngine engine, Threat t, Rally r, long nowMs) {
+        if (engine == null || t == null || r == null || r.marchId <= 0L) return false;
+        if (t.endEpochSec > 0L && t.endEpochSec + LATE_REINFORCE_WINDOW_SEC < nowMs / 1000L) return false;
+        Long last = rallyDetailQueriedAt.get(r.marchId);
+        int used = rallyDetailQueries.getOrDefault(r.marchId, 0);
+        if (used >= RALLY_DETAIL_MAX_QUERIES) return false;
+        if (last != null && nowMs - last < RALLY_DETAIL_QUERY_MIN_INTERVAL_MS) return true;
+        rallyDetailQueriedAt.put(r.marchId, nowMs);
+        rallyDetailQueries.put(r.marchId, used + 1);
+        try {
+            guardExec.execute(() -> {
+                try {
+                    GameMessage rsp = engine.request(PROTO_MASS_DETAIL,
+                            Exec.args("id", r.marchId, "owner", t.ownerUid,
+                                    "kid", engine.lastServerId()), 8);
+                    if (!Exec.ok(rsp) || rsp.getContent() == null) {
+                        ledger("rally_detail_fail", t, null, "集结详情查询失败 code="
+                                + Exec.codeOf(rsp) + "（第 " + (used + 1) + " 次）");
+                        return;
+                    }
+                    Map<String, Object> content = rsp.getContent();
+                    Map<String, Object> mass = firstMap(content, "mass_master", "mass",
+                            "mass_info", "mass_boss", "mass_alliance_trap");
+                    Map<String, Object> src = mass == null ? content : mass;
+                    mergeRallyMass(r, src);
+                    if (mass != null && mass != content) mergeRallyMass(r, content);
+                    ledger("rally_detail", t, null, "集结详情：兵力="
+                            + (r.hasSoldierInfo ? (r.soldierCount + "/" + r.soldierMax) : "未知")
+                            + " 成员=" + (r.hasJoinInfo ? String.valueOf(r.memberCount) : "未知")
+                            + "（阈值 " + config.rallyTroopsMin + "）");
+                    // 重估：真→等待/发射；假→记账；仍未知→下一轮再查（受上限/节流）
+                    resubmitRallyThreats(engine);
+                } catch (Throwable ex) {
+                    FileLog.warn("守护盟友集结详情查询异常 {}:{} {}",
+                            fpid, String.valueOf(sid), brief(String.valueOf(ex)));
+                }
+            });
+            return true;
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     /** 执行一条威胁：重新校验规则 → 门控 → dry_run 记录 / 立即发射。 */
     void executeThreat(WjdrEngine engine, long marchId) {
         if (stopped) return;
@@ -1851,6 +1949,9 @@ public final class ServerGuardianEngine {
                 return;
             }
             if (truth == RallyTruth.UNKNOWN) {
+                // 批次 N（2026-10-31）：mass 推送普遍缺兵力/上车字段 → 用只读详情查询补一次再判，
+                // 避免“真集结永远 unknown 不驻防”（用户规则：>阈值兵力即真）。
+                if (queryRallyDetailIfNeeded(engine, t, r, nowMs)) return;
                 noteRallyUnknown(t, nowMs);
                 return;
             }
