@@ -129,12 +129,20 @@ public class UiStyle {
         });
     }
 
-    /** 实心底色按压加深（状态两态：normal / pressed）。 */
+    /** 实心底色状态：disabled / pressed / normal。禁用态统一降层级，不改变点击回调。 */
     public static StateListDrawable pressRound(Context ctx, int normal, int pressed, int radiusDp) {
         StateListDrawable s = new StateListDrawable();
+        s.addState(new int[]{-android.R.attr.state_enabled}, roundRectDp(ctx, SURFACE_3, radiusDp));
         s.addState(new int[]{android.R.attr.state_pressed}, roundRectDp(ctx, pressed, radiusDp));
         s.addState(new int[]{}, roundRectDp(ctx, normal, radiusDp));
         return s;
+    }
+
+    /** 按钮正常/禁用文字色；供原生 TextView 按钮统一使用。 */
+    private static android.content.res.ColorStateList buttonTextColors(int normal) {
+        return new android.content.res.ColorStateList(
+                new int[][]{new int[]{-android.R.attr.state_enabled}, new int[]{}},
+                new int[]{INK3, normal});
     }
 
     // ==================== 容器 ====================
@@ -240,7 +248,7 @@ public class UiStyle {
         v.setText(text);
         v.setTextSize(15);
         v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setTextColor(WHITE);
+        v.setTextColor(buttonTextColors(WHITE));
         v.setGravity(android.view.Gravity.CENTER);
         v.setBackground(pressRound(ctx, BRAND, BRAND_PRESS, 12));
         v.setMinHeight(dp(ctx, 48));
@@ -249,34 +257,35 @@ public class UiStyle {
         return v;
     }
 
-    /** 次级按钮（40dp · r-2 12dp · 白底 BRAND_300 描边 · 按压 BRAND_50）。 */
+    /** 次级按钮（44dp · r-2 12dp · 白底 BRAND_300 描边 · 按压 BRAND_50）。 */
     public static android.widget.TextView secondaryBtn(android.content.Context ctx, String text, Runnable onClick) {
         android.widget.TextView v = new android.widget.TextView(ctx);
         v.setText(text);
         v.setTextSize(13);
         v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setTextColor(BRAND_TEXT);
+        v.setTextColor(buttonTextColors(BRAND_TEXT));
         v.setGravity(android.view.Gravity.CENTER);
         StateListDrawable g = new StateListDrawable();
+        g.addState(new int[]{-android.R.attr.state_enabled}, roundRectDp(ctx, SURFACE_3, 12));
         g.addState(new int[]{android.R.attr.state_pressed}, roundRectDp(ctx, BRAND_50, 12));
         g.addState(new int[]{}, roundRectStroke(ctx, WHITE, 12, BRAND_300));
         v.setBackground(g);
-        v.setMinHeight(dp(ctx, 40));
+        v.setMinHeight(dp(ctx, 44));
         press(v);
         if (onClick != null) v.setOnClickListener(x -> onClick.run());
         return v;
     }
 
-    /** 危险按钮（40dp · ERR_SOLID 底白字 · 按压加深）。 */
+    /** 危险按钮（44dp · ERR_SOLID 底白字 · 按压加深）。 */
     public static android.widget.TextView dangerBtn(android.content.Context ctx, String text, Runnable onClick) {
         android.widget.TextView v = new android.widget.TextView(ctx);
         v.setText(text);
         v.setTextSize(13);
         v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setTextColor(WHITE);
+        v.setTextColor(buttonTextColors(WHITE));
         v.setGravity(android.view.Gravity.CENTER);
         v.setBackground(pressRound(ctx, ERR_SOLID, 0xFFDC2626, 12));
-        v.setMinHeight(dp(ctx, 40));
+        v.setMinHeight(dp(ctx, 44));
         press(v);
         if (onClick != null) v.setOnClickListener(x -> onClick.run());
         return v;
@@ -288,10 +297,10 @@ public class UiStyle {
         v.setText(text);
         v.setTextSize(13);
         v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setTextColor(BRAND_TEXT);
+        v.setTextColor(buttonTextColors(BRAND_TEXT));
         v.setGravity(android.view.Gravity.CENTER);
         v.setBackground(pressRound(ctx, Color.TRANSPARENT, BRAND_50, 12));
-        v.setMinHeight(dp(ctx, 40));
+        v.setMinHeight(dp(ctx, 44));
         v.setPadding(dp(ctx, 12), 0, dp(ctx, 12), 0);
         press(v);
         if (onClick != null) v.setOnClickListener(x -> onClick.run());
@@ -362,7 +371,7 @@ public class UiStyle {
                 label.length() + 2, ss.length(), 0);
         v.setText(ss);
         v.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        v.setMinHeight(dp(ctx, 40));
+        v.setMinHeight(dp(ctx, 44));
         press(v);
         if (onClick != null) v.setOnClickListener(x -> onClick.run());
         return v;
@@ -399,6 +408,11 @@ public class UiStyle {
 
     /** 规范轻提示：墨底 + 反色字 + r-2 圆角，短时自动消失。 */
     public static void toast(Context ctx, String msg) {
+        toast(ctx, msg, Toast.LENGTH_SHORT);
+    }
+
+    /** 相同样式的长/短提示；调用方可保留原有错误提示时长。 */
+    public static void toast(Context ctx, String msg, int duration) {
         TextView v = new TextView(ctx);
         v.setText(msg);
         v.setTextSize(13);
@@ -408,7 +422,7 @@ public class UiStyle {
         v.setPadding(dp(ctx, 16), dp(ctx, 11), dp(ctx, 16), dp(ctx, 11));
         Toast t = new Toast(ctx);
         t.setView(v);
-        t.setDuration(Toast.LENGTH_SHORT);
+        t.setDuration(duration);
         t.setGravity(Gravity.CENTER, 0, dp(ctx, 80));
         t.show();
     }
@@ -473,7 +487,7 @@ public class UiStyle {
         v.setTextSize(13);
         v.setTypeface(Typeface.DEFAULT_BOLD);
         v.setGravity(Gravity.CENTER);
-        v.setMinHeight(dp(ctx, 40));
+        v.setMinHeight(dp(ctx, 44));
         v.setPadding(dp(ctx, 16), 0, dp(ctx, 16), 0);
         if (filled) {
             int bg = accent == ERR_INK ? ERR_SOLID : BRAND;

@@ -286,7 +286,7 @@ public final class LicenseUi {
                 || st == LicenseState.TAMPERED || st == LicenseState.UNACTIVATED) {
             TextView reenter = UiStyle.secondaryBtn(act, "重新输入兑换码激活", null);
             LinearLayout.LayoutParams reenterLp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, UiStyle.dp(act, 40));
+                    ViewGroup.LayoutParams.MATCH_PARENT, UiStyle.dp(act, 44));
             reenterLp.topMargin = dp(act, 18);
             card.addView(reenter, reenterLp);
             UiStyle.press(reenter);

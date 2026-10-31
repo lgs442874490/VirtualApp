@@ -305,7 +305,7 @@ public final class SubCardUi {
         return pickRow(ctx, "勾选商品",
                 preCount == 0 ? "按店铺浏览并勾选（点开加载货架）" : "已勾选 " + preCount + " 件（点开修改）",
                 () -> {
-                    android.widget.Toast.makeText(ctx, "正在拉取货架…", android.widget.Toast.LENGTH_SHORT).show();
+                    UiStyle.toast(ctx, "正在拉取货架…");
                     final java.util.List<Long> idsF = new ArrayList<>();
                     for (long id : shopIdsF) idsF.add(id);
                     new Thread(() -> {

@@ -48,7 +48,7 @@ import java.util.Locale;
 /** 号库主界面：Carlos 风格九宫格 + 蓝色悬浮加号 */
 public class AccountVaultActivity extends Activity {
 
-    /** 网格列数：入口卡片占 1 格；分组表头经 SpanSizeLookup 占满 {@link #SPAN} 格（通铺）。 */
+    /** 网格最大 3 列；窄屏由 UiLayoutRules 降列，分组表头始终占满当前行。 */
     private static final int SPAN = 3;
     /** 两类行的 viewType —— 直接复用 {@link EntryLayout} 的行类型常量，避免两套编号对不上。 */
     private static final int VH_HEADER = EntryLayout.TYPE_HEADER;
@@ -580,6 +580,9 @@ public class AccountVaultActivity extends Activity {
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(UiStyle.BG_V2);
 
+        int contentWidth = UiLayoutRules.contentWidthPx(
+                getResources().getDisplayMetrics().widthPixels,
+                getResources().getDisplayMetrics().density);
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
 
@@ -587,7 +590,7 @@ public class AccountVaultActivity extends Activity {
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
-        header.setPadding(dp(20), dp(28), dp(20), dp(4));
+        header.setPadding(dp(18), dp(28), dp(18), dp(4));
 
         TextView title = new TextView(this);
         title.setText("无尽号库");
@@ -617,13 +620,13 @@ public class AccountVaultActivity extends Activity {
         menuBtn.setBackground(menuBg);
         UiStyle.press(menuBtn);
         menuBtn.setOnClickListener(v -> showMainMenu());
-        header.addView(menuBtn, new LinearLayout.LayoutParams(dp(36), dp(36)));
+        header.addView(menuBtn, new LinearLayout.LayoutParams(dp(44), dp(44)));
         root.addView(header);
 
         status = new TextView(this);
         status.setTextSize(12);
         status.setTextColor(UiStyle.INK2);
-        status.setPadding(dp(20), dp(4), dp(20), dp(12));
+        status.setPadding(dp(18), dp(4), dp(18), dp(12));
         root.addView(status);
 
         // 九宫格：RecyclerView + 3 列 GridLayoutManager（androidx，项目里已有，零新增依赖）。
@@ -637,13 +640,16 @@ public class AccountVaultActivity extends Activity {
         recycler.setScrollBarStyle(View.SCROLLBARS_OUTSIDE_OVERLAY);
         // 展开/收起要有逐项动画（手风琴感），别关掉默认动画器。
         recycler.setItemAnimator(new androidx.recyclerview.widget.DefaultItemAnimator());
-        layoutManager = new GridLayoutManager(this, SPAN);
+        int gridWidthDp = Math.round(contentWidth / getResources().getDisplayMetrics().density) - 12;
+        int gridColumns = UiLayoutRules.columns(gridWidthDp, 96, 12, SPAN);
+        layoutManager = new GridLayoutManager(this, gridColumns);
         layoutManager.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
             @Override
             public int getSpanSize(int position) {
                 EntryLayout.Row r = rowAt(position);
                 // 分组表头 ⇒ 通铺整行；入口卡片 ⇒ 占 1 格。
-                return (r != null && r.type == EntryLayout.TYPE_HEADER) ? SPAN : 1;
+                return (r != null && r.type == EntryLayout.TYPE_HEADER)
+                        ? layoutManager.getSpanCount() : 1;
             }
         });
         recycler.setLayoutManager(layoutManager);
@@ -653,7 +659,7 @@ public class AccountVaultActivity extends Activity {
         root.addView(recycler, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         frame.addView(root, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                contentWidth, ViewGroup.LayoutParams.MATCH_PARENT, Gravity.CENTER_HORIZONTAL));
 
         // 蓝色悬浮加号
         TextView fab = new TextView(this);
@@ -1334,31 +1340,13 @@ public class AccountVaultActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(UiStyle.BG_V2);
 
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(14), dp(14), dp(6));
-        android.widget.FrameLayout back = new android.widget.FrameLayout(this);
-        back.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.INK, 22),
-                new android.widget.FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(back);
-        back.setOnClickListener(v -> dlg.dismiss());
-        bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView title = new TextView(this);
-        title.setText("初始化向导");
-        title.setTextSize(24);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        title.setPadding(dp(6), 0, 0, 0);
-        bar.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        root.addView(bar);
+        root.addView(UiComponents.topBar(this, "初始化向导", null, dlg::dismiss));
 
         ScrollView sc = new ScrollView(this);
         LinearLayout box = new LinearLayout(this);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(2), dp(18), dp(28));
-        sc.addView(box);
+        box.setPadding(0, dp(2), 0, dp(28));
+        sc.addView(UiComponents.contentHost(this, box));
         root.addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
@@ -1645,7 +1633,7 @@ public class AccountVaultActivity extends Activity {
     }
 
     private void toast(String s) {
-        Toast.makeText(this, s, Toast.LENGTH_LONG).show();
+        UiStyle.toast(this, s, Toast.LENGTH_LONG);
     }
 
     private int dp(int v) {
@@ -1841,8 +1829,8 @@ public class AccountVaultActivity extends Activity {
      */
     private View buildTileView() {
         FrameLayout tile = new FrameLayout(this);
-        tile.setBackground(UiStyle.roundRect(UiStyle.CARD, 14));
-        tile.setElevation(dp(2));
+        tile.setBackground(UiStyle.roundRectStroke(this, UiStyle.CARD, 16, UiStyle.LINE));
+        tile.setElevation(0);
         tile.setLayoutParams(new RecyclerView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 

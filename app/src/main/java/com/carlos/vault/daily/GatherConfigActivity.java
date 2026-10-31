@@ -13,6 +13,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.carlos.vault.AccountStore;
+import com.carlos.vault.UiComponents;
 import com.carlos.vault.UiStyle;
 import com.carlos.vault.VaultSync;
 import com.carlos.vault.daily.gather.GatherConfigV2;
@@ -255,53 +256,12 @@ public class GatherConfigActivity extends Activity {
     // ==================== 页面骨架 ====================
 
     private View buildUi() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(UiStyle.BG_V2);
-        root.addView(topBar());
-
-        ScrollView scroll = new ScrollView(this);
-        box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(2), dp(18), dp(32));
-        scroll.addView(box);
-        root.addView(scroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
-
+        TextView save = UiComponents.compactPrimaryButton(this, "保存", this::save);
+        UiComponents.Page page = UiComponents.scrollPage(
+                this, "采集设置", null, this::goBack, 32, save);
+        box = page.body;
         renderContent();
-        return root;
-    }
-
-    private View topBar() {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(16), dp(14), dp(16), dp(6));
-        android.widget.FrameLayout backWrap = new android.widget.FrameLayout(this);
-        backWrap.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.INK, 22),
-                new android.widget.FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(backWrap);
-        backWrap.setOnClickListener(v -> goBack());
-        bar.addView(backWrap, new LinearLayout.LayoutParams(dp(40), dp(40)));
-        TextView title = new TextView(this);
-        title.setText("采集设置");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        title.setPadding(dp(6), 0, 0, 0);
-        bar.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        TextView save = new TextView(this);
-        save.setText("保存");
-        save.setTextSize(15);
-        save.setTypeface(Typeface.DEFAULT_BOLD);
-        save.setTextColor(UiStyle.WHITE);
-        save.setGravity(Gravity.CENTER);
-        save.setBackground(UiStyle.roundRectDp(this, UiStyle.BRAND, 12));
-        UiStyle.press(save);
-        save.setOnClickListener(v -> save());
-        bar.addView(save, new LinearLayout.LayoutParams(dp(72), dp(38)));
-        return bar;
+        return page.root;
     }
 
     private void renderContent() {
@@ -426,18 +386,9 @@ public class GatherConfigActivity extends Activity {
         return card;
     }
 
-    /** 小号主色按钮（入口卡右侧）。 */
+    /** 小号次按钮（入口卡右侧），统一 44dp 热区与三态样式。 */
     private TextView smallAction(String label, final Runnable onClick) {
-        TextView btn = new TextView(this);
-        btn.setText(label);
-        btn.setTextSize(12);
-        btn.setTypeface(Typeface.DEFAULT_BOLD);
-        btn.setTextColor(UiStyle.BRAND_TEXT);
-        btn.setGravity(Gravity.CENTER);
-        btn.setPadding(dp(10), dp(7), dp(10), dp(7));
-        btn.setBackground(UiStyle.roundRectStroke(this, UiStyle.SURFACE_2, 10, UiStyle.LINE));
-        UiStyle.press(btn);
-        btn.setOnClickListener(v -> onClick.run());
+        TextView btn = UiComponents.compactSecondaryButton(this, label, onClick);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.leftMargin = dp(6);
@@ -986,31 +937,15 @@ public class GatherConfigActivity extends Activity {
     // ==================== 基础组件 ====================
 
     private LinearLayout shellCard() {
-        LinearLayout card = UiStyle.outlineCard(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(16), dp(14), dp(16), dp(14));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.topMargin = dp(10);
-        card.setLayoutParams(lp);
-        return card;
+        return UiComponents.card(this);
     }
 
     private TextView titleText(String text, float size) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextSize(size);
-        t.setTypeface(Typeface.DEFAULT_BOLD);
-        t.setTextColor(UiStyle.INK);
-        return t;
+        return UiComponents.text(this, text, size, UiStyle.INK, true);
     }
 
     private TextView hintText(String text) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextSize(11.5f);
-        t.setTextColor(UiStyle.INK2);
-        return t;
+        return UiComponents.caption(this, text, UiStyle.INK2);
     }
 
     /** 行：标题/副题 + 右侧控件（Switch）。 */

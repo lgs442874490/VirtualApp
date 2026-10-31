@@ -16,6 +16,8 @@ import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import com.carlos.vault.UiComponents;
+import com.carlos.vault.UiLayoutRules;
 import com.carlos.vault.UiStyle;
 import com.carlos.vault.daily.FormationStore;
 
@@ -64,13 +66,12 @@ public final class ManagerUi {
         return (int) (ctx.getResources().getDisplayMetrics().density * v + 0.5f);
     }
 
-    /** 设计基准宽（屏宽 - 边距，且不超过 463dp）。 */
+    /** 编队弹窗保留 463dp 设计上限，与全局共用窗口宽度/边距算法。 */
     public static int designWidth(Context ctx) {
-        int screen = ctx.getResources().getDisplayMetrics().widthPixels;
-        int margin = dp(ctx, 12);
-        int w = screen - margin * 2;
-        int max = dp(ctx, DESIGN_WIDTH_DP);
-        return Math.min(w, max);
+        return UiLayoutRules.contentWidthPx(
+                ctx.getResources().getDisplayMetrics().widthPixels,
+                ctx.getResources().getDisplayMetrics().density,
+                DESIGN_WIDTH_DP, 12);
     }
 
     // ===== 背景 =====
@@ -105,6 +106,7 @@ public final class ManagerUi {
 
     public static StateListDrawable pressable(Context ctx, int normal, int pressed, int radiusDp) {
         StateListDrawable s = new StateListDrawable();
+        s.addState(new int[]{-android.R.attr.state_enabled}, round(ctx, SOFT, radiusDp));
         s.addState(new int[]{android.R.attr.state_pressed}, round(ctx, pressed, radiusDp));
         s.addState(new int[]{}, round(ctx, normal, radiusDp));
         return s;
@@ -196,14 +198,16 @@ public final class ManagerUi {
     /** 描边小按钮（36dp 高，圆角 10，白底 LINE 描边，主色粗体字）。 */
     public static TextView smallButton(Context ctx, String text, boolean primary, Runnable onClick) {
         TextView t = text(ctx, text, 12, primary ? Color.WHITE : PRIMARY_DEEP, true);
+        t.setTextColor(UiComponents.enabledTextColors(primary ? Color.WHITE : PRIMARY_DEEP));
         t.setGravity(Gravity.CENTER);
-        t.setMinHeight(dp(ctx, 36));
+        t.setMinHeight(dp(ctx, 44));
         t.setMinWidth(dp(ctx, 64));
         t.setPadding(dp(ctx, 12), 0, dp(ctx, 12), 0);
         if (primary) {
             t.setBackground(pressable(ctx, PRIMARY, 0xFF4338CA, 10));
         } else {
             StateListDrawable g = new StateListDrawable();
+            g.addState(new int[]{-android.R.attr.state_enabled}, round(ctx, SOFT, 10));
             g.addState(new int[]{android.R.attr.state_pressed}, round(ctx, PRIMARY_50, 10));
             g.addState(new int[]{}, stroke(ctx, CARD, 10, LINE));
             t.setBackground(g);

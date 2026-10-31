@@ -136,48 +136,15 @@ public final class OnboardingActivity extends Activity {
     // ==================================================================================
 
     private View buildRoot() {
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setBackgroundColor(UiStyle.BG_V2);
-
-        // 顶部栏：返回 + 标题 + 说明
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(12), dp(14), dp(16), dp(4));
-
-        FrameLayout back = new FrameLayout(this);
-        back.addView(new UiStyle.Icon(this, UiStyle.Icon.ARROW_LEFT, UiStyle.INK, 22),
-                new FrameLayout.LayoutParams(dp(22), dp(22), Gravity.CENTER));
-        UiStyle.press(back);
-        back.setOnClickListener(v -> finish());
-        bar.addView(back, new LinearLayout.LayoutParams(dp(40), dp(40)));
-
-        LinearLayout titles = new LinearLayout(this);
-        titles.setOrientation(LinearLayout.VERTICAL);
-        titles.setPadding(dp(4), 0, 0, 0);
-        TextView title = new TextView(this);
-        title.setText("新手引导");
-        title.setTextSize(22);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        titles.addView(title);
-        subtitleText = new TextView(this);
-        subtitleText.setTextSize(11.5f);
-        subtitleText.setTextColor(UiStyle.INK2);
-        subtitleText.setPadding(0, dp(3), 0, 0);
-        titles.addView(subtitleText);
-        bar.addView(titles, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        LinearLayout root = UiComponents.pageRoot(this);
+        LinearLayout bar = UiComponents.topBar(this, "新手引导", " ", this::finish);
+        subtitleText = (TextView) bar.findViewWithTag("subtitle");
         root.addView(bar);
 
         // 进度卡
-        LinearLayout progressCard = UiStyle.card(this);
+        LinearLayout progressCard = UiComponents.card(this);
         progressCard.setOrientation(LinearLayout.VERTICAL);
-        progressText = new TextView(this);
-        progressText.setTextSize(13);
-        progressText.setTypeface(Typeface.DEFAULT_BOLD);
-        progressText.setTextColor(UiStyle.INK);
+        progressText = UiComponents.numeric(this, "", 13, UiStyle.INK, true);
         progressCard.addView(progressText);
         progressSegs = new LinearLayout(this);
         progressSegs.setOrientation(LinearLayout.HORIZONTAL);
@@ -185,7 +152,7 @@ public final class OnboardingActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(4));
         segLp.topMargin = dp(10);
         progressCard.addView(progressSegs, segLp);
-        root.addView(progressCard);
+        root.addView(UiComponents.contentHost(this, progressCard));
 
         // 步骤区（可滚动）
         ScrollView sc = new ScrollView(this);
@@ -193,7 +160,7 @@ public final class OnboardingActivity extends Activity {
         stepsBox = new LinearLayout(this);
         stepsBox.setOrientation(LinearLayout.VERTICAL);
         stepsBox.setPadding(dp(0), dp(2), dp(0), dp(18));
-        sc.addView(stepsBox, new ViewGroup.LayoutParams(
+        sc.addView(UiComponents.contentHost(this, stepsBox), new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         root.addView(sc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
@@ -202,7 +169,7 @@ public final class OnboardingActivity extends Activity {
         LinearLayout bottom = new LinearLayout(this);
         bottom.setOrientation(LinearLayout.HORIZONTAL);
         bottom.setGravity(Gravity.CENTER_VERTICAL);
-        bottom.setPadding(dp(18), dp(10), dp(18), dp(18));
+        bottom.setPadding(0, dp(10), 0, dp(18));
 
         // 批次8（P0-3）：点「稍后再说」记录 onboarding_deferred，后续冷启动不再自动弹
         // （☰ 功能菜单「新手引导」入口保留，可随时补做）。
@@ -212,7 +179,7 @@ public final class OnboardingActivity extends Activity {
         LinearLayout.LayoutParams primaryLp = new LinearLayout.LayoutParams(0, dp(48), 1.6f);
         primaryLp.leftMargin = dp(10);
         bottom.addView(primaryBtn, primaryLp);
-        root.addView(bottom, new LinearLayout.LayoutParams(
+        root.addView(UiComponents.contentHost(this, bottom), new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         return root;
     }
@@ -469,13 +436,7 @@ public final class OnboardingActivity extends Activity {
                              String primaryText, Runnable primaryAction, Boolean primaryEnabled,
                              String secondaryText, Runnable secondaryAction) {
         int status = OnboardingState.statusOf(steps, step);
-        LinearLayout card = UiStyle.outlineCard(this);
-        card.setOrientation(LinearLayout.VERTICAL);
-        card.setPadding(dp(16), dp(14), dp(16), dp(14));
-        LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        cardLp.setMargins(dp(18), dp(12), dp(18), 0);
-        card.setLayoutParams(cardLp);
+        LinearLayout card = UiComponents.card(this);
 
         // 头部：图标 + 标题 + 状态角标
         LinearLayout head = new LinearLayout(this);
@@ -531,12 +492,12 @@ public final class OnboardingActivity extends Activity {
                 UiStyle.toast(this, "已跳过第 " + step + " 步，可稍后在 ☰ 功能菜单重新进入");
                 refresh();
             });
-            links.addView(skip, new LinearLayout.LayoutParams(dp(108), dp(36)));
+            links.addView(skip, new LinearLayout.LayoutParams(dp(108), dp(44)));
         }
         if (secondaryText != null && secondaryAction != null) {
             TextView extra = UiStyle.ghostBtn(this, secondaryText, secondaryAction);
             links.addView(extra, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(36)));
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(44)));
         }
         if (links.getChildCount() > 0) card.addView(links);
 

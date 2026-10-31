@@ -430,7 +430,7 @@ public class FormationManagerActivity extends Activity {
         FrameLayout head = new FrameLayout(this);
         head.setBackgroundColor(ManagerUi.CARD);
         head.setLayoutParams(new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ManagerUi.dp(this, 44)));
+                ViewGroup.LayoutParams.MATCH_PARENT, ManagerUi.dp(this, 56)));
 
         LinearLayout center = new LinearLayout(this);
         center.setOrientation(LinearLayout.VERTICAL);
@@ -461,9 +461,9 @@ public class FormationManagerActivity extends Activity {
         });
         UiStyle.press(close);
         FrameLayout.LayoutParams xlp = new FrameLayout.LayoutParams(
-                ManagerUi.dp(this, 30), ManagerUi.dp(this, 30),
+                ManagerUi.dp(this, 44), ManagerUi.dp(this, 44),
                 Gravity.CENTER_VERTICAL | Gravity.END);
-        xlp.rightMargin = ManagerUi.dp(this, 6);
+        xlp.rightMargin = ManagerUi.dp(this, 4);
         head.addView(close, xlp);
 
         if (!editorOpen) {
@@ -473,9 +473,9 @@ public class FormationManagerActivity extends Activity {
             add.setOnClickListener(v -> openEditor(null));
             UiStyle.press(add);
             FrameLayout.LayoutParams alp = new FrameLayout.LayoutParams(
-                    ManagerUi.dp(this, 32), ManagerUi.dp(this, 32),
+                    ManagerUi.dp(this, 44), ManagerUi.dp(this, 44),
                     Gravity.CENTER_VERTICAL | Gravity.END);
-            alp.rightMargin = ManagerUi.dp(this, 40);
+            alp.rightMargin = ManagerUi.dp(this, 44);
             head.addView(add, alp);
         }
 
@@ -486,9 +486,9 @@ public class FormationManagerActivity extends Activity {
             back.setOnClickListener(v -> closeEditor());
             UiStyle.press(back);
             FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
-                    ManagerUi.dp(this, 32), ManagerUi.dp(this, 32),
+                    ManagerUi.dp(this, 44), ManagerUi.dp(this, 44),
                     Gravity.CENTER_VERTICAL | Gravity.START);
-            blp.leftMargin = ManagerUi.dp(this, 4);
+            blp.leftMargin = 0;
             head.addView(back, blp);
         }
         return head;
@@ -541,7 +541,7 @@ public class FormationManagerActivity extends Activity {
             btn.setBackground(active
                     ? ManagerUi.round(this, ManagerUi.PRIMARY_50, 12)
                     : ManagerUi.round(this, ManagerUi.CARD, 12));
-            btn.setMinHeight(ManagerUi.dp(this, 38));
+            btn.setMinHeight(ManagerUi.dp(this, 44));
             btn.setOnClickListener(v -> {
                 if (editorOpen) return;
                 if (key.equals(tab)) return;
@@ -555,7 +555,7 @@ public class FormationManagerActivity extends Activity {
             });
             UiStyle.press(btn);
             LinearLayout.LayoutParams lp = ManagerUi.lp(0,
-                    ManagerUi.dp(this, 38), 1f);
+                    ManagerUi.dp(this, 44), 1f);
             if (!t[0].equals(TAB_MINE)) lp.rightMargin = ManagerUi.dp(this, 6);
             row.addView(btn, lp);
         }
@@ -593,7 +593,7 @@ public class FormationManagerActivity extends Activity {
                 render();
             });
             LinearLayout.LayoutParams lp = ManagerUi.lp(0,
-                    ManagerUi.dp(this, 32), 1f);
+                    ManagerUi.dp(this, 44), 1f);
             if (i != 2 && i != 3) lp.rightMargin = ManagerUi.dp(this, 6);
             line.addView(btn, lp);
         }
@@ -605,7 +605,7 @@ public class FormationManagerActivity extends Activity {
         TextView createBtn = ManagerUi.smallButton(this, "＋ 新建编队", true,
                 () -> openEditor(null));
         createRow.addView(createBtn, ManagerUi.lp(ViewGroup.LayoutParams.MATCH_PARENT,
-                ManagerUi.dp(this, 40), 1f));
+                ManagerUi.dp(this, 44), 1f));
         wrap.addView(createRow);
         return wrap;
     }
@@ -621,7 +621,7 @@ public class FormationManagerActivity extends Activity {
         boolean hasMemory = hasAnyMemory();
         TextView save = ManagerUi.smallButton(this, "记忆", false, () -> openMemoryDialog(false));
         LinearLayout.LayoutParams slp = ManagerUi.lp(
-                ManagerUi.dp(this, 64), ManagerUi.dp(this, 36));
+                ManagerUi.dp(this, 64), ManagerUi.dp(this, 44));
         row.addView(save, slp);
         TextView restore = ManagerUi.smallButton(this, "恢复", false, () -> {
             if (!hasMemory) {
@@ -639,7 +639,7 @@ public class FormationManagerActivity extends Activity {
             openMemoryDialog(true);
         });
         LinearLayout.LayoutParams rlp = ManagerUi.lp(
-                ManagerUi.dp(this, 64), ManagerUi.dp(this, 36));
+                ManagerUi.dp(this, 64), ManagerUi.dp(this, 44));
         rlp.leftMargin = ManagerUi.dp(this, 6);
         if (!hasMemory) restore.setAlpha(0.45f);
         row.addView(restore, rlp);

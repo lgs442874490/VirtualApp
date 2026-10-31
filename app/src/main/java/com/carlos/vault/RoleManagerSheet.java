@@ -78,8 +78,11 @@ public final class RoleManagerSheet {
         panel.setBackground(pbg);
         panel.setElevation(dp(act, 16));
         FrameLayout.LayoutParams plp = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM);
+                UiLayoutRules.contentWidthPx(
+                        act.getResources().getDisplayMetrics().widthPixels,
+                        act.getResources().getDisplayMetrics().density, 640, 0),
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM | Gravity.CENTER_HORIZONTAL);
         panel.setLayoutParams(plp);
 
         // —— 拖拽条 ——
@@ -458,6 +461,6 @@ public final class RoleManagerSheet {
     }
 
     private static void toast(Activity act, String s) {
-        Toast.makeText(act, s, Toast.LENGTH_LONG).show();
+        UiStyle.toast(act, s, Toast.LENGTH_LONG);
     }
 }

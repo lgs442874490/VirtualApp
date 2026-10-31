@@ -2,8 +2,6 @@ package com.carlos.vault.wechat;
 
 import android.app.Activity;
 import android.graphics.BitmapFactory;
-import android.graphics.Color;
-import android.graphics.Typeface;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -18,6 +16,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.carlos.vault.AccountStore;
+import com.carlos.vault.UiComponents;
+import com.carlos.vault.UiLayoutRules;
 import com.carlos.vault.UiStyle;
 import com.carlos.vault.VaultEngine;
 import com.carlos.vault.VaultSync;
@@ -83,78 +83,41 @@ public class WechatQrLoginActivity extends Activity {
     }
 
     private void buildUi() {
-        FrameLayout frame = new FrameLayout(this);
-        frame.setBackgroundColor(UiStyle.BG_V2);
+        // 统一页面骨架：19sp 顶栏 + 44dp 返回热区 + 18dp 正文边距（宽屏 640dp 限宽居中）
+        UiComponents.Page page = UiComponents.scrollPage(this, "微信扫码登录", null,
+                this::finish, 24);
+        page.root.setFitsSystemWindows(true);
+        LinearLayout body = page.body;
 
-        LinearLayout root = new LinearLayout(this);
-        root.setOrientation(LinearLayout.VERTICAL);
-        root.setPadding(dp(20), dp(18), dp(20), dp(18));
-        root.setFitsSystemWindows(true);
-
-        // 顶栏：返回 + 标题
-        LinearLayout header = new LinearLayout(this);
-        header.setOrientation(LinearLayout.HORIZONTAL);
-        header.setGravity(Gravity.CENTER_VERTICAL);
-
-        TextView back = new TextView(this);
-        back.setText("‹");
-        back.setTextSize(26);
-        back.setTextColor(UiStyle.BRAND);
-        back.setGravity(Gravity.CENTER);
-        back.setWidth(dp(40));
-        back.setHeight(dp(40));
-        UiStyle.press(back);
-        back.setOnClickListener(v -> finish());
-        header.addView(back);
-
-        TextView title = new TextView(this);
-        title.setText("微信扫码登录");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        header.addView(title);
-
-        root.addView(header);
-
-        TextView desc = new TextView(this);
-        desc.setText(entryId == null || entryId.isEmpty()
+        TextView desc = UiComponents.body(this, entryId == null || entryId.isEmpty()
                 ? "用微信扫码授权，直接拿到游戏账号（fpid + token）；不需要在容器里装微信，也不需要走原生登录。"
                 : "扫码后把号 ID 和 token 直接回填到本入口；不需要在容器里装微信，也不需要走原生登录。");
-        desc.setTextSize(12.5f);
-        desc.setTextColor(UiStyle.INK2);
-        desc.setLineSpacing(dp(2), 1f);
-        desc.setPadding(0, dp(6), 0, dp(14));
-        root.addView(desc);
+        desc.setPadding(dp(2), dp(2), dp(2), dp(10));
+        body.addView(desc);
 
-        // 二维码卡片
-        LinearLayout card = new LinearLayout(this);
-        card.setOrientation(LinearLayout.VERTICAL);
+        // 二维码卡片：统一描边卡（16dp 圆角 + 1px 描边），尺寸随窗口自适应，窄屏不溢出
+        LinearLayout card = UiComponents.card(this);
         card.setGravity(Gravity.CENTER_HORIZONTAL);
-        card.setBackground(UiStyle.roundRectDp(this, UiStyle.CARD, 18));
         card.setPadding(dp(18), dp(18), dp(18), dp(14));
 
+        int qrSize = Math.min(dp(252), qrAvailableWidth() - dp(36));
         FrameLayout qrBox = new FrameLayout(this);
         qrBox.setBackground(UiStyle.roundRectDp(this, 0xFFFFFFFF, 14));
         qrView = new ImageView(this);
         qrView.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        qrBox.addView(qrView, new FrameLayout.LayoutParams(dp(228), dp(228), Gravity.CENTER));
-        LinearLayout.LayoutParams qrLp = new LinearLayout.LayoutParams(dp(252), dp(252));
+        qrBox.addView(qrView, new FrameLayout.LayoutParams(qrSize - dp(24), qrSize - dp(24),
+                Gravity.CENTER));
+        LinearLayout.LayoutParams qrLp = new LinearLayout.LayoutParams(qrSize, qrSize);
         qrLp.gravity = Gravity.CENTER_HORIZONTAL;
         card.addView(qrBox, qrLp);
 
-        statusView = new TextView(this);
-        statusView.setText("正在获取微信登录二维码…");
-        statusView.setTextSize(14);
-        statusView.setTextColor(UiStyle.INK);
+        statusView = UiComponents.text(this, "正在获取微信登录二维码…",
+                UiComponents.TEXT_BODY, UiStyle.INK, true);
         statusView.setGravity(Gravity.CENTER);
-        statusView.setTypeface(Typeface.DEFAULT_BOLD);
         statusView.setPadding(0, dp(14), 0, dp(2));
         card.addView(statusView);
 
-        subView = new TextView(this);
-        subView.setText("二维码约 2 分钟有效；过期会自动换新。");
-        subView.setTextSize(11.5f);
-        subView.setTextColor(UiStyle.INK2);
+        subView = UiComponents.caption(this, "二维码约 2 分钟有效；过期会自动换新。", UiStyle.INK2);
         subView.setGravity(Gravity.CENTER);
         subView.setPadding(0, 0, 0, dp(4));
         card.addView(subView);
@@ -162,28 +125,29 @@ public class WechatQrLoginActivity extends Activity {
         LinearLayout.LayoutParams cardLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         cardLp.topMargin = dp(2);
-        root.addView(card, cardLp);
+        body.addView(card, cardLp);
 
-        // 操作按钮
+        // 操作按钮（44dp 热区）
         actionsRow = buildActions();
         LinearLayout.LayoutParams actionLp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        actionLp.topMargin = dp(16);
-        root.addView(actionsRow, actionLp);
+        actionLp.topMargin = dp(14);
+        body.addView(actionsRow, actionLp);
 
-        TextView tip = new TextView(this);
-        tip.setText("· 扫码后请尽快在微信里点「确认授权」\n"
+        TextView tip = UiComponents.caption(this, "· 扫码后请尽快在微信里点「确认授权」\n"
                 + "· 登录会占用该微信绑定游戏号的会话（可能顶掉它当前的在线）；号库小号请自行判断\n"
-                + "· 成功后自动加入账号页「未分组」，点它即可注入登录");
-        tip.setTextSize(11.5f);
-        tip.setTextColor(UiStyle.INK3);
-        tip.setLineSpacing(dp(3), 1f);
-        tip.setPadding(0, dp(18), 0, 0);
-        root.addView(tip);
+                + "· 成功后自动加入账号页「未分组」，点它即可注入登录", UiStyle.INK3);
+        tip.setPadding(dp(2), dp(14), dp(2), 0);
+        body.addView(tip);
 
-        frame.addView(root, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        setContentView(frame);
+        setContentView(page.root);
+    }
+
+    /** 二维码可用宽度 = 正文限宽后的卡片内宽（窄屏按实际窗口收缩，宽屏不超过 640dp）。 */
+    private int qrAvailableWidth() {
+        return UiLayoutRules.contentWidthPx(
+                getResources().getDisplayMetrics().widthPixels,
+                getResources().getDisplayMetrics().density);
     }
 
     private View buildActions() {
@@ -204,7 +168,7 @@ public class WechatQrLoginActivity extends Activity {
         ui.post(() -> {
             if (isFinishing()) return;
             statusView.setText(text);
-            statusView.setTextColor(error ? 0xFFDC2626 : UiStyle.INK);
+            statusView.setTextColor(error ? UiStyle.ERR_INK : UiStyle.INK);
         });
     }
 
