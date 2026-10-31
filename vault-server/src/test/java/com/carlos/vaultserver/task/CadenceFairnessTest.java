@@ -124,11 +124,12 @@ public class CadenceFairnessTest {
 
     @Test
     public void parseGlobalMax_defaultsAndOffMeansUnlimited() {
-        assertEquals("默认 20 次/分钟", 20, TaskCadenceScheduler.DEFAULT_GLOBAL_MAX_PER_MINUTE);
-        assertEquals(20, TaskCadenceScheduler.parseGlobalMax(null));
-        assertEquals(20, TaskCadenceScheduler.parseGlobalMax(""));
-        assertEquals(20, TaskCadenceScheduler.parseGlobalMax("   "));
-        assertEquals("非法值回落默认", 20, TaskCadenceScheduler.parseGlobalMax("abc"));
+        // 2026-11-01 用户口径：默认不限（每角色独立预算，不再全局挤压）
+        assertEquals("默认 0=不限", 0, TaskCadenceScheduler.DEFAULT_GLOBAL_MAX_PER_MINUTE);
+        assertEquals(0, TaskCadenceScheduler.parseGlobalMax(null));
+        assertEquals(0, TaskCadenceScheduler.parseGlobalMax(""));
+        assertEquals(0, TaskCadenceScheduler.parseGlobalMax("   "));
+        assertEquals("非法值回落默认", 0, TaskCadenceScheduler.parseGlobalMax("abc"));
         assertEquals("off=不限", 0, TaskCadenceScheduler.parseGlobalMax("off"));
         assertEquals("OFF 大小写不敏感", 0, TaskCadenceScheduler.parseGlobalMax("OFF"));
         assertEquals("false=不限", 0, TaskCadenceScheduler.parseGlobalMax("false"));

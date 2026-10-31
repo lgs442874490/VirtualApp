@@ -43,9 +43,11 @@ import java.util.concurrent.ConcurrentHashMap;
  *   <li>候选按 {@link #pickNextAccount 账号 fpid 字典序 + round-robin 游标}（Phase 2 起为
  *       {@link #pickNextRole 角色 fpid|sid|uid round-robin + 每角色保底 floor}）公平选一个
  *       （同 tick 只派 1 单，避免遍历顺序导致某账号/角色饿死）；</li>
- *   <li>全局每分钟派单预算 {@code VAULT_CADENCE_GLOBAL_MAX}（默认 20；off/0=不限）用 60s
+ *   <li>全局每分钟派单预算 {@code VAULT_CADENCE_GLOBAL_MAX}（**默认 0=不限**；2026-11-01 起
+ *       改为每角色独立预算，账号/全局仅在显式配置时生效）用 60s
  *       滑动窗口限流，超预算本 tick 不派（不写 cad 键，下 tick 继续）；Phase 2 另加账号级
- *       {@code VAULT_CADENCE_ACCOUNT_MAX}（默认 24/分）防同账号双角色把预算挤爆；</li>
+ *       {@code VAULT_CADENCE_ACCOUNT_MAX}（默认 0=不限）与 {@code VAULT_CADENCE_ROLE_MAX}
+ *       （默认 0=不限，每角色独立滑窗）用于按需节流；角色之间互不挤压。</li>
  *   <li>把命中的任务提交单任务执行（{@link RoundScheduler.KeeperFacade#submitRound(RoleKey, String, String)}，
  *       进入会话单线程执行器，天然与整轮/手动串行），并按 {@link TaskCadence} 写下次执行时间
  *       （>60s 的间隔加 ±10% 抖动；上轮 SKIPPED/ERROR 按 {@link #nextIntervalForResult} 退避）；</li>
@@ -99,9 +101,11 @@ public final class TaskCadenceScheduler {
     /** 全局预算滑动窗口（毫秒）：统计最近 60 秒成功派单数。 */
     static final long BUDGET_WINDOW_MILLIS = 60_000L;
     /** 全局每分钟派单预算默认值（环境变量未配置时；0=不限）。 */
-    static final int DEFAULT_GLOBAL_MAX_PER_MINUTE = 20;
+    static final int DEFAULT_GLOBAL_MAX_PER_MINUTE = 0;
     /** Phase 2：账号级每分钟派单上限默认值（防同账号双角色把请求打爆；0=不限）。 */
-    static final int DEFAULT_ACCOUNT_MAX_PER_MINUTE = 24;
+    static final int DEFAULT_ACCOUNT_MAX_PER_MINUTE = 0;
+    /** 每角色每分钟派单上限默认值（0=不限；每角色仍有 6s 最小间隔）。 */
+    static final int DEFAULT_ROLE_MAX_PER_MINUTE = 0;
     /** Phase 2：每角色每分钟保底派单数（不足优先派，避免兄弟角色饿死）。 */
     static final int MIN_ROLE_FLOOR_PER_MINUTE = 4;
     /** 统计落盘最小间隔；有派单时立即落盘（skip 原因等低频计数按该间隔合并写）。 */
@@ -110,6 +114,8 @@ public final class TaskCadenceScheduler {
     static final String ENV_PER_ROLE = "VAULT_PER_ROLE";
     /** Phase 2：账号级每分钟派单上限（默认 24；off/0=不限）。 */
     static final String ENV_ACCOUNT_MAX = "VAULT_CADENCE_ACCOUNT_MAX";
+    /** 每角色每分钟派单上限（默认 0=不限；显式设置才生效）。 */
+    static final String ENV_ROLE_MAX = "VAULT_CADENCE_ROLE_MAX";
     /**
      * 派单统计键：{@code srv:cad:stats:{yyyy-MM-dd}}（北京时间日期；值为 JSON 文本）。
      *
@@ -148,6 +154,8 @@ public final class TaskCadenceScheduler {
     private final boolean perRoleEnabled;
     /** Phase 2：账号级每分钟派单上限（0=不限）。 */
     private final int accountMaxPerMinute;
+    /** 每角色每分钟派单上限（0=不限）。 */
+    private final int roleMaxPerMinute;
     private final Set<String> startedLog = ConcurrentHashMap.newKeySet();
     private final Set<String> busyWarned = ConcurrentHashMap.newKeySet();
     /** 内存派单时刻（role key → ms；state 缺失时兜底最小间隔）。 */
@@ -171,7 +179,7 @@ public final class TaskCadenceScheduler {
     public TaskCadenceScheduler(VaultStore store, StateStore stateStore,
                                 RoundScheduler.KeeperFacade keeper) {
         this(store, stateStore, keeper, defaultRegistry(), windowEnabledByEnv(), new Random(),
-                globalMaxByEnv(), perRoleEnabledByEnv(), accountMaxByEnv());
+                globalMaxByEnv(), perRoleEnabledByEnv(), accountMaxByEnv(), roleMaxByEnv());
     }
 
     /** 可注入构造（单测：固定 registry / 窗口模式 / 随机种子；全局预算取环境变量）。 */
@@ -179,7 +187,7 @@ public final class TaskCadenceScheduler {
                          RoundScheduler.KeeperFacade keeper, ModuleRegistry registry,
                          boolean respectWindow, Random random) {
         this(store, stateStore, keeper, registry, respectWindow, random,
-                globalMaxByEnv(), perRoleEnabledByEnv(), accountMaxByEnv());
+                globalMaxByEnv(), perRoleEnabledByEnv(), accountMaxByEnv(), roleMaxByEnv());
     }
 
     /** 可注入构造（单测：额外固定全局每分钟预算，0=不限）。 */
@@ -187,14 +195,15 @@ public final class TaskCadenceScheduler {
                          RoundScheduler.KeeperFacade keeper, ModuleRegistry registry,
                          boolean respectWindow, Random random, int globalMaxPerMinute) {
         this(store, stateStore, keeper, registry, respectWindow, random,
-                globalMaxPerMinute, perRoleEnabledByEnv(), accountMaxByEnv());
+                globalMaxPerMinute, perRoleEnabledByEnv(), accountMaxByEnv(), roleMaxByEnv());
     }
 
     /** Phase 2 完整注入（单测/灰度：perRole + 账号级预算显式指定）。 */
     TaskCadenceScheduler(VaultStore store, StateStore stateStore,
                          RoundScheduler.KeeperFacade keeper, ModuleRegistry registry,
                          boolean respectWindow, Random random, int globalMaxPerMinute,
-                         boolean perRoleEnabled, int accountMaxPerMinute) {
+                         boolean perRoleEnabled, int accountMaxPerMinute,
+                         int roleMaxPerMinute) {
         this.store = store;
         this.stateStore = stateStore;
         this.keeper = keeper;
@@ -204,6 +213,7 @@ public final class TaskCadenceScheduler {
         this.globalMaxPerMinute = Math.max(0, globalMaxPerMinute);
         this.perRoleEnabled = perRoleEnabled;
         this.accountMaxPerMinute = Math.max(0, accountMaxPerMinute);
+        this.roleMaxPerMinute = Math.max(0, roleMaxPerMinute);
     }
 
     private static ModuleRegistry defaultRegistry() {
@@ -255,6 +265,21 @@ public final class TaskCadenceScheduler {
         if (raw == null) return false;
         String v = raw.trim();
         return "on".equalsIgnoreCase(v) || "1".equals(v) || "true".equalsIgnoreCase(v);
+    }
+
+    /** 每角色预算（环境变量 {@code VAULT_CADENCE_ROLE_MAX}；未配置=默认 0=不限）。 */
+    static int roleMaxByEnv() {
+        return parseRoleMax(System.getenv(ENV_ROLE_MAX));
+    }
+
+    /** 解析每角色预算：null/空/非法/负数 → 默认 0（不限）。 */
+    static int parseRoleMax(String raw) {
+        if (raw == null || raw.trim().isEmpty()) return DEFAULT_ROLE_MAX_PER_MINUTE;
+        try {
+            return Math.max(0, Integer.parseInt(raw.trim()));
+        } catch (Throwable t) {
+            return DEFAULT_ROLE_MAX_PER_MINUTE;
+        }
     }
 
     /** Phase 2 账号级预算（环境变量 {@code VAULT_CADENCE_ACCOUNT_MAX}；未配置=默认 24）。 */
@@ -344,6 +369,9 @@ public final class TaskCadenceScheduler {
             if (candidates.isEmpty()) return;
             // 账号级预算过滤（on/off 都生效；默认 24/分，对单角色现网行为无影响）
             List<RoleCandidate> eligible = filterByAccountBudget(candidates, now);
+            if (eligible.isEmpty()) return;
+            // 每角色独立预算过滤（默认 0=不限；角色之间不互相挤压）
+            eligible = filterByRoleBudget(eligible, now);
             if (eligible.isEmpty()) return;
             RoleCandidate picked;
             if (!perRoleEnabled) {
@@ -797,6 +825,26 @@ public final class TaskCadenceScheduler {
             if (accountBudgetExhausted(c.acc.fpid, now)) {
                 stats.skip("account_budget");
                 if (c.role.roleScoped()) stats.skipRole(c.role.key(), "account_budget");
+            } else {
+                out.add(c);
+            }
+        }
+        return out;
+    }
+
+    /** 每角色预算是否用尽（0=不限）；顺带清理窗口。 */
+    boolean roleBudgetExhausted(String roleKey, long now) {
+        if (roleMaxPerMinute <= 0) return false;
+        return recentRoleDispatchCount(roleKey, now) >= roleMaxPerMinute;
+    }
+
+    /** 按每角色预算过滤候选（角色独立预算；被过滤记 role_budget skip，不写 cad 键）。 */
+    private List<RoleCandidate> filterByRoleBudget(List<RoleCandidate> candidates, long now) {
+        List<RoleCandidate> out = new ArrayList<>(candidates.size());
+        for (RoleCandidate c : candidates) {
+            if (roleBudgetExhausted(c.role.key(), now)) {
+                stats.skip("role_budget");
+                if (c.role.roleScoped()) stats.skipRole(c.role.key(), "role_budget");
             } else {
                 out.add(c);
             }

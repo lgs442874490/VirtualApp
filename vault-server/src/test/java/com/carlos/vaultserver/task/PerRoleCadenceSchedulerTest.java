@@ -77,7 +77,13 @@ public class PerRoleCadenceSchedulerTest {
     /** 完整注入构造（perRole / accountMax 可控）。 */
     private TaskCadenceScheduler scheduler(boolean perRole, int globalMax, int accountMax) {
         return new TaskCadenceScheduler(store, stateStore, keeper, registry(),
-                false, new Random(42L), globalMax, perRole, accountMax);
+                false, new Random(42L), globalMax, perRole, accountMax, 0);
+    }
+
+    private TaskCadenceScheduler scheduler(boolean perRole, int globalMax, int accountMax,
+                                           int roleMax) {
+        return new TaskCadenceScheduler(store, stateStore, keeper, registry(),
+                false, new Random(42L), globalMax, perRole, accountMax, roleMax);
     }
 
     private VaultStore.Account seed(boolean withAlt, Map<String, Boolean> sidConfig) {
@@ -141,14 +147,19 @@ public class PerRoleCadenceSchedulerTest {
         assertTrue(TaskCadenceScheduler.parsePerRole("1"));
         assertTrue(TaskCadenceScheduler.parsePerRole("true"));
 
-        assertEquals("账号预算默认 24", 24, TaskCadenceScheduler.parseAccountMax(null));
-        assertEquals(24, TaskCadenceScheduler.parseAccountMax(""));
-        assertEquals(24, TaskCadenceScheduler.parseAccountMax("abc"));
+        // 2026-11-01：账号预算默认 0=不限（每角色独立预算）
+        assertEquals("账号预算默认 0", 0, TaskCadenceScheduler.parseAccountMax(null));
+        assertEquals(0, TaskCadenceScheduler.parseAccountMax(""));
+        assertEquals(0, TaskCadenceScheduler.parseAccountMax("abc"));
         assertEquals("off=不限", 0, TaskCadenceScheduler.parseAccountMax("off"));
         assertEquals("0=不限", 0, TaskCadenceScheduler.parseAccountMax("0"));
         assertEquals("负数=不限", 0, TaskCadenceScheduler.parseAccountMax("-1"));
         assertEquals(24, TaskCadenceScheduler.parseAccountMax("24"));
         assertEquals(8, TaskCadenceScheduler.parseAccountMax("8"));
+        assertEquals("每角色预算默认 0=不限", 0, TaskCadenceScheduler.parseRoleMax(null));
+        assertEquals(0, TaskCadenceScheduler.parseRoleMax(""));
+        assertEquals(6, TaskCadenceScheduler.parseRoleMax("6"));
+        assertEquals(0, TaskCadenceScheduler.parseRoleMax("-3"));
 
         TaskCadenceScheduler on = scheduler(true, 20, 24);
         assertTrue(on.perRoleEnabled());
@@ -390,6 +401,36 @@ public class PerRoleCadenceSchedulerTest {
         // 60s 窗口滑过后恢复
         scheduler.tick(now + 62_000L);
         assertEquals("账号预算窗口滑过后恢复派单", 3, keeper.submittedRoles.size());
+    }
+
+    // ======================= 6b. 每角色独立预算（2026-11-01） =======================
+
+    /** 每角色预算 1/分：主角色被限流时，兄弟角色仍按自己的预算派单（互不挤压）。 */
+    @Test
+    public void onMode_roleBudgetIsIndependentPerRole() {
+        seed(true, null);
+        TaskCadenceScheduler scheduler = scheduler(true, 0, 0, 1);   // 全局/账号不限，每角色 1/分
+        long now = bj(2026, 10, 29, 6, 0);
+
+        scheduler.tick(now);
+        assertEquals("首拍派 1 单", 1, keeper.submittedRoles.size());
+        String first = keeper.submittedRoles.get(0).key();
+
+        // 紧接的第二拍：被派过的角色预算用尽；另一角色若到期仍可派
+        scheduler.tick(now + 7_000L);
+        for (int i = 1; i < keeper.submittedRoles.size(); i++) {
+            assertNotEquals("同一角色 60s 内不超过 1 单",
+                    first, keeper.submittedRoles.get(i).key());
+        }
+        scheduler.publishStats(now + 7_000L);
+        long roleBudgetSkips = stats(now + 7_000L).getJSONObject("skip")
+                .optLong("role_budget", 0L);
+        assertTrue("统计记录 role_budget（同角色预算用尽）", roleBudgetSkips >= 1L);
+
+        // 60s 窗口滑过后主角色恢复
+        int before = keeper.submittedRoles.size();
+        scheduler.tick(now + 62_000L);
+        assertTrue("60s 后恢复派单", keeper.submittedRoles.size() > before);
     }
 
     // ======================= 7. 迁移读 + 配置优先级 =======================
