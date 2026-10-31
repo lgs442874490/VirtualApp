@@ -744,6 +744,10 @@ public final class ServerGuardianEngine {
                 hydrateAlliesFromNotify(engine);
             } catch (Throwable ignored) {
             }
+            try {
+                hydrateMassRalliesFromNotify(engine);
+            } catch (Throwable ignored) {
+            }
             engine.addMessageHook((proto, content) -> {
                 try {
                     onPush(engine, proto, content);
@@ -1262,6 +1266,20 @@ public final class ServerGuardianEngine {
         } catch (Throwable ex) {
             FileLog.warn("守护盟友集结解析异常 {}:{} {}",
                     fpid, String.valueOf(sid), brief(String.valueOf(ex)));
+        }
+    }
+
+    /** 批次 Q：从登录推送缓存补集结（mass_march_* 常在登录后一次性下发，钩子错过）。 */
+    void hydrateMassRalliesFromNotify(WjdrEngine engine) {
+        if (engine == null) return;
+        for (String proto : new String[]{PROTO_MASS_ADD, PROTO_MASS_UPDATE}) {
+            try {
+                Map<String, Object> content = engine.notifyData(proto);
+                if (content == null || content.isEmpty()) continue;
+                logMassKeys(proto, content, "hydrate");
+                handleMassMarch(engine, proto, content, clockMs.getAsLong());
+            } catch (Throwable ignored) {
+            }
         }
     }
 
