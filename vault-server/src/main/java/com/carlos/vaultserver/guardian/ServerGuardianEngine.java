@@ -2062,8 +2062,9 @@ public final class ServerGuardianEngine {
         probes.put(session, p);
         try {
             Map<String, Object> args = new LinkedHashMap<>();
-            args.put("startpoint", probePoint(x, y));
-            args.put("endpoint", probePoint(x, y));
+            // 点查询退化矩形可能只返回城/Boss；用 ±3 小矩形（同网页坐标查询）才能拿到在途队列
+            args.put("startpoint", probePoint(Math.max(0, x - 3), Math.max(0, y - 3)));
+            args.put("endpoint", probePoint(x + 3, y + 3));
             args.put("kid", engine.lastServerId());
             Map<String, Object> payload = new LinkedHashMap<>();
             payload.put("args", java.util.Collections.singletonList(args));
@@ -2157,7 +2158,6 @@ public final class ServerGuardianEngine {
                     }
                 }
                 boolean queueLike = item.containsKey("owner") && item.containsKey("endpoint");
-                if (!queueLike && Exec.longOf(item.get("type")) == 4L) queueLike = true;
                 if (!queueLike) continue;
                 int[] pt = pointOfAny(item, "endpoint", "end_point", "point");
                 if (pt == null || pt[0] != p.x || pt[1] != p.y) continue;
