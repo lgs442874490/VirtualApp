@@ -67,6 +67,11 @@ public final class WatchPointEngine {
     private static final long ATTACKER_TRACK_TTL_MS = 2L * 3_600_000L;
     private static final int ATTACKER_TRACK_MAX = 200;
     private static final long ATTACKER_MISSING_DEDUPE_MS = 6L * 3_600_000L;
+    /** 批次 B：跨区探测阈值（前 8 个 tile 无城 → 游戏不允许跨区查图）。 */
+    static final int CROSS_KID_PROBE_TILES = 8;
+    // 说明（C）：本引擎只有一个 store.kid；同一时间只能监听一个目标区服。
+    // 跨区角色（crossKidRoleUids）只是借用其它区服会话去查 store.kid 的地图；
+    // 不支持多个区服同时监听（需多实例/多配置，另立需求）。
     private static final long ALERT_DEDUPE_MS = 15L * 60_000L;
     private static final int SCAN_SEND_PER_TICK = 6;
 
@@ -76,14 +81,16 @@ public final class WatchPointEngine {
         final int session;
         final Kind kind;
         final WatchPointStore.Rect rect;
+        final WjdrEngine engine;
         final long sentAt;
         volatile boolean ended;
         final Set<Long> cityUids = ConcurrentHashMap.newKeySet();
 
-        Ctx(int session, Kind kind, WatchPointStore.Rect rect) {
+        Ctx(int session, Kind kind, WatchPointStore.Rect rect, WjdrEngine engine) {
             this.session = session;
             this.kind = kind;
             this.rect = rect;
+            this.engine = engine;
             this.sentAt = System.currentTimeMillis();
         }
     }
@@ -286,6 +293,7 @@ public final class WatchPointEngine {
     private long lastStatsAt;
     private volatile boolean lastTickHadEngine;
     private volatile java.util.List<String> lastEngineDescs = java.util.Collections.emptyList();
+    private volatile int lastAccountCount;
     /** 批次 Q3：攻击者 uid → 最后已知城坐标（来袭/出兵告警时记录）。 */
     private final Map<Long, TrackedAttacker> trackedAttackers = new ConcurrentHashMap<>();
     /** 批次 Q3：未定位告警 6h 去重。 */
@@ -294,6 +302,22 @@ public final class WatchPointEngine {
     private final Map<String, Integer> rectEmptyStreak = new ConcurrentHashMap<>();
     /** 最近一条告警文本（单测断言用）。 */
     private volatile String lastAlertText = "";
+    /** 批次 B：跨区角色探测状态（uid → probe；不支持的角色自动排除）。 */
+    private final Map<Long, CrossProbe> crossProbes = new ConcurrentHashMap<>();
+    private final Set<Long> crossUnavailable = ConcurrentHashMap.newKeySet();
+
+    /** 跨区角色探测记录。 */
+    static final class CrossProbe {
+        final long uid;
+        int tiles;
+        int cities;
+        Boolean supported;   // null=探测中；TRUE/FALSE=已判定
+        boolean logged;
+
+        CrossProbe(long uid) {
+            this.uid = uid;
+        }
+    }
     private volatile boolean baselineDone;
     private volatile long startedAt;
 
@@ -387,7 +411,7 @@ public final class WatchPointEngine {
         if (now - lastStatsAt < 60_000L) return;
         lastStatsAt = now;
         FileLog.info("[{}] 运行统计：有会话={} 会话={} 监视发送={}(回包{} 超时{}) 保护发送={}(回包{}) 告警={} 扫描={} 城缓存={}"
-                        + " 自循环忽略={} 未知目标忽略={} 随从静默={} 角色数={}",
+                        + " 自循环忽略={} 未知目标忽略={} 随从静默={} 角色数={} 账号数={}",
                 LOG, String.valueOf(lastTickHadEngine),
                 String.join(",", lastEngineDescs),
                 String.valueOf(statSentMonitor.get()), String.valueOf(statOkMonitor.get()),
@@ -396,39 +420,63 @@ public final class WatchPointEngine {
                 scan.active ? "进行中" : "空闲", String.valueOf(cityByUid.size()),
                 String.valueOf(statSelfIgnored.get()), String.valueOf(statUnknownTargetIgnored.get()),
                 String.valueOf(statRallyFollowerIgnored.get()),
-                String.valueOf(lastEngineDescs.size()));
+                String.valueOf(lastEngineDescs.size()), String.valueOf(lastAccountCount));
     }
 
-    /** 批次 Q2：返回所有满足 kid/fpid 且在线的引擎（去重；multi off 只返回 1 个）。 */
+    /** 批次 A/B：返回所有满足 kid/账号白名单/跨区探测且在线的引擎（multi off 只返回 1 个）。 */
     java.util.List<WjdrEngine> pickEngines() {
         java.util.List<WjdrEngine> online = new java.util.ArrayList<>();
         try {
             for (WjdrEngine e : keeper.onlineEngines()) online.add(e);
         } catch (Throwable ignored) {
         }
-        return selectEngines(online, store.fpid, store.kid, multiRoleEnabled());
+        java.util.Set<Long> crossUids = new java.util.LinkedHashSet<>(store.crossKidRoleUids);
+        return selectEngines(online, store.fpid, store.fpids, store.allAccounts,
+                store.kid, store.crossKid, crossUids, multiRoleEnabled(), crossUnavailable);
     }
 
-    /** 纯选择（单测可注入 online 列表）：同 kid（+fpid，若配置）且在线；fpid 未配置时锁定首个账号，避免跨账号。 */
+    /**
+     * 纯选择（单测可注入 online 列表）：
+     * 同 kid 角色按账号规则过滤（fpid 兼容优先 → fpids 白名单 → allAccounts；allAccounts=false 时锁定首个账号）；
+     * 跨区角色仅当 crossKid=true、uid ∈ crossUids 且未被标记不可用时纳入；按 fpid|sid|uid 去重。
+     */
     static java.util.List<WjdrEngine> selectEngines(java.util.List<WjdrEngine> online,
-                                                    String fpid, long kid, boolean multi) {
+                                                    String fpid, java.util.List<String> fpids,
+                                                    boolean allAccounts, long kid,
+                                                    boolean crossKid, java.util.Set<Long> crossUids,
+                                                    boolean multi, java.util.Set<Long> excluded) {
         java.util.List<WjdrEngine> out = new java.util.ArrayList<>();
         if (online == null) return out;
-        java.util.Set<WjdrEngine> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
         String want = fpid == null ? "" : fpid.trim();
+        java.util.Set<String> white = new java.util.LinkedHashSet<>();
+        if (fpids != null) {
+            for (String f : fpids) if (f != null && !f.trim().isEmpty()) white.add(f.trim());
+        }
+        String lockedFpid = null;   // allAccounts=false 时锁首个账号
         for (WjdrEngine e : online) {
             if (e == null) continue;
             try {
-                if (e.lastServerId() != kid) continue;
                 if (e.sessionState() == null || !WjdrEngine.STATE_ONLINE.equals(e.sessionState())) continue;
+                long uid = e.lastUid();
                 String efpid = e.lastFpid() == null ? "" : e.lastFpid();
-                if (!want.isEmpty()) {
-                    if (!want.equals(efpid)) continue;
-                } else if (!out.isEmpty()) {
-                    // 未配置 fpid：只选同一账号（fpid 全等），避免跨账号串数据
-                    if (!efpid.equals(out.get(0).lastFpid())) continue;
+                boolean sameKid = e.lastServerId() == kid;
+                if (!sameKid) {
+                    if (!crossKid) continue;
+                    if (crossUids == null || !crossUids.contains(uid)) continue;
+                    if (excluded != null && excluded.contains(uid)) continue;
+                } else {
+                    if (!want.isEmpty()) {
+                        if (!want.equals(efpid)) continue;
+                    } else if (!white.isEmpty()) {
+                        if (!white.contains(efpid)) continue;
+                    } else if (!allAccounts) {
+                        if (lockedFpid == null) lockedFpid = efpid;
+                        else if (!lockedFpid.equals(efpid)) continue;
+                    }
                 }
-                if (!seen.add(e)) continue;
+                String key = efpid + "|" + e.lastServerId() + "|" + uid;
+                if (!seen.add(key)) continue;
                 out.add(e);
                 if (!multi) break;
             } catch (Throwable ignored) {
@@ -437,6 +485,41 @@ public final class WatchPointEngine {
         return out;
     }
 
+    /** 跨区探测纯函数：有城→TRUE；≥8 tile 且 0 城→FALSE；未达阈值→null。 */
+    static Boolean crossKidSupported(int cityCount, int tiles) {
+        if (cityCount > 0) return Boolean.TRUE;
+        if (tiles >= CROSS_KID_PROBE_TILES) return Boolean.FALSE;
+        return null;
+    }
+
+    /** 每次扫描 tile 回包记录跨区角色探测；不支持则加入排除集合（自动降级）。 */
+    private void noteCrossProbe(Ctx ctx) {
+        if (ctx == null || ctx.engine == null) return;
+        try {
+            long uid = ctx.engine.lastUid();
+            if (uid <= 0L || ctx.engine.lastServerId() == store.kid) return;
+            int cities = ctx.cityUids.size();
+            CrossProbe p = crossProbes.computeIfAbsent(uid, k -> new CrossProbe(uid));
+            p.tiles++;
+            p.cities += cities;
+            Boolean s = crossKidSupported(p.cities, p.tiles);
+            if (s == null) return;
+            if (p.supported == null) {
+                p.supported = s;
+                if (Boolean.TRUE.equals(s)) {
+                    FileLog.info("[{}] 跨区角色 uid={} kid={} 探测可用（已获 {} 城/{} tile）",
+                            LOG, String.valueOf(uid), String.valueOf(ctx.engine.lastServerId()),
+                            String.valueOf(p.cities), String.valueOf(p.tiles));
+                } else {
+                    crossUnavailable.add(uid);
+                    FileLog.warn("[{}] 跨区角色 uid={} kid={} 探测不可用（前 {} tile 0 城）→ 自动排除，查询仍带 kid={}",
+                            LOG, String.valueOf(uid), String.valueOf(ctx.engine.lastServerId()),
+                            String.valueOf(p.tiles), String.valueOf(store.kid));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
     /** env VAULT_WATCHPOINT_MULTI=off/0 强制单角色；否则按 store.multiRole（默认 true）。 */
     static boolean multiRoleEnabled(boolean storeMulti) {
         try {
@@ -465,8 +548,14 @@ public final class WatchPointEngine {
         }
         if (!descs.equals(lastEngineDescs)) {
             lastEngineDescs = descs;
-            FileLog.info("[{}] 使用会话 {}（观察点扫描，角色数={}）",
-                    LOG, String.join(",", descs), String.valueOf(descs.size()));
+            java.util.Set<String> accounts = new java.util.HashSet<>();
+            for (WjdrEngine e : engines) {
+                try { accounts.add(e.lastFpid()); } catch (Throwable ignored) { }
+            }
+            lastAccountCount = accounts.size();
+            FileLog.info("[{}] 使用会话 {}（观察点扫描，角色数={}，账号数={}）",
+                    LOG, String.join(",", descs), String.valueOf(descs.size()),
+                    String.valueOf(lastAccountCount));
         }
         for (WjdrEngine e : engines) attach(e);
     }
@@ -589,7 +678,7 @@ public final class WatchPointEngine {
     }
 
     private void doSend(WjdrEngine engine, int session, WatchPointStore.Rect rect, Kind kind, long now) {
-        Ctx ctx = new Ctx(session, kind, rect);
+        Ctx ctx = new Ctx(session, kind, rect, engine);
         ctxBySession.put(session, ctx);
         lastSent.put(session, now);
         Map<String, Object> args = new LinkedHashMap<>();
@@ -717,6 +806,7 @@ public final class WatchPointEngine {
         if (ctx.kind == Kind.MONITOR) statOkMonitor.incrementAndGet();
         else if (ctx.kind == Kind.PROTECT) statOkProtect.incrementAndGet();
         if (ctx.kind == Kind.SCAN) {
+            noteCrossProbe(ctx);
             scan.ended++;
             if (scan.ended >= SCAN_TILES) finishScan();
             return;
@@ -971,7 +1061,7 @@ public final class WatchPointEngine {
             int ey = Math.min(MAP_MAX, sy + TILE - 1);
             WatchPointStore.Rect rect = new WatchPointStore.Rect("scan", sx, sy, ex, ey);
             int session = SESSION_SCAN_BASE + i;
-            Ctx ctx = new Ctx(session, Kind.SCAN, rect);
+            Ctx ctx = new Ctx(session, Kind.SCAN, rect, engines.get(i % n));
             ctxBySession.put(session, ctx);
             lastSent.put(session, now);
             try {
@@ -1340,7 +1430,23 @@ public final class WatchPointEngine {
     }
 
     java.util.List<WjdrEngine> pickEnginesForTest(java.util.List<WjdrEngine> online) {
-        return selectEngines(online, store.fpid, store.kid, multiRoleEnabled());
+        java.util.Set<Long> crossUids = new java.util.LinkedHashSet<>(store.crossKidRoleUids);
+        return selectEngines(online, store.fpid, store.fpids, store.allAccounts,
+                store.kid, store.crossKid, crossUids, multiRoleEnabled(), crossUnavailable);
+    }
+
+    int crossProbeTilesForTest(long uid) {
+        CrossProbe p = crossProbes.get(uid);
+        return p == null ? 0 : p.tiles;
+    }
+
+    Boolean crossSupportedForTest(long uid) {
+        CrossProbe p = crossProbes.get(uid);
+        return p == null ? null : p.supported;
+    }
+
+    boolean crossUnavailableForTest(long uid) {
+        return crossUnavailable.contains(uid);
     }
 
     void pollTickForTest(java.util.List<WjdrEngine> engines) {

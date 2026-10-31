@@ -90,8 +90,16 @@ public final class WatchPointStore {
 
     public boolean enabled = true;
     public long kid = 888L;
-    /** 限定账号 fpid；空 = 任意在线账号。 */
+    /** 限定账号 fpid；空 = 任意在线账号（兼容旧配置；非空=只该账号）。 */
     public String fpid = "";
+    /** 批次 A（2026-11-01）：累计监听所有账号（fpids 为空时生效）。 */
+    public boolean allAccounts = true;
+    /** 账号白名单（fpid 数字串，最多 20 个；空=全部）。 */
+    public List<String> fpids = new ArrayList<>();
+    /** 批次 B：跨区角色探测开关（默认 false；显式列出 uid 才尝试）。 */
+    public boolean crossKid = false;
+    /** 跨区角色 uid 列表（其它区服角色；查询仍带 store.kid）。 */
+    public List<Long> crossKidRoleUids = new ArrayList<>();
     /** 监视目标查询间隔（毫秒）。 */
     public long monitorIntervalMs = 4000L;
     /** 保护矩形查询间隔（毫秒）。 */
@@ -152,6 +160,22 @@ public final class WatchPointStore {
         o.put("envEnabled", envEnabled());
         o.put("kid", kid);
         o.put("fpid", fpid == null ? "" : fpid);
+        o.put("allAccounts", allAccounts);
+        JSONArray fpa = new JSONArray();
+        int fi = 0;
+        for (String f : fpids) {
+            if (fi++ >= 20) break;
+            fpa.put(f);
+        }
+        o.put("fpids", fpa);
+        o.put("crossKid", crossKid);
+        JSONArray cua = new JSONArray();
+        int ci = 0;
+        for (Long u : crossKidRoleUids) {
+            if (ci++ >= 100) break;
+            cua.put(u);
+        }
+        o.put("crossKidRoleUids", cua);
         o.put("monitorIntervalMs", monitorIntervalMs);
         o.put("protectIntervalMs", protectIntervalMs);
         o.put("maxReqPerSec", maxReqPerSec);
@@ -227,6 +251,24 @@ public final class WatchPointStore {
             if (nKid <= 0) return "区服 kid 必须大于 0";
             String nFpid = in.has("fpid") ? in.optString("fpid", "").trim() : fpid;
             if (nFpid.length() > MAX_TEXT) return "账号 fpid 过长";
+            boolean nAllAccounts = in.has("allAccounts")
+                    ? in.optBoolean("allAccounts", allAccounts) : allAccounts;
+            List<String> nFpids;
+            try {
+                nFpids = in.has("fpids") ? parseFpids(in.get("fpids")) : new ArrayList<>(fpids);
+            } catch (IllegalArgumentException iae) {
+                return iae.getMessage();
+            }
+            boolean nCrossKid = in.has("crossKid")
+                    ? in.optBoolean("crossKid", crossKid) : crossKid;
+            List<Long> nCrossUids;
+            try {
+                nCrossUids = in.has("crossKidRoleUids")
+                        ? parseLongIds(in.get("crossKidRoleUids"), "跨区角色 uid", 100)
+                        : new ArrayList<>(crossKidRoleUids);
+            } catch (IllegalArgumentException iae) {
+                return iae.getMessage();
+            }
             long nMonitorMs = in.has("monitorIntervalMs")
                     ? in.optLong("monitorIntervalMs", monitorIntervalMs) : monitorIntervalMs;
             long nProtectMs = in.has("protectIntervalMs")
@@ -292,6 +334,10 @@ public final class WatchPointStore {
             enabled = nEnabled;
             kid = nKid;
             fpid = nFpid;
+            allAccounts = nAllAccounts;
+            fpids = nFpids;
+            crossKid = nCrossKid;
+            crossKidRoleUids = nCrossUids;
             monitorIntervalMs = nMonitorMs;
             protectIntervalMs = nProtectMs;
             fullScanIntervalMs = nFullScan;
@@ -500,6 +546,24 @@ public final class WatchPointStore {
             enabled = o.optBoolean("enabled", true);
             kid = o.optLong("kid", 888L);
             fpid = o.optString("fpid", "");
+            allAccounts = o.optBoolean("allAccounts", true);
+            fpids = new ArrayList<>();
+            JSONArray fpa = o.optJSONArray("fpids");
+            if (fpa != null) {
+                for (int i = 0; i < fpa.length() && fpids.size() < 20; i++) {
+                    String v = String.valueOf(fpa.opt(i)).trim();
+                    if (v.matches("\\d{1,20}")) fpids.add(v);
+                }
+            }
+            crossKid = o.optBoolean("crossKid", false);
+            crossKidRoleUids = new ArrayList<>();
+            JSONArray cua = o.optJSONArray("crossKidRoleUids");
+            if (cua != null) {
+                for (int i = 0; i < cua.length() && crossKidRoleUids.size() < 100; i++) {
+                    long v = cua.optLong(i, 0L);
+                    if (v > 0L) crossKidRoleUids.add(v);
+                }
+            }
             monitorIntervalMs = clamp(o.optLong("monitorIntervalMs", 4000L), 1000L, 300_000L);
             protectIntervalMs = clamp(o.optLong("protectIntervalMs", 25000L), 3000L, 3_600_000L);
             maxReqPerSec = clampDouble(o.optDouble("maxReqPerSec", 2.5d), 0.2d, 30d);
@@ -576,6 +640,22 @@ public final class WatchPointStore {
         o.put("enabled", enabled);
         o.put("kid", kid);
         o.put("fpid", fpid == null ? "" : fpid);
+        o.put("allAccounts", allAccounts);
+        JSONArray fpa = new JSONArray();
+        int fi = 0;
+        for (String f : fpids) {
+            if (fi++ >= 20) break;
+            fpa.put(f);
+        }
+        o.put("fpids", fpa);
+        o.put("crossKid", crossKid);
+        JSONArray cua = new JSONArray();
+        int ci = 0;
+        for (Long u : crossKidRoleUids) {
+            if (ci++ >= 100) break;
+            cua.put(u);
+        }
+        o.put("crossKidRoleUids", cua);
         o.put("monitorIntervalMs", monitorIntervalMs);
         o.put("protectIntervalMs", protectIntervalMs);
         o.put("maxReqPerSec", maxReqPerSec);
@@ -665,4 +745,62 @@ public final class WatchPointStore {
     private static double clampDouble(double v, double min, double max) {
         return Math.max(min, Math.min(max, v));
     }
+    /** fpids：JSONArray / 逗号字符串；元素必须数字串，最多 20 个。 */
+    static List<String> parseFpids(Object raw) {
+        List<String> out = new ArrayList<>();
+        if (raw == null) return out;
+        List<String> parts = new ArrayList<>();
+        if (raw instanceof JSONArray) {
+            JSONArray a = (JSONArray) raw;
+            for (int i = 0; i < a.length(); i++) parts.add(String.valueOf(a.opt(i)).trim());
+        } else if (raw instanceof List) {
+            for (Object o : (List<?>) raw) parts.add(String.valueOf(o).trim());
+        } else {
+            for (String p : String.valueOf(raw).split("[,，\\s]+")) {
+                if (!p.trim().isEmpty()) parts.add(p.trim());
+            }
+        }
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        for (String p : parts) {
+            if (p.isEmpty()) continue;
+            if (!p.matches("\\d{1,20}")) throw new IllegalArgumentException("账号 fpid 须为数字串: " + p);
+            if (seen.size() >= 20) throw new IllegalArgumentException("账号白名单最多 20 个");
+            seen.add(p);
+        }
+        out.addAll(seen);
+        return out;
+    }
+
+    /** 通用 long id 列表（JSONArray/逗号串/List）；上限 max，非法拒绝。 */
+    static List<Long> parseLongIds(Object raw, String what, int max) {
+        List<Long> out = new ArrayList<>();
+        if (raw == null) return out;
+        List<Object> vals = new ArrayList<>();
+        if (raw instanceof JSONArray) {
+            JSONArray a = (JSONArray) raw;
+            for (int i = 0; i < a.length(); i++) vals.add(a.opt(i));
+        } else if (raw instanceof List) {
+            vals.addAll((List<?>) raw);
+        } else {
+            for (String p : String.valueOf(raw).split("[,，\\s]+")) {
+                if (!p.trim().isEmpty()) vals.add(p.trim());
+            }
+        }
+        java.util.Set<Long> seen = new java.util.LinkedHashSet<>();
+        for (Object v : vals) {
+            long id;
+            try {
+                id = v instanceof Number ? ((Number) v).longValue()
+                        : Long.parseLong(String.valueOf(v).trim());
+            } catch (Throwable t) {
+                throw new IllegalArgumentException(what + " 须为数字: " + v);
+            }
+            if (id <= 0L) throw new IllegalArgumentException(what + " 须大于 0");
+            if (seen.size() >= max) throw new IllegalArgumentException(what + " 最多 " + max + " 个");
+            seen.add(id);
+        }
+        out.addAll(seen);
+        return out;
+    }
+
 }
