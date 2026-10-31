@@ -406,6 +406,9 @@ public final class VaultSync {
                 // 服务器登录后才知道实际落地 sid/角色名（App 端尚未本地发现角色时）：
                 // 回写角色表 + active/current_role，保证角色卡与 st:…:sid:fn 都能命中。
                 learnServerRole(app, fpid, o, requestTs);
+                // 2026-11-01：服务器账号池 roles[] 里的全部角色也登记到本地角色表（含 enabled），
+                // 否则「在别的端/账号池启用新角色」后本机角色切换器要重启才看得到（真机实测）。
+                learnServerRoles(app, fpid, o);
             }
             app.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
                     .putString("status_cache", cache.toString())
@@ -433,6 +436,38 @@ public final class VaultSync {
      * {@code registerRole} 元数据学习受 {@link RoleIdentity#shouldLearnServerMeta}
      * 门控（P1-2：uid=0 旧服务器回传不污染同服已知行，见方法内注释）。
      */
+    /**
+     * 2026-11-01：把 /status 账号池 roles[] 的全部角色登记到本地（name/level/power/enabled）。
+     *
+     * <p>真机实测：在服务器侧（或另一端）启用 152/531/882 角色后，本机角色切换器仍只显示
+     * 4 个角色，重启 App 后才出现——因为本地只从「当前活动会话」学习单个角色元数据。
+     * 这里补齐为：roles[] 每项 registerRole + setEnabled（服务器为准），角色卡/切换器即时完整。
+     */
+    private static void learnServerRoles(Context app, String fpid, JSONObject status) {
+        try {
+            JSONArray roles = status.optJSONArray("roles");
+            if (roles == null) return;
+            for (int i = 0; i < roles.length(); i++) {
+                JSONObject r = roles.optJSONObject(i);
+                if (r == null) continue;
+                long sid = parseUidSafe(r.optString("sid", ""));
+                long uid = parseUidSafe(r.optString("uid", ""));
+                if (sid <= 0) continue;
+                String name = r.optString("name", "");
+                if (uid > 0 || !name.isEmpty()) {
+                    com.carlos.vault.daily.RoleStore.registerRole(app, fpid, sid, uid, name,
+                            r.optLong("level", 0), r.optLong("power", 0),
+                            r.optString("alliance", ""), r.optString("allianceAbbr", ""));
+                }
+                if (r.has("enabled") && uid > 0) {
+                    com.carlos.vault.daily.RoleStore.setEnabled(app, fpid, sid, uid,
+                            r.optBoolean("enabled", true));
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
     private static void learnServerRole(Context app, String fpid, JSONObject status, long requestTs) {
         if (fpid == null || fpid.isEmpty() || status == null) return;
         String sidText = status.optString("sid", "");
