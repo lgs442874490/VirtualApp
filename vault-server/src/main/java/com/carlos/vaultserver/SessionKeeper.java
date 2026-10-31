@@ -2186,10 +2186,15 @@ public final class SessionKeeper implements SessionControl,
                 store.applyRoleLoginExclusive(fpid, acc.activeSid, acc.activeUid);
                 key = sessionKey(fpid, acc.activeSid, acc.activeUid);
                 // 会话级收敛：停掉该 fpid 其它键的会话（旧 active 槽/兄弟角色），
-                // 保证账号级登录后单会话（与 sync 切角色收敛规则一致）
+                // 保证账号级登录后单会话（与 sync 切角色收敛规则一致）。
+                // 2026-11-01：VAULT_PER_ROLE=on（每角色独立跑任务）时不再停兄弟会话——
+                // 生产实证：App 重新登录/账号级 login 会把另外 3 个已 desired 的角色停掉
+                // （19:09 UTC 停 882/531/152/88280792），与“5 角色一起跑”的用户口径冲突。
                 List<LiveSession> others = new ArrayList<>();
-                for (LiveSession ls : sessions.values()) {
-                    if (ls.fpid.equals(fpid) && !ls.key.equals(key)) others.add(ls);
+                if (!com.carlos.vaultserver.task.RoundScheduler.perRoleEnabled()) {
+                    for (LiveSession ls : sessions.values()) {
+                        if (ls.fpid.equals(fpid) && !ls.key.equals(key)) others.add(ls);
+                    }
                 }
                 for (LiveSession ls : others) {
                     FileLog.info("账号级登录收敛：停止兄弟会话 {}", ls.key);
