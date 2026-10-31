@@ -467,6 +467,8 @@ public final class WatchPointEngine {
     private final Map<Long, Integer> crossProbeTries = new ConcurrentHashMap<>();
     private final Set<Integer> crossProbeSessions = ConcurrentHashMap.newKeySet();
     static final int CROSS_PROBE_TRIES = 2;
+    /** 跨区探测等待上限（ms）：无 end_flag 也按 0 城计一次。 */
+    static final long CROSS_PROBE_TIMEOUT_MS = 8_000L;
     static final int SESSION_CROSS_PROBE_BASE = 100_900_000;
 
     /** 对跨区角色发起一次地图查询（已知有城的矩形），结果异步判定。 */
@@ -484,6 +486,10 @@ public final class WatchPointEngine {
             ctx.probeUid = uid;
             ctxBySession.put(session, ctx);
             lastSent.put(session, System.currentTimeMillis());
+            FileLog.info("[{}] 跨区探测发起 uid={} 区服={} 矩形({},{})-({},{})", LOG,
+                    String.valueOf(uid), String.valueOf(engine.lastServerId()),
+                    String.valueOf(rect.x1), String.valueOf(rect.y1),
+                    String.valueOf(rect.x2), String.valueOf(rect.y2));
             sendRaw(engine, session, rect);
         } catch (Throwable t) {
             FileLog.warn("[{}] 跨区探测发起失败：{}", LOG, String.valueOf(t));
@@ -716,6 +722,28 @@ public final class WatchPointEngine {
                 if (!c.ended && now - c.sentAt > RESPONSE_TIMEOUT_MS * 2) {
                     ctxBySession.remove(e.getKey(), c);
                     statTimeouts.incrementAndGet();
+                }
+                // 2026-11-01：跨区探测无回包（常见于游戏拒绝跨区查图）→ 按 0 城计一次；
+                // 连续 2 次 0 城即判“跨区不可用”，自动从分发中排除。
+                if (c.kind == Kind.CROSS_PROBE && !c.ended
+                        && now - c.sentAt > CROSS_PROBE_TIMEOUT_MS) {
+                    ctxBySession.remove(e.getKey(), c);
+                    crossProbeSessions.remove(c.session);
+                    long uid = c.probeUid;
+                    int tries = crossProbeTries.merge(uid, 1, Integer::sum);
+                    Boolean verdict = crossProbeVerdict(c.cityUids.size(), tries);
+                    if (Boolean.TRUE.equals(verdict)) {
+                        crossProbeSupported.add(uid);
+                        FileLog.info("[{}] 跨区角色 uid={} 探测可用（{} 城）", LOG,
+                                String.valueOf(uid), String.valueOf(c.cityUids.size()));
+                    } else if (Boolean.FALSE.equals(verdict)) {
+                        crossUnavailable.add(uid);
+                        FileLog.info("[{}] 跨区角色 uid={} 探测不可用（{} 次无回包/0 城）→ 排除", LOG,
+                                String.valueOf(uid), String.valueOf(tries));
+                    } else {
+                        FileLog.info("[{}] 跨区角色 uid={} 探测超时（第 {} 次，将重试）", LOG,
+                                String.valueOf(uid), String.valueOf(tries));
+                    }
                 }
             }
             alerted.entrySet().removeIf(en -> now - en.getValue() > ALERT_DEDUPE_MS * 2);
