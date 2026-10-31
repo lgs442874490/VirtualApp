@@ -1,6 +1,9 @@
 package com.carlos.vaultserver.task;
 
+import com.carlos.vault.daily.gather.GatherConfigV2;
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.pet.PetSkillCatalog;
+import com.carlos.vault.wjdr.pet.PetSupport;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.Beijing;
 import com.carlos.vaultserver.FileLog;
@@ -12,8 +15,10 @@ import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * 城镇类任务（App 端 daily/TownTasks 逐行移植，改动须两侧同步）。
@@ -742,28 +747,26 @@ public final class ServerTownTasks {
         Exec.Multi m = new Exec.Multi();
         try {
             tc.engine.collectNotifies(2000);
-            JSONObject pp2 = tc.params("pet");
-            List<Object> skills = new ArrayList<>();
-            // 指定技能优先；未配置时沿用旧默认技能集合，保证零配置账号行为不变。
-            org.json.JSONArray selectedSkills = pp2.optJSONArray("selected_skills");
-            if (selectedSkills != null && selectedSkills.length() > 0) {
-                for (int i = 0; i < selectedSkills.length(); i++) {
-                    long sid = selectedSkills.optLong(i, 0);
-                    if (sid > 0) skills.add(sid);
-                }
+            JSONObject pp = tc.params("pet");
+            long now = petNowSec(tc.engine);
+            Map<String, Object> petInfo = tc.engine.notifyData("notify_pet_info");
+            Map<String, Object> exInfo = tc.engine.notifyData("notify_pet_ex_info");
+            Set<Long> ownedPets = PetSupport.ownedPetIds(petInfo);
+            Set<Long> ownedSkills = PetSupport.ownedSkillIds(petInfo, exInfo);
+            // 拥有列表落状态供 App 技能开关卡展示（子项卡不展示该键）。
+            if (!ownedSkills.isEmpty()) {
+                tc.saveModText("pet", "owned", PetSupport.csv(ownedSkills));
+            }
+
+            // 1. 宠物技能：默认只自动使用「发育类」，战斗类由用户逐项勾选（selected_skills）。
+            if (tc.subOn("pet", "skills", true)) {
+                petApplySkills(tc, petSelectedSkills(pp), ownedSkills, exInfo, now, m);
             } else {
-                for (long s : new long[]{550051L, 550071L, 550081L, 550091L, 550101L,
-                        550111L, 550121L, 550131L, 550141L}) {
-                    skills.add(s);
-                }
+                m.subSkip("skills", "自动使用已关闭");
             }
-            if (pp2.optBoolean("skills", pp2.optBoolean("auto_skills", true))) {
-                GameMessage sk = tc.engine.request("req_pet_use_skill",
-                        Exec.args("skill_id_lst", skills));
-                if (Exec.ok(sk)) { m.claimed("宠物技能"); m.subOk("skills", "技能已开"); }
-                else { m.skip("宠物技能冷却/不可用(码" + Exec.codeOf(sk) + ")"); m.subSkip("skills", "码" + Exec.codeOf(sk)); }
-            }
-            if (pp2.optBoolean("alliance_chest", true)) {
+
+            // 2. 盟友分享的寻宝宝箱（每日 5 次；用户可关闭）。
+            if (tc.subOn("pet", "alliance_chest", true)) {
                 GameMessage ab = tc.engine.request("req_pet_adventure_batch_take_alliance_reward", null);
                 if (Exec.ok(ab)) { m.claimed("联盟寻宝宝箱"); m.subOk("alliance_chest", "宝箱已领"); }
                 else {
@@ -776,52 +779,292 @@ public final class ServerTownTasks {
                     m.skip(noReward ? "联盟宝箱暂无可领" : ("联盟宝箱不可领(码" + abCode + ")"));
                     m.subSkip("alliance_chest", noReward ? "暂无可领" : ("码" + abCode));
                 }
-            }
-            Map<String, Object> adv = tc.engine.notifyContent("notify_pet_adventure_info");
-            Map<String, Object> petInfo = tc.engine.notifyData("notify_pet_info");
-            List<Long> petIds = new ArrayList<>();
-            if (petInfo != null) {
-                for (Map<String, Object> p : Exec.mapsOf(petInfo.get("info"))) {
-                    long id = Exec.longOf(p.get("id"));
-                    if (id > 0) petIds.add(id);
-                }
-            }
-            if (adv != null && !petIds.isEmpty() && pp2.optBoolean("adventure", true)) {
-                int claimed = 0, sent = 0;
-                for (Map<String, Object> area : Exec.mapsOf(adv.get("areas"))) {
-                    long aid = Exec.longOf(area.get("id"));
-                    if (aid <= 0) continue;
-                    GameMessage r = tc.engine.request("req_pet_adventure_get_reward",
-                            Exec.args("id", aid));
-                    if (Exec.ok(r)) claimed++;
-                }
-                for (Map<String, Object> area : Exec.mapsOf(adv.get("areas"))) {
-                    long aid = Exec.longOf(area.get("id"));
-                    Object st = area.get("status");
-                    if (aid <= 0 || (st != null && Exec.longOf(st) != 0)) continue;
-                    for (long pid : petIds) {
-                        GameMessage r = tc.engine.request("req_pet_adventure_dispatch",
-                                Exec.args("id", aid, "pet_id", pid));
-                        if (Exec.ok(r)) {
-                            sent++;
-                            break;
-                        }
-                    }
-                }
-                if (claimed > 0) { m.claimed("寻宝领奖×" + claimed); m.subOk("adventure", "领奖×" + claimed + (sent > 0 ? " 派遣×" + sent : "")); }
-                else { m.skip("寻宝无已完成区域"); m.subSkip("adventure", sent > 0 ? "无已完成区域，派遣×" + sent : "无已完成区域"); }
-                if (sent > 0) {
-                    m.claimed("派遣宠物×" + sent);
-                    tc.saveModText("pet", "adventure", "上轮派遣 " + sent + " 只宠物寻宝");
-                }
             } else {
+                m.subSkip("alliance_chest", "自动领取已关闭");
+            }
+
+            // 3. 宠物寻宝：领已完成奖励 + 派遣空闲藏宝点（每轮最多 3 只）。
+            Map<String, Object> adv = tc.engine.notifyData("notify_pet_adventure_info");
+            if (adv == null) {
                 m.skip("寻宝数据未同步");
+                m.subSkip("adventure", "通知未同步");
+            } else if (!tc.subOn("pet", "adventure", true)) {
+                m.skip("寻宝已关闭");
+                m.subSkip("adventure", "已关闭");
+            } else {
+                petRunAdventure(tc, adv, ownedPets, now, m);
             }
         } catch (Exception e) {
             if (sessionLost(e)) return ServerTasks.classifyException(e, "宠物");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "pet", "宠物");
+    }
+
+    /** 服务器时钟秒；未校准时退回本机时间（仅影响冷却预判，不影响请求）。 */
+    static long petNowSec(WjdrEngine engine) {
+        try {
+            long t = engine.serverClock().nowServerSec();
+            if (t > 0) return t;
+        } catch (Throwable ignored) {
+        }
+        return System.currentTimeMillis() / 1000L;
+    }
+
+    /**
+     * 解析用户勾选的技能：{@code selected_skills} 存在即按其内容（空数组=全部关闭）；
+     * 缺省 = 发育类技能（不再默认开战斗技能）。
+     */
+    static List<Long> petSelectedSkills(JSONObject pp) {
+        List<Long> out = new ArrayList<>();
+        org.json.JSONArray arr = pp == null ? null : pp.optJSONArray("selected_skills");
+        if (arr != null) {
+            for (int i = 0; i < arr.length(); i++) {
+                long sid = arr.optLong(i, 0L);
+                if (sid > 0 && !out.contains(sid)) out.add(sid);
+            }
+            return out;
+        }
+        for (long sid : PetSkillCatalog.developmentIds()) out.add(sid);
+        return out;
+    }
+
+    /** 逐项使用冷却已好的技能；单技能请求避免“一条冷却拖垮整批”。 */
+    static void petApplySkills(TaskContext tc, List<Long> selected, Set<Long> ownedSkills,
+                               Map<String, Object> exInfo, long now, Exec.Multi m) throws Exception {
+        if (selected == null || selected.isEmpty()) {
+            m.skip("未选择宠物技能");
+            m.subSkip("skills", "未选择技能");
+            return;
+        }
+        Map<Long, Long> lastUse = PetSupport.skillUseTimes(exInfo);
+        // 本地成功记录（通知未及时到达时兜底），与推送 use_time 取较新值。
+        for (Map.Entry<Long, Long> e : petStoredSkillUseTimes(tc).entrySet()) {
+            Long prev = lastUse.get(e.getKey());
+            if (prev == null || e.getValue() > prev) lastUse.put(e.getKey(), e.getValue());
+        }
+        List<Long> ready = new ArrayList<>();
+        List<Long> cooling = new ArrayList<>();
+        List<Long> missing = new ArrayList<>();
+        List<Long> delegated = new ArrayList<>();
+        boolean heavyByGather = false;
+        try {
+            heavyByGather = GatherConfigV2.parse(tc.params("gather")).heavyLiftingEnabled
+                    && tc.taskEnabled("gather");
+        } catch (Throwable ignored) {
+        }
+        boolean ownedKnown = ownedSkills != null && !ownedSkills.isEmpty();
+        for (Long sid : selected) {
+            if (sid == null || sid <= 0) continue;
+            if (heavyByGather && sid == 550031L) {
+                // 采集设置里的「重物搬运」会自己激活 550031；宠物任务不抢技能，避免把效果浪费掉。
+                delegated.add(sid);
+                continue;
+            }
+            if (ownedKnown && !ownedSkills.contains(sid)) {
+                missing.add(sid);
+                continue;
+            }
+            PetSkillCatalog.Skill sk = PetSkillCatalog.byId(sid);
+            int cd = sk == null ? 20 : sk.cooldownHours;
+            Long last = lastUse.get(sid);
+            if (PetSupport.skillReady(last == null ? 0L : last, cd, now)) ready.add(sid);
+            else cooling.add(sid);
+        }
+
+        List<String> usedNames = new ArrayList<>();
+        List<String> coolNames = new ArrayList<>();
+        int lastCode = 0;
+        for (Long sid : ready) {
+            List<Object> one = new ArrayList<>();
+            one.add(sid);
+            GameMessage r = tc.engine.request("req_pet_use_skill",
+                    Exec.args("skill_id_lst", one));
+            if (Exec.ok(r)) {
+                usedNames.add(PetSkillCatalog.nameOf(sid));
+                lastUse.put(sid, now);
+            } else {
+                lastCode = Exec.codeOf(r);
+                // 11536 未解锁 / 11537 未突破 / 11539 冷却 / 11542 未拥有：跳过，不污染异常统计。
+                if (lastCode == 11536 || lastCode == 11537 || lastCode == 11539 || lastCode == 11542) {
+                    coolNames.add(PetSkillCatalog.nameOf(sid));
+                } else {
+                    break;
+                }
+            }
+        }
+        petSaveSkillUseTimes(tc, lastUse);
+        StringBuilder sub = new StringBuilder();
+        if (!usedNames.isEmpty()) sub.append("已开：").append(String.join("、", usedNames));
+        if (!coolNames.isEmpty()) {
+            if (sub.length() > 0) sub.append("；");
+            sub.append("冷却/不可用：").append(String.join("、", coolNames));
+        }
+        if (!missing.isEmpty()) {
+            if (sub.length() > 0) sub.append("；");
+            sub.append("未拥有：").append(PetSupport.formatSkillNames(missing));
+        }
+        if (!delegated.isEmpty()) {
+            if (sub.length() > 0) sub.append("；");
+            sub.append("由采集接管：").append(PetSupport.formatSkillNames(delegated));
+        }
+        if (sub.length() == 0) sub.append("无可用技能");
+        if (!usedNames.isEmpty()) {
+            m.claimed("宠物技能×" + usedNames.size());
+            m.subOk("skills", sub.toString());
+            tc.saveModText("pet", "skills", sub.toString());
+        } else {
+            String why;
+            if (ready.isEmpty()) {
+                if (!missing.isEmpty()) why = "已选技能未拥有";
+                else if (!delegated.isEmpty() && cooling.isEmpty()) why = "重物搬运已由采集接管";
+                else why = "技能均未到冷却";
+            } else {
+                why = "技能不可用(码" + lastCode + ")";
+            }
+            m.skip(why);
+            m.subSkip("skills", sub.toString());
+            tc.saveModText("pet", "skills", sub.toString());
+        }
+    }
+
+    /** 读取本角色本地记录的上次成功使用时间（skill_used JSON 字符串）。 */
+    static Map<Long, Long> petStoredSkillUseTimes(TaskContext tc) {
+        Map<Long, Long> out = new LinkedHashMap<>();
+        try {
+            String raw = tc.modState("pet").optString("skill_used", "");
+            if (raw == null || raw.trim().isEmpty()) return out;
+            JSONObject o = new JSONObject(raw);
+            java.util.Iterator<String> it = o.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                try {
+                    long sid = Long.parseLong(k);
+                    long t = o.optLong(k, 0L);
+                    if (sid > 0 && t > 0) out.put(sid, t);
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    static void petSaveSkillUseTimes(TaskContext tc, Map<Long, Long> times) {
+        try {
+            JSONObject o = new JSONObject();
+            if (times != null) {
+                for (Map.Entry<Long, Long> e : times.entrySet()) {
+                    if (e.getKey() != null && e.getValue() != null && e.getValue() > 0) {
+                        o.put(String.valueOf(e.getKey()), e.getValue());
+                    }
+                }
+            }
+            tc.saveModText("pet", "skill_used", o.toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 寻宝：先领已完成，再给空闲藏宝点派宠物；每轮最多 3 只，失败即停（防每日次数/体力被刷）。 */
+    static void petRunAdventure(TaskContext tc, Map<String, Object> adv, Set<Long> ownedPets,
+                                long now, Exec.Multi m) throws Exception {
+        List<PetSupport.Area> areas = PetSupport.adventureAreas(adv);
+        if (areas.isEmpty()) {
+            m.skip("寻宝无藏宝点数据");
+            m.subSkip("adventure", "无藏宝点数据");
+            return;
+        }
+        int usedBefore = PetSupport.dailyAdventureUsed(adv);
+        int claimed = 0;
+        Set<Long> freedPets = new java.util.LinkedHashSet<>();
+        for (PetSupport.Area a : areas) {
+            if (!a.completed(now)) continue;
+            GameMessage r = tc.engine.request("req_pet_adventure_get_reward",
+                    Exec.args("id", a.id));
+            if (Exec.ok(r)) {
+                claimed++;
+                freedPets.add(a.petId);
+                Map<String, Object> c = r.getContent();
+                PetSupport.markAreaClaimed(adv, a.id,
+                        c == null ? 0L : Exec.longOf(c.get("refresh_index")),
+                        c == null ? 0L : Exec.longOf(c.get("refresh_time")));
+            } else if (Exec.codeOf(r) == 11787) {
+                // 11787=该藏宝点暂未派遣宠物（快照 pet_id 已是陈旧值）：释放该宠物，避免永久堵住队列。
+                freedPets.add(a.petId);
+            }
+        }
+
+        // 忙碌宠物 = 仍在寻宝的 + 已完成但领取失败的；已领取成功的宠物可再次派遣。
+        Set<Long> busy = new java.util.LinkedHashSet<>();
+        for (PetSupport.Area a : areas) {
+            if (!a.occupied()) continue;
+            boolean freed = a.completed(now) && freedPets.contains(a.petId);
+            if (!freed) busy.add(a.petId);
+        }
+        List<Long> pets = PetSupport.idlePets(ownedPets, busy);
+        int sent = 0;
+        int failCode = 0;
+        if (!pets.isEmpty()) {
+            outer:
+            for (PetSupport.Area a : areas) {
+                if (sent >= PetSupport.MAX_DISPATCH_PER_ROUND) break;
+                boolean idle = a.idle() || (a.completed(now) && freedPets.contains(a.petId));
+                if (!idle) continue;
+                java.util.Iterator<Long> it = pets.iterator();
+                while (it.hasNext()) {
+                    long pid = it.next();
+                    GameMessage r = tc.engine.request("req_pet_adventure_dispatch",
+                            Exec.args("id", a.id, "pet_id", pid));
+                    if (Exec.ok(r)) {
+                        sent++;
+                        it.remove();
+                        Map<String, Object> c = r.getContent();
+                        PetSupport.markAreaDispatched(adv, a.id, pid,
+                                c == null ? 0L : Exec.longOf(c.get("start_time")),
+                                c == null ? 0L : Exec.longOf(c.get("finish_time")),
+                                c != null && PetSupport.truthy(c.get("is_reward_multiple")));
+                        break;
+                    }
+                    int code = Exec.codeOf(r);
+                    if (code == 11784 || code == 11801) {
+                        // 藏宝点已有宠物 / 该宠物已在此点：换下一只/下一个点。
+                        continue;
+                    }
+                    failCode = code;
+                    break outer;
+                }
+            }
+        }
+
+        int used = usedBefore + sent;
+        StringBuilder sub = new StringBuilder();
+        if (claimed > 0) sub.append("领奖×").append(claimed);
+        if (sent > 0) {
+            if (sub.length() > 0) sub.append(" ");
+            sub.append("派遣×").append(sent);
+        }
+        if (sub.length() == 0) sub.append("无已完成/可派遣藏宝点");
+        sub.append("（今日寻宝 ").append(used).append(" 次");
+        if (PetSupport.dailyHintExhausted(used)) sub.append("，基础次数已用完");
+        sub.append("）");
+        if (failCode != 0) {
+            sub.append("；派遣码").append(failCode);
+            if (failCode == 51) sub.append("（体力不足）");
+        }
+        String text = sub.toString();
+        tc.saveModText("pet", "adventure", text);
+        if (claimed > 0) {
+            m.claimed("寻宝领奖×" + claimed);
+        }
+        if (sent > 0) {
+            m.claimed("派遣宠物×" + sent);
+        }
+        if (claimed > 0 || sent > 0) {
+            m.subOk("adventure", text);
+        } else {
+            m.skip(text);
+            m.subSkip("adventure", text);
+        }
     }
 
     // ---------- 专家游历 ----------
