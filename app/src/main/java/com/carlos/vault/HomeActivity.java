@@ -564,7 +564,9 @@ public class HomeActivity extends AccountVaultActivity {
         heroSub.setTextSize(16);
         heroSub.setTypeface(Typeface.DEFAULT_BOLD);
         heroSub.setTextColor(UiStyle.WHITE);
-        heroSub.setMaxLines(1);
+        // Hero 右侧要同时放账号名 + 长角色名（如 888-cch-小鹿矿工5号）+ 状态，
+        // 单行必然被省略号截断；改为最多两行，保证账号名与角色名都完整可读。
+        heroSub.setMaxLines(2);
         heroSub.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heroSubRow.addView(heroSub, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
