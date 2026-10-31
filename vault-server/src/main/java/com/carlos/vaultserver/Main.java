@@ -57,6 +57,8 @@ public final class Main {
                 new com.carlos.vaultserver.watchpoint.WatchPointEngine(
                         keeper, watchPointStore, store, new WeComNotifier());
         watchPoint.start();
+        // 2026-10-31：把观察点实例共享给守护盟友（按坐标反查城 uid/联盟、保护矩形判定）。
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.install(watchPoint);
 
         com.carlos.vaultserver.task.RoundScheduler scheduler =
                 new com.carlos.vaultserver.task.RoundScheduler(store, stateStore, keeper);

@@ -81,6 +81,88 @@ public final class WatchPointEngine {
         }
     }
 
+    /** 供其它模块（守护盟友）按坐标查城：uid/aid/lv/nick/坐标。 */
+    public static final class CityInfo {
+        public final long uid;
+        public final long aid;
+        public final long lv;
+        public final String nick;
+        public final int x;
+        public final int y;
+
+        CityInfo(long uid, long aid, long lv, String nick, int x, int y) {
+            this.uid = uid;
+            this.aid = aid;
+            this.lv = lv;
+            this.nick = nick == null ? "" : nick;
+            this.x = x;
+            this.y = y;
+        }
+    }
+
+    /** 共享实例（Main 安装）：供守护盟友按坐标反查城 uid/联盟。 */
+    private static volatile WatchPointEngine SHARED;
+
+    public static void install(WatchPointEngine engine) {
+        SHARED = engine;
+    }
+
+    public static WatchPointEngine shared() {
+        return SHARED;
+    }
+
+    /** 坐标 → 城（整图扫描缓存；未扫描到/未启用返回 null）。任意线程可调。 */
+    public static CityInfo cityAt(int x, int y) {
+        WatchPointEngine e = SHARED;
+        if (e == null || x <= 0 || y <= 0) return null;
+        City c = e.cityByPoint.get(x + "," + y);
+        return c == null ? null : new CityInfo(c.uid, c.aid, c.lv, c.nick, c.x, c.y);
+    }
+
+    /** 坐标是否落在保护矩形（友盟聚集地）内；未启用/无矩形返回 false。 */
+    public static boolean inProtectRect(int x, int y) {
+        WatchPointEngine e = SHARED;
+        if (e == null || x <= 0 || y <= 0) return false;
+        try {
+            for (WatchPointStore.Rect r : e.store.protectRects) {
+                if (r != null && r.contains(x, y)) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /** 保护矩形列表（只读快照；供诊断/守护决策）。 */
+    public static java.util.List<WatchPointStore.Rect> protectRects() {
+        WatchPointEngine e = SHARED;
+        if (e == null) return java.util.Collections.emptyList();
+        try {
+            return new java.util.ArrayList<>(e.store.protectRects);
+        } catch (Throwable t) {
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    /** 测试钩子：注入一个城市坐标（仅单测使用；生产由整图扫描填充）。 */
+    public void seedCityForTest(long uid, long aid, int x, int y, String nick) {
+        City c = new City();
+        c.uid = uid;
+        c.aid = aid;
+        c.x = x;
+        c.y = y;
+        c.nick = nick == null ? "" : nick;
+        cityByPoint.put(x + "," + y, c);
+        if (uid > 0L) cityByUid.put(uid, c);
+    }
+
+    /** 测试钩子：注入一个保护矩形（仅单测使用）。 */
+    public void seedProtectRectForTest(String name, int x1, int y1, int x2, int y2) {
+        try {
+            store.protectRects.add(new WatchPointStore.Rect(name, x1, y1, x2, y2));
+        } catch (Throwable ignored) {
+        }
+    }
+
     private static final class City {
         long uid;
         long aid;

@@ -247,6 +247,12 @@ public final class ServerGuardianEngine {
         boolean requireAlly = true;
         /** 盟友坐标匹配容差（曼哈顿距离；默认 0=严格相等，clamp 0..3；1 可吸收 ±1 取整差）。 */
         long allyMatchTolerance = 0L;
+        /** 2026-10-31：用观察点整图扫描缓存按坐标反查「城 uid + 联盟 aid」判定友方（默认开）。 */
+        boolean allyUseWatchpoint = true;
+        /** 2026-10-31：坐标落在观察点保护矩形（友盟聚集地）内 → 视为友方目标（默认开）。 */
+        boolean allyUseProtectRect = true;
+        /** 保护矩形内/附近按最近盟友坐标匹配的最大曼哈顿距离（默认 20）。 */
+        long allyRectMaxDist = 20L;
         // ---- 批次 F：队列无位有界重试（默认 12 次 × 5s；0=旧行为） ----
         int queueRetryMax = DEFAULT_QUEUE_RETRY_MAX;
         long queueRetryIntervalMs = DEFAULT_QUEUE_RETRY_INTERVAL_MS;
@@ -310,6 +316,7 @@ public final class ServerGuardianEngine {
                     + " queue_retry_max=" + queueRetryMax
                     + " queue_retry_interval_ms=" + queueRetryIntervalMs
                     + " require_ally=" + requireAlly + " ally_tol=" + allyMatchTolerance
+                    + " ally_watch=" + allyUseWatchpoint + " ally_rect=" + allyUseProtectRect
                     + " rally=" + rallyEnabled + " rally_wait=" + rallyWaitSec + "s"
                     + " rally_early_speedup=" + rallyEarlySpeedup
                     + " rally_full_ratio=" + rallyFullTroopsRatio
@@ -1568,9 +1575,15 @@ public final class ServerGuardianEngine {
         Rally r = rallyFor(t);
         String army = r != null && r.hasSoldierInfo
                 ? "兵力=" + r.soldierCount + "/" + r.soldierMax : "兵力未知";
+        if (r == null) r = rallies.get(t.marchId);
+        String diag = "（r=" + (r == null ? "null" : ("type" + r.type
+                + " soldier=" + (r.hasSoldierInfo ? "Y" : "N")
+                + " join=" + (r.hasJoinInfo ? "Y" : "N")
+                + " members=" + r.memberCount))
+                + " rallies=" + rallies.size() + "）";
         ledger("rally_unknown", t, null,
                 "skip_rally_unknown：集结无法判定真伪（" + army + "，阈值=" + config.rallyTroopsMin
-                        + "；缺 mass 兵力/上车字段）→ 保守不发射");
+                        + "；缺 mass 兵力/上车字段）→ 保守不发射" + diag);
     }
 
     /** 推送入口（钩子线程；包级可见便于单测直接驱动）。 */
@@ -1942,6 +1955,20 @@ public final class ServerGuardianEngine {
         boolean rally = cfg.rallyEnabled && RALLY_THREAT_TYPES.contains(t.type);
         if (rally) {
             Rally r = rallyFor(t);
+            if (r == null) {
+                // 2026-10-31：mass 推送与 situation 威胁可能不同源（id/坐标/owner 对不上）→
+                // 用威胁本身建一个 Rally 占位，详情查询仍可用 t.marchId 取兵力；随后按真伪链处理。
+                r = new Rally(t.marchId, nowMs);
+                r.type = t.type;
+                r.ownerUid = t.ownerUid;
+                r.targetUid = t.targetUid;
+                r.x = t.x;
+                r.y = t.y;
+                r.hasXY = t.hasXY;
+                r.startAtMs = t.firstSeenMs > 0 ? t.firstSeenMs : nowMs;
+                r.lastProto = "threat_fallback";
+                rallies.put(r.marchId, r);
+            }
             RallyTruth truth = evaluateRally(r, cfg);
             if (truth == RallyTruth.CANCELLED) {
                 ledger("rally_cancelled", t, null, "集结已取消/解散 → 不驻防");
@@ -1991,32 +2018,59 @@ public final class ServerGuardianEngine {
         // 批次 G：targetUid=0（type=102 集结常见）→ 按盟友坐标反查 uid 供 launcher 的 target_uid 变体；
         // 反查不到/坐标表为空则不发射（防 2810 风暴），可 require_ally=false/env off 回旧行为。
         long resolvedTargetUid = t.targetUid;
+        String allyVia = resolvedTargetUid > 0L ? "threat_uid" : "";
         if (cfg.requireAlly && resolvedTargetUid <= 0L) {
             if (allies.isEmpty()) {
                 // 批次 L：登录缓存里通常已经有成员坐标 → 惰性补一次（30s 节流），仍空才放弃
                 hydrateAlliesFromNotify(engine);
             }
-            if (allies.isEmpty()) {
+            if (allies.isEmpty() && !cfg.allyUseWatchpoint && !cfg.allyUseProtectRect) {
                 noteAlliesUnknown(t, nowMs);
                 clearQueueRetry(marchId);
                 attempted.remove(marchId);   // 成员坐标稍后同步时，update 推送可再试
                 return;
             }
-            if (!t.hasXY || t.x <= 0 || t.y <= 0) {
-                ledger("skip_no_ally", t, null, "目标坐标未知且 target_uid=0（require_ally=true，不发射）");
-                clearQueueRetry(marchId);
-                return;
+            if (t.hasXY && t.x > 0 && t.y > 0) {
+                resolvedTargetUid = allyUidByPoint(t.x, t.y);
+                if (resolvedTargetUid > 0L) allyVia = "ally_coord";
             }
-            resolvedTargetUid = allyUidByPoint(t.x, t.y);
-            if (resolvedTargetUid <= 0L) {
+            // 2026-10-31（用户建议）：参考观察点整图缓存——坐标→城 uid/联盟 aid；保护矩形内视为友方。
+            if (resolvedTargetUid <= 0L && cfg.allyUseWatchpoint && t.hasXY) {
+                com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo ci =
+                        com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(t.x, t.y);
+                if (ci != null && ci.uid > 0L) {
+                    boolean isAlly = allies.containsKey(ci.uid);
+                    if (!isAlly) {
+                        long selfAid = selfAllianceAid(engine);
+                        isAlly = selfAid > 0L && ci.aid > 0L && ci.aid == selfAid;
+                    }
+                    if (isAlly) {
+                        resolvedTargetUid = ci.uid;
+                        allyVia = "watchpoint_city";
+                    }
+                }
+            }
+            boolean inRect = false;
+            if (resolvedTargetUid <= 0L && cfg.allyUseProtectRect && t.hasXY
+                    && com.carlos.vaultserver.watchpoint.WatchPointEngine.inProtectRect(t.x, t.y)) {
+                inRect = true;
+                long near = nearestAllyUid(t.x, t.y, cfg.allyRectMaxDist);
+                if (near > 0L) {
+                    resolvedTargetUid = near;
+                    allyVia = "protect_rect_uid";
+                } else {
+                    allyVia = "protect_rect";
+                }
+            }
+            if (resolvedTargetUid <= 0L && !inRect) {
                 ledger("skip_no_ally", t, null, "目标坐标(" + t.x + "," + t.y
-                        + ")未匹配盟友（require_ally=true，避免 2810 风暴）");
+                        + ")未匹配盟友/观察点城/保护矩形（require_ally=true，避免 2810 风暴）");
                 clearQueueRetry(marchId);
                 return;
             }
-            FileLog.info("守护盟友坐标反查 {}:{} marchId={} ({},{}) → uid={}",
-                    fpid, String.valueOf(sid), String.valueOf(marchId), String.valueOf(t.x),
-                    String.valueOf(t.y), String.valueOf(resolvedTargetUid));
+            FileLog.info("守护盟友目标解析 via={} {}:{} marchId={} ({},{}) → uid={}",
+                    allyVia, fpid, String.valueOf(sid), String.valueOf(marchId),
+                    String.valueOf(t.x), String.valueOf(t.y), String.valueOf(resolvedTargetUid));
         }
         // 2026-10-28：同目标 415/406 失败后的冷却期内，新威胁只记账不发射（防重试风暴/日志刷屏）
         Long coolUntil = targetCooldowns.get(targetKey);
@@ -3729,6 +3783,10 @@ public final class ServerGuardianEngine {
             c.requireAlly = bool(sub, st, p, "require_ally", true);
             c.allyMatchTolerance = Math.max(0L, Math.min(3L,
                     num(sub, st, p, "ally_match_tolerance", 0L)));
+            c.allyUseWatchpoint = bool(sub, st, p, "ally_use_watchpoint", true);
+            c.allyUseProtectRect = bool(sub, st, p, "ally_use_protect_rect", true);
+            c.allyRectMaxDist = Math.max(0L, Math.min(60L,
+                    num(sub, st, p, "ally_rect_max_dist", 20L)));
             // 批次 I 集结规则（默认：开启/300s/允许出发秒−25%/满兵/要求有人满兵上车）
             c.rallyEnabled = bool(sub, st, p, "rally_enabled", true);
             long rallyWait = num(sub, st, p, "rally_wait_sec", DEFAULT_RALLY_WAIT_SEC);
@@ -4570,6 +4628,40 @@ public final class ServerGuardianEngine {
      * 批次 G：按坐标精确反查盟友 uid（容差 0）。同坐标多 uid 取第一个；
      * 若配置了 ally_uid 且命中则优先返回它。无命中返回 0。
      */
+    /** 我方城在观察点缓存中的联盟 aid（未知 0）。 */
+    long selfAllianceAid(WjdrEngine engine) {
+        try {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo me = ownCityInfo(engine);
+            return me == null ? 0L : me.aid;
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    /** 我方城市坐标的观察点城信息（资产库 city_point / notify_world_player_init）。 */
+    com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo ownCityInfo(WjdrEngine engine) {
+        int[] city = ownCityPoint(engine);
+        if (city == null) return null;
+        return com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(city[0], city[1]);
+    }
+
+    /** 曼哈顿距离 ≤ maxDist 的最近盟友 uid（无则 0）。 */
+    long nearestAllyUid(int x, int y, long maxDist) {
+        if (allies.isEmpty() || maxDist <= 0L) return 0L;
+        long bestUid = 0L;
+        long best = Long.MAX_VALUE;
+        for (Map.Entry<Long, long[]> e : allies.entrySet()) {
+            long[] xy = e.getValue();
+            if (xy == null || xy.length < 2) continue;
+            long d = Math.abs(xy[0] - x) + Math.abs(xy[1] - y);
+            if (d <= maxDist && d < best) {
+                best = d;
+                bestUid = e.getKey();
+            }
+        }
+        return bestUid;
+    }
+
     long allyUidByPoint(int x, int y) {
         if (x <= 0 || y <= 0 || allies.isEmpty()) return 0L;
         long first = 0L;
