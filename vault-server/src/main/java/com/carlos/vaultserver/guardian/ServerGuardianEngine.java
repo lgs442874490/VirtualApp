@@ -2041,6 +2041,8 @@ public final class ServerGuardianEngine {
     private final Map<String, long[]> probeCache = new ConcurrentHashMap<>();
     /** 批次 R：坐标查询响应诊断节流（60s）。 */
     private volatile long probeDiagLogAt;
+    /** 队列项无兵力的键名诊断节流（独立于 probeDiagLogAt）。 */
+    private volatile long probeQueueDiagLogAt;
     static final long PROBE_CACHE_TTL_MS = 60_000L;
 
     /**
@@ -2164,8 +2166,8 @@ public final class ServerGuardianEngine {
                 long tr = Math.max(0L, troopsOf(item)[0]);
                 p.troops += tr;
                 p.marches++;
-                if (tr <= 0L && System.currentTimeMillis() - probeDiagLogAt > 60_000L) {
-                    probeDiagLogAt = System.currentTimeMillis();
+                if (tr <= 0L && System.currentTimeMillis() - probeQueueDiagLogAt > 30_000L) {
+                    probeQueueDiagLogAt = System.currentTimeMillis();
                     FileLog.info("守护盟友[probe] 队列项无兵力 keys={} squad_list={} squad={} soldier_map={}",
                             item.keySet(), item.get("squad_list"), item.get("squad"),
                             item.get("soldier_map"));
