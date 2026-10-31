@@ -682,6 +682,37 @@ public final class WatchPointEngine {
         if (scan.active) scan.cityCount++;
     }
 
+    /**
+     * 2026-10-31：按坐标找城（容忍 ±2 格）——生产大量「目标城联盟未知」候选的 endpoint 与
+     * 城 point 差 1 格（城中心/格子口径不同），精确查找会把真来袭全部过滤掉。
+     * 命中记录偏差日志（节流），便于后续统一坐标口径。
+     */
+    private City cityNear(int x, int y) {
+        City c = cityByPoint.get(x + "," + y);
+        if (c != null) return c;
+        for (int r = 1; r <= 2; r++) {
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dy = -r; dy <= r; dy++) {
+                    if (Math.abs(dx) != r && Math.abs(dy) != r) continue;
+                    City n = cityByPoint.get((x + dx) + "," + (y + dy));
+                    if (n == null) continue;
+                    long now = System.currentTimeMillis();
+                    if (now - nearCityLogAt > 60_000L) {
+                        nearCityLogAt = now;
+                        FileLog.info("[{}] 坐标容差命中：march endpoint=({},{}) → 城 {} ({},{}) 偏差 {},{}",
+                                LOG, String.valueOf(x), String.valueOf(y),
+                                String.valueOf(n.uid), String.valueOf(n.x), String.valueOf(n.y),
+                                String.valueOf(dx), String.valueOf(dy));
+                    }
+                    return n;
+                }
+            }
+        }
+        return null;
+    }
+
+    private volatile long nearCityLogAt;
+
     private void onComplete(Ctx ctx) {
         if (ctx.kind == Kind.MONITOR) statOkMonitor.incrementAndGet();
         else if (ctx.kind == Kind.PROTECT) statOkProtect.incrementAndGet();
@@ -733,7 +764,7 @@ public final class WatchPointEngine {
         int ey = (int) asLong(ep.get("y"), -1L);
         long endtime = asLong(m.get("endtime"), 0L);
         // 只告警「打城」：地图行军的 atk_city/recon_city 在 map_info 数据里为空，用终点坐标是否命中已知城坐标判定
-        City targetCity = cityByPoint.get(ex + "," + ey);
+        City targetCity = cityNear(ex, ey);
         long targetUid = targetCity == null ? 0L : targetCity.uid;
         long targetAid = targetCity == null ? 0L : targetCity.aid;
         City ownerCity = cityByUid.get(owner);
@@ -842,7 +873,7 @@ public final class WatchPointEngine {
     private void alertOutgoing(long owner, long marchId, long type, int ex, int ey, long endtime, long troops) {
         String key = "out:" + owner + ":" + marchId;
         City ownerCity = cityByUid.get(owner);
-        City target = cityByPoint.get(ex + "," + ey);
+        City target = cityNear(ex, ey);
         String nick = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "uid" + owner;
         String text = outgoingAlertText(nick, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
                 type, target == null ? null : target.nick, target == null ? 0L : target.aid,
@@ -879,7 +910,7 @@ public final class WatchPointEngine {
         String key = (type == 99L || type == 100L || type == 102L || type == 10L || type == 12L)
                 ? "in-rally:" + ex + ":" + ey
                 : "in:" + owner + ":" + marchId;
-        City target = cityByPoint.get(ex + "," + ey);
+        City target = cityNear(ex, ey);
         String who = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "uid" + owner;
         String text = incomingAlertText(who, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
                 type, target == null ? null : target.nick, target == null ? 0L : target.aid,
