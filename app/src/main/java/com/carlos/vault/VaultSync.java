@@ -64,6 +64,8 @@ public final class VaultSync {
     private static final String PATH_ACCOUNT_ACTION = "/v1/vault/account-action";
     private static final String PATH_GLOBAL_ACTION = "/v1/vault/global-action";
     private static final String PATH_WATCH = "/v1/vault/watch";
+    /** 观察点配置（批次 B 2026-10-30；服务端写 data/watchpoint.json，引擎 5s 热载）。 */
+    private static final String PATH_WATCHPOINT = "/v1/vault/watchpoint";
     private static final String PATH_EVENTS = "/v1/vault/events";
     private static final String PATH_MONITOR = "/v1/vault/monitor";
     private static final String OP_SYNC = "vaultSync";
@@ -80,6 +82,7 @@ public final class VaultSync {
     private static final String OP_ACCOUNT_ACTION = "vaultAccountAction";
     private static final String OP_GLOBAL_ACTION = "vaultGlobalAction";
     private static final String OP_WATCH = "vaultWatch";
+    private static final String OP_WATCHPOINT = "vaultWatchpoint";
     private static final String OP_EVENTS = "vaultEvents";
     private static final String OP_MONITOR = "vaultMonitor";
 
@@ -945,6 +948,53 @@ public final class VaultSync {
     /** 测试通知（服务端向企业微信群发一条测试消息，data.ok=是否送达）。回调在 OkHttp 线程。 */
     public static void watchTestNotify(Context ctx, Callback done) {
         watchPost(ctx, watchFields("test", ""), done, "vault-watch-test");
+    }
+
+    // ---------- 观察点配置（批次 B 2026-10-30：App 可视化编辑服务器 watchpoint.json） ----------
+
+    /** 观察点 op 通道（非服务器模式回调 server_mode_off）。 */
+    private static void watchpointPost(Context ctx, Map<String, Object> fields, Callback done,
+                                       String threadName) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app)) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        new Thread(() -> post(app, PATH_WATCHPOINT, OP_WATCHPOINT, fields, done), threadName).start();
+    }
+
+    private static Map<String, Object> watchpointFields(String action) {
+        Map<String, Object> f = new TreeMap<>();
+        f.put("action", action);
+        return f;
+    }
+
+    /** 读取观察点配置（get）。回调在 OkHttp 线程。 */
+    public static void watchpointGet(Context ctx, Callback done) {
+        watchpointPost(ctx, watchpointFields("get"), done, "vault-watchpoint-get");
+    }
+
+    /**
+     * 整体保存观察点配置（set）：目标/矩形以 JSON 数组字符串下发（HMAC 扁平标量约定），
+     * 友盟 aid/告警类型用逗号串；服务端兜底校验，非法返回业务码且旧配置不变。
+     */
+    public static void watchpointSet(Context ctx, boolean enabled, JSONArray monitorTargets,
+                                     JSONArray protectRects, String friendAids, String alertTypes,
+                                     Boolean wecomEnabled, Callback done) {
+        Map<String, Object> f = watchpointFields("set");
+        f.put("enabled", enabled);
+        f.put("monitorTargetsJson", monitorTargets == null ? "[]" : monitorTargets.toString());
+        f.put("protectRectsJson", protectRects == null ? "[]" : protectRects.toString());
+        f.put("friendAids", friendAids == null ? "" : friendAids);
+        f.put("alertTypes", alertTypes == null ? "" : alertTypes);
+        if (wecomEnabled != null) f.put("wecomEnabled", wecomEnabled);
+        watchpointPost(ctx, f, done, "vault-watchpoint-set");
+    }
+
+    /** 只改观察点开关（enable/disable）。回调在 OkHttp 线程。 */
+    public static void watchpointEnable(Context ctx, boolean on, Callback done) {
+        watchpointPost(ctx, watchpointFields(on ? "enable" : "disable"), done,
+                "vault-watchpoint-enable");
     }
 
     /** 事件游标同步：cursor 之后的新事件 + ackCursor。回调在 OkHttp 线程。 */

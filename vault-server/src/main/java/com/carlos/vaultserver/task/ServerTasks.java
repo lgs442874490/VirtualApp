@@ -2099,6 +2099,12 @@ public final class ServerTasks {
             case 3601: case 3602: case 6101:
             case 1510: case 1511: case 1528: case 1545:
             case 1570: case 1571: case 1574: case 1576: case 1577: case 1579: case 1580: case 1581:
+            // 2026-10-30 生产实证：21 天签到（三轨之一）返回 11506（暂不可用/未开放/未同步），
+            // 旧实现落 DEGRADED 每轮刷；归一为“不可用”（不写已领台账，下轮/开放后再试）。
+            case 11506:
+            // 2026-10-30 生产实证：米娅许愿屋 req_fortune_card_get_daily_free_gift 返回 10151
+            // （每日免费礼物已领/今日不可领）。旧实现记 ERROR 并每 ~6 分钟重试；归一为“不可用/已领”。
+            case 10151:
                 return true;
             default:
                 return false;
@@ -2110,6 +2116,7 @@ public final class ServerTasks {
         switch (code) {
             case 21: case 61: case 7501: case 40032: case 40034: case 40611: case 7602: case 4502:
             case 1507:   // 联盟发展/排名奖励「今日已捐献」（生产 state 实证）
+            case 10151:  // 米娅许愿屋每日免费礼物「今日已领」（生产实证；写台账后当天不再请求）
                 return true;
             default:
                 return false;
@@ -2493,8 +2500,13 @@ public final class ServerTasks {
             } else if (isOneOf(id, ACT_ARMAMENT_CUSTOM_IDS)) {
                 subKey = "armament_custom";
                 name = "武备自选";
+            } else if (id >= 2507001L && id <= 2507999L) {
+                // 2026-10-30：新活动 id（如 2507019）不在旧常量表；协议相同（req_customize_item_get_free_box{id}），
+                // 分类只影响展示文案 → 归“自选箱”照常领取，避免漏领。
+                subKey = "customize_other";
+                name = "自选箱";
             } else {
-                st.skipped("customize", "自选箱未知活动 id " + id + "（网页版常量表 15 个 id 之外）");
+                st.skipped("customize", "自选箱未知活动 id " + id + "（未知活动族）");
                 continue;
             }
             any = true;
@@ -3081,8 +3093,9 @@ public final class ServerTasks {
                 } else if (code == 1529) {   // 战利品宝箱上限
                     trophyLimitHit = true;
                     skipped++;
-                } else if (code == 1540) {
-                    // 箱子已失效/不可领（陈旧战利品宝箱）：记失效集合，本轮跳过、6h 内不再重复请求。
+                } else if (code == 1540 || code == 1541 || code == 1542 || code == 1543) {
+                    // 箱子已失效/不可领（网页版 DailyAllianceChestService.isConvergedChestError:
+                    // 1540/1541/1542/1543 均视为“已收敛”）：记失效集合，本轮跳过、TTL 内不再重复请求。
                     invalidChests.put(id, nowSec);
                     invalidChanged = true;
                     skipped++;
@@ -3436,7 +3449,8 @@ public final class ServerTasks {
                 }
             }
             try {
-                int rankType = Math.max(1, tc.params("alliance_donate").optInt("rank_type", 1));
+                // 2026-10-30：网页版周捐献排名固定 type=2（每日/周榜以配置覆盖，缺省按周榜）。
+                int rankType = Math.max(1, tc.params("alliance_donate").optInt("rank_type", 2));
                 String rankKey = "rank:" + rankType;
                 if (!ClaimLedger.isClaimed(tc, "alliance_donate", rankKey)) {
                     GameMessage rsp = tc.engine.request("req_alliance_rank_get_rewards",
@@ -5347,6 +5361,8 @@ public final class ServerTasks {
             case 1507: return which + "今日已捐献";
             case 40032: return which + "今日已领取";
             case 40034: return which + "本周已领取";
+            // 2026-10-30：网页版 DailySupplyService.FREE_ENERGY_LIMIT_CODE
+            case 6159: return which + "体力已达上限（等待消耗后领取限时补给）";
             default: return which + "错误码 " + code;
         }
     }

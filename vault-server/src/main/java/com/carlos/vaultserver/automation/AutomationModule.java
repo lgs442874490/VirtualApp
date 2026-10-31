@@ -1,6 +1,8 @@
 package com.carlos.vaultserver.automation;
 
 import com.carlos.vaultserver.monitor.TaskTrace;
+import com.carlos.vaultserver.task.ArenaGate;
+import com.carlos.vaultserver.task.RoleKey;
 import com.carlos.vaultserver.task.ServerTasks;
 import com.carlos.vaultserver.task.TaskContext;
 import com.carlos.vaultserver.task.TaskOutcome;
@@ -48,6 +50,13 @@ public interface AutomationModule {
             long t0 = System.currentTimeMillis();
             // 真机监控（2026-10-25）：每个 action 前后 task.start/task.end，只观测不改变结果/控制流
             TaskContext traceTask = ctx.task();
+            // 批次 B：竞技场独占窗内，本角色非白名单动作整轮也让位（不消耗游戏内次数）
+            if (traceTask != null && ArenaGate.blocks(
+                    new RoleKey(traceTask.fpid, traceTask.sid, traceTask.roleUid), action.id)) {
+                result.add(action.id, new TaskOutcome(action.id, action.name,
+                        TaskOutcome.Category.SKIPPED, "竞技场独占中，本任务让位"));
+                continue;
+            }
             TaskTrace.Context trace = TaskTrace.begin(traceTask.fpid, traceTask.sid,
                     traceTask.roleUid, action.id, action.name, traceTask.trigger);
             try {

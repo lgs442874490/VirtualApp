@@ -135,6 +135,11 @@
             android:name="com.carlos.vault.daily.MonitorActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
+        <!-- 观察点配置页（批次 B，2026-10-30）：工具箱「观察点」进入；get/set/enable 服务器 watchpoint.json -->
+        <activity
+            android:name="com.carlos.vault.WatchpointActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
         <!-- 采集设置页（批次12）：6 队列采集配置，从功能详情页「采集参数」卡片进入 -->
         <activity
             android:name="com.carlos.vault.daily.GatherConfigActivity"

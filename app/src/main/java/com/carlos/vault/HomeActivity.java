@@ -163,12 +163,13 @@ public class HomeActivity extends AccountVaultActivity {
     private void setFnOn(FnRegistry.Fn fn, boolean on) {
         if (taskAccount == null) return;
         long sid = configSid(taskAccount);
+        long uid = currentRoleUid();   // Phase2C 修复：显式按当前角色 uid 读写（防同服双角色串写）
         com.carlos.vault.daily.DailyConfigStore cs = new com.carlos.vault.daily.DailyConfigStore(this);
         // 写前先补齐为完整配置，避免把稀疏 map 整包上传后其它开关“丢失/不生效”
-        Map<String, Boolean> cfg = cs.effectiveRoleConfig(taskAccount.fpid, sid,
+        Map<String, Boolean> cfg = cs.effectiveRoleConfig(taskAccount.fpid, sid, uid,
                 com.carlos.vault.daily.DailyTasks.all());
         cfg.put(fn.id, on);
-        cs.saveRoleConfig(taskAccount.fpid, sid, cfg);
+        cs.saveRoleConfig(taskAccount.fpid, sid, uid, cfg);
         // 关键：服务端执行依据是上传后的 roleConfig；不调用会等下一次全量同步，
         // 表现为“App 里开了，服务器整轮仍按旧配置跑”。
         VaultSync.onAccountsChanged(this);
@@ -4613,12 +4614,17 @@ public class HomeActivity extends AccountVaultActivity {
         }
         String roleName = "";
         try {
+            long curUid = currentRoleUid();
+            RoleStore.Role fallback = null;
             for (RoleStore.Role r : RoleStore.roles(this, taskAccount.fpid)) {
-                if (r.serverid == sid && r.name != null && !r.name.isEmpty()) {
+                if (r.serverid != sid || r.name == null || r.name.isEmpty()) continue;
+                if (curUid > 0L && r.uid == curUid) {   // Phase2C：同服双角色按 uid 精确取当前角色名
                     roleName = r.name;
                     break;
                 }
+                if (fallback == null) fallback = r;
             }
+            if (roleName.isEmpty() && fallback != null) roleName = fallback.name;
         } catch (Throwable ignored) {
         }
         if (roleName.isEmpty()) roleName = taskAccount.label;

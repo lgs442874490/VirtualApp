@@ -55,6 +55,8 @@ public final class VaultHttpApi {
     private final com.carlos.vaultserver.task.RoundScheduler roundScheduler;
     /** 战争通知中枢（可 null：测试旧构造；watch/events 端点返回 3002）。 */
     private final WarNotify war;
+    /** 观察点配置仓（批次 B 2026-10-30；可 null：测试旧构造/watchpoint 端点返回 3002）。 */
+    private final com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore;
     private final ApiSign.NonceCache nonceCache = new ApiSign.NonceCache();
     private HttpServer server;
 
@@ -67,16 +69,25 @@ public final class VaultHttpApi {
         this(config, store, keeper, stateStore, roundScheduler, null);
     }
 
-    /** 战争通知接线构造（Main 用）：watch/events 端点可用。 */
+    /** 战争通知接线构造：watch/events 端点可用（watchpoint 端点返回 3002）。 */
     public VaultHttpApi(VaultConfig config, VaultStore store, SessionControl keeper,
                         StateStore stateStore, com.carlos.vaultserver.task.RoundScheduler roundScheduler,
                         WarNotify war) {
+        this(config, store, keeper, stateStore, roundScheduler, war, null);
+    }
+
+    /** 批次 B 构造（Main 用）：watch/events + 观察点配置端点可用。 */
+    public VaultHttpApi(VaultConfig config, VaultStore store, SessionControl keeper,
+                        StateStore stateStore, com.carlos.vaultserver.task.RoundScheduler roundScheduler,
+                        WarNotify war,
+                        com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore) {
         this.config = config;
         this.store = store;
         this.keeper = keeper;
         this.stateStore = stateStore;
         this.roundScheduler = roundScheduler;
         this.war = war;
+        this.watchPointStore = watchPointStore;
     }
 
     public void start() throws IOException {
@@ -104,6 +115,9 @@ public final class VaultHttpApi {
         // 战争通知（2026-10-22）：监视名单/通知配置/测试通知 + 事件游标同步
         server.createContext("/v1/vault/watch", ex -> guard(ex, "POST", "vaultWatch", this::handleWatch));
         server.createContext("/v1/vault/events", ex -> guard(ex, "POST", "vaultEvents", this::handleEvents));
+        // 观察点配置（批次 B 2026-10-30）：get/set/enable/disable；写盘后引擎 5s 内 mtime 热载
+        server.createContext("/v1/vault/watchpoint",
+                ex -> guard(ex, "POST", "vaultWatchpoint", this::handleWatchpoint));
         // 真机监控（2026-10-25）：后台任务级协议监控事件游标拉取 + 用户打点；默认 off（VAULT_MONITOR=on 才开）
         server.createContext("/v1/vault/monitor", ex -> guard(ex, "POST", "vaultMonitor", this::handleMonitor));
         // 热更新自托管（2026-10-25）：App 默认更新源，无签名；详见 HotConfigRoutes
@@ -949,6 +963,48 @@ public final class VaultHttpApi {
      * POST /v1/vault/watch：action ∈ list/add/update/remove/config/test。
      * 名单是账号级（fpid 寻址）；config 为全局（watch 开关/企微/冷却/静默）。
      */
+    /**
+     * 观察点配置（批次 B 2026-10-30）：
+     * <ul>
+     *   <li>{@code get}：返回 {@code {enabled,envEnabled,monitorTargets[],protectRects[],
+     *       friendAids[],alertTypes[],aidLabels{},…,updatedAt}}（脱敏/裁剪大字段）；</li>
+     *   <li>{@code set}：整体替换配置；复杂结构用 JSON 字符串字段（{@code monitorTargetsJson} 等，
+     *       HMAC 扁平标量约定）；非法输入返回 3002 且旧文件不变（fail-closed）；</li>
+     *   <li>{@code enable}/{@code disable}：只改 {@code enabled}。</li>
+     * </ul>
+     * 写盘=临时文件原子替换 + {@code watchpoint.json.bak} 备份；WatchPointEngine 按 mtime 5s 热载。
+     */
+    private JSONObject handleWatchpoint(Map<String, Object> fields) throws Exception {
+        com.carlos.vaultserver.watchpoint.WatchPointStore wp = watchPointStore;
+        if (wp == null) throw new BizError(3002, "观察点未启用（服务端未就绪）");
+        wp.ensureLoaded();
+        String action = str(fields, "action");
+        if (action == null || action.isEmpty()) throw new BizError(3002, "缺少 action");
+        if ("get".equals(action)) return wp.snapshotJson();
+        if ("enable".equals(action) || "disable".equals(action)) {
+            boolean on = "enable".equals(action);
+            wp.setEnabled(on);
+            FileLog.info("[观察点] 配置开关更新 enabled={}", String.valueOf(on));
+            return wp.snapshotJson();
+        }
+        if (!"set".equals(action)) throw new BizError(3002, "未知 action: " + action);
+        JSONObject in = new JSONObject();
+        for (String k : new String[]{"enabled", "kid", "fpid", "monitorIntervalMs",
+                "protectIntervalMs", "maxReqPerSec", "wecomEnabled", "fullScanIntervalMs",
+                "cityTargetOnly", "incomingRallyFollowerAlerts", "alertTypes", "friendAids",
+                "aidLabels", "monitorTargets", "protectRects"}) {
+            if (fields.containsKey(k)) in.put(k, fields.get(k));
+            Object json = fields.get(k + "Json");
+            if (json != null && !in.has(k)) in.put(k, json);
+        }
+        String err = wp.applyConfig(in);
+        if (err != null) throw new BizError(3002, err);
+        FileLog.info("[观察点] 配置已更新：目标={} 矩形={} 告警类型={} 友盟={}",
+                String.valueOf(wp.monitorTargets.size()), String.valueOf(wp.protectRects.size()),
+                String.valueOf(wp.alertTypes.size()), String.valueOf(wp.friendAids.size()));
+        return wp.snapshotJson();
+    }
+
     private JSONObject handleWatch(Map<String, Object> fields) throws Exception {
         if (war == null) throw new BizError(3002, "战争通知未启用");
         String action = str(fields, "action");

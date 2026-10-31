@@ -8,11 +8,14 @@ import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
 import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.FileLog;
+import com.carlos.vaultserver.guardian.GuardianReserve;
 import com.carlos.vaultserver.formation.FormationLibrary;
 import com.carlos.vaultserver.formation.HeroAvailability;
 import com.carlos.vaultserver.formation.FormationResolver;
+import com.carlos.vaultserver.formation.IntelFormationPlan;
 import com.carlos.vaultserver.formation.ResolvedFormation;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -42,6 +45,12 @@ public final class ServerFieldTasks {
      * </ul>
      */
     public static TaskOutcome gather(TaskContext tc) {
+        // 批次 J（2026-10-31 用户长期规则第 3 条）：守护战争态直接停派采集——6 个行军队列
+        // 全部留给对盟友驻防；退出战争态（无在途威胁 60s）后本闸自动放行，恢复正常采集。
+        if (GuardianReserve.gatherBlocked(tc)) {
+            return new TaskOutcome("gather", "野外采集", TaskOutcome.Category.SKIPPED,
+                    "战争态停派采集（队列全部留给守护驻防）");
+        }
         JSONObject gatherParams = null;
         try {
             gatherParams = tc.params("gather");
@@ -65,7 +74,10 @@ public final class ServerFieldTasks {
             tc.engine.collectNotifies(2500);
             JSONObject p = tc.params("gather");
             int minLevel = Math.max(1, Math.min(6, p.optInt("min_level", 5)));
-            int maxQueues = Math.max(1, Math.min(5, p.optInt("max_queues", 3)));
+            // 批次 E：守护实盘 → 采集让出 reserve_slots 队（默认 1，clamp 0..2，至少保留 1 队采集）
+            int guardReserve = GuardianReserve.reserveSlots(tc);
+            int rawMaxQueues = Math.max(1, Math.min(5, p.optInt("max_queues", 3)));
+            int maxQueues = GuardianReserve.effectiveMaxQueues(rawMaxQueues, guardReserve);
             List<Integer> resList = new ArrayList<>();
             org.json.JSONArray named = p.optJSONArray("resources_named");
             if (named != null && named.length() > 0) {
@@ -127,7 +139,8 @@ public final class ServerFieldTasks {
             int regularCapacity = Math.max(0, capacity - (mineReserved ? 1 : 0));
             int slots = Math.max(0, regularCapacity - active);
             if (slots == 0) {
-                m.skip("采集队列已满(" + active + "/" + capacity + ")");
+                m.skip("采集队列已满(" + active + "/" + capacity + ")"
+                        + (guardReserve > 0 ? "（为守护预留 " + guardReserve + " 队）" : ""));
             } else {
                 int sent = 0;
                 for (int res : resList) {
@@ -163,7 +176,8 @@ public final class ServerFieldTasks {
                 if (sent > 0) {
                     m.claimed("派出采集×" + sent);
                     tc.saveModText("gather", "send",
-                            "上轮派出 " + sent + " 队（队列 " + active + "/" + capacity + "）");
+                            "上轮派出 " + sent + " 队（队列 " + active + "/" + capacity + "）"
+                                    + (guardReserve > 0 ? "；为守护预留 " + guardReserve + " 队" : ""));
                 } else m.skip("附近未搜到资源点");
             }
         } catch (Exception e) {
@@ -1044,8 +1058,11 @@ public final class ServerFieldTasks {
                                          Exec.Multi m) throws Exception {
         GatherConfigV2 cfg = GatherConfigV2.parse(gatherParams);
         AssetSnapshot.Queue queue = lib.queue() == null ? AssetSnapshot.Queue.empty() : lib.queue();
-        FileLog.info("gather queue: capacity={} occupied={} idle={} special={} limit={}",
-                queue.capacity, queue.occupied, queue.idle, specialQueueCount(queue), queue.limitReached);
+        // 批次 E：守护实盘时预留行军队列（采集让位；默认 1，clamp 0..2）
+        int guardReserve = GuardianReserve.reserveSlots(tc);
+        FileLog.info("gather queue: capacity={} occupied={} idle={} special={} limit={} reserve={}",
+                queue.capacity, queue.occupied, queue.idle, specialQueueCount(queue),
+                queue.limitReached, guardReserve);
 
         long now = System.currentTimeMillis();
         long backoffUntil = stateLongOf(tc, gatherBackoffKey(tc));
@@ -1118,10 +1135,12 @@ public final class ServerFieldTasks {
             }
         }
         int slots = Math.max(0, slotCount(cfg, queue.idle, unbound, queue.capacity,
-                queue.limitReached) - allianceMineReserved);
+                queue.limitReached, guardReserve) - allianceMineReserved);
         if (queue.limitReached || slots <= 0) {
             String text = "采集队列已满(capacity=" + queue.capacity + " occupied=" + queue.occupied
-                    + " idle=" + queue.idle + " unbound=" + unbound + ")";
+                    + " idle=" + queue.idle + " unbound=" + unbound
+                    + (guardReserve > 0 ? " reserve=" + guardReserve : "") + ")"
+                    + (guardReserve > 0 ? "（为守护预留 " + guardReserve + " 队）" : "");
             m.skip(text);
             tc.saveModText("gather", "send", text);
             writeQueueMapping(tc, mapping);
@@ -1253,6 +1272,7 @@ public final class ServerFieldTasks {
         } else {
             m.skip("本轮未派出采集队");
         }
+        if (guardReserve > 0) statuses.add("为守护预留 " + guardReserve + " 队");
         String text = statuses.isEmpty() ? "无可派采集队列" : String.join("；", statuses);
         tc.saveModText("gather", "send", text);
     }
@@ -1538,8 +1558,20 @@ public final class ServerFieldTasks {
      */
     static int slotCount(GatherConfigV2 cfg, int idle, int unboundEnabledQueues,
                          int worldCapacity, boolean limitReached) {
+        return slotCount(cfg, idle, unboundEnabledQueues, worldCapacity, limitReached, 0);
+    }
+
+    /**
+     * 批次 E：在容量/启用数/空闲夹取后，再扣掉守护预留（采集让位；下限保留 1 队采集）。
+     * reserve&gt;0 且有效上限&gt;0 时 {@code effective = max(1, effective - reserve)}。
+     */
+    static int slotCount(GatherConfigV2 cfg, int idle, int unboundEnabledQueues,
+                         int worldCapacity, boolean limitReached, int reserve) {
         if (cfg == null || limitReached) return 0;
         int effective = cfg.effectiveQueueLimit(worldCapacity, 0);
+        if (reserve > 0 && effective > 0) {
+            effective = Math.max(1, effective - Math.max(0, Math.min(2, reserve)));
+        }
         int slots = Math.min(Math.max(0, idle), Math.max(0, unboundEnabledQueues));
         return Math.max(0, Math.min(slots, effective));
     }
@@ -1949,11 +1981,12 @@ public final class ServerFieldTasks {
     }
 
     /**
-     * 情报优先事件数（1:1 网页版 {@code DailyIntelligenceService.gatherPriorityEventCount}）：
-     * 只统计 <b>status=1 且占普通队列</b>的可派事件（type 3 PVE 不占队列、type 11 巨兽需活动门控→保守排除），
-     * 且体力 >= 10×事件数时才返回事件数（体力不足时情报发不出去，采集不应让位）。
+     * 情报优先事件数（用户规则 2，2026-10-31 修正）：
+     * 只统计 <b>status=1 且占普通行军队列</b>的可派事件——即狩猎类 1/11/100；
+     * 营救(2) 走 301 特殊队列、英雄之旅(3) 是 PVE，都<b>不与采集争普通队列</b>，不能让采集让位
+     * （否则营救类可无限等待，采集被永久饿死）。
      *
-     * <p>type 映射与 {@link #intelEventType(long)} 一致：1/2/100 为普通队列事件。
+     * <p>体力要求：体力 >= Σ事件体力成本时才返回事件数（体力不足时情报发不出去，采集不应让位）。
      */
     static int intelGatherPriorityCount(AssetSnapshot.Intel intel, AssetSnapshot.Stamina stamina,
                                         long nowSec) {
@@ -1967,17 +2000,19 @@ public final class ServerFieldTasks {
                                         long nowSec, TaskContext tc) {
         if (intel == null || intel.events == null || intel.events.isEmpty()) return 0;
         int count = 0;
+        long costSum = 0L;
         for (AssetSnapshot.IntelEvent e : intel.events.values()) {
             if (e == null || e.status != 1L) continue;
             if (e.expireTs > 0L && e.expireTs <= nowSec) continue;
             int type = intelEventType(e.eventId);
-            if (type == 0 || type == 3 || type == 11) continue;   // PVE / 活动巨兽不占普通队列
+            if (!intelConsumesNormalMarchSlot(type)) continue;   // 只有狩猎类占普通队列
             if (tc != null && intelDispatchBlocked(tc, e.id, nowSec * 1000L)) continue;
             count++;
+            costSum += intelStaminaCost(type);
         }
         if (count <= 0) return 0;
         long st = stamina == null || !stamina.known() ? 0L : stamina.staminaAt(nowSec);
-        return st >= count * 10L ? count : 0;
+        return st >= costSum ? count : 0;
     }
 
     /** 纯函数：巨熊窗口 [reserve-600, reserve+1800] / [mass_start-600, mass_end]；情报可派优先。 */
@@ -2111,6 +2146,16 @@ public final class ServerFieldTasks {
     /** C3 业务态唤醒：情报派队后多久兜底再看一次（15 分钟；正常由结果推送提前唤醒）。 */
     static final long INTEL_NEXT_WAKE_MILLIS = 15L * 60L * 1000L;
 
+    /** 用户规则 3：情报剩余 ≤30min 且队列满时，召回 1 个采集队列（同角色冷却 5 分钟）。 */
+    static final long INTEL_PREEMPT_COOLDOWN_MILLIS = 300_000L;
+    /** 用户规则 3：10 分钟内最多召回 2 队（绝不把采集全部召回）。 */
+    static final long INTEL_PREEMPT_WINDOW_MILLIS = 600_000L;
+    static final int INTEL_PREEMPT_MAX_PER_WINDOW = 2;
+    /** 召回后重派等待（队列释放有推送/响应延迟）。 */
+    static final long INTEL_PREEMPT_RETRY_DELAY_MILLIS = 15_000L;
+    /** 召回失败码：行军不存在/已结束（等同于队列已释放，不再重试该队）。 */
+    static final int INTEL_ERR_MARCH_GONE = 2806;
+
     /**
      * C3 业务态唤醒（纯函数）：本轮<b>派出情报行军</b>后，下一次兜底检查时刻。
      *
@@ -2142,6 +2187,12 @@ public final class ServerFieldTasks {
         Exec.Multi m = new Exec.Multi();
         // C3：方法级计数（try 外的 dispatched 作用域），用于落盘业务态唤醒时刻。
         int dispatchedAny = 0;
+        int pendingAny = 0;
+        boolean preemptedAny = false;
+        boolean eventsEmpty = true;
+        boolean dedupedOrInflight = false;
+        long nowSecAny = System.currentTimeMillis() / 1000L;
+        long roundStartAny = 0L;
         try {
             tc.engine.collectNotifies(2500);
             Map<Long, Map<String, Object>> events = new LinkedHashMap<>();
@@ -2165,19 +2216,23 @@ public final class ServerFieldTasks {
                     }
                 }
             }
-            if (events.isEmpty()) {
-                m.skip("暂无情报事件");
+            eventsEmpty = events.isEmpty();
+            if (eventsEmpty) {
+                m.skip("暂无情报事件（下一轮 " + IntelRound.roundLabel(IntelRound.nextRefreshSec(nowSecAny))
+                        + " 刷新）");
             } else {
-                // I2 门控（P0 2026-10-23，1:1 网页版 DailyIntelligenceService）：
-                // ① 普通队列数 = min(世界容量, 配置 queueCount，默认 1)（:256-262,598-606 的
-                //    effectiveQueueCount = min(config.queueCount, playerQueueLimit(world))）；
-                // ② 已占用情报行军（type=301/302）不重复派（:919-928 activeIntelligenceMarchCount）；
-                // ③ 体力门：普通事件 10/12 点、保留 50 点底仓（:598-606 staminaCost、:256-262
-                //    staminaReserve）；体力取不到（notify_recover_resource_init 未到）时只做队列门。
-                // 15s 节奏天然重试：本轮条件不足只写 SKIP“待下一次”，不循环重试、不刷 ERROR。
+                // I2 门控（用户规则 2，2026-10-31 修正）：
+                // ① 普通队列数 = min(世界容量, 配置 queueCount，默认 1)；
+                // ② 在途普通情报只数 type=302（狩猎）；301 营救走特殊队列，不占普通队列；
+                // ③ 体力门：狩猎 10 点、营救/英雄之旅 12 点、保留 50 点底仓；
+                // ④ 用户规则 3：狩猎剩余 ≤30min 且普通队列满 → 召回 1 个采集队列腾位（不全部召回）。
                 JSONObject ip = tc.params("intel");
                 long now = System.currentTimeMillis();
+                long nowSec = now / 1000L;
+                nowSecAny = nowSec;
+                roundStartAny = intelRoundStartOf(events, nowSec);
                 boolean hasDispatchable = false;
+                long expiringHuntExpire = 0L;
                 for (Map<String, Object> e : events.values()) {
                     long id = Exec.longOf(e.get("id"));
                     if (id <= 0) continue;
@@ -2185,27 +2240,41 @@ public final class ServerFieldTasks {
                     if (status != 1) continue;
                     int t = intelEventType(intelEventConfigId(e));
                     if (t == 0 || intelDispatchBlocked(tc, id, now)) continue;
+                    long expireTs = Exec.longOf(e.get("expire_ts"));
+                    if (IntelRound.expired(nowSec, expireTs)) continue;
                     hasDispatchable = true;
-                    break;
+                    if (intelConsumesNormalMarchSlot(t) && expireTs > 0L
+                            && (expiringHuntExpire <= 0L || expireTs < expiringHuntExpire)) {
+                        expiringHuntExpire = expireTs;     // 最紧急的狩猎事件
+                    }
                 }
-                // I2 队列门控（P0 2026-10-28，1:1 网页版 planActions:452-525 + consumesNormalWorldMarchSlot:614-616）：
-                // 营救(2) 不占普通行军队列；怪物(1)/活动巨兽(11)/冒险巨兽(100) 才占普通队列。
-                // remainingNormal = clamp(min(queueCount, 世界容量) - 在途情报(301|302), 0, 世界空闲)；
-                // 只有普通队列事件检查并扣减 remaining，营救类队列满时照发（旧实现营救/怪物一起被队列卡死）。
-                int allowedSlots = 0, activeIntelMarches = 0, remainingNormalSlots = 0;
+                // I2 队列门控（用户规则 2）：营救(2)/英雄之旅(3) 不占普通行军队列；
+                // 狩猎(1)/活动巨兽(11)/冒险巨兽(100) 才占普通队列（type=302）。
+                int allowedSlots = 0, activeNormalIntel = 0, activeSpecialIntel = 0;
+                int remainingNormalSlots = 0;
                 boolean staminaKnown = false;
                 long usableStamina = Long.MAX_VALUE;
+                IntelQueueSnapshot intelQueue = null;
                 if (hasDispatchable) {
                     // 页面/请求只在有可派事件时取，避免纯领奖轮次多发队列查询。
-                    IntelQueueSnapshot q = intelQueueSnapshot(tc.engine);
-                    allowedSlots = intelQueueSlots(intelQueueCount(ip), q.capacity);
-                    activeIntelMarches = q.activeIntelligenceMarches;
-                    remainingNormalSlots = q.queueIdleKnown
-                            ? intelRemainingNormalSlots(allowedSlots, activeIntelMarches, q.normalIdle)
-                            : intelRemainingNormalSlots(allowedSlots, activeIntelMarches);
+                    intelQueue = intelQueueSnapshot(tc.engine);
+                    allowedSlots = intelQueueSlots(intelQueueCount(ip), intelQueue.capacity);
+                    activeNormalIntel = intelQueue.activeNormalIntelMarches;
+                    activeSpecialIntel = intelQueue.activeSpecialIntelMarches;
+                    remainingNormalSlots = intelQueue.queueIdleKnown
+                            ? intelRemainingNormalSlots(allowedSlots, activeNormalIntel, intelQueue.normalIdle)
+                            : intelRemainingNormalSlots(allowedSlots, activeNormalIntel);
                     Long stamina = intelStamina(tc.engine);
                     staminaKnown = stamina != null;
                     if (staminaKnown) usableStamina = Math.max(0L, stamina - INTEL_STAMINA_RESERVE);
+                    // 用户规则 3：仅当“狩猎快过期 + 普通队列真被采集占满”时才召回 1 队采集。
+                    if (intelNeedsQueuePreempt(intelQueue, allowedSlots, activeNormalIntel,
+                            expiringHuntExpire, nowSec) && intelPreemptEnabled(tc)) {
+                        String preemptText = tryPreemptGatherForIntel(tc, now, nowSec);
+                        if (preemptText != null) {
+                            preemptedAny = true;
+                        }
+                    }
                 }
                 int handled = 0, claimed = 0, dispatched = 0, waiting = 0, deduped = 0;
                 int queueFullBlocked = 0, staminaBlocked = 0;
@@ -2238,6 +2307,8 @@ public final class ServerFieldTasks {
                     }
                     if (status != 1) continue;
                     if (type == 0) continue;
+                    long expireTs = Exec.longOf(e.get("expire_ts"));
+                    if (IntelRound.expired(nowSec, expireTs)) continue;   // 已过期不派（只等推送删除）
                     if (intelDispatchBlocked(tc, id, now)) {
                         // 已派出/已开战（或 10 分钟内刚失败）：等推送把 status 变 2 或去重窗过期。
                         deduped++;
@@ -2249,7 +2320,12 @@ public final class ServerFieldTasks {
                     if (gate == INTEL_GATE_QUEUE_FULL) {
                         queueFullBlocked++;     // 普通队列满：留待下一次节奏，不写失败（营救类不走这里）
                         waiting++;
-                        continue;
+                        if (preemptedAny) {
+                            appendWait(waits, "队列腾位中");
+                        } else if (IntelRound.expiringSoon(nowSec, expireTs)) {
+                            appendWait(waits, "30分钟内消失且队列满");
+                        }
+                        continue;   // 不写去重窗：下一轮腾位/让位后仍可派
                     }
                     if (gate == INTEL_GATE_STAMINA) {
                         staminaBlocked++;       // 体力不足：留待下一次节奏，不写失败
@@ -2286,15 +2362,17 @@ public final class ServerFieldTasks {
                         }
                     } else if (worldMarch) {
                         long marchType = type == 2 ? 301L : 302L;
-                        StringBuilder formationWhy = new StringBuilder();
-                        Map<String, Object> formation = formationFor(tc, "intel", 1, formationWhy);
-                        if (formation == null) {
+                        // 用户规则 4：情报编队——指定编队(ROLE) > 情报设置(英雄/比例) > 默认
+                        // 最强盾/波根(矛)/吉娜(弓)（缺失回退最强矛/弓）。不再回退“游戏第 1 队”。
+                        FormationResolver.ResolveOutcome fro = IntelFormationPlan.resolve(tc);
+                        if (!fro.ready()) {
                             waiting++;
-                            markIntelDispatched(tc, id, now);   // 编队不可用同样计入去重窗
-                            appendWait(waits, formationWhy.length() > 0
-                                    ? "编队：" + formationWhy : "无英雄可派");
+                            markIntelDispatched(tc, id, now);   // 编队不可用计入去重窗（防 15s 请求风暴）
+                            appendWait(waits, fro.reason.isEmpty() ? "无英雄可派" : "编队：" + fro.reason);
                             continue;
                         }
+                        Map<String, Object> formation = fro.formation.toFormationPayload();
+                        tc.saveModText("intel", "formation", fro.formation.describe() + " · " + fro.reason);
                         GameMessage march = tc.engine.request("req_world_march", Exec.args(
                                 "type", marchType,
                                 "endpoint", Exec.point(Exec.longOf(e.get("x")), Exec.longOf(e.get("y"))),
@@ -2332,23 +2410,52 @@ public final class ServerFieldTasks {
                     }
                 }
                 dispatchedAny = dispatched;
+                pendingAny = intelPendingDispatchableCount(tc, events, now, nowSec);
+                boolean inFlight = false;
+                for (Map<String, Object> e : events.values()) {
+                    if (e != null && Exec.longOf(e.get("status")) == 3L) {
+                        inFlight = true;
+                        break;
+                    }
+                }
+                dedupedOrInflight = deduped > 0 || inFlight;
+                long remainSec = intelRoundRemainSec(events, nowSec);
+                String roundText = " · " + IntelRound.roundLabel(roundStartAny)
+                        + (remainSec > 0L ? " · 剩 " + IntelRound.remainingLabel(remainSec) : "");
+                String preemptText = preemptedAny ? "；已召回 1 个采集队列腾位（不会全部召回）" : "";
+                String statusText;
                 if (handled > 0) {
-                    m.claimed("处理情报×" + handled
+                    statusText = "处理情报×" + handled
                             + (claimed > 0 ? "（领奖" + claimed + "）" : "")
-                            + (dispatched > 0 ? "（派队" + dispatched + "）" : ""));
+                            + (dispatched > 0 ? "（派队" + dispatched + "）" : "")
+                            + preemptText + roundText;
+                    m.claimed(statusText);
+                } else if (preemptedAny) {
+                    statusText = "已召回 1 个采集队列为情报腾位（剩余采集仍保留，不会全部召回），15 秒后重派"
+                            + roundText;
+                    m.skip(statusText);
                 } else if (queueFullBlocked > 0) {
-                    m.skip("情报队列已满(情报" + activeIntelMarches + "/" + allowedSlots + "·空闲"
-                            + remainingNormalSlots + ")，营救类不受队列限制，怪物/巨兽待下一次");
+                    statusText = "情报队列已满(普通情报" + activeNormalIntel + "/" + allowedSlots + "·空闲"
+                            + remainingNormalSlots
+                            + (activeSpecialIntel > 0 ? "·营救在途" + activeSpecialIntel : "")
+                            + ")，营救/英雄之旅不受队列限制" + roundText;
+                    m.skip(statusText);
                 } else if (staminaBlocked > 0
                         || (hasDispatchable && staminaKnown && usableStamina < intelStaminaCost(1))) {
-                    m.skip("情报体力不足(可用" + usableStamina + "·保留" + INTEL_STAMINA_RESERVE + ")，待下一次");
+                    statusText = "情报体力不足(可用" + usableStamina + "·保留" + INTEL_STAMINA_RESERVE
+                            + ")，待下一次" + roundText;
+                    m.skip(statusText);
                 } else if (waiting > 0) {
-                    m.skip("情报待重试：" + waits.toString().trim());
+                    statusText = "情报待重试：" + waits.toString().trim() + roundText;
+                    m.skip(statusText);
                 } else if (deduped > 0) {
-                    m.skip("情报行军/领奖进行中，待下一次");
+                    statusText = "情报行军/领奖进行中，待下一次" + roundText;
+                    m.skip(statusText);
                 } else {
-                    m.skip("无可派情报");
+                    statusText = "无可派情报" + roundText;
+                    m.skip(statusText);
                 }
+                tc.saveModText("intel", "events", statusText);
             }
 
             // 专家额外情报页：notify_expert_quests.finishs 中 isgetaward=false 的项，
@@ -2415,11 +2522,249 @@ public final class ServerFieldTasks {
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         TaskOutcome out = Exec.result(m, "intel", "情报任务");
-        // C3 业务态唤醒（网页版 TaskDecision.SleepUntil）：本轮派出情报行军 → 15 分钟兜底再看；
-        // 结果推送到达时 TaskWakeRouter 会把 cadence 提前置 0（不必等 15 分钟）。
-        long nextWake = intelNextWakeAt(System.currentTimeMillis(), dispatchedAny);
+        // C3 业务态唤醒（网页版 TaskDecision.SleepUntil，2026-10-31 轮次化）：
+        // - 刚召回采集队 → 15s 后重派；
+        // - 无事件 → 下一 0/8/16 刷新点 +5s（新事件仍由 TaskWakeRouter 推送即时唤醒）；
+        // - 还有可派但被门控 → 60s 重试；已派出/战斗中 → 15min 兜底（结果推送会提前唤醒）。
+        long nextWake = IntelRound.intelWakeAt(System.currentTimeMillis(), nowSecAny, dispatchedAny,
+                pendingAny, preemptedAny, eventsEmpty, dedupedOrInflight);
         if (nextWake > 0L) out.wakeAt(nextWake);
         return out;
+    }
+
+    // ---------- 情报轮次 / 采集让位（2026-10-31 用户规则 1/3） ----------
+
+    /** 本轮开始时刻：由事件 expire_ts 反推（优先）→ 无 expire 时按当前 0/8/16 轮次。 */
+    static long intelRoundStartOf(Map<Long, Map<String, Object>> events, long nowSec) {
+        long start = 0L;
+        if (events != null) {
+            for (Map<String, Object> e : events.values()) {
+                if (e == null) continue;
+                long rs = IntelRound.roundStartSecOfExpire(Exec.longOf(e.get("expire_ts")));
+                if (rs > start) start = rs;
+            }
+        }
+        return start > 0L ? start : IntelRound.currentRoundStartSec(nowSec);
+    }
+
+    /** 本轮剩余时间（取事件 expire_ts 最大值；未知/已过期 → 0）。 */
+    static long intelRoundRemainSec(Map<Long, Map<String, Object>> events, long nowSec) {
+        long expire = 0L;
+        if (events != null) {
+            for (Map<String, Object> e : events.values()) {
+                if (e == null) continue;
+                long ts = Exec.longOf(e.get("expire_ts"));
+                if (ts > expire) expire = ts;
+            }
+        }
+        return IntelRound.remainingSec(nowSec, expire);
+    }
+
+    /** 仍有“可派但本轮没派出去”的事件数（status=1/未过期/不在去重窗/类型可识别）。 */
+    static int intelPendingDispatchableCount(TaskContext tc, Map<Long, Map<String, Object>> events,
+                                             long nowMillis, long nowSec) {
+        if (events == null || events.isEmpty()) return 0;
+        int n = 0;
+        for (Map<String, Object> e : events.values()) {
+            if (e == null) continue;
+            long id = Exec.longOf(e.get("id"));
+            if (id <= 0L) continue;
+            long status = e.containsKey("status") ? Exec.longOf(e.get("status")) : 1L;
+            if (status != 1L) continue;
+            if (intelEventType(intelEventConfigId(e)) == 0) continue;
+            if (IntelRound.expired(nowSec, Exec.longOf(e.get("expire_ts")))) continue;
+            if (tc != null && intelDispatchBlocked(tc, id, nowMillis)) continue;
+            n++;
+        }
+        return n;
+    }
+
+    /**
+     * 是否需要为情报召回 1 队采集（纯函数）：
+     * 有狩猎事件剩余 ≤30min，且普通队列“真的被采集/其它占满”（worldIdle=0），
+     * 且不是情报自己的 302 占满（activeNormal &lt; allowedSlots）。
+     */
+    static boolean intelNeedsQueuePreempt(IntelQueueSnapshot q, int allowedSlots,
+                                          int activeNormalIntel, long expiringHuntExpireTs,
+                                          long nowSec) {
+        if (q == null || expiringHuntExpireTs <= 0L) return false;
+        if (!q.queueIdleKnown || q.normalIdle > 0) return false;
+        if (activeNormalIntel >= Math.max(1, allowedSlots)) return false;
+        return IntelRound.expiringSoon(nowSec, expiringHuntExpireTs);
+    }
+
+    /** 采集让位开关：env {@code VAULT_INTEL_PREEMPT=off/0/false} 硬关；否则 intel params 默认 true。 */
+    static boolean intelPreemptEnabled(TaskContext tc) {
+        String env = System.getenv("VAULT_INTEL_PREEMPT");
+        if (env != null) {
+            String v = env.trim().toLowerCase(java.util.Locale.ROOT);
+            if ("off".equals(v) || "0".equals(v) || "false".equals(v)) return false;
+        }
+        if (tc == null) return false;
+        try {
+            JSONObject p = tc.params("intel");
+            return !p.has("intel_preempt_gather") || p.optBoolean("intel_preempt_gather", true);
+        } catch (Throwable ignored) {
+            return true;
+        }
+    }
+
+    /** 统计我方 type=4 采集行军数（state 2/3、owner 自己或未知）。 */
+    static int intelCountGatherMarches(List<AssetSnapshot.QueueMarch> marches, long ownUid) {
+        int n = 0;
+        if (marches == null) return 0;
+        for (AssetSnapshot.QueueMarch m : marches) {
+            if (m == null) continue;
+            if (m.type != 4L) continue;
+            if (m.state != 2L && m.state != 3L) continue;
+            if (m.owner > 0L && ownUid > 0L && m.owner != ownUid) continue;
+            n++;
+        }
+        return n;
+    }
+
+    /**
+     * 选出要召回的采集队（纯函数）：只 type=4、state=2/3、我方；优先在途(2)，其次剩余采集时间最短，
+     * 再按 marchId 小。绝不返回保护类（5/99/102/411）。
+     */
+    static AssetSnapshot.QueueMarch intelChooseGatherToRecall(List<AssetSnapshot.QueueMarch> marches,
+                                                              long ownUid) {
+        AssetSnapshot.QueueMarch best = null;
+        if (marches == null) return null;
+        long bestEnd = Long.MAX_VALUE;
+        for (AssetSnapshot.QueueMarch m : marches) {
+            if (m == null || m.id <= 0L) continue;
+            if (m.type != 4L) continue;
+            if (m.state != 2L && m.state != 3L) continue;
+            if (m.owner > 0L && ownUid > 0L && m.owner != ownUid) continue;
+            long end = queueMarchEndMillis(m);
+            if (end <= 0L) end = Long.MAX_VALUE;
+            if (best == null) {
+                best = m;
+                bestEnd = end;
+                continue;
+            }
+            boolean bestInFlight = best.state == 2L;
+            boolean candInFlight = m.state == 2L;
+            if (candInFlight != bestInFlight) {
+                if (candInFlight) { best = m; bestEnd = end; }
+                continue;
+            }
+            if (end < bestEnd || (end == bestEnd && m.id < best.id)) {
+                best = m;
+                bestEnd = end;
+            }
+        }
+        return best;
+    }
+
+    /** 情报采集让位状态键（按角色隔离）：{@code srv:intel:preempt:<fpid>:<sid>:<uid>}。 */
+    static String intelPreemptKey(TaskContext tc) {
+        return "srv:intel:preempt:" + tc.fpid + ":" + tc.sid + ":" + tc.roleUid;
+    }
+
+    static JSONObject intelPreemptState(TaskContext tc) {
+        try {
+            String raw = tc.store.getString(intelPreemptKey(tc));
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+        } catch (Throwable ignored) {
+            return new JSONObject();
+        }
+    }
+
+    /** 冷却 + 10 分钟窗口上限判定（纯函数）。 */
+    static boolean intelPreemptBudgetAllows(JSONObject state, long nowMillis) {
+        if (state == null) return true;
+        long last = state.optLong("last", 0L);
+        if (last > 0L && nowMillis - last < INTEL_PREEMPT_COOLDOWN_MILLIS) return false;
+        JSONArray recent = state.optJSONArray("recent");
+        int n = 0;
+        if (recent != null) {
+            for (int i = 0; i < recent.length(); i++) {
+                long t = recent.optLong(i, 0L);
+                if (t > 0L && nowMillis - t <= INTEL_PREEMPT_WINDOW_MILLIS) n++;
+            }
+        }
+        return n < INTEL_PREEMPT_MAX_PER_WINDOW;
+    }
+
+    static void markIntelPreempt(TaskContext tc, long nowMillis) {
+        JSONObject o = new JSONObject();
+        o.put("last", nowMillis);
+        JSONArray recent = new JSONArray();
+        JSONObject prev = intelPreemptState(tc);
+        JSONArray old = prev.optJSONArray("recent");
+        if (old != null) {
+            for (int i = 0; i < old.length(); i++) {
+                long t = old.optLong(i, 0L);
+                if (t > 0L && nowMillis - t <= INTEL_PREEMPT_WINDOW_MILLIS) recent.put(t);
+            }
+        }
+        recent.put(nowMillis);
+        o.put("recent", recent);
+        try {
+            tc.store.putString(intelPreemptKey(tc), o.toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 用户规则 3：情报剩余 ≤30min 且普通队列满时，召回且仅召回 1 个采集队列。
+     *
+     * <p>安全约束：只 type=4（采集）、state=2/3、我方；**至少 2 队采集才召回**（只有 1 队=全部召回，
+     * 违反用户“不要全部召回”）；同角色 5 分钟冷却 + 10 分钟最多 2 队；绝不碰驻防/集结/上车等保护类。
+     *
+     * @return 成功时返回状态文案；未召回返回 null（只记日志，不重试风暴）
+     */
+    static String tryPreemptGatherForIntel(TaskContext tc, long nowMillis, long nowSec) {
+        if (tc == null || tc.engine == null) return null;
+        List<AssetSnapshot.QueueMarch> marches = null;
+        try {
+            CoreAssetLibrary lib = assetReadsEnabled()
+                    ? CoreAssetRegistry.global().get(tc.engine) : null;
+            if (lib != null && lib.ready() && lib.queue() != null) {
+                marches = lib.queue().marches;
+            }
+        } catch (Throwable ignored) {
+        }
+        long ownUid = tc.engine.lastUid();
+        int gatherCount = intelCountGatherMarches(marches, ownUid);
+        if (gatherCount < 2) {
+            FileLog.info("intel 采集让位跳过 fpid={}：采集行军不足 2 队（{} 队，不全部召回）",
+                    tc.fpid, gatherCount);
+            return null;
+        }
+        JSONObject state = intelPreemptState(tc);
+        if (!intelPreemptBudgetAllows(state, nowMillis)) {
+            FileLog.info("intel 采集让位冷却中 fpid={} last={}", tc.fpid, state.optLong("last", 0L));
+            return null;
+        }
+        AssetSnapshot.QueueMarch cand = intelChooseGatherToRecall(marches, ownUid);
+        if (cand == null) return null;
+        String proto = cand.state == 3L ? "req_world_march_off_work" : "req_world_march_recall";
+        int code;
+        try {
+            GameMessage rsp = tc.engine.request(proto, Exec.args("id", cand.id));
+            code = Exec.codeOf(rsp);
+        } catch (Throwable t) {
+            FileLog.warn("intel 采集让位召回异常 fpid={} marchId={}：{}",
+                    tc.fpid, cand.id, String.valueOf(t.getMessage()));
+            return null;
+        }
+        if (code == 0 || code == INTEL_ERR_MARCH_GONE) {
+            markIntelPreempt(tc, nowMillis);
+            long remain = cand.endTime > 0L ? Math.max(0L,
+                    queueMarchEndMillis(cand) / 1000L - nowSec) : 0L;
+            FileLog.info("intel 采集让位 fpid={} 召回 marchId={} type={} state={} code={} 剩余采集≈{}s"
+                            + "（采集 {}→{} 队）",
+                    tc.fpid, cand.id, cand.type, cand.state, code, remain,
+                    gatherCount, gatherCount - 1);
+            return "已召回 1 个采集队列为情报腾位（采集" + gatherCount + "→" + (gatherCount - 1)
+                    + " 队，不会全部召回）";
+        }
+        FileLog.warn("intel 采集让位失败 fpid={} marchId={} state={} code={}",
+                tc.fpid, cand.id, cand.state, code);
+        return null;
     }
 
     /** 合并情报事件推送（info 全量 / events 增量）：以事件实例 id 归并。 */
@@ -2495,28 +2840,36 @@ public final class ServerFieldTasks {
         return Math.max(0, Math.min(cfg, cap));
     }
 
-    // ---------- 情报普通队列语义（P0 2026-10-28：营救不占普通队列 / 狩猎类才占） ----------
-    // 基准：网页版 DailyIntelligenceService.consumesNormalWorldMarchSlot:614-616
-    //   → type!=2 && isWorldMarch(type)；planActions:452-525
-    //   → activeNormalMarches=count(301|302)，remaining=clamp(effectiveQueueCount-active,0,world.idle())。
-    // 生产现象：普通队列被采集/狩猎占满时，旧实现「所有世界行军一律要 freeSlots」导致营救照发、
-    // 怪物永不发（用户反馈“情报只会做营救类”）。修复后营救不检查也不扣普通队列，狩猎类按真实空闲排队。
+    // ---------- 情报普通队列语义（2026-10-31 用户规则 2：只有狩猎占普通行军队列） ----------
+    // 用户口径：情报三种类型——狩猎/营救/英雄之旅；**除狩猎外不需要行军队列**。
+    //   狩猎(1)/活动巨兽(11)/冒险巨兽(100) → req_world_march type=302，占普通队列；
+    //   营救(2) → req_world_march type=301（特殊队列），不占普通队列；
+    //   英雄之旅(3) → start/end_battle（PVE），不需要队列。
+    // 生产根因（2026-10-31 用户反馈“情报一天没打过”）：旧实现把在途 **301 营救**也计入 active
+    // 普通队列占用；默认 queue_count=1 时只要有一队营救在途，`remainingNormalSlots=0`，
+    // 真正“打”的狩猎(302)永远派不出 → 全天只做营救/领奖。修复：普通 active 只数 302。
 
     /** 情报普通队列门控快照。 */
     static final class IntelQueueSnapshot {
         /** 普通行军队列容量（marchCapacity 口径，未再与配置取小）。 */
         final int capacity;
-        /** 在途情报行军（type=301/302，网页版 activeIntelligenceMarchCount）。 */
+        /** 在途情报行军合计（301+302；仅诊断/旧键兼容，不参与普通队列扣减）。 */
         final int activeIntelligenceMarches;
+        /** 在途普通情报行军（type=302 狩猎类，唯一参与普通队列扣减的口径）。 */
+        final int activeNormalIntelMarches;
+        /** 在途特殊情报行军（type=301 营救，不占普通队列）。 */
+        final int activeSpecialIntelMarches;
         /** 是否拿到真实普通队列空闲（资产库 Queue.idle；false=只扣在途情报的兜底口径）。 */
         final boolean queueIdleKnown;
         /** 普通队列真实空闲（32 位保护性 clamp，≥0）。 */
         final int normalIdle;
 
-        IntelQueueSnapshot(int capacity, int activeIntelligenceMarches,
-                           boolean queueIdleKnown, int normalIdle) {
+        IntelQueueSnapshot(int capacity, int activeNormalIntelMarches,
+                           int activeSpecialIntelMarches, boolean queueIdleKnown, int normalIdle) {
             this.capacity = Math.max(0, capacity);
-            this.activeIntelligenceMarches = Math.max(0, activeIntelligenceMarches);
+            this.activeNormalIntelMarches = Math.max(0, activeNormalIntelMarches);
+            this.activeSpecialIntelMarches = Math.max(0, activeSpecialIntelMarches);
+            this.activeIntelligenceMarches = this.activeNormalIntelMarches + this.activeSpecialIntelMarches;
             this.queueIdleKnown = queueIdleKnown;
             this.normalIdle = Math.max(0, normalIdle);
         }
@@ -2528,12 +2881,13 @@ public final class ServerFieldTasks {
      *   <li>资产库优先：{@code AssetSnapshot.Queue} 的 capacity/occupied/idle 已按网页版口径算好
      *       （301 等特殊队列不计普通占用，pending 也扣除），idle 与网页版 world.idle() 同义；</li>
      *   <li>未接线/未 READY/容量未知：回退 {@code req_world_march_detail_4_player_situation}
-     *       只统计在途情报，空闲未知时按「容量 - 在途情报」口径（老口径，不会因采集占满而卡死营救）。</li>
+     *       分别统计 302（普通）与 301（特殊），空闲未知时按「容量 - 在途 302」口径。</li>
      * </ul>
      */
     static IntelQueueSnapshot intelQueueSnapshot(WjdrEngine engine) {
         int capacity = 0;
-        int active = 0;
+        int activeNormal = 0;
+        int activeSpecial = 0;
         int normalIdle = 0;
         boolean idleKnown = false;
         if (engine != null && assetReadsEnabled()) {
@@ -2546,7 +2900,9 @@ public final class ServerFieldTasks {
                         normalIdle = q.idle;
                         idleKnown = true;
                         for (AssetSnapshot.QueueMarch march : q.marches) {
-                            if (march != null && (march.type == 301L || march.type == 302L)) active++;
+                            if (march == null) continue;
+                            if (march.type == 302L) activeNormal++;
+                            else if (march.type == 301L) activeSpecial++;
                         }
                     }
                 }
@@ -2556,27 +2912,28 @@ public final class ServerFieldTasks {
         }
         if (capacity <= 0) capacity = engine == null ? 0 : marchCapacity(engine);
         if (!idleKnown) {
-            active = engine == null ? 0 : countIntelMarches(engine);
-            normalIdle = Math.max(0, capacity - active);
+            int[] split = engine == null ? new int[]{0, 0} : countIntelMarchesByType(engine);
+            activeNormal = split[0];
+            activeSpecial = split[1];
+            normalIdle = Math.max(0, capacity - activeNormal);
         }
-        return new IntelQueueSnapshot(capacity, active, idleKnown, normalIdle);
+        return new IntelQueueSnapshot(capacity, activeNormal, activeSpecial, idleKnown, normalIdle);
     }
 
-    /** 是否消耗普通世界行军队列（1:1 网页版 consumesNormalWorldMarchSlot）：
-     *  营救(type=2) 不占普通队列，怪物(1)/活动巨兽(11)/冒险巨兽(100) 才占。 */
+    /** 是否消耗普通世界行军队列（用户规则 2）：只有狩猎类（1/11/100）；营救(2)/英雄之旅(3) 不占。 */
     static boolean intelConsumesNormalMarchSlot(int type) {
-        return type != 2 && intelIsWorldMarch(type);
+        return type == 1 || type == 11 || type == 100;
     }
 
-    /** 普通队列可派情报数 = clamp(min(队列配置, 世界容量) - 在途情报, 0, 世界空闲)（网页版 planActions:461-463）。 */
-    static int intelRemainingNormalSlots(int allowedSlots, int activeIntelligenceMarches, int worldIdle) {
-        int slots = Math.max(0, allowedSlots - Math.max(0, activeIntelligenceMarches));
+    /** 普通队列可派情报数 = clamp(min(队列配置, 世界容量) - 在途普通情报(302), 0, 世界空闲)。 */
+    static int intelRemainingNormalSlots(int allowedSlots, int activeNormalIntelMarches, int worldIdle) {
+        int slots = Math.max(0, allowedSlots - Math.max(0, activeNormalIntelMarches));
         return Math.max(0, Math.min(slots, Math.max(0, worldIdle)));
     }
 
-    /** 同上，但世界空闲未知时的兜底口径：只扣在途情报（保持旧行为，不因采集占满而误判队列满）。 */
-    static int intelRemainingNormalSlots(int allowedSlots, int activeIntelligenceMarches) {
-        return Math.max(0, allowedSlots - Math.max(0, activeIntelligenceMarches));
+    /** 同上，但世界空闲未知时的兜底口径：只扣在途普通情报(302)。 */
+    static int intelRemainingNormalSlots(int allowedSlots, int activeNormalIntelMarches) {
+        return Math.max(0, allowedSlots - Math.max(0, activeNormalIntelMarches));
     }
 
     /** 派队门控结果：可派。 */
@@ -2792,21 +3149,24 @@ public final class ServerFieldTasks {
     }
 
     /**
-     * 当前情报行军数（type=301/302 合计）：1:1 网页版 activeIntelligenceMarchCount
-     * （DailyIntelligenceService.java:926-928）。与 countMarches 同协议，
-     * 但一次查询统计两种类型（gather 用的 countMarches 保持不动，避免回退采集修复）。
+     * 当前情报行军数拆分：{@code [普通(302 狩猎), 特殊(301 营救)]}。
+     *
+     * <p>用户规则 2：只有狩猎占普通行军队列；营救走 301 特殊队列、不占普通队列。
+     * 资产库优先（push 维护），未接线时回退 {@code req_world_march_detail_4_player_situation} 单次查询。
      */
-    private static int countIntelMarches(WjdrEngine engine) {
-        // 资产库优先：type=301/302 在途行军数（push 维护，替代生产恒 code=2 的查询）
+    static int[] countIntelMarchesByType(WjdrEngine engine) {
+        int[] out = new int[]{0, 0};
+        if (engine == null) return out;
         if (assetReadsEnabled()) {
             try {
                 CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
-                if (lib != null && lib.ready()) {
-                    int n = 0;
+                if (lib != null && lib.ready() && lib.queue() != null) {
                     for (AssetSnapshot.QueueMarch march : lib.queue().marches) {
-                        if (march != null && (march.type == 301L || march.type == 302L)) n++;
+                        if (march == null) continue;
+                        if (march.type == 302L) out[0]++;
+                        else if (march.type == 301L) out[1]++;
                     }
-                    return n;
+                    return out;
                 }
             } catch (Throwable ignored) {
             }
@@ -2816,21 +3176,21 @@ public final class ServerFieldTasks {
             args.put("owner", engine.lastUid());
             args.put("kid", engine.lastServerId());
             GameMessage rsp = engine.request("req_world_march_detail_4_player_situation", args);
-            if (rsp == null || rsp.getContent() == null) return 0;
+            if (rsp == null || rsp.getContent() == null) return out;
             Object code = rsp.getContent().get("code");
-            if (code != null && Exec.longOf(code) != 0) return 0;
+            if (code != null && Exec.longOf(code) != 0) return out;
             Map<String, Object> detail = Exec.mapOf(rsp.getContent().get("detail"));
-            int n = 0;
             for (String k : new String[]{"marchs", "march_list", "list", "marches"}) {
                 for (Map<String, Object> march : Exec.mapsOf(detail == null ? null : detail.get(k))) {
                     long t = Exec.longOf(march.get("type"));
-                    if (t == 301L || t == 302L) n++;
+                    if (t == 302L) out[0]++;
+                    else if (t == 301L) out[1]++;
                 }
-                if (n > 0) break;
+                if (out[0] + out[1] > 0) break;
             }
-            return n;
+            return out;
         } catch (Throwable ignored) {
-            return 0;
+            return out;
         }
     }
 

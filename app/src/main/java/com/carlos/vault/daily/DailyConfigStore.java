@@ -37,7 +37,9 @@ public class DailyConfigStore {
      */
     private long currentUid(String fpid) {
         try {
-            return RoleStore.activeRoleUid(context, fpid);
+            // Phase2C 修复（2026-10-30）：鲁棒解析（active 复合键 → home:current_role），
+            // 避免同服双角色时因旧 active 键只记 sid 而取到另一个角色的 uid（开关串写）。
+            return RoleStore.currentRoleUid(context, fpid);
         } catch (Throwable t) {
             return 0L;
         }

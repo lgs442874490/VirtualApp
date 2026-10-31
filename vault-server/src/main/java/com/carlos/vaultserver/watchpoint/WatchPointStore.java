@@ -98,6 +98,10 @@ public final class WatchPointStore {
     public long protectIntervalMs = 25000L;
     /** 常态请求限速（req/s），整图扫描突发不受此限。 */
     public double maxReqPerSec = 2.5d;
+    /** 批次 Q2：多角色协同（同账号同 kid 的在线角色分摊监视/保护/扫描；env off 可强制单角色）。 */
+    public boolean multiRole = true;
+    /** 批次 Q1：整图扫描超时（毫秒；默认 60000，超时后按已回包数据收尾但不做告警判定）。 */
+    public long scanTimeoutMs = 60_000L;
     /** 是否走企业微信（还需 vault.json watch.webhookUrl 非空）。只发告警，不发汇总。 */
     public boolean wecomEnabled = true;
     /** 可选：定期整图基线刷新间隔（毫秒；0=关闭，只在迁城事件触发）。 */
@@ -124,7 +128,343 @@ public final class WatchPointStore {
     /** 受保护的友盟聚集地（熊坑）。 */
     public List<Rect> protectRects = new ArrayList<>();
 
+    // ---------------- 配置 API（批次 B 2026-10-30）：校验/快照/写回 ----------------
+
+    /** 数量/长度上限（fail-closed：超限直接拒绝，不裁剪成“看似成功”）。 */
+    public static final int MAX_TARGETS = 100;
+    public static final int MAX_RECTS = 100;
+    public static final int MAX_ALERT_TYPES = 32;
+    public static final int MAX_FRIEND_AIDS = 200;
+    public static final int MAX_TEXT = 64;
+    /** 地图坐标有效范围（含端点；与引擎/网页版地图一致）。 */
+    public static final int MAP_MIN = 0;
+    public static final int MAP_MAX = 1200;
+    /** 单个查询/保护矩形最大跨度（x/y 各自）。 */
+    public static final int MAX_RECT_SPAN = 55;
+    /** 告警 type 合理上限（1=侦查 … 102=集结主体；留余量给未来类型）。 */
+    public static final long MAX_ALERT_TYPE = 99_999L;
+
+    /** 配置快照（API get 返回；脱敏/裁剪大字段，线程安全）。 */
+    public synchronized JSONObject snapshotJson() {
+        ensureLoaded();
+        JSONObject o = new JSONObject();
+        o.put("enabled", enabled);
+        o.put("envEnabled", envEnabled());
+        o.put("kid", kid);
+        o.put("fpid", fpid == null ? "" : fpid);
+        o.put("monitorIntervalMs", monitorIntervalMs);
+        o.put("protectIntervalMs", protectIntervalMs);
+        o.put("maxReqPerSec", maxReqPerSec);
+        o.put("multiRole", multiRole);
+        o.put("scanTimeoutMs", scanTimeoutMs);
+        o.put("wecomEnabled", wecomEnabled);
+        o.put("fullScanIntervalMs", fullScanIntervalMs);
+        o.put("cityTargetOnly", cityTargetOnly);
+        o.put("incomingRallyFollowerAlerts", incomingRallyFollowerAlerts);
+        JSONArray at = new JSONArray();
+        int n = 0;
+        for (Long t : alertTypes) {
+            if (n++ >= MAX_ALERT_TYPES) break;
+            at.put(t);
+        }
+        o.put("alertTypes", at);
+        JSONArray fa = new JSONArray();
+        n = 0;
+        for (Long a : friendAids) {
+            if (n++ >= MAX_FRIEND_AIDS) break;
+            fa.put(a);
+        }
+        o.put("friendAids", fa);
+        JSONObject al = new JSONObject();
+        n = 0;
+        for (Map.Entry<Long, String> e : aidLabels.entrySet()) {
+            if (n++ >= MAX_FRIEND_AIDS) break;
+            al.put(String.valueOf(e.getKey()), clip(e.getValue(), 16));
+        }
+        o.put("aidLabels", al);
+        JSONArray mt = new JSONArray();
+        for (int i = 0; i < monitorTargets.size() && i < MAX_TARGETS; i++) {
+            Target t = monitorTargets.get(i);
+            mt.put(new JSONObject().put("uid", t.uid).put("nick", clip(t.nick, MAX_TEXT))
+                    .put("x", t.x).put("y", t.y));
+        }
+        o.put("monitorTargets", mt);
+        JSONArray pr = new JSONArray();
+        for (int i = 0; i < protectRects.size() && i < MAX_RECTS; i++) {
+            Rect r = protectRects.get(i);
+            pr.put(new JSONObject().put("name", clip(r.name, MAX_TEXT)).put("x1", r.x1)
+                    .put("y1", r.y1).put("x2", r.x2).put("y2", r.y2));
+        }
+        o.put("protectRects", pr);
+        o.put("updatedAt", updatedAt());
+        return o;
+    }
+
+    /** 文件最近修改时间（毫秒；无文件=0）。 */
+    public synchronized long updatedAt() {
+        try {
+            return Files.isRegularFile(file) ? Files.getLastModifiedTime(file).toMillis() : 0L;
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    /**
+     * 整体应用一份配置（API set）：**先全量校验，任何一条非法都拒绝且不落盘**（fail-closed），
+     * 校验通过后才赋值 + 原子写 + 备份 {@code watchpoint.json.bak}。
+     *
+     * <p>字段缺省 = 保留当前值；显式给空数组 = 拒绝（引擎启动要求至少 1 目标/1 矩形，避免误清空）；
+     * 字段既接受原生 JSONArray/JSONObject，也接受 App 下发的 JSON 字符串（HMAC 扁平标量约定）。
+     *
+     * @return null=成功；非空=中文错误（调用方转业务码，旧文件保持不变）
+     */
+    public synchronized String applyConfig(JSONObject in) {
+        if (in == null) return "配置为空";
+        ensureLoaded();
+        try {
+            boolean nEnabled = in.has("enabled") ? in.optBoolean("enabled", enabled) : enabled;
+            long nKid = in.has("kid") ? in.optLong("kid", kid) : kid;
+            if (nKid <= 0) return "区服 kid 必须大于 0";
+            String nFpid = in.has("fpid") ? in.optString("fpid", "").trim() : fpid;
+            if (nFpid.length() > MAX_TEXT) return "账号 fpid 过长";
+            long nMonitorMs = in.has("monitorIntervalMs")
+                    ? in.optLong("monitorIntervalMs", monitorIntervalMs) : monitorIntervalMs;
+            long nProtectMs = in.has("protectIntervalMs")
+                    ? in.optLong("protectIntervalMs", protectIntervalMs) : protectIntervalMs;
+            long nFullScan = in.has("fullScanIntervalMs")
+                    ? in.optLong("fullScanIntervalMs", fullScanIntervalMs) : fullScanIntervalMs;
+            double nRate = in.has("maxReqPerSec")
+                    ? optDouble(in.get("maxReqPerSec"), maxReqPerSec) : maxReqPerSec;
+            if (nMonitorMs < 1000L || nMonitorMs > 300_000L) return "监视间隔须在 1000~300000ms";
+            if (nProtectMs < 3000L || nProtectMs > 3_600_000L) return "保护间隔须在 3000~3600000ms";
+            if (nFullScan < 0L || nFullScan > 86_400_000L) return "整图扫描间隔须在 0~86400000ms";
+            if (nRate < 0.2d || nRate > 30d) return "限速须在 0.2~30 req/s";
+            boolean nMulti = in.has("multiRole") ? in.optBoolean("multiRole", multiRole) : multiRole;
+            long nScanTimeout = in.has("scanTimeoutMs")
+                    ? in.optLong("scanTimeoutMs", scanTimeoutMs) : scanTimeoutMs;
+            if (nScanTimeout < 5_000L || nScanTimeout > 300_000L) {
+                return "扫描超时须在 5000~300000ms";
+            }
+            boolean nWecom = in.has("wecomEnabled") ? in.optBoolean("wecomEnabled", wecomEnabled) : wecomEnabled;
+            boolean nCityOnly = in.has("cityTargetOnly") ? in.optBoolean("cityTargetOnly", cityTargetOnly)
+                    : cityTargetOnly;
+            boolean nRallyFollower = in.has("incomingRallyFollowerAlerts")
+                    ? in.optBoolean("incomingRallyFollowerAlerts", incomingRallyFollowerAlerts)
+                    : incomingRallyFollowerAlerts;
+
+            Set<Long> nAlertTypes = in.has("alertTypes")
+                    ? parseIds(in.get("alertTypes"), "告警类型") : new LinkedHashSet<>(alertTypes);
+            if (nAlertTypes.isEmpty()) return "告警类型不能为空";
+            if (nAlertTypes.size() > MAX_ALERT_TYPES) return "告警类型过多（>" + MAX_ALERT_TYPES + "）";
+            for (Long t : nAlertTypes) {
+                String err = validateAlertType(t);
+                if (err != null) return err;
+            }
+            Set<Long> nFriends = in.has("friendAids")
+                    ? parseIds(in.get("friendAids"), "友盟 aid") : new LinkedHashSet<>(friendAids);
+            if (nFriends.size() > MAX_FRIEND_AIDS) return "友盟 aid 过多（>" + MAX_FRIEND_AIDS + "）";
+            for (Long a : nFriends) {
+                String err = validateFriendAid(a);
+                if (err != null) return err;
+            }
+            Map<Long, String> nLabels = in.has("aidLabels")
+                    ? parseAidLabels(in.get("aidLabels")) : new LinkedHashMap<>(aidLabels);
+            List<Target> nTargets = in.has("monitorTargets")
+                    ? parseTargets(in.get("monitorTargets")) : new ArrayList<>(monitorTargets);
+            List<Rect> nRects = in.has("protectRects")
+                    ? parseRects(in.get("protectRects")) : new ArrayList<>(protectRects);
+            if (nTargets.isEmpty()) return "监视目标不能为空（至少 1 个）";
+            if (nTargets.size() > MAX_TARGETS) return "监视目标过多（>" + MAX_TARGETS + "）";
+            Set<Long> uids = new LinkedHashSet<>();
+            for (Target t : nTargets) {
+                String err = validateTarget(t.uid, t.nick, t.x, t.y);
+                if (err != null) return err;
+                if (!uids.add(t.uid)) return "监视目标 uid 重复: " + t.uid;
+            }
+            if (nRects.isEmpty()) return "保护矩形不能为空（至少 1 个）";
+            if (nRects.size() > MAX_RECTS) return "保护矩形过多（>" + MAX_RECTS + "）";
+            for (Rect r : nRects) {
+                String err = validateRect(r.name, r.x1, r.y1, r.x2, r.y2);
+                if (err != null) return err;
+            }
+
+            // ---- 校验全部通过后才提交（fail-closed：此前任何 return 均未改内存/文件） ----
+            enabled = nEnabled;
+            kid = nKid;
+            fpid = nFpid;
+            monitorIntervalMs = nMonitorMs;
+            protectIntervalMs = nProtectMs;
+            fullScanIntervalMs = nFullScan;
+            maxReqPerSec = nRate;
+            multiRole = nMulti;
+            scanTimeoutMs = nScanTimeout;
+            wecomEnabled = nWecom;
+            cityTargetOnly = nCityOnly;
+            incomingRallyFollowerAlerts = nRallyFollower;
+            alertTypes = nAlertTypes;
+            friendAids = nFriends;
+            aidLabels = nLabels;
+            monitorTargets = nTargets;
+            protectRects = nRects;
+            save();
+            return null;
+        } catch (Throwable t) {
+            return "配置解析失败：" + (t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
+        }
+    }
+
+    /** 只改开关（API enable/disable）；写盘+备份，其余字段不变。 */
+    public synchronized void setEnabled(boolean on) {
+        enabled = on;
+        save();
+    }
+
+    // ---------------- schema 校验纯函数（包内/单测可见） ----------------
+
+    public static String validateAlertType(long type) {
+        if (type <= 0L || type > MAX_ALERT_TYPE) return "告警类型非法: " + type;
+        return null;
+    }
+
+    public static String validateFriendAid(long aid) {
+        if (aid <= 0L) return "友盟 aid 必须大于 0: " + aid;
+        return null;
+    }
+
+    public static String validateTarget(long uid, String nick, int x, int y) {
+        if (uid <= 0L) return "监视目标 uid 必须大于 0: " + uid;
+        if (nick != null && nick.length() > MAX_TEXT) return "监视目标昵称过长（>" + MAX_TEXT + "）";
+        String err = validateCoord(x);
+        if (err != null) return "监视目标 x " + err;
+        err = validateCoord(y);
+        if (err != null) return "监视目标 y " + err;
+        return null;
+    }
+
+    public static String validateRect(String name, int x1, int y1, int x2, int y2) {
+        if (name != null && name.length() > MAX_TEXT) return "保护矩形名称过长（>" + MAX_TEXT + "）";
+        String err = validateCoord(x1);
+        if (err != null) return "保护矩形 x1 " + err;
+        err = validateCoord(y1);
+        if (err != null) return "保护矩形 y1 " + err;
+        err = validateCoord(x2);
+        if (err != null) return "保护矩形 x2 " + err;
+        err = validateCoord(y2);
+        if (err != null) return "保护矩形 y2 " + err;
+        if (x2 <= x1 || y2 <= y1) return "保护矩形须满足 x2>x1 且 y2>y1: " + name;
+        if (x2 - x1 > MAX_RECT_SPAN || y2 - y1 > MAX_RECT_SPAN) {
+            return "保护矩形跨度超过 " + MAX_RECT_SPAN + ": " + name;
+        }
+        return null;
+    }
+
+    public static String validateCoord(int v) {
+        if (v < MAP_MIN || v > MAP_MAX) return "坐标超出范围 " + MAP_MIN + "~" + MAP_MAX + ": " + v;
+        return null;
+    }
+
+    // ---------------- 解析辅助（接受 JSON 字符串/数组；App 扁平标量约定） ----------------
+
+    static List<Target> parseTargets(Object raw) {
+        List<Target> out = new ArrayList<>();
+        JSONArray arr = asArray(raw);
+        if (arr == null) throw new IllegalArgumentException("monitorTargets 须为 JSON 数组");
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o == null) throw new IllegalArgumentException("monitorTargets[" + i + "] 须为对象");
+            Target t = new Target(o.optLong("uid"), clip(o.optString("nick", ""), MAX_TEXT),
+                    o.optInt("x"), o.optInt("y"));
+            out.add(t);
+        }
+        return out;
+    }
+
+    static List<Rect> parseRects(Object raw) {
+        List<Rect> out = new ArrayList<>();
+        JSONArray arr = asArray(raw);
+        if (arr == null) throw new IllegalArgumentException("protectRects 须为 JSON 数组");
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o == null) throw new IllegalArgumentException("protectRects[" + i + "] 须为对象");
+            out.add(new Rect(clip(o.optString("name", ""), MAX_TEXT), o.optInt("x1"),
+                    o.optInt("y1"), o.optInt("x2"), o.optInt("y2")));
+        }
+        return out;
+    }
+
+    /** 支持 JSON 数组字符串、JSONArray、或 "1,2,99" 逗号串。 */
+    static Set<Long> parseIds(Object raw, String label) {
+        Set<Long> out = new LinkedHashSet<>();
+        if (raw == null) return out;
+        if (raw instanceof JSONArray) {
+            JSONArray arr = (JSONArray) raw;
+            for (int i = 0; i < arr.length(); i++) out.add(arr.optLong(i));
+            return out;
+        }
+        String text = String.valueOf(raw).trim();
+        if (text.isEmpty()) return out;
+        if (text.startsWith("[")) {
+            JSONArray arr = new JSONArray(text);
+            for (int i = 0; i < arr.length(); i++) out.add(arr.optLong(i));
+            return out;
+        }
+        for (String part : text.split(",")) {
+            String v = part.trim();
+            if (v.isEmpty()) continue;
+            try {
+                out.add(Long.parseLong(v));
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException(label + " 含非法数字: " + v);
+            }
+        }
+        return out;
+    }
+
+    static Map<Long, String> parseAidLabels(Object raw) {
+        Map<Long, String> out = new LinkedHashMap<>();
+        Object v = raw;
+        if (v instanceof String && !((String) v).trim().startsWith("{")) return out;
+        JSONObject o;
+        if (v instanceof JSONObject) o = (JSONObject) v;
+        else if (v instanceof String) o = new JSONObject((String) v);
+        else return out;
+        for (String k : o.keySet()) {
+            try {
+                long aid = Long.parseLong(k.trim());
+                if (aid > 0) out.put(aid, clip(o.optString(k, ""), 16));
+            } catch (Throwable ignored) {
+            }
+        }
+        return out;
+    }
+
+    private static JSONArray asArray(Object raw) {
+        if (raw instanceof JSONArray) return (JSONArray) raw;
+        if (raw instanceof String) {
+            String text = ((String) raw).trim();
+            if (text.isEmpty()) return new JSONArray();
+            return new JSONArray(text);
+        }
+        return null;
+    }
+
+    static double optDouble(Object v, double def) {
+        if (v instanceof Number) return ((Number) v).doubleValue();
+        try {
+            return Double.parseDouble(String.valueOf(v).trim());
+        } catch (Throwable t) {
+            return def;
+        }
+    }
+
+    static String clip(String s, int max) {
+        if (s == null) return "";
+        return s.length() <= max ? s : s.substring(0, max);
+    }
+
     private final Path file;
+    /** 是否已从磁盘载入（API 首次访问时惰性 load，见 {@link #ensureLoaded()}）。 */
+    private volatile boolean loaded;
 
     public WatchPointStore(Path dataDir) {
         this.file = dataDir.resolve("watchpoint.json");
@@ -141,6 +481,11 @@ public final class WatchPointStore {
         return "on".equalsIgnoreCase(v) || "true".equalsIgnoreCase(v) || "1".equals(v);
     }
 
+    /** API 首次访问时确保已载入（引擎未启动/未启用时也能读写配置）。 */
+    public synchronized void ensureLoaded() {
+        if (!loaded) load();
+    }
+
     /** 载入配置；文件不存在时写入默认（K888 实扫结果）并落盘。 */
     public synchronized void load() {
         try {
@@ -148,6 +493,7 @@ public final class WatchPointStore {
             if (!Files.isRegularFile(file)) {
                 seedDefaults();
                 saveLocked();
+                loaded = true;
                 return;
             }
             JSONObject o = new JSONObject(new String(Files.readAllBytes(file), StandardCharsets.UTF_8));
@@ -157,6 +503,8 @@ public final class WatchPointStore {
             monitorIntervalMs = clamp(o.optLong("monitorIntervalMs", 4000L), 1000L, 300_000L);
             protectIntervalMs = clamp(o.optLong("protectIntervalMs", 25000L), 3000L, 3_600_000L);
             maxReqPerSec = clampDouble(o.optDouble("maxReqPerSec", 2.5d), 0.2d, 30d);
+            multiRole = o.optBoolean("multiRole", true);
+            scanTimeoutMs = clamp(o.optLong("scanTimeoutMs", 60_000L), 5_000L, 300_000L);
             wecomEnabled = o.optBoolean("wecomEnabled", true);
             fullScanIntervalMs = clamp(o.optLong("fullScanIntervalMs", 0L), 0L, 86_400_000L);
             cityTargetOnly = o.optBoolean("cityTargetOnly", true);
@@ -207,8 +555,10 @@ public final class WatchPointStore {
                 seedDefaults();
                 saveLocked();
             }
+            loaded = true;
         } catch (Throwable t) {
             seedDefaults();
+            loaded = true;
         }
     }
 
@@ -229,6 +579,8 @@ public final class WatchPointStore {
         o.put("monitorIntervalMs", monitorIntervalMs);
         o.put("protectIntervalMs", protectIntervalMs);
         o.put("maxReqPerSec", maxReqPerSec);
+        o.put("multiRole", multiRole);
+        o.put("scanTimeoutMs", scanTimeoutMs);
         o.put("wecomEnabled", wecomEnabled);
         o.put("fullScanIntervalMs", fullScanIntervalMs);
         o.put("cityTargetOnly", cityTargetOnly);
@@ -253,6 +605,14 @@ public final class WatchPointStore {
                     .put("x2", r.x2).put("y2", r.y2));
         }
         o.put("protectRects", pr);
+        // 批次 B：写前保留一份 .bak（仅当旧文件存在；备份失败不影响主流程）
+        try {
+            if (Files.isRegularFile(file)) {
+                Files.copy(file, file.resolveSibling(file.getFileName() + ".bak"),
+                        StandardCopyOption.REPLACE_EXISTING);
+            }
+        } catch (Throwable ignored) {
+        }
         Path tmp = file.resolveSibling(file.getFileName() + ".tmp");
         Files.write(tmp, o.toString(2).getBytes(StandardCharsets.UTF_8));
         try {

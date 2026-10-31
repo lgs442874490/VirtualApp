@@ -2,6 +2,7 @@ package com.carlos.vaultserver;
 
 import com.carlos.vault.daily.guardian.ThreatBoard;
 import com.carlos.vault.daily.guardian.WarState;
+import com.carlos.vaultserver.guardian.GuardianWar;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.asset.AssetSnapshot;
 import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
@@ -63,6 +64,20 @@ public final class ServerWarState {
     private final Map<Long, Long> extremeLock = new ConcurrentHashMap<>();
     /** 服务器侧压缩计数：owner → 次数（≥3 触发锁存）。 */
     private final Map<Long, Integer> compressCount = new ConcurrentHashMap<>();
+
+    // ---------------- 批次 J（2026-10-31 用户长期规则第 3 条）：守护战争态 ----------------
+    /** 是否启用守护战争态（守护实盘 enabled&&!dry_run 且未被 VAULT_GUARDIAN_WAR=off 回滚）。 */
+    private volatile boolean guardianWarEnabled;
+    /** 侦查（type=1）即入战争态；false=侦查只降级预警（进攻类仍按 H 触发入战时）。 */
+    private volatile boolean guardianWarOnScout = true;
+    /** 战争态立即召回全部 type=4 采集队列。 */
+    private volatile boolean guardianWarRecallGather = true;
+    /** 战争态暂停占队日常任务（{@link GuardianWar#QUEUE_TASKS}）。 */
+    private volatile boolean guardianWarPauseQueueTasks = true;
+    /** 无在途敌方行军持续该时长 → 自动退出战争态（默认 60s）。 */
+    private volatile long guardianWarExitIdleMs = GuardianWar.DEFAULT_EXIT_IDLE_SEC * 1000L;
+    /** 本次「无在途威胁」起始时刻（epoch millis；0=有在途/未计时）。 */
+    private volatile long noThreatSinceMs;
 
     private ServerWarState(String fpid, long sid, long uid) {
         this.fpid = fpid;
@@ -277,11 +292,29 @@ public final class ServerWarState {
         configure(acc, sid, 0L);
     }
 
-    /** Phase 2B：按角色 uid 热载 p:war.*（roleParamsByUid 优先，回退旧 sid 参数）。 */
+    /**
+     * Phase 2B：按角色 uid 热载 p:war.*（roleParamsByUid 优先，回退旧 sid 参数）。
+     *
+     * <p>批次 J（2026-10-31）：同时热载守护战争态配置（{@code roleParams.guardian.war_*}）。
+     * 守护实盘开启时，侦查即入战争态（war_on_scout 默认 true）作为 H0 硬触发的服务端口径：
+     * 强制 {@code auto=true}（用户长期规则第 3 条要求「一旦有人来侦查即进入战争态」）。
+     */
     public static void configure(VaultStore.Account acc, long sid, long uid) {
         ServerWarState w = REGISTRY.get(key(acc == null ? "" : acc.fpid, sid, uid));
         if (w == null) return;
-        w.core.configure(configOf(acc, sid, uid));
+        WarState.Config c = configOf(acc, sid, uid);
+        GuardianWar.Settings gs = GuardianWar.resolve(acc, sid, uid);
+        w.guardianWarEnabled = gs.enabled;
+        w.guardianWarOnScout = gs.onScout;
+        w.guardianWarRecallGather = gs.recallGather;
+        w.guardianWarPauseQueueTasks = gs.pauseQueueTasks;
+        w.guardianWarExitIdleMs = Math.max(5_000L, gs.exitIdleSec * 1000L);
+        if (gs.enabled) {
+            // 守护战争态以「侦查即入」为准（war_on_scout=false 时退回软信号/仅进攻类 H 触发）。
+            c.auto = true;
+            c.scoutHard = gs.onScout;
+        }
+        w.core.configure(c);
     }
 
     /** 挂引擎消息钩子（推送线程只解析入账；幂等由引擎 hook 容器保证）。 */
@@ -306,8 +339,8 @@ public final class ServerWarState {
             "notify_world_situation_info_add",
             "notify_world_situation_info_up");
 
-    /** 钩子入口（包可见供单测直接驱动）。 */
-    void onPush(String proto, Map<String, Object> content, long ownUidNow) {
+    /** 钩子入口（包可见/跨包单测直接驱动；生产由 {@link #attach} 挂到引擎消息钩子）。 */
+    public void onPush(String proto, Map<String, Object> content, long ownUidNow) {
         if (content == null || proto == null) return;
         boolean alliance = ALLIANCE_PROTOS.contains(proto);
         if (!alliance && !WORLD_PROTOS.contains(proto)) return;
@@ -459,6 +492,82 @@ public final class ServerWarState {
     /** 退出判定/持续提醒（1s 节拍调用，内部有状态短路，开销可忽略）。 */
     public void tick(long now) {
         core.tick(now);
+        tickGuardianWar(now);
+    }
+
+    // ---------------- 批次 J：守护战争态（侦查触发/无在途自动退出） ----------------
+
+    /**
+     * 守护战争态退出判定：无任何在途敌方行军指向我方/盟友持续
+     * {@code war_exit_idle_sec}（默认 60s）→ 退出 WARTIME 恢复日常。
+     *
+     * <p>与既有「全敌静默 quiet_exit（默认 30min）」并行：本判定更短、由守护战争态专用，
+     * 复用 {@link WarState#forceWartime(boolean, String, long)} 的非人工解除路径（不产生 manualLock）。
+     * 人工锁定期间不自动退出。
+     */
+    private void tickGuardianWar(long now) {
+        if (!guardianWarEnabled || !core.wartime() || core.manualLocked()) {
+            noThreatSinceMs = 0L;
+            return;
+        }
+        if (hasInFlightThreat(now)) {
+            noThreatSinceMs = 0L;
+            return;
+        }
+        if (noThreatSinceMs == 0L) {
+            noThreatSinceMs = now;
+            return;
+        }
+        long idleMs = Math.max(5_000L, guardianWarExitIdleMs);
+        if (now - noThreatSinceMs >= idleMs) {
+            String detail = "无在途敌方威胁 ≥" + (idleMs / 1000L) + "s（守护战争态自动退出）";
+            noThreatSinceMs = 0L;
+            core.forceWartime(false, detail, now);
+            FileLog.info("战争态退出 fpid={} sid={} uid={} 原因={}", fpid, String.valueOf(sid),
+                    String.valueOf(uid), detail);
+        }
+    }
+
+    /** 是否仍有在途敌方行军（进攻在途表 + 已入账侦查/进攻行军的 endtime 未到）。 */
+    private boolean hasInFlightThreat(long nowMs) {
+        if (core.inFlightAttacks() > 0) return true;
+        long nowS = nowMs / 1000L;
+        for (long[] v : tracked.values()) {
+            if (v != null && v[2] > nowS) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 该角色当前是否处于「守护战争态」（供采集/守护引擎/任务闸查询；false=未启用或不在战时）。
+     */
+    public static boolean guardianWarActive(String fpid, long sid, long uid) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
+        return w != null && w.guardianWarEnabled && w.core.wartime();
+    }
+
+    /** 该角色是否启用了守护战争态（不论当前是否在战时；配置/测试用）。 */
+    public static boolean guardianWarEnabled(String fpid, long sid, long uid) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
+        return w != null && w.guardianWarEnabled;
+    }
+
+    /** 当前战争态进入原因（H0 侦查即入 / H1 战斗确认…；未在战时返回空串）。 */
+    public static String guardianWarTrigger(String fpid, long sid, long uid) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
+        if (w == null || !w.core.wartime()) return "";
+        WarState.Trigger t = w.core.reason();
+        return t == null ? "?" : t.name() + "(" + t.text + ")";
+    }
+
+    /** 守护战争态配置摘要（诊断/测试）。 */
+    public static String guardianWarSummary(String fpid, long sid, long uid) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
+        if (w == null) return "";
+        return "enabled=" + w.guardianWarEnabled + " on_scout=" + w.guardianWarOnScout
+                + " exit_idle=" + (w.guardianWarExitIdleMs / 1000L) + "s"
+                + " recall_gather=" + w.guardianWarRecallGather
+                + " pause_queue_tasks=" + w.guardianWarPauseQueueTasks;
     }
 
     // ---------------- 战时任务闸（E1 对等） ----------------
@@ -478,6 +587,12 @@ public final class ServerWarState {
         if (w == null) return null;
         WarState core = w.core;
         if (core.wartime()) {
+            // 批次 J（守护战争态）：占队任务清单显式暂停（即使被用户加进 war.allowlist 也停，
+            // 保证行军队列全部留给对盟友驻防；gather 另在任务入口直接停派）。
+            if (w.guardianWarEnabled && w.guardianWarPauseQueueTasks
+                    && taskId != null && GuardianWar.QUEUE_TASKS.contains(taskId)) {
+                return "战时暂停（占队任务，队列全部留给守护驻防）：" + taskId;
+            }
             return core.dailyTaskGated(taskId)
                     ? "战时暂停（" + reasonText(core) + "；war.allowlist 外任务）" : null;
         }
@@ -510,6 +625,19 @@ public final class ServerWarState {
     public static boolean wartimeYield(String fpid, long sid, long uid) {
         ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
         return w != null && w.core.wartime();
+    }
+
+    /**
+     * 按任务粒度判断战时让位（G7，2026-10-31 用户口径）：守护战争态只暂停「占队任务」，
+     * 其它任务（邮件/补给/活动等）照常；非守护触发的战争态保持旧口径（整角色让位）。
+     */
+    public static boolean wartimeYield(String fpid, long sid, long uid, String fnId) {
+        ServerWarState w = REGISTRY.get(key(fpid, sid, uid));
+        if (w == null || !w.core.wartime()) return false;
+        if (guardianWarActive(fpid, sid, uid)) {
+            return com.carlos.vaultserver.guardian.GuardianWar.isQueueTask(fnId);
+        }
+        return true;
     }
 
     /** 账号级聚合让位：该账号任一角色处于战争态 → true（运维/旧调度兼容，保留）。 */

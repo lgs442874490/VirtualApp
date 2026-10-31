@@ -88,6 +88,8 @@ public final class FeatureGate {
         // 守护盟友：T3 高阶（批次11 用户确认放开 UI）。服务端 ServerGuardianEngine/Launcher 已上线：
         // 默认 enabled=false + dry_run=true（演练模式只记录不派兵），App 配置页显式切换实发（二次确认）。
         GUARDIAN("guardian", TIER_PREMIUM, true, false, "守护盟友"),
+        // 观察点（批次 B 2026-10-30）：工具箱内可视化编辑服务器 watchpoint.json（API get/set/enable）。
+        WATCHPOINT("watchpoint", TIER_PREMIUM, true, false, "观察点"),
 
         // ===== T3 高级会员：尚未实现（即使 T3 也隐藏，立项完成后再打开） =====
         MOVE_CITY("move_city", TIER_PREMIUM, false, false, "迁城"),
@@ -289,6 +291,7 @@ public final class FeatureGate {
         int n = 0;
         if (visible(Feature.ENEMY_WATCH, tier, debugBuild)) n++;
         if (visible(Feature.DEV_MONITOR, tier, debugBuild)) n++;
+        if (visible(Feature.WATCHPOINT, tier, debugBuild)) n++;
         if (visible(Feature.PROTOCOL_LOGGER, tier, debugBuild)) n++;
         return n;
     }

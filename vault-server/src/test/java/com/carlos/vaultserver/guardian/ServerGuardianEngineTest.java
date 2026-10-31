@@ -54,6 +54,8 @@ public class ServerGuardianEngineTest {
     private static final class TestEngine extends WjdrEngine {
         final Map<String, Map<String, Object>> notifies = new HashMap<>();
         final Map<String, GameMessage> responses = new HashMap<>();
+        /** 批次 D：同一 proto 的连续响应队列（多发追赶需要逐发不同 endtime）。 */
+        final Map<String, java.util.Deque<GameMessage>> queues = new HashMap<>();
         final List<String> requested = new ArrayList<>();
         final List<Map<String, Object>> argLog = new ArrayList<>();
         boolean online = true;
@@ -108,6 +110,8 @@ public class ServerGuardianEngineTest {
         public GameMessage request(String proto, Map<String, Object> args, int timeoutSec) {
             requested.add(proto);
             argLog.add(args);
+            java.util.Deque<GameMessage> q = queues.get(proto);
+            if (q != null && !q.isEmpty()) return q.pollFirst();
             return responses.get(proto);
         }
     }
@@ -126,14 +130,30 @@ public class ServerGuardianEngineTest {
         a.token = "tk";
         a.auto = true;
         a.activeSid = String.valueOf(SID);
-        if (guardianJson != null) {
+        String effective = legacyTimingOff(guardianJson);
+        if (effective != null) {
             Map<String, String> params = new LinkedHashMap<>();
-            params.put(ServerGuardianEngine.FN_ID, guardianJson);
+            params.put(ServerGuardianEngine.FN_ID, effective);
             a.roleParams.put(String.valueOf(SID), params);
         }
         List<VaultStore.Account> in = new ArrayList<>();
         in.add(a);
         vault.replaceAll(in);
+    }
+
+    /**
+     * 本类用例写在批次 C-A3 之前，默认按“推送后立即发射”断言；统一注入 timing=false 保持原断言语义。
+     * 卡秒默认开/重排/自愈/取消等新行为由 GuardianTimingTest 覆盖。
+     */
+    private static String legacyTimingOff(String guardianJson) {
+        if (guardianJson == null || guardianJson.trim().isEmpty()) return guardianJson;
+        try {
+            JSONObject p = new JSONObject(guardianJson);
+            if (!p.has("timing")) p.put("timing", false);
+            return p.toString();
+        } catch (Throwable ignored) {
+            return guardianJson;
+        }
     }
 
     private ServerGuardianEngine engine() {
@@ -291,7 +311,8 @@ public class ServerGuardianEngineTest {
             System.setProperty("VAULT_GUARDIAN_DIAMOND", "on");
             ServerGuardianEngine.Config gray = ServerGuardianEngine.parseConfig(p);
             assertTrue("env 灰度开启对等加速", gray.speedupEnabled);
-            assertTrue("env 灰度开启钻石（慎用）", gray.diamondSpeedupEnabled);
+            assertFalse("批次 K：env=1 不再强制开钻石，以用户 params 为准", gray.diamondSpeedupEnabled);
+            assertFalse("env=1 不是硬关", gray.diamondHardOff);
 
             // 无 roleParams 时也能靠 env 实盘开启（目标由 push 自动解析，无需配置盟友/坐标）
             System.setProperty("VAULT_GUARDIAN_ENABLED", "1");
@@ -301,6 +322,14 @@ public class ServerGuardianEngineTest {
             assertTrue("env 实盘：无 roleParams 也可开守护", live.enabled);
             assertFalse("env 实盘：dry_run=0", live.dryRun);
             assertEquals("env 兵力档位", 50000L, live.troopsMin);
+
+            // 批次 K：env=0/off 是全局硬关（忽略用户开关）
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "0");
+            ServerGuardianEngine.Config hard = ServerGuardianEngine.parseConfig(new JSONObject(
+                    "{\"sub\":{\"enabled\":true,\"diamond_speedup_enabled\":true}}"));
+            assertFalse("env=0 → 硬关，用户开也不生效", hard.diamondSpeedupEnabled);
+            assertTrue("env=0 → diamond_hard_off 诊断字段", hard.diamondHardOff);
+            assertTrue(hard.describe().contains("diamond_hard_off=true"));
 
             System.setProperty("VAULT_GUARDIAN_TROOPS_MIN", "abc");
             ServerGuardianEngine.Config badTroops = ServerGuardianEngine.parseConfig(null);
@@ -615,10 +644,15 @@ public class ServerGuardianEngineTest {
 
         assertFalse("type=1 侦查不驻防",
                 ServerGuardianEngine.decide(threat(2L, 1L, 1001L, end, 674, 684), cfg, now).hit);
-        assertFalse("已过期（ETA<=0）拒绝",
+        // 批次 D（用户口径）：ETA 太近/刚落地不再直接放弃 → 落地 60s 内仍补驻防
+        assertTrue("已落地 5s（-5s）仍补驻防",
                 ServerGuardianEngine.decide(threat(3L, 2L, 1001L, now / 1000L - 5, 674, 684), cfg, now).hit);
-        assertFalse("ETA<3s 过近拒绝（P0 追不上）",
+        assertTrue("ETA 1s（加速压秒）仍尽量驻防",
                 ServerGuardianEngine.decide(threat(4L, 2L, 1001L, now / 1000L + 1, 674, 684), cfg, now).hit);
+        assertFalse("已落地 >60s 不再补驻防",
+                ServerGuardianEngine.decide(threat(6L, 2L, 1001L, now / 1000L - 61, 674, 684), cfg, now).hit);
+        assertFalse("已落地 90s 拒绝",
+                ServerGuardianEngine.decide(threat(7L, 2L, 1001L, now / 1000L - 90, 674, 684), cfg, now).hit);
         assertFalse("非白名单盟友拒绝",
                 ServerGuardianEngine.decide(threat(5L, 2L, 2002L, end, 674, 684), cfg, now).hit);
 
@@ -759,7 +793,7 @@ public class ServerGuardianEngineTest {
 
     @Test
     public void enabled_launchesType5AndRecordsMission() {
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1090,7 +1124,8 @@ public class ServerGuardianEngineTest {
     }
 
     private static final String SPEEDUP_CFG =
-            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true},"
+            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true,"
+                    + "\"catch_up\":false},"   // 批次 D：本组用例只测 P1 压缩对等加速，关闭追赶
                     + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}";
 
     /** 发射一单 type=5 驻防（enemyEnd 已入威胁表、mission 已在册）。 */
@@ -1118,7 +1153,8 @@ public class ServerGuardianEngineTest {
         assertTrue(def.describe().contains("diamond_max=3"));
 
         ServerGuardianEngine.Config on = ServerGuardianEngine.parseConfig(new JSONObject(
-                "{\"sub\":{\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                "{\"sub\":{\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                         + "\"strategy\":{\"speedup_margin_s\":3,\"max_speedups_per_march\":4,"
                         + "\"diamond_max_per_march\":5}}"));
         assertTrue(on.speedupEnabled);
@@ -1151,8 +1187,8 @@ public class ServerGuardianEngineTest {
 
     @Test
     public void speedupDisabled_compressionNoSpeedupRequest() {
-        // 默认 speedup_enabled=false：即使敌加速、道具充足，也必须零加速请求（零行为变化）
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
+        // speedup_enabled=false 且 catch_up=false（批次 D 旧行为）：即使敌加速、道具充足，也必须零加速请求
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1268,7 +1304,8 @@ public class ServerGuardianEngineTest {
     public void diamondSwitchOn_buysThenUses50Percent() {
         // 开关打开 + 道具 0 + 购买成功：请求序列必须是 quick_buy(301901,count=1) → speedup(301901)
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
-                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1311,7 +1348,8 @@ public class ServerGuardianEngineTest {
     @Test
     public void diamondBuyFailure_terminatesChainWithoutSpeedup() {
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
-                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1342,7 +1380,8 @@ public class ServerGuardianEngineTest {
     public void diamondMaxPerMarch_one_stopsBeforeSecondBuy() {
         // 一颗 50% 不足以先到（我方 120s vs 敌 10s）：第一次购买后使用，第二次需要购买时止损不超买
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
-                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]},"
                 + "\"diamond_max_per_march\":1}}");
         TestEngine e = new TestEngine();
@@ -1374,7 +1413,8 @@ public class ServerGuardianEngineTest {
     public void diamondSwitchOn_25PercentPreferred_noBuy() {
         // 有 25% 道具时优先 25%（成本优先），绝不触发钻石购买
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
-                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true},"
+                + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
@@ -1400,7 +1440,8 @@ public class ServerGuardianEngineTest {
 
     @Test
     public void speedupMaxPerMarch_capsRequests() {
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true},"
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"speedup_enabled\":true,"
+                + "\"catch_up\":false},"
                 + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]},"
                 + "\"max_speedups_per_march\":1}}");
         TestEngine e = new TestEngine();
@@ -1801,5 +1842,490 @@ public class ServerGuardianEngineTest {
         assertEquals("显式 hero_ids 保持原行为", 2, heroes.size());
         assertTrue(heroes.contains(50002L) && heroes.contains(50003L));
         assertFalse("显式路径不混入 AUTO 最强英雄", heroes.contains(50001L));
+    }
+
+    // ================= 批次 C A4：防守战报判定（只记账/告警，绝不撤防） =================
+
+    /** notify_new_mail_syn 最小样本（mail_cover_info 形状，与 WarNotify 解析口径一致）。 */
+    private static Map<String, Object> mailPush(long first, long second, long mailId, String title) {
+        Map<String, Object> cover = new LinkedHashMap<>();
+        cover.put("first_type", first);
+        cover.put("second_type", second);
+        cover.put("mailid_new", mailId);
+        cover.put("title", title);
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("mail_cover_info", cover);
+        return c;
+    }
+
+    private int ledgerEventCount(String event) {
+        String raw = state.getString(ServerGuardianEngine.ledgerKey(FPID, SID));
+        if (raw == null) return 0;
+        JSONArray arr;
+        try {
+            arr = new JSONArray(raw);
+        } catch (Throwable t) {
+            return 0;
+        }
+        int n = 0;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o != null && event.equals(o.optString("ev", ""))) n++;
+        }
+        return n;
+    }
+
+    @Test
+    public void mailReport_winLossUnknown_recordedWithoutMissionChanges() {
+        accountWithParams("{\"sub\":{\"enabled\":true},\"strategy\":{\"dry_run\":true}}");
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine engine = engine();
+        int missionsBefore = engine.missionCount();
+        int threatsBefore = engine.threatCount();
+
+        // 胜：first=30 second=5 → report_win
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9001L, "防守胜利"));
+        assertEquals("胜战报记 report_win", 1, ledgerEventCount("report_win"));
+        assertTrue(ledgerEventCount("report_loss") == 0);
+
+        // 败：first=30 second=6 → report_loss + mod 文案
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 6L, 9002L, "防守失败"));
+        assertEquals("败战报记 report_loss", 1, ledgerEventCount("report_loss"));
+        String mod = state.getString(ServerGuardianEngine.modKey(FPID, SID));
+        assertNotNull("败战报应写 mod 文案", mod);
+        assertTrue("mod 应含“防守战报：败”", mod.contains("防守战报：败"));
+
+        // 未收录：second=1 → report_unknown，且每分钟最多 1 条（连续两条只计 1）
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 1L, 9003L, "未校准"));
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 1L, 9004L, "未校准2"));
+        assertEquals("未收录码每分钟最多 1 条 ledger", 1, ledgerEventCount("report_unknown"));
+
+        // 非战报 first（16=普通邮件）忽略
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(16L, 5L, 9005L, "其它邮件"));
+        assertEquals("非战报 first 不记 report_win", 1, ledgerEventCount("report_win"));
+        assertEquals(0, ledgerEventCount("report_loss") - 1);
+
+        // 铁律：战报只记账——不撤防、不改 missions、不发任何游戏协议
+        assertEquals("战报不得改变 missions", missionsBefore, engine.missionCount());
+        assertEquals("战报不得改变威胁表", threatsBefore, engine.threatCount());
+        assertTrue("战报不得发任何游戏协议（撤防/召回/加速）", e.requested.isEmpty());
+    }
+
+    @Test
+    public void mailReport_reportCodesOverride_turnsWinIntoUnknown() {
+        JSONObject strategy = new JSONObject();
+        strategy.put("dry_run", true);
+        JSONObject byFirst = new JSONObject();
+        byFirst.put("30", new JSONObject().put("5", "unknown"));
+        strategy.put("report_codes", new JSONObject().put("by_first", byFirst).toString());
+        JSONObject guardian = new JSONObject();
+        guardian.put("sub", new JSONObject().put("enabled", true));
+        guardian.put("strategy", strategy);
+        accountWithParams(guardian.toString());
+
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine engine = engine();
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9101L, "校准为未知"));
+        assertEquals("params 覆盖：已校准未知 → 不判胜", 0, ledgerEventCount("report_win"));
+        assertEquals(1, ledgerEventCount("report_unknown"));
+        assertEquals(0, engine.missionCount());
+        assertTrue(e.requested.isEmpty());
+    }
+
+    @Test
+    public void mailReport_duplicateMailId_deduped() {
+        accountWithParams("{\"sub\":{\"enabled\":true},\"strategy\":{\"dry_run\":true}}");
+        TestEngine e = new TestEngine();
+        ServerGuardianEngine engine = engine();
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9201L, "重复"));
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL, mailPush(30L, 5L, 9201L, "重复"));
+        assertEquals("同 mailId 重复推送只记 1 次", 1, ledgerEventCount("report_win"));
+    }
+
+    // =======================================================================
+    // 批次 D：追赶加速（catch-up，2026-10-31）
+    // 核心口径：驻防成功优先；我方晚到就主动追到先到；卡秒只是省道具。
+    // =======================================================================
+
+    /** 追赶默认开；仅 formation/ally 配置，不依赖 speedup_enabled/P1。 */
+    private static final String CATCHUP_CFG =
+            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":true},"
+                    + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}";
+
+    private static final String CATCHUP_CFG_OFF =
+            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":false},"
+                    + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}";
+
+    /** 等待追赶链跑完（轮次有 250ms 间隔；同时等 guardExec 队列清空）。 */
+    private void awaitCatchup(ServerGuardianEngine engine, long timeoutMs) {
+        long end = System.currentTimeMillis() + timeoutMs;
+        while (System.currentTimeMillis() < end) {
+            engine.awaitIdleForTest(200);
+            if (engine.catchupCount() == 0) return;
+            try {
+                Thread.sleep(20L);
+            } catch (InterruptedException ignored) {
+                return;
+            }
+        }
+    }
+
+    @Test
+    public void parseConfig_catchupKeys_defaultOn_cappedAndEnvOff() {
+        ServerGuardianEngine.Config def = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"sub\":{\"enabled\":true}}"));
+        assertTrue("catch_up 默认开（核心是驻防成功）", def.catchUp);
+        assertEquals("catch_up_margin_s 默认 2s", 2L, def.catchUpMarginS);
+        assertEquals("catch_up_max_rounds 默认 20", 20, def.catchUpMaxRounds);
+        assertTrue(def.describe().contains("catch_up=true"));
+
+        ServerGuardianEngine.Config off = ServerGuardianEngine.parseConfig(new JSONObject(
+                "{\"sub\":{\"catch_up\":false},"
+                        + "\"strategy\":{\"catch_up_margin_s\":3,\"catch_up_max_rounds\":5}}"));
+        assertFalse(off.catchUp);
+        assertEquals(3L, off.catchUpMarginS);
+        assertEquals(5, off.catchUpMaxRounds);
+
+        ServerGuardianEngine.Config capped = ServerGuardianEngine.parseConfig(
+                new JSONObject("{\"catch_up_max_rounds\":\"999\"}"));
+        assertEquals("轮数硬上限 100（防配置笔误风暴）", 100, capped.catchUpMaxRounds);
+
+        System.setProperty("VAULT_GUARDIAN_CATCHUP", "off");
+        try {
+            assertFalse("env off 可回旧行为",
+                    ServerGuardianEngine.parseConfig(new JSONObject("{\"sub\":{\"enabled\":true}}")).catchUp);
+        } finally {
+            System.clearProperty("VAULT_GUARDIAN_CATCHUP");
+        }
+    }
+
+    @Test
+    public void catchup_lateLaunch_oneShotReachesAhead_withLedger() {
+        accountWithParams(CATCHUP_CFG);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 10);
+        long nowS = System.currentTimeMillis() / 1000L;
+        // 我方 130s vs 敌 120s（晚 10s）→ 一发 25% 后 ~97.5s，先到
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+        assertEquals("驻防已在册", 1, engine.missionCount());
+
+        awaitCatchup(engine, 3_000L);
+
+        assertEquals("只发 1 发即先到（25% 够用不升 50%）", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        Map<String, Object> args = lastArgsOf(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP);
+        assertNotNull(args);
+        assertEquals(555L, ((Number) args.get("id")).longValue());
+        assertEquals(301900L, ((Number) args.get("itemid")).longValue());
+        assertEquals("默认零钻石", 0, requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+
+        JSONObject start = ledgerEvent("catchup_start");
+        assertNotNull("必须有 catchup_start 账本", start);
+        assertTrue("start note 含我方/敌方 end 与晚到差",
+                start.optString("note").contains("我方 end=130")
+                        && start.optString("note").contains("敌 end=120")
+                        || start.optString("note").contains("晚 10s"));
+        JSONObject round = ledgerEvent("catchup_round");
+        assertNotNull("必须有 catchup_round 账本", round);
+        assertTrue("round note 含 before/after/结果", round.optString("note").contains("追赶第1发"));
+        JSONObject done = ledgerEvent("catchup_done");
+        assertNotNull("先到必须记 catchup_done", done);
+        assertTrue(done.optString("note").contains("追赶成功"));
+        assertEquals("追赶链已结束", 0, engine.catchupCount());
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_noItem_giveupNoItem_zeroRequests() {
+        accountWithParams(CATCHUP_CFG);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 0, 0);          // 道具耗尽
+        long nowS = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+
+        awaitCatchup(engine, 2_000L);
+
+        assertEquals("无道具 → 零加速请求", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        assertEquals("钻石默认关 → 零 quick_buy", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+        JSONObject giveup = ledgerEvent("catchup_giveup");
+        assertNotNull(giveup);
+        assertTrue("原因应为 no_item：" + giveup.optString("note"),
+                giveup.optString("note").contains("no_item"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_disabled_zeroRequestsOldBehavior() {
+        accountWithParams(CATCHUP_CFG_OFF);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 10);
+        long nowS = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+
+        awaitCatchup(engine, 1_000L);
+
+        assertEquals("catch_up=false → 零加速请求（旧行为）", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        assertNull("不产生 catchup_start", ledgerEvent("catchup_start"));
+        assertEquals(0, engine.catchupCount());
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_enemyLandedOver30s_noCatchup() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        assertTrue("敌已落地 40s → 过期", ServerGuardianEngine.catchupExpired(nowS - 40L, nowS));
+        assertFalse("敌落地 10s → 仍在宽限", ServerGuardianEngine.catchupExpired(nowS - 10L, nowS));
+        assertFalse("无 endtime → 不判过期", ServerGuardianEngine.catchupExpired(0L, nowS));
+
+        // 先以 catch_up=false 发射（避免 0ms 首轮先跑掉），再把敌 end 推到过去并开启追赶触发
+        accountWithParams(CATCHUP_CFG_OFF);
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 10);
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+        assertEquals(1, engine.missionCount());
+
+        accountWithParams(CATCHUP_CFG);
+        engine.reloadConfig(true);
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
+                attackPush(13080L, ENEMY_UID, 1001L, nowS - 40L, 679, 686));
+        engine.awaitIdleForTest(1_000L);
+
+        assertEquals("敌已落地 >30s → 不追（零加速请求）", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        assertEquals(0, engine.catchupCount());
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_maxRounds_giveupRounds() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]},"
+                + "\"catch_up_max_rounds\":2}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 10, 10);
+        long nowS = System.currentTimeMillis() / 1000L;
+        // 两发都只前移到「仍晚」：130→129→128（敌 120，margin 2 → 需 ≤118）
+        java.util.Deque<GameMessage> q = new java.util.ArrayDeque<>();
+        q.add(speedupOk(nowS + 129L));
+        q.add(speedupOk(nowS + 128L));
+        e.queues.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, q);
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+
+        awaitCatchup(engine, 3_000L);
+
+        assertEquals("max_rounds=2 → 最多 2 发", 2,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        JSONObject giveup = ledgerEvent("catchup_giveup");
+        assertNotNull(giveup);
+        assertTrue("原因应为 rounds：" + giveup.optString("note"),
+                giveup.optString("note").contains("rounds"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void catchup_diamondEnabled_buysThenUses50Percent() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":true,"
+                + "\"diamond_speedup_enabled\":true},"
+                + "\"strategy\":{\"ally_uid\":1001,\"formation\":{\"hero_ids\":[1]}}}");
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        presetSpeedupStock(e, 0, 0);
+        long nowS = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, msg(0));
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 95L));
+        ServerGuardianEngine engine = launchForSpeedup(e, nowS + 120L, nowS + 130L);
+
+        awaitCatchup(engine, 3_000L);
+
+        List<String> seq = new ArrayList<>();
+        for (String p : e.requested) {
+            if (ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY.equals(p)
+                    || ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP.equals(p)) seq.add(p);
+        }
+        assertEquals("钻石路径=先买后加速；实际=" + seq, 2, seq.size());
+        assertEquals(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, seq.get(0));
+        assertEquals(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, seq.get(1));
+        Map<String, Object> buyArgs = lastArgsOf(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY);
+        assertNotNull(buyArgs);
+        assertEquals("批次 K：优先买 25% 道具 301900", 301900L,
+                ((Number) buyArgs.get("id")).longValue());
+        Map<String, Object> sp = lastArgsOf(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP);
+        assertNotNull(sp);
+        assertEquals("买入 301900 立即使用", 301900L, ((Number) sp.get("itemid")).longValue());
+        JSONObject buy = ledgerEvent("speedup_diamond_buy");
+        assertNotNull(buy);
+        assertEquals("catchup", buy.getString("reason"));
+        assertEquals(301900L, buy.getLong("itemid"));
+        assertNotNull(ledgerEvent("catchup_done"));
+        engine.shutdown();
+    }
+
+    // =======================================================================
+    // 批次 K：钻石加速用户开关 + 25%/50% 经济换算
+    // =======================================================================
+
+    @Test
+    public void parseConfig_diamondHardOffSemantics() {
+        try {
+            System.clearProperty("VAULT_GUARDIAN_DIAMOND");
+            ServerGuardianEngine.Config userOn = ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"diamond_speedup_enabled\":true}}"));
+            assertTrue("未设 env：用户开=生效", userOn.diamondSpeedupEnabled);
+            assertFalse(userOn.diamondHardOff);
+
+            ServerGuardianEngine.Config userOff = ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"enabled\":true}}"));
+            assertFalse("未设 env：用户关=关（默认）", userOff.diamondSpeedupEnabled);
+
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "1");
+            assertFalse("env=1 不强制开（以用户为准）", ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"enabled\":true}}")).diamondSpeedupEnabled);
+            assertTrue("env=1 + 用户开 → 生效", ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"diamond_speedup_enabled\":true}}"))
+                    .diamondSpeedupEnabled);
+
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "0");
+            ServerGuardianEngine.Config hard = ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"diamond_speedup_enabled\":true}}"));
+            assertFalse("env=0 → 硬关（忽略用户开）", hard.diamondSpeedupEnabled);
+            assertTrue(hard.diamondHardOff);
+            assertTrue(hard.describe().contains("diamond_hard_off=true"));
+
+            System.setProperty("VAULT_GUARDIAN_DIAMOND", "off");
+            assertTrue(ServerGuardianEngine.parseConfig(
+                    new JSONObject("{\"sub\":{\"diamond_speedup_enabled\":true}}")).diamondHardOff);
+        } finally {
+            System.clearProperty("VAULT_GUARDIAN_DIAMOND");
+        }
+    }
+
+    @Test
+    public void burstMode_thresholds() {
+        assertFalse(ServerGuardianEngine.burstMode(3, 4));
+        assertTrue("1s 内 ≥4 次 → 梭哈", ServerGuardianEngine.burstMode(4, 4));
+        assertTrue("累计 >4 次 → 梭哈", ServerGuardianEngine.burstMode(0, 5));
+        assertFalse(ServerGuardianEngine.burstMode(0, 4));
+    }
+
+    @Test
+    public void pickSpeedupStep_25PreferredAndStacked() {
+        long margin = 2_000L;
+        // 130s vs 120s：一发 25% 后 ≈97.5s，先到 → 25% 优先
+        GuardianSpeedupPlanner.Step s1 = ServerGuardianEngine.pickSpeedupStep(
+                130_000L, 120_000L, 10, 10, 0, 0, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.USE_25, s1.action);
+        assertEquals(301900L, s1.itemId);
+
+        // 200s vs 100s：2 发 25%（≈112.5s→84.4s）可达；50% 库存也有，仍应选 25%
+        GuardianSpeedupPlanner.Step s2 = ServerGuardianEngine.pickSpeedupStep(
+                200_000L, 100_000L, 10, 10, 0, 0, 0, 0, 0, false, margin);
+        assertEquals("2×25% 更便宜，不升 50%", GuardianSpeedupPlanner.Action.USE_25, s2.action);
+    }
+
+    @Test
+    public void pickSpeedupStep_burstForces25EvenWhenUpgradeWouldBeUsed() {
+        long margin = 2_000L;
+        // 无 25% 库存时普通 planner 会用 50%；梭哈模式有 25% 就必须连续 25%
+        GuardianSpeedupPlanner.Step normal = GuardianSpeedupPlanner.next(
+                new GuardianSpeedupPlanner.Input(2_000_000L, 100_000L, margin, 0, 10,
+                        0, 0, 0, false));
+        assertEquals(GuardianSpeedupPlanner.Action.USE_50, normal.action);
+
+        GuardianSpeedupPlanner.Step burst = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 10, 10, 4, 4, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.USE_25, burst.action);
+        assertEquals("burst_25", burst.reasonCode);
+
+        // 累计 >4 也触发（1s 窗口 0 次）
+        GuardianSpeedupPlanner.Step cum = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 10, 10, 0, 5, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.USE_25, cum.action);
+
+        // 梭哈无 25 有 50 → 用 50
+        GuardianSpeedupPlanner.Step use50 = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 0, 10, 4, 4, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.USE_50, use50.action);
+
+        // 梭哈无道具：钻石开→NEED_DIAMOND；钻石关→诚实止损
+        GuardianSpeedupPlanner.Step needDia = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 0, 0, 4, 4, 0, 0, 0, true, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NEED_DIAMOND, needDia.action);
+        GuardianSpeedupPlanner.Step none = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 0, 0, 4, 4, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NONE, none.action);
+        assertEquals("stock_insufficient", none.reasonCode);
+
+        // 上限优先于梭哈
+        GuardianSpeedupPlanner.Step limit = ServerGuardianEngine.pickSpeedupStep(
+                2_000_000L, 100_000L, 10, 0, 4, 4, 2, 2, 0, true, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NONE, limit.action);
+        assertEquals("burst_march_limit", limit.reasonCode);
+    }
+
+    @Test
+    public void diamondBuyItem_prefers25WhenReachableElse50() {
+        long margin = 2_000L;
+        GuardianSpeedupPlanner.Step need = ServerGuardianEngine.pickSpeedupStep(
+                130_000L, 120_000L, 0, 0, 0, 0, 0, 0, 0, true, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NEED_DIAMOND, need.action);
+        assertEquals("再买 1 颗 25% 可达 → 优先 301900", 301900L,
+                ServerGuardianEngine.diamondBuyItem(need, false, 130_000L, 120_000L,
+                        0, 0, 0, 0, 0, true, margin));
+
+        GuardianSpeedupPlanner.Step need50 = ServerGuardianEngine.pickSpeedupStep(
+                120_000L, 80_000L, 0, 0, 0, 0, 0, 0, 0, true, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NEED_DIAMOND, need50.action);
+        assertEquals("25% 不达 → 买 301901", 301901L,
+                ServerGuardianEngine.diamondBuyItem(need50, false, 120_000L, 80_000L,
+                        0, 0, 0, 0, 0, true, margin));
+        assertEquals("梭哈必买 301900", 301900L,
+                ServerGuardianEngine.diamondBuyItem(need50, true, 120_000L, 80_000L,
+                        0, 0, 0, 0, 0, true, margin));
+    }
+
+    @Test
+    public void recordEnemyCompression_countsBurstAndTotal() {
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false}}");
+        ServerGuardianEngine engine = engine();
+        long nowMs = System.currentTimeMillis();
+        long nowS = nowMs / 1000L;
+        // 4 次 −50% 压缩（endtime 剩余减半）→ 1s 窗口 4 次 + 累计 4
+        for (int i = 0; i < 4; i++) {
+            ServerGuardianEngine.Threat prev = new ServerGuardianEngine.Threat(
+                    9001L, 9L, 102L, 0L, 0, 0, false, nowS + 100L - i, nowMs);
+            ServerGuardianEngine.Threat cur = new ServerGuardianEngine.Threat(
+                    9001L, 9L, 102L, 0L, 0, 0, false, nowS + 50L - i, nowMs);
+            engine.recordEnemyCompression(prev, cur, nowMs);
+        }
+        assertEquals(4, engine.enemy50TotalFor(9001L));
+        assertEquals(4, engine.enemy50BurstCount(9001L, nowMs));
+        assertTrue(ServerGuardianEngine.burstMode(
+                engine.enemy50BurstCount(9001L, nowMs), engine.enemy50TotalFor(9001L)));
+
+        // 25% 压缩（剩余 ×0.75）不计入 50%
+        ServerGuardianEngine.Threat p2 = new ServerGuardianEngine.Threat(
+                9002L, 9L, 102L, 0L, 0, 0, false, nowS + 100L, nowMs);
+        ServerGuardianEngine.Threat c2 = new ServerGuardianEngine.Threat(
+                9002L, 9L, 102L, 0L, 0, 0, false, nowS + 75L, nowMs);
+        engine.recordEnemyCompression(p2, c2, nowMs);
+        assertEquals(0, engine.enemy50TotalFor(9002L));
     }
 }

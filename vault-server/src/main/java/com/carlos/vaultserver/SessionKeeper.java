@@ -125,9 +125,10 @@ public final class SessionKeeper implements SessionControl,
      * 角色级任务开关（Phase 1 2026-10-29；与 {@code TaskCadenceScheduler.enabledTaskIds} 同口径的轻量版）：
      * roleConfig 显式值优先，缺省回退任务目录默认。用于兄弟角色按角色跑联盟科技捐献前的门控。
      */
-    static boolean roleTaskEnabled(VaultStore.Account acc, long sid, String fn) {
+    static boolean roleTaskEnabled(VaultStore.Account acc, long sid, long uid, String fn) {
         if (acc == null || fn == null || fn.isEmpty()) return false;
-        Map<String, Boolean> cfg = acc.roleConfig.get(String.valueOf(sid));
+        // R2 Phase2C：uid 优先（角色独立开关）→ 旧 sid 默认 → 任务目录默认
+        Map<String, Boolean> cfg = VaultStore.roleConfigOf(acc, sid, uid);
         Boolean explicit = cfg == null ? null : cfg.get(fn);
         if (explicit != null) return explicit;
         ServerTasks.TaskDef def = ServerTasks.byId(fn);
@@ -1051,7 +1052,7 @@ public final class SessionKeeper implements SessionControl,
             if (acc == null || !acc.auto) return;            // 未开启自动：保持手动语义
             long sidNow = resolveSid();
             if (sidNow <= 0L) return;
-            if (!roleTaskEnabled(acc, sidNow, "alliance_donate")) return;
+            if (!roleTaskEnabled(acc, sidNow, roleUid, "alliance_donate")) return;
             if (SessionKeeper.this.wartimeYield(fpid)) return;   // P7 战时让位
             try {
                 TaskContext tc = new TaskContext(engine, fpid, sidNow, stateStore,
@@ -1440,6 +1441,13 @@ public final class SessionKeeper implements SessionControl,
             if (w != null) {
                 // Phase2B：按角色注销（不再误删兄弟角色实例）
                 ServerWarState.unregister(fpid, w.sid, roleUid > 0L ? roleUid : wantUid);
+            }
+            // 批次B：会话关闭 → 释放竞技场独占门（否则该角色其它任务最多被挡 30min 由 TTL 兜底）
+            try {
+                long gateSid = w != null ? w.sid : resolveSid();
+                long gateUid = roleUid > 0L ? roleUid : wantUid;
+                com.carlos.vaultserver.task.ArenaGate.clear(fpid, gateSid, gateUid);
+            } catch (Throwable ignored) {
             }
             try {
                 engine.close();
@@ -2379,6 +2387,12 @@ public final class SessionKeeper implements SessionControl,
     public boolean wartimeYield(RoleKey role) {
         if (role == null) return true;
         return ServerWarState.wartimeYield(role.fpid, role.sid, role.uid);
+    }
+
+    /** G7：按任务粒度让位（守护战争态只暂停占队任务）。 */
+    public boolean wartimeYield(RoleKey role, String fnId) {
+        if (role == null) return true;
+        return ServerWarState.wartimeYield(role.fpid, role.sid, role.uid, fnId);
     }
 
     /** 账号当前 active 角色会话 sid（无会话 0）。 */

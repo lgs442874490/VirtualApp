@@ -36,6 +36,8 @@ public final class Main {
 
         StateStore stateStore = new StateStore(config.dataDir);
         stateStore.load();
+        // 2026-10-30 批次 A：状态保留（st:<day> 默认保留 7 天；可用 VAULT_STATE_RETENTION=off 关闭）
+        StateRetention.start(stateStore);
 
         // 战争通知（敌人监视 + 企微机器人）：事件环形缓冲 + 推送中枢，接线会话与 API
         WatchEventStore watchEvents = new WatchEventStore(config.dataDir);
@@ -55,6 +57,8 @@ public final class Main {
                 new com.carlos.vaultserver.watchpoint.WatchPointEngine(
                         keeper, watchPointStore, store, new WeComNotifier());
         watchPoint.start();
+        // 2026-10-31：把观察点实例共享给守护盟友（按坐标反查城 uid/联盟、保护矩形判定）。
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.install(watchPoint);
 
         com.carlos.vaultserver.task.RoundScheduler scheduler =
                 new com.carlos.vaultserver.task.RoundScheduler(store, stateStore, keeper);
@@ -71,7 +75,9 @@ public final class Main {
                 new com.carlos.vaultserver.task.TaskCadenceScheduler(store, stateStore, keeper);
         cadence.start();
 
-        VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war);
+        // 批次 B：观察点配置端点（get/set/enable）——写 data/watchpoint.json，引擎按 mtime 5s 热载
+        VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war,
+                watchPointStore);
         api.start();
 
         // 每日自动化日报（批次5）：北京时间定点（默认 09:00，VAULT_DIGEST_TIME=HH:mm 覆盖）汇总近 24h

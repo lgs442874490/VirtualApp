@@ -359,11 +359,14 @@ public class FunctionActivity extends Activity {
         toggle = new UiStyle.Switch(this, autoOn,
                 () -> {
                     boolean isChecked = swRef[0].isOn();
+                    // Phase2C 修复（2026-10-30）：显式按当前角色 uid 读写，避免同服双角色时
+                    // 旧 active 键只记 sid → 解析到另一个角色、把开关串写到别的角色。
+                    long uidNow = RoleStore.currentRoleUid(FunctionActivity.this, account.fpid);
                     // 写入前先补齐为完整配置，避免稀疏 map 整包上传把其它开关冲掉
                     Map<String, Boolean> c = configStore.effectiveRoleConfig(
-                            account.fpid, serverid, DailyTasks.all());
+                            account.fpid, serverid, uidNow, DailyTasks.all());
                     c.put(fn.id, isChecked);
-                    configStore.saveRoleConfig(account.fpid, serverid, c);
+                    configStore.saveRoleConfig(account.fpid, serverid, uidNow, c);
                     com.carlos.vault.VaultSync.onAccountsChanged(FunctionActivity.this);
                     toast(isChecked ? "已加入自动化任务并同步服务器" : "已从自动化任务移除");
                 });
@@ -447,6 +450,14 @@ public class FunctionActivity extends Activity {
                 // 巨熊另需「发起队 + 上车编队 1-6」（每支可独立自动/指定）
                 scrollBox.addView(FormationPicker.buildBearJoinCard(
                         this, account.fpid, serverid, null));
+            }
+            if ("intel".equals(fn.id)) {
+                // 设计 §4.2（2026-10-31）：情报出征设置卡——三行英雄下拉（盾/矛/弓，
+                // 默认最强盾/波根/吉娜）+ 兵种比例（intel_ratio 10:10:80），写 intel_* params
+                // 由服务端 IntelFormationPlan 消费；位于通用「编队」摘要卡下方，其它功能页不受影响。
+                long intelUid = RoleStore.currentRoleUid(this, account.fpid);
+                scrollBox.addView(IntelFormationCard.build(this, account.fpid, serverid,
+                        intelUid > 0L ? String.valueOf(intelUid) : "", fn.id, null));
             }
         }
         // 批次11：守护盟友配置页（用户确认放开 UI）——只读状态卡 + 配置卡
@@ -1489,6 +1500,11 @@ public class FunctionActivity extends Activity {
                 + " · " + (cfg.dryRun ? "演练模式（只记录不派兵）" : "实发模式"));
         addKV(card, "触发策略", "强制上线=" + (cfg.forceOnline ? "开" : "关")
                 + " · 来袭兵力下限=" + (cfg.troopsMin > 0 ? String.valueOf(cfg.troopsMin) : "不限"));
+        addKV(card, "集结威胁阈值", cfg.rallyTroopsMin > 0
+                ? ("兵力 > " + cfg.rallyTroopsMin + " 视为威胁集结")
+                : "不限（0=不按兵力判定）");
+        addKV(card, "钻石加速", cfg.diamondSpeedup
+                ? "允许（真实花钻；先用道具，无道具才买）" : "关闭（零钻石，默认）");
         if (!cfg.enabled) addKV(card, "提示", "未启用：服务器不处理敌情（等待配置）");
         String last = mod.optString("last", "");
         long lastTs = mod.optLong("last_ts", 0);
@@ -1604,10 +1620,45 @@ public class FunctionActivity extends Activity {
         troopsTip.setPadding(0, dp(2), 0, 0);
         card.addView(troopsTip);
 
+        // ④.6 批次 K：集结兵力阈值（> 该兵力视为威胁集结并驻防）
+        final EditText rallyEt = numField("集结兵力阈值（默认 300000）", cfg.rallyTroopsMin);
+        card.addView(fieldRow("集结兵力阈值", rallyEt));
+        TextView rallyTip = new TextView(this);
+        rallyTip.setText("> 该兵力视为威胁集结并驻防（整数，0~10000000；默认 300000）。"
+                + "仅集结类威胁按此阈值判定，普通来袭仍按上面的兵力下限。");
+        rallyTip.setTextSize(10.5f);
+        rallyTip.setTextColor(UiStyle.INK2);
+        rallyTip.setPadding(0, dp(2), 0, 0);
+        card.addView(rallyTip);
+
+        // ④.7 批次 K：允许钻石加速（真实花钻；默认关，与 speedup_enabled 独立）
+        final UiStyle.Switch[] diamondRef = new UiStyle.Switch[1];
+        diamondRef[0] = new UiStyle.Switch(this, cfg.diamondSpeedup, () -> { });
+        card.addView(switchRow("允许钻石加速（真实花钻）",
+                "−25%≈400 钻/次 · −50%≈2000 钻/次；先用道具，没道具才买道具再加速"
+                        + "（1×50%≈2×25%，优先 25%）；关闭时零钻石消耗（默认关）",
+                diamondRef[0]));
+        TextView diamondTip = new TextView(this);
+        diamondTip.setText("道具库存/本场已花钻石见上方「守护盟友 · 状态」卡（服务器账本统计，最近 50 条）。"
+                + "服务端 env 硬关（VAULT_GUARDIAN_DIAMOND=0）时本开关不生效。");
+        diamondTip.setTextSize(10.5f);
+        diamondTip.setTextColor(UiStyle.INK2);
+        diamondTip.setPadding(0, dp(2), 0, 0);
+        card.addView(diamondTip);
+
         // ⑤ 保存（写 params.guardian；保留统一编队字段）
         TextView save = UiStyle.primaryBtn(this, "保存守护配置", () -> {
+            String rallyErr = FnParams.validateRallyTroopsMin(rallyEt.getText() == null
+                    ? "" : rallyEt.getText().toString());
+            if (rallyErr != null) {
+                toast(rallyErr);
+                return;
+            }
             FnParams.GuardianCfg next = FnParams.loadGuardianCfg(this, account.fpid, serverid);
             next.enabled = enRef[0].isOn();
+            next.diamondSpeedup = diamondRef[0].isOn();
+            next.rallyTroopsMin = FnParams.rallyTroopsMinOf(rallyEt.getText() == null
+                    ? "" : rallyEt.getText().toString());
             next.recall = recallRef[0].isOn();
             next.forceOnline = forceRef[0].isOn();
             next.troopsMin = numOf(troopsEt);

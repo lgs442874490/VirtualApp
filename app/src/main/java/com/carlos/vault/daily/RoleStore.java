@@ -445,6 +445,33 @@ public class RoleStore {
         return activeRoleEx(ctx, fpid).uid;
     }
 
+    /**
+     * 当前选中角色 uid 的**鲁棒解析**（R2 Phase2C 修复，2026-10-30）：
+     * ① {@link #activeRoleUid}；② 回退解析 {@code home:current_role} 复合键（{@code fpid:sid:uid}）；
+     * ③ 仍未知返回 0（调用方退旧键）。
+     *
+     * <p>为什么需要：生产实测（888 服双角色）角色选择器使用 {@code home:current_role}（带 uid），
+     * 而 {@code daily_roles:active:*} 可能仍是旧格式（只记 sid）；旧格式回退 {@code resolveUidForSid}
+     * 会取“第一个 enabled 角色”，同服双角色时可能命中另一个角色 → 开关写入错误角色/串写。
+     */
+    public static long currentRoleUid(Context ctx, String fpid) {
+        if (ctx == null || fpid == null || fpid.isEmpty()) return 0L;
+        long uid = activeRoleUid(ctx, fpid);
+        if (uid > 0L) return uid;
+        try {
+            String raw = ctx.getSharedPreferences("home", Context.MODE_PRIVATE)
+                    .getString("current_role", "");
+            if (raw == null || raw.isEmpty()) return 0L;
+            String[] p = raw.split(":");
+            if (p.length >= 3 && fpid.equals(p[0])) {
+                long u = Long.parseLong(p[2].trim());
+                return u > 0L ? u : 0L;
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0L;
+    }
+
     /** 设置当前角色（复合身份）。uid<=0 时按角色表解析后写入（旧签名行为保持一致）。 */
     public static void setActiveRole(Context ctx, String fpid, long serverid, long uid) {
         if (fpid == null || fpid.isEmpty()) return;

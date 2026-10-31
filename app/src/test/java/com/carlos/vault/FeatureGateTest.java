@@ -152,7 +152,7 @@ public class FeatureGateTest {
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
         assertFalse("release(T3) 不显示协议探针",
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_PROBE, 3, debug));
-        assertEquals("release(T3) 工具箱=敌情监控+真机监控", 2, FeatureGate.visibleToolCount(3, debug));
+        assertEquals("release(T3) 工具箱=敌情监控+真机监控+观察点", 3, FeatureGate.visibleToolCount(3, debug));
     }
 
     @Test
@@ -160,7 +160,7 @@ public class FeatureGateTest {
         boolean debug = FeatureGate.isDebugBuildType("debug");
         assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
         assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_PROBE, 3, debug));
-        assertEquals("debug(T3) 工具数=敌情监控+真机监控+协议监听", 3,
+        assertEquals("debug(T3) 工具数=敌情监控+真机监控+观察点+协议监听", 4,
                 FeatureGate.visibleToolCount(3, debug));
         assertEquals("debug(T1) 仅协议监听（敌情监控需 T3）", 1, FeatureGate.visibleToolCount(1, debug));
     }
@@ -191,10 +191,24 @@ public class FeatureGateTest {
 
     @Test
     public void visibleToolCount_includesDevMonitorForT3() {
-        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 release 有 2 个工具（敌情监控 + 真机监控）
-        assertEquals(2, FeatureGate.visibleToolCount(3, false));
-        assertEquals(3, FeatureGate.visibleToolCount(3, true));
+        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 release 有 3 个工具（敌情监控+真机监控+观察点）
+        assertEquals(3, FeatureGate.visibleToolCount(3, false));
+        assertEquals(4, FeatureGate.visibleToolCount(3, true));
         assertEquals("T2 仍无任何可用工具", 0, FeatureGate.visibleToolCount(2, false));
+    }
+
+    // ================= 观察点（批次 B 2026-10-30）=================
+
+    @Test
+    public void watchpoint_isT3ReleaseVisible() {
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, 3, RELEASE));
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, 3, DEBUG));
+        assertFalse(FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, 2, RELEASE));
+        assertFalse(FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, 1, RELEASE));
+        assertEquals("watchpoint", FeatureGate.Feature.WATCHPOINT.key);
+        assertEquals("观察点", FeatureGate.Feature.WATCHPOINT.label);
+        assertTrue(FeatureGate.Feature.WATCHPOINT.implemented);
+        assertFalse(FeatureGate.Feature.WATCHPOINT.debugOnly);
     }
 
     // ================= 未知功能 / 越界等级安全 =================

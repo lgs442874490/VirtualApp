@@ -23,7 +23,8 @@ public final class FnParams {
      */
     private static long currentUid(Context ctx, String fpid) {
         try {
-            return RoleStore.activeRoleUid(ctx, fpid);
+            // Phase2C 修复（2026-10-30）：同 DailyConfigStore，鲁棒解析当前角色 uid（防同服双角色串写）。
+            return RoleStore.currentRoleUid(ctx, fpid);
         } catch (Throwable t) {
             return 0L;
         }
@@ -327,6 +328,10 @@ public final class FnParams {
 
     /** 提前量默认 38 秒（1:1 服务器 DEFAULT_D_SEC）。 */
     public static final int GUARDIAN_DEFAULT_D_SEC = 38;
+    /** 批次 K：集结兵力阈值默认值（服务端同默认；> 该兵力视为威胁集结）。 */
+    public static final long GUARDIAN_DEFAULT_RALLY_TROOPS_MIN = 300_000L;
+    /** 集结兵力阈值上限（0..10,000,000）。 */
+    public static final long GUARDIAN_MAX_RALLY_TROOPS_MIN = 10_000_000L;
 
     /** 守护盟友配置（默认=关闭 + 演练；实发必须 App 侧二次确认后才写入 dry_run=false）。 */
     public static final class GuardianCfg {
@@ -346,6 +351,14 @@ public final class FnParams {
         public int targetX = 0;
         public int targetY = 0;
         public int dSec = GUARDIAN_DEFAULT_D_SEC;
+        /**
+         * 批次 K：允许钻石加速（真实花钻；默认关）。
+         * 顺序：先用道具 → 没道具才 req_shop_quick_buy 买道具再加速；
+         * 价格 −25%≈400 钻、−50%≈2000 钻；与 speedup_enabled（P1 对等加速）相互独立。
+         */
+        public boolean diamondSpeedup = false;
+        /** 批次 K：集结兵力阈值（> 该兵力视为威胁集结并驻防；默认 300000）。 */
+        public long rallyTroopsMin = GUARDIAN_DEFAULT_RALLY_TROOPS_MIN;
 
         public boolean hasTargetPoint() {
             return targetX > 0 && targetY > 0;
@@ -353,6 +366,37 @@ public final class FnParams {
 
         public String modeText() {
             return dryRun ? "演练模式（只记录不派兵）" : "实发模式（命中后自动派兵驻防）";
+        }
+    }
+
+    /**
+     * 批次 K：集结兵力阈值输入校验（纯函数，供设置页与服务端同口径）。
+     *
+     * @return null=合法（空串也合法=用默认 300000）；否则中文错误
+     */
+    public static String validateRallyTroopsMin(String raw) {
+        String v = raw == null ? "" : raw.trim();
+        if (v.isEmpty()) return null;                       // 未填 → 默认 300000
+        long n;
+        try {
+            n = Long.parseLong(v);
+        } catch (Throwable t) {
+            return "集结兵力阈值须为整数（0~10000000）";
+        }
+        if (n < 0L) return "集结兵力阈值不能小于 0";
+        if (n > GUARDIAN_MAX_RALLY_TROOPS_MIN) return "集结兵力阈值不能大于 10000000";
+        return null;
+    }
+
+    /** 输入 → 落库值：空/非法回默认 300000；合法值夹取 0..10,000,000。 */
+    public static long rallyTroopsMinOf(String raw) {
+        String v = raw == null ? "" : raw.trim();
+        if (v.isEmpty()) return GUARDIAN_DEFAULT_RALLY_TROOPS_MIN;
+        try {
+            long n = Long.parseLong(v);
+            return Math.max(0L, Math.min(GUARDIAN_MAX_RALLY_TROOPS_MIN, n));
+        } catch (Throwable t) {
+            return GUARDIAN_DEFAULT_RALLY_TROOPS_MIN;
         }
     }
 
@@ -376,6 +420,9 @@ public final class FnParams {
             c.dryRun = gBool(sub, st, p, "dry_run", true);
             c.recall = gBool(sub, st, p, "recall", true);
             c.forceOnline = gBool(sub, st, p, "force_online", false);
+            c.diamondSpeedup = gBool(sub, st, p, "diamond_speedup_enabled", false);
+            long rally = gNum(sub, st, p, "rally_troops_min", GUARDIAN_DEFAULT_RALLY_TROOPS_MIN);
+            c.rallyTroopsMin = Math.max(0L, Math.min(GUARDIAN_MAX_RALLY_TROOPS_MIN, rally));
             c.troopsMin = Math.max(0L, gNum(sub, st, p, "troops_min", 0L));
             c.allyUid = Math.max(0L, gNum(sub, st, p, "ally_uid", 0L));
             c.targetUid = Math.max(0L, gNum(sub, st, p, "target_uid", 0L));
@@ -422,6 +469,19 @@ public final class FnParams {
             out.put("ally_uid", Math.max(0, cfg.allyUid));
             out.put("target_uid", Math.max(0, cfg.targetUid));
             out.put("d_sec", Math.max(10, Math.min(600, cfg.dSec)));
+            // 批次 K：钻石开关关闭时不下发任何钻石相关参数（默认关；开启才写）
+            // 批次 K：集结兵力阈值（默认 300000；0=不按兵力判定，服务端同口径）
+            out.put("rally_troops_min",
+                    Math.max(0L, Math.min(GUARDIAN_MAX_RALLY_TROOPS_MIN, cfg.rallyTroopsMin)));
+            if (cfg.diamondSpeedup) {
+                out.put("diamond_speedup_enabled", true);
+            } else {
+                out.remove("diamond_speedup_enabled");
+                JSONObject oldSub = out.optJSONObject("sub");
+                if (oldSub != null) oldSub.remove("diamond_speedup_enabled");
+                JSONObject oldSt = out.optJSONObject("strategy");
+                if (oldSt != null) oldSt.remove("diamond_speedup_enabled");
+            }
             if (cfg.hasTargetPoint()) {
                 JSONObject pt = new JSONObject();
                 pt.put("x", cfg.targetX);
@@ -460,6 +520,9 @@ public final class FnParams {
         public int skipped;
         /** 威胁事件（threat_*）。 */
         public int threats;
+        /** 批次 K：本场（最近 50 条账本内）钻石购买次数（25%/50%）。 */
+        public int diamond25;
+        public int diamond50;
         public long lastTs;
         public String lastEv = "";
         public String lastNote = "";
@@ -470,6 +533,10 @@ public final class FnParams {
             sb.append("演练").append(dryRun).append(" · 实发").append(launched)
                     .append(" · 失败").append(failed).append(" · 撤防").append(recalled)
                     .append(" · 跳过").append(skipped);
+            if (diamond25 > 0 || diamond50 > 0) {
+                sb.append(" · 钻25%×").append(diamond25).append(" 50%×").append(diamond50)
+                        .append("（≈").append(diamond25 * 400L + diamond50 * 2000L).append("钻）");
+            }
             if (lastEv != null && !lastEv.isEmpty()) {
                 sb.append("\n最近：").append(lastEv);
                 if (lastTs > 0) {
@@ -497,6 +564,10 @@ public final class FnParams {
                     || "recall_error".equals(ev)) l.failed++;
             else if ("recalled".equals(ev)) l.recalled++;
             else if (ev.startsWith("skip_")) l.skipped++;
+            else if ("speedup_diamond_buy".equals(ev)) {
+                if (e.optLong("itemid") == 301900L) l.diamond25++;
+                else l.diamond50++;
+            }
             else if (ev.startsWith("threat_")) l.threats++;
             long ts = e.optLong("ts", 0);
             if (i == 0) {   // 服务端数组最新在前

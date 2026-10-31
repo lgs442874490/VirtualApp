@@ -337,6 +337,24 @@ public class GatherQueuePlanTest {
     }
 
     @Test
+    public void slotCount_guardianReserveYieldsOneQueue() {
+        GatherConfigV2 cfg3 = enabledCfg(3, 0);
+
+        assertEquals("capacity=3/reserve=1 → 最多 2 队", 2,
+                ServerFieldTasks.slotCount(cfg3, 3, 3, 3, false, 1));
+        assertEquals("reserve=0 → 3 队", 3,
+                ServerFieldTasks.slotCount(cfg3, 3, 3, 3, false, 0));
+        assertEquals("reserve 超过容量 → 仍至少 1 队采集", 1,
+                ServerFieldTasks.slotCount(cfg3, 3, 3, 3, false, 3));
+        assertEquals("reserve=2/capacity=2 → 1", 1,
+                ServerFieldTasks.slotCount(cfg3, 2, 3, 2, false, 2));
+        assertEquals("idle=0 时不因 reserve 变负", 0,
+                ServerFieldTasks.slotCount(cfg3, 0, 3, 3, false, 1));
+        assertEquals("旧 5 参重载保持 reserve=0 行为", 3,
+                ServerFieldTasks.slotCount(cfg3, 3, 3, 3, false));
+    }
+
+    @Test
     public void nextUnboundQueue_cyclicAndQueueAfterWraps() {
         GatherConfigV2 cfg = enabledCfg(3, 0);
         ServerFieldTasks.QueueMapping mapping = new ServerFieldTasks.QueueMapping();
