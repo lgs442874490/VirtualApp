@@ -187,6 +187,51 @@ public final class FormationResolver {
             }
             return ResolveOutcome.skip(why);
         }
+        return autoOutcomeFor(engine, heroIds, ratio, total, "自动编队", "自动编队");
+    }
+
+    /**
+     * 按职业指定偏好英雄的自动编队（情报出征；契约 §4.1.2/§4.1.3）。
+     *
+     * <p>与 {@link #autoOutcome} <b>完全同口径</b>（库存夹取、出征容量夹取、406 缩放、比例分配、
+     * payload 构造共用 {@link #autoOutcomeFor}，不维护第二份实现）；唯一差别是英雄候选由
+     * {@link #preferredProfessionHeroes} 给出：指定英雄不可用（不在城/301 拉黑/在途占用/职业不符）
+     * → 同职业最强可用兜底。
+     *
+     * @param preferredByProfession 下标 1/2/3 = 盾/矛/弓职业的指定英雄 id（0=自动取该职业最强）
+     * @param ratio                 兵种比例（null/全 0 → 40:30:30）
+     * @param total                 目标总兵力（&lt;=0=按库存/容量自动）
+     * @param usedHeroes            本轮前序队列已占用英雄（null=不预留）
+     * @return READY/SKIP（reason 含「情报编队（盾/矛/弓=…）」与库存/容量/缩放说明）
+     */
+    public static ResolveOutcome autoWithPreferredHeroes(WjdrEngine engine, long[] preferredByProfession,
+                                                         Map<String, Long> ratio, long total,
+                                                         Collection<Long> usedHeroes) {
+        if (engine == null) return ResolveOutcome.skip("engine 为空");
+        List<Long> heroIds = preferredProfessionHeroes(engine, preferredByProfession, usedHeroes);
+        if (heroIds.isEmpty()) {
+            String why = "情报编队无可用英雄（英雄目录未同步或指定英雄均不可用）";
+            if (usedHeroes != null && !usedHeroes.isEmpty()) {
+                why = why + "；本轮前序队列已占用英雄 " + usedHeroes;
+            }
+            return ResolveOutcome.skip(why);
+        }
+        StringBuilder lead = new StringBuilder("情报编队（盾/矛/弓=");
+        for (int i = 0; i < heroIds.size(); i++) {
+            if (i > 0) lead.append('/');
+            lead.append(heroIds.get(i));
+        }
+        lead.append('）');
+        return autoOutcomeFor(engine, heroIds, ratio, total, "情报编队", lead.toString());
+    }
+
+    /**
+     * AUTO 编队公共实现（{@link #autoOutcome} 与 {@link #autoWithPreferredHeroes} 共用）：
+     * 库存校验 → 容量夹取 → 406 缩放 → 比例分配 → payload。调用方保证 {@code heroIds} 非空。
+     */
+    private static ResolveOutcome autoOutcomeFor(WjdrEngine engine, List<Long> heroIds,
+                                                 Map<String, Long> ratio, long total,
+                                                 String label, String reasonLead) {
         long[] stock = FormationCatalog.soldierStock(engine);
         long stockSum = stock[0] + stock[1] + stock[2];
         if (stockSum <= 0) {
@@ -220,9 +265,9 @@ public final class FormationResolver {
         if (heroLimit < HeroAvailability.DEFAULT_AUTO_HEROES) {
             notes.append("，415 英雄上限下调至").append(heroLimit);
         }
-        ResolvedFormation rf = build(engine, ResolvedFormation.SRC_AUTO, 0L, "自动编队",
+        ResolvedFormation rf = build(engine, ResolvedFormation.SRC_AUTO, 0L, label,
                 heroIds, soldiers);
-        return ResolveOutcome.ready(rf, "自动编队（比例 " + weights[0] + ":" + weights[1] + ":"
+        return ResolveOutcome.ready(rf, reasonLead + "（比例 " + weights[0] + ":" + weights[1] + ":"
                 + weights[2] + notes + "）");
     }
 
@@ -714,6 +759,79 @@ public final class FormationResolver {
             if (picked[p] > 0L) out.add(picked[p]);
         }
         return out;
+    }
+
+    /**
+     * 按职业指定偏好英雄的候选（情报出征；契约 §4.1.2/§4.1.3）：
+     * 下标 1/2/3 = 盾/矛/弓职业的指定英雄 id（0=取该职业“最强可用”）。
+     *
+     * <p>指定英雄必须<b>存在于目录且职业匹配且当前可用</b>——目录不存在的 id、职业不符
+     * （盾位填了弓英雄）、不可用（{@link FormationCatalog.Hero#available}=false 在途/不在城、
+     * 301 拉黑 {@link HeroAvailability#isBlocked}、{@link FormationCatalog#busyHeroIds} 在途占用、
+     * {@code usedHeroes} 本轮前序占用）一律跳过，回退该职业“最强可用”。
+     *
+     * <p>目录 {@link FormationCatalog#heroes} 已按强→弱排序，因此“最强可用”= 顺序首个可用者；
+     * 最多 {@link HeroAvailability#autoHeroLimit} 名（415 自适应），职业唯一，按盾/矛/弓顺序输出；
+     * 某职业无可用英雄则跳过该位（不硬凑）。
+     *
+     * @param preferredByProfession 长度 ≥4 的数组（下标 1/2/3 生效；null/短数组按 0=自动处理）
+     * @param usedHeroes            本轮前序队列已占用英雄（null=不预留）
+     */
+    public static List<Long> preferredProfessionHeroes(WjdrEngine engine, long[] preferredByProfession,
+                                                       Collection<Long> usedHeroes) {
+        List<Long> out = new ArrayList<>();
+        if (engine == null) return out;
+        Set<Long> used = normalizeHeroes(usedHeroes);
+        Set<Long> busy = FormationCatalog.busyHeroIds(engine);
+        int limit = Math.max(1, Math.min(HeroAvailability.DEFAULT_AUTO_HEROES,
+                HeroAvailability.autoHeroLimit(engine)));
+        List<FormationCatalog.Hero> catalog = FormationCatalog.heroes(engine);   // 强 → 弱
+        Set<Long> chosen = new LinkedHashSet<>();
+        long[] picked = new long[4];   // index 1/2/3 = 盾/矛/弓
+        for (int p = 1; p <= 3; p++) {
+            long preferred = preferredByProfession != null && p < preferredByProfession.length
+                    ? preferredByProfession[p] : 0L;
+            if (preferred > 0L) {
+                FormationCatalog.Hero hit = heroById(catalog, preferred);
+                // 指定英雄：必须职业匹配且可用，否则回退该职业最强可用
+                if (hit != null && hit.profession == p
+                        && heroUsable(engine, hit, busy, used, chosen)) {
+                    picked[p] = hit.id;
+                    chosen.add(hit.id);
+                    continue;
+                }
+            }
+            for (FormationCatalog.Hero h : catalog) {
+                if (h.profession != p) continue;
+                if (!heroUsable(engine, h, busy, used, chosen)) continue;
+                picked[p] = h.id;
+                chosen.add(h.id);
+                break;
+            }
+        }
+        for (int p = 1; p <= 3 && out.size() < limit; p++) {
+            if (picked[p] > 0L) out.add(picked[p]);
+        }
+        return out;
+    }
+
+    /** 目录内按 id 查英雄（不存在/非法 id 返回 null）。 */
+    private static FormationCatalog.Hero heroById(List<FormationCatalog.Hero> catalog, long heroId) {
+        if (heroId <= 0L || catalog == null) return null;
+        for (FormationCatalog.Hero h : catalog) {
+            if (h.id == heroId) return h;
+        }
+        return null;
+    }
+
+    /** 自动/指定英雄是否可用于本队列（在城 + 未拉黑 + 未在途 + 未被本队列/前序队列占用）。 */
+    private static boolean heroUsable(WjdrEngine engine, FormationCatalog.Hero h, Set<Long> busy,
+                                      Set<Long> used, Set<Long> chosen) {
+        return h != null && h.available
+                && (busy == null || !busy.contains(h.id))
+                && (used == null || !used.contains(h.id))
+                && (chosen == null || !chosen.contains(h.id))
+                && !HeroAvailability.isBlocked(engine, h.id);
     }
 
     // ==================================================================
