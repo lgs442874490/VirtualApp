@@ -2039,6 +2039,8 @@ public final class ServerGuardianEngine {
     private final Map<Integer, TroopProbe> probes = new ConcurrentHashMap<>();
     /** 坐标→(兵力探测结果, 时刻)，60s 缓存（同点多次威胁不重复查询）。 */
     private final Map<String, long[]> probeCache = new ConcurrentHashMap<>();
+    /** 批次 R：坐标查询响应诊断节流（60s）。 */
+    private volatile long probeDiagLogAt;
     static final long PROBE_CACHE_TTL_MS = 60_000L;
 
     /**
@@ -2106,6 +2108,11 @@ public final class ServerGuardianEngine {
         if (p == null) return;
         boolean marchProto = proto != null && (proto.startsWith("notify_world_march")
                 || proto.startsWith("notify_mass_march"));
+        if (System.currentTimeMillis() - probeDiagLogAt > 60_000L) {
+            probeDiagLogAt = System.currentTimeMillis();
+            FileLog.info("守护盟友[probe] 收到 proto={} keys={} (session={})", proto,
+                    content.keySet(), String.valueOf(sess));
+        }
         if (marchProto) {
             java.util.List<Map<String, Object>> marches = new ArrayList<>();
             collectMaps(content.get("datalist"), marches);
@@ -2213,6 +2220,10 @@ public final class ServerGuardianEngine {
                     && t.hasXY && t.x > 0 && t.y > 0 && r != null) {
                 // 批次 R（用户口径）：同网页“查询坐标”——查该点出征队列携带兵力，>阈值即真
                 long[] pr = probeTargetTroops(engine, t.x, t.y, cfg.rallyProbeTimeoutMs);
+                if (pr != null && pr[0] <= 0L) {
+                    ledger("rally_probe_zero", t, null, "坐标查询：目标(" + t.x + "," + t.y
+                            + ") 未取到行军兵力（marches=" + pr[1] + "）");
+                }
                 if (pr != null && pr[0] > 0L) {
                     ledger("rally_probe", t, null, "坐标查询：目标(" + t.x + "," + t.y
                             + ") 行军 " + pr[1] + " 支，携带兵力 " + pr[0]
