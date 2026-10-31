@@ -285,4 +285,16 @@ public class WatchPointMultiAccountTest {
         assertNotNull(err);
         assertTrue(err.contains("大于 0"));
     }
+
+    @Test
+    public void crossProbeVerdict_thresholds() {
+        // 有城 → 立即可用
+        assertEquals(Boolean.TRUE, WatchPointEngine.crossProbeVerdict(5, 1));
+        // 首次 0 城 → 待定（会重试）
+        assertNull(WatchPointEngine.crossProbeVerdict(0, 1));
+        // 连续 2 次 0 城 → 不可用
+        assertEquals(Boolean.FALSE, WatchPointEngine.crossProbeVerdict(0, 2));
+        // 有城优先于次数
+        assertEquals(Boolean.TRUE, WatchPointEngine.crossProbeVerdict(1, 5));
+    }
 }

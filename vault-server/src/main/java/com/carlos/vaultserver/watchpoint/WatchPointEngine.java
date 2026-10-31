@@ -75,10 +75,11 @@ public final class WatchPointEngine {
     private static final long ALERT_DEDUPE_MS = 15L * 60_000L;
     private static final int SCAN_SEND_PER_TICK = 6;
 
-    private enum Kind {MONITOR, PROTECT, SCAN}
+    private enum Kind {MONITOR, PROTECT, SCAN, CROSS_PROBE}
 
     private static final class Ctx {
         final int session;
+        long probeUid;
         final Kind kind;
         final WatchPointStore.Rect rect;
         final WjdrEngine engine;
@@ -431,8 +432,74 @@ public final class WatchPointEngine {
         } catch (Throwable ignored) {
         }
         java.util.Set<Long> crossUids = new java.util.LinkedHashSet<>(store.crossKidRoleUids);
-        return selectEngines(online, store.fpid, store.fpids, store.allAccounts,
-                store.kid, store.crossKid, crossUids, multiRoleEnabled(), crossUnavailable);
+        java.util.List<WjdrEngine> picked = selectEngines(online, store.fpid, store.fpids,
+                store.allAccounts, store.kid, store.crossKid, crossUids, multiRoleEnabled(),
+                crossUnavailable);
+        // 2026-11-01：跨区角色先「探测」再参与分发——未验证前不占用扫描分片，避免整图完整性被拉低；
+        // 探测用已知有城的矩形（观察点缓存/monitorTargets），比用地图左上角 8 格可靠。
+        java.util.List<WjdrEngine> out = new java.util.ArrayList<>();
+        for (WjdrEngine e : picked) {
+            try {
+                long sid = e.lastServerId();
+                long uid = e.lastUid();
+                if (sid == store.kid) {
+                    out.add(e);
+                    continue;
+                }
+                if (crossProbeSupported.contains(uid)) {
+                    out.add(e);
+                    continue;
+                }
+                if (!crossUnavailable.contains(uid)) startCrossProbe(e);
+            } catch (Throwable ignored) {
+            }
+        }
+        return out;
+    }
+
+    /** 跨区角色探测结果判定（纯函数）：有城=可用；连续 tries 次 0 城=不可用；否则待定。 */
+    static Boolean crossProbeVerdict(int cities, int tries) {
+        if (cities > 0) return Boolean.TRUE;
+        return tries >= CROSS_PROBE_TRIES ? Boolean.FALSE : null;
+    }
+
+    private final Set<Long> crossProbeSupported = ConcurrentHashMap.newKeySet();
+    private final Map<Long, Integer> crossProbeTries = new ConcurrentHashMap<>();
+    private final Set<Integer> crossProbeSessions = ConcurrentHashMap.newKeySet();
+    static final int CROSS_PROBE_TRIES = 2;
+    static final int SESSION_CROSS_PROBE_BASE = 100_900_000;
+
+    /** 对跨区角色发起一次地图查询（已知有城的矩形），结果异步判定。 */
+    private void startCrossProbe(WjdrEngine engine) {
+        try {
+            long uid = engine.lastUid();
+            int session = SESSION_CROSS_PROBE_BASE + (int) Math.abs(uid % 1000L);
+            if (!crossProbeSessions.add(session)) return;   // 已有在途探测
+            WatchPointStore.Rect rect = probeRect();
+            if (rect == null) {
+                crossProbeSessions.remove(session);
+                return;
+            }
+            Ctx ctx = new Ctx(session, Kind.CROSS_PROBE, rect, engine);
+            ctx.probeUid = uid;
+            ctxBySession.put(session, ctx);
+            lastSent.put(session, System.currentTimeMillis());
+            sendRaw(engine, session, rect);
+        } catch (Throwable t) {
+            FileLog.warn("[{}] 跨区探测发起失败：{}", LOG, String.valueOf(t));
+        }
+    }
+
+    /** 探测用矩形：优先取缓存里任一座城周边（必有城），否则 monitorTargets[0]。 */
+    private WatchPointStore.Rect probeRect() {
+        for (City c : cityByPoint.values()) {
+            if (c != null && c.x > 0 && c.y > 0) return rectAround(c.x, c.y, 27);
+        }
+        if (!store.monitorTargets.isEmpty()) {
+            WatchPointStore.Target t = store.monitorTargets.get(0);
+            return rectAround(t.x, t.y, 27);
+        }
+        return null;
     }
 
     /**
@@ -803,6 +870,26 @@ public final class WatchPointEngine {
     private volatile long nearCityLogAt;
 
     private void onComplete(Ctx ctx) {
+        if (ctx.kind == Kind.CROSS_PROBE) {
+            crossProbeSessions.remove(ctx.session);
+            long uid = ctx.probeUid;
+            int cities = ctx.cityUids.size();
+            int tries = crossProbeTries.merge(uid, 1, Integer::sum);
+            Boolean verdict = crossProbeVerdict(cities, tries);
+            if (Boolean.TRUE.equals(verdict)) {
+                crossProbeSupported.add(uid);
+                FileLog.info("[{}] 跨区角色 uid={} 探测可用（{} 城，{} 格）→ 参与观察点分发", LOG,
+                        String.valueOf(uid), String.valueOf(cities), String.valueOf(1));
+            } else if (Boolean.FALSE.equals(verdict)) {
+                crossUnavailable.add(uid);
+                FileLog.info("[{}] 跨区角色 uid={} 探测不可用（{} 次均 0 城）→ 自动排除", LOG,
+                        String.valueOf(uid), String.valueOf(tries));
+            } else {
+                FileLog.info("[{}] 跨区角色 uid={} 探测未定（0 城，第 {} 次，将重试）", LOG,
+                        String.valueOf(uid), String.valueOf(tries));
+            }
+            return;
+        }
         if (ctx.kind == Kind.MONITOR) statOkMonitor.incrementAndGet();
         else if (ctx.kind == Kind.PROTECT) statOkProtect.incrementAndGet();
         if (ctx.kind == Kind.SCAN) {
