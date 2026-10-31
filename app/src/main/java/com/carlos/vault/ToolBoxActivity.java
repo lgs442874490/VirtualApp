@@ -30,7 +30,7 @@ import java.util.List;
  *       坐标查询/充值记录/巨兽批量等均无实现，未开发/未立项功能一律不显示；
  *       同一条目在 {@code design/全流程行为与分级门控-20261023.md} 中登记。</li>
  * </ul>
- * 敌情监控配置（原 HomeActivity.showWatchConfig）与协议探针（showProbe）整体迁入本页，
+ * （2026-10-31）工具箱不再提供敌情监控：敌情监控/战争通知统一走 我的-敌情监控（服务器观察点）。
  * HomeActivity 不再保留副本，避免两处逻辑漂移。
  */
 public class ToolBoxActivity extends Activity {
@@ -123,7 +123,6 @@ public class ToolBoxActivity extends Activity {
         // ③ 工具箱内调试/实测项仅调试包可见。
         final boolean debugBuild = FeatureGate.isDebugBuild(this);
         final int tier = FeatureGate.currentTier(this);
-        final boolean canWatch = FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, tier, debugBuild);      // T3 高阶
         final boolean canMonitor = FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, tier, debugBuild);    // T3 高阶（正式包可见）
         final boolean canWatchpoint = FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, tier, debugBuild);   // T3 高阶
         final boolean canProto = FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, tier, debugBuild); // 仅调试包
@@ -148,24 +147,6 @@ public class ToolBoxActivity extends Activity {
                 attachToggle(protoCard, protoSw[0]);
                 refreshProtoCard(protoCard, protoSw[0]);
                 box.addView(protoCard);
-            }
-            // 敌情监控（T3 高级会员）
-            if (canWatch) {
-                LinearLayout watchCard = toolCard(UiStyle.Icon.EYE, "敌情监控",
-                        watchSub(), UiStyle.BRAND_50);
-                final UiStyle.Switch[] watchSw = new UiStyle.Switch[1];
-                watchSw[0] = new UiStyle.Switch(this,
-                        com.carlos.vault.daily.EnemyWatchStore.enabled(this), () -> {
-                            boolean on = watchSw[0].isOn();
-                            saveWatchEnabled(on);
-                            if (on) com.carlos.vault.daily.EnemyWatch.attachAll(this);
-                            toast("敌情监控已" + (on ? "开启" : "关闭"));
-                            setCardSub(watchCard, watchSub());
-                        });
-                watchCard.addView(watchSw[0]);
-                // 点卡片主体 = 打开配置（开关只承担开关，避免误触）
-                watchCard.setOnClickListener(v -> showWatchConfig());
-                box.addView(watchCard);
             }
             // 观察点（批次 B 2026-10-30）：App 内可视化编辑服务器 data/watchpoint.json（get/set/enable）。
             if (canWatchpoint) {
@@ -323,129 +304,6 @@ public class ToolBoxActivity extends Activity {
     private void refreshProtoCard(LinearLayout card, UiStyle.Switch sw) {
         sw.setOn(com.carlos.vault.daily.ProtoLogger.on(this));
         setCardSub(card, protoSub());
-    }
-
-    private String watchSub() {
-        int n = com.carlos.vault.daily.EnemyWatchStore.entries(this).size();
-        return "标记敌人出征 · 企业微信 + 短信 · 名单 " + n + " 个";
-    }
-
-    /** 只翻转总开关，其余配置原样写回（EnemyWatchStore.save 是全量保存）。 */
-    private void saveWatchEnabled(boolean on) {
-        StringBuilder listText = new StringBuilder();
-        for (com.carlos.vault.daily.EnemyWatchStore.Entry e
-                : com.carlos.vault.daily.EnemyWatchStore.entries(this)) {
-            listText.append(e.kid).append(':').append(e.uid);
-            if (e.note != null && !e.note.isEmpty()) listText.append(' ').append(e.note);
-            listText.append('\n');
-        }
-        com.carlos.vault.daily.EnemyWatchStore.save(this, on,
-                com.carlos.vault.daily.EnemyWatchStore.webhook(this),
-                com.carlos.vault.daily.EnemyWatchStore.smsPhone(this),
-                com.carlos.vault.daily.EnemyWatchStore.wecomOn(this),
-                com.carlos.vault.daily.EnemyWatchStore.smsOn(this),
-                com.carlos.vault.daily.EnemyWatchStore.smsEscalateOnly(this),
-                listText.toString());
-    }
-
-    // ================= 敌情监控配置（自 HomeActivity 迁入，逻辑不变） =================
-
-    private void showWatchConfig() {
-        ScrollView sc = new ScrollView(this);
-        LinearLayout box = new LinearLayout(this);
-        box.setOrientation(LinearLayout.VERTICAL);
-        box.setPadding(dp(18), dp(12), dp(18), dp(6));
-
-        TextView tip = new TextView(this);
-        tip.setText("标记敌人（按服分号观察）。名单每行一条：服:uid 备注\n例如 888:57347368 仇人A（备注可空，服号缺省按888）");
-        tip.setTextSize(12);
-        box.addView(tip);
-
-        android.widget.CheckBox cbOn = new android.widget.CheckBox(this);
-        cbOn.setText("敌情监控开启（挂在全部在线会话上）");
-        cbOn.setChecked(com.carlos.vault.daily.EnemyWatchStore.enabled(this));
-        box.addView(cbOn);
-
-        EditText etList = new EditText(this);
-        etList.setHint("888:57347368 仇人A\n888:123861751");
-        etList.setTextSize(13);
-        StringBuilder pre = new StringBuilder();
-        for (com.carlos.vault.daily.EnemyWatchStore.Entry e
-                : com.carlos.vault.daily.EnemyWatchStore.entries(this)) {
-            pre.append(e.kid).append(':').append(e.uid);
-            if (!e.note.isEmpty()) pre.append(' ').append(e.note);
-            pre.append('\n');
-        }
-        etList.setText(pre.toString());
-        box.addView(etList);
-
-        EditText etWebhook = new EditText(this);
-        etWebhook.setHint("企业微信群机器人 Webhook URL");
-        etWebhook.setTextSize(13);
-        etWebhook.setText(com.carlos.vault.daily.EnemyWatchStore.webhook(this));
-        box.addView(etWebhook);
-
-        EditText etPhone = new EditText(this);
-        etPhone.setHint("短信接收手机号");
-        etPhone.setTextSize(13);
-        etPhone.setInputType(android.text.InputType.TYPE_CLASS_PHONE);
-        etPhone.setText(com.carlos.vault.daily.EnemyWatchStore.smsPhone(this));
-        box.addView(etPhone);
-
-        android.widget.CheckBox cbWecom = new android.widget.CheckBox(this);
-        cbWecom.setText("企业微信通知");
-        cbWecom.setChecked(com.carlos.vault.daily.EnemyWatchStore.wecomOn(this));
-        box.addView(cbWecom);
-        android.widget.CheckBox cbSms = new android.widget.CheckBox(this);
-        cbSms.setText("短信通知");
-        cbSms.setChecked(com.carlos.vault.daily.EnemyWatchStore.smsOn(this));
-        box.addView(cbSms);
-        android.widget.CheckBox cbEsc = new android.widget.CheckBox(this);
-        cbEsc.setText("短信仅升级事件（敌人加速时）；不勾 = 所有敌情都发短信");
-        cbEsc.setChecked(com.carlos.vault.daily.EnemyWatchStore.smsEscalateOnly(this));
-        box.addView(cbEsc);
-
-        TextView status = new TextView(this);
-        status.setText("最近事件：\n" + joinRecent());
-        status.setTextSize(11);
-        box.addView(status);
-
-        sc.addView(box);
-        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("敌情监控 · 标记敌人出征即推送（企业微信+短信）")
-                .setView(sc)
-                .setPositiveButton("保存", (d, w) -> {
-                    int bad = com.carlos.vault.daily.EnemyWatchStore.save(this,
-                            cbOn.isChecked(), etWebhook.getText().toString(),
-                            etPhone.getText().toString(),
-                            cbWecom.isChecked(), cbSms.isChecked(), cbEsc.isChecked(),
-                            etList.getText().toString());
-                    com.carlos.vault.daily.EnemyWatch.attachAll(this);
-                    toast(bad > 0 ? "已保存，" + bad + " 行格式非法被忽略"
-                            : "已保存，已对在线会话即时挂载");
-                    refreshUi();
-                })
-                .setNeutralButton("测试推送", (d, w) -> {
-                    int bad = com.carlos.vault.daily.EnemyWatchStore.save(this,
-                            cbOn.isChecked(), etWebhook.getText().toString(),
-                            etPhone.getText().toString(),
-                            cbWecom.isChecked(), cbSms.isChecked(), cbEsc.isChecked(),
-                            etList.getText().toString());
-                    com.carlos.vault.daily.EnemyWatch.attachAll(this);
-                    com.carlos.vault.daily.EnemyWatch.sendTest(this);
-                    toast(bad > 0 ? "已保存并发送测试（" + bad + " 行非法）"
-                            : "已保存并发送测试推送");
-                })
-                .setNegativeButton("关闭", null)
-                .show();
-    }
-
-    private String joinRecent() {
-        List<String> list = com.carlos.vault.daily.EnemyWatchStore.recent(this);
-        if (list.isEmpty()) return "（暂无）";
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i < Math.min(list.size(), 12); i++) sb.append(list.get(i)).append('\n');
-        return sb.toString();
     }
 
     /** 配置保存后整页重Render，开关态/副题即时刷新。 */
