@@ -3582,6 +3582,9 @@ public final class ServerFieldTasks {
             } else if (code == 4104) {
                 // 实测：目标科技已满级/当前路线不可研究，不是异常。
                 m.skip("科技目标已满级或当前不可研究（码4104）");
+            } else if (code == 73) {
+                // 2026-11-01 生产实证（新角色）：研究码 73 = 科技暂不可研究（前置/等级/条件不足）→ SKIP
+                m.skip("科技暂不可研究（码73，前置或等级不足）");
             } else {
                 m.fail("研究码" + code);
             }

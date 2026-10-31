@@ -776,7 +776,10 @@ public final class ServerTownTasks {
                     boolean noReward = abCode == 11790 || abCode == 11792 || abCode == 11794
                             || abCode == 11795 || abCode == 11796 || abCode == 11797
                             || abCode == 11799 || abCode == 11803;
-                    m.skip(noReward ? "联盟宝箱暂无可领" : ("联盟宝箱不可领(码" + abCode + ")"));
+                    String petChestNote = noReward ? "联盟宝箱暂无可领"
+                            : (abCode == 1507 ? "未加入联盟（码1507）"
+                            : ("联盟宝箱不可领(码" + abCode + ")"));
+                    m.skip(petChestNote);
                     m.subSkip("alliance_chest", noReward ? "暂无可领" : ("码" + abCode));
                 }
             } else {
