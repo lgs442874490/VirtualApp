@@ -2161,8 +2161,15 @@ public final class ServerGuardianEngine {
                 if (pt == null || pt[0] != p.x || pt[1] != p.y) continue;
                 long owner = Exec.longOf(item.get("owner"));
                 if (owner > 0L && owner == safeLastUid()) continue;
-                p.troops += Math.max(0L, troopsOf(item)[0]);
+                long tr = Math.max(0L, troopsOf(item)[0]);
+                p.troops += tr;
                 p.marches++;
+                if (tr <= 0L && System.currentTimeMillis() - probeDiagLogAt > 60_000L) {
+                    probeDiagLogAt = System.currentTimeMillis();
+                    FileLog.info("守护盟友[probe] 队列项无兵力 keys={} squad_list={} squad={} soldier_map={}",
+                            item.keySet(), item.get("squad_list"), item.get("squad"),
+                            item.get("soldier_map"));
+                }
             }
             Object ef0 = content.get("end_flag");
             boolean ended0 = ef0 instanceof Boolean ? (Boolean) ef0 : Exec.longOf(ef0) != 0L;
@@ -4684,7 +4691,10 @@ public final class ServerGuardianEngine {
         boolean known = false;
         if (m != null) {
             Map<String, Object> squad = Exec.mapOf(m.get("squad_list"));
+            if (squad == null) squad = Exec.mapOf(m.get("squad"));
             Object soldier = squad == null ? null : squad.get("soldier");
+            if (soldier == null && squad != null) soldier = squad.get("soldier_map");
+            if (soldier == null) soldier = m.get("soldier_map");
             if (soldier instanceof Map) {
                 for (Map.Entry<?, ?> en : ((Map<?, ?>) soldier).entrySet()) {
                     long id = Exec.longOf(en.getKey());
