@@ -59,7 +59,14 @@ public final class WatchPointEngine {
     private static final int SESSION_PROTECT_BASE = 100_000_100;
     private static final int SESSION_SCAN_BASE = 100_500_000;
     private static final long RESPONSE_TIMEOUT_MS = 6000L;
-    private static final long SCAN_TIMEOUT_MS = 45_000L;
+    /** 批次 Q1：扫描完整性阈值（>=95% 才做告警判定）。 */
+    private static final double SCAN_COMPLETE_RATIO = 0.95d;
+    /** 批次 Q2：多角色协同 env 开关（off/0 强制单角色旧行为）。 */
+    public static final String ENV_MULTI = "VAULT_WATCHPOINT_MULTI";
+    /** 批次 Q3：攻击者跟踪 TTL/上限/未定位去重。 */
+    private static final long ATTACKER_TRACK_TTL_MS = 2L * 3_600_000L;
+    private static final int ATTACKER_TRACK_MAX = 200;
+    private static final long ATTACKER_MISSING_DEDUPE_MS = 6L * 3_600_000L;
     private static final long ALERT_DEDUPE_MS = 15L * 60_000L;
     private static final int SCAN_SEND_PER_TICK = 6;
 
@@ -200,6 +207,23 @@ public final class WatchPointEngine {
         }
     }
 
+    /** 批次 Q3：被跟踪的攻击者。 */
+    static final class TrackedAttacker {
+        final long uid;
+        final String nick;
+        int x;
+        int y;
+        long atMs;
+
+        TrackedAttacker(long uid, String nick, int x, int y, long atMs) {
+            this.uid = uid;
+            this.nick = nick == null ? "" : nick;
+            this.x = x;
+            this.y = y;
+            this.atMs = atMs;
+        }
+    }
+
     private static final class City {
         long uid;
         long aid;
@@ -261,7 +285,15 @@ public final class WatchPointEngine {
     private final Set<String> unknownTargetLogged = ConcurrentHashMap.newKeySet();
     private long lastStatsAt;
     private volatile boolean lastTickHadEngine;
-    private volatile String lastEngineDesc = "";
+    private volatile java.util.List<String> lastEngineDescs = java.util.Collections.emptyList();
+    /** 批次 Q3：攻击者 uid → 最后已知城坐标（来袭/出兵告警时记录）。 */
+    private final Map<Long, TrackedAttacker> trackedAttackers = new ConcurrentHashMap<>();
+    /** 批次 Q3：未定位告警 6h 去重。 */
+    private final Map<Long, Long> attackerMissingAt = new ConcurrentHashMap<>();
+    /** 批次 Q1：每个保护矩形连续「完整扫描为空」次数。 */
+    private final Map<String, Integer> rectEmptyStreak = new ConcurrentHashMap<>();
+    /** 最近一条告警文本（单测断言用）。 */
+    private volatile String lastAlertText = "";
     private volatile boolean baselineDone;
     private volatile long startedAt;
 
@@ -289,10 +321,12 @@ public final class WatchPointEngine {
         thread = new Thread(this::loop, "watchpoint-engine");
         thread.setDaemon(true);
         thread.start();
-        FileLog.info("[{}] 已启用：kid={} 监视目标={} 保护矩形={} 监视间隔={}ms 保护间隔={}ms 限速={}req/s",
+        FileLog.info("[{}] 已启用：kid={} 监视目标={} 保护矩形={} 监视间隔={}ms 保护间隔={}ms 限速={}req/s"
+                        + " 多角色={} 扫描超时={}ms",
                 LOG, String.valueOf(store.kid), String.valueOf(store.monitorTargets.size()),
                 String.valueOf(store.protectRects.size()), String.valueOf(store.monitorIntervalMs),
-                String.valueOf(store.protectIntervalMs), String.valueOf(store.maxReqPerSec));
+                String.valueOf(store.protectIntervalMs), String.valueOf(store.maxReqPerSec),
+                String.valueOf(multiRoleEnabled()), String.valueOf(store.scanTimeoutMs));
     }
 
     public void stop() {
@@ -312,11 +346,13 @@ public final class WatchPointEngine {
                     Thread.sleep(1500L);
                     continue;
                 }
-                WjdrEngine engine = pickEngine();
-                lastTickHadEngine = engine != null;
-                if (engine == null) {
+                java.util.List<WjdrEngine> engines = pickEngines();
+                lastTickHadEngine = !engines.isEmpty();
+                updateEngineDesc(engines);
+                if (engines.isEmpty()) {
                     // 扫描中会话掉线：超时后按已收到的数据收尾，避免卡在扫描态
-                    if (scan.active && System.currentTimeMillis() - scan.startedAt > SCAN_TIMEOUT_MS + 15_000L) {
+                    if (scan.active && System.currentTimeMillis() - scan.startedAt
+                            > Math.max(15_000L, store.scanTimeoutMs) + 15_000L) {
                         finishScan();
                     }
                     Thread.sleep(1000L);
@@ -326,9 +362,9 @@ public final class WatchPointEngine {
                     baselineDone = true;
                     startScan("启动基线");
                 } else if (scan.active) {
-                    scanTick(engine);
+                    scanTick(engines);
                 } else {
-                    pollTick(engine);
+                    pollTick(engines);
                 }
                 maybeLogStats();
                 Thread.sleep(80L);
@@ -351,39 +387,88 @@ public final class WatchPointEngine {
         if (now - lastStatsAt < 60_000L) return;
         lastStatsAt = now;
         FileLog.info("[{}] 运行统计：有会话={} 会话={} 监视发送={}(回包{} 超时{}) 保护发送={}(回包{}) 告警={} 扫描={} 城缓存={}"
-                        + " 自循环忽略={} 未知目标忽略={} 随从静默={}",
-                LOG, String.valueOf(lastTickHadEngine), lastEngineDesc,
+                        + " 自循环忽略={} 未知目标忽略={} 随从静默={} 角色数={}",
+                LOG, String.valueOf(lastTickHadEngine),
+                String.join(",", lastEngineDescs),
                 String.valueOf(statSentMonitor.get()), String.valueOf(statOkMonitor.get()),
                 String.valueOf(statTimeouts.get()), String.valueOf(statSentProtect.get()),
                 String.valueOf(statOkProtect.get()), String.valueOf(statAlerts.get()),
                 scan.active ? "进行中" : "空闲", String.valueOf(cityByUid.size()),
                 String.valueOf(statSelfIgnored.get()), String.valueOf(statUnknownTargetIgnored.get()),
-                String.valueOf(statRallyFollowerIgnored.get()));
+                String.valueOf(statRallyFollowerIgnored.get()),
+                String.valueOf(lastEngineDescs.size()));
     }
 
-    /** 选一条目标区服在线的会话（优先 fpid 匹配；无匹配则任意同 kid 会话）。 */
-    private WjdrEngine pickEngine() {
-        WjdrEngine fallback = null;
-        for (WjdrEngine e : keeper.onlineEngines()) {
+    /** 批次 Q2：返回所有满足 kid/fpid 且在线的引擎（去重；multi off 只返回 1 个）。 */
+    java.util.List<WjdrEngine> pickEngines() {
+        java.util.List<WjdrEngine> online = new java.util.ArrayList<>();
+        try {
+            for (WjdrEngine e : keeper.onlineEngines()) online.add(e);
+        } catch (Throwable ignored) {
+        }
+        return selectEngines(online, store.fpid, store.kid, multiRoleEnabled());
+    }
+
+    /** 纯选择（单测可注入 online 列表）：同 kid（+fpid，若配置）且在线；fpid 未配置时锁定首个账号，避免跨账号。 */
+    static java.util.List<WjdrEngine> selectEngines(java.util.List<WjdrEngine> online,
+                                                    String fpid, long kid, boolean multi) {
+        java.util.List<WjdrEngine> out = new java.util.ArrayList<>();
+        if (online == null) return out;
+        java.util.Set<WjdrEngine> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        String want = fpid == null ? "" : fpid.trim();
+        for (WjdrEngine e : online) {
+            if (e == null) continue;
             try {
-                attach(e);
-                if (e.lastServerId() != store.kid) continue;
-                String want = store.fpid == null ? "" : store.fpid.trim();
-                if (!want.isEmpty() && !want.equals(e.lastFpid())) continue;
-                fallback = e;
-                break;
+                if (e.lastServerId() != kid) continue;
+                if (e.sessionState() == null || !WjdrEngine.STATE_ONLINE.equals(e.sessionState())) continue;
+                String efpid = e.lastFpid() == null ? "" : e.lastFpid();
+                if (!want.isEmpty()) {
+                    if (!want.equals(efpid)) continue;
+                } else if (!out.isEmpty()) {
+                    // 未配置 fpid：只选同一账号（fpid 全等），避免跨账号串数据
+                    if (!efpid.equals(out.get(0).lastFpid())) continue;
+                }
+                if (!seen.add(e)) continue;
+                out.add(e);
+                if (!multi) break;
             } catch (Throwable ignored) {
-                // 单会话异常跳过
             }
         }
-        if (fallback != null) {
-            String desc = fallback.lastFpid() + ":" + fallback.lastServerId() + ":" + fallback.lastUid();
-            if (!desc.equals(lastEngineDesc)) {
-                lastEngineDesc = desc;
-                FileLog.info("[{}] 使用会话 {}（观察点扫描）", LOG, desc);
+        return out;
+    }
+
+    /** env VAULT_WATCHPOINT_MULTI=off/0 强制单角色；否则按 store.multiRole（默认 true）。 */
+    static boolean multiRoleEnabled(boolean storeMulti) {
+        try {
+            String v = System.getenv(ENV_MULTI);
+            if (v != null) {
+                String s = v.trim();
+                if ("off".equalsIgnoreCase(s) || "0".equals(s)
+                        || "false".equalsIgnoreCase(s) || "no".equalsIgnoreCase(s)) return false;
+            }
+        } catch (Throwable ignored) {
+        }
+        return storeMulti;
+    }
+
+    private boolean multiRoleEnabled() {
+        return multiRoleEnabled(store.multiRole);
+    }
+
+    private void updateEngineDesc(java.util.List<WjdrEngine> engines) {
+        java.util.List<String> descs = new java.util.ArrayList<>();
+        for (WjdrEngine e : engines) {
+            try {
+                descs.add(e.lastFpid() + ":" + e.lastServerId() + ":" + e.lastUid());
+            } catch (Throwable ignored) {
             }
         }
-        return fallback;
+        if (!descs.equals(lastEngineDescs)) {
+            lastEngineDescs = descs;
+            FileLog.info("[{}] 使用会话 {}（观察点扫描，角色数={}）",
+                    LOG, String.join(",", descs), String.valueOf(descs.size()));
+        }
+        for (WjdrEngine e : engines) attach(e);
     }
 
     private void attach(WjdrEngine engine) {
@@ -421,7 +506,9 @@ public final class WatchPointEngine {
 
     // ------------------------------------------------------------------ 常态轮询
 
-    private void pollTick(WjdrEngine engine) {
+    private void pollTick(java.util.List<WjdrEngine> engines) {
+        if (engines == null || engines.isEmpty()) return;
+        int n = engines.size();
         long now = System.currentTimeMillis();
         refillTokens(now);
         if (store.fullScanIntervalMs > 0 && now >= nextScanAt) {
@@ -438,7 +525,7 @@ public final class WatchPointEngine {
             if (!due || (old != null && !old.ended && now - old.sentAt < RESPONSE_TIMEOUT_MS)) continue;
             if (!takeToken()) return;
             WatchPointStore.Rect rect = rectAround(t.x, t.y, 27);
-            send(engine, session, rect, Kind.MONITOR);
+            send(engines.get(i % n), session, rect, Kind.MONITOR);
         }
         // 保护矩形（20–30s）
         for (int i = 0; i < store.protectRects.size(); i++) {
@@ -449,7 +536,8 @@ public final class WatchPointEngine {
             boolean due = sent == null || now - sent >= store.protectIntervalMs;
             if (!due || (old != null && !old.ended && now - old.sentAt < RESPONSE_TIMEOUT_MS)) continue;
             if (!takeToken()) return;
-            send(engine, session, rect, Kind.PROTECT);
+            int mi = store.monitorTargets.size();
+            send(engines.get((i + mi) % n), session, rect, Kind.PROTECT);
         }
         // 超时清理 + 告警去重表清理
         if (now - lastPruneAt > 60_000L) {
@@ -747,6 +835,7 @@ public final class WatchPointEngine {
                 type, target == null ? null : target.nick, target == null ? 0L : target.aid,
                 ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText());
         alert(key, text);
+        trackAttacker(owner, ownerCity);
     }
 
     /**
@@ -783,6 +872,7 @@ public final class WatchPointEngine {
                 type, target == null ? null : target.nick, target == null ? 0L : target.aid,
                 ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText());
         alert(key, text);
+        trackAttacker(owner, ownerCity);
     }
 
     /**
@@ -823,9 +913,11 @@ public final class WatchPointEngine {
         FileLog.info("[{}] 触发整图扫描：{}（484 格，预计 15–20s）", LOG, scan.reason);
     }
 
-    private void scanTick(WjdrEngine engine) {
+    private void scanTick(java.util.List<WjdrEngine> engines) {
+        if (engines == null || engines.isEmpty()) return;
+        int n = engines.size();
         long now = System.currentTimeMillis();
-        int budget = 4;   // 每 80ms 最多 4 块 ⇒ ≈50 req/s 的扫描发送速率（整图约 10s 发完）
+        int budget = 4;   // 每 80ms 最多 4 块（N 个角色并行时总速率为 4N）
         while (scan.nextTile < SCAN_TILES && budget-- > 0) {
             int i = scan.nextTile++;
             int sx = (i / GRID) * TILE;
@@ -838,10 +930,17 @@ public final class WatchPointEngine {
             Ctx ctx = new Ctx(session, Kind.SCAN, rect);
             ctxBySession.put(session, ctx);
             lastSent.put(session, now);
-            sendRaw(engine, session, rect);
+            try {
+                sendRaw(engines.get(i % n), session, rect);
+            } catch (Throwable t) {
+                // 单引擎异常不影响其它引擎/后续 tile
+                FileLog.warn("[{}] 扫描发送失败 engine={} session={}：{}",
+                        LOG, String.valueOf(engines.get(i % n).lastUid()),
+                        String.valueOf(session), String.valueOf(t));
+            }
         }
         if (scan.nextTile >= SCAN_TILES && (scan.ended >= SCAN_TILES
-                || now - scan.startedAt > SCAN_TIMEOUT_MS)) {
+                || now - scan.startedAt > store.scanTimeoutMs)) {
             finishScan();
         }
     }
@@ -862,6 +961,16 @@ public final class WatchPointEngine {
     private void finishScan() {
         scan.active = false;
         long cost = System.currentTimeMillis() - scan.startedAt;
+        String completeness = scan.ended + "/" + SCAN_TILES;
+        boolean complete = scan.ended >= (int) Math.ceil(SCAN_TILES * SCAN_COMPLETE_RATIO);
+        if (!complete) {
+            FileLog.warn("[{}] 整图扫描不完整：{}/{} 格，耗时 {}ms，城缓存 {}（<95%，跳过矩形健康度/迁城/攻击者判定，不告警）",
+                    LOG, String.valueOf(scan.ended), String.valueOf(SCAN_TILES),
+                    String.valueOf(cost), String.valueOf(cityByUid.size()));
+            nextScanAt = store.fullScanIntervalMs > 0
+                    ? System.currentTimeMillis() + store.fullScanIntervalMs : Long.MAX_VALUE;
+            return;
+        }
         int found = 0;
         int missing = 0;
         for (WatchPointStore.Target t : store.monitorTargets) {
@@ -879,10 +988,11 @@ public final class WatchPointEngine {
                 targetMisses.remove(t.uid);
                 alert("move:" + t.uid + ":" + c.x + ":" + c.y,
                         "📍 观察点·迁城\n监视目标 " + t.display() + "\n原坐标 (" + ox + "," + oy
-                                + ") → 新坐标 (" + c.x + "," + c.y + ")\n时间：" + nowText());
+                                + ") → 新坐标 (" + c.x + "," + c.y + ")\n扫描完整度=" + completeness
+                                + "\n时间：" + nowText());
             }
         }
-        // 保护矩形健康度：基线上报每个聚集地当前友盟城数量；为 0 说明聚集地可能已迁移，提示重扫
+        // 保护矩形健康度：连续 2 次完整扫描为 0 才告警（防部分扫描误报）
         StringBuilder health = new StringBuilder();
         for (WatchPointStore.Rect r : store.protectRects) {
             int n = 0;
@@ -891,23 +1001,104 @@ public final class WatchPointEngine {
             }
             health.append(r.name).append('=').append(n).append(' ');
             if (n == 0) {
-                alert("rect-empty:" + r.name + ":" + (scan.startedAt / 3_600_000L),
-                        "⚠️ 观察点·保护矩形为空\n" + r.name + " " + r.display()
-                                + " 内没有友盟城（聚集地可能已迁移，建议重扫）\n时间：" + nowText());
+                int streak = rectEmptyStreak.merge(r.name, 1, Integer::sum);
+                if (streak >= 2) {
+                    alert("rect-empty:" + r.name + ":" + (scan.startedAt / 3_600_000L),
+                            "⚠️ 观察点·保护矩形为空\n" + r.name + " " + r.display()
+                                    + " 内没有友盟城（连续 " + streak + " 次完整扫描；聚集地可能已迁移，建议重扫）"
+                                    + "\n扫描完整度=" + completeness + "\n时间：" + nowText());
+                } else {
+                    FileLog.info("[{}] 保护矩形 {} 首次完整扫描为空（连续 {} 次），暂不告警",
+                            LOG, r.name, String.valueOf(streak));
+                }
+            } else {
+                rectEmptyStreak.remove(r.name);
             }
         }
-        FileLog.info("[{}] 保护矩形友盟城数：{}", LOG, health.toString().trim());
+        FileLog.info("[{}] 保护矩形友盟城数（完整度 {}）：{}", LOG, completeness, health.toString().trim());
         if (found > 0) store.save();
-        FileLog.info("[{}] 整图扫描完成：{} 格/{} 城，耗时 {}ms，监视目标命中 {}/{}（缺失 {}）",
-                LOG, String.valueOf(SCAN_TILES), String.valueOf(cityByUid.size()),
-                String.valueOf(cost), String.valueOf(found),
-                String.valueOf(store.monitorTargets.size()), String.valueOf(missing));
+        checkTrackedAttackers(completeness);
+        FileLog.info("[{}] 整图扫描完成：{}/{} 格/{} 城，完整度={}，耗时 {}ms，监视目标命中 {}/{}（缺失 {}）",
+                LOG, String.valueOf(scan.ended), String.valueOf(SCAN_TILES),
+                String.valueOf(cityByUid.size()), completeness, String.valueOf(cost),
+                String.valueOf(found), String.valueOf(store.monitorTargets.size()),
+                String.valueOf(missing));
         if (missing > 0) {
             alert("scan-missing:" + scan.startedAt,
-                    "⚠️ 观察点·扫描未找到\n" + missing + " 个监视目标本轮整图未找到（可能跨服/数据延迟）\n时间：" + nowText());
+                    "⚠️ 观察点·扫描未找到\n" + missing + " 个监视目标本轮整图未找到（可能跨服/数据延迟）"
+                            + "\n扫描完整度=" + completeness + "\n时间：" + nowText());
         }
         nextScanAt = store.fullScanIntervalMs > 0
                 ? System.currentTimeMillis() + store.fullScanIntervalMs : Long.MAX_VALUE;
+    }
+
+    // ------------------------------------------------------------------ 攻击者击飞/迁城跟踪（Q3）
+
+    /** 告警时记录攻击者 uid + 当前城坐标（monitorTargets 内的 uid 跳过）。 */
+    private void trackAttacker(long uid, City city) {
+        if (uid <= 0L || city == null || isMonitoredUid(uid)) return;
+        long now = System.currentTimeMillis();
+        TrackedAttacker old = trackedAttackers.get(uid);
+        if (old != null) {
+            old.x = city.x;
+            old.y = city.y;
+            old.atMs = now;
+            return;
+        }
+        if (trackedAttackers.size() >= ATTACKER_TRACK_MAX) {
+            long oldestUid = 0L;
+            long oldest = Long.MAX_VALUE;
+            for (TrackedAttacker a : trackedAttackers.values()) {
+                if (a.atMs < oldest) {
+                    oldest = a.atMs;
+                    oldestUid = a.uid;
+                }
+            }
+            if (oldestUid > 0L) trackedAttackers.remove(oldestUid);
+        }
+        trackedAttackers.put(uid, new TrackedAttacker(uid, city.nick, city.x, city.y, now));
+    }
+
+    /** 完整扫描后对比攻击者坐标：迁城→告警新坐标；未找到→未定位（同 uid 6h 去重）。 */
+    private void checkTrackedAttackers(String completeness) {
+        long now = System.currentTimeMillis();
+        for (Long uidObj : new java.util.ArrayList<>(trackedAttackers.keySet())) {
+            long uid = uidObj == null ? 0L : uidObj;
+            if (uid <= 0L) continue;
+            TrackedAttacker ta = trackedAttackers.get(uid);
+            if (ta == null) continue;
+            if (now - ta.atMs > ATTACKER_TRACK_TTL_MS) {
+                trackedAttackers.remove(uid);
+                attackerMissingAt.remove(uid);
+                continue;
+            }
+            if (isMonitoredUid(uid)) continue;   // 监视目标自身逻辑已覆盖
+            City c = cityByUid.get(uid);
+            if (c == null) {
+                Long last = attackerMissingAt.get(uid);
+                if (last != null && now - last < ATTACKER_MISSING_DEDUPE_MS) continue;
+                attackerMissingAt.put(uid, now);
+                alert("attacker-missing:" + uid,
+                        "⚠️ 观察点·攻击者未定位（可能被击飞/跨服）\nuid=" + uid
+                                + (ta.nick.isEmpty() ? "" : " " + ta.nick)
+                                + "\n最后坐标 (" + ta.x + "," + ta.y + ")"
+                                + "\n扫描完整度=" + completeness + "\n时间：" + nowText());
+                continue;
+            }
+            attackerMissingAt.remove(uid);
+            if (c.x != ta.x || c.y != ta.y) {
+                int ox = ta.x;
+                int oy = ta.y;
+                alert("attacker-move:" + uid + ":" + c.x + ":" + c.y,
+                        "📍 观察点·攻击者迁城\nuid=" + uid
+                                + (ta.nick.isEmpty() ? "" : " " + ta.nick)
+                                + "\n原坐标 (" + ox + "," + oy + ") → 新坐标 (" + c.x + "," + c.y + ")"
+                                + "\n扫描完整度=" + completeness + "\n时间：" + nowText());
+                ta.x = c.x;
+                ta.y = c.y;
+                ta.atMs = now;
+            }
+        }
     }
 
     // ------------------------------------------------------------------ 告警出口
@@ -918,6 +1109,7 @@ public final class WatchPointEngine {
         if (prev != null && now - prev < ALERT_DEDUPE_MS) return;
         alerted.put(key, now);
         statAlerts.incrementAndGet();
+        lastAlertText = text;
         FileLog.info("[{}] {}", LOG, text.replace('\n', ' ').replace('\r', ' '));
         if (!store.wecomEnabled) return;
         VaultStore.WatchConfig cfg = vaultStore.watchConfig();
@@ -1060,6 +1252,71 @@ public final class WatchPointEngine {
 
     List<WatchPointStore.Rect> protectRectsSnapshot() {
         return new ArrayList<>(store.protectRects);
+    }
+
+    // ------------------------------------------------------------------ 单测钩子（包可见）
+
+    void startScanForTest(String reason) {
+        startScan(reason);
+    }
+
+    void scanTickForTest(java.util.List<WjdrEngine> engines) {
+        scanTick(engines);
+    }
+
+    void finishScanForTest() {
+        finishScan();
+    }
+
+    void feedResponseForTest(int session, String proto, Map<String, Object> content) {
+        Map<String, Object> c = new LinkedHashMap<>();
+        if (content != null) c.putAll(content);
+        c.put("session", (long) session);
+        onMessage(null, proto, c);
+    }
+
+    boolean scanActiveForTest() {
+        return scan.active;
+    }
+
+    int scanEndedForTest() {
+        return scan.ended;
+    }
+
+    int cityCacheForTest() {
+        return cityByUid.size();
+    }
+
+    int alertCountForTest() {
+        return (int) statAlerts.get();
+    }
+
+    String lastAlertTextForTest() {
+        return lastAlertText;
+    }
+
+    java.util.List<WjdrEngine> pickEnginesForTest(java.util.List<WjdrEngine> online) {
+        return selectEngines(online, store.fpid, store.kid, multiRoleEnabled());
+    }
+
+    void pollTickForTest(java.util.List<WjdrEngine> engines) {
+        pollTick(engines);
+    }
+
+    void trackAttackerForTest(long uid, long aid, int x, int y, String nick) {
+        City c = new City();
+        c.uid = uid;
+        c.aid = aid;
+        c.x = x;
+        c.y = y;
+        c.nick = nick == null ? "" : nick;
+        cityByUid.put(uid, c);
+        cityByPoint.put(x + "," + y, c);
+        trackAttacker(uid, c);
+    }
+
+    void setMultiRoleForTest(boolean multi) {
+        store.multiRole = multi;
     }
 
 }

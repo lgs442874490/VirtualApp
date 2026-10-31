@@ -98,6 +98,10 @@ public final class WatchPointStore {
     public long protectIntervalMs = 25000L;
     /** 常态请求限速（req/s），整图扫描突发不受此限。 */
     public double maxReqPerSec = 2.5d;
+    /** 批次 Q2：多角色协同（同账号同 kid 的在线角色分摊监视/保护/扫描；env off 可强制单角色）。 */
+    public boolean multiRole = true;
+    /** 批次 Q1：整图扫描超时（毫秒；默认 60000，超时后按已回包数据收尾但不做告警判定）。 */
+    public long scanTimeoutMs = 60_000L;
     /** 是否走企业微信（还需 vault.json watch.webhookUrl 非空）。只发告警，不发汇总。 */
     public boolean wecomEnabled = true;
     /** 可选：定期整图基线刷新间隔（毫秒；0=关闭，只在迁城事件触发）。 */
@@ -151,6 +155,8 @@ public final class WatchPointStore {
         o.put("monitorIntervalMs", monitorIntervalMs);
         o.put("protectIntervalMs", protectIntervalMs);
         o.put("maxReqPerSec", maxReqPerSec);
+        o.put("multiRole", multiRole);
+        o.put("scanTimeoutMs", scanTimeoutMs);
         o.put("wecomEnabled", wecomEnabled);
         o.put("fullScanIntervalMs", fullScanIntervalMs);
         o.put("cityTargetOnly", cityTargetOnly);
@@ -233,6 +239,12 @@ public final class WatchPointStore {
             if (nProtectMs < 3000L || nProtectMs > 3_600_000L) return "保护间隔须在 3000~3600000ms";
             if (nFullScan < 0L || nFullScan > 86_400_000L) return "整图扫描间隔须在 0~86400000ms";
             if (nRate < 0.2d || nRate > 30d) return "限速须在 0.2~30 req/s";
+            boolean nMulti = in.has("multiRole") ? in.optBoolean("multiRole", multiRole) : multiRole;
+            long nScanTimeout = in.has("scanTimeoutMs")
+                    ? in.optLong("scanTimeoutMs", scanTimeoutMs) : scanTimeoutMs;
+            if (nScanTimeout < 5_000L || nScanTimeout > 300_000L) {
+                return "扫描超时须在 5000~300000ms";
+            }
             boolean nWecom = in.has("wecomEnabled") ? in.optBoolean("wecomEnabled", wecomEnabled) : wecomEnabled;
             boolean nCityOnly = in.has("cityTargetOnly") ? in.optBoolean("cityTargetOnly", cityTargetOnly)
                     : cityTargetOnly;
@@ -284,6 +296,8 @@ public final class WatchPointStore {
             protectIntervalMs = nProtectMs;
             fullScanIntervalMs = nFullScan;
             maxReqPerSec = nRate;
+            multiRole = nMulti;
+            scanTimeoutMs = nScanTimeout;
             wecomEnabled = nWecom;
             cityTargetOnly = nCityOnly;
             incomingRallyFollowerAlerts = nRallyFollower;
@@ -489,6 +503,8 @@ public final class WatchPointStore {
             monitorIntervalMs = clamp(o.optLong("monitorIntervalMs", 4000L), 1000L, 300_000L);
             protectIntervalMs = clamp(o.optLong("protectIntervalMs", 25000L), 3000L, 3_600_000L);
             maxReqPerSec = clampDouble(o.optDouble("maxReqPerSec", 2.5d), 0.2d, 30d);
+            multiRole = o.optBoolean("multiRole", true);
+            scanTimeoutMs = clamp(o.optLong("scanTimeoutMs", 60_000L), 5_000L, 300_000L);
             wecomEnabled = o.optBoolean("wecomEnabled", true);
             fullScanIntervalMs = clamp(o.optLong("fullScanIntervalMs", 0L), 0L, 86_400_000L);
             cityTargetOnly = o.optBoolean("cityTargetOnly", true);
@@ -563,6 +579,8 @@ public final class WatchPointStore {
         o.put("monitorIntervalMs", monitorIntervalMs);
         o.put("protectIntervalMs", protectIntervalMs);
         o.put("maxReqPerSec", maxReqPerSec);
+        o.put("multiRole", multiRole);
+        o.put("scanTimeoutMs", scanTimeoutMs);
         o.put("wecomEnabled", wecomEnabled);
         o.put("fullScanIntervalMs", fullScanIntervalMs);
         o.put("cityTargetOnly", cityTargetOnly);
