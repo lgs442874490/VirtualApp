@@ -533,6 +533,11 @@ public final class ServerTasks {
             }
             Object code = rsp.getContent().get("code");
             if (code != null && toInt(code) != 0) {
+                // 2026-11-01 生产实证（新角色）：成就领取返回 7903（无奖励/未开放）→ 跳过，不刷 ERROR
+                if (toInt(code) == 7903) {
+                    return new TaskOutcome("achievement_claim", "成就奖励",
+                            TaskOutcome.Category.SKIPPED, "成就奖励暂不可领（码7903）");
+                }
                 return classifyServerCode(toInt(code), "成就奖励");
             }
             String d = com.carlos.vault.daily.RewardText.describe(rsp.getContent().get("rewards") != null
@@ -2101,6 +2106,10 @@ public final class ServerTasks {
             case 1570: case 1571: case 1574: case 1576: case 1577: case 1579: case 1580: case 1581:
             // 2026-10-30 生产实证：21 天签到（三轨之一）返回 11506（暂不可用/未开放/未同步），
             // 旧实现落 DEGRADED 每轮刷；归一为“不可用”（不写已领台账，下轮/开放后再试）。
+            // 2026-11-01 生产实证（152/531/882 新角色）：七天签到 1706、21 天签到 11501
+            // 为未开放/等级不足/活动不可用 —— 归入不可用（SKIP，不写已领台账，后续自动重试）。
+            case 1706:
+            case 11501:
             case 11506:
             // 2026-10-30 生产实证：米娅许愿屋 req_fortune_card_get_daily_free_gift 返回 10151
             // （每日免费礼物已领/今日不可领）。旧实现记 ERROR 并每 ~6 分钟重试；归一为“不可用/已领”。
@@ -3045,6 +3054,7 @@ public final class ServerTasks {
             long trophyRemaining = trophyReceived < 0 ? Long.MAX_VALUE
                     : Math.max(0L, 500L - trophyReceived);
             int claimed = 0, skipped = 0, failed = 0;
+            boolean notInAlliance = false;
             boolean trophyLimitHit = false;
             StringBuilder detail = new StringBuilder();
             // 2026-10-25：失败码入文案（生产 7 次 ERROR 只写“宝箱失败×1”，无法定位是 1540 还是别的）
@@ -3093,6 +3103,10 @@ public final class ServerTasks {
                 } else if (code == 1529) {   // 战利品宝箱上限
                     trophyLimitHit = true;
                     skipped++;
+                } else if (code == 1507) {
+                    // 2026-11-01 生产实证（152/531/882 新角色）：1507 = 未加入联盟 → 整任务跳过，不再逐箱重试
+                    notInAlliance = true;
+                    break;
                 } else if (code == 1540 || code == 1541 || code == 1542 || code == 1543) {
                     // 箱子已失效/不可领（网页版 DailyAllianceChestService.isConvergedChestError:
                     // 1540/1541/1542/1543 均视为“已收敛”）：记失效集合，本轮跳过、TTL 内不再重复请求。
@@ -3106,6 +3120,11 @@ public final class ServerTasks {
             }
             if (invalidChanged) saveInvalidChests(tc, invalidChests);
             TaskOutcome r;
+            if (notInAlliance && claimed == 0) {
+                r = new TaskOutcome("alliance_chest", "联盟宝箱",
+                        TaskOutcome.Category.SKIPPED, "未加入联盟（码1507），跳过联盟宝箱");
+                return r;
+            }
             if (claimed > 0) {
                 r = new TaskOutcome("alliance_chest", "联盟宝箱",
                         TaskOutcome.Category.CLAIMED, "联盟宝箱领取×" + claimed + " " + detail);

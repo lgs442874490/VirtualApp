@@ -488,6 +488,8 @@ public final class MedicService {
         return stop.isEmpty()
                 || stop.contains("上批仍在治疗中")
                 || stop.contains("资源不足")
+                // 2026-11-01 生产实证（新角色）：军医所数据未就绪返回码 2 → 跳过而非 ERROR
+                || stop.contains("伤兵数据无效")
                 || stop.contains("伤兵数量已变化")
                 || stop.contains("无剩余可治疗伤兵")
                 || stop.contains("伤兵已清零");

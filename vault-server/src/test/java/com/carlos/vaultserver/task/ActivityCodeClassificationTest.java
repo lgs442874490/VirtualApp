@@ -27,4 +27,13 @@ public class ActivityCodeClassificationTest {
         assertFalse("未知码仍按失败处理", ServerTasks.isActivityUnavailableCode(999999));
         assertFalse(ServerTasks.isActivityAlreadyClaimedCode(10152));
     }
+
+    /** 2026-11-01：新角色（152/531/882）实测的签到码 1706/11501 归“不可用”（SKIP 不刷 DEGRADED）。 */
+    @Test
+    public void loginTrackCodes_1706_11501_areUnavailableNotClaimed() {
+        assertTrue("七天签到 1706 = 不可用", ServerTasks.isActivityUnavailableCode(1706));
+        assertTrue("21天签到 11501 = 不可用", ServerTasks.isActivityUnavailableCode(11501));
+        assertFalse("1706 不写已领台账", ServerTasks.isActivityAlreadyClaimedCode(1706));
+        assertFalse("11501 不写已领台账", ServerTasks.isActivityAlreadyClaimedCode(11501));
+    }
 }
