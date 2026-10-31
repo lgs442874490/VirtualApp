@@ -1272,19 +1272,60 @@ public final class ServerGuardianEngine {
     /** 批次 Q：从登录推送缓存补集结（mass_march_* 常在登录后一次性下发，钩子错过）。 */
     void hydrateMassRalliesFromNotify(WjdrEngine engine) {
         if (engine == null) return;
+        int n = 0;
         for (String proto : new String[]{PROTO_MASS_ADD, PROTO_MASS_UPDATE}) {
             try {
                 Map<String, Object> content = engine.notifyData(proto);
                 if (content == null || content.isEmpty()) continue;
                 logMassKeys(proto, content, "hydrate");
                 handleMassMarch(engine, proto, content, clockMs.getAsLong());
+                n++;
             } catch (Throwable ignored) {
             }
+        }
+        // 2026-10-31：集结推送可能只到兄弟角色会话（守护只挂 active 角色）→ 用账号级通知历史兜底。
+        if (n == 0) hydrateMassRalliesFromHistory(engine);
+    }
+
+    /** 批次 Q：把同 owner/同目标且带兵力信息的 Rally 合并进当前 Rally（历史补链后）。 */
+    void mergeRallyInfoFor(Threat t, Rally r) {
+        if (t == null || r == null || r.hasSoldierInfo) return;
+        for (Rally other : rallies.values()) {
+            if (other == null || other == r) continue;
+            if (!other.hasSoldierInfo && !other.hasJoinInfo && other.memberCount <= 0L) continue;
+            boolean sameOwner = other.ownerUid > 0L && other.ownerUid == t.ownerUid;
+            boolean sameTarget = (t.targetUid > 0L && other.targetUid == t.targetUid)
+                    || (t.hasXY && other.hasXY && t.x == other.x && t.y == other.y);
+            if (sameOwner && sameTarget) {
+                mergeRally(r, other);
+                if (r.hasSoldierInfo) return;
+            }
+        }
+    }
+
+    /** 批次 Q：账号级通知历史（ServerNotifyHistory）补集结（跨角色会话）。 */
+    void hydrateMassRalliesFromHistory(WjdrEngine engine) {
+        try {
+            java.util.List<com.carlos.vaultserver.task.ServerNotifyHistory.Entry> list =
+                    com.carlos.vaultserver.task.ServerNotifyHistory.history(fpid,
+                            "notify_mass_march_add", "notify_mass_march_update",
+                            "notify_mass_march_del");
+            if (list == null || list.isEmpty()) return;
+            int used = 0;
+            for (com.carlos.vaultserver.task.ServerNotifyHistory.Entry e : list) {
+                if (e == null || e.content == null) continue;
+                if (used++ >= 64) break;
+                logMassKeys(e.proto, e.content, "history");
+                handleMassMarch(engine, e.proto, e.content, clockMs.getAsLong());
+            }
+        } catch (Throwable ignored) {
         }
     }
 
     /** 批次 N：mass 推送键名诊断（只键名不含值；同进程 ≤1 条/10 分钟），用于校准真实字段。 */
     private volatile long massKeysLogAtMs;
+    /** 批次 Q：账号级 mass 历史补链节流（30s）。 */
+    private volatile long lastRallyHistoryHydrateMs;
 
     void logMassKeys(String proto, Map<String, Object> content, String why) {
         long now = clockMs.getAsLong();
@@ -2005,6 +2046,17 @@ public final class ServerGuardianEngine {
                 ledger("rally_cancelled", t, null, "集结已取消/解散 → 不驻防");
                 cancelRallyWait(marchId);
                 return;
+            }
+            if (truth == RallyTruth.UNKNOWN && (r == null || !r.hasSoldierInfo)) {
+                // 兄弟角色会话收到 mass 推送时，本引擎靠账号级历史兜底（30s 节流）
+                long hnow = clockMs.getAsLong();
+                if (hnow - lastRallyHistoryHydrateMs > 30_000L) {
+                    lastRallyHistoryHydrateMs = hnow;
+                    hydrateMassRalliesFromHistory(engine);
+                    // 历史 mass 与威胁可能不同 id/坐标口径：把同 owner/同目标且带兵力的 mass 合并进当前 Rally
+                    mergeRallyInfoFor(t, r);
+                    truth = evaluateRally(r, cfg);
+                }
             }
             if (truth == RallyTruth.UNKNOWN) {
                 // 批次 N（2026-10-31）：mass 推送普遍缺兵力/上车字段 → 用只读详情查询补一次再判，
