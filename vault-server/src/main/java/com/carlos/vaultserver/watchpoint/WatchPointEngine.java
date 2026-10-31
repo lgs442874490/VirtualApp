@@ -495,7 +495,20 @@ public final class WatchPointEngine {
             long m = Files.isRegularFile(f) ? Files.getLastModifiedTime(f).toMillis() : -1L;
             if (m > 0 && m != storeMtime) {
                 storeMtime = m;
+                long prevInterval = store.fullScanIntervalMs;
                 store.load();
+                // 2026-10-31：在线改 fullScanIntervalMs（0→15min 等）时必须重排下次扫描，
+                // 否则 nextScanAt 仍是 Long.MAX_VALUE → 周期扫描永不触发（迁城/攻击者跟踪失效）。
+                if (store.fullScanIntervalMs != prevInterval) {
+                    nextScanAt = store.fullScanIntervalMs > 0
+                            ? System.currentTimeMillis() + store.fullScanIntervalMs
+                            : Long.MAX_VALUE;
+                    FileLog.info("[{}] 扫描间隔已更新：{}ms（下次扫描 {}）", LOG,
+                            String.valueOf(store.fullScanIntervalMs),
+                            store.fullScanIntervalMs > 0
+                                    ? new java.text.SimpleDateFormat("HH:mm:ss").format(new java.util.Date(nextScanAt))
+                                    : "禁用");
+                }
                 FileLog.info("[{}] 配置已重载：监视={} 保护={} enabled={}",
                         LOG, String.valueOf(store.monitorTargets.size()),
                         String.valueOf(store.protectRects.size()), String.valueOf(store.enabled));
