@@ -77,9 +77,9 @@ public final class GameCloneGuide {
             intent.setType("application/vnd.android.package-archive");
             activity.startActivityForResult(intent, REQ_PICK_APK);
         } catch (Throwable t) {
-            Toast.makeText(activity,
+            com.carlos.vault.UiStyle.toast(activity,
                     "当前系统没有可用的文件选择器，请把官方 APK 放进「下载」目录后点「开始克隆」重试",
-                    Toast.LENGTH_LONG).show();
+                    Toast.LENGTH_LONG);
         }
     }
 
@@ -89,8 +89,8 @@ public final class GameCloneGuide {
             String url = GameClientUpdateConfig.defaults().shortLink;
             activity.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(url)));
         } catch (Throwable t) {
-            Toast.makeText(activity, "无法打开浏览器，请手动搜索「无尽冬日 安卓版 下载」",
-                    Toast.LENGTH_LONG).show();
+            com.carlos.vault.UiStyle.toast(activity, "无法打开浏览器，请手动搜索「无尽冬日 安卓版 下载」",
+                    Toast.LENGTH_LONG);
         }
     }
 
@@ -132,7 +132,8 @@ public final class GameCloneGuide {
                 }
                 if (activity.isFinishing()) return;
                 if (err == null) {
-                    Toast.makeText(activity, "克隆完成 ✓ 继续点②首启", Toast.LENGTH_LONG).show();
+                    com.carlos.vault.UiStyle.toast(activity, "克隆完成 ✓ 继续点②首启",
+                            Toast.LENGTH_LONG);
                     if (onInstalled != null) onInstalled.run();
                 } else {
                     new AlertDialog.Builder(activity, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)

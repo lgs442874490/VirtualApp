@@ -1714,30 +1714,24 @@ public class FunctionActivity extends Activity {
         // 只展示默认值：打开页面不修改任何参数（服务端对缺省 heal_count 的默认值由服务端
         // 侧统一为 400，App 不静默写配置；仅用户改动/点保存时才落库下发）。
 
-        LinearLayout card = UiStyle.card(this);
+        LinearLayout card = UiComponents.card(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(16), dp(14), dp(16), dp(14));
 
-        TextView title = new TextView(this);
-        title.setText("医院设置");
-        title.setTextSize(14);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
+        TextView title = UiComponents.text(this, "医院设置", UiComponents.TEXT_BODY,
+                UiStyle.INK, true);
         card.addView(title);
 
-        medicSummaryView = new TextView(this);
-        medicSummaryView.setText(medicSummaryText(heal));
-        medicSummaryView.setTextSize(12);
-        medicSummaryView.setTypeface(Typeface.DEFAULT_BOLD);
-        medicSummaryView.setTextColor(UiStyle.BRAND_TEXT);
+        medicSummaryView = UiComponents.numeric(this, medicSummaryText(heal),
+                UiComponents.TEXT_LABEL, UiStyle.BRAND_TEXT, true);
+        medicSummaryView.setSingleLine(true);
         medicSummaryView.setPadding(0, dp(4), 0, dp(2));
         card.addView(medicSummaryView);
 
-        TextView tip = new TextView(this);
-        tip.setText("按每批数量治疗伤兵（1-10000，默认 400）；循环治疗直到伤兵清零或资源不足。"
-                + "「治疗后联盟求助」在上方「执行参数」里切换（默认开）。");
-        tip.setTextSize(10.5f);
-        tip.setTextColor(UiStyle.INK2);
+        TextView tip = UiComponents.text(this, "按每批数量治疗伤兵（1-10000，默认 400）；"
+                        + "循环治疗直到伤兵清零或资源不足。"
+                        + "「治疗后联盟求助」在上方「执行参数」里切换（默认开）。",
+                UiComponents.TEXT_MICRO, UiStyle.INK2, false);
         tip.setPadding(0, 0, 0, dp(6));
         card.addView(tip);
 
@@ -1746,11 +1740,8 @@ public class FunctionActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, dp(6), 0, dp(2));
-        TextView label = new TextView(this);
-        label.setText("每批治疗数量");
-        label.setTextSize(12.5f);
-        label.setTypeface(Typeface.DEFAULT_BOLD);
-        label.setTextColor(UiStyle.INK);
+        TextView label = UiComponents.text(this, "每批治疗数量", UiComponents.TEXT_LABEL,
+                UiStyle.INK, true);
         row.addView(label, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         medicHealEt = UiStyle.searchInput(this, "1-10000");
@@ -1799,7 +1790,7 @@ public class FunctionActivity extends Activity {
             if (medicHealEt != null) medicHealEt.clearFocus();
         });
         LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
         slp.topMargin = dp(10);
         card.addView(save, slp);
         return card;
@@ -1886,26 +1877,19 @@ public class FunctionActivity extends Activity {
         final HuntConfig.Cfg cfg = HuntConfig.parse(
                 FnParams.params(this, account.fpid, serverid, HuntConfig.FN_ID));
 
-        TextView title = new TextView(this);
-        title.setText("狩猎设置");
-        title.setTextSize(14);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
+        TextView title = UiComponents.text(this, "狩猎设置", UiComponents.TEXT_BODY,
+                UiStyle.INK, true);
         card.addView(title);
 
-        TextView cur = new TextView(this);
-        cur.setText("当前：" + cfg.summary());
-        cur.setTextSize(12);
-        cur.setTypeface(Typeface.DEFAULT_BOLD);
-        cur.setTextColor(UiStyle.BRAND_TEXT);
+        TextView cur = UiComponents.numeric(this, "当前：" + cfg.summary(),
+                UiComponents.TEXT_LABEL, UiStyle.BRAND_TEXT, true);
+        cur.setSingleLine(true);
         cur.setPadding(0, dp(4), 0, dp(2));
         card.addView(cur);
 
-        TextView tip = new TextView(this);
-        tip.setText("只搜索该等级区间的野怪；下限高于上限时自动夹取（上限至少等于下限）。"
-                + "出击次数用满、无目标或体力不足即停。");
-        tip.setTextSize(10.5f);
-        tip.setTextColor(UiStyle.INK2);
+        TextView tip = UiComponents.text(this, "只搜索该等级区间的野怪；下限高于上限时自动夹取（上限至少等于下限）。"
+                        + "出击次数用满、无目标或体力不足即停。",
+                UiComponents.TEXT_MICRO, UiStyle.INK2, false);
         tip.setPadding(0, 0, 0, dp(6));
         card.addView(tip);
 
