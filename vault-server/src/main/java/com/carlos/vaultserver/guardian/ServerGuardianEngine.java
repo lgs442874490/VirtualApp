@@ -2108,6 +2108,8 @@ public final class ServerGuardianEngine {
         if (p == null) return;
         boolean marchProto = proto != null && (proto.startsWith("notify_world_march")
                 || proto.startsWith("notify_mass_march"));
+        boolean mapProto = proto != null && (proto.equals("notify_world_mapobjs")
+                || proto.startsWith("notify_world_mapobj"));
         if (System.currentTimeMillis() - probeDiagLogAt > 60_000L) {
             probeDiagLogAt = System.currentTimeMillis();
             FileLog.info("守护盟友[probe] 收到 proto={} keys={} (session={})", proto,
@@ -2128,6 +2130,48 @@ public final class ServerGuardianEngine {
                 p.troops += Math.max(0L, troops);
                 p.marches++;
             }
+
+        }
+        if (mapProto) {
+            // notify_world_mapobjs.datalist 同时含「城」(map_city) 与「在途队列」(owner+endpoint/type=4)，
+            // 网页坐标查询就是从这里取“出征队列 + 携带兵数量”。
+            java.util.List<Map<String, Object>> items = new ArrayList<>();
+            collectMaps(content.get("datalist"), items);
+            collectMaps(content.get("obj"), items);
+            collectMaps(content.get("change"), items);
+            for (Map<String, Object> item : items) {
+                Map<String, Object> city = firstMap(item, "map_city", "city", "mapCity");
+                if (city != null && !city.isEmpty()) {
+                    int[] cp = pointOfAny(item, "point");
+                    if (cp != null) {
+                        Object aidRaw = city.get("aid");
+                        if (aidRaw == null) aidRaw = city.get("alliance_id");
+                        Object nickRaw = city.get("nickName");
+                        if (nickRaw == null) nickRaw = city.get("nickname");
+                        if (nickRaw == null) nickRaw = city.get("name");
+                        com.carlos.vaultserver.watchpoint.WatchPointEngine.observeCity(
+                                Exec.longOf(city.get("uid")), Exec.longOf(aidRaw),
+                                cp[0], cp[1], nickRaw == null ? "" : String.valueOf(nickRaw));
+                    }
+                }
+                boolean queueLike = item.containsKey("owner") && item.containsKey("endpoint");
+                if (!queueLike && Exec.longOf(item.get("type")) == 4L) queueLike = true;
+                if (!queueLike) continue;
+                int[] pt = pointOfAny(item, "endpoint", "end_point", "point");
+                if (pt == null || pt[0] != p.x || pt[1] != p.y) continue;
+                long owner = Exec.longOf(item.get("owner"));
+                if (owner > 0L && owner == safeLastUid()) continue;
+                p.troops += Math.max(0L, troopsOf(item)[0]);
+                p.marches++;
+            }
+            Object ef0 = content.get("end_flag");
+            boolean ended0 = ef0 instanceof Boolean ? (Boolean) ef0 : Exec.longOf(ef0) != 0L;
+            if (ended0) {
+                p.ended = true;
+                p.done.countDown();
+            }
+        }
+        if (marchProto) {
             Object ef = content.get("end_flag");
             boolean ended = ef instanceof Boolean ? (Boolean) ef : Exec.longOf(ef) != 0L;
             if (ended) {

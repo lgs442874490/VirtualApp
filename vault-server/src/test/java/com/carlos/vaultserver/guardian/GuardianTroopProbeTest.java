@@ -98,4 +98,29 @@ public class GuardianTroopProbeTest {
             g.shutdown();
         }
     }
+
+    @Test
+    public void mapobjsQueueEntries_countTroopsAtPoint() {
+        ServerGuardianEngine g = engine();
+        try {
+            g.registerProbeForTest(SESSION, 545, 470);
+            List<Object> items = new ArrayList<>();
+            Map<String, Object> q = march(77L, 545, 470, 260_000L);
+            q.put("type", 102L);
+            items.add(q);
+            Map<String, Object> other = march(78L, 600, 470, 999_999L);
+            items.add(other);
+            Map<String, Object> content = new LinkedHashMap<>();
+            content.put("session", (long) SESSION);
+            content.put("datalist", items);
+            content.put("end_flag", Boolean.TRUE);
+            g.handleProbeMessage("notify_world_mapobjs", content);
+            long[] r = g.probeResultForTest(SESSION);
+            assertEquals("mapobjs 里的队列兵力计入", 260_000L, r[0]);
+            assertEquals("只计目标点", 1L, r[1]);
+            assertEquals("结束等待", 1L, r[2]);
+        } finally {
+            g.shutdown();
+        }
+    }
 }

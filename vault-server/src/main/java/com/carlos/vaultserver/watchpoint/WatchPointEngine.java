@@ -143,6 +143,13 @@ public final class WatchPointEngine {
         }
     }
 
+    /** 其它模块（守护坐标查询）观测到的城 → 写入共享缓存（aid 用于同联盟判定）。 */
+    public static void observeCity(long uid, long aid, int x, int y, String nick) {
+        WatchPointEngine e = SHARED;
+        if (e == null || uid <= 0L || x <= 0 || y <= 0) return;
+        e.seedCityForTest(uid, aid, x, y, nick);
+    }
+
     /** 测试钩子：注入一个城市坐标（仅单测使用；生产由整图扫描填充）。 */
     public void seedCityForTest(long uid, long aid, int x, int y, String nick) {
         City c = new City();
