@@ -470,6 +470,14 @@ public class FunctionActivity extends Activity {
                 scrollBox.addView(FormationPicker.buildBearJoinCard(
                         this, account.fpid, serverid, null));
             }
+            if ("intel".equals(fn.id)) {
+                // 设计 §4.2（2026-10-31）：情报出征设置卡——三行英雄下拉（盾/矛/弓，
+                // 默认最强盾/波根/吉娜）+ 兵种比例（intel_ratio 10:10:80），写 intel_* params
+                // 由服务端 IntelFormationPlan 消费；位于通用「编队」摘要卡下方，其它功能页不受影响。
+                long intelUid = RoleStore.currentRoleUid(this, account.fpid);
+                scrollBox.addView(IntelFormationCard.build(this, account.fpid, serverid,
+                        intelUid > 0L ? String.valueOf(intelUid) : "", fn.id, null));
+            }
         }
         // 批次11：守护盟友配置页（用户确认放开 UI）——只读状态卡 + 配置卡
         if ("guardian".equals(fn.id)) {

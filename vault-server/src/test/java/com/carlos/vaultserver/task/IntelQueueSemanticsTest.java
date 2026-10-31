@@ -9,19 +9,15 @@ import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 
 /**
- * 情报普通队列语义单测（P0 2026-10-28，bug 2「情报只会做营救类，不会打狩猎类」）。
+ * 情报普通队列语义单测（2026-10-31 用户规则 2 修正）。
  *
- * <p>基准：网页版 {@code DailyIntelligenceService.consumesNormalWorldMarchSlot:614-616}
- * （type!=2 && isWorldMarch(type)）与 {@code planActions:452-525}
- * （remaining=clamp(min(queueCount,playerQueueLimit)-active(301|302),0,world.idle())，
- * 仅普通队列事件检查/扣减 remaining）。
- *
- * <p>锁死三件事，防止回归到「所有世界行军一律要 freeSlots → 采集占满时营救照发、怪物永不发」：
- * <ol>
- *   <li>营救(type=2) 不占普通队列：队列满时仍必须可派；</li>
- *   <li>怪物(1)/活动巨兽(11)/冒险巨兽(100) 占普通队列：队列满时必须等待；</li>
- *   <li>剩余槽位按「配置/容量 - 在途情报」并受世界空闲上界钳制，type2 不扣减。</li>
- * </ol>
+ * <p>用户口径：情报三种类型，**除狩猎外不需要行军队列**。
+ * <ul>
+ *   <li>狩猎(1)/活动巨兽(11)/冒险巨兽(100) → 302，占普通队列；</li>
+ *   <li>营救(2) → 301 特殊队列，不占普通队列；英雄之旅(3) → PVE，不需要队列；</li>
+ *   <li>剩余槽位只扣在途 302；**在途 301 不扣**（2026-10-31 根因：旧实现把 301 也计入，
+ *       默认 queue_count=1 时一队营救在途就让狩猎永远派不出）。</li>
+ * </ul>
  */
 public class IntelQueueSemanticsTest {
 
@@ -54,7 +50,8 @@ public class IntelQueueSemanticsTest {
     public void remainingNormalSlots_webFormula() {
         // allowed=min(配置,容量)=1；无在途 → 1 队可派
         assertEquals(1, ServerFieldTasks.intelRemainingNormalSlots(1, 0, 3));
-        // 已有 1 队情报在途（301/302 合计）→ 0（网页版 activeNormalMarches 扣减）
+        // 已有 1 队在途普通情报（type=302 狩猎）→ 0
+        // （在途 301 营救不占普通队列，不参与此扣减）
         assertEquals(0, ServerFieldTasks.intelRemainingNormalSlots(1, 1, 3));
         // 世界空闲=0（被采集/狩猎占满）→ 上界钳到 0，即便配置允许多队也不派
         assertEquals(0, ServerFieldTasks.intelRemainingNormalSlots(3, 0, 0));
@@ -136,8 +133,43 @@ public class IntelQueueSemanticsTest {
         ServerFieldTasks.IntelQueueSnapshot snap = ServerFieldTasks.intelQueueSnapshot(null);
         assertEquals("无引擎不猜容量", 0, snap.capacity);
         assertEquals(0, snap.activeIntelligenceMarches);
+        assertEquals("无在途普通情报(302)", 0, snap.activeNormalIntelMarches);
+        assertEquals("无在途特殊情报(301)", 0, snap.activeSpecialIntelMarches);
         assertFalse("无队列数据 → 空闲未知，走只扣在途的兜底口径", snap.queueIdleKnown);
         assertEquals(0, snap.normalIdle);
+    }
+
+    @Test
+    public void snapshot_activeIntelligence_isSplitNormalAndSpecial() {
+        // 在途 301 营救 + 302 狩猎：普通只认 302，营救单独展示
+        ServerFieldTasks.IntelQueueSnapshot snap =
+                new ServerFieldTasks.IntelQueueSnapshot(3, 1, 2, true, 2);
+        assertEquals(3, snap.activeIntelligenceMarches);
+        assertEquals(1, snap.activeNormalIntelMarches);
+        assertEquals(2, snap.activeSpecialIntelMarches);
+    }
+
+    @Test
+    public void gatherPriority_excludesRescueAndPve_includesHunts() {
+        java.util.Map<Long, com.carlos.vault.wjdr.asset.AssetSnapshot.IntelEvent> events =
+                new java.util.LinkedHashMap<>();
+        // 营救（event_id 2001 → type 2）：不占普通队列，采集不让位
+        events.put(1L, new com.carlos.vault.wjdr.asset.AssetSnapshot.IntelEvent(
+                1L, 2001L, 1L, 1L, 1L, 9_999_999_999L, false));
+        // 英雄之旅（code 3001 → type 3）：PVE，不让位
+        events.put(2L, new com.carlos.vault.wjdr.asset.AssetSnapshot.IntelEvent(
+                2L, 3001L, 1L, 1L, 1L, 9_999_999_999L, false));
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Intel nonHunts =
+                new com.carlos.vault.wjdr.asset.AssetSnapshot.Intel(0, 0, 0, 0, events, 0L);
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Stamina st100 =
+                new com.carlos.vault.wjdr.asset.AssetSnapshot.Stamina(100, 200, 0, 0, 0);
+        assertEquals(0, ServerFieldTasks.intelGatherPriorityCount(nonHunts, st100, 1000L));
+        // 活动巨兽（code 11001 → type 11）占普通队列 → 计 1
+        events.put(3L, new com.carlos.vault.wjdr.asset.AssetSnapshot.IntelEvent(
+                3L, 11001L, 1L, 1L, 1L, 9_999_999_999L, false));
+        com.carlos.vault.wjdr.asset.AssetSnapshot.Intel withHunt =
+                new com.carlos.vault.wjdr.asset.AssetSnapshot.Intel(0, 0, 0, 0, events, 0L);
+        assertEquals(1, ServerFieldTasks.intelGatherPriorityCount(withHunt, st100, 1000L));
     }
 
     @Test
