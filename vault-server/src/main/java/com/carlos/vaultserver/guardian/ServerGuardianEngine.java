@@ -249,10 +249,17 @@ public final class ServerGuardianEngine {
         long allyMatchTolerance = 0L;
         /** 2026-10-31：用观察点整图扫描缓存按坐标反查「城 uid + 联盟 aid」判定友方（默认开）。 */
         boolean allyUseWatchpoint = true;
-        /** 2026-10-31：坐标落在观察点保护矩形（友盟聚集地）内 → 视为友方目标（默认开）。 */
-        boolean allyUseProtectRect = true;
+        /**
+         * 保护矩形内视为友方（2026-10-31 用户修正：**默认关**）——保护矩形里可能是其它联盟的城，
+         * 给非本盟城驻防会变成“出征/攻击”，只认本联盟（盟友坐标或观察点城 aid=本盟）。
+         */
+        boolean allyUseProtectRect = false;
         /** 保护矩形内/附近按最近盟友坐标匹配的最大曼哈顿距离（默认 20）。 */
         long allyRectMaxDist = 20L;
+        /** 2026-10-31：集结兵力缺失时，查目标坐标的行军携带兵力（同网页“查询坐标”功能）。 */
+        boolean rallyProbeTroops = true;
+        /** 目标坐标查询等待毫秒（默认 2500，clamp 500..8000）。 */
+        long rallyProbeTimeoutMs = 2500L;
         // ---- 批次 F：队列无位有界重试（默认 12 次 × 5s；0=旧行为） ----
         int queueRetryMax = DEFAULT_QUEUE_RETRY_MAX;
         long queueRetryIntervalMs = DEFAULT_QUEUE_RETRY_INTERVAL_MS;
@@ -321,7 +328,7 @@ public final class ServerGuardianEngine {
                     + " rally_early_speedup=" + rallyEarlySpeedup
                     + " rally_full_ratio=" + rallyFullTroopsRatio
                     + " rally_require_join_full=" + rallyRequireJoinFull
-                    + " rally_troops_min=" + rallyTroopsMin
+                    + " rally_troops_min=" + rallyTroopsMin + " rally_probe=" + rallyProbeTroops
                     + " preempt_gather=" + preemptGather
                     + " preempt_cooldown=" + preemptCooldownMs + "ms"
                     + " preempt_max_per_minute=" + preemptMaxPerMinute
@@ -748,6 +755,7 @@ public final class ServerGuardianEngine {
                 hydrateMassRalliesFromNotify(engine);
             } catch (Throwable ignored) {
             }
+            lastUidHint = engine.lastUid();
             engine.addMessageHook((proto, content) -> {
                 try {
                     onPush(engine, proto, content);
@@ -1659,6 +1667,7 @@ public final class ServerGuardianEngine {
         if (!cfg.enabled) return;                       // 默认关：零副作用（不解析、不写状态）
         lastPushAt = System.currentTimeMillis();
         lastProto = proto;
+        handleProbeMessage(proto, content);
         // 安全兜底（A3）：每次入口先做一次“到期自检”，防定时器丢失（自愈）
         fireDueNow(engine, cfg, nowMs);
 
@@ -2002,6 +2011,148 @@ public final class ServerGuardianEngine {
         }
     }
 
+    // =====================================================================
+    // 批次 R（2026-10-31 用户口径）：目标坐标查询——“网页查询坐标”能看到该点出征队列与携带兵数量，
+    // 用于集结兵力判定（>rally_troops_min 即真）。fire-and-forget 地图查询 + 短等待聚合。
+    // =====================================================================
+
+    /** 坐标查询会话号基址（避免与观察点 1..N / 地图查询 1e8..4e8 冲突）。 */
+    static final int PROBE_SESSION_BASE = 600_000_000;
+
+    private static final class TroopProbe {
+        final int x;
+        final int y;
+        final long deadlineMs;
+        final java.util.concurrent.CountDownLatch done =
+                new java.util.concurrent.CountDownLatch(1);
+        volatile long troops;
+        volatile int marches;
+        volatile boolean ended;
+
+        TroopProbe(int x, int y, long deadlineMs) {
+            this.x = x;
+            this.y = y;
+            this.deadlineMs = deadlineMs;
+        }
+    }
+
+    private final Map<Integer, TroopProbe> probes = new ConcurrentHashMap<>();
+    /** 坐标→(兵力探测结果, 时刻)，60s 缓存（同点多次威胁不重复查询）。 */
+    private final Map<String, long[]> probeCache = new ConcurrentHashMap<>();
+    static final long PROBE_CACHE_TTL_MS = 60_000L;
+
+    /**
+     * 查询目标坐标的行军携带兵力（阻塞 ≤ cfg.rallyProbeTimeoutMs；只在 guardExec 调用）。
+     * 返回 [troops, marches]；失败返回 null。
+     */
+    long[] probeTargetTroops(WjdrEngine engine, int x, int y, long timeoutMs) {
+        if (engine == null || x <= 0 || y <= 0) return null;
+        String key = x + "," + y;
+        long now = clockMs.getAsLong();
+        long[] cached = probeCache.get(key);
+        if (cached != null && now - cached[2] < PROBE_CACHE_TTL_MS) {
+            return new long[]{cached[0], cached[1]};
+        }
+        int session = PROBE_SESSION_BASE + Math.abs((x * 31 + y * 17) % 100_000);
+        TroopProbe p = new TroopProbe(x, y, now + Math.max(500L, timeoutMs));
+        probes.put(session, p);
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("startpoint", probePoint(x, y));
+            args.put("endpoint", probePoint(x, y));
+            args.put("kid", engine.lastServerId());
+            Map<String, Object> payload = new LinkedHashMap<>();
+            payload.put("args", java.util.Collections.singletonList(args));
+            payload.put("session", (long) session);
+            payload.put("fulldata", Boolean.TRUE);
+            payload.put("lod", 1L);
+            engine.sendFireAndForget("req_world_map_info", payload, session);
+            p.done.await(Math.max(500L, timeoutMs), java.util.concurrent.TimeUnit.MILLISECONDS);
+            probeCache.put(key, new long[]{p.troops, p.marches, clockMs.getAsLong()});
+            return new long[]{p.troops, p.marches};
+        } catch (Throwable ex) {
+            FileLog.warn("守护盟友坐标查询异常 {}:{} ({},{}) {}", fpid, String.valueOf(sid),
+                    String.valueOf(x), String.valueOf(y), brief(String.valueOf(ex)));
+            return null;
+        } finally {
+            probes.remove(session);
+        }
+    }
+
+    /** 测试钩子：注册一个待聚合的坐标查询。 */
+    void registerProbeForTest(int session, int x, int y) {
+        probes.put(session, new TroopProbe(x, y, Long.MAX_VALUE));
+    }
+
+    /** 测试钩子：读取坐标查询聚合结果 [troops, marches, ended]。 */
+    long[] probeResultForTest(int session) {
+        TroopProbe p = probes.get(session);
+        if (p == null) return null;
+        return new long[]{p.troops, p.marches, p.ended ? 1L : 0L};
+    }
+
+    private static Map<String, Object> probePoint(int x, int y) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("x", (long) x);
+        m.put("y", (long) y);
+        return m;
+    }
+
+    /** 钩子线程：聚合坐标查询返回的行军兵力（不阻塞）。 */
+    void handleProbeMessage(String proto, Map<String, Object> content) {
+        if (probes.isEmpty() || content == null) return;
+        long sess = Exec.longOf(content.get("session"));
+        TroopProbe p = sess > 0L ? probes.get((int) sess) : null;
+        if (p == null) return;
+        boolean marchProto = proto != null && (proto.startsWith("notify_world_march")
+                || proto.startsWith("notify_mass_march"));
+        if (marchProto) {
+            java.util.List<Map<String, Object>> marches = new ArrayList<>();
+            collectMaps(content.get("datalist"), marches);
+            collectMaps(content.get("march"), marches);
+            collectMaps(content.get("marchs"), marches);
+            collectMaps(content.get("data"), marches);
+            for (Map<String, Object> m : marches) {
+                int[] pt = pointOfAny(m, "endpoint", "end_point", "point", "target");
+                if (pt == null || pt[0] != p.x || pt[1] != p.y) continue;
+                long owner = Exec.longOf(m.get("owner"));
+                if (owner > 0L && owner == safeLastUid()) continue;      // 排除我方
+                long troops = troopsOf(m)[0];
+                p.troops += Math.max(0L, troops);
+                p.marches++;
+            }
+            Object ef = content.get("end_flag");
+            boolean ended = ef instanceof Boolean ? (Boolean) ef : Exec.longOf(ef) != 0L;
+            if (ended) {
+                p.ended = true;
+                p.done.countDown();
+            }
+        }
+    }
+
+    private long safeLastUid() {
+        try {
+            return lastUidHint;
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
+    /** 我方 uid 提示（attach 时记录，用于过滤自身行军）。 */
+    private volatile long lastUidHint;
+
+    private static void collectMaps(Object raw, java.util.List<Map<String, Object>> out) {
+        if (raw instanceof List) {
+            for (Object o : (List<?>) raw) {
+                Map<String, Object> m = Exec.mapOf(o);
+                if (m != null && !m.isEmpty()) out.add(m);
+            }
+        } else if (raw instanceof Map) {
+            Map<String, Object> m = Exec.mapOf(raw);
+            if (m != null && !m.isEmpty()) out.add(m);
+        }
+    }
+
     /** 执行一条威胁：重新校验规则 → 门控 → dry_run 记录 / 立即发射。 */
     void executeThreat(WjdrEngine engine, long marchId) {
         if (stopped) return;
@@ -2056,6 +2207,22 @@ public final class ServerGuardianEngine {
                     // 历史 mass 与威胁可能不同 id/坐标口径：把同 owner/同目标且带兵力的 mass 合并进当前 Rally
                     mergeRallyInfoFor(t, r);
                     truth = evaluateRally(r, cfg);
+                }
+            }
+            if (truth == RallyTruth.UNKNOWN && cfg.rallyProbeTroops
+                    && t.hasXY && t.x > 0 && t.y > 0 && r != null) {
+                // 批次 R（用户口径）：同网页“查询坐标”——查该点出征队列携带兵力，>阈值即真
+                long[] pr = probeTargetTroops(engine, t.x, t.y, cfg.rallyProbeTimeoutMs);
+                if (pr != null && pr[0] > 0L) {
+                    ledger("rally_probe", t, null, "坐标查询：目标(" + t.x + "," + t.y
+                            + ") 行军 " + pr[1] + " 支，携带兵力 " + pr[0]
+                            + "（阈值 " + cfg.rallyTroopsMin + "）");
+                    if (pr[0] > cfg.rallyTroopsMin) {
+                        r.soldierCount = pr[0];
+                        r.soldierMax = Math.max(r.soldierMax, pr[0]);
+                        r.hasSoldierInfo = true;
+                        truth = RallyTruth.TRUE;
+                    }
                 }
             }
             if (truth == RallyTruth.UNKNOWN) {
@@ -3867,9 +4034,12 @@ public final class ServerGuardianEngine {
             c.allyMatchTolerance = Math.max(0L, Math.min(3L,
                     num(sub, st, p, "ally_match_tolerance", 0L)));
             c.allyUseWatchpoint = bool(sub, st, p, "ally_use_watchpoint", true);
-            c.allyUseProtectRect = bool(sub, st, p, "ally_use_protect_rect", true);
+            c.allyUseProtectRect = bool(sub, st, p, "ally_use_protect_rect", false);
             c.allyRectMaxDist = Math.max(0L, Math.min(60L,
                     num(sub, st, p, "ally_rect_max_dist", 20L)));
+            c.rallyProbeTroops = bool(sub, st, p, "rally_probe_troops", true);
+            c.rallyProbeTimeoutMs = Math.max(500L, Math.min(8000L,
+                    num(sub, st, p, "rally_probe_timeout_ms", 2500L)));
             // 批次 I 集结规则（默认：开启/300s/允许出发秒−25%/满兵/要求有人满兵上车）
             c.rallyEnabled = bool(sub, st, p, "rally_enabled", true);
             long rallyWait = num(sub, st, p, "rally_wait_sec", DEFAULT_RALLY_WAIT_SEC);
