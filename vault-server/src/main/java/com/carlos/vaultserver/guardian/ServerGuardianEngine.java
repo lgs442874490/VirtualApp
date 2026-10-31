@@ -1206,6 +1206,7 @@ public final class ServerGuardianEngine {
     /** 处理 notify_mass_march_add/update/del（只读解析+重估，不发请求）。 */
     void handleMassMarch(WjdrEngine engine, String proto, Map<String, Object> content, long nowMs) {
         try {
+            logMassKeys(proto, content, "entry");
             if (PROTO_MASS_DEL.equals(proto)) {
                 for (long id : massIds(content)) {
                     Rally r = rallies.get(id);
