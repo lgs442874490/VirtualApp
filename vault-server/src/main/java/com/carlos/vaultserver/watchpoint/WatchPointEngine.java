@@ -150,6 +150,36 @@ public final class WatchPointEngine {
         e.seedCityForTest(uid, aid, x, y, nick);
     }
 
+    /** 终点坐标 → [兵力合计, 行军数, 最近时刻]（观察点扫到的在途行军；供守护判断集结威胁）。 */
+    private final Map<String, long[]> marchDest = new ConcurrentHashMap<>();
+    static final long MARCH_DEST_TTL_MS = 180_000L;
+
+    /** 终点(x,y) 的在途行军兵力合计：[troops, count, ageMs]；无数据返回 null。 */
+    public static long[] marchTroopsTo(int x, int y) {
+        WatchPointEngine e = SHARED;
+        if (e == null || x <= 0 || y <= 0) return null;
+        long[] v = e.marchDest.get(x + "," + y);
+        if (v == null) return null;
+        long age = System.currentTimeMillis() - v[2];
+        if (age > MARCH_DEST_TTL_MS) return null;
+        return new long[]{v[0], v[1], age};
+    }
+
+    /** 记录一条在途行军（终点兵力索引；供守护集结兵力判定）。 */
+    private void indexMarchDestination(int ex, int ey, long troops, long endtime) {
+        if (ex <= 0 || ey <= 0 || troops <= 0L) return;
+        String key = ex + "," + ey;
+        long now = System.currentTimeMillis();
+        marchDest.compute(key, (k, old) -> {
+            long sum = (old == null ? 0L : old[0]) + troops;
+            long cnt = (old == null ? 0L : old[1]) + 1L;
+            return new long[]{sum, cnt, now};
+        });
+        if (marchDest.size() > 4000) {
+            marchDest.entrySet().removeIf(en -> now - en.getValue()[2] > MARCH_DEST_TTL_MS);
+        }
+    }
+
     /** 测试钩子：注入一个城市坐标（仅单测使用；生产由整图扫描填充）。 */
     public void seedCityForTest(long uid, long aid, int x, int y, String nick) {
         City c = new City();
@@ -586,6 +616,13 @@ public final class WatchPointEngine {
         long owner = asLong(m.get("owner"), 0L);
         long type = asLong(m.get("type"), 0L);
         if (id <= 0 || owner <= 0) return;
+        // 2026-10-31：先索引终点兵力（不受告警类型过滤；守护判断集结威胁用）
+        try {
+            Map<?, ?> epIndex = asMap(m.get("endpoint"));
+            indexMarchDestination((int) asLong(epIndex.get("x"), -1L),
+                    (int) asLong(epIndex.get("y"), -1L), troopsOf(m), asLong(m.get("endtime"), 0L));
+        } catch (Throwable ignored) {
+        }
         if (!store.alertTypes.contains(type)) return;
         Map<?, ?> sp = asMap(m.get("startpoint"));
         Map<?, ?> ep = asMap(m.get("endpoint"));
