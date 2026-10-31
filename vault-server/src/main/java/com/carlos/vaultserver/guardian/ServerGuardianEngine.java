@@ -2273,6 +2273,17 @@ public final class ServerGuardianEngine {
                     && t.hasXY && t.x > 0 && t.y > 0 && r != null) {
                 // 批次 R（用户口径）：同网页“查询坐标”——查该点出征队列携带兵力，>阈值即真
                 long[] pr = probeTargetTroops(engine, t.x, t.y, cfg.rallyProbeTimeoutMs);
+                if (pr == null || pr[0] <= 0L) {
+                    // 观察点常驻扫描已索引「终点→在途兵力」：自身坐标查询没拿到时用它兜底
+                    long[] wp = com.carlos.vaultserver.watchpoint.WatchPointEngine
+                            .marchTroopsTo(t.x, t.y);
+                    if (wp != null && wp[0] > 0L) {
+                        pr = new long[]{wp[0], wp[1]};
+                        ledger("rally_probe_watch", t, null, "观察点索引：目标(" + t.x + "," + t.y
+                                + ") 行军 " + wp[1] + " 支，兵力 " + wp[0]
+                                + "（数据龄 " + (wp[2] / 1000L) + "s）");
+                    }
+                }
                 if (pr != null && pr[0] <= 0L) {
                     ledger("rally_probe_zero", t, null, "坐标查询：目标(" + t.x + "," + t.y
                             + ") 未取到行军兵力（marches=" + pr[1] + "）");
