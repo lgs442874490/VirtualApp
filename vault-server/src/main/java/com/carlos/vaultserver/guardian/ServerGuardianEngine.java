@@ -1967,7 +1967,19 @@ public final class ServerGuardianEngine {
                 r.hasXY = t.hasXY;
                 r.startAtMs = t.firstSeenMs > 0 ? t.firstSeenMs : nowMs;
                 r.lastProto = "threat_fallback";
+                // 2026-10-31：situation 推送里的敌方兵力（squad_list.soldier）可直接作为集结兵力判断依据
+                if (t.troopsKnown && t.troops > 0L) {
+                    r.soldierCount = t.troops;
+                    r.soldierMax = Math.max(r.soldierMax, t.troops);
+                    r.hasSoldierInfo = true;
+                }
                 rallies.put(r.marchId, r);
+            }
+            // 2026-10-31：mass 推送缺兵力时，用威胁自身的兵力（squad_list.soldier 求和）兜底
+            if (r != null && !r.hasSoldierInfo && t.troopsKnown && t.troops > 0L) {
+                r.soldierCount = t.troops;
+                r.soldierMax = Math.max(r.soldierMax, t.troops);
+                r.hasSoldierInfo = true;
             }
             RallyTruth truth = evaluateRally(r, cfg);
             if (truth == RallyTruth.CANCELLED) {
