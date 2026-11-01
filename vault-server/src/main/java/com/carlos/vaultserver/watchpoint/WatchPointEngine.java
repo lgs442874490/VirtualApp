@@ -466,9 +466,9 @@ public final class WatchPointEngine {
     private final Set<Long> crossProbeSupported = ConcurrentHashMap.newKeySet();
     private final Map<Long, Integer> crossProbeTries = new ConcurrentHashMap<>();
     private final Set<Integer> crossProbeSessions = ConcurrentHashMap.newKeySet();
-    static final int CROSS_PROBE_TRIES = 2;
-    /** 跨区探测等待上限（ms）：无 end_flag 也按 0 城计一次。 */
-    static final long CROSS_PROBE_TIMEOUT_MS = 8_000L;
+    static final int CROSS_PROBE_TRIES = 3;
+    /** 跨区探测等待上限（ms）：无 end_flag 也按 0 城计一次（跨区图较大，给足 20s）。 */
+    static final long CROSS_PROBE_TIMEOUT_MS = 20_000L;
     static final int SESSION_CROSS_PROBE_BASE = 100_900_000;
 
     /** 对跨区角色发起一次地图查询（已知有城的矩形），结果异步判定。 */
@@ -809,7 +809,17 @@ public final class WatchPointEngine {
         if (proto == null || content == null) return;
         long sess = asLong(content.get("session"), -1L);
         Ctx ctx = sess > 0 ? ctxBySession.get((int) sess) : null;
-        if (ctx == null) return;
+        if (ctx == null) {
+            // 2026-11-01 诊断：跨区探测无回包时，确认回包是否「session 不同/缺失」。
+            if (("notify_world_mapobjs".equals(proto) || proto.startsWith("notify_world_mapobj"))
+                    && System.currentTimeMillis() - unmatchedLogAt > 30_000L) {
+                unmatchedLogAt = System.currentTimeMillis();
+                FileLog.info("[{}] 未匹配地图回包：proto={} session={} kid={} keys={}", LOG, proto,
+                        String.valueOf(sess), String.valueOf(content.get("kid")),
+                        content.keySet());
+            }
+            return;
+        }
         boolean mapobjs = "notify_world_mapobjs".equals(proto) || proto.startsWith("notify_world_mapobj_");
         boolean marchs = "notify_world_marchs".equals(proto) || proto.startsWith("notify_world_march_")
                 || proto.startsWith("notify_mass_march");
@@ -896,6 +906,8 @@ public final class WatchPointEngine {
     }
 
     private volatile long nearCityLogAt;
+    /** 未匹配地图回包诊断节流（30s）。 */
+    private volatile long unmatchedLogAt;
 
     private void onComplete(Ctx ctx) {
         if (ctx.kind == Kind.CROSS_PROBE) {
