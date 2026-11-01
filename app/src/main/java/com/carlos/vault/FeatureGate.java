@@ -90,6 +90,10 @@ public final class FeatureGate {
         GUARDIAN("guardian", TIER_PREMIUM, true, false, "守护盟友"),
         // 观察点（批次 B 2026-10-30）：工具箱内可视化编辑服务器 watchpoint.json（API get/set/enable）。
         WATCHPOINT("watchpoint", TIER_PREMIUM, true, false, "观察点"),
+        // 真机抓包（T3，2026-11-01）：VpnService+tun2socks 免 root 抓游戏 TCP，sproto 实时解码。
+        // 2026-11-01 真机验证通过（分裂路由 43/101 网段，不影响游戏联网）→ release 放开；
+        // 入口默认关闭，页面内有“抓包期间游戏可能短暂重连”的提示。
+        PROTO_CAPTURE("proto_capture", TIER_PREMIUM, true, false, "真机抓包"),
 
         // ===== T3 高级会员：尚未实现（即使 T3 也隐藏，立项完成后再打开） =====
         MOVE_CITY("move_city", TIER_PREMIUM, false, false, "迁城"),
@@ -292,6 +296,7 @@ public final class FeatureGate {
         if (visible(Feature.ENEMY_WATCH, tier, debugBuild)) n++;
         if (visible(Feature.DEV_MONITOR, tier, debugBuild)) n++;
         if (visible(Feature.WATCHPOINT, tier, debugBuild)) n++;
+        if (visible(Feature.PROTO_CAPTURE, tier, debugBuild)) n++;
         if (visible(Feature.PROTOCOL_LOGGER, tier, debugBuild)) n++;
         return n;
     }

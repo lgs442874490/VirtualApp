@@ -256,6 +256,48 @@ implements SprotoCodec {
         this.warnedUnmappedResponses.clear();
     }
 
+    /**
+     * 真机抓包（批次 T3）：被动解码 C2S 帧（含 2 字节长度前缀已剥离后的 sproto package）。
+     * 与 {@link #decodeResponse(byte[])} 对称：解 package 头 → 按 ud.crypt_method 解 content →
+     * 用 C2S schema 的 request type 解字段；解不出时 proto=unknown_{tag}。
+     */
+    public GameMessage decodeRequestForCapture(byte[] payload) {
+        byte[] unpacked = this.unpack(payload);
+        PortableSprotoCodecDecodedValue decodedHeader = this.decode(this.requireC2sPackageType(), unpacked, 0);
+        Map<String, Object> header = this.castMap(decodedHeader.value());
+        int type = this.intValue(header.get("type"), 0);
+        int session = this.intValue(header.get("session"), 0);
+        int contentOffset = decodedHeader.nextOffset();
+        Map<String, Object> userdata = this.castMap(header.get("ud"));
+        int cryptMethod = this.intValue(userdata.get("crypt_method"), 0);
+        int cryptLength = this.intValue(userdata.get("crypt_length"),
+                Math.max(0, unpacked.length - contentOffset));
+        byte[] content = Arrays.copyOfRange(unpacked, contentOffset, unpacked.length);
+        content = this.applyMessageCrypt(content, cryptMethod, cryptLength, this.outboundRc4);
+        GameMessage message = new GameMessage();
+        message.setLength(payload.length);
+        message.setSession(session);
+        message.setType("REQUEST");
+        SprotoProtocolDef protocol = type > 0
+                ? this.requireC2s().findProtocol(type).orElse(null) : null;
+        if (protocol == null) {
+            message.setProto(type > 0 ? "unknown_" + type : "");
+            message.setContent(this.unknownContent(type, session, content.length));
+        } else {
+            message.setProto(protocol.getName());
+            if (protocol.getRequestType() != null && content.length > 0) {
+                message.setContent(this.castMap(this.decode(protocol.getRequestType(), content, 0).value()));
+            } else {
+                message.setContent(new LinkedHashMap<String, Object>());
+            }
+            if (session > 0L) {
+                this.registerSession(session, protocol.getName(), protocol.getResponseType() == null
+                        ? NO_RESPONSE : protocol.getResponseType());
+            }
+        }
+        return message;
+    }
+
     public Map<String, Object> decodeByTypeName(String typeName, byte[] payload) {
         if (typeName == null || typeName.isBlank()) {
             throw new IllegalArgumentException("sproto \u7c7b\u578b\u540d\u4e0d\u80fd\u4e3a\u7a7a");

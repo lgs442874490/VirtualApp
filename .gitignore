@@ -128,3 +128,6 @@ engine-upgrade/
 # 根目录发布 APK（历史惯例不入库）
 /*.apk
 license-server/deploy/license-server-linux
+
+# 真机抓包（T3）：uProxy tun2socks native（Apache-2.0），需随 App 打包
+!app/libs/**/libtun2socks.so

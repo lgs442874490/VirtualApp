@@ -156,6 +156,23 @@
             android:name="com.carlos.vault.AssetCenterActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
+        <!-- 真机抓包（T3，2026-11-01）：VpnService + tun2socks + 本地 SOCKS5；sproto 实时解码 -->
+        <activity
+            android:name="com.carlos.vault.protocapture.ProtoCaptureActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+        <!-- 调试包专用：adb 启停/导出/打开抓包页（release 内 BuildConfig.DEBUG=false no-op） -->
+        <receiver
+            android:name="com.carlos.vault.protocapture.ProtoCaptureDebugReceiver"
+            android:exported="true" />
+        <service
+            android:name="com.carlos.vault.protocapture.ProtoCaptureService"
+            android:exported="true"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
         <activity
             android:name="com.carlos.vault.ToolBoxActivity"
             android:exported="false"
