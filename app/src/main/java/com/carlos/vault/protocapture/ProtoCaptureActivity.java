@@ -157,7 +157,11 @@ public class ProtoCaptureActivity extends Activity {
         targetEt.setHint("目标包名（留空=自动检测 com.gof.china/global）");
         targetEt.setTextSize(12);
         targetEt.setSingleLine(true);
-        targetEt.setText(prefs().getString(KEY_TARGET, defaultTargetPackage()));
+        String savedTarget = prefs().getString(KEY_TARGET, "");
+        if (savedTarget == null || savedTarget.isEmpty() || savedTarget.equals(getPackageName())) {
+            savedTarget = defaultTargetPackage();   // 旧版本误存本 App 包名 → 改为默认游戏包
+        }
+        targetEt.setText(savedTarget);
         LinearLayout.LayoutParams etlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         etlp.topMargin = dp(8);
