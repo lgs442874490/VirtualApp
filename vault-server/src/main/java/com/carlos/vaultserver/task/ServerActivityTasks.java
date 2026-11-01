@@ -525,6 +525,10 @@ public final class ServerActivityTasks {
                                 Exec.args("locker_id", lockerId, "amount", reDep));
                         if (Exec.ok(dp)) m.claimed("续存" + reDep);
                         else m.skip("续存码" + Exec.codeOf(dp));
+                    } else {
+                        // G14（2026-11-01）：余额不足 100 不续存时旧实现无任何记录，
+                        // 巡检看不到“取到了但没续存”，与成功后静默无法区分。
+                        m.skip("余额不足100不续存（可取" + amount + "）");
                     }
                 } else {
                     int code = Exec.codeOf(wd);
