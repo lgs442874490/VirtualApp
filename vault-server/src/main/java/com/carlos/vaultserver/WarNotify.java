@@ -1,5 +1,6 @@
 package com.carlos.vaultserver;
 
+import com.carlos.vault.daily.ScoutPushQuota;
 import com.carlos.vaultserver.task.Exec;
 
 import org.json.JSONObject;
@@ -52,6 +53,12 @@ import java.util.concurrent.TimeUnit;
  *       到达结算默认等待 {@value #BATTLE_GRACE_DEFAULT_MS}（毫秒）让战报先落地，无战报则判
  *       「非本账号防守，结果未知」（防守语义未知风险见 GuardReportCodes）。</li>
  * </ul>
+ *
+ * <p><b>侦查类推送限流（用户 2026-11-01 硬规则）</b>：{@code action=侦查}（march type=1）不走
+ * 通用「同目标同动作冷却」，改按<b>滑动 5 分钟窗口内每个敌人只推送前 3 次</b>计数——
+ * 实现为 {@link ScoutPushQuota}（App 本地模式 EnemyWatch 与服务端同源共用，口径只改一处）。
+ * 超限的侦查行军照常跟踪但不产生事件、不发企微；其后续「撤回/到达」结算一并静默，避免出现
+ * 无上下文的孤立结算。进攻/集结/出征仍按 {@code cooldownSeconds} 冷却。
  *
  * <p><b>线程纪律</b>：昵称解析走 engine.request（阻塞等响应、响应经推送线程投递）——
  * 严禁在推送线程调用，否则自等自死锁。本类只在 {@code name-wecom} 线程（企微文案构建前）
@@ -128,6 +135,12 @@ public final class WarNotify {
     private final ScheduledExecutorService settleExec;
     /** 冷却表：fpid|targetUid|action[|done] → 最近通知 millis。 */
     private final ConcurrentHashMap<String, Long> cooldown = new ConcurrentHashMap<>();
+    /**
+     * 侦查推送配额：滑动 5 分钟窗口内每个敌人只推前 3 次（{@link ScoutPushQuota} 同源口径）。
+     * 只作用于侦查（march type=1）的初始动作事件；不按 fpid 分账——marchId 已全局去重，
+     * 「每个敌人」即敌人 uid 维度。
+     */
+    private final ScoutPushQuota scoutQuota = new ScoutPushQuota();
     /** 行军跟踪表：marchId → track（del 判撤回/到达；跨推送保持）。 */
     private final ConcurrentHashMap<Long, Track> tracked = new ConcurrentHashMap<>();
     /** 昵称缓存：fpid|uid → {name, at}（10min，失败也缓存回退名防反复请求）。 */
@@ -314,6 +327,11 @@ public final class WarNotify {
     private void finalizeSettle(String fpid, VaultStore.WatchConfig cfg, long marchId, Settle s) {
         if (!pending.remove(marchId, s)) return;
         Track t = s.t;
+        if (t.muted) {
+            // 超限被静默的侦查行军：初始事件没推，结算也不推（否则是无上下文的孤立通知）
+            FileLog.info("侦查结算静默 uid={} 行军{}（该侦查已超限未推送）", t.targetUid, t.marchId);
+            return;
+        }
         long now = System.currentTimeMillis();
         if (s.recall) {
             s.breach = "";   // 撤回无破城概念
@@ -356,11 +374,19 @@ public final class WarNotify {
 
     // ---------------------------------------------------------------- 事件发射
 
-    /** 初始动作事件：冷却 → 事件入库（含增强字段）→ 企微 → 昵称异步回填。 */
+    /** 初始动作事件：侦查按「5 分钟窗口内每个敌人前 3 次」配额，其余按冷却 → 事件入库 → 企微 → 昵称异步回填。 */
     private void emitAction(String fpid, VaultStore.WatchConfig cfg, Track t, long endSec) {
         long now = System.currentTimeMillis();
-        String key = fpid + "|" + t.targetUid + "|" + t.action;
-        if (throttled(key, cfg.cooldownSeconds * 1000L, now)) {
+        if (ACT_RECON.equals(t.action)) {
+            // 用户 2026-11-01 硬规则：侦查类推送五分钟内每个敌人只推前三次（计数口径，取代通用冷却）
+            if (!scoutQuota.allow(t.targetUid, now)) {
+                t.muted = true;   // 后续「撤回/到达」结算一并静默
+                FileLog.info("侦查推送超限 {} uid={} 行军{}（5 分钟内已推 {} 次，本次静默）",
+                        fpid, t.targetUid, t.marchId, ScoutPushQuota.MAX_PUSHES);
+                return;
+            }
+        } else if (throttled(fpid + "|" + t.targetUid + "|" + t.action,
+                cfg.cooldownSeconds * 1000L, now)) {
             FileLog.info("战争通知节流 {} uid={} {}（冷却中，丢弃）",
                     fpid, t.targetUid, t.action);
             return;
@@ -793,6 +819,7 @@ public final class WarNotify {
         return prev[0] > 0;
     }
 
+    /** 周期回收：跟踪表 TTL、战斗邮件 TTL、侦查配额窗口外记录（防长期运行无界增长）。 */
     private void sweep(long now) {
         for (Map.Entry<Long, Track> e : tracked.entrySet()) {
             if (e.getValue().endServerSec * 1000L + TRACK_TTL_MS < now) tracked.remove(e.getKey());
@@ -800,6 +827,7 @@ public final class WarNotify {
         for (ConcurrentLinkedDeque<MailRec> dq : recentMails.values()) {
             dq.removeIf(m -> now - m.at > MAIL_TTL_MS);
         }
+        scoutQuota.sweep(now);   // 侦查配额表回收窗口外记录，防长期运行无界增长
     }
 
     /** 监视目标显示名：备注 &gt; 名称 &gt; uid。 */
@@ -874,6 +902,8 @@ public final class WarNotify {
         String behavior = BEH_MARCH;
         /** 兵力汇总文案（未知=无 squad 数据）。 */
         String troops = TROOPS_UNKNOWN;
+        /** 侦查推送超限被静默：初始事件未推送，其撤回/到达结算也不再推送。 */
+        volatile boolean muted;
         /** 发起人显示名（昵称解析成功后异步升级；初值=监视备注/名称/uid）。 */
         volatile String attackerName;
 
@@ -925,5 +955,16 @@ public final class WarNotify {
     /** 测试用：清空冷却表。 */
     void resetCooldownForTest() {
         cooldown.clear();
+    }
+
+    /** 侦查配额表剩余敌人数（测试）。 */
+    int scoutQuotaCount() {
+        return scoutQuota.trackedEnemies();
+    }
+
+    /** 指定行军是否被侦查限流静默（测试）。 */
+    boolean mutedForTest(long marchId) {
+        Track t = tracked.get(marchId);
+        return t != null && t.muted;
     }
 }

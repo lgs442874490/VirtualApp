@@ -253,6 +253,64 @@ public class WarNotifyTest {
         assertEquals(2, events.size());
     }
 
+    // ---------- 侦查类推送限流（用户 2026-11-01：5 分钟内每个敌人只推前 3 次侦查） ----------
+    // 纯逻辑（滑动窗口/独立计数/恢复）单测在 App 侧 ScoutPushQuotaTest（本类由两侧同源编译）。
+
+    @Test
+    public void onPush_scoutOnlyFirstThreeWithinFiveMinutes() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        for (int i = 0; i < 5; i++) {
+            war.onPush(FPID, 888L, "notify_player_march_add",
+                    playerMarchAdd(300 + i, ENEMY_UID, 1, nowS, nowS + 100 + i, 1, 1));
+        }
+        assertEquals("侦查 5 支行军只推前 3 次", 3, events.size());
+        for (int i = 0; i < 3; i++) {
+            assertEquals(WarNotify.ACT_RECON, events.after(0).get(i).optString("action"));
+            assertEquals(WarNotify.PHASE_ACTION, events.after(0).get(i).optString("phase"));
+        }
+        assertEquals("5 支行军全部跟踪（超限的静默）", 5, war.trackedCount());
+        assertEquals(1, war.scoutQuotaCount());   // 配额表按敌人 uid 计（不随行军数增长）
+        assertFalse(war.mutedForTest(302));
+        assertTrue(war.mutedForTest(303));
+        assertTrue(war.mutedForTest(304));
+        // 每个敌人独立计数：另一个敌人不受影响
+        store.addWatchTarget(FPID, "42424242", "", "888", "");
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(310, 42424242L, 1, nowS, nowS + 120, 2, 2));
+        assertEquals(4, events.size());
+        assertEquals(2, war.scoutQuotaCount());
+    }
+
+    @Test
+    public void onPush_scoutSettleOfSuppressedMarchIsSilent() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        for (int i = 0; i < 4; i++) {
+            war.onPush(FPID, 888L, "notify_player_march_add",
+                    playerMarchAdd(400 + i, ENEMY_UID, 1, nowS, nowS + 100 + i, 1, 1));
+        }
+        assertEquals(3, events.size());
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(403));
+        assertEquals("被压制侦查的撤回/到达结算静默", 3, events.size());
+        war.onPush(FPID, 888L, "notify_player_march_del", delContent(400));
+        assertEquals("已推送侦查的结算照常", 4, events.size());
+        assertEquals(WarNotify.PHASE_SETTLE, events.after(0).get(3).optString("phase"));
+    }
+
+    @Test
+    public void onPush_scoutBypassesGenericCooldown() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(500, ENEMY_UID, 2, nowS, nowS + 300, 1, 1));
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(501, ENEMY_UID, 2, nowS, nowS + 200, 1, 1));
+        assertEquals("进攻仍按冷却：第二支被节流", 1, events.size());
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(502, ENEMY_UID, 1, nowS, nowS + 100, 1, 1));
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(503, ENEMY_UID, 1, nowS, nowS + 90, 1, 1));
+        assertEquals("侦查按计数配额，不受 300s 冷却限制（前 3 次都推）", 3, events.size());
+    }
+
     @Test
     public void onPush_delRecallAndArrive() {
         long nowS = System.currentTimeMillis() / 1000L;

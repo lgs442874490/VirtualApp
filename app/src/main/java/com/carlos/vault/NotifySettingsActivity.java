@@ -224,6 +224,7 @@ public class NotifySettingsActivity extends Activity {
         adv.setOrientation(LinearLayout.VERTICAL);
         adv.setPadding(dp(12), dp(12), dp(12), dp(12));
         cooldownEt = field(adv, "同目标同动作冷却（秒，60~3600）", "默认 300");
+        adv.addView(hint("侦查类例外（2026-11-01 规则）：每个敌人 5 分钟内只推前 3 次侦查，超限的不推送（也不进最近事件），只跟踪；该规则不占上面的冷却。"));
         quietStartEt = field(adv, "静默开始小时（0~23，留空关闭）", "如 23");
         quietEndEt = field(adv, "静默结束小时（0~23）", "如 8");
         LinearLayout.LayoutParams s3 = new LinearLayout.LayoutParams(

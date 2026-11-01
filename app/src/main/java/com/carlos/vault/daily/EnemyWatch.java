@@ -33,6 +33,10 @@ import java.util.concurrent.TimeUnit;
  * 注意：world_situation 系列推送存在地图范围（观察哨周边/联盟相关），远处的标记敌人行军
  * 可能不进推送——由 req_world_march_detail_4_player_situation 定向轮询兜底（每 uid 60s±抖动，
  * 服务器拒绝则自动停用轮询并留痕）。
+ *
+ * <p><b>侦查类推送限流（用户 2026-11-01 硬规则）</b>：侦查（type=1）滑动 5 分钟窗口内每个敌人
+ * 只推送前 3 次（{@link ScoutPushQuota}，与 vault-server WarNotify 同源共用）。超限侦查仍入跟踪表
+ * （防轮询重报）但静默：其加速/解除推送也不再发，避免无上下文的孤立通知。
  */
 public final class EnemyWatch {
 
@@ -56,6 +60,8 @@ public final class EnemyWatch {
     private static final ConcurrentHashMap<Long, Track> TRACKED = new ConcurrentHashMap<>();
     /** 已解除（到达/召回）的行军：marchId → 解除时刻，防轮询旧数据重报。 */
     private static final ConcurrentHashMap<Long, Long> RESOLVED = new ConcurrentHashMap<>();
+    /** 侦查推送配额（滑动 5 分钟窗口内每个敌人只推前 3 次；与 vault-server WarNotify 同源口径）。 */
+    private static final ScoutPushQuota SCOUT_QUOTA = new ScoutPushQuota();
 
     private static final LinkedBlockingQueue<String> WECOM_QUEUE = new LinkedBlockingQueue<>();
     private static final LinkedBlockingQueue<String> SMS_QUEUE = new LinkedBlockingQueue<>();
@@ -238,6 +244,14 @@ public final class EnemyWatch {
             if (RESOLVED.containsKey(id)) return;   // 已解除（到达/召回）的行军，防止轮询旧数据重报
             if (end + 60 < nowS) return;   // 陈旧样本
             t = new Track(id, owner, kid, type, note, end, targetUid, xy == null ? "" : "(" + xy[0] + "," + xy[1] + ")");
+            if (type == 1 && !SCOUT_QUOTA.allow(owner, System.currentTimeMillis())) {
+                // 用户 2026-11-01：侦查类推送 5 分钟内每个敌人只推前 3 次；超限只跟踪不推送
+                t.muted = true;
+                TRACKED.put(id, t);
+                EnemyWatchStore.log(ctx, "侦查推送超限 uid" + owner + " 行军" + id
+                        + "（5 分钟内已推 " + ScoutPushQuota.MAX_PUSHES + " 次，静默）");
+                return;
+            }
             TRACKED.put(id, t);
             String kind = type == 1 ? "侦查" : type == 2 ? "进攻" : type == 5 ? "驻防" : "行军#" + type;
             StringBuilder sb = new StringBuilder("🎯敌情·").append(kind).append('\n')
@@ -248,6 +262,8 @@ public final class EnemyWatch {
             sb.append("\n行军 ").append(id).append('@').append(kid);
             send(ctx, sb.toString(), false);
             EnemyWatchStore.log(ctx, "命中 " + kind + " uid" + owner + " 行军" + id);
+        } else if (t.muted) {
+            if (end > 0) t.endServerSec = end;   // 超限静默的侦查：只维护跟踪，不推加速/重估
         } else if (end < t.endServerSec - SPEEDUP_MIN_S) {
             long prevEnd = t.endServerSec;
             t.endServerSec = end;
@@ -272,6 +288,10 @@ public final class EnemyWatch {
         RESOLVED.put(marchId, System.currentTimeMillis());
         if (t == null || t.resolved) return;
         t.resolved = true;
+        if (t.muted) {
+            EnemyWatchStore.log(ctx, "解除静默 行军" + marchId + "（该侦查超限未推送）");
+            return;
+        }
         long nowS = System.currentTimeMillis() / 1000L;
         long remain = t.endServerSec - nowS;
         String how = remain > RECALL_MIN_S ? "召回（距落地还剩 " + remain + "s）" : "已落地";
@@ -288,6 +308,7 @@ public final class EnemyWatch {
         for (Map.Entry<Long, Long> e : RESOLVED.entrySet()) {
             if (nowMs - e.getValue() > TRACK_TTL_MS) RESOLVED.remove(e.getKey());
         }
+        SCOUT_QUOTA.sweep(nowMs);   // 侦查配额表回收窗口外记录，防长期运行无界增长
     }
 
     private static int[] endpoint(Map<?, ?> m) {
@@ -506,6 +527,8 @@ public final class EnemyWatch {
         boolean escalated = false;
         long lastEscalateAt = 0L;
         boolean resolved = false;
+        /** 侦查推送超限被静默：首次推送未发，后续加速/解除也不再推送。 */
+        boolean muted = false;
 
         Track(long marchId, long owner, long kid, long type, String note, long endServerSec, long targetUid, String xy) {
             this.marchId = marchId;
