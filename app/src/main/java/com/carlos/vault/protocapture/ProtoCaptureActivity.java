@@ -157,7 +157,7 @@ public class ProtoCaptureActivity extends Activity {
         targetEt.setHint("目标包名（留空=自动检测 com.gof.china/global）");
         targetEt.setTextSize(12);
         targetEt.setSingleLine(true);
-        targetEt.setText(prefs().getString(KEY_TARGET, ""));
+        targetEt.setText(prefs().getString(KEY_TARGET, defaultTargetPackage()));
         LinearLayout.LayoutParams etlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         etlp.topMargin = dp(8);
@@ -205,6 +205,18 @@ public class ProtoCaptureActivity extends Activity {
         listBox.setOrientation(LinearLayout.VERTICAL);
         box.addView(listBox);
         return root;
+    }
+
+    /** 默认目标包：优先游戏（无尽冬日国服/国际服），未安装则留空=全部应用。 */
+    private String defaultTargetPackage() {
+        for (String pkg : new String[]{"com.gof.china", "com.gof.global"}) {
+            try {
+                getPackageManager().getPackageInfo(pkg, 0);
+                return pkg;
+            } catch (Throwable ignored) {
+            }
+        }
+        return "";
     }
 
     private SharedPreferences prefs() {
