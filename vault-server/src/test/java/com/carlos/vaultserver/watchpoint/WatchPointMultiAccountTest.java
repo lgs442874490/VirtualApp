@@ -292,8 +292,9 @@ public class WatchPointMultiAccountTest {
         assertEquals(Boolean.TRUE, WatchPointEngine.crossProbeVerdict(5, 1));
         // 首次 0 城 → 待定（会重试）
         assertNull(WatchPointEngine.crossProbeVerdict(0, 1));
-        // 连续 2 次 0 城 → 不可用
-        assertEquals(Boolean.FALSE, WatchPointEngine.crossProbeVerdict(0, 2));
+        assertNull(WatchPointEngine.crossProbeVerdict(0, 2));
+        // 连续 3 次 0 城 → 不可用（2026-11-01：超时 20s、重试 3 次）
+        assertEquals(Boolean.FALSE, WatchPointEngine.crossProbeVerdict(0, 3));
         // 有城优先于次数
         assertEquals(Boolean.TRUE, WatchPointEngine.crossProbeVerdict(1, 5));
     }
