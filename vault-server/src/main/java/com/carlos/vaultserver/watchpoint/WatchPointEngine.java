@@ -435,8 +435,11 @@ public final class WatchPointEngine {
         java.util.List<WjdrEngine> picked = selectEngines(online, store.fpid, store.fpids,
                 store.allAccounts, store.kid, store.crossKid, crossUids, multiRoleEnabled(),
                 crossUnavailable);
-        // 2026-11-01：跨区角色先「探测」再参与分发——未验证前不占用扫描分片，避免整图完整性被拉低；
-        // 探测用已知有城的矩形（观察点缓存/monitorTargets），比用地图左上角 8 格可靠。
+        // 2026-11-01 关键修复：先给「所有候选引擎」挂消息钩子，再做跨区探测过滤。
+        // 之前探测用的跨区引擎不在最终列表 → 没挂钩子 → 服务端回包被引擎丢弃，误判“跨区不可用”。
+        for (WjdrEngine e : picked) attach(e);
+        // 跨区角色先「探测」再参与分发——未验证前不占用扫描分片，避免整图完整性被拉低；
+        // 探测用已知有城的矩形（观察点缓存/monitorTargets）。
         java.util.List<WjdrEngine> out = new java.util.ArrayList<>();
         for (WjdrEngine e : picked) {
             try {
@@ -470,6 +473,9 @@ public final class WatchPointEngine {
     /** 跨区探测等待上限（ms）：无 end_flag 也按 0 城计一次（跨区图较大，给足 20s）。 */
     static final long CROSS_PROBE_TIMEOUT_MS = 20_000L;
     static final int SESSION_CROSS_PROBE_BASE = 100_900_000;
+    /** 跨区探测 content.session 序号（官方用小序号回显）。 */
+    private static final java.util.concurrent.atomic.AtomicLong crossProbeSeq =
+            new java.util.concurrent.atomic.AtomicLong();
 
     /** 对跨区角色发起一次地图查询（已知有城的矩形），结果异步判定。 */
     private void startCrossProbe(WjdrEngine engine) {
@@ -482,15 +488,22 @@ public final class WatchPointEngine {
                 crossProbeSessions.remove(session);
                 return;
             }
+            int cx = (rect.x1 + rect.x2) / 2, cy = (rect.y1 + rect.y2) / 2;
+            // 2026-11-01 官方抓包口径：fog{kid} 之后 map_info{args:[{startpoint,endpoint,kid}],
+            //   session=小序号, fulldata=false, lod=0}，矩形 21×21。
+            long contentSession = 500_000L + Math.abs(uid % 1000L) * 100L
+                    + (crossProbeSeq.incrementAndGet() % 100L);
             Ctx ctx = new Ctx(session, Kind.CROSS_PROBE, rect, engine);
             ctx.probeUid = uid;
             ctxBySession.put(session, ctx);
+            ctxBySession.put((int) contentSession, ctx);   // 推送按 content.session 回显
             lastSent.put(session, System.currentTimeMillis());
-            FileLog.info("[{}] 跨区探测发起 uid={} 区服={} 矩形({},{})-({},{})", LOG,
+            FileLog.info("[{}] 跨区探测发起 uid={} 区服={} 中心({},{}) 目标kid={} "
+                            + "fulldata=false lod=0 header={} content={}", LOG,
                     String.valueOf(uid), String.valueOf(engine.lastServerId()),
-                    String.valueOf(rect.x1), String.valueOf(rect.y1),
-                    String.valueOf(rect.x2), String.valueOf(rect.y2));
-            sendRaw(engine, session, rect);
+                    String.valueOf(cx), String.valueOf(cy), String.valueOf(store.kid),
+                    String.valueOf(session), String.valueOf(contentSession));
+            sendRawOfficial(engine, session, contentSession, cx, cy);
         } catch (Throwable t) {
             FileLog.warn("[{}] 跨区探测发起失败：{}", LOG, String.valueOf(t));
         }
@@ -1204,6 +1217,21 @@ public final class WatchPointEngine {
                 || now - scan.startedAt > store.scanTimeoutMs)) {
             finishScan();
         }
+    }
+
+    /** 官方口径（2026-11-01 真机抓包）：跨区查询 fulldata=false、lod=0、21×21 小块、content.session 小序号。 */
+    private void sendRawOfficial(WjdrEngine engine, int headerSession, long contentSession,
+                                 int cx, int cy) {
+        Map<String, Object> args = new LinkedHashMap<>();
+        args.put("startpoint", xy(Math.max(0, cx - 10), Math.max(0, cy - 10)));
+        args.put("endpoint", xy(cx + 10, cy + 10));
+        args.put("kid", store.kid);
+        Map<String, Object> payload = new LinkedHashMap<>();
+        payload.put("args", Collections.singletonList(args));
+        payload.put("session", contentSession);
+        payload.put("fulldata", Boolean.FALSE);
+        payload.put("lod", 0L);
+        engine.sendFireAndForget("req_world_map_info", payload, headerSession);
     }
 
     private void sendRaw(WjdrEngine engine, int session, WatchPointStore.Rect rect) {
