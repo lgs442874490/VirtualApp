@@ -348,6 +348,67 @@ public class WarNotifyTest {
         assertEquals(4, events.size());
     }
 
+    // ================= 2026-11-02：非敌情行军不推（建设援助/采集/驻防返程误报） =================
+
+    @Test
+    public void isPvpMarch_onlyAttackTypes() {
+        assertTrue(WarNotify.isPvpMarch(1L));
+        assertTrue(WarNotify.isPvpMarch(2L));
+        assertTrue(WarNotify.isPvpMarch(100L));
+        assertTrue(WarNotify.isPvpMarch(102L));
+        assertFalse("采集不推", WarNotify.isPvpMarch(4L));
+        assertFalse("驻防/援助不推", WarNotify.isPvpMarch(5L));
+        assertFalse("狩猎不推", WarNotify.isPvpMarch(3L));
+        assertFalse("未知类型不推", WarNotify.isPvpMarch(0L));
+    }
+
+    @Test
+    public void onPush_nonPvpMarchIsSilent() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        // 采集(4) / 驻防援助(5) / 类型缺失(0) 都不该产生事件
+        war.onPush(FPID, 888L, "notify_world_marchs",
+                playerMarchAdd(901, ENEMY_UID, 4, nowS, nowS + 600, 9, 9));
+        war.onPush(FPID, 888L, "notify_world_marchs",
+                playerMarchAdd(902, ENEMY_UID, 5, nowS, nowS + 600, 9, 9));
+        war.onPush(FPID, 888L, "notify_world_marchs",
+                playerMarchAdd(903, ENEMY_UID, 0, nowS, nowS + 600, 9, 9));
+        assertEquals("非敌情行军一律不推", 0, events.size());
+    }
+
+    @Test
+    public void onPush_returnToOwnCityIsSilent() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        // 监视目标自己的城在 (569,420)：从 (281,603) 回自己城（建设援助返程）不是敌情
+        com.carlos.vaultserver.watchpoint.WatchPointStore wps =
+                new com.carlos.vaultserver.watchpoint.WatchPointStore(
+                        java.nio.file.Paths.get(tmp.getRoot().getAbsolutePath()));
+        com.carlos.vaultserver.watchpoint.WatchPointEngine wpe =
+                new com.carlos.vaultserver.watchpoint.WatchPointEngine(null, wps, null, null);
+        wpe.seedCityForTest(ENEMY_UID, 89700731L, 569, 420, "[818]南音_");
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.install(wpe);
+        try {
+            Map<String, Object> c = playerMarchAdd(904, ENEMY_UID, 2, nowS, nowS + 600, 569, 420);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> march = (Map<String, Object>) c.get("march");
+            Map<String, Object> sp = new LinkedHashMap<>();
+            sp.put("x", 281L);
+            sp.put("y", 603L);
+            march.put("startpoint", sp);
+            war.onPush(FPID, 888L, "notify_world_marchs", c);
+            assertEquals("回自己城的行军不是敌情", 0, events.size());
+        } finally {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
+        }
+    }
+
+    @Test
+    public void onPush_attackMarchStillAlerts() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_world_marchs",
+                playerMarchAdd(905, ENEMY_UID, 2, nowS, nowS + 600, 12, 34));
+        assertEquals("真实进攻仍要推", 1, events.size());
+    }
+
     @Test
     public void onPush_massMarchIsRally() {
         long nowS = System.currentTimeMillis() / 1000L;

@@ -1827,7 +1827,7 @@ public final class WatchPointEngine {
                     alert("rect-empty:" + r.name + ":" + (scan.startedAt / 3_600_000L),
                             "⚠️ 观察点·保护矩形为空\n" + r.name + " " + r.display()
                                     + " 内没有友盟城（连续 " + streak + " 次完整扫描；聚集地可能已迁移，建议重扫）"
-                                    + "\n扫描完整度=" + completeness + "\n时间：" + nowText());
+                                    + "\n时间：" + nowText());
                 } else {
                     FileLog.info("[{}] 保护矩形 {} 首次完整扫描为空（连续 {} 次），暂不告警",
                             LOG, r.name, String.valueOf(streak));
@@ -1850,7 +1850,7 @@ public final class WatchPointEngine {
             // 不再每 15 分钟刷一条（同一批缺失 30 分钟内只报一次）。
             alert("scan-missing:" + (scan.startedAt / (30L * 60_000L)),
                     "⚠️ 观察点·本轮整图仍未找到\n" + missing + " 个监视目标（已记录最后坐标，继续搜索中）"
-                            + "\n扫描完整度=" + completeness + "\n时间：" + nowText());
+                            + "\n时间：" + nowText());
         }
         nextScanAt = store.fullScanIntervalMs > 0
                 ? System.currentTimeMillis() + store.fullScanIntervalMs : Long.MAX_VALUE;
@@ -1903,10 +1903,10 @@ public final class WatchPointEngine {
                 if (last != null && now - last < ATTACKER_MISSING_DEDUPE_MS) continue;
                 attackerMissingAt.put(uid, now);
                 alert("attacker-missing:" + uid,
-                        "⚠️ 观察点·攻击者未定位（可能被击飞/跨服）\nuid=" + uid
-                                + (ta.nick.isEmpty() ? "" : " " + ta.nick)
+                        "⚠️ 观察点·攻击者未定位（可能被击飞/跨服）\n"
+                                + (ta.nick.isEmpty() ? "未知名玩家" : ta.nick)
                                 + "\n最后坐标 (" + ta.x + "," + ta.y + ")"
-                                + "\n扫描完整度=" + completeness + "\n时间：" + nowText());
+                                + "\n时间：" + nowText());
                 continue;
             }
             attackerMissingAt.remove(uid);
@@ -1914,10 +1914,10 @@ public final class WatchPointEngine {
                 int ox = ta.x;
                 int oy = ta.y;
                 alert("attacker-move:" + uid + ":" + c.x + ":" + c.y,
-                        "📍 观察点·攻击者迁城\nuid=" + uid
-                                + (ta.nick.isEmpty() ? "" : " " + ta.nick)
+                        "📍 观察点·攻击者迁城\n"
+                                + (ta.nick.isEmpty() ? "未知名玩家" : ta.nick)
                                 + "\n原坐标 (" + ox + "," + oy + ") → 新坐标 (" + c.x + "," + c.y + ")"
-                                + "\n扫描完整度=" + completeness + "\n时间：" + nowText());
+                                + "\n时间：" + nowText());
                 ta.x = c.x;
                 ta.y = c.y;
                 ta.atMs = now;

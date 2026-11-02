@@ -266,10 +266,28 @@ public final class WarNotify {
         if (watched == null) return;
 
         long type = Exec.longOf(m.get("type"));
+        long state = Exec.longOf(m.get("state"));
         long startSec = Exec.longOf(m.get("starttime"));
         long endSec = Exec.longOf(m.get("endtime"));
         int[] xy = endpointOf(m);
         int[] sp = startPointOf(m);
+        // 2026-11-02 误报修复：只推敌情行军（侦查/进攻/集结）；采集/驻防/建设援助/狩猎一律不推。
+        // 典型误报：监视目标派队列去建联盟总部，返程被当成「出征」推送。
+        if (state >= 3L) return;                       // 已到达/回程
+        if (!isPvpMarch(type) && (proto == null || !proto.contains("mass_march"))) {
+            if (diagAllowed("typeskip:" + proto)) {
+                FileLog.info("战争通知跳过（非敌情行军）proto={} owner={} type={} state={}",
+                        proto, String.valueOf(owner), String.valueOf(type), String.valueOf(state));
+            }
+            return;
+        }
+        // 回自己城（援助/建设返程、撤军）不是打谁
+        if (xy != null && sp != null && xy[0] == sp[0] && xy[1] == sp[1]) return;
+        if (xy != null) {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo self =
+                    com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(xy[0], xy[1]);
+            if (self != null && self.uid == owner) return;
+        }
         String action = actionOf(proto, type, false, 0);
         String behavior = behaviorOf(proto, type);
         String troops = troopsOf(m);
@@ -281,6 +299,7 @@ public final class WarNotify {
             t.startServerSec = startSec;
             t.behavior = behavior;
             t.troops = troops;
+            t.marchType = type;
             if (sp != null) {
                 t.sx = sp[0];
                 t.sy = sp[1];
@@ -395,8 +414,9 @@ public final class WarNotify {
         e.put("phase", PHASE_ACTION);
         e.put("etaSeconds", Math.max(0, endSec - now / 1000L));
         JSONObject stored = events.append(e);
-        FileLog.info("战争通知命中 {} uid={} {} 行军{}（事件 {}）",
-                fpid, t.targetUid, t.action, t.marchId, stored.optString("eventId"));
+        FileLog.info("战争通知命中 {} uid={} {} type={} 行军{}（事件 {}）",
+                fpid, t.targetUid, t.action, String.valueOf(t.marchType), t.marchId,
+                stored.optString("eventId"));
         if (cfg.wecomEnabled && !cfg.webhookUrl.isEmpty() && !inQuietHours(cfg, now)) {
             if (asyncWecom) wecomExec.execute(() -> sendWecom(cfg, t, stored));
             else sendWecom(cfg, t, stored);
@@ -414,6 +434,7 @@ public final class WarNotify {
         e.put("targetName", t.targetName);
         e.put("action", t.action);
         e.put("behavior", t.behavior);
+        e.put("marchType", t.marchType);
         e.put("troops", t.troops);
         if (t.hasXY) {
             e.put("endpoint", new JSONObject().put("x", t.ex).put("y", t.ey));
@@ -612,7 +633,22 @@ public final class WarNotify {
         if (proto != null && proto.contains("mass_march")) return ACT_RALLY;
         if (type == 1L) return ACT_RECON;
         if (type == 2L) return ACT_ATTACK;
+        if (isRallyType(type)) return ACT_RALLY;
         return ACT_MARCH;
+    }
+
+    /** 集结相关类型：10/12 集结中、99 集结随从、100 集结、102 集结主体。 */
+    static boolean isRallyType(long type) {
+        return type == 10L || type == 12L || type == 99L || type == 100L || type == 102L;
+    }
+
+    /**
+     * 敌情行军类型（2026-11-02）：1 侦查 / 2 进攻 / 10、12 集结中 / 99 集结随从 /
+     * 100 集结 / 102 集结主体。采集(4)、驻防(5)、狩猎(3)、打野(302)、建设援助等一律不推。
+     */
+    static boolean isPvpMarch(long type) {
+        return type == 1L || type == 2L || type == 10L || type == 12L
+                || type == 99L || type == 100L || type == 102L;
     }
 
     /** 行为映射（v4.1.8）：集结协议=集结城堡；type 1=侦查 2=进攻城堡 5=驻防；余=出征。 */
@@ -621,6 +657,7 @@ public final class WarNotify {
         if (type == 1L) return BEH_RECON;
         if (type == 2L) return BEH_ATTACK;
         if (type == 5L) return BEH_GARRISON;
+        if (isRallyType(type)) return BEH_RALLY;
         return BEH_MARCH;
     }
 
@@ -930,6 +967,7 @@ public final class WarNotify {
         volatile boolean muted;
         /** 发起人显示名（昵称解析成功后异步升级；初值=监视备注/名称/uid）。 */
         volatile String attackerName;
+        long marchType;
 
         Track(long marchId, String fpid, long sid, long targetUid, String targetName,
               String action, long endServerSec, int[] xy, String rawProto) {

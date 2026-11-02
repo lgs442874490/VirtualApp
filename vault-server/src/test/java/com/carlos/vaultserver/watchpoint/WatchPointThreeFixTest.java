@@ -164,7 +164,7 @@ public class WatchPointThreeFixTest {
         assertEquals("连续第二次完整空扫才告警", 1, engine.alertCountForTest());
         String text = engine.lastAlertTextForTest();
         assertTrue("文案含矩形: " + text, text.contains("保护矩形为空") && text.contains("THY-1"));
-        assertTrue("文案含完整度: " + text, text.contains("完整度=460/484"));
+        assertFalse("推送里不再带完整度等技术信息: " + text, text.contains("完整度"));
         assertTrue("文案含连续次数: " + text, text.contains("连续 2 次"));
     }
 
@@ -288,7 +288,8 @@ public class WatchPointThreeFixTest {
         String text = engine.lastAlertTextForTest();
         assertTrue("攻击者迁城: " + text, text.contains("攻击者迁城"));
         assertTrue("含老/新坐标: " + text, text.contains("(10,10)") && text.contains("(50,60)"));
-        assertTrue("含完整度: " + text, text.contains("完整度=460/484"));
+        assertFalse("推送里不再带完整度: " + text, text.contains("完整度"));
+        assertFalse("推送里不带 uid: " + text, text.contains("uid"));
     }
 
     @Test
