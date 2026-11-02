@@ -198,7 +198,18 @@ public final class WarNotify {
      * 所有异常就地吞掉——通知模块任何故障不得影响会话。
      */
     public void onPush(String fpid, long sid, String proto, Map<String, Object> content) {
+        onPush(fpid, sid, 0L, proto, content);
+    }
+
+    /** 带角色 uid 的入口（2026-11-03）：用于「名单生效角色」范围过滤。 */
+    public void onPush(String fpid, long sid, long selfUid, String proto,
+                       Map<String, Object> content) {
         try {
+            VaultStore.WatchConfig cfg = store.watchConfig();
+            if (selfUid > 0L && cfg.roleUidScope != null && !cfg.roleUidScope.isEmpty()
+                    && !cfg.roleUidScope.contains(selfUid)) {
+                return;   // 该角色不在名单生效范围内
+            }
             handlePush(fpid, sid, proto, content);
         } catch (Throwable t) {
             FileLog.warn("战争通知解析异常 {} {}：{}", proto == null ? "?" : proto,

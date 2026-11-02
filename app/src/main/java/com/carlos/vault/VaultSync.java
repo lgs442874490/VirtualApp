@@ -970,6 +970,15 @@ public final class VaultSync {
     public static void watchConfig(Context ctx, Boolean enabled, Boolean wecomEnabled,
                                    String webhookUrl, Integer cooldownSeconds,
                                    Integer quietStart, Integer quietEnd, Callback done) {
+        watchConfig(ctx, enabled, wecomEnabled, webhookUrl, cooldownSeconds,
+                quietStart, quietEnd, null, done);
+    }
+
+    /** 带「名单生效角色」范围的重载（roleUidScopeCsv 为 null=不改，空串=全部角色）。 */
+    public static void watchConfig(Context ctx, Boolean enabled, Boolean wecomEnabled,
+                                   String webhookUrl, Integer cooldownSeconds,
+                                   Integer quietStart, Integer quietEnd,
+                                   String roleUidScopeCsv, Callback done) {
         Map<String, Object> f = watchFields("config", "");
         if (enabled != null) f.put("enabled", enabled);
         if (wecomEnabled != null) f.put("wecomEnabled", wecomEnabled);
@@ -977,6 +986,7 @@ public final class VaultSync {
         if (cooldownSeconds != null) f.put("cooldownSeconds", cooldownSeconds);
         if (quietStart != null) f.put("quietStart", quietStart);
         if (quietEnd != null) f.put("quietEnd", quietEnd);
+        if (roleUidScopeCsv != null) f.put("roleUidScope", roleUidScopeCsv);
         watchPost(ctx, f, done, "vault-watch-config");
     }
 

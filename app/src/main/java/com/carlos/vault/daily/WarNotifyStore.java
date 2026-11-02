@@ -23,6 +23,8 @@ public final class WarNotifyStore {
     private static final String KEY_LAST_SMS_AT = "last_sms_at";
     private static final String KEY_CURSOR = "events_cursor";
     private static final String KEY_LAST_FPID = "last_fpid";
+    private static final String KEY_SCOPE_FPIDS = "scope_fpids";   // 名单生效账号（逗号分隔）
+    private static final String KEY_SCOPE_ROLES = "scope_roles";   // 名单生效角色 uid（逗号分隔）
 
     private WarNotifyStore() {
     }
@@ -99,5 +101,25 @@ public final class WarNotifyStore {
 
     public static void setLastFpid(Context ctx, String fpid) {
         sp(ctx).edit().putString(KEY_LAST_FPID, fpid == null ? "" : fpid).apply();
+    }
+
+    /** 名单生效账号（多选，逗号分隔 fpid；空=仅 lastFpid）。 */
+    public static String scopeFpids(Context ctx) {
+        String v = sp(ctx).getString(KEY_SCOPE_FPIDS, "");
+        return v == null ? "" : v;
+    }
+
+    public static void setScopeFpids(Context ctx, String csv) {
+        sp(ctx).edit().putString(KEY_SCOPE_FPIDS, csv == null ? "" : csv).apply();
+    }
+
+    /** 名单生效角色（多选，逗号分隔 uid；空=账号下全部角色）。 */
+    public static String scopeRoleUids(Context ctx) {
+        String v = sp(ctx).getString(KEY_SCOPE_ROLES, "");
+        return v == null ? "" : v;
+    }
+
+    public static void setScopeRoleUids(Context ctx, String csv) {
+        sp(ctx).edit().putString(KEY_SCOPE_ROLES, csv == null ? "" : csv).apply();
     }
 }

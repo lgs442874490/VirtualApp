@@ -402,6 +402,23 @@ public class WarNotifyTest {
     }
 
     @Test
+    public void onPush_roleScopeFiltersNotifications() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        // 只让 uid=42 这个角色生效；其它角色（如 7）看到同一目标也不推
+        store.updateWatchRoleScope(List.of(42L));
+        Map<String, Object> march = playerMarchAdd(906, ENEMY_UID, 2, nowS, nowS + 600, 12, 34);
+        war.onPush(FPID, 888L, 7L, "notify_world_marchs", march);
+        assertEquals("不在生效角色范围 → 不推", 0, events.size());
+        war.onPush(FPID, 888L, 42L, "notify_world_marchs", march);
+        assertEquals("生效角色 → 正常推", 1, events.size());
+        // 清空范围 = 全部角色
+        store.updateWatchRoleScope(List.of());
+        war.onPush(FPID, 888L, 7L, "notify_world_marchs",
+                playerMarchAdd(907, ENEMY_UID, 1, nowS, nowS + 600, 12, 35));   // 侦查：不同动作，避开冷却
+        assertEquals("空范围=全部角色", 2, events.size());
+    }
+
+    @Test
     public void onPush_attackMarchStillAlerts() {
         long nowS = System.currentTimeMillis() / 1000L;
         war.onPush(FPID, 888L, "notify_world_marchs",

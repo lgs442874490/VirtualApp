@@ -11,6 +11,7 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -23,7 +24,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 import com.carlos.vault.daily.WarNotifyGate;
 import com.carlos.vault.daily.WarNotifyPoller;
@@ -55,6 +58,10 @@ public class NotifySettingsActivity extends Activity {
     /** 当前编辑的名单条目 uid（enabled 开关回传用）。 */
     private final List<String> targetUidOrder = new ArrayList<>();
     private String fpid = "";
+    /** 名单生效账号（多选）。 */
+    private final List<String> scopeFpids = new ArrayList<>();
+    /** 名单生效角色 uid（多选；空=账号下全部角色）。 */
+    private final List<Long> scopeRoleUids = new ArrayList<>();
 
     private int dp(int v) {
         return UiStyle.dp(this, v);
@@ -131,6 +138,7 @@ public class NotifySettingsActivity extends Activity {
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         watchSw = new UiStyle.Switch(this, false, () ->
                 VaultSync.watchConfig(this, watchSw.isOn(), null, null, null, null, null,
+                        scopeRoleCsv(),
                         cb("监视已" + (watchSw.isOn() ? "开启" : "关闭"), false)));
         masterCard.addView(watchSw);
         box.addView(masterCard);
@@ -303,11 +311,13 @@ public class NotifySettingsActivity extends Activity {
     // ================================= 数据加载 =================================
 
     private void loadAll() {
-        fpid = WarNotifyStore.lastFpid(this);
+        loadScope();
+        fpid = scopeFpids.isEmpty() ? WarNotifyStore.lastFpid(this) : scopeFpids.get(0);
         if (fpid.isEmpty()) {
             List<AccountStore.Account> all = new AccountStore(this).all();
             if (!all.isEmpty()) fpid = all.get(0).fpid;
         }
+        if (scopeFpids.isEmpty() && !fpid.isEmpty()) scopeFpids.add(fpid);
         renderAccountLabel();
         if (fpid.isEmpty()) {
             toast("请先导入账号（我的 → 批量导入导出）");
@@ -324,11 +334,53 @@ public class NotifySettingsActivity extends Activity {
     }
 
     private void renderAccountLabel() {
+        if (accountValue == null) return;
+        if (scopeFpids.size() > 1) {
+            accountValue.setText(scopeFpids.size() + " 个账号"
+                    + (scopeRoleUids.isEmpty() ? " · 全部角色" : " · " + scopeRoleUids.size() + " 个角色"));
+            return;
+        }
         String label = fpid;
         for (AccountStore.Account a : new AccountStore(this).all()) {
             if (a.fpid.equals(fpid) && a.label != null && !a.label.isEmpty()) label = a.label;
         }
+        if (!scopeRoleUids.isEmpty()) label += " · " + scopeRoleUids.size() + " 个角色";
         accountValue.setText(label);
+    }
+
+    /** 从本地记忆恢复「名单生效账号/角色」。 */
+    private void loadScope() {
+        scopeFpids.clear();
+        scopeRoleUids.clear();
+        for (String p : WarNotifyStore.scopeFpids(this).split(",")) {
+            String t = p.trim();
+            if (!t.isEmpty() && !scopeFpids.contains(t)) scopeFpids.add(t);
+        }
+        for (String p : WarNotifyStore.scopeRoleUids(this).split(",")) {
+            String t = p.trim();
+            if (t.isEmpty()) continue;
+            try {
+                long u = Long.parseLong(t);
+                if (u > 0L && !scopeRoleUids.contains(u)) scopeRoleUids.add(u);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+    }
+
+    /** 生效账号集合（空 = 当前账号）。 */
+    private List<String> scopeList() {
+        return scopeFpids.isEmpty()
+                ? java.util.Collections.singletonList(fpid) : new ArrayList<>(scopeFpids);
+    }
+
+    /** 生效角色 CSV（空串 = 账号下全部角色）。 */
+    private String scopeRoleCsv() {
+        StringBuilder sb = new StringBuilder();
+        for (Long u : scopeRoleUids) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(u);
+        }
+        return sb.toString();
     }
 
     /** 名单 + 配置渲染（回调线程 → UI 线程）。 */
@@ -400,8 +452,10 @@ public class NotifySettingsActivity extends Activity {
         final UiStyle.Switch[] swBox = new UiStyle.Switch[1];
         swBox[0] = new UiStyle.Switch(this, t.optBoolean("enabled", true), () -> {
             boolean on = swBox[0].isOn();
-            VaultSync.watchUpdate(this, fpid, uid, null, null, null, on,
-                    cb("已" + (on ? "启用" : "停用") + "监视", true));
+            for (String p : scopeList()) {
+                VaultSync.watchUpdate(this, p, uid, null, null, null, on, null);
+            }
+            toast("已" + (on ? "启用" : "停用") + "监视（" + scopeList().size() + " 个账号）");
         });
         row.addView(swBox[0]);
         TextView del = new TextView(this);
@@ -414,8 +468,11 @@ public class NotifySettingsActivity extends Activity {
                         AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle("删除监视")
                 .setMessage("不再监视 " + display + "（uid " + uid + "）？")
-                .setPositiveButton("删除", (dg, w) -> VaultSync.watchRemove(this, fpid, uid,
-                        cb("已删除", true)))
+                .setPositiveButton("删除", (dg, w) -> {
+                    for (String p : scopeList()) VaultSync.watchRemove(this, p, uid, null);
+                    toast("已删除（" + scopeList().size() + " 个账号）");
+                    loadAll();
+                })
                 .setNegativeButton("取消", null).show());
         row.addView(del);
         return row;
@@ -491,29 +548,134 @@ public class NotifySettingsActivity extends Activity {
     }
 
     private void pickAccount() {
+        showScopeTree();
+    }
+
+    /**
+     * 名单生效范围（2026-11-03 用户要求）：树状多选——账号为父节点，角色为子节点；
+     * 勾账号=该账号全部角色；也可单独勾某几个角色。选择存本地并同步服务器
+     * （roleUidScope，服务端按会话角色过滤通知）。
+     */
+    private void showScopeTree() {
         List<AccountStore.Account> all = new AccountStore(this).all();
         if (all.isEmpty()) {
             toast("暂无账号，请先导入");
             return;
         }
-        String[] names = new String[all.size()];
-        int checked = 0;
-        for (int i = 0; i < all.size(); i++) {
-            AccountStore.Account a = all.get(i);
-            names[i] = (a.label == null || a.label.isEmpty() ? a.fpid : a.label)
-                    + (a.fpid.equals(fpid) ? "（当前）" : "");
-            if (a.fpid.equals(fpid)) checked = i;
+        JSONObject pool = AccountPoolCache.load(this);
+        final Map<String, JSONArray> rolesOf = new HashMap<>();
+        if (pool != null) {
+            JSONArray accs = pool.optJSONArray("accounts");
+            if (accs != null) {
+                for (int i = 0; i < accs.length(); i++) {
+                    JSONObject a = accs.optJSONObject(i);
+                    if (a == null) continue;
+                    String fp = a.optString("fpid", "");
+                    if (!fp.isEmpty()) rolesOf.put(fp, a.optJSONArray("roles"));
+                }
+            }
+        }
+        ScrollView sc = new ScrollView(this);
+        LinearLayout col = new LinearLayout(this);
+        col.setOrientation(LinearLayout.VERTICAL);
+        col.setPadding(dp(18), dp(10), dp(18), dp(10));
+        sc.addView(col);
+        final List<CheckBox> accCbs = new ArrayList<>();
+        final List<String> accFpids = new ArrayList<>();
+        final List<CheckBox> roleCbs = new ArrayList<>();
+        final List<Long> roleUids = new ArrayList<>();
+        for (AccountStore.Account a : all) {
+            final String fpidVal = a.fpid == null ? "" : a.fpid.trim();
+            if (fpidVal.isEmpty()) continue;
+            CheckBox cbAcc = new CheckBox(this);
+            cbAcc.setText((a.label == null || a.label.isEmpty() ? fpidVal : a.label) + "  (" + fpidVal + ")");
+            cbAcc.setTextSize(13.5f);
+            cbAcc.setChecked(scopeFpids.contains(fpidVal));
+            cbAcc.setPadding(dp(4), dp(8), 0, 0);
+            col.addView(cbAcc);
+            accCbs.add(cbAcc);
+            accFpids.add(fpidVal);
+            JSONArray rs = rolesOf.get(fpidVal);
+            List<CheckBox> kids = new ArrayList<>();
+            if (rs != null) {
+                for (int j = 0; j < rs.length(); j++) {
+                    JSONObject ro = rs.optJSONObject(j);
+                    if (ro == null) continue;
+                    long uid = parseLong(ro.optString("uid", "0"));
+                    if (uid <= 0L) continue;
+                    String sid = ro.optString("sid", "");
+                    String nm = ro.optString("name", ro.optString("nickName", ""));
+                    CheckBox cbRole = new CheckBox(this);
+                    cbRole.setText("↳ " + (nm.isEmpty() ? ("uid" + uid) : nm)
+                            + (sid.isEmpty() ? "" : "  @k" + sid));
+                    cbRole.setTextSize(12.5f);
+                    cbRole.setPadding(dp(30), 0, 0, 0);
+                    cbRole.setChecked(scopeRoleUids.isEmpty()
+                            ? cbAcc.isChecked() : scopeRoleUids.contains(uid));
+                    col.addView(cbRole);
+                    roleCbs.add(cbRole);
+                    roleUids.add(uid);
+                    kids.add(cbRole);
+                }
+            }
+            final List<CheckBox> children = kids;
+            cbAcc.setOnCheckedChangeListener((b, checked) -> {
+                for (CheckBox k : children) k.setChecked(checked);
+            });
+        }
+        if (accCbs.isEmpty()) {
+            toast("账号缺少 fpid（请先同步账号池）");
+            return;
         }
         new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("选择名单生效账号")
-                .setSingleChoiceItems(names, checked, (d, which) -> {
-                    fpid = all.get(which).fpid;
+                .setTitle("选择名单生效账号 / 角色")
+                .setView(sc)
+                .setPositiveButton("确定", (d, w) -> {
+                    List<String> fps = new ArrayList<>();
+                    for (int i = 0; i < accCbs.size(); i++) {
+                        if (accCbs.get(i).isChecked()) fps.add(accFpids.get(i));
+                    }
+                    List<Long> uids = new ArrayList<>();
+                    for (int i = 0; i < roleCbs.size(); i++) {
+                        if (roleCbs.get(i).isChecked() && !uids.contains(roleUids.get(i))) {
+                            uids.add(roleUids.get(i));
+                        }
+                    }
+                    if (fps.isEmpty()) fps.add(accFpids.get(0));
+                    scopeFpids.clear();
+                    scopeFpids.addAll(fps);
+                    scopeRoleUids.clear();
+                    scopeRoleUids.addAll(uids);
+                    fpid = scopeFpids.get(0);
+                    WarNotifyStore.setScopeFpids(this, joinCsv(scopeFpids));
+                    WarNotifyStore.setScopeRoleUids(this, scopeRoleCsv());
                     WarNotifyStore.setLastFpid(this, fpid);
-                    d.dismiss();
                     renderAccountLabel();
                     loadAll();
+                    VaultSync.watchConfig(this, null, null, null, null, null, null,
+                            scopeRoleCsv(),
+                            cb("生效范围已保存：" + scopeFpids.size() + " 个账号 / "
+                                    + (scopeRoleUids.isEmpty() ? "全部角色" : scopeRoleUids.size() + " 个角色"), false));
                 })
-                .setNegativeButton("取消", null).show();
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private static String joinCsv(List<String> list) {
+        StringBuilder sb = new StringBuilder();
+        for (String v : list) {
+            if (sb.length() > 0) sb.append(',');
+            sb.append(v);
+        }
+        return sb.toString();
+    }
+
+    private static long parseLong(String s) {
+        try {
+            return Long.parseLong(s == null ? "" : s.trim());
+        } catch (Throwable t) {
+            return 0L;
+        }
     }
 
     private void addTarget() {
@@ -526,6 +688,11 @@ public class NotifySettingsActivity extends Activity {
         addTargetInFlight = true;
         addTargetBtn.setEnabled(false);
         addTargetBtn.setAlpha(0.5f);
+        List<String> targets = scopeList();
+        for (int i = 1; i < targets.size(); i++) {
+            VaultSync.watchAdd(this, targets.get(i), uid, text(addNameEt), text(addKidEt),
+                    text(addNoteEt), null);
+        }
         VaultSync.watchAdd(this, fpid, uid, text(addNameEt), text(addKidEt), text(addNoteEt),
                 (code, message, data) -> runOnUiThread(() -> {
                     addTargetInFlight = false;
@@ -546,7 +713,7 @@ public class NotifySettingsActivity extends Activity {
 
     private void saveWecom() {
         VaultSync.watchConfig(this, null, wecomSw.isOn(), text(webhookEt),
-                null, null, null, (code, message, data) -> runOnUiThread(() -> {
+                null, null, null, scopeRoleCsv(), (code, message, data) -> runOnUiThread(() -> {
                     if (code == 0) {
                         setWecomStatus("✅ 已保存（企微推送已" + (wecomSw.isOn() ? "开启" : "关闭") + "）",
                                 UiStyle.OK_INK);
@@ -605,7 +772,7 @@ public class NotifySettingsActivity extends Activity {
             return;
         }
         VaultSync.watchConfig(this, watchSw == null ? null : watchSw.isOn(), null, null,
-                cooldown, quietStart, quietEnd, cb("节流与静默已保存", false));
+                cooldown, quietStart, quietEnd, scopeRoleCsv(), cb("节流与静默已保存", false));
     }
 
     // ================================= 短信权限 =================================

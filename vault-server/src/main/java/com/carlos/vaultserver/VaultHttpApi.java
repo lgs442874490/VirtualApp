@@ -1347,6 +1347,11 @@ public final class VaultHttpApi {
         o.put("cooldownSeconds", c.cooldownSeconds);
         o.put("quietStart", c.quietStart);
         o.put("quietEnd", c.quietEnd);
+        org.json.JSONArray scope = new org.json.JSONArray();
+        if (c.roleUidScope != null) {
+            for (Long u : c.roleUidScope) scope.put(u);
+        }
+        o.put("roleUidScope", scope);
         return o;
     }
 
@@ -1366,6 +1371,24 @@ public final class VaultHttpApi {
         if (invalid != null) throw new BizError(3002, invalid);
         store.updateWatchConfig(enabled, wecomEnabled, webhookUrl,
                 cooldownSeconds, quietStart, quietEnd);
+        // 2026-11-03：名单生效角色（App 树状多选勾选的角色 uid；空=该账号全部角色）
+        if (fields.containsKey("roleUidScope")) {
+            java.util.List<Long> uids = new java.util.ArrayList<>();
+            String csv = str(fields, "roleUidScope");
+            if (csv != null) {
+                for (String part : csv.split(",")) {
+                    String t = part.trim();
+                    if (t.isEmpty()) continue;
+                    try {
+                        long u = Long.parseLong(t);
+                        if (u > 0L && !uids.contains(u)) uids.add(u);
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            }
+            store.updateWatchRoleScope(uids);
+            FileLog.info("名单生效角色已保存：{} 个", String.valueOf(uids.size()));
+        }
         FileLog.info("战争通知配置已保存 enabled={} wecom={} 冷却={}s 静默={}~{}",
                 enabled, wecomEnabled, cooldownSeconds,
                 quietStart < 0 ? "关" : String.valueOf(quietStart), String.valueOf(quietEnd));

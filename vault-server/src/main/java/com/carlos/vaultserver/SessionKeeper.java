@@ -1161,7 +1161,8 @@ public final class SessionKeeper implements SessionControl,
             if (w == null) return;
             String fp = fpid;
             long sd = resolveSid();
-            engine.addMessageHook((proto, content) -> w.onPush(fp, sd, proto, content));
+            long selfUid = engine.lastUid();
+            engine.addMessageHook((proto, content) -> w.onPush(fp, sd, selfUid, proto, content));
             FileLog.info("战争监视钩子已挂载 {}", key);
         }
 

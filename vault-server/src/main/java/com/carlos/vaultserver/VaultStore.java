@@ -219,6 +219,8 @@ public final class VaultStore {
         public int quietStart = -1;
         /** 静默结束小时（0..23，与 quietStart 配对）。 */
         public int quietEnd = 8;
+        /** 名单生效角色（uid）；空 = 该账号下所有角色都生效（2026-11-03 App 树状多选）。 */
+        public List<Long> roleUidScope = new ArrayList<>();
 
         WatchConfig copy() {
             WatchConfig c = new WatchConfig();
@@ -228,6 +230,8 @@ public final class VaultStore {
             c.cooldownSeconds = cooldownSeconds;
             c.quietStart = quietStart;
             c.quietEnd = quietEnd;
+            c.roleUidScope = new ArrayList<>(roleUidScope == null
+                    ? java.util.Collections.emptyList() : roleUidScope);
             return c;
         }
     }
@@ -254,6 +258,20 @@ public final class VaultStore {
                     Math.max(60, Math.min(3600, cooldownSeconds));
             watchConfigLocked.quietStart = quietStart < 0 ? -1 : Math.max(0, Math.min(23, quietStart));
             watchConfigLocked.quietEnd = Math.max(0, Math.min(23, quietEnd));
+            saveLocked();
+        }
+    }
+
+    /** 名单生效角色范围（uid 列表；空 = 全部角色）。 */
+    public void updateWatchRoleScope(java.util.List<Long> roleUids) {
+        synchronized (lock) {
+            java.util.List<Long> next = new ArrayList<>();
+            if (roleUids != null) {
+                for (Long u : roleUids) {
+                    if (u != null && u > 0L && !next.contains(u) && next.size() < 64) next.add(u);
+                }
+            }
+            watchConfigLocked.roleUidScope = next;
             saveLocked();
         }
     }
@@ -466,6 +484,14 @@ public final class VaultStore {
                         int qs = wc.optInt("quietStart", -1);
                         watchConfigLocked.quietStart = qs < 0 ? -1 : clampInt(qs, 0, 23, -1);
                         watchConfigLocked.quietEnd = clampInt(wc.optInt("quietEnd", 8), 0, 23, 8);
+                        watchConfigLocked.roleUidScope = new ArrayList<>();
+                        JSONArray ru = wc.optJSONArray("roleUidScope");
+                        if (ru != null) {
+                            for (int i = 0; i < ru.length() && i < 64; i++) {
+                                long u = ru.optLong(i, 0L);
+                                if (u > 0L) watchConfigLocked.roleUidScope.add(u);
+                            }
+                        }
                     }
                     return; // 主文件解析成功即不再看备份
                 } catch (Exception e) {
@@ -590,6 +616,9 @@ public final class VaultStore {
             wc.put("cooldownSeconds", watchConfigLocked.cooldownSeconds);
             wc.put("quietStart", watchConfigLocked.quietStart);
             wc.put("quietEnd", watchConfigLocked.quietEnd);
+            JSONArray scope = new JSONArray();
+            for (Long u : watchConfigLocked.roleUidScope) scope.put(u);
+            wc.put("roleUidScope", scope);
             root.put("watch", wc);
             root.put("savedAt", System.currentTimeMillis());
 
