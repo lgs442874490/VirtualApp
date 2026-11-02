@@ -227,10 +227,13 @@ public class VaultWatchApiTest {
     public void events_cursorFlow() throws Exception {
         store.updateWatchConfig(true, false, "", 300, -1, 8);   // 关企微，纯事件流
         store.addWatchTarget(FPID, "57347368", "仇人A", "888", "");
+        store.addWatchTarget(FPID, "57347369", "仇人B", "888", "");
+        store.addWatchTarget(FPID, "57347370", "仇人C", "888", "");
         long nowS = System.currentTimeMillis() / 1000L;
+        // 2026-11-03：侦查已统一由观察点推送、巨兽集结不再推，这里用三条不同目标的进攻造事件
         war.onPush(FPID, 888L, "notify_player_march_add", march(201, 57347368L, 2, nowS));
-        war.onPush(FPID, 888L, "notify_player_march_add", march(202, 57347368L, 1, nowS));
-        war.onPush(FPID, 888L, "notify_mass_march_add", march(203, 57347368L, 501, nowS));
+        war.onPush(FPID, 888L, "notify_player_march_add", march(202, 57347369L, 2, nowS));
+        war.onPush(FPID, 888L, "notify_player_march_add", march(203, 57347370L, 2, nowS));
 
         // 首拉 cursor=0：3 条，最旧在前；ackCursor=最新 seq
         JSONObject r = post("/v1/vault/events", "vaultEvents", fields("cursor", 0));
@@ -239,8 +242,8 @@ public class VaultWatchApiTest {
         JSONArray evs = data.getJSONArray("events");
         assertEquals(3, evs.length());
         assertEquals("进攻", evs.getJSONObject(0).getString("action"));
-        assertEquals("侦查", evs.getJSONObject(1).getString("action"));
-        assertEquals("集结", evs.getJSONObject(2).getString("action"));
+        assertEquals("进攻", evs.getJSONObject(1).getString("action"));
+        assertEquals("进攻", evs.getJSONObject(2).getString("action"));
         assertTrue(evs.getJSONObject(0).optLong("seq") < evs.getJSONObject(1).optLong("seq"));
         long latest = data.getLong("cursor");
         assertEquals(latest, data.getLong("ackCursor"));

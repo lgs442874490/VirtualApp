@@ -1228,9 +1228,17 @@ public final class WatchPointEngine {
                 return;
             }
             if (store.cityTargetOnly && targetCity == null) return;
+            // 2026-11-03：集结类（99/100/102/10/12）只有目标是「城」才算敌情——
+            // 集结巨兽/野外集结终点没有城，推出来就是「集结自己人」的误报。
+            if (isRallyType(type) && targetCity == null) return;
             // 同联盟目标（增援/自家城/内部动作）不算“打谁”，避免噪音
             if (!shouldAlertMonitor(ownerAid, targetAid)) return;
-            alertOutgoing(owner, id, type, ex, ey, endtime, troopsOf(m));
+            // 2026-11-03 去重：监视目标的「进攻/集结」统一由战争警报推送（含结算/破城），
+            // 观察点这里只推侦查，避免同一条行军两边各推一次。
+            if (type != 1L) return;
+            String marchKey = "m:" + owner + ":" + id;
+            if (recentlyAlerted(marchKey)) return;   // 来袭通道已推过同一条行军
+            alertOutgoing(owner, id, type, ex, ey, endtime, troopsOf(m), marchKey);
         } else if (ctx.kind == Kind.PROTECT) {
             if (!ctx.rect.contains(ex, ey)) return;
             if (selfMarch) {
@@ -1246,6 +1254,8 @@ public final class WatchPointEngine {
             }
             boolean alert = shouldAlertIncoming(selfMarch, ownerAid, targetAid,
                     store.friendAids, type, store.incomingRallyFollowerAlerts);
+            // 监视目标发起的行军由战争警报统一推（避免同一条行军重复通知）
+            if (alert && isMonitoredUid(owner)) alert = false;
             if (!alert) {
                 if (!store.incomingRallyFollowerAlerts && (type == 99L || type == 100L)
                         && store.friendAids.contains(targetAid)) {
@@ -1253,7 +1263,9 @@ public final class WatchPointEngine {
                 }
                 return;
             }
-            alertIncoming(owner, ownerCity, id, type, ex, ey, endtime, troopsOf(m));
+            String marchKey = "m:" + owner + ":" + id;
+            if (recentlyAlerted(marchKey)) return;   // 敌情通道已推过同一条行军
+            alertIncoming(owner, ownerCity, id, type, ex, ey, endtime, troopsOf(m), marchKey);
         }
     }
 
@@ -1462,17 +1474,18 @@ public final class WatchPointEngine {
         return false;
     }
 
-    private void alertOutgoing(long owner, long marchId, long type, int ex, int ey, long endtime, long troops) {
+    private void alertOutgoing(long owner, long marchId, long type, int ex, int ey, long endtime,
+                               long troops, String marchKey) {
         String key = "out:" + owner + ":" + marchId;
         if (recentlyAlerted(key)) return;   // 同一条行军的轮询重放：不推送也不再扣配额
         long nowMs = System.currentTimeMillis();
-        if (type == 1L && scoutCountOnce(owner, marchId, nowMs)
-                && !scoutQuotaAllow(scoutAlertTimes, owner, nowMs,
+        if (type == 1L && !scoutQuotaAllow(scoutAlertTimes, owner, nowMs,
                         SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
             FileLog.info("[{}] 侦查告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
                     String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
             return;
         }
+        if (marchKey != null) alerted.put(marchKey, nowMs);   // 标记：另一通道不再重复推
         City ownerCity = cityByUid.get(owner);
         City target = cityNear(ex, ey);
         String nick = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "未知名玩家";
@@ -1517,20 +1530,20 @@ public final class WatchPointEngine {
     }
 
     private void alertIncoming(long owner, City ownerCity, long marchId, long type,
-                               int ex, int ey, long endtime, long troops) {
+                               int ex, int ey, long endtime, long troops, String marchKey) {
         // 集结随从/集结类按「目标点」聚合去重：一次集结几十个随从，避免刷屏与触发企微 20 条/分钟限速
         String key = (type == 99L || type == 100L || type == 102L || type == 10L || type == 12L)
                 ? "in-rally:" + ex + ":" + ey
                 : "in:" + owner + ":" + marchId;
         if (recentlyAlerted(key)) return;
         long nowMs = System.currentTimeMillis();
-        if (type == 1L && scoutCountOnce(owner, marchId, nowMs)
-                && !scoutQuotaAllow(scoutAlertTimes, owner, nowMs,
+        if (type == 1L && !scoutQuotaAllow(scoutAlertTimes, owner, nowMs,
                         SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
             FileLog.info("[{}] 侦查告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
                     String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
             return;
         }
+        if (marchKey != null) alerted.put(marchKey, nowMs);
         City target = cityNear(ex, ey);
         String who = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "未知名玩家";
         String text = incomingAlertText(who, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
@@ -1998,6 +2011,11 @@ public final class WatchPointEngine {
         } catch (Throwable ignored) {
             return 0L;
         }
+    }
+
+    /** 集结相关类型：10/12 集结中、99 随从、100 集结、102 集结主体。 */
+    static boolean isRallyType(long type) {
+        return type == 10L || type == 12L || type == 99L || type == 100L || type == 102L;
     }
 
     private static String typeLabel(long type) {

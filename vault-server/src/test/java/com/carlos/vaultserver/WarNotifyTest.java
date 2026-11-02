@@ -242,74 +242,18 @@ public class WarNotifyTest {
         war.onPush(FPID, 888L, "notify_player_march_add",
                 playerMarchAdd(112, ENEMY_UID, 2, nowS, nowS + 200, 1, 1));
         assertEquals(1, events.size());
-        // 不同动作（侦查）不受该 key 冷却影响
+        // 侦查不再由战争警报推送（交给观察点），所以这里不该新增事件
         war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(113, ENEMY_UID, 1, nowS, nowS + 100, 1, 1));
-        assertEquals(2, events.size());
-        assertEquals(WarNotify.ACT_RECON, events.after(0).get(1).optString("action"));
+                playerMarchAdd(113, ENEMY_UID, 2, nowS, nowS + 100, 1, 1));
+        assertEquals(1, events.size());
         // 已跟踪行军的 update 只刷新跟踪表，不产生新事件
         war.onPush(FPID, 888L, "notify_player_march_update",
                 playerMarchAdd(111, ENEMY_UID, 2, nowS, nowS + 10, 1, 1));
-        assertEquals(2, events.size());
+        assertEquals(1, events.size());
     }
 
     // ---------- 侦查类推送限流（用户 2026-11-01：5 分钟内每个敌人只推前 3 次侦查） ----------
     // 纯逻辑（滑动窗口/独立计数/恢复）单测在 App 侧 ScoutPushQuotaTest（本类由两侧同源编译）。
-
-    @Test
-    public void onPush_scoutOnlyFirstThreeWithinFiveMinutes() {
-        long nowS = System.currentTimeMillis() / 1000L;
-        for (int i = 0; i < 5; i++) {
-            war.onPush(FPID, 888L, "notify_player_march_add",
-                    playerMarchAdd(300 + i, ENEMY_UID, 1, nowS, nowS + 100 + i, 1, 1));
-        }
-        assertEquals("侦查 5 支行军只推前 3 次", 3, events.size());
-        for (int i = 0; i < 3; i++) {
-            assertEquals(WarNotify.ACT_RECON, events.after(0).get(i).optString("action"));
-            assertEquals(WarNotify.PHASE_ACTION, events.after(0).get(i).optString("phase"));
-        }
-        assertEquals("5 支行军全部跟踪（超限的静默）", 5, war.trackedCount());
-        assertEquals(1, war.scoutQuotaCount());   // 配额表按敌人 uid 计（不随行军数增长）
-        assertFalse(war.mutedForTest(302));
-        assertTrue(war.mutedForTest(303));
-        assertTrue(war.mutedForTest(304));
-        // 每个敌人独立计数：另一个敌人不受影响
-        store.addWatchTarget(FPID, "42424242", "", "888", "");
-        war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(310, 42424242L, 1, nowS, nowS + 120, 2, 2));
-        assertEquals(4, events.size());
-        assertEquals(2, war.scoutQuotaCount());
-    }
-
-    @Test
-    public void onPush_scoutSettleOfSuppressedMarchIsSilent() {
-        long nowS = System.currentTimeMillis() / 1000L;
-        for (int i = 0; i < 4; i++) {
-            war.onPush(FPID, 888L, "notify_player_march_add",
-                    playerMarchAdd(400 + i, ENEMY_UID, 1, nowS, nowS + 100 + i, 1, 1));
-        }
-        assertEquals(3, events.size());
-        war.onPush(FPID, 888L, "notify_player_march_del", delContent(403));
-        assertEquals("被压制侦查的撤回/到达结算静默", 3, events.size());
-        war.onPush(FPID, 888L, "notify_player_march_del", delContent(400));
-        assertEquals("已推送侦查的结算照常", 4, events.size());
-        assertEquals(WarNotify.PHASE_SETTLE, events.after(0).get(3).optString("phase"));
-    }
-
-    @Test
-    public void onPush_scoutBypassesGenericCooldown() {
-        long nowS = System.currentTimeMillis() / 1000L;
-        war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(500, ENEMY_UID, 2, nowS, nowS + 300, 1, 1));
-        war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(501, ENEMY_UID, 2, nowS, nowS + 200, 1, 1));
-        assertEquals("进攻仍按冷却：第二支被节流", 1, events.size());
-        war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(502, ENEMY_UID, 1, nowS, nowS + 100, 1, 1));
-        war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(503, ENEMY_UID, 1, nowS, nowS + 90, 1, 1));
-        assertEquals("侦查按计数配额，不受 300s 冷却限制（前 3 次都推）", 3, events.size());
-    }
 
     @Test
     public void onPush_delRecallAndArrive() {
@@ -327,9 +271,10 @@ public class WarNotifyTest {
         assertEquals(WarNotify.ACT_RECALL, events.after(0).get(1).optString("action"));
         assertEquals(7, events.after(0).get(1).optJSONObject("endpoint").optInt("x"));
 
-        // 到达：endtime 已过（del 用 122 自己的 id）
+        // 到达：endtime 已过（del 用 122 自己的 id；换目标避开冷却）
+        long second = addSecondTarget();
         war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(122, ENEMY_UID, 1, nowS - 100, nowS - 5, 7, 8));
+                playerMarchAdd(122, second, 2, nowS - 100, nowS - 5, 7, 8));
         Map<String, Object> d122 = new LinkedHashMap<>();
         d122.put("id", 122);
         d122.put("type", 1);
@@ -411,10 +356,11 @@ public class WarNotifyTest {
         assertEquals("不在生效角色范围 → 不推", 0, events.size());
         war.onPush(FPID, 888L, 42L, "notify_world_marchs", march);
         assertEquals("生效角色 → 正常推", 1, events.size());
-        // 清空范围 = 全部角色
+        // 清空范围 = 全部角色（换目标避开冷却）
         store.updateWatchRoleScope(List.of());
+        long secondR = addSecondTarget();
         war.onPush(FPID, 888L, 7L, "notify_world_marchs",
-                playerMarchAdd(907, ENEMY_UID, 1, nowS, nowS + 600, 12, 35));   // 侦查：不同动作，避开冷却
+                playerMarchAdd(907, secondR, 2, nowS, nowS + 600, 12, 35));
         assertEquals("空范围=全部角色", 2, events.size());
     }
 
@@ -429,10 +375,74 @@ public class WarNotifyTest {
     @Test
     public void onPush_massMarchIsRally() {
         long nowS = System.currentTimeMillis() / 1000L;
+        installCity(ENEMY_UID, 1001L, 1, 1);       // 发起人城
+        installCity(9002L, 2002L, 9, 9);           // 敌方目标城（不同联盟）
+        try {
+            war.onPush(FPID, 888L, "notify_mass_march_add",
+                    playerMarchAdd(131, ENEMY_UID, 501, nowS, nowS + 600, 9, 9));
+            assertEquals(1, events.size());
+            assertEquals(WarNotify.ACT_RALLY, events.after(0).get(0).optString("action"));
+        } finally {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
+        }
+    }
+
+    /** 再加一个监视目标（不同 target+action 冷却键用）。 */
+    private long addSecondTarget() {
+        long uid = ENEMY_UID + 9000;
+        store.addWatchTarget(FPID, String.valueOf(uid), "仇人B", "888", "宿敌B");
+        return uid;
+    }
+
+    /** 装一份城的临时观测点缓存（cityAt 用）。 */
+    private void installCity(long uid, long aid, int x, int y) {
+        installCities(new long[][]{{uid, aid, x, y}});
+    }
+
+    private void installCities(long[][] cities) {
+        com.carlos.vaultserver.watchpoint.WatchPointStore wps =
+                new com.carlos.vaultserver.watchpoint.WatchPointStore(
+                        java.nio.file.Paths.get(tmp.getRoot().getAbsolutePath()));
+        com.carlos.vaultserver.watchpoint.WatchPointEngine wpe =
+                new com.carlos.vaultserver.watchpoint.WatchPointEngine(null, wps, null, null);
+        for (long[] c : cities) wpe.seedCityForTest(c[0], c[1], (int) c[2], (int) c[3], "[T]nick");
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.install(wpe);
+    }
+
+    @Test
+    public void onPush_scoutIsNotDuplicatedByWarNotify() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        war.onPush(FPID, 888L, "notify_world_marchs",
+                playerMarchAdd(908, ENEMY_UID, 1, nowS, nowS + 120, 12, 34));
+        assertEquals("侦查交给观察点推送，战争警报不重复", 0, events.size());
+    }
+
+    @Test
+    public void onPush_sameAllianceRallyIsSilent() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        installCities(new long[][]{{ENEMY_UID, 777L, 100, 100}, {ENEMY_UID + 1, 777L, 120, 120}});
+        try {
+            Map<String, Object> c = playerMarchAdd(909, ENEMY_UID, 100, nowS, nowS + 600, 120, 120);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> march = (Map<String, Object>) c.get("march");
+            Map<String, Object> sp = new LinkedHashMap<>();
+            sp.put("x", 100L);
+            sp.put("y", 100L);
+            march.put("startpoint", sp);
+            war.onPush(FPID, 888L, "notify_world_marchs", c);
+            assertEquals("同联盟集结自己人是误报", 0, events.size());
+        } finally {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
+        }
+    }
+
+    @Test
+    public void onPush_monsterRallyIsSilent() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        // mass_march 打巨兽：终点没有城
         war.onPush(FPID, 888L, "notify_mass_march_add",
-                playerMarchAdd(131, ENEMY_UID, 501, nowS, nowS + 600, 9, 9));
-        assertEquals(1, events.size());
-        assertEquals(WarNotify.ACT_RALLY, events.after(0).get(0).optString("action"));
+                playerMarchAdd(910, ENEMY_UID, 501, nowS, nowS + 600, 700, 700));
+        assertEquals("巨兽/野外集结不推", 0, events.size());
     }
 
     @Test
@@ -622,11 +632,14 @@ public class WarNotifyTest {
     public void eventsStore_bakFileWritten() throws Exception {
         // 首次写只有主文件（.bak 是旧主文件轮转）；第二次写起 .bak 出现。
         // 两推送用不同动作（集结/进攻），避免撞同 target+action 的冷却节流
-        war.onPush(FPID, 888L, "notify_mass_march_add",
-                playerMarchAdd(161, ENEMY_UID, 501, 1, 2, 1, 1));
-        assertFalse(Files.isRegularFile(tmp.getRoot().toPath().resolve("events.json.bak")));
         war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(162, ENEMY_UID, 2, 3, 4, 1, 1));
+                playerMarchAdd(161, ENEMY_UID, 2, 3, 4, 1, 1));
+        assertFalse(Files.isRegularFile(tmp.getRoot().toPath().resolve("events.json.bak")));
+        long second = ENEMY_UID;
+        for (int i = 0; i < 2; i++) { second = ENEMY_UID + 1000 + i; }
+        store.addWatchTarget(FPID, String.valueOf(second), "仇人B", "888", "宿敌B");
+        war.onPush(FPID, 888L, "notify_player_march_add",
+                playerMarchAdd(162, second, 2, 3, 4, 5, 6));
         assertTrue(Files.isRegularFile(tmp.getRoot().toPath().resolve("events.json.bak")));
     }
 
@@ -776,9 +789,14 @@ public class WarNotifyTest {
         }
         assertEquals("张三", war.trackedNameForTest(211));
         assertEquals(1, res.calls.size());
-        // 第二支行军（同 uid）：缓存命中直接带昵称，不再发解析请求
-        war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(212, ENEMY_UID, 1, nowS, nowS + 100, 1, 1));
+        // 第二支行军（同 uid、不同动作=集结，避开冷却）：缓存命中直接带昵称，不再发解析请求
+        installCity(9002L, 2002L, 5, 6);
+        try {
+            war.onPush(FPID, 888L, "notify_player_march_add",
+                    playerMarchAdd(212, ENEMY_UID, 100, nowS, nowS + 100, 5, 6));
+        } finally {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
+        }
         assertEquals("张三", events.after(0).get(1).optString("attackerName"));
         assertEquals(1, res.calls.size());
     }
@@ -796,9 +814,14 @@ public class WarNotifyTest {
         }
         assertEquals("宿敌", war.trackedNameForTest(221));   // 回退监视备注
         assertEquals(1, res.calls.size());
-        // 失败也缓存（10min）：后续事件不再反复请求
-        war.onPush(FPID, 888L, "notify_player_march_add",
-                playerMarchAdd(222, ENEMY_UID, 1, nowS, nowS + 100, 1, 1));
+        // 失败也缓存（10min）：后续事件不再反复请求（换动作=集结，避开冷却）
+        installCity(9002L, 2002L, 5, 6);
+        try {
+            war.onPush(FPID, 888L, "notify_player_march_add",
+                    playerMarchAdd(222, ENEMY_UID, 100, nowS, nowS + 100, 5, 6));
+        } finally {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
+        }
         Thread.sleep(200);
         assertEquals(1, res.calls.size());
         assertEquals("宿敌", events.after(0).get(1).optString("attackerName"));

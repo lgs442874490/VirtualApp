@@ -285,6 +285,14 @@ public final class WarNotify {
         // 2026-11-02 误报修复：只推敌情行军（侦查/进攻/集结）；采集/驻防/建设援助/狩猎一律不推。
         // 典型误报：监视目标派队列去建联盟总部，返程被当成「出征」推送。
         if (state >= 3L) return;                       // 已到达/回程
+        // 2026-11-03：侦查统一由「观察点·敌情」推送，战争警报不再重复推一次
+        if (type == 1L) {
+            if (diagAllowed("scoutskip:" + proto)) {
+                FileLog.info("战争通知跳过（侦查走观察点告警）proto={} owner={}", proto,
+                        String.valueOf(owner));
+            }
+            return;
+        }
         if (!isPvpMarch(type) && (proto == null || !proto.contains("mass_march"))) {
             if (diagAllowed("typeskip:" + proto)) {
                 FileLog.info("战争通知跳过（非敌情行军）proto={} owner={} type={} state={}",
@@ -294,10 +302,30 @@ public final class WarNotify {
         }
         // 回自己城（援助/建设返程、撤军）不是打谁
         if (xy != null && sp != null && xy[0] == sp[0] && xy[1] == sp[1]) return;
-        if (xy != null) {
-            com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo self =
-                    com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(xy[0], xy[1]);
-            if (self != null && self.uid == owner) return;
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo tgtCity =
+                xy == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(xy[0], xy[1]);
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo atkCity =
+                sp == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(sp[0], sp[1]);
+        if (tgtCity != null && tgtCity.uid == owner) return;
+        long atkAid = atkCity == null ? 0L : atkCity.aid;
+        long tgtAid = tgtCity == null ? 0L : tgtCity.aid;
+        // 2026-11-03 误报修复：同一联盟不可能「集结/进攻自己人」——
+        // 这类帧其实是「加入集结/集结巨兽/联盟内部增援」，目标城联盟与发起人相同，直接跳过。
+        if (atkAid > 0L && tgtAid > 0L && atkAid == tgtAid) {
+            if (diagAllowed("sameally:" + proto)) {
+                FileLog.info("战争通知跳过（同联盟目标）proto={} owner={} aid={}", proto,
+                        String.valueOf(owner), String.valueOf(atkAid));
+            }
+            return;
+        }
+        // 集结类（含巨兽/野外集结）：目标是「城」才算敌情；没有目标城的集结（巨兽、资源点）不推
+        boolean rally = isRallyType(type) || (proto != null && proto.contains("mass_march"));
+        if (rally && (tgtCity == null || tgtAid <= 0L)) {
+            if (diagAllowed("rallynotcity:" + proto)) {
+                FileLog.info("战争通知跳过（集结目标不是城：巨兽/野外集结）proto={} owner={} ep={}",
+                        proto, String.valueOf(owner), xy == null ? "?" : (xy[0] + "," + xy[1]));
+            }
+            return;
         }
         String action = actionOf(proto, type, false, 0);
         String behavior = behaviorOf(proto, type);
