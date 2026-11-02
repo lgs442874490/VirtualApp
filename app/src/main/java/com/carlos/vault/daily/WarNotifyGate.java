@@ -73,8 +73,7 @@ public final class WarNotifyGate {
         if (endSec > 0 && endSec > nowSec && !"撤回".equals(action) && !"到达".equals(action)) {
             sb.append(' ').append(endSec - nowSec).append("s后到");
         }
-        if (sid > 0) sb.append(" k").append(sid);
-        return sb.toString();
+        return sb.toString();   // 2026-11-02：通知里不带区服号等编号
     }
 
     /** 最近事件列表行（UI）：`MM-dd HH:mm 进攻 宿敌(3,4) @k888`。 */
@@ -85,8 +84,7 @@ public final class WarNotifyGate {
                 .append(action == null ? "" : action).append(' ')
                 .append(targetName == null ? "" : targetName);
         if (hasXY) sb.append('(').append(x).append(',').append(y).append(')');
-        if (sid > 0) sb.append(" @k").append(sid);
-        return sb.toString();
+        return sb.toString();   // 2026-11-02：列表行也不带区服号
     }
 
     // ---------------- v4.1.8：事件级短信 / 列表子行 / 详情 ----------------
@@ -153,8 +151,7 @@ public final class WarNotifyGate {
             if (endSec > 0 && endSec > nowSec) sb.append(' ').append(endSec - nowSec).append("s后到");
         }
         long sid = e.optLong("sid", 0);
-        if (sid > 0) sb.append(" k").append(sid);
-        return sb.toString();
+        return sb.toString();   // 2026-11-02：通知里不带区服号等编号
     }
 
     /** 兵力明细 → 「合计N」（无合计信息返回空串）。 */
@@ -212,8 +209,6 @@ public final class WarNotifyGate {
         }
         appendLine(sb, "行为：", firstNonEmpty(e.optString("behavior", ""), e.optString("action", "")));
         appendLine(sb, "发起人：", firstNonEmpty(e.optString("attackerName", ""), e.optString("targetName", "")));
-        long uid = e.optLong("targetUid", 0);
-        if (uid > 0) sb.append("（uid ").append(uid).append('）');
         JSONObject sp = e.optJSONObject("startPoint");
         if (sp != null) {
             sb.append("\n发起人坐标：(").append(sp.optInt("x")).append(',').append(sp.optInt("y")).append(')');
@@ -243,12 +238,7 @@ public final class WarNotifyGate {
                 if (!codes.isEmpty()) sb.append("（战报 ").append(codes).append('）');
             }
         }
-        appendLine(sb, "来源：", e.optString("rawProto", ""));
-        long sid = e.optLong("sid", 0);
-        if (sid > 0) sb.append("\n会话：k").append(sid);
-        String eventId = e.optString("eventId", "");
-        if (!eventId.isEmpty()) sb.append("\n事件：").append(eventId);
-        return sb.toString();
+        return sb.toString();   // 2026-11-02：详情里同样不带 uid/aid/区服/事件号
     }
 
     private static void appendLine(StringBuilder sb, String label, String value) {

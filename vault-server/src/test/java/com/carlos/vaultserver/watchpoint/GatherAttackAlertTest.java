@@ -23,14 +23,16 @@ public class GatherAttackAlertTest {
         labels.put(89700731L, "818");
         labels.put(89700055L, "SYD");
         String text = WatchPointEngine.gatherAlertText(
-                "[818]鲱鱼罐头", 89700731L, 278, 607, 2L, 13080L,
+                "[818]鲱鱼罐头", 89700731L, 278, 607, 2L,
                 512, 688, 185, 197860L,
-                "小淑女i", 89700055L, 19694427L, 12345L,
+                "小淑女i", 89700055L,
                 "22:30:00", labels, 1000L);
         assertTrue(text, text.contains("采集点被攻击"));
         assertTrue("攻击人坐标: " + text, text.contains("(278,607)"));
-        assertTrue("出征信息: " + text, text.contains("进攻") && text.contains("march 13080"));
-        assertTrue("被攻击人: " + text, text.contains("小淑女i") && text.contains("uid19694427"));
+        assertTrue("出征信息: " + text, text.contains("进攻") && text.contains("ETA"));
+        assertTrue("被攻击人: " + text, text.contains("小淑女i") && text.contains("[SYD]"));
+        assertFalse("通知里不能带 uid/aid 编号: " + text,
+                text.contains("uid") || text.contains("aid") || text.contains("march"));
         assertTrue("资源点坐标: " + text, text.contains("(512,688)"));
         assertTrue("兵力和 ETA: " + text, text.contains("威胁进攻") || text.contains("兵力约"));
     }

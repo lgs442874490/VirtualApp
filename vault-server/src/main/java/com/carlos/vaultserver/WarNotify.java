@@ -716,8 +716,9 @@ public final class WarNotify {
         String behavior = event.optString("behavior", "");
         if (behavior.isEmpty()) behavior = event.optString("action", "");
         StringBuilder sb = new StringBuilder("⚔️ 战争警报·").append(behavior.isEmpty() ? "动静" : behavior);
-        sb.append("\n发起人：").append(event.optString("attackerName", ""))
-                .append("（uid ").append(event.optLong("targetUid")).append('）');
+        // 2026-11-02 用户要求：通知里不带 uid/aid 等编号，只留昵称与坐标
+        String attackerName = event.optString("attackerName", "");
+        sb.append("\n发起人：").append(attackerName.isEmpty() ? "未知名玩家" : attackerName);
         sb.append("\n发起人坐标：");
         Object sp = event.optJSONObject("startPoint");
         if (sp instanceof JSONObject) {
@@ -748,13 +749,6 @@ public final class WarNotify {
                 sb.append(eta % 60).append(" 秒后）");
             }
         }
-        String proto = event.optString("rawProto", "");
-        sb.append("\n来源：").append(proto.isEmpty() ? "?" : proto);
-        String label = "";
-        VaultStore.Account acc = store.find(fpid);
-        if (acc != null && acc.label != null && !acc.label.isEmpty()) label = acc.label;
-        sb.append("\n监视会话：").append(label.isEmpty() ? fpid : label)
-                .append("@k").append(event.optLong("sid"));
         if (settle) {
             sb.append("\n🏁 进攻结算：").append(displayOutcome(event.optString("outcome", "")))
                     .append("，从发起到完成耗时").append(fmtDuration(event.optLong("durationSeconds", 0)));
@@ -830,11 +824,11 @@ public final class WarNotify {
         scoutQuota.sweep(now);   // 侦查配额表回收窗口外记录，防长期运行无界增长
     }
 
-    /** 监视目标显示名：备注 &gt; 名称 &gt; uid。 */
+    /** 监视目标显示名：备注 &gt; 名称 &gt; 「未知名玩家」（通知里不带 uid）。 */
     private static String displayOf(VaultStore.WatchTarget t) {
         if (t.note != null && !t.note.isEmpty()) return t.note;
         if (t.name != null && !t.name.isEmpty()) return t.name;
-        return "uid " + t.uid;
+        return "未知名玩家";
     }
 
     /** 昵称缓存条目。 */

@@ -93,7 +93,7 @@ public class WarNotifyGateTest {
     public void formatSms_fullFields() {
         String s = WarNotifyGate.formatSms("宿敌", "进攻", true, 3, 4,
                 2_000_000L, 1_999_900L, 888L);
-        assertEquals("[号库]敌情·进攻 宿敌(3,4) 100s后到 k888", s);
+        assertEquals("[号库]敌情·进攻 宿敌(3,4) 100s后到", s);
     }
 
     @Test
@@ -129,7 +129,7 @@ public class WarNotifyGateTest {
         assertTrue(row.contains("进攻"));
         assertTrue(row.contains("宿敌"));
         assertTrue(row.contains("(3,4)"));
-        assertTrue(row.contains("@k888"));
+        assertFalse("列表行不带区服号: " + row, row.contains("@k888"));
         assertTrue(row.matches("\\d{2}-\\d{2} \\d{2}:\\d{2} .*"));
     }
 
@@ -147,7 +147,7 @@ public class WarNotifyGateTest {
                 + "\"startPoint\":{\"x\":5,\"y\":6},\"endpoint\":{\"x\":3,\"y\":4},"
                 + "\"endtime\":2000000,\"etaSeconds\":100,\"phase\":\"action\"}");
         String s = WarNotifyGate.formatSms(e, 1999900L);
-        assertEquals("[号库]敌情·进攻城堡 张三(5,6)→(3,4) 盾T10×1200（合计1200） 100s后到 k888", s);
+        assertEquals("[号库]敌情·进攻城堡 张三(5,6)→(3,4) 盾T10×1200（合计1200） 100s后到", s);
     }
 
     @Test
@@ -156,7 +156,7 @@ public class WarNotifyGateTest {
                 + "\"phase\":\"settle\",\"outcome\":\"已到达\",\"action\":\"到达\","
                 + "\"durationSeconds\":330,\"breach\":\"是\",\"battleCodes\":\"30/6\"}");
         String s = WarNotifyGate.formatSms(e, 0L);
-        assertEquals("[号库]结算·已到达 张三 耗时5分30秒 破城:是(30/6) k888", s);
+        assertEquals("[号库]结算·已到达 张三 耗时5分30秒 破城:是(30/6)", s);
 
         JSONObject recall = jobj("{\"phase\":\"settle\",\"outcome\":\"撤回\","
                 + "\"attackerName\":\"张三\",\"durationSeconds\":45}");
@@ -224,15 +224,16 @@ public class WarNotifyGateTest {
                 + "\"rawProto\":\"notify_player_march_add\"}");
         String d = WarNotifyGate.formatEventDetail(e);
         assertTrue(d.contains("行为：进攻城堡"));
-        assertTrue(d.contains("发起人：张三（uid 57347368）"));
+        assertTrue(d.contains("发起人：张三"));
+        assertFalse("详情不带 uid: " + d, d.contains("uid"));
         assertTrue(d.contains("发起人坐标：(5,6)"));
         assertTrue(d.contains("目标坐标：(3,4)"));
         assertTrue(d.contains("兵力：盾T10×1200（合计1200）"));
         assertTrue(d.contains("到达："));
         assertTrue(d.contains("（300s 后）"));
-        assertTrue(d.contains("来源：notify_player_march_add"));
-        assertTrue(d.contains("会话：k888"));
-        assertTrue(d.contains("事件：w1"));
+        assertFalse("详情不带来源协议: " + d, d.contains("来源："));
+        assertFalse("详情不带区服号: " + d, d.contains("会话："));
+        assertFalse("详情不带事件号: " + d, d.contains("事件："));
 
         JSONObject st = jobj("{\"eventId\":\"w2\",\"detectedAt\":1792632000000,\"phase\":\"settle\","
                 + "\"attackerName\":\"张三\",\"outcome\":\"已到达\",\"durationSeconds\":330,"

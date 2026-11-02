@@ -101,9 +101,10 @@ public class GatherAttackEndToEndTest {
         String text = engine.lastAlertTextForTest();
         assertTrue(text, text.contains("采集点被攻击"));
         assertTrue("攻击人坐标: " + text, text.contains("(278,607)"));
-        assertTrue("被攻击人: " + text, text.contains("uid" + VICTIM));
         assertTrue("资源点坐标: " + text, text.contains("(512,688)"));
-        assertTrue("出征信息: " + text, text.contains("march 9002"));
+        assertTrue("出征信息: " + text, text.contains("出征信息"));
+        assertFalse("通知里不能带 uid/aid/march 编号: " + text,
+                text.contains("uid") || text.contains("aid") || text.contains("march"));
     }
 
     @Test

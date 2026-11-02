@@ -1308,7 +1308,8 @@ public final class WatchPointEngine {
         String label = aid > 0L && aidLabels != null ? aidLabels.get(aid) : null;
         if (label == null || label.isEmpty()) label = abbrFromNick(nick);
         if (label != null && !label.isEmpty()) return " [" + label + "]";
-        return aid > 0L ? " [盟" + aid + "]" : "（联盟未知）";
+        // 2026-11-02 用户要求：通知里不带 aid/uid，联盟未知时只给文字，不给数字
+        return aid > 0L ? "" : "（联盟未知）";
     }
 
     /** 城堡昵称里的联盟简称：{@code "[818]小淑女i"} → {@code "818"}；无前缀/异常返回空串。 */
@@ -1356,10 +1357,11 @@ public final class WatchPointEngine {
         targetSearchAt.remove(uid);
         targetMisses.remove(uid);
         String nickText = gameNick == null || gameNick.isEmpty() ? "" : gameNick + " ";
+        String label = t.nick == null || t.nick.isEmpty() ? "监视目标" : t.nick;
         if (t.x == x && t.y == y) {
             if (wasLost) {
                 alert("relocate:" + uid + ":" + x + ":" + y + ":" + (now / 600_000L),
-                        "📡 观察点·重新锁定目标\n监视目标 " + t.display() + "\n"
+                        "📡 观察点·重新锁定目标\n" + label + "\n"
                                 + (nickText.isEmpty() ? "" : "游戏昵称：" + gameNick + "\n")
                                 + "坐标 (" + x + "," + y + ")（位置未变，已恢复视野）\n时间：" + nowText());
             }
@@ -1376,8 +1378,8 @@ public final class WatchPointEngine {
         boolean first = ox <= 0 || oy <= 0;
         String reason = relocationReason(uid);
         String head = first
-                ? "📍 观察点·已定位监视目标\n监视目标 " + t.display()
-                : "📍 观察点·监视目标新坐标\n监视目标 " + t.display()
+                ? "📍 观察点·已定位监视目标\n" + label
+                : "📍 观察点·监视目标新坐标\n" + label
                         + "\n原坐标 (" + ox + "," + oy + ") → 新坐标 (" + x + "," + y + ")";
         alert("move:" + uid + ":" + x + ":" + y,
                 head + "\n"
@@ -1413,8 +1415,9 @@ public final class WatchPointEngine {
         if (targetLostAt.putIfAbsent(t.uid, now) == null) {
             FileLog.info("[{}] 监视目标丢失视野：{} 最后坐标 ({},{})，开始搜索", LOG,
                     t.display(), String.valueOf(t.x), String.valueOf(t.y));
+            String label = t.nick == null || t.nick.isEmpty() ? "监视目标" : t.nick;
             alert("lost:" + t.uid + ":" + (now / 600_000L),
-                    "📡 观察点·目标暂时丢失\n监视目标 " + t.display()
+                    "📡 观察点·目标暂时丢失\n" + label
                             + "\n最后坐标 (" + t.x + "," + t.y + ")"
                             + "\n已开始搜索：先查他最后出现的位置周边，再扫全图未知区域；找到会立即通知新坐标。"
                             + "\n时间：" + nowText());
@@ -1446,7 +1449,7 @@ public final class WatchPointEngine {
         }
         City ownerCity = cityByUid.get(owner);
         City target = cityNear(ex, ey);
-        String nick = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "uid" + owner;
+        String nick = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "未知名玩家";
         String text = outgoingAlertText(nick, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
                 type, nickOf(target), target == null ? 0L : target.aid,
                 ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText(),
@@ -1503,7 +1506,7 @@ public final class WatchPointEngine {
             return;
         }
         City target = cityNear(ex, ey);
-        String who = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "uid" + owner;
+        String who = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "未知名玩家";
         String text = incomingAlertText(who, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
                 type, nickOf(target), target == null ? 0L : target.aid,
                 ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText(),
@@ -1562,35 +1565,31 @@ public final class WatchPointEngine {
         }
         City atk = cityByUid.get(owner);
         String atkNick = atk != null && atk.nick != null && !atk.nick.isEmpty()
-                ? atk.nick : "uid" + owner;
+                ? atk.nick : "未知名玩家";
         long atkAid = atk == null ? 0L : atk.aid;
         PlayerDirectory dir = PlayerDirectory.shared();
         PlayerDirectory.Entry de = dir == null ? null : dir.byUid(rp.uid);
         String victimNick = de != null && de.nick != null && !de.nick.isEmpty()
-                ? de.nick : "uid" + rp.uid;
+                ? de.nick : "未知名玩家";
         long victimAid = rp.aid > 0L ? rp.aid : (de == null ? 0L : de.aid);
-        alert(key, gatherAlertText(atkNick, atkAid, sx, sy, type, marchId, ex, ey,
-                endtime - now / 1000L, troops, victimNick, victimAid, rp.uid, rp.marchId,
+        alert(key, gatherAlertText(atkNick, atkAid, sx, sy, type, ex, ey,
+                endtime - now / 1000L, troops, victimNick, victimAid,
                 nowText(), store.aidLabels, store.feintTroopsBelow));
         trackAttacker(owner, atk);
     }
 
     /** 采集点被攻击文案（纯函数，便于单测）。 */
     static String gatherAlertText(String atkNick, long atkAid, int sx, int sy, long type,
-                                  long marchId, int ex, int ey, long etaSeconds, long troops,
-                                  String victimNick, long victimAid, long victimUid,
-                                  long victimMarchId, String nowTime,
+                                  int ex, int ey, long etaSeconds, long troops,
+                                  String victimNick, long victimAid, String nowTime,
                                   Map<Long, String> aidLabels, long feintBelow) {
         StringBuilder sb = new StringBuilder();
         sb.append("🚨 观察点·采集点被攻击\n");
         sb.append("攻击人：").append(atkNick).append(allySuffix(atkAid, aidLabels, atkNick))
                 .append("  坐标 (").append(sx).append(",").append(sy).append(")\n");
-        sb.append("出征信息：").append(typeLabel(type)).append("｜march ").append(marchId)
-                .append("｜ETA ").append(hms(etaSeconds));
+        sb.append("出征信息：").append(typeLabel(type)).append("｜ETA ").append(hms(etaSeconds));
         sb.append(troopsTag(troops, feintBelow)).append("\n");
-        sb.append("被攻击人：").append(victimNick).append(allySuffix(victimAid, aidLabels, victimNick))
-                .append("（uid").append(victimUid).append("）");
-        if (victimMarchId > 0L) sb.append("｜采集 march ").append(victimMarchId);
+        sb.append("被攻击人：").append(victimNick).append(allySuffix(victimAid, aidLabels, victimNick));
         sb.append("\n资源点：(").append(ex).append(",").append(ey).append(")");
         sb.append("\n时间：").append(nowTime);
         return sb.toString();

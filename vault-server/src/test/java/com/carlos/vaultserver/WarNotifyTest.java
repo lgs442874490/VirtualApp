@@ -369,7 +369,7 @@ public class WarNotifyTest {
         assertTrue(text.contains("进攻"));
         assertTrue(text.contains("宿敌"));
         assertTrue(text.contains("(3,4)"));
-        assertTrue(text.contains("notify_player_march_add"));
+        assertFalse("不再附协议名: " + text, text.contains("notify_player_march_add"));
 
         // 静默时段只抑制企微，事件照记；本机当前小时不在窗口内则无法直接断言跳过，
         // 这里只验证 inQuietHours 与人工时刻一致（同钟计算，无 flake）
@@ -906,13 +906,15 @@ public class WarNotifyTest {
         assertEquals(1, notifier.sent.size());
         String text = notifier.sent.get(0);
         assertTrue(text.contains("⚔️ 战争警报·进攻城堡"));
-        assertTrue(text.contains("发起人：宿敌（uid " + ENEMY_UID + "）"));
+        assertTrue(text.contains("发起人：宿敌"));
+        assertFalse("通知里不带 uid/aid 编号: " + text,
+                text.contains("uid") || text.contains("aid"));
         assertTrue(text.contains("发起人坐标：(5,6)"));
         assertTrue(text.contains("目标：(3,4)"));
         assertTrue(text.contains("兵力：盾T10×1200 矛T9×800（合计2000）"));
         assertTrue(text.contains("到达："));                     // HH:mm:ss（约 N 分 M 秒后）
         assertTrue(text.contains("分 ") && text.contains(" 秒后）"));
-        assertTrue(text.contains("来源：notify_player_march_add"));
+        assertFalse("不再附来源协议名（技术噪声）: " + text, text.contains("来源："));
     }
 
     @Test

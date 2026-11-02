@@ -108,8 +108,8 @@ public class WatchPointAlertFilterTest {
         assertEquals(" [818]", WatchPointEngine.allySuffix(999L, labels(), "[818]小淑女i"));
         // 目录里有 → 目录优先
         assertEquals(" [yYz]", WatchPointEngine.allySuffix(FRIEND_AID, labels(), "[818]小淑女i"));
-        // 都没有 → 盟<aid>
-        assertEquals(" [盟999]", WatchPointEngine.allySuffix(999L, labels(), "无前缀昵称"));
+        // 都没有 → 不带任何编号（用户要求通知里不出现 aid/uid）
+        assertEquals("", WatchPointEngine.allySuffix(999L, labels(), "无前缀昵称"));
         // 联盟未知且无昵称 → （联盟未知）
         assertEquals("（联盟未知）", WatchPointEngine.allySuffix(0L, null, null));
     }
@@ -172,7 +172,7 @@ public class WatchPointAlertFilterTest {
     @Test
     public void allySuffix_knownAndUnknown() {
         assertEquals(" [yYz]", WatchPointEngine.allySuffix(FRIEND_AID, labels()));
-        assertEquals(" [盟999]", WatchPointEngine.allySuffix(999L, labels()));
+        assertEquals("", WatchPointEngine.allySuffix(999L, labels()));
         assertEquals("（联盟未知）", WatchPointEngine.allySuffix(0L, labels()));
         assertEquals("（联盟未知）", WatchPointEngine.allySuffix(-1L, labels()));
     }
