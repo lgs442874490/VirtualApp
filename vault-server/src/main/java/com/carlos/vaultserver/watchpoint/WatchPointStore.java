@@ -119,6 +119,11 @@ public final class WatchPointStore {
     /** 只告警「目标是城」的行军（endpoint 命中已知城坐标）；false=不过滤（含打野/资源点）。 */
     public boolean cityTargetOnly = true;
     /**
+     * 出征兵力判定阈值（2026-11-02）：低于该值视为「佯攻」，≥该值视为「威胁进攻」并在文案标红。
+     * 默认 1000；0 = 关闭分级（一律按普通出征提示）。
+     */
+    public long feintTroopsBelow = 1000L;
+    /**
      * 来袭告警是否包含 99/100「集结随从/集结」（2026-10-28 新增，默认 true）。
      *
      * <p>默认保留历史有效预警（如 技术分析→莲花emira [yYz]、小鹿月亮→师太 [SYD]）；
@@ -184,6 +189,7 @@ public final class WatchPointStore {
         o.put("wecomEnabled", wecomEnabled);
         o.put("fullScanIntervalMs", fullScanIntervalMs);
         o.put("cityTargetOnly", cityTargetOnly);
+        o.put("feintTroopsBelow", feintTroopsBelow);
         o.put("incomingRallyFollowerAlerts", incomingRallyFollowerAlerts);
         JSONArray at = new JSONArray();
         int n = 0;
@@ -290,6 +296,10 @@ public final class WatchPointStore {
             boolean nWecom = in.has("wecomEnabled") ? in.optBoolean("wecomEnabled", wecomEnabled) : wecomEnabled;
             boolean nCityOnly = in.has("cityTargetOnly") ? in.optBoolean("cityTargetOnly", cityTargetOnly)
                     : cityTargetOnly;
+            long nFeint = in.has("feintTroopsBelow")
+                    ? in.optLong("feintTroopsBelow", feintTroopsBelow) : feintTroopsBelow;
+            if (nFeint < 0L) nFeint = 0L;
+            if (nFeint > 100_000_000L) nFeint = 100_000_000L;
             boolean nRallyFollower = in.has("incomingRallyFollowerAlerts")
                     ? in.optBoolean("incomingRallyFollowerAlerts", incomingRallyFollowerAlerts)
                     : incomingRallyFollowerAlerts;
@@ -346,6 +356,7 @@ public final class WatchPointStore {
             scanTimeoutMs = nScanTimeout;
             wecomEnabled = nWecom;
             cityTargetOnly = nCityOnly;
+            feintTroopsBelow = nFeint;
             incomingRallyFollowerAlerts = nRallyFollower;
             alertTypes = nAlertTypes;
             friendAids = nFriends;
@@ -572,6 +583,8 @@ public final class WatchPointStore {
             wecomEnabled = o.optBoolean("wecomEnabled", true);
             fullScanIntervalMs = clamp(o.optLong("fullScanIntervalMs", 0L), 0L, 86_400_000L);
             cityTargetOnly = o.optBoolean("cityTargetOnly", true);
+            feintTroopsBelow = o.optLong("feintTroopsBelow", 1000L);
+            if (feintTroopsBelow < 0L) feintTroopsBelow = 0L;
             incomingRallyFollowerAlerts = o.optBoolean("incomingRallyFollowerAlerts", true);
             alertTypes.clear();
             JSONArray at = o.optJSONArray("alertTypes");
@@ -664,6 +677,7 @@ public final class WatchPointStore {
         o.put("wecomEnabled", wecomEnabled);
         o.put("fullScanIntervalMs", fullScanIntervalMs);
         o.put("cityTargetOnly", cityTargetOnly);
+        o.put("feintTroopsBelow", feintTroopsBelow);
         o.put("incomingRallyFollowerAlerts", incomingRallyFollowerAlerts);
         JSONArray at = new JSONArray();
         for (Long t : alertTypes) at.put(t);
@@ -709,6 +723,7 @@ public final class WatchPointStore {
         fpid = "";
         alertTypes = new LinkedHashSet<>(List.of(1L, 2L, 99L, 100L, 102L));
         cityTargetOnly = true;
+        feintTroopsBelow = 1000L;
         incomingRallyFollowerAlerts = true;
         friendAids = new LinkedHashSet<>(List.of(
                 89700055L, 89700652L, 89700071L, 89700410L, 89700728L, 89700352L, 89700483L));

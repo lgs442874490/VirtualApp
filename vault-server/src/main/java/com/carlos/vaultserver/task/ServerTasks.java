@@ -2970,6 +2970,62 @@ public final class ServerTasks {
     /** 联盟宝箱 1540（已失效/不可领）本地抑制 TTL：6 小时。 */
     static final long CHEST_INVALID_TTL_SEC = 6L * 3600L;
 
+    /** 批量领取单请求上限（保守 50/批；网页版一次全发，超限时本侧分批，避免超长协议帧）。 */
+    static final int CHEST_BATCH_MAX = 50;
+
+    /** 批量领取候选（L1 纯函数，便于单测）：未领 + 未过期 + 未失效；战利品按剩余配额截断。 */
+    static final class ChestPlan {
+        final List<Long> ids = new ArrayList<>();
+        final Map<Long, Integer> types = new LinkedHashMap<>();
+        final Map<Long, String> names = new LinkedHashMap<>();
+        boolean trophyLimitHit;
+
+        int size() {
+            return ids.size();
+        }
+    }
+
+    /**
+     * 生成批量领取计划（纯函数）：{@code req_alliance_receive_chest_by_ids} 的 ids 必须一次给全，
+     * 而「已领/已过期/本地判失效/战利品超 500 上限」的箱子不能进批次，否则整批可能被服务端拒。
+     * 顺序与 {@code chests} 一致；战利品按出现顺序消耗剩余配额。
+     */
+    static ChestPlan planChestClaims(Map<Long, Map<String, Object>> chests, long nowSec,
+                                     Map<Long, Long> invalid, long trophyRemaining) {
+        ChestPlan plan = new ChestPlan();
+        if (chests == null || chests.isEmpty()) return plan;
+        long budget = trophyRemaining;
+        for (Map<String, Object> chest : chests.values()) {
+            if (chest == null || truthy(chest.get("receive"))) continue;
+            long id = Exec.longOf(chest.get("id"));
+            if (id <= 0L) continue;
+            if (invalid != null && invalid.containsKey(id)) continue;
+            long endTime = firstLong(chest, "endtime", "end_time");
+            if (endTime > 0L && endTime < nowSec) continue;
+            long cid = firstLong(chest, "cid", "chest_config_id");
+            int type = allianceChestType(cid);
+            if (type == 2) {
+                if (budget <= 0L) {
+                    plan.trophyLimitHit = true;
+                    continue;
+                }
+                budget--;
+            }
+            plan.ids.add(id);
+            plan.types.put(id, type);
+            Object name = chest.get("name");
+            plan.names.put(id, name == null ? ("#" + id) : String.valueOf(name));
+        }
+        return plan;
+    }
+
+    /** {@code req_alliance_receive_chest_by_ids} 请求体：{@code {ids:[..]}}（2026-11-01 schema 实证）。 */
+    static Map<String, Object> chestBatchArgs(List<Long> ids) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        if (ids != null && !ids.isEmpty()) m.put("ids", new ArrayList<>(ids));
+        return m;
+    }
+
     /** 解析角色级失效箱集合（纯函数）：{@code "id:ts,id:ts"} → Map。 */
     static java.util.Map<Long, Long> parseInvalidChests(String raw) {
         java.util.Map<Long, Long> out = new java.util.LinkedHashMap<>();
@@ -3065,57 +3121,58 @@ public final class ServerTasks {
             java.util.Map<Long, Long> invalidChests = loadInvalidChests(tc);
             boolean invalidChanged = invalidChests.values().removeIf(ts -> ts <= 0L
                     || ts < nowSec - CHEST_INVALID_TTL_SEC);
-            for (Map<String, Object> chest : chests.values()) {
-                if (truthy(chest.get("receive"))) {
-                    skipped++;
-                    continue;
-                }
-                long id = Exec.longOf(chest.get("id"));
-                if (id <= 0) continue;
-                if (invalidChests.containsKey(id)) {
-                    skipped++;            // 近期已被服务端判失效：本轮不再请求
-                    continue;
-                }
-                long endTime = firstLong(chest, "endtime", "end_time");
-                if (endTime > 0 && endTime < nowSec) {
-                    skipped++;            // 已过期
-                    continue;
-                }
-                long cid = firstLong(chest, "cid", "chest_config_id");
-                int type = allianceChestType(cid);
-                if (type == 2) {
-                    if (trophyRemaining <= 0) {
-                        skipped++;
+
+            // 2026-11-01（L1）：先批量 req_alliance_receive_chest_by_ids{ids}（网页版
+            // DailyAllianceChestService:136-170 同口径）——候选一次请求领完，请求数 N→1；
+            // 批量失败（1529/1507/收敛码/协议异常）再按条降级，逐条分支给出精确分类。
+            ChestPlan plan = planChestClaims(chests, nowSec, invalidChests, trophyRemaining);
+            trophyLimitHit = plan.trophyLimitHit;
+            for (int from = 0; from < plan.size() && !notInAlliance; from += CHEST_BATCH_MAX) {
+                List<Long> chunk = new ArrayList<>(plan.ids.subList(from,
+                        Math.min(plan.size(), from + CHEST_BATCH_MAX)));
+                boolean batchOk = false;
+                if (chunk.size() >= 2) {
+                    GameMessage brsp = tc.engine.request("req_alliance_receive_chest_by_ids",
+                            chestBatchArgs(chunk));
+                    int bcode = Exec.codeOf(brsp);
+                    if (Exec.ok(brsp)) {
+                        batchOk = true;
+                        claimed += chunk.size();
+                        detail.append("批量×").append(chunk.size()).append(' ');
+                    } else if (bcode == 1529) {   // 战利品宝箱上限：本批降级逐条，由单条给出上限文案
                         trophyLimitHit = true;
-                        continue;
+                    } else if (bcode == 1507) {
+                        notInAlliance = true;
                     }
-                    trophyRemaining--;
                 }
-                GameMessage rsp = tc.engine.request("req_alliance_receive_chest",
-                        args("id", id, "type", type));
-                int code = Exec.codeOf(rsp);
-                if (Exec.ok(rsp)) {
-                    claimed++;
-                    detail.append(chest.get("name") == null ? ("#" + id) : chest.get("name"))
-                            .append("✓ ");
-                } else if (code == 2 || code == 4303 || code == 7501 || code == 40611) {
-                    skipped++;
-                } else if (code == 1529) {   // 战利品宝箱上限
-                    trophyLimitHit = true;
-                    skipped++;
-                } else if (code == 1507) {
-                    // 2026-11-01 生产实证（152/531/882 新角色）：1507 = 未加入联盟 → 整任务跳过，不再逐箱重试
-                    notInAlliance = true;
-                    break;
-                } else if (code == 1540 || code == 1541 || code == 1542 || code == 1543) {
-                    // 箱子已失效/不可领（网页版 DailyAllianceChestService.isConvergedChestError:
-                    // 1540/1541/1542/1543 均视为“已收敛”）：记失效集合，本轮跳过、TTL 内不再重复请求。
-                    invalidChests.put(id, nowSec);
-                    invalidChanged = true;
-                    skipped++;
-                } else {
-                    failed++;
-                    failCodes.add(code);
+                if (batchOk) continue;
+                for (Long id : chunk) {
+                    int type = plan.types.containsKey(id) ? plan.types.get(id) : allianceChestType(0L);
+                    GameMessage rsp = tc.engine.request("req_alliance_receive_chest",
+                            args("id", id, "type", type));
+                    int code = Exec.codeOf(rsp);
+                    if (Exec.ok(rsp)) {
+                        claimed++;
+                        detail.append(plan.names.getOrDefault(id, "#" + id)).append("✓ ");
+                    } else if (code == 2 || code == 4303 || code == 7501 || code == 40611) {
+                        skipped++;
+                    } else if (code == 1529) {   // 战利品宝箱上限
+                        trophyLimitHit = true;
+                        skipped++;
+                    } else if (code == 1507) {
+                        // 2026-11-01 生产实证（152/531/882 新角色）：1507 = 未加入联盟 → 整任务跳过，不再逐箱重试
+                        notInAlliance = true;
+                        break;
+                    } else if (code == 1540 || code == 1541 || code == 1542 || code == 1543) {
+                        // 箱子已失效/不可领（网页版 DailyAllianceChestService.isConvergedChestError:
+                        // 1540/1541/1542/1543 均视为“已收敛”）：记失效集合，本轮跳过、TTL 内不再重复请求。
+                        invalidChests.put(id, nowSec);
+                        invalidChanged = true;
+                        skipped++;
+                    } else {
+                        failed++;
+                        failCodes.add(code);
+                    }
                 }
             }
             if (invalidChanged) saveInvalidChests(tc, invalidChests);

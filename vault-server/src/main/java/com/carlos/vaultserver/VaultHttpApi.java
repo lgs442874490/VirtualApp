@@ -960,10 +960,6 @@ public final class VaultHttpApi {
     // ---------- 战争通知（2026-10-22）----------
 
     /**
-     * POST /v1/vault/watch：action ∈ list/add/update/remove/config/test。
-     * 名单是账号级（fpid 寻址）；config 为全局（watch 开关/企微/冷却/静默）。
-     */
-    /**
      * 观察点配置（批次 B 2026-10-30）：
      * <ul>
      *   <li>{@code get}：返回 {@code {enabled,envEnabled,monitorTargets[],protectRects[],
@@ -974,24 +970,284 @@ public final class VaultHttpApi {
      * </ul>
      * 写盘=临时文件原子替换 + {@code watchpoint.json.bak} 备份；WatchPointEngine 按 mtime 5s 热载。
      */
+    /**
+     * 观察点配置快照 + {@code friendAbbrs}（App 只认简称，回填输入框用）：
+     * 先用 App 自己维护的 {@code aidLabels}，没有再用玩家目录反查，取不到就给空串占位。
+     */
+    private JSONObject watchpointSnapshot() {
+        JSONObject o = watchPointStore.snapshotJson();
+        try {
+            JSONArray abbrs = new JSONArray();
+            JSONArray aids = o.optJSONArray("friendAids");
+            JSONObject labels = o.optJSONObject("aidLabels");
+            com.carlos.vaultserver.watchpoint.PlayerDirectory dir =
+                    com.carlos.vaultserver.watchpoint.PlayerDirectory.shared();
+            if (aids != null) {
+                for (int i = 0; i < aids.length(); i++) {
+                    long aid = aids.optLong(i);
+                    String a = aid <= 0L || labels == null
+                            ? "" : labels.optString(String.valueOf(aid), "");
+                    if (a.isEmpty() && aid > 0L && dir != null) a = dir.abbrOfAid(aid);
+                    abbrs.put(a);
+                }
+            }
+            o.put("friendAbbrs", abbrs);
+        } catch (Throwable ignore) {
+            // 快照照常返回，简称补不上只是回填缺省
+        }
+        return o;
+    }
+
     private JSONObject handleWatchpoint(Map<String, Object> fields) throws Exception {
         com.carlos.vaultserver.watchpoint.WatchPointStore wp = watchPointStore;
         if (wp == null) throw new BizError(3002, "观察点未启用（服务端未就绪）");
         wp.ensureLoaded();
         String action = str(fields, "action");
         if (action == null || action.isEmpty()) throw new BizError(3002, "缺少 action");
-        if ("get".equals(action)) return wp.snapshotJson();
+        if ("get".equals(action)) return watchpointSnapshot();
         if ("enable".equals(action) || "disable".equals(action)) {
             boolean on = "enable".equals(action);
             wp.setEnabled(on);
             FileLog.info("[观察点] 配置开关更新 enabled={}", String.valueOf(on));
-            return wp.snapshotJson();
+            return watchpointSnapshot();
+        }
+        if ("alliance".equals(action)) {
+            // 2026-11-02：联盟简称 → aid（官方 req_alliance_search_by_key；游戏内「查询联盟」同款）
+            String abbr = str(fields, "abbr");
+            if (abbr == null || abbr.trim().isEmpty()) throw new BizError(3002, "缺少 abbr");
+            long aid = keeper.resolveAllianceAid(str(fields, "fpid"),
+                    optInt(fields, "sid", 0), abbr.trim());
+            org.json.JSONObject data = new org.json.JSONObject();
+            data.put("abbr", abbr.trim());
+            data.put("aid", aid);
+            data.put("found", aid > 0L);
+            FileLog.info("[观察点] 联盟简称查询 abbr={} → aid={}", abbr.trim(), String.valueOf(aid));
+            return data;
+        }
+        if ("dir".equals(action)) {
+            // 2026-11-02：目录重建要 20-40s（约 90 次游戏协议），绝不能占 HTTP 线程（池仅 4 个）
+            com.carlos.vaultserver.watchpoint.PlayerDirectory dir =
+                    com.carlos.vaultserver.watchpoint.PlayerDirectory.shared();
+            boolean refreshing = false;
+            // 只有过期才需要城缓存列表（拉 4500 条也要几秒），未过期就别白跑
+            if (dir != null && dir.isStale()) {
+                java.util.List<com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo> all =
+                        com.carlos.vaultserver.watchpoint.WatchPointEngine.lookup(null, null, null, 0, 0, 6000);
+                if (keeper instanceof com.carlos.vaultserver.SessionKeeper) {
+                    dir.refreshAsync((com.carlos.vaultserver.SessionKeeper) keeper,
+                            resolveFpid(fields), 0L, all);
+                    refreshing = true;
+                }
+            }
+            org.json.JSONObject data = new org.json.JSONObject();
+            data.put("count", dir == null ? 0 : dir.size());
+            data.put("builtAt", dir == null ? 0L : dir.builtAt());
+            data.put("refreshing", refreshing);
+            return data;
+        }
+        if ("lookup".equals(action)) {
+            // 2026-11-02 小工具：按 uid / 昵称子串 / 联盟简称（昵称 [818] 前缀）/ aid / 最低等级 查整图城缓存
+            String fidArg = str(fields, "fid");
+            boolean refreshing = false;
+            java.util.List<com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo> list;
+            if (fidArg != null && !fidArg.trim().isEmpty()) {
+                com.carlos.vaultserver.watchpoint.PlayerDirectory dir =
+                        com.carlos.vaultserver.watchpoint.PlayerDirectory.shared();
+                com.carlos.vaultserver.watchpoint.PlayerDirectory.Entry hit = dir == null ? null : dir.byFid(fidArg);
+                if (hit == null && dir != null && dir.isStale()) {
+                    // 2026-11-02：目录重建要 20-40s，HTTP 里不能同步做（会超时/拖死请求线程）
+                    java.util.List<com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo> all =
+                            com.carlos.vaultserver.watchpoint.WatchPointEngine.lookup(null, null, null, 0, 0, 6000);
+                    if (keeper instanceof com.carlos.vaultserver.SessionKeeper) {
+                        dir.refreshAsync((com.carlos.vaultserver.SessionKeeper) keeper,
+                                resolveFpid(fields), 0L, all);
+                        refreshing = true;
+                    }
+                }
+                list = new java.util.ArrayList<>();
+                if (hit != null) {
+                    list.add(new com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo(
+                            hit.uid, hit.aid, hit.stoveLv, hit.nick, hit.x, hit.y));
+                }
+            } else {
+                list = com.carlos.vaultserver.watchpoint.WatchPointEngine.lookup(
+                        str(fields, "uid"), str(fields, "nick"), str(fields, "abbr"),
+                        optInt(fields, "aid", 0), optInt(fields, "minLv", 0),
+                        optInt(fields, "limit", 200));
+            }
+            org.json.JSONArray arr = new org.json.JSONArray();
+            for (com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo c : list) {
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("uid", c.uid);
+                o.put("aid", c.aid);
+                o.put("lv", c.lv);
+                o.put("nick", c.nick);
+                o.put("x", c.x);
+                o.put("y", c.y);
+                arr.put(o);
+            }
+            org.json.JSONObject data = new org.json.JSONObject();
+            data.put("count", arr.length());
+            data.put("cities", arr);
+            if (fidArg != null && !fidArg.trim().isEmpty() && arr.length() == 0) {
+                data.put("refreshing", refreshing);
+                data.put("hint", refreshing
+                        ? "玩家目录正在后台重建（约 20-40 秒），稍后再查一次"
+                        : "玩家目录里没有这个账号ID（可先点“刷新玩家目录”）");
+            }
+            FileLog.info("[观察点] 查询：uid={} nick={} abbr={} aid={} minLv={} → {} 条",
+                    str(fields, "uid"), str(fields, "nick"), str(fields, "abbr"),
+                    String.valueOf(optInt(fields, "aid", 0)), String.valueOf(optInt(fields, "minLv", 0)),
+                    String.valueOf(arr.length()));
+            return data;
+        }
+        if ("player".equals(action)) {
+            // 2026-11-02 小工具：借在线会话查玩家条目（含 alliance{aid,abbr,name} / stove_lv）
+            String uids = str(fields, "uids");
+            if (uids == null) uids = str(fields, "uid");
+            if (uids == null || uids.trim().isEmpty()) throw new BizError(3002, "缺少 uid/uids");
+            String fpid = resolveFpid(fields);
+            int sid = optInt(fields, "sid", 0);
+            java.util.List<Long> want = new java.util.ArrayList<>();
+            for (String part : uids.split(",")) {
+                if (want.size() >= 50) break;
+                try {
+                    long uid = Long.parseLong(part.trim());
+                    if (uid > 0L && !want.contains(uid)) want.add(uid);
+                } catch (NumberFormatException e) {
+                    // 忽略非数字
+                }
+            }
+            // 一次批量协议（50/批）取回，避免逐个 uid 打协议
+            java.util.Map<Long, java.util.Map<String, Object>> infos = want.isEmpty()
+                    ? java.util.Collections.emptyMap() : keeper.resolvePlayers(fpid, sid, want);
+            org.json.JSONArray arr = new org.json.JSONArray();
+            for (Long uid : want) {
+                java.util.Map<String, Object> info = infos.get(uid);
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("uid", uid);
+                if (info == null) {
+                    o.put("found", false);
+                } else {
+                    o.put("found", true);
+                    Object nick = info.get("nickName");
+                    o.put("nick", nick == null ? "" : String.valueOf(nick));
+                    o.put("stoveLv", com.carlos.vaultserver.task.Exec.longOf(info.get("stove_lv")));
+                    o.put("fid", com.carlos.vaultserver.task.Exec.longOf(info.get("fid")));
+                    o.put("power", com.carlos.vaultserver.task.Exec.longOf(info.get("power")));
+                    Object al = info.get("alliance");
+                    if (al instanceof Map) {
+                        java.util.Map<String, Object> am = com.carlos.vaultserver.task.Exec.mapOf(al);
+                        o.put("aid", com.carlos.vaultserver.task.Exec.longOf(am.get("aid")));
+                        Object abbr = am.get("abbr");
+                        Object name = am.get("name");
+                        o.put("abbr", abbr == null ? "" : String.valueOf(abbr));
+                        o.put("allianceName", name == null ? "" : String.valueOf(name));
+                    }
+                }
+                arr.put(o);
+            }
+            org.json.JSONObject data = new org.json.JSONObject();
+            data.put("count", arr.length());
+            data.put("players", arr);
+            FileLog.info("[观察点] 玩家查询 fpid={} sid={} uids={} → {} 条",
+                    fpid, String.valueOf(sid), uids, String.valueOf(arr.length()));
+            return data;
+        }
+        if ("resolve".equals(action)) {
+            // 2026-11-02 小工具：城缓存筛出候选（可带 minLv），借在线会话批量解析联盟简称，再按 abbr 过滤
+            String abbr = str(fields, "abbr");
+            int minLv = optInt(fields, "minLv", 0);
+            int limit = optInt(fields, "limit", 400);
+            int aid = optInt(fields, "aid", 0);
+            java.util.List<com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo> cand =
+                    com.carlos.vaultserver.watchpoint.WatchPointEngine.lookup(
+                            null, null, null, aid, minLv, limit);
+            String fpid = str(fields, "fpid");
+            if (fpid == null || fpid.isEmpty()) {
+                java.util.List<com.carlos.vaultserver.VaultStore.Account> all = store.snapshot();
+                if (!all.isEmpty()) fpid = all.get(0).fpid;
+            }
+            int sid = optInt(fields, "sid", 0);
+            org.json.JSONArray arr = new org.json.JSONArray();
+            int batch = 50;
+            for (int i = 0; i < cand.size(); i += batch) {
+                int end = Math.min(cand.size(), i + batch);
+                java.util.List<Long> uids = new java.util.ArrayList<>();
+                for (int j = i; j < end; j++) uids.add(cand.get(j).uid);
+                java.util.Map<Long, java.util.Map<String, Object>> infos =
+                        keeper.resolvePlayers(fpid, sid, uids);
+                for (int j = i; j < end; j++) {
+                    com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo c = cand.get(j);
+                    java.util.Map<String, Object> info = infos.get(c.uid);
+                    if (info == null) continue;
+                    java.util.Map<String, Object> am =
+                            com.carlos.vaultserver.task.Exec.mapOf(info.get("alliance"));
+                    String a = am == null || am.get("abbr") == null
+                            ? "" : String.valueOf(am.get("abbr"));
+                    if (abbr != null && !abbr.isEmpty() && !abbr.equalsIgnoreCase(a)) continue;
+                    org.json.JSONObject o = new org.json.JSONObject();
+                    o.put("uid", c.uid);
+                    o.put("nick", c.nick);
+                    o.put("x", c.x);
+                    o.put("y", c.y);
+                    o.put("stoveLv", com.carlos.vaultserver.task.Exec.longOf(info.get("stove_lv")));
+                    o.put("fid", com.carlos.vaultserver.task.Exec.longOf(info.get("fid")));
+                    o.put("abbr", a);
+                    o.put("aid", am == null ? 0L : com.carlos.vaultserver.task.Exec.longOf(am.get("aid")));
+                    o.put("allianceName", am == null || am.get("name") == null ? "" : String.valueOf(am.get("name")));
+                    arr.put(o);
+                }
+            }
+            org.json.JSONObject data = new org.json.JSONObject();
+            data.put("count", arr.length());
+            data.put("players", arr);
+            FileLog.info("[观察点] 联盟解析 abbr={} minLv={} 候选={} → 命中 {}",
+                    abbr, String.valueOf(minLv), String.valueOf(cand.size()),
+                    String.valueOf(arr.length()));
+            return data;
+        }
+        if ("set".equals(action)) {
+            // 2026-11-02：UI 只能看到联盟简称，入参 friendAbbrs 用玩家目录/官方联盟搜索换成 friendAids。
+            // 约定：字段出现即生效——空串表示清空（原来“空串被忽略”导致 App 上清不掉）。
+            if (fields.containsKey("friendAbbrs")) {
+                String abbrs = str(fields, "friendAbbrs");
+                com.carlos.vaultserver.watchpoint.PlayerDirectory dir =
+                        com.carlos.vaultserver.watchpoint.PlayerDirectory.shared();
+                java.util.List<String> aids = new java.util.ArrayList<>();
+                java.util.List<String> missing = new java.util.ArrayList<>();
+                int onlineLookups = 0;   // 未知简称在线解析上限 2 次，避免 N 个未知名称串行打协议拖长保存
+
+                if (abbrs != null) {
+                    for (String part : abbrs.split(",")) {
+                        String a = part.trim();
+                        if (a.isEmpty()) continue;
+                        // 简称优先按「目录/官方搜索」解析：纯数字简称（如 [818]）真实存在，
+                        // 不能先当 aid 直通，否则「回填→保存」会把 friendAids 写成 818 这种错值。
+                        Long aid = dir == null ? null : dir.aidOfAbbr(a);
+                        if ((aid == null || aid <= 0L) && onlineLookups < 2) {
+                            onlineLookups++;
+                            long viaApi = keeper.resolveAllianceAid(resolveFpid(fields),
+                                    optInt(fields, "sid", 0), a);
+                            if (viaApi > 0L && dir != null) dir.rememberAbbr(a, viaApi);
+                            aid = pickAbbrAid(viaApi > 0L ? viaApi : null, a);
+                        }
+                        if (aid == null || aid <= 0L) missing.add(a);
+                        else if (!aids.contains(String.valueOf(aid))) aids.add(String.valueOf(aid));
+                    }
+                }
+                if (!missing.isEmpty()) {
+                    throw new BizError(3002, "联盟简称未识别：" + missing
+                            + "（先点“刷新玩家目录”，或确认简称拼写正确）");
+                }
+                fields.put("friendAids", String.join(",", aids));   // 空列表 = 空串 = 清空
+            }
         }
         if (!"set".equals(action)) throw new BizError(3002, "未知 action: " + action);
         JSONObject in = new JSONObject();
         for (String k : new String[]{"enabled", "kid", "fpid", "monitorIntervalMs",
                 "protectIntervalMs", "maxReqPerSec", "wecomEnabled", "fullScanIntervalMs",
-                "cityTargetOnly", "incomingRallyFollowerAlerts", "alertTypes", "friendAids",
+                "cityTargetOnly", "feintTroopsBelow", "incomingRallyFollowerAlerts", "alertTypes", "friendAids",
                 "aidLabels", "monitorTargets", "protectRects"}) {
             if (fields.containsKey(k)) in.put(k, fields.get(k));
             Object json = fields.get(k + "Json");
@@ -1002,7 +1258,7 @@ public final class VaultHttpApi {
         FileLog.info("[观察点] 配置已更新：目标={} 矩形={} 告警类型={} 友盟={}",
                 String.valueOf(wp.monitorTargets.size()), String.valueOf(wp.protectRects.size()),
                 String.valueOf(wp.alertTypes.size()), String.valueOf(wp.friendAids.size()));
-        return wp.snapshotJson();
+        return watchpointSnapshot();
     }
 
     private JSONObject handleWatch(Map<String, Object> fields) throws Exception {
@@ -1176,6 +1432,31 @@ public final class VaultHttpApi {
         if (v == null) return null;
         String s = String.valueOf(v);
         return "null".equals(s) ? null : s;
+    }
+
+    /**
+     * 简称 → aid 的取值优先级（2026-11-02 修）：目录/官方搜索解析结果优先；
+     * 纯数字简称（如地图前缀 {@code [818]}）真实存在，只有「≥7 位且解析不到」才当作 aid 直通，
+     * 否则 {@code 818} 会被写成 friendAids=818，静默写坏友盟配置。
+     */
+    static Long pickAbbrAid(Long resolved, String raw) {
+        if (resolved != null && resolved > 0L) return resolved;
+        if (raw != null && raw.matches("\\d{7,}")) {
+            try {
+                return Long.parseLong(raw);
+            } catch (NumberFormatException ignore) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    /** 取 fpid：入参 → 第一个账号。观察点小工具统一走这里，避免各处重复兜底。 */
+    private String resolveFpid(Map<String, Object> fields) {
+        String fpid = str(fields, "fpid");
+        if (fpid != null && !fpid.isEmpty()) return fpid;
+        java.util.List<com.carlos.vaultserver.VaultStore.Account> all = store.snapshot();
+        return all.isEmpty() ? "" : all.get(0).fpid;
     }
 
     /** 宽松布尔解析（Boolean/true/1/yes；用于 allowEmpty/force 这类显式确认开关）。 */

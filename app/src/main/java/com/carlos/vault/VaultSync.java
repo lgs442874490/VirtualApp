@@ -1010,6 +1010,17 @@ public final class VaultSync {
     public static void watchpointSet(Context ctx, boolean enabled, JSONArray monitorTargets,
                                      JSONArray protectRects, String friendAids, String alertTypes,
                                      Boolean wecomEnabled, Callback done) {
+        watchpointSet(ctx, enabled, monitorTargets, protectRects, friendAids, alertTypes,
+                wecomEnabled, null, done);
+    }
+
+    /**
+     * 观察点配置保存（2026-11-02 新增 feintTroopsBelow）：出征兵力阈值，
+     * 低于该值判定「佯攻」，≥该值判定「威胁进攻」并在告警文案标红；null=不改。
+     */
+    public static void watchpointSet(Context ctx, boolean enabled, JSONArray monitorTargets,
+                                     JSONArray protectRects, String friendAids, String alertTypes,
+                                     Boolean wecomEnabled, Integer feintTroopsBelow, Callback done) {
         Map<String, Object> f = watchpointFields("set");
         f.put("enabled", enabled);
         f.put("monitorTargetsJson", monitorTargets == null ? "[]" : monitorTargets.toString());
@@ -1017,7 +1028,32 @@ public final class VaultSync {
         f.put("friendAids", friendAids == null ? "" : friendAids);
         f.put("alertTypes", alertTypes == null ? "" : alertTypes);
         if (wecomEnabled != null) f.put("wecomEnabled", wecomEnabled);
+        if (feintTroopsBelow != null) f.put("feintTroopsBelow", feintTroopsBelow);
         watchpointPost(ctx, f, done, "vault-watchpoint-set");
+    }
+
+    /**
+     * 观察点配置保存（2026-11-02：友盟用「联盟简称」配置，aid 由服务端玩家目录换算）。
+     */
+    public static void watchpointSetAbbrs(Context ctx, boolean enabled, JSONArray monitorTargets,
+                                          JSONArray protectRects, String friendAbbrs, String alertTypes,
+                                          Boolean wecomEnabled, Integer feintTroopsBelow, Callback done) {
+        Map<String, Object> f = watchpointFields("set");
+        f.put("enabled", enabled);
+        f.put("monitorTargetsJson", monitorTargets == null ? "[]" : monitorTargets.toString());
+        f.put("protectRectsJson", protectRects == null ? "[]" : protectRects.toString());
+        f.put("friendAbbrs", friendAbbrs == null ? "" : friendAbbrs);
+        f.put("alertTypes", alertTypes == null ? "" : alertTypes);
+        if (wecomEnabled != null) f.put("wecomEnabled", wecomEnabled);
+        if (feintTroopsBelow != null) f.put("feintTroopsBelow", feintTroopsBelow);
+        watchpointPost(ctx, f, done, "vault-watchpoint-set-abbrs");
+    }
+
+    /** 按账号ID（fid）查询角色 uid/昵称/坐标（服务端玩家目录）。回调在 OkHttp 线程。 */
+    public static void watchpointLookupFid(Context ctx, String fid, Callback done) {
+        Map<String, Object> f = watchpointFields("lookup");
+        f.put("fid", fid == null ? "" : fid.trim());
+        watchpointPost(ctx, f, done, "vault-watchpoint-lookup-fid");
     }
 
     /** 只改观察点开关（enable/disable）。回调在 OkHttp 线程。 */

@@ -369,7 +369,7 @@ public class WarNotifyTest {
         assertTrue(text.contains("进攻"));
         assertTrue(text.contains("宿敌"));
         assertTrue(text.contains("(3,4)"));
-        assertTrue(text.contains("notify_player_march_add"));
+        assertFalse("不再附协议名: " + text, text.contains("notify_player_march_add"));
 
         // 静默时段只抑制企微，事件照记；本机当前小时不在窗口内则无法直接断言跳过，
         // 这里只验证 inQuietHours 与人工时刻一致（同钟计算，无 flake）
@@ -906,13 +906,39 @@ public class WarNotifyTest {
         assertEquals(1, notifier.sent.size());
         String text = notifier.sent.get(0);
         assertTrue(text.contains("⚔️ 战争警报·进攻城堡"));
-        assertTrue(text.contains("发起人：宿敌（uid " + ENEMY_UID + "）"));
+        assertTrue(text.contains("发起人：宿敌"));
+        assertFalse("通知里不带 uid/aid 编号: " + text,
+                text.contains("uid") || text.contains("aid"));
         assertTrue(text.contains("发起人坐标：(5,6)"));
         assertTrue(text.contains("目标：(3,4)"));
         assertTrue(text.contains("兵力：盾T10×1200 矛T9×800（合计2000）"));
         assertTrue(text.contains("到达："));                     // HH:mm:ss（约 N 分 M 秒后）
         assertTrue(text.contains("分 ") && text.contains(" 秒后）"));
-        assertTrue(text.contains("来源：notify_player_march_add"));
+        assertFalse("不再附来源协议名（技术噪声）: " + text, text.contains("来源："));
+    }
+
+    @Test
+    public void wecomText_targetShowsDefenderNickAndAlliance() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        store.updateWatchConfig(true, true,
+                "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x", 300, -1, 8);
+        // 整图城缓存里已经有 (3,4) 这座城：地图昵称自带联盟简称前缀
+        com.carlos.vaultserver.watchpoint.WatchPointStore wps =
+                new com.carlos.vaultserver.watchpoint.WatchPointStore(
+                        java.nio.file.Paths.get(tmp.getRoot().getAbsolutePath()));
+        com.carlos.vaultserver.watchpoint.WatchPointEngine wpe =
+                new com.carlos.vaultserver.watchpoint.WatchPointEngine(null, wps, null, null);
+        wpe.seedCityForTest(19694427L, 89700055L, 3, 4, "[SYD]小淑女");
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.install(wpe);
+        try {
+            war.onPush(FPID, 888L, "notify_player_march_add", content(
+                    fullMarch(321, ENEMY_UID, 2, nowS - 60, nowS + 300, 3, 4, 5, 6, null)));
+            assertEquals(1, notifier.sent.size());
+            String text = notifier.sent.get(0);
+            assertTrue("目标行要带被攻击人昵称+简称: " + text, text.contains("目标：[SYD]小淑女(3,4)"));
+        } finally {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
+        }
     }
 
     @Test
