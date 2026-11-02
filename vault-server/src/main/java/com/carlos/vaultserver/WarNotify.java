@@ -293,6 +293,14 @@ public final class WarNotify {
             }
             return;
         }
+        // 「加入集结」不推（只提醒发起集结 / 集结出征）
+        if (isRallyFollower(m, type)) {
+            if (diagAllowed("rattlefollow:" + proto)) {
+                FileLog.info("战争通知跳过（加入集结）proto={} owner={} type={}", proto,
+                        String.valueOf(owner), String.valueOf(type));
+            }
+            return;
+        }
         if (!isPvpMarch(type) && (proto == null || !proto.contains("mass_march"))) {
             if (diagAllowed("typeskip:" + proto)) {
                 FileLog.info("战争通知跳过（非敌情行军）proto={} owner={} type={} state={}",
@@ -682,12 +690,23 @@ public final class WarNotify {
     }
 
     /**
-     * 敌情行军类型（2026-11-02）：1 侦查 / 2 进攻 / 10、12 集结中 / 99 集结随从 /
-     * 100 集结 / 102 集结主体。采集(4)、驻防(5)、狩猎(3)、打野(302)、建设援助等一律不推。
+     * 敌情行军类型（2026-11-03 用户口径）：2 进攻 / 100 发起集结 / 102 集结出征。
+     * 99 集结随从、10/12 集结中 = 加入集结/过程 → 不推；采集(4)、驻防(5)、狩猎(3)、
+     * 打野(302)、建设援助等一律不推。侦查(1)由观察点负责，这里也返回 false。
      */
     static boolean isPvpMarch(long type) {
-        return type == 1L || type == 2L || type == 10L || type == 12L
-                || type == 99L || type == 100L || type == 102L;
+        return type == 2L || type == 100L || type == 102L;
+    }
+
+    /** 是否为「加入集结」帧：带 mass_slave（随从）或 type=99。 */
+    static boolean isRallyFollower(Map<String, Object> m, long type) {
+        if (type == 99L) return true;
+        Object slave = m.get("mass_slave");
+        if (slave == null) slave = m.get("massSlave");
+        if (slave instanceof Map) return !((Map<?, ?>) slave).isEmpty();
+        if (slave instanceof List) return !((List<?>) slave).isEmpty();
+        return slave != null && !String.valueOf(slave).trim().isEmpty()
+                && !"0".equals(String.valueOf(slave).trim());
     }
 
     /** 行为映射（v4.1.8）：集结协议=集结城堡；type 1=侦查 2=进攻城堡 5=驻防；余=出征。 */

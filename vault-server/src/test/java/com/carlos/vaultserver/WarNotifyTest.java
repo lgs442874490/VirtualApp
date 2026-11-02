@@ -296,15 +296,34 @@ public class WarNotifyTest {
     // ================= 2026-11-02：非敌情行军不推（建设援助/采集/驻防返程误报） =================
 
     @Test
-    public void isPvpMarch_onlyAttackTypes() {
-        assertTrue(WarNotify.isPvpMarch(1L));
+    public void isPvpMarch_onlyAttackAndRallyLeader() {
         assertTrue(WarNotify.isPvpMarch(2L));
-        assertTrue(WarNotify.isPvpMarch(100L));
-        assertTrue(WarNotify.isPvpMarch(102L));
+        assertTrue("发起集结", WarNotify.isPvpMarch(100L));
+        assertTrue("集结出征", WarNotify.isPvpMarch(102L));
+        assertFalse("侦查走观察点", WarNotify.isPvpMarch(1L));
+        assertFalse("加入集结不推", WarNotify.isPvpMarch(99L));
+        assertFalse("集结中不推", WarNotify.isPvpMarch(10L));
+        assertFalse("集结中不推", WarNotify.isPvpMarch(12L));
         assertFalse("采集不推", WarNotify.isPvpMarch(4L));
         assertFalse("驻防/援助不推", WarNotify.isPvpMarch(5L));
         assertFalse("狩猎不推", WarNotify.isPvpMarch(3L));
         assertFalse("未知类型不推", WarNotify.isPvpMarch(0L));
+    }
+
+    @Test
+    public void onPush_rallyFollowerIsSilent() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        // type=99 随从 / 带 mass_slave 的加入集结帧都不推
+        war.onPush(FPID, 888L, "notify_world_marchs",
+                playerMarchAdd(920, ENEMY_UID, 99, nowS, nowS + 300, 12, 34));
+        Map<String, Object> c = playerMarchAdd(921, ENEMY_UID, 501, nowS, nowS + 300, 12, 34);
+        @SuppressWarnings("unchecked")
+        Map<String, Object> march = (Map<String, Object>) c.get("march");
+        Map<String, Object> slave = new LinkedHashMap<>();
+        slave.put("id", 921);
+        march.put("mass_slave", slave);
+        war.onPush(FPID, 888L, "notify_mass_march_add", c);
+        assertEquals("加入集结不推", 0, events.size());
     }
 
     @Test

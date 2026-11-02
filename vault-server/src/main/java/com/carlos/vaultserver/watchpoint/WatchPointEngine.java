@@ -1256,6 +1256,8 @@ public final class WatchPointEngine {
                     store.friendAids, type, store.incomingRallyFollowerAlerts);
             // 监视目标发起的行军由战争警报统一推（避免同一条行军重复通知）
             if (alert && isMonitoredUid(owner)) alert = false;
+            // 2026-11-03：加入集结（99 随从 / 10、12 集结中）不推，只保留发起(100)与集结出征(102)
+            if (alert && (type == 99L || type == 10L || type == 12L)) alert = false;
             if (!alert) {
                 if (!store.incomingRallyFollowerAlerts && (type == 99L || type == 100L)
                         && store.friendAids.contains(targetAid)) {
