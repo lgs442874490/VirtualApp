@@ -918,6 +918,30 @@ public class WarNotifyTest {
     }
 
     @Test
+    public void wecomText_targetShowsDefenderNickAndAlliance() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        store.updateWatchConfig(true, true,
+                "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x", 300, -1, 8);
+        // 整图城缓存里已经有 (3,4) 这座城：地图昵称自带联盟简称前缀
+        com.carlos.vaultserver.watchpoint.WatchPointStore wps =
+                new com.carlos.vaultserver.watchpoint.WatchPointStore(
+                        java.nio.file.Paths.get(tmp.getRoot().getAbsolutePath()));
+        com.carlos.vaultserver.watchpoint.WatchPointEngine wpe =
+                new com.carlos.vaultserver.watchpoint.WatchPointEngine(null, wps, null, null);
+        wpe.seedCityForTest(19694427L, 89700055L, 3, 4, "[SYD]小淑女");
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.install(wpe);
+        try {
+            war.onPush(FPID, 888L, "notify_player_march_add", content(
+                    fullMarch(321, ENEMY_UID, 2, nowS - 60, nowS + 300, 3, 4, 5, 6, null)));
+            assertEquals(1, notifier.sent.size());
+            String text = notifier.sent.get(0);
+            assertTrue("目标行要带被攻击人昵称+简称: " + text, text.contains("目标：[SYD]小淑女(3,4)"));
+        } finally {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
+        }
+    }
+
+    @Test
     public void wecomText_settleAppendsOutcomeLine() {
         long nowS = System.currentTimeMillis() / 1000L;
         store.updateWatchConfig(true, true,

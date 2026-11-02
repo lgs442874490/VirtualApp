@@ -333,6 +333,10 @@ public final class WatchPointEngine {
     private final Map<Long, Long> targetLostAt = new ConcurrentHashMap<>();
     private final Map<Long, Long> targetSearchAt = new ConcurrentHashMap<>();
     private final Map<Long, Long> targetAttackedAt = new ConcurrentHashMap<>();
+    /** 迁城通知节流：uid → 上次推送时刻（每个目标每 60 秒最多一条迁城通知）。 */
+    private final Map<Long, Long> lastMoveAlertAt = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 迁城通知最小间隔：一分钟只推一次（用户口径 2026-11-02）。 */
+    private static final long MOVE_ALERT_MIN_INTERVAL_MS = 60_000L;
     private final Map<String, Long> alerted = new ConcurrentHashMap<>();
     private final ExecutorService alertExec = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "watchpoint-alert");
@@ -1047,6 +1051,12 @@ public final class WatchPointEngine {
     }
 
     private void parseCity(Map<?, ?> item, Set<Long> seenUids) {
+        // 2026-11-02：world_mapobj type: 1=城 2=资源矿 3=行军…；只有 type=1 才是城。
+        // 行军/资源对象里也可能带 map_city（归属城快照），按对象 point 记坐标会让城「到处乱跳」。
+        if (item.containsKey("type")) {
+            long objType = asLong(item.get("type"), 0L);
+            if (objType > 0L && objType != 1L) return;
+        }
         Map<?, ?> city = asMap(item.get("map_city"));
         if (city.isEmpty()) {
             city = asMap(item.get("city"));
@@ -1171,12 +1181,9 @@ public final class WatchPointEngine {
         int sy = (int) asLong(sp.get("y"), -1L);
         int ex = (int) asLong(ep.get("x"), -1L);
         int ey = (int) asLong(ep.get("y"), -1L);
-        // 2026-11-02：监视目标一旦出兵，行军起点就是他的城 → 用行军持续校正坐标（追踪「飞到哪里」）。
-        // 放在状态/类型过滤之前：回程、非告警类型的行军同样能证明他在哪。
-        if (sx > 0 && sy > 0 && isMonitoredUid(owner)) {
-            City oc = cityByUid.get(owner);
-            noteTargetCity(owner, sx, sy, oc == null ? null : oc.nick);
-        }
+        // 2026-11-02：不用行军 startpoint 校正坐标——行军对象的“当前位置”会随部队移动，
+        // 拿它当城坐标会让监视窗口来回跳（实测同一目标 4 秒内在多个坐标间抖动）。
+        // 坐标只认地图城对象（type=1）与整图扫描结果。
         // 2026-11-02：行军状态过滤——2=在途 / 3=到达 / 4=回程；只对在途告警，
         // 否则「进攻后返回」会被当成「打自己」（终点=自己城）重复通知。
         long endtime = asLong(m.get("endtime"), 0L);
@@ -1348,6 +1355,11 @@ public final class WatchPointEngine {
      * 坐标变了 → 更新配置 + 企微通知；从「丢失」状态恢复时补一条恢复通知。
      */
     void noteTargetCity(long uid, int x, int y, String gameNick) {
+        noteTargetCity(uid, x, y, gameNick, false);
+    }
+
+    /** force=true 用于「已确认丢失后重新找到」：不再走两次确认，直接推送。 */
+    void noteTargetCity(long uid, int x, int y, String gameNick, boolean force) {
         if (uid <= 0L || x <= 0 || y <= 0) return;
         WatchPointStore.Target t = findTarget(uid);
         if (t == null) return;
@@ -1356,13 +1368,12 @@ public final class WatchPointEngine {
         boolean wasLost = targetLostAt.remove(uid) != null;
         targetSearchAt.remove(uid);
         targetMisses.remove(uid);
-        String nickText = gameNick == null || gameNick.isEmpty() ? "" : gameNick + " ";
-        String label = t.nick == null || t.nick.isEmpty() ? "监视目标" : t.nick;
         if (t.x == x && t.y == y) {
             if (wasLost) {
+                String label = t.nick == null || t.nick.isEmpty() ? "监视目标" : t.nick;
                 alert("relocate:" + uid + ":" + x + ":" + y + ":" + (now / 600_000L),
                         "📡 观察点·重新锁定目标\n" + label + "\n"
-                                + (nickText.isEmpty() ? "" : "游戏昵称：" + gameNick + "\n")
+                                + (gameNick == null || gameNick.isEmpty() ? "" : "游戏昵称：" + gameNick + "\n")
                                 + "坐标 (" + x + "," + y + ")（位置未变，已恢复视野）\n时间：" + nowText());
             }
             return;
@@ -1370,21 +1381,35 @@ public final class WatchPointEngine {
         int ox = t.x;
         int oy = t.y;
         int jump = Math.max(Math.abs(x - ox), Math.abs(y - oy));
+        // 坐标随时更新（监视窗口要跟着他走），但通知按目标节流
         t.x = x;
         t.y = y;
         store.save();
-        // 坐标口径误差（行军起点/城点差 1-2 格）不算迁城：静默校正，避免刷屏
-        if (jump <= 2 && !wasLost) return;
-        boolean first = ox <= 0 || oy <= 0;
+        if (jump <= 2 && !wasLost) return;   // 城点相邻格口径误差：静默校正
+        if (!force && !wasLost) {
+            Long last = lastMoveAlertAt.get(uid);
+            if (last != null && now - last < MOVE_ALERT_MIN_INTERVAL_MS) {
+                FileLog.info("[{}] 迁城通知节流（1 分钟内已推过）：uid={} → ({},{})", LOG,
+                        String.valueOf(uid), String.valueOf(x), String.valueOf(y));
+                return;
+            }
+        }
+        lastMoveAlertAt.put(uid, now);
+        fireMoveAlert(uid, t, ox, oy, x, y, gameNick, wasLost);
+    }
+
+    /** 推送迁城/定位通知（确认后调用）。 */
+    private void fireMoveAlert(long uid, WatchPointStore.Target t, int ox, int oy,
+                               int x, int y, String gameNick, boolean wasLost) {
+        String label = t.nick == null || t.nick.isEmpty() ? "监视目标" : t.nick;
+        String nickLine = gameNick == null || gameNick.isEmpty() ? "" : "游戏昵称：" + gameNick + "\n";
         String reason = relocationReason(uid);
-        String head = first
+        String head = (ox <= 0 || oy <= 0)
                 ? "📍 观察点·已定位监视目标\n" + label
                 : "📍 观察点·监视目标新坐标\n" + label
                         + "\n原坐标 (" + ox + "," + oy + ") → 新坐标 (" + x + "," + y + ")";
         alert("move:" + uid + ":" + x + ":" + y,
-                head + "\n"
-                        + (nickText.isEmpty() ? "" : "游戏昵称：" + gameNick + "\n")
-                        + reason
+                head + "\n" + nickLine + reason
                         + (wasLost ? "（此前一度丢失视野，已重新找到）" : "")
                         + "\n时间：" + nowText());
         FileLog.info("[{}] 监视目标坐标更新：uid={} ({},{}) → ({},{}) {}", LOG,
@@ -1409,7 +1434,8 @@ public final class WatchPointEngine {
         long now = System.currentTimeMillis();
         City known = cityByUid.get(t.uid);
         if (known != null && (known.x != t.x || known.y != t.y)) {
-            noteTargetCity(t.uid, known.x, known.y, known.nick);   // 已知视野里就有 → 直接通知新坐标
+            // 已知视野里就有 → 直接通知新坐标（不再等两次确认）
+            noteTargetCity(t.uid, known.x, known.y, known.nick, true);
             return;
         }
         if (targetLostAt.putIfAbsent(t.uid, now) == null) {

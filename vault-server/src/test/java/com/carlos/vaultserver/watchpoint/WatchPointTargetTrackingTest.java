@@ -6,7 +6,6 @@ import org.junit.Test;
 import java.nio.file.Paths;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -32,28 +31,29 @@ public class WatchPointTargetTrackingTest {
     }
 
     @Test
-    public void marchStartpointUpdatesTargetCity() {
+    public void relocationAlertThrottledToOnePerMinute() {
         WatchPointStore store = storeWithTarget();
         WatchPointEngine e = new WatchPointEngine(null, store, null, null);
+        // 第一次迁城：立即推送（该目标 1 分钟内还没推过）
         e.noteTargetCity(UID, 532, 641, "[818]鲱鱼罐头");
-        WatchPointStore.Target t = store.monitorTargets.get(0);
-        assertEquals(532, t.x);
-        assertEquals(641, t.y);
-        assertNotNull("坐标变化必须产生通知", e.lastAlertTextForTest());
-        assertTrue(e.lastAlertTextForTest(), e.lastAlertTextForTest().contains("新坐标"));
-        assertTrue(e.lastAlertTextForTest(), e.lastAlertTextForTest().contains("(532,641)"));
-        assertTrue("昵称要带上，用户只认简称/昵称", e.lastAlertTextForTest().contains("鲱鱼罐头"));
+        String text = e.lastAlertTextForTest();
+        assertTrue("首次迁城要推送: " + text, text.contains("新坐标") && text.contains("(532,641)"));
+        assertTrue("昵称要带上", text.contains("鲱鱼罐头"));
+        // 30 秒内又换坐标：坐标照样更新（窗口跟着走），但不再推送
+        e.noteTargetCity(UID, 300, 300, "[818]鲱鱼罐头");
+        assertEquals("坐标仍要更新", 300, store.monitorTargets.get(0).x);
+        assertTrue("1 分钟内不重复推送: " + e.lastAlertTextForTest(),
+                e.lastAlertTextForTest().contains("(532,641)"));
     }
 
     @Test
-    public void smallJitterDoesNotAlert() {
+    public void rapidCoordinateJitterProducesAtMostOneAlert() {
         WatchPointStore store = storeWithTarget();
         WatchPointEngine e = new WatchPointEngine(null, store, null, null);
-        e.noteTargetCity(UID, 101, 102, "x");   // 差 1-2 格：静默校正
-        WatchPointStore.Target t = store.monitorTargets.get(0);
-        assertEquals(101, t.x);
-        assertEquals(102, t.y);
-        assertTrue("口径误差不该刷屏，实际通知：" + e.lastAlertTextForTest(), e.lastAlertTextForTest().isEmpty());
+        e.noteTargetCity(UID, 289, 578, "x");
+        e.noteTargetCity(UID, 267, 605, "x");
+        e.noteTargetCity(UID, 253, 608, "x");
+        assertEquals("抖动只报一次", 1, e.alertCountForTest());
     }
 
     @Test

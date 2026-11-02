@@ -709,6 +709,32 @@ public final class WarNotify {
     // ---------------------------------------------------------------- 企微文案与静默
 
     /**
+     * 目标城显示名（2026-11-02）：整图城缓存里的昵称（地图昵称一般已带 {@code [SYD]} 前缀），
+     * 缓存没有昵称时用玩家目录补，最后按 aid 反查联盟简称拼 {@code [abbr]}；都没有返回空串。
+     */
+    static String targetLabelAt(int x, int y) {
+        if (x <= 0 || y <= 0) return "";
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo c =
+                com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(x, y);
+        if (c == null) return "";
+        String nick = c.nick == null ? "" : c.nick.trim();
+        if (!nick.isEmpty() && nick.startsWith("[")) return nick;   // 已带联盟前缀，直接用
+        String abbr = "";
+        com.carlos.vaultserver.watchpoint.PlayerDirectory dir =
+                com.carlos.vaultserver.watchpoint.PlayerDirectory.shared();
+        if (dir != null) {
+            if (nick.isEmpty()) {
+                com.carlos.vaultserver.watchpoint.PlayerDirectory.Entry e = dir.byUid(c.uid);
+                if (e != null && e.nick != null) nick = e.nick.trim();
+            }
+            abbr = dir.abbrOfAid(c.aid);
+        }
+        if (nick.isEmpty()) return abbr.isEmpty() ? "" : "[" + abbr + "]";
+        if (abbr.isEmpty() || nick.startsWith("[")) return nick;
+        return "[" + abbr + "]" + nick;
+    }
+
+    /**
      * 企微文本（v4.1.8 按用户 6 项重写）：行为/发起人/发起人坐标/目标/兵力/到达 + 来源 + 会话；
      * 结算事件（phase=settle）以「🏁 进攻结算」行替代到达倒计时。
      */
@@ -730,8 +756,12 @@ public final class WarNotify {
         sb.append("\n目标：");
         Object ep = event.optJSONObject("endpoint");
         if (ep instanceof JSONObject) {
-            sb.append('(').append(((JSONObject) ep).optInt("x"))
-                    .append(',').append(((JSONObject) ep).optInt("y")).append(')');
+            int tx = ((JSONObject) ep).optInt("x");
+            int ty = ((JSONObject) ep).optInt("y");
+            // 2026-11-02：目标行带上被攻击人的昵称 + 联盟简称（地图昵称通常自带 [SYD] 前缀）
+            String label = targetLabelAt(tx, ty);
+            if (!label.isEmpty()) sb.append(label);
+            sb.append('(').append(tx).append(',').append(ty).append(')');
         } else {
             sb.append("未知");
         }
