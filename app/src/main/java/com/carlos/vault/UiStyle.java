@@ -138,8 +138,8 @@ public class UiStyle {
         return s;
     }
 
-    /** 按钮正常/禁用文字色；供原生 TextView 按钮统一使用。 */
-    private static android.content.res.ColorStateList buttonTextColors(int normal) {
+    /** 按钮正常/禁用文字色（唯一实现；组合组件与编队等自定义按钮统一复用）。 */
+    public static android.content.res.ColorStateList enabledTextColors(int normal) {
         return new android.content.res.ColorStateList(
                 new int[][]{new int[]{-android.R.attr.state_enabled}, new int[]{}},
                 new int[]{INK3, normal});
@@ -248,7 +248,7 @@ public class UiStyle {
         v.setText(text);
         v.setTextSize(15);
         v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setTextColor(buttonTextColors(WHITE));
+        v.setTextColor(enabledTextColors(WHITE));
         v.setGravity(android.view.Gravity.CENTER);
         v.setBackground(pressRound(ctx, BRAND, BRAND_PRESS, 12));
         v.setMinHeight(dp(ctx, 48));
@@ -263,7 +263,7 @@ public class UiStyle {
         v.setText(text);
         v.setTextSize(13);
         v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setTextColor(buttonTextColors(BRAND_TEXT));
+        v.setTextColor(enabledTextColors(BRAND_TEXT));
         v.setGravity(android.view.Gravity.CENTER);
         StateListDrawable g = new StateListDrawable();
         g.addState(new int[]{-android.R.attr.state_enabled}, roundRectDp(ctx, SURFACE_3, 12));
@@ -282,7 +282,7 @@ public class UiStyle {
         v.setText(text);
         v.setTextSize(13);
         v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setTextColor(buttonTextColors(WHITE));
+        v.setTextColor(enabledTextColors(WHITE));
         v.setGravity(android.view.Gravity.CENTER);
         v.setBackground(pressRound(ctx, ERR_SOLID, 0xFFDC2626, 12));
         v.setMinHeight(dp(ctx, 44));
@@ -297,7 +297,7 @@ public class UiStyle {
         v.setText(text);
         v.setTextSize(13);
         v.setTypeface(Typeface.DEFAULT_BOLD);
-        v.setTextColor(buttonTextColors(BRAND_TEXT));
+        v.setTextColor(enabledTextColors(BRAND_TEXT));
         v.setGravity(android.view.Gravity.CENTER);
         v.setBackground(pressRound(ctx, Color.TRANSPARENT, BRAND_50, 12));
         v.setMinHeight(dp(ctx, 44));
