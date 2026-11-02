@@ -38,10 +38,9 @@ public class BehemothUpgradeTest {
         assertTrue("原生自动上车保留默认开（既有行为）", cfg.autoJoinEnabled);
         assertFalse("每日发起默认关（批次安全口径）", cfg.launchEnabled);
         assertEquals("发起上限默认 1 次/日", 1, cfg.launchLimit);
-        assertEquals("队列数默认 5（2026-11-03 用户要求按游戏编队槽数，与 App 卡片一致）",
-                5, cfg.queueCount);
+        assertEquals("队列数默认 1", 1, cfg.queueCount);
         assertTrue("手工上车默认开（与原生互斥）", cfg.joinEnabled);
-        assertEquals("手工上车默认跟队列入 5 队（2026-11-03 用户要求）", 5, cfg.joinLimit);
+        assertEquals("手工上车默认 1 队", 1, cfg.joinLimit);
         assertFalse("默认不与原生自动上车叠加", cfg.manualJoinWithAutoJoin);
         assertEquals(1, cfg.minLevel);
         assertEquals(8, cfg.maxLevel);

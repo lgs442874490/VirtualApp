@@ -5,7 +5,7 @@ import android.content.SharedPreferences;
 
 import com.carlos.vault.daily.formation.BearFormationTemplates;
 import com.carlos.vault.daily.formation.FormationBinding;
-import com.carlos.vault.daily.formation.FormationBuiltIns;
+import com.carlos.vault.daily.formation.PresetFormations;
 import com.carlos.vault.daily.formation.FormationCatalogStore;
 import com.carlos.vault.daily.formation.FormationModel;
 import com.carlos.vault.daily.formation.FormationRules;
@@ -594,7 +594,6 @@ public final class FormationStore {
         target.name = name;
 
         boolean isNew = target.id <= 0 || target.id < 0 || FormationRules.findById(lib, target.id) == null;
-        if (!isNew && FormationBuiltIns.isProtected(target.id)) return null;
         if (target.id < 0) {
             // 游戏编队只读 → 保存即生成自定义副本（契约 §2.5）
             target.id = 0;
@@ -637,7 +636,6 @@ public final class FormationStore {
     /** 删除编队（契约 §2.2）：受保护内置不删；不存在静默返回。 */
     public static void deleteFormation(Context ctx, String fpid, long sid, long id) {
         if (ctx == null) return;
-        if (FormationBuiltIns.isProtected(id)) return;
         List<FormationModel> lib = formations(ctx, fpid, sid);
         boolean removed = false;
         for (int i = lib.size() - 1; i >= 0; i--) {
@@ -663,40 +661,59 @@ public final class FormationStore {
         return saveFormation(ctx, fpid, sid, copy);
     }
 
-    /**
-     * 懒创建 8 个内置编队（契约 §2.6）：2 个基础内置始终补齐；6 个在
-     * {@code 容量已同步 + 目录有英雄} 时补齐。幂等，不覆盖已有数据。
-     */
-    public static void ensureBuiltIns(Context ctx, String fpid, long sid) {
-        ensureBuiltIns(ctx, fpid, sid, "");
+    /** 懒创建 19 套「预设编队」（契约 §2.6 / 2026-11-03 用户确认保留预设）。 */
+    public static void ensurePresets(Context ctx, String fpid, long sid) {
+        ensurePresets(ctx, fpid, sid, "");
     }
 
     /**
-     * 懒创建 8 个内置编队（v2，uid 感知；T7 2026-10-25）：目录用 {@code uid} 键精确读取，
-     * 避免同 fpid:sid 多角色时用错角色的英雄懒填内置编队（其它行为与无 uid 版一致）。
+     * 懒创建 19 套预设编队（v2，uid 感知）：目录用 {@code uid} 键精确读取，
+     * 避免同 fpid:sid 多角色时用错角色的英雄懒填预设编队。
+     *
+     * <p>幂等：已存在的预设不覆盖用户改名/兵量；目录未就绪时只清理旧内置，不创建预设。
+     * 2026-11-03：用户要求删除网页版 8 套「内置编队」（错误数据），本方法会从库中
+     * 清掉这些历史 id，再补齐 19 套预设。
      */
-    public static void ensureBuiltIns(Context ctx, String fpid, long sid, String uid) {
+    public static void ensurePresets(Context ctx, String fpid, long sid, String uid) {
         if (ctx == null) return;
         List<FormationModel> lib = formations(ctx, fpid, sid);
         String before = fingerprint(lib);
-        // 2026-11-03：用户确认删除 19 套「预设编队」（英雄头像/设置不正确），
-        // 老版本懒创建的 9100000001..19 一并从库中清掉，避免残留脏编队。
-        int removed = removePresetFormations(lib);
-        int created = FormationBuiltIns.ensure(lib, catalogOf(ctx, fpid, sid, uid));
+        int removed = removeLegacyBuiltIns(lib);
+        int created = PresetFormations.ensure(lib, catalogOf(ctx, fpid, sid, uid));
         if (removed > 0 || created > 0 || !before.equals(fingerprint(lib))) {
             writeModels(ctx, fpid, sid, lib, null);
         }
     }
 
-    /** 删除老版本「预设编队」id 段（9100000001..19）；返回删除数量。 */
-    private static int removePresetFormations(List<FormationModel> lib) {
+    /** 旧 API 兼容：等价 {@link #ensurePresets(Context, String, long, String)}。 */
+    @Deprecated
+    public static void ensureBuiltIns(Context ctx, String fpid, long sid, String uid) {
+        ensurePresets(ctx, fpid, sid, uid);
+    }
+
+    /** 旧 API 兼容（无 uid）。 */
+    @Deprecated
+    public static void ensureBuiltIns(Context ctx, String fpid, long sid) {
+        ensurePresets(ctx, fpid, sid, "");
+    }
+
+    /** 网页版 8 套「内置编队」历史 id（2026-11-03 用户确认错误，删除）。 */
+    private static final long[] LEGACY_BUILTIN_IDS = {
+            9000000001L, 9000000002L, 57L, 55L, 54L, 56L, 53L, 58L};
+
+    /** 从库中删除旧「内置编队」；返回删除数量。 */
+    private static int removeLegacyBuiltIns(List<FormationModel> lib) {
         if (lib == null) return 0;
         int n = 0;
         for (int i = lib.size() - 1; i >= 0; i--) {
             FormationModel f = lib.get(i);
-            if (f != null && f.id >= 9100000001L && f.id <= 9100000019L) {
-                lib.remove(i);
-                n++;
+            if (f == null) continue;
+            for (long id : LEGACY_BUILTIN_IDS) {
+                if (f.id == id) {
+                    lib.remove(i);
+                    n++;
+                    break;
+                }
             }
         }
         return n;
@@ -1543,18 +1560,19 @@ public final class FormationStore {
         return sb.toString();
     }
 
-    /** 下一个自定义编队 id：避开内置大 id、从 1 起、跳过已占用。 */    private static long nextFormationId(List<FormationModel> lib) {
+    /** 下一个自定义编队 id：避开预设大 id、从 1 起、跳过已占用。 */
+    private static long nextFormationId(List<FormationModel> lib) {
         long max = 0;
         Set<Long> used = new LinkedHashSet<>();
         if (lib != null) {
             for (FormationModel m : lib) {
                 if (m == null || m.id <= 0) continue;
                 used.add(m.id);
-                if (m.id < FormationBuiltIns.ID_ONE_INFANTRY && m.id > max) max = m.id;
+                if (m.id < PresetFormations.ID_FIRST && m.id > max) max = m.id;
             }
         }
         long next = max + 1;
-        while (used.contains(next) || FormationBuiltIns.isBuiltIn(next)) next++;
+        while (used.contains(next) || PresetFormations.isPreset(next)) next++;
         return next;
     }
 

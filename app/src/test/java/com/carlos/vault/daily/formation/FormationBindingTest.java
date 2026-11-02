@@ -43,7 +43,7 @@ public class FormationBindingTest {
                 f(1, "甲队", 50001L, 50002L),
                 f(2, "乙队", 50003L),
                 f(3, "丙队", 50002L, 50004L),
-                f(FormationBuiltIns.ID_BEHEMOTH, "基础编队·巨兽"));
+                f(PresetFormations.ID_FIRST, "预设·巨兽"));
     }
 
     // ==================== params 读写 ====================
@@ -140,9 +140,9 @@ public class FormationBindingTest {
         // 无冲突 → 合法
         assertNull(FormationBinding.validate(catalog(), library(), "gather", "ROLE",
                 new long[]{1, 2}));
-        // 单编队 → 合法（内置 id 也可引用）
+        // 单编队 → 合法（预设 id 也可引用）
         assertNull(FormationBinding.validate(catalog(), library(), "behemoth", "ROLE",
-                new long[]{FormationBuiltIns.ID_BEHEMOTH}));
+                new long[]{PresetFormations.ID_FIRST}));
     }
 
     // ==================== banner / 队列名 ====================

@@ -20,11 +20,11 @@ import com.carlos.vault.AccountPoolCache;
 import com.carlos.vault.UiStyle;
 import com.carlos.vault.VaultSync;
 import com.carlos.vault.daily.formation.BearFormationTemplates;
-import com.carlos.vault.daily.formation.FormationBuiltIns;
 import com.carlos.vault.daily.formation.FormationCatalogStore;
 import com.carlos.vault.daily.formation.FormationModel;
 import com.carlos.vault.daily.formation.FormationQuickSetup;
 import com.carlos.vault.daily.formation.FormationRules;
+import com.carlos.vault.daily.formation.PresetFormations;
 import com.carlos.vault.daily.formation.ui.FormationBoardView;
 import com.carlos.vault.daily.formation.ui.FormationManagerDialogs;
 import com.carlos.vault.daily.formation.ui.FormationRatioDialog;
@@ -44,10 +44,11 @@ import java.util.Map;
  * 编队管理页（1:1 网页版 {@code 编队管理}，契约 §4.3）。
  *
  * <p>4 主 tab（自动编队 / 游戏编队 / 预设编队 / 我的编队；默认「游戏编队」）+
- * 我的子 tab（全部/内置/预设/自定义/巨熊编队），
+ * 我的子 tab（全部/预设/自定义/巨熊编队），
  * 复用 {@link FormationBoardView} 编队板；游戏编队只读、编辑走副本；我的编队提供新建/编辑/
  * 复制/删除（编辑器内）。保存后经 {@link VaultSync#onAccountsChanged} 触发既有同步链路；
  * 容量未同步时按规格 §1.1 每 1500ms 轮询、最多 8 次；离线只读。
+ * <p>已删除网页版「内置编队」这一层：只剩 19 套预设编队（{@link PresetFormations}）与用户自定义编队。
  */
 public class FormationManagerActivity extends Activity {
 
@@ -58,12 +59,14 @@ public class FormationManagerActivity extends Activity {
 
     private static final String TAB_AUTO = "AUTO";
     private static final String TAB_GAME = "GAME";
+    private static final String TAB_PRESET = "PRESET";
     private static final String TAB_MINE = "MINE";
     /** 入口直达「新建编队」编辑器（功能页/选择器的 ＋新建 入口）。 */
     public static final String FOCUS_NEW = "__new__";
 
     private static final String MINE_ALL = "ALL";
-    private static final String MINE_BUILTIN = "BUILTIN";
+    /** 我的编队子筛选：预设（{@link PresetFormations#isPreset(long)}）。 */
+    private static final String MINE_PRESET = "PRESET";
     private static final String MINE_CUSTOM = "CUSTOM";
     private static final String MINE_BEAR = "BEAR";
 
@@ -86,6 +89,7 @@ public class FormationManagerActivity extends Activity {
     private String tab = TAB_GAME;
     private String mineFilter = MINE_ALL;
     private long selectedGameId;
+    private long selectedPresetId;
     private long selectedMineId;
     private boolean loading;
     private boolean saving;
@@ -206,16 +210,16 @@ public class FormationManagerActivity extends Activity {
 
     private void ensureData() {
         try {
-            FormationStore.ensureBuiltIns(this, fpid, sid, uidText());   // T7：按角色目录懒填内置
+            FormationStore.ensurePresets(this, fpid, sid, uidText());   // 按角色目录懒建 19 套预设编队
         } catch (Throwable ignored) {
         }
         reload();
     }
 
     private void reload() {
-        // 改完自动补齐内置编队（幂等，仅在需要时落盘）
+        // 改完自动补齐预设编队（幂等；目录就绪时才建，只在需要时落盘）
         try {
-            FormationStore.ensureBuiltIns(this, fpid, sid, uidText());   // T7：按角色目录懒填内置
+            FormationStore.ensurePresets(this, fpid, sid, uidText());
         } catch (Throwable ignored) {
         }
         try {
@@ -340,10 +344,33 @@ public class FormationManagerActivity extends Activity {
         List<FormationModel> out = new ArrayList<FormationModel>();
         for (FormationModel f : lib) {
             if (f == null || f.isGame()) continue;
-            if (MINE_BUILTIN.equals(mineFilter) && !f.builtIn) continue;
-            if (MINE_CUSTOM.equals(mineFilter) && f.builtIn) continue;
-            if (MINE_BEAR.equals(mineFilter) && !f.isBear()) continue;
+            if (MINE_PRESET.equals(mineFilter)) {
+                if (!isPreset(f)) continue;
+            } else if (MINE_CUSTOM.equals(mineFilter)) {
+                if (isPreset(f)) continue;          // 预设单独归类，不再有「内置」层
+            } else if (MINE_BEAR.equals(mineFilter)) {
+                if (!f.isBear()) continue;
+            }
             out.add(f);
+        }
+        return out;
+    }
+
+    /** 是否预设编队（19 套内置预设，由 T1 PresetFormations 判定，目录就绪后 ensure 落库）。 */
+    private static boolean isPreset(FormationModel f) {
+        if (f == null) return false;
+        try {
+            return PresetFormations.isPreset(f.id);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    private List<FormationModel> presetFormations() {
+        List<FormationModel> out = new ArrayList<FormationModel>();
+        for (FormationModel f : lib) {
+            if (f == null || f.isGame()) continue;
+            if (isPreset(f)) out.add(f);
         }
         return out;
     }
@@ -379,6 +406,25 @@ public class FormationManagerActivity extends Activity {
         }
         selectedMineId = 0;
         return null;
+    }
+
+    private FormationModel selectedPresetFormation() {
+        List<FormationModel> presets = presetFormations();
+        for (FormationModel f : presets) {
+            if (f != null && f.id == selectedPresetId) return f;
+        }
+        if (!presets.isEmpty()) {
+            selectedPresetId = presets.get(0).id;
+            return presets.get(0);
+        }
+        selectedPresetId = 0;
+        return null;
+    }
+
+    /** 当前「库内编队」页（预设/我的）的选中编队。 */
+    private FormationModel selectedPageFormation() {
+        if (TAB_PRESET.equals(tab)) return selectedPresetFormation();
+        return selectedMineFormation();
     }
 
     private int[] currentAutoRatios() {
@@ -533,7 +579,7 @@ public class FormationManagerActivity extends Activity {
         row.setPadding(ManagerUi.dp(this, 6), ManagerUi.dp(this, 8),
                 ManagerUi.dp(this, 6), ManagerUi.dp(this, 5));
         String[][] tabs = {{TAB_AUTO, "自动编队"}, {TAB_GAME, "游戏编队"},
-                {TAB_MINE, "我的编队"}};
+                {TAB_PRESET, "预设编队"}, {TAB_MINE, "我的编队"}};
         for (String[] t : tabs) {
             final String key = t[0];
             boolean active = key.equals(tab);
@@ -552,6 +598,7 @@ public class FormationManagerActivity extends Activity {
                     mineFilter = MINE_ALL;
                     selectedMineId = 0;
                 }
+                if (TAB_PRESET.equals(tab)) selectedPresetId = 0;
                 if (TAB_GAME.equals(tab)) selectedGameId = 0;
                 render();
             });
@@ -569,17 +616,19 @@ public class FormationManagerActivity extends Activity {
         wrap.setOrientation(LinearLayout.VERTICAL);
         wrap.setPadding(ManagerUi.dp(this, 4), 0, ManagerUi.dp(this, 4),
                 ManagerUi.dp(this, 4));
-        int total = lib.size();
-        int builtIn = 0;
+        int total = 0;
+        int preset = 0;
         int custom = 0;
         int bear = 0;
         for (FormationModel f : lib) {
             if (f == null || f.isGame()) continue;
-            if (f.builtIn) builtIn++;
+            total++;
+            if (isPreset(f)) preset++;
             else custom++;
             if (f.isBear()) bear++;
         }
-        String[][] subs = {{MINE_ALL, "全部 " + total}, {MINE_BUILTIN, "内置 " + builtIn},
+        // 子 tab：全部 / 预设 / 自定义 / 巨熊编队（不再有「内置」）
+        String[][] subs = {{MINE_ALL, "全部 " + total}, {MINE_PRESET, "预设 " + preset},
                 {MINE_CUSTOM, "自定义 " + custom}, {MINE_BEAR, "巨熊编队 " + bear}};
         LinearLayout line = ManagerUi.row(this);
         for (int i = 0; i < subs.length; i++) {
@@ -729,10 +778,14 @@ public class FormationManagerActivity extends Activity {
         String text;
         if (TAB_GAME.equals(tab)) {
             text = "暂未同步到游戏内编队；请先登录游戏并保存编队";
+        } else if (TAB_PRESET.equals(tab)) {
+            return ManagerUi.emptyBlock(this, "✦", "暂无预设编队",
+                    "登录后自动生成 19 套预设编队");
         } else if (MINE_BEAR.equals(mineFilter)) {
             text = "还没有巨熊编队；点击上方「选择模板」生成 1 支开车队与 6 支上车队";
-        } else if (MINE_BUILTIN.equals(mineFilter)) {
-            text = "暂无内置编队；保存配置时会按需自动创建";
+        } else if (MINE_PRESET.equals(mineFilter)) {
+            return ManagerUi.emptyBlock(this, "✦", "暂无预设编队",
+                    "登录后自动生成 19 套预设编队");
         } else if (MINE_CUSTOM.equals(mineFilter)) {
             text = "还没有自定义编队；自动编队无需预先创建编队";
         } else {
@@ -808,7 +861,7 @@ public class FormationManagerActivity extends Activity {
         int games = gameFormations().size();
         int customs = 0;
         for (FormationModel f : lib) {
-            if (f != null && !f.isGame() && !f.builtIn) customs++;
+            if (f != null && !f.isGame() && !isPreset(f)) customs++;
         }
         if (games == 0 && customs == 0) {
             return "容量已就绪，可同步游戏编队或创建自定义编队";
@@ -823,9 +876,8 @@ public class FormationManagerActivity extends Activity {
         if (editorOpen) {
             for (FormationModel f : lib) {
                 if (f == null || f.isGame()) continue;
-                if (FormationBuiltIns.ID_ONE_INFANTRY == f.id) continue;
                 out.add(new FormationBoardView.BoardTab("e:" + f.id, displayName(f),
-                        f.builtIn ? "内置" : "自定义", firstHero(f)));
+                        isPreset(f) ? "预设" : "自定义", firstHero(f)));
             }
             out.add(new FormationBoardView.BoardTab("new", "新建编队", "", 0));
             return out;
@@ -846,9 +898,17 @@ public class FormationManagerActivity extends Activity {
             }
             return out;
         }
+        if (TAB_PRESET.equals(tab)) {
+            for (FormationModel f : presetFormations()) {
+                out.add(new FormationBoardView.BoardTab("p:" + f.id, displayName(f), "预设",
+                        firstHero(f)));
+            }
+            return out;
+        }
         if (TAB_MINE.equals(tab)) {
             for (FormationModel f : mineFormations()) {
-                String badge = f.builtIn ? "内置" : (f.isBear() ? "巨熊" : "自定义");
+                String badge = isPreset(f) ? "预设"
+                        : (f.isBear() ? "巨熊" : "自定义");
                 out.add(new FormationBoardView.BoardTab("m:" + f.id, displayName(f), badge,
                         firstHero(f)));
             }
@@ -886,6 +946,7 @@ public class FormationManagerActivity extends Activity {
     private String boardKey() {
         if (editorOpen) return "editor";
         if (TAB_GAME.equals(tab)) return "game";
+        if (TAB_PRESET.equals(tab)) return "preset";
         if (TAB_MINE.equals(tab)) return "mine:" + mineFilter;
         return "auto";
     }
@@ -904,7 +965,7 @@ public class FormationManagerActivity extends Activity {
         if (editorOpen) return draft;
         if (TAB_AUTO.equals(tab)) return null;
         if (TAB_GAME.equals(tab)) return selectedGameFormation();
-        return selectedMineFormation();
+        return selectedPageFormation();
     }
 
     private boolean boardAutomatic() {
@@ -977,8 +1038,8 @@ public class FormationManagerActivity extends Activity {
         if (editorOpen) return "保存编队";
         if (TAB_AUTO.equals(tab)) return "保存比例";
         if (TAB_GAME.equals(tab)) return "记忆当前编队";
-        FormationModel f = selectedMineFormation();
-        if (f == null || f.id == FormationBuiltIns.ID_ONE_INFANTRY) return "新建编队";
+        FormationModel f = selectedPageFormation();
+        if (f == null) return "新建编队";
         return "编辑编队";
     }
 
@@ -989,7 +1050,7 @@ public class FormationManagerActivity extends Activity {
             return FormationRules.ratioCode(r[0], r[1], r[2]);
         }
         if (TAB_GAME.equals(tab)) return gameFormations().size() + " 支";
-        FormationModel f = selectedMineFormation();
+        FormationModel f = selectedPageFormation();
         if (f == null) return "0 英雄";
         return f.distinctHeroIds().size() + " 英雄";
     }
@@ -1048,6 +1109,7 @@ public class FormationManagerActivity extends Activity {
                 return draft != null && draft.id > 0 ? "e:" + draft.id : "new";
             }
             if (TAB_GAME.equals(tab)) return "g:" + selectedGameFormationId();
+            if (TAB_PRESET.equals(tab)) return "p:" + selectedPresetFormationId();
             if (TAB_MINE.equals(tab)) return "m:" + selectedMineFormationId();
             return "auto";
         }
@@ -1246,18 +1308,16 @@ public class FormationManagerActivity extends Activity {
                 openRatioDialog();
                 return;
             }
-            if (TAB_MINE.equals(tab)) {
-                FormationModel f = selectedMineFormation();
+            if (TAB_MINE.equals(tab) || TAB_PRESET.equals(tab)) {
+                FormationModel f = selectedPageFormation();
                 if (f == null) {
                     UiStyle.toast(FormationManagerActivity.this,
-                            "还没有编队；可同步游戏编队或创建自定义编队");
+                            TAB_PRESET.equals(tab) || MINE_PRESET.equals(mineFilter)
+                                    ? "登录后自动生成 19 套预设编队"
+                                    : "还没有编队；可同步游戏编队或创建自定义编队");
                     return;
                 }
-                if (FormationBuiltIns.ID_ONE_INFANTRY == f.id) {
-                    openEditor(null);
-                } else {
-                    openEditor(f);
-                }
+                openEditor(f);
                 return;
             }
             FormationModel game = selectedGameFormation();
@@ -1285,6 +1345,11 @@ public class FormationManagerActivity extends Activity {
         return f == null ? 0 : f.id;
     }
 
+    private long selectedPresetFormationId() {
+        FormationModel f = selectedPresetFormation();
+        return f == null ? 0 : f.id;
+    }
+
     // ==================== 交互 ====================
 
     private void handleTabSelected(String key) {
@@ -1303,6 +1368,12 @@ public class FormationManagerActivity extends Activity {
             long id = parseLong(key.substring(2));
             if (id != selectedGameId) {
                 selectedGameId = id;
+                render();
+            }
+        } else if (key.startsWith("p:")) {
+            long id = parseLong(key.substring(2));
+            if (id != selectedPresetId) {
+                selectedPresetId = id;
                 render();
             }
         } else if (key.startsWith("m:")) {
@@ -1357,8 +1428,9 @@ public class FormationManagerActivity extends Activity {
             openMemoryDialog(false);
             return;
         }
-        FormationModel f = selectedMineFormation();
-        if (f == null || f.id == FormationBuiltIns.ID_ONE_INFANTRY) openEditor(null);
+        // MINE / PRESET
+        FormationModel f = selectedPageFormation();
+        if (f == null) openEditor(null);
         else openEditor(f);
     }
 
@@ -1630,15 +1702,11 @@ public class FormationManagerActivity extends Activity {
                 ManagerUi.dp(this, 4), ManagerUi.dp(this, 4));
         LinearLayout row = ManagerUi.row(this);
         row.setPadding(ManagerUi.dp(this, 8), 0, ManagerUi.dp(this, 8), 0);
-        boolean protectedFormation = draft != null && draft.id > 0 && draft.builtIn;
+        // 预设/自定义均可编辑、复制、删除（删除后下次 ensure 重建），不再有「内置」保护。
         TextView del = ManagerUi.smallButton(this, "删除编队", false, () -> {
             if (draft == null) return;
             if (draft.id <= 0) {
                 UiStyle.toast(this, "新建编队尚未保存");
-                return;
-            }
-            if (protectedFormation) {
-                UiStyle.toast(this, "内置编队不可删除");
                 return;
             }
             FormationManagerDialogs.showDeleteConfirm(this, draft, () -> {
@@ -1653,7 +1721,7 @@ public class FormationManagerActivity extends Activity {
                 render();
             });
         });
-        del.setAlpha(draft != null && draft.id > 0 && !protectedFormation ? 1f : 0.45f);
+        del.setAlpha(draft != null && draft.id > 0 ? 1f : 0.45f);
         row.addView(del);
         TextView copy = ManagerUi.smallButton(this, "复制编队", false, this::duplicateDraft);
         copy.setAlpha(draft != null && draft.id > 0 ? 1f : 0.45f);
@@ -1670,14 +1738,10 @@ public class FormationManagerActivity extends Activity {
         return wrap;
     }
 
-    /** 复制当前编队（新建副本并进入编辑）。 */
+    /** 复制当前编队（新建副本并进入编辑）；预设与自定义均可复制。 */
     private void duplicateDraft() {
         if (draft == null || draft.id <= 0) {
             UiStyle.toast(this, "新建编队尚未保存，无法复制");
-            return;
-        }
-        if (draft.builtIn) {
-            UiStyle.toast(this, "内置编队不可复制，请直接新建编队");
             return;
         }
         FormationModel copy = null;
@@ -1779,7 +1843,7 @@ public class FormationManagerActivity extends Activity {
 
     private void openEditorSettings() {
         if (draft == null) return;
-        boolean canDelete = draft.id > 0 && !draft.builtIn;
+        boolean canDelete = draft.id > 0;
         FormationManagerDialogs.showEditorSettingsDialog(this, draft, canDelete,
                 new FormationManagerDialogs.EditorSettings() {
                     @Override public void onConfirm(String name, String allocationMode) {
