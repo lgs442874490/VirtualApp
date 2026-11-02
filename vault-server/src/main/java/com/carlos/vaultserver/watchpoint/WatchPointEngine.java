@@ -314,6 +314,20 @@ public final class WatchPointEngine {
     private final Map<Long, City> cityByUid = new ConcurrentHashMap<>();
     private final Map<String, City> cityByPoint = new ConcurrentHashMap<>();
     private final Map<Long, AtomicInteger> targetMisses = new ConcurrentHashMap<>();
+    /** 采集点缓存（2026-11-02）：坐标 → 正在该点采集的人（uid/aid/marchId）。 */
+    static final class ResPoint {
+        long uid;
+        long aid;
+        long marchId;
+        long atMs;
+    }
+
+    private final Map<String, ResPoint> resByPoint = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 采集点被攻击告警配额：每个攻击者 5 分钟最多 3 条（与侦查同口径，独立计数）。 */
+    private final Map<Long, java.util.ArrayDeque<Long>> gatherAlertTimes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final Map<String, Long> gatherCounted = new java.util.concurrent.ConcurrentHashMap<>();
+
     /** 监视目标跟踪（2026-11-02）：最后出现时刻 / 丢失时刻 / 上次搜索扫描时刻 / 最近被进攻时刻。 */
     private final Map<Long, Long> targetSeenAt = new ConcurrentHashMap<>();
     private final Map<Long, Long> targetLostAt = new ConcurrentHashMap<>();
@@ -968,13 +982,22 @@ public final class WatchPointEngine {
             Object dl = content.get("datalist");
             if (dl instanceof List) {
                 for (Object o : (List<?>) dl) {
-                    if (o instanceof Map) parseCity((Map<?, ?>) o, ctx.cityUids);
+                    if (o instanceof Map) {
+                        parseCity((Map<?, ?>) o, ctx.cityUids);
+                        parseResource((Map<?, ?>) o);
+                    }
                 }
             }
             Map<?, ?> obj = asMap(content.get("obj"));
-            if (!obj.isEmpty()) parseCity(obj, ctx.cityUids);
+            if (!obj.isEmpty()) {
+                parseCity(obj, ctx.cityUids);
+                parseResource(obj);
+            }
             Map<?, ?> change = asMap(content.get("change"));
-            if (!change.isEmpty()) parseCity(change, ctx.cityUids);
+            if (!change.isEmpty()) {
+                parseCity(change, ctx.cityUids);
+                parseResource(change);
+            }
             if (truthy(content.get("end_flag"))) {
                 ctx.ended = true;
                 onComplete(ctx);
@@ -991,6 +1014,35 @@ public final class WatchPointEngine {
             if (truthy(content.get("end_flag")) && ctx.kind == Kind.SCAN) {
                 ctx.ended = true;
             }
+        }
+    }
+
+    /** 资源矿对象（world_mapobj.map_resource：id/uid/aid/march_id）：记录「谁在这个点采集」。 */
+    private void parseResource(Map<?, ?> item) {
+        Map<?, ?> res = asMap(item.get("map_resource"));
+        if (res.isEmpty()) return;
+        Map<?, ?> point = asMap(item.get("point"));
+        int x = (int) asLong(point.get("x"), 0L);
+        int y = (int) asLong(point.get("y"), 0L);
+        if (x <= 0 || y <= 0) return;
+        long uid = asLong(res.get("uid"), 0L);
+        long marchId = asLong(res.get("march_id"), 0L);
+        if (uid <= 0L && marchId <= 0L) return;   // 空矿点不缓存
+        recordResource(x, y, uid, asLong(res.get("aid"), 0L), marchId);
+    }
+
+    /** 写入采集点缓存（空矿点会被后续「无人采集」覆盖掉）。 */
+    void recordResource(int x, int y, long uid, long aid, long marchId) {
+        if (x <= 0 || y <= 0) return;
+        ResPoint rp = new ResPoint();
+        rp.uid = uid;
+        rp.aid = aid;
+        rp.marchId = marchId;
+        rp.atMs = System.currentTimeMillis();
+        resByPoint.put(x + "," + y, rp);
+        if (resByPoint.size() > 20000) {
+            long now = System.currentTimeMillis();
+            resByPoint.entrySet().removeIf(e -> now - e.getValue().atMs > 30L * 60_000L);
         }
     }
 
@@ -1127,10 +1179,26 @@ public final class WatchPointEngine {
         }
         // 2026-11-02：行军状态过滤——2=在途 / 3=到达 / 4=回程；只对在途告警，
         // 否则「进攻后返回」会被当成「打自己」（终点=自己城）重复通知。
+        long endtime = asLong(m.get("endtime"), 0L);
         long marchState = asLong(m.get("state"), 0L);
+        // 2026-11-02：采集行军（type=4）本身就是「这个点在采」的证据 → 记录采集人，供采集点被攻击告警用
+        if (type == 4L && marchState == 2L) {
+            recordResource(ex, ey, owner,
+                    asLong(asMap(m.get("collect")).get("target_aid"), asLong(m.get("aid"), 0L)), id);
+            return;
+        }
+        // 攻击采集点：终点不是城、而是有人在采的矿点 → 单独一条「采集点被攻击」（每人 5 分钟 3 条）。
+        // 只推与本人相关的：攻击者是监视目标，或被打的是友盟采集点（否则全图采集点互殴会刷屏）。
+        ResPoint rp = resByPoint.get(ex + "," + ey);
+        if (rp != null && rp.uid > 0L && rp.uid != owner
+                && (type == 2L || type == 100L || type == 102L)) {
+            if (marchState == 2L && gatherRelevant(owner, rp)) {
+                gatherAttackAlert(owner, id, type, sx, sy, ex, ey, endtime, troopsOf(m), rp);
+            }
+            return;   // 采集点攻击走专门文案，不再重复发「目标城未知」的攻城告警
+        }
         if (marchState >= 3L) return;
         if (!store.alertTypes.contains(type)) return;
-        long endtime = asLong(m.get("endtime"), 0L);
         // 只告警「打城」：地图行军的 atk_city/recon_city 在 map_info 数据里为空，用终点坐标是否命中已知城坐标判定
         City targetCity = cityNear(ex, ey);
         long targetUid = targetCity == null ? 0L : targetCity.uid;
@@ -1444,6 +1512,90 @@ public final class WatchPointEngine {
         trackAttacker(owner, ownerCity);
     }
 
+    /** 采集点缓存（只读，单测用）。 */
+    Map<String, ResPoint> resByPointForTest() {
+        return resByPoint;
+    }
+
+    /** 终点是不是「有人在采的矿点」且来的是攻击（供 onMarch 判定，便于单测）。 */
+    boolean isGatherAttack(long owner, int ex, int ey, long type) {
+        ResPoint rp = resByPoint.get(ex + "," + ey);
+        return rp != null && rp.uid > 0L && rp.uid != owner
+                && (type == 2L || type == 100L || type == 102L);
+    }
+
+    /** 这条采集点告警是否与本人相关：攻击者是监视目标，或被打的是友盟的人。 */
+    boolean gatherRelevant(long owner, ResPoint rp) {
+        if (isMonitoredUid(owner)) return true;
+        if (rp == null) return false;
+        if (rp.aid > 0L && store.friendAids.contains(rp.aid)) return true;
+        PlayerDirectory dir = PlayerDirectory.shared();
+        PlayerDirectory.Entry de = dir == null ? null : dir.byUid(rp.uid);
+        return de != null && de.aid > 0L && store.friendAids.contains(de.aid);
+    }
+
+    /** 同一条行军只记一次采集点告警配额（轮询重放不重复扣）。 */
+    boolean gatherCountOnce(long uid, long marchId, long now) {
+        if (uid <= 0L || marchId <= 0L) return true;
+        String k = uid + ":" + marchId;
+        Long prev = gatherCounted.get(k);
+        if (prev != null && now - prev < SCOUT_WINDOW_MS) return false;
+        gatherCounted.put(k, now);
+        if (gatherCounted.size() > 4096) {
+            gatherCounted.entrySet().removeIf(e -> now - e.getValue() > SCOUT_WINDOW_MS);
+        }
+        return true;
+    }
+
+    /** 采集点被攻击告警（2026-11-02）：攻击人坐标/出征信息 + 被攻击人 + 资源点坐标。 */
+    private void gatherAttackAlert(long owner, long marchId, long type, int sx, int sy,
+                                   int ex, int ey, long endtime, long troops, ResPoint rp) {
+        String key = "gather:" + owner + ":" + marchId;
+        if (recentlyAlerted(key)) return;
+        long now = System.currentTimeMillis();
+        if (gatherCountOnce(owner, marchId, now)
+                && !scoutQuotaAllow(gatherAlertTimes, owner, now,
+                        SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
+            FileLog.info("[{}] 采集点告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
+                    String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
+            return;
+        }
+        City atk = cityByUid.get(owner);
+        String atkNick = atk != null && atk.nick != null && !atk.nick.isEmpty()
+                ? atk.nick : "uid" + owner;
+        long atkAid = atk == null ? 0L : atk.aid;
+        PlayerDirectory dir = PlayerDirectory.shared();
+        PlayerDirectory.Entry de = dir == null ? null : dir.byUid(rp.uid);
+        String victimNick = de != null && de.nick != null && !de.nick.isEmpty()
+                ? de.nick : "uid" + rp.uid;
+        long victimAid = rp.aid > 0L ? rp.aid : (de == null ? 0L : de.aid);
+        alert(key, gatherAlertText(atkNick, atkAid, sx, sy, type, marchId, ex, ey,
+                endtime - now / 1000L, troops, victimNick, victimAid, rp.uid, rp.marchId,
+                nowText(), store.aidLabels, store.feintTroopsBelow));
+        trackAttacker(owner, atk);
+    }
+
+    /** 采集点被攻击文案（纯函数，便于单测）。 */
+    static String gatherAlertText(String atkNick, long atkAid, int sx, int sy, long type,
+                                  long marchId, int ex, int ey, long etaSeconds, long troops,
+                                  String victimNick, long victimAid, long victimUid,
+                                  long victimMarchId, String nowTime,
+                                  Map<Long, String> aidLabels, long feintBelow) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("🚨 观察点·采集点被攻击\n");
+        sb.append("攻击人：").append(atkNick).append(allySuffix(atkAid, aidLabels, atkNick))
+                .append("  坐标 (").append(sx).append(",").append(sy).append(")\n");
+        sb.append("出征信息：").append(typeLabel(type)).append("｜march ").append(marchId)
+                .append("｜ETA ").append(hms(etaSeconds));
+        sb.append(troopsTag(troops, feintBelow)).append("\n");
+        sb.append("被攻击人：").append(victimNick).append(allySuffix(victimAid, aidLabels, victimNick))
+                .append("（uid").append(victimUid).append("）");
+        if (victimMarchId > 0L) sb.append("｜采集 march ").append(victimMarchId);
+        sb.append("\n资源点：(").append(ex).append(",").append(ey).append(")");
+        sb.append("\n时间：").append(nowTime);
+        return sb.toString();
+    }
+
     /**
      * 来袭告警文案（纯函数）：攻击者联盟未知（aid&lt;=0）时显式标注「（联盟未知）」，
      * 降低"攻守同名/没 [盟] 标签"歧义；目标一定是已知友盟城（带 [abbr]）。
@@ -1663,11 +1815,11 @@ public final class WatchPointEngine {
         if (found > 0) store.save();
         checkTrackedAttackers(completeness);
         refreshPlayerDirectory();
-        FileLog.info("[{}] 整图扫描完成：{}/{} 格/{} 城，完整度={}，耗时 {}ms，监视目标命中 {}/{}（缺失 {}）",
+        FileLog.info("[{}] 整图扫描完成：{}/{} 格/{} 城，采集点缓存 {} 个，完整度={}，耗时 {}ms，监视目标命中 {}/{}（缺失 {}）",
                 LOG, String.valueOf(scan.ended), String.valueOf(SCAN_TILES),
-                String.valueOf(cityByUid.size()), completeness, String.valueOf(cost),
-                String.valueOf(found), String.valueOf(store.monitorTargets.size()),
-                String.valueOf(missing));
+                String.valueOf(cityByUid.size()), String.valueOf(resByPoint.size()), completeness,
+                String.valueOf(cost), String.valueOf(found),
+                String.valueOf(store.monitorTargets.size()), String.valueOf(missing));
         if (missing > 0) {
             // 丢失的目标已由 handleTargetLost 起了「周边优先 + 全图」的搜索，这里只做低频汇总，
             // 不再每 15 分钟刷一条（同一批缺失 30 分钟内只报一次）。

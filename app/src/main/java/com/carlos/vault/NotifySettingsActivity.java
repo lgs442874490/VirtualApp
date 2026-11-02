@@ -119,6 +119,8 @@ public class NotifySettingsActivity extends Activity {
         box.addView(hint("监视目标按坐标追踪：他一出兵就知道他从哪座城出发、打谁；迁城或被打飞后会自动搜索新坐标，"
                 + "找到即推送（先查他最后出现的位置周边，再扫全图未知区域）。"));
         box.addView(hint("⚠️ 非监视目标（普通敌人）仍受游戏视野限制：只有打到你或盟友、或出现在已扫描区域时才会有事件。"));
+        box.addView(hint("采集点被攻击也会推（监视目标打采集点，或友盟采集点被打）：带攻击人坐标/出征信息、"
+                + "被攻击人、资源点坐标；每人 5 分钟最多 3 条。"));
 
         // —— 监视总开关 ——
         LinearLayout masterCard = UiComponents.card(this);
