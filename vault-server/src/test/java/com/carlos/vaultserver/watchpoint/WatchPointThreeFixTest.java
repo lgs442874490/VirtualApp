@@ -120,7 +120,7 @@ public class WatchPointThreeFixTest {
     // ==================== Q1：完整度 ====================
 
     @Test
-    public void incompleteScan_doesNotAlertRectOrMove() {
+    public void incompleteScan_doesNotAlertRectEmptiness() {
         WatchPointStore st = store();
         WatchPointStore.Rect rect = new WatchPointStore.Rect("THY-1", 0, 0, 100, 100);
         st.protectRects.add(rect);
@@ -133,9 +133,14 @@ public class WatchPointThreeFixTest {
         feedEmpty(engine, sessions.subList(1, sessions.size()), 100);
         engine.finishScanForTest();
 
-        assertEquals("不完整扫描 0 告警", 0, engine.alertCountForTest());
-        assertFalse(engine.lastAlertTextForTest().contains("迁城"));
+        // 2026-11-02 口径变更：扫描期间「真的看到他」就是正向证据，允许立刻报新坐标
+        // （不完整扫描只是不再据此判定「未找到/矩形为空」）。
         assertFalse(engine.lastAlertTextForTest().contains("保护矩形为空"));
+        assertFalse(engine.lastAlertTextForTest().contains("扫描未找到"));
+        if (engine.alertCountForTest() > 0) {
+            assertTrue("多出来的那条只能是新坐标通知：" + engine.lastAlertTextForTest(),
+                    engine.lastAlertTextForTest().contains("新坐标"));
+        }
         // 保护矩形连续计数不因不完整扫描推进
         st.protectRects.clear();
         st.monitorTargets.clear();
@@ -164,7 +169,7 @@ public class WatchPointThreeFixTest {
     }
 
     @Test
-    public void completeScan_moveAlertIncludesCompleteness() {
+    public void completeScan_moveAlertHasNewCoordsAndReason() {
         WatchPointStore st = store();
         st.monitorTargets.add(new WatchPointStore.Target(7001L, "目标A", 10, 10));
         WatchPointEngine engine = engine(st);
@@ -175,8 +180,8 @@ public class WatchPointThreeFixTest {
         engine.finishScanForTest();
 
         String text = engine.lastAlertTextForTest();
-        assertTrue("迁城告警: " + text, text.contains("迁城") && text.contains("(20,20)"));
-        assertTrue("完整度: " + text, text.contains("完整度=460/484"));
+        assertTrue("新坐标告警: " + text, text.contains("新坐标") && text.contains("(20,20)"));
+        assertTrue("必须说明原因（迁城/被打飞）: " + text, text.contains("原因："));
         assertEquals(20, st.monitorTargets.get(0).x);
     }
 
