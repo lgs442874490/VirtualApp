@@ -21,7 +21,7 @@ import java.util.Map;
  *   <li><b>情报自定义 / 默认自动</b>（§4.1.2/§4.1.3）：{@code intel_hero_shield/lancer/marksman}
  *       （英雄 id，0=自动）+ {@code intel_ratio} + {@code intel_total}；
  *       默认<b>最强盾 / 波根 50029 / 吉娜 50008</b>，缺波根/吉娜或不可用时回退同职业最强可用；
- *       比例默认 <b>10:10:80</b>，总兵力 0=按容量/库存自动（单队上限 50000）。</li>
+ *       比例默认 <b>50:20:30</b>，总兵力 0=按容量/库存自动（单队上限 50000）。</li>
  * </ol>
  *
  * <p>本类只做“参数 → 解析入口”的翻译，不复制 {@link FormationResolver} 的库存/容量/406/415
@@ -35,8 +35,8 @@ public final class IntelFormationPlan {
     /** 吉娜（射手；情报默认弓位英雄，§4.1.3）。 */
     public static final long HERO_GINA = 50008L;
 
-    /** 情报默认兵种比例 盾:矛:弓 = 10:10:80（与内置打野 WILD 编队一致，§4.1.2）。 */
-    public static final long[] DEFAULT_RATIO = new long[]{10L, 10L, 80L};
+    /** 情报默认兵种比例 盾:矛:弓 = 50:20:30（用户 2026-11-03 定义）。 */
+    public static final long[] DEFAULT_RATIO = new long[]{50L, 20L, 30L};
 
     /** 默认比例键（FormationResolver 同源口径：infantry/lancer/marksman）。 */
     private static final String[] RATIO_KEYS = {"infantry", "lancer", "marksman"};
@@ -85,7 +85,7 @@ public final class IntelFormationPlan {
 
     /**
      * 情报兵种比例（纯函数）：{@code intel_ratio{infantry,lancer,marksman}} 优先，
-     * 其次旧 {@code ratio}/{@code soldier_ratio}，否则默认 {@link #DEFAULT_RATIO}（10:10:80）。
+     * 其次旧 {@code ratio}/{@code soldier_ratio}，否则默认 {@link #DEFAULT_RATIO}（50:20:30）。
      * 返回 Map 始终含 infantry/lancer/marksman 三键（缺失项按默认补齐）。
      */
     static Map<String, Long> ratioOf(JSONObject p) {

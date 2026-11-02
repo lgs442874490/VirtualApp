@@ -28,7 +28,7 @@ import static org.junit.Assert.assertTrue;
  *   <li>默认最强盾 + 波根（即便别的矛更强）+ 吉娜（即便别的弓更强）；</li>
  *   <li>目录无波根/吉娜 → 最强矛/最强弓；</li>
  *   <li>指定英雄在途（available=false）/301 拉黑/不存在/职业不符 → 同职业最强可用回退；</li>
- *   <li>默认比例 10:10:80；显式 intel_ratio 覆盖；旧 ratio 次之；</li>
+ *   <li>默认比例 50:20:30；显式 intel_ratio 覆盖；旧 ratio 次之；</li>
  *   <li>ROLE 指定编队优先（formation_library + formation_mode=ROLE + formation_id）。</li>
  * </ul>
  */
@@ -92,10 +92,10 @@ public class IntelFormationPlanTest {
     }
 
     @Test
-    public void ratioOf_defaultTenTenEighty_intelRatioThenLegacyRatio() {
-        assertEquals(10L, (long) IntelFormationPlan.ratioOf(new JSONObject()).get("infantry"));
-        assertEquals(10L, (long) IntelFormationPlan.ratioOf(new JSONObject()).get("lancer"));
-        assertEquals(80L, (long) IntelFormationPlan.ratioOf(new JSONObject()).get("marksman"));
+    public void ratioOf_defaultFiftyTwentyThirty_intelRatioThenLegacyRatio() {
+        assertEquals(50L, (long) IntelFormationPlan.ratioOf(new JSONObject()).get("infantry"));
+        assertEquals(20L, (long) IntelFormationPlan.ratioOf(new JSONObject()).get("lancer"));
+        assertEquals(30L, (long) IntelFormationPlan.ratioOf(new JSONObject()).get("marksman"));
 
         JSONObject explicit = new JSONObject();
         explicit.put("intel_ratio", new JSONObject(
@@ -119,8 +119,8 @@ public class IntelFormationPlanTest {
         partial.put("intel_ratio", new JSONObject("{\"infantry\":50}"));
         Map<String, Long> pr = IntelFormationPlan.ratioOf(partial);
         assertEquals(50L, (long) pr.get("infantry"));
-        assertEquals("缺失项按默认补", 10L, (long) pr.get("lancer"));
-        assertEquals(80L, (long) pr.get("marksman"));
+        assertEquals("缺失项按默认补", 20L, (long) pr.get("lancer"));
+        assertEquals(30L, (long) pr.get("marksman"));
 
         // total：intel_total 优先，其次旧 total
         JSONObject t = new JSONObject();
@@ -145,7 +145,7 @@ public class IntelFormationPlanTest {
                 List.of(SHIELD_TOP, LANCER_BORGAN, MARK_GINA), ro.formation.heroIds);
         assertTrue("reason 必须注明情报编队与盾/矛/弓：" + ro.reason,
                 ro.reason.contains("情报编队（盾/矛/弓=50001/50029/50008）"));
-        assertTrue(ro.reason.contains("比例 10:10:80"));
+        assertTrue(ro.reason.contains("比例 50:20:30"));
     }
 
     @Test
@@ -243,23 +243,23 @@ public class IntelFormationPlanTest {
     // ------------------------------------------------------------------
 
     @Test
-    public void resolve_defaultRatio_isTenTenEighty() {
+    public void resolve_defaultRatio_isFiftyTwentyThirty() {
         presetAll(true);
         JSONObject p = new JSONObject();
         p.put("intel_total", 1000L);
         FormationResolver.ResolveOutcome ro = IntelFormationPlan.resolve(context(p));
         assertTrue(ro.reason, ro.ready());
-        assertEquals(100L, ro.formation.infantry);
-        assertEquals(100L, ro.formation.lancer);
-        assertEquals(800L, ro.formation.marksman);
-        // payload 里的 soldier 数量即 10:10:80
+        assertEquals(500L, ro.formation.infantry);
+        assertEquals(200L, ro.formation.lancer);
+        assertEquals(300L, ro.formation.marksman);
+        // payload 里的 soldier 数量即 50:20:30
         @SuppressWarnings("unchecked")
         List<Map<String, Object>> soldiers =
                 (List<Map<String, Object>>) ro.formation.toFormationPayload().get("soldier");
         assertEquals(3, soldiers.size());
-        assertEquals(100L, ((Number) soldiers.get(0).get("v")).longValue());
-        assertEquals(100L, ((Number) soldiers.get(1).get("v")).longValue());
-        assertEquals(800L, ((Number) soldiers.get(2).get("v")).longValue());
+        assertEquals(500L, ((Number) soldiers.get(0).get("v")).longValue());
+        assertEquals(200L, ((Number) soldiers.get(1).get("v")).longValue());
+        assertEquals(300L, ((Number) soldiers.get(2).get("v")).longValue());
     }
 
     @Test

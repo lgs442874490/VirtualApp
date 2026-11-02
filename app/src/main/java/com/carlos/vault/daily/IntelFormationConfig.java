@@ -10,7 +10,7 @@ import org.json.JSONObject;
  * <ul>
  *   <li>{@code intel_hero_shield}/{@code intel_hero_lancer}/{@code intel_hero_marksman}：
  *       英雄 id（long；<b>0=自动</b>：盾=最强可用盾兵，矛=波根→最强矛，弓=吉娜→最强弓）；</li>
- *   <li>{@code intel_ratio}：兵种比例 {@code {infantry,lancer,marksman}}（相对权重，默认 10/10/80）；</li>
+ *   <li>{@code intel_ratio}：兵种比例 {@code {infantry,lancer,marksman}}（相对权重，默认 50/20/30）；</li>
  *   <li>{@code intel_total}：总兵力（long；0=按出征容量/库存自动）。</li>
  * </ul>
  *
@@ -20,7 +20,7 @@ import org.json.JSONObject;
  * 只有 {@link IntelFormationCard} 负责落到 {@link FnParams#saveParams}。
  *
  * <p><b>写入口径</b>：{@link #write(JSONObject)} 只落"非默认值"——英雄 0（自动）与
- * 10:10:80（默认比例）、总兵力 0 的键都会从 params 中移除，因此「写默认值」与
+ * 50:20:30（默认比例）、总兵力 0 的键都会从 params 中移除，因此「写默认值」与
  * {@link #clear(JSONObject)} 等价，直接回落到服务端默认自动编队（设计 §6 回滚口径）。
  */
 public final class IntelFormationConfig {
@@ -39,9 +39,9 @@ public final class IntelFormationConfig {
     /** 英雄"自动（最强）"哨兵值。 */
     public static final long HERO_AUTO = 0L;
 
-    public static final int DEFAULT_INFANTRY = 10;
-    public static final int DEFAULT_LANCER = 10;
-    public static final int DEFAULT_MARKSMAN = 80;
+    public static final int DEFAULT_INFANTRY = 50;
+    public static final int DEFAULT_LANCER = 20;
+    public static final int DEFAULT_MARKSMAN = 30;
 
     public static final int RATIO_MIN = 0;
     public static final int RATIO_MAX = 100;
@@ -71,7 +71,7 @@ public final class IntelFormationConfig {
     /**
      * 解析 params → 配置（缺失/非法一律回落默认，绝不抛异常）。
      *
-     * <p>比例对象存在但三项合计为 0（脏数据/手写错误）时同样回落 10/10/80：
+     * <p>比例对象存在但三项合计为 0（脏数据/手写错误）时同样回落 50/20/30：
      * 合计为 0 的配置无意义（服务端也会回退默认），UI 不应展示一个必然保存失败的组合。
      */
     public static IntelFormationConfig read(JSONObject params) {
@@ -194,7 +194,7 @@ public final class IntelFormationConfig {
         return MODE_AUTOMATIC;
     }
 
-    /** 比例文案 {@code 10:10:80}。 */
+    /** 比例文案 {@code 50:20:30}。 */
     public String ratioText() {
         return quoteRatio(ratioInfantry, ratioLancer, ratioMarksman);
     }

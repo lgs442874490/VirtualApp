@@ -926,10 +926,14 @@ public final class FormationCatalog {
         if (name.isEmpty()) name = HeroCatalog.name(id);
         long level = firstLong(m, "level", "lv", "lev");
         long star = firstLong(m, "star", "star_lv", "starLevel");
-        long power = firstLong(m, "power", "fight_num", "fight_capacity");
+        long power = firstLong(m, "power", "fight_num", "fight_capacity",
+                "fight", "fight_power", "combat_power", "power_value");
         String status = firstString(m, "status", "state");
         long trainingLev = firstLong(m, "training_lev", "trainingLev");
         long capLevel = Math.max(level, trainingLev);   // 容量按有效等级（同 MarchCapacityCalculator）
+        // 2026-11-03：生产帧部分英雄只有 training_lev（lev=1），目录展示/排序按有效等级，
+        // 避免情报英雄下拉全部显示 Lv1。
+        level = capLevel;
         return new Hero(id, name, level, star, power, status,
                 capLevel, true, "AVAILABLE", "英雄在家",
                 weaponLevelOf(m), expeditionSkillLevelOf(m, id));
