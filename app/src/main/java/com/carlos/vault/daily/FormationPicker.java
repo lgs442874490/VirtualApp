@@ -16,6 +16,7 @@ import com.carlos.vault.daily.formation.FormationBinding;
 import com.carlos.vault.daily.formation.FormationCatalogStore;
 import com.carlos.vault.daily.formation.FormationModel;
 import com.carlos.vault.daily.formation.FormationRules;
+import com.carlos.vault.daily.formation.PresetFormations;
 import com.carlos.vault.daily.formation.ui.FormationBoardView;
 import com.carlos.vault.daily.formation.ui.FormationEntryCard;
 import com.carlos.vault.daily.formation.ui.FormationManagerDialogs;
@@ -61,12 +62,14 @@ public final class FormationPicker {
                       long marksman, int[] ratios);
     }
 
-    /** 来源 tab（与网页版 §1.13 一致）。 */
+    /** 来源 tab（与网页版 §1.13 一致；新增「预设编队」）。 */
     private static final String SRC_AUTO = "AUTO";
     private static final String SRC_BUILTIN = "BUILTIN";
+    private static final String SRC_PRESET = "PRESET";
     private static final String SRC_BEAR = "BEAR";
     private static final String SRC_GAME = "GAME";
-    private static final String[] SRC_LABELS = {"自动编队", "内置编队", "巨熊编队", "游戏编队"};
+    private static final String[] SRC_LABELS = {"自动编队", "内置编队", "预设编队",
+            "巨熊编队", "游戏编队"};
 
     private FormationPicker() {
     }
@@ -393,9 +396,14 @@ public final class FormationPicker {
         }
         List<FormationModel> list = host.listOf(host.source[0]);
         if (list.isEmpty()) {
-            String empty = SRC_GAME.equals(host.source[0])
-                    ? "暂未同步到游戏内编队；请先登录游戏并保存编队"
-                    : "还没有编队；可到「编队管理」创建自定义编队";
+            String empty;
+            if (SRC_GAME.equals(host.source[0])) {
+                empty = "暂未同步到游戏内编队；请先登录游戏并保存编队";
+            } else if (SRC_PRESET.equals(host.source[0])) {
+                empty = "登录并同步英雄目录后生成预设编队";
+            } else {
+                empty = "还没有编队；可到「编队管理」创建自定义编队";
+            }
             box.addView(UiStyle.emptyState(act, "🧩", "暂无编队", empty, "＋ 新建编队",
                     () -> openManagerNew(act, host.fpid, host.sid, host.uid)));
             return box;
@@ -442,13 +450,18 @@ public final class FormationPicker {
         }
         if (ids == null || ids.length == 0) return "角色编队";
         boolean allBuiltIn = true;
+        boolean allPreset = true;
         for (long id : ids) {
             FormationModel f = find(lib, id);
             if (f == null || !f.builtIn) {
                 allBuiltIn = false;
-                break;
             }
+            if (f == null || !isPreset(f)) {
+                allPreset = false;
+            }
+            if (!allBuiltIn && !allPreset) break;
         }
+        if (allPreset) return "预设编队";
         return allBuiltIn ? "内置编队" : "角色编队";
     }
 
@@ -601,10 +614,15 @@ public final class FormationPicker {
             List<FormationModel> out = new ArrayList<>();
             if (SRC_GAME.equals(src)) {
                 out.addAll(games);
+            } else if (SRC_PRESET.equals(src)) {
+                for (FormationModel f : lib) if (!f.isGame() && isPreset(f)) out.add(f);
             } else if (SRC_BEAR.equals(src)) {
                 for (FormationModel f : lib) if (isBear(f)) out.add(f);
             } else if (SRC_BUILTIN.equals(src)) {
-                for (FormationModel f : lib) if (!isBear(f) && !f.isGame()) out.add(f);
+                // 预设单独成 tab，内置 tab 不重复列预设（契约 §4.4）
+                for (FormationModel f : lib) {
+                    if (!isBear(f) && !f.isGame() && !isPreset(f)) out.add(f);
+                }
             }
             return out;
         }
@@ -628,6 +646,7 @@ public final class FormationPicker {
 
         String badgeOf(FormationModel f) {
             if (f.isGame()) return f.name == null || f.name.isEmpty() ? "游戏" : f.name;
+            if (isPreset(f)) return "预设";
             if (f.builtIn) return "内置";
             return "自定义";
         }
@@ -874,8 +893,10 @@ public final class FormationPicker {
             case 1:
                 return SRC_BUILTIN;
             case 2:
-                return SRC_BEAR;
+                return SRC_PRESET;
             case 3:
+                return SRC_BEAR;
+            case 4:
                 return SRC_GAME;
             default:
                 return SRC_AUTO;
@@ -888,6 +909,16 @@ public final class FormationPicker {
             return f.isBear();
         } catch (Throwable t) {
             return f.name != null && f.name.startsWith("巨熊·");
+        }
+    }
+
+    /** 预设编队（T1 的 19 套内置预设，id 段由 PresetFormations 判定）。 */
+    private static boolean isPreset(FormationModel f) {
+        if (f == null) return false;
+        try {
+            return PresetFormations.isPreset(f.id);
+        } catch (Throwable t) {
+            return false;
         }
     }
 

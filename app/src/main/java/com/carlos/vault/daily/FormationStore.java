@@ -145,6 +145,10 @@ public final class FormationStore {
         public String availabilityReason = "";
         /** 旧版目录 status 原样（兼容保留）。 */
         public String status = "";
+        /** 队长第一个远征技能等级（0..5，0=未同步；契约 §1）。 */
+        public int skillLevel;
+        /** 专武等级（0..10，0=未同步/无专武；契约 §1）。 */
+        public int weaponLevel;
 
         public String label() {
             StringBuilder sb = new StringBuilder();
@@ -414,6 +418,12 @@ public final class FormationStore {
             h.troopCapacity = Math.max(0, o.optLong("troopCapacity",
                     o.optLong("troop_capacity", 0)));
             h.status = o.optString("status", "");
+            // 契约 §1：队长第一个远征技能 / 专武（宽容别名；缺字段=0，不报错）
+            h.skillLevel = clampInt(firstInt(o, "expeditionSkillLevel",
+                    "expedition_skill_level", "skillLevel", "skill_level",
+                    "firstSkillLevel", "first_skill_level"), 0, 5);
+            h.weaponLevel = clampInt(firstInt(o, "weaponLevel", "weapon_level",
+                    "exclusiveWeaponLevel", "exclusive_weapon_level", "elv"), 0, 10);
             h.availabilityState = o.optString("availabilityState",
                     o.optString("availability_state", ""));
             h.availabilityReason = o.optString("availabilityReason",
@@ -1458,6 +1468,23 @@ public final class FormationStore {
 
     private static int clampInt(int v, int min, int max) {
         return v < min ? min : (v > max ? max : v);
+    }
+
+    /** 宽容取整（多别名；数字/数字字符串/浮点串均可；全缺失返回 0）。 */
+    private static int firstInt(JSONObject o, String... keys) {
+        if (o == null) return 0;
+        for (String k : keys) {
+            if (k == null || !o.has(k)) continue;
+            Object v = o.opt(k);
+            if (v instanceof Number) return ((Number) v).intValue();
+            if (v instanceof String) {
+                try {
+                    return (int) Math.round(Double.parseDouble(((String) v).trim()));
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return 0;
     }
 
     private static SharedPreferences prefs(Context ctx) {

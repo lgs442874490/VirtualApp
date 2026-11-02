@@ -88,9 +88,12 @@ public class FormationBuiltInsTest {
     @Test
     public void ensure_readyCreatesAllEight_withBestHeroes() throws Exception {
         List<FormationModel> lib = new ArrayList<FormationModel>();
-        assertEquals(8, FormationBuiltIns.ensure(lib, readyCatalog()));
-        assertEquals(8, lib.size());
+        // 契约 2026-11-02 §3：目录就绪时 ensure 末尾还会懒创建 19 套预设；数量以实际定义数计
+        int expectPresets = PresetFormations.ensure(new ArrayList<FormationModel>(), readyCatalog());
+        assertEquals(8 + expectPresets, FormationBuiltIns.ensure(lib, readyCatalog()));
+        assertEquals(8 + expectPresets, lib.size());
         for (FormationModel f : lib) {
+            if (PresetFormations.isPreset(f.id)) continue;   // 预设英雄规则单测见 PresetFormationsTest
             if (f.templateKey != null && !"ONE_INFANTRY".equals(f.templateKey)
                     && !"RANDOM_HERO_ONE_SOLDIER".equals(f.templateKey)) {
                 assertEquals("懒创建英雄=各职业最高战力（盾B/矛A/弓A）",
@@ -103,7 +106,7 @@ public class FormationBuiltInsTest {
         }
         // 幂等：第二次不新增、不重复
         assertEquals(0, FormationBuiltIns.ensure(lib, readyCatalog()));
-        assertEquals(8, lib.size());
+        assertEquals(8 + expectPresets, lib.size());
     }
 
     @Test
@@ -129,9 +132,10 @@ public class FormationBuiltInsTest {
         // 模拟早期异常数据：懒创建项已存在但英雄为空
         FormationModel early = FormationBuiltIns.byId(FormationBuiltIns.ID_MEAT).copy();
         lib.add(early);
-        assertEquals("其余 5 个懒创建补齐（56 已存在）", 5,
-                FormationBuiltIns.ensure(lib, readyCatalog()));
-        assertEquals(8, lib.size());
+        int expectPresets = PresetFormations.ensure(new ArrayList<FormationModel>(), readyCatalog());
+        assertEquals("其余 5 个懒创建补齐（56 已存在）+ 预设",
+                5 + expectPresets, FormationBuiltIns.ensure(lib, readyCatalog()));
+        assertEquals(8 + expectPresets, lib.size());
         assertEquals("已存在项补英雄", Arrays.asList(50004L, 50002L, 50003L), early.heroIds);
         assertEquals(Long.valueOf(50004L), early.captainHeroId);
     }

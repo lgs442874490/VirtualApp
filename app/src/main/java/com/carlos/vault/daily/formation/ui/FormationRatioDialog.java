@@ -7,6 +7,7 @@ import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.SeekBar;
@@ -20,7 +21,8 @@ import com.carlos.vault.UiStyle;
  *
  * <p>结构：头部 `比例分配` → 说明 `设置自动编队时盾、矛、弓的出兵比例，合计必须为 100%。`
  * → 3 行（兵种名 + 滑杆 0-100/步进 5 + 数字输入 + `%`）→ 快捷比例 `523/514/505/640/433`
- * → 合计行 `当前合计 X%`（≠100 时红字 `请调整为 100% 后再应用`）→ `取消` / `应用比例`。
+ * → 合计行 `当前合计 X%`（≠100 时红字 `请调整为 100% 后再应用`）
+ * →（可选）`开启出征界面默认使用当前比例分配` 复选框 → `取消` / `应用比例`。
  *
  * <p>纯 Android 代码构建（无 XML），颜色/圆角沿用 {@link UiStyle}；步进与上限与网页版一致
  * （滑杆 step=5，输入框 step=5，0..100）。打开时用传入比例初始化；应用回调整数且合计=100。
@@ -30,6 +32,15 @@ public final class FormationRatioDialog {
     /** 应用回调（主线程；保证三项均为 5 的倍数且合计 100）。 */
     public interface OnApplied {
         void onApplied(int infantry, int lancer, int marksman);
+    }
+
+    /**
+     * 应用回调（带「开启出征界面默认使用当前比例分配」勾选状态）。
+     *
+     * <p>勾选时调用方应把该比例写入全局自动编队设置（契约 §4.3）。
+     */
+    public interface OnAppliedWithDefault {
+        void onApplied(int infantry, int lancer, int marksman, boolean useAsDefault);
     }
 
     /** 快捷比例（码 → 三项）：523=50/20/30、514=50/10/40、505=50/0/50、640=60/40/0、433=40/30/30。 */
@@ -48,9 +59,26 @@ public final class FormationRatioDialog {
      */
     public static void show(final Activity act, int[] current, final boolean available,
                             final OnApplied cb) {
+        // 旧签名保持：不显示「默认使用当前比例分配」开关（FormationEntryCard 等调用方零改动）。
+        show(act, current, available, false, false,
+                cb == null ? null : (inf, lancer, marksman, useAsDefault) ->
+                        cb.onApplied(inf, lancer, marksman));
+    }
+
+    /**
+     * 带「开启出征界面默认使用当前比例分配」复选框的重载（契约 §4.3）。
+     *
+     * @param showDefaultSwitch 是否显示该复选框（false 时行为与旧签名一致）
+     * @param defaultOn         复选框初始勾选状态
+     * @param cb                应用回调（第三参 = 复选框勾选状态）
+     */
+    public static void show(final Activity act, int[] current, final boolean available,
+                            final boolean showDefaultSwitch, final boolean defaultOn,
+                            final OnAppliedWithDefault cb) {
         if (act == null) return;
         final int[] init = normalize(current);
         final int[] value = {init[0], init[1], init[2]};
+        final boolean[] useDefault = {showDefaultSwitch && defaultOn};
 
         final LinearLayout box = new LinearLayout(act);
         box.setOrientation(LinearLayout.VERTICAL);
@@ -209,6 +237,18 @@ public final class FormationRatioDialog {
         totalHint.setPadding(0, dp(act, 2), 0, 0);
         box.addView(totalHint);
 
+        // ---------- 开启出征界面默认使用当前比例分配 ----------
+        if (showDefaultSwitch) {
+            CheckBox defaultSwitch = new CheckBox(act);
+            defaultSwitch.setText("开启出征界面默认使用当前比例分配");
+            defaultSwitch.setTextSize(12);
+            defaultSwitch.setTextColor(UiStyle.INK2);
+            defaultSwitch.setChecked(useDefault[0]);
+            defaultSwitch.setPadding(0, dp(act, 8), 0, dp(act, 2));
+            defaultSwitch.setOnCheckedChangeListener((v, checked) -> useDefault[0] = checked);
+            box.addView(defaultSwitch);
+        }
+
         // ---------- 底部按钮 ----------
         LinearLayout actions = new LinearLayout(act);
         actions.setOrientation(LinearLayout.HORIZONTAL);
@@ -245,7 +285,7 @@ public final class FormationRatioDialog {
                 return;
             }
             if (dlgRef[0] != null) dlgRef[0].dismiss();
-            if (cb != null) cb.onApplied(value[0], value[1], value[2]);
+            if (cb != null) cb.onApplied(value[0], value[1], value[2], useDefault[0]);
         });
         LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1.6f);

@@ -168,6 +168,8 @@ public final class FormationBuiltIns {
                 }
             }
         }
+        // 契约 2026-11-02 §3：目录就绪时懒创建 19 套预设编队（内部再判幂等/只建前 6 支熊上车）
+        created += PresetFormations.ensure(lib, cat);
         return created;
     }
 
