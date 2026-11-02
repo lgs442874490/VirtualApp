@@ -4542,7 +4542,10 @@ public final class ServerTasks {
             out.text = "行军队列已满（" + active + "/" + queueLimit + "），本轮不上车";
             return out;
         }
-        BehemothFormationChoice joinFormationChoice = chooseBehemothFormation(tc, cfg);
+        // 2026-11-03：优先按 state.joinCount 取「上车编队 1..N」槽（App join_formations）；
+        // 无启用槽/槽编队不可用 → 槽内回退 chooseBehemothFormation（旧行为零变化）。
+        BehemothFormationChoice joinFormationChoice =
+                chooseBehemothJoinFormation(tc, cfg, state.joinCount);
         Map<String, Object> formation = joinFormationChoice.payload;
         if (!behemothFormationReady(formation)) {
             out.text = "无可用上车编队（" + joinFormationChoice.label + "）："
@@ -4568,7 +4571,8 @@ public final class ServerTasks {
                 state.lastJoinMasterId = rally.masterMarchId;
                 state.save(tc);
                 out.joined++;
-                out.text = "已手工上车 1 队(车头" + rally.masterMarchId + ") 今日 "
+                out.text = "已手工上车 1 队(车头" + rally.masterMarchId + " · "
+                        + joinFormationChoice.label + ") 今日 "
                         + state.joinCount + "/" + cfg.joinLimit;
                 FileLog.info("巨兽手动上车成功 fpid={} sid={} masterMarchId={} 今日={}/{} 编队={}",
                         tc.fpid, String.valueOf(tc.sid), String.valueOf(rally.masterMarchId),
@@ -4578,9 +4582,11 @@ public final class ServerTasks {
             }
             ClaimLedger.mark(tc, "behemoth_join", "m" + rally.masterMarchId);
             String cls = behemothCodeText(code);
-            out.text = "手工上车失败（码" + code + "）" + (cls.isEmpty() ? "" : "：" + cls);
-            FileLog.warn("巨兽手动上车失败 fpid={} code={} masterMarchId={}", tc.fpid,
-                    String.valueOf(code), String.valueOf(rally.masterMarchId));
+            out.text = "手工上车失败（" + joinFormationChoice.label + "，码" + code + "）"
+                    + (cls.isEmpty() ? "" : "：" + cls);
+            FileLog.warn("巨兽手动上车失败 fpid={} code={} masterMarchId={} 编队={}", tc.fpid,
+                    String.valueOf(code), String.valueOf(rally.masterMarchId),
+                    joinFormationChoice.label);
             if (code == CODE_BEHEMOTH_JOIN_ALREADY) continue;   // 已在集结：换下一车头
             if (code == CODE_BEHEMOTH_JOIN_INVALID || code == CODE_BEHEMOTH_JOIN_FULL) continue;
             return out;
@@ -5144,7 +5150,8 @@ public final class ServerTasks {
         boolean autoJoinEnabled = true;
         boolean launchEnabled = false;
         int launchLimit = 1;
-        int queueCount = 1;
+        /** 队列数（用户 2026-11-03：默认按游戏编队槽数 5，clamp 1..6，再按世界容量夹取）。 */
+        int queueCount = 5;
         boolean joinEnabled = true;
         int joinLimit = 1;
         boolean manualJoinWithAutoJoin = false;
@@ -5165,6 +5172,11 @@ public final class ServerTasks {
         boolean formationConfigured;
         /** formation_library 原始 JSON（空=无库）。 */
         String formationLibraryJson = "";
+        /**
+         * 巨兽上车编队 1..N（App {@code join_formations}；N=queue_count 1..6，含 disabled 槽）。
+         * 空列表=未配置 → behemothJoinOnce 完全沿用旧 chooseBehemothFormation 行为。
+         */
+        List<ServerBearTasks.JoinFormationConfig> joinFormations = java.util.Collections.emptyList();
 
         static BehemothConfig of(org.json.JSONObject params) {
             BehemothConfig cfg = new BehemothConfig();
@@ -5174,9 +5186,13 @@ public final class ServerTasks {
             cfg.autoJoinEnabled = optSubBool(p, sub, "auto_join", "auto_join", true);
             cfg.launchEnabled = optSubBool(p, sub, "launch", "launch_enabled", false);
             cfg.launchLimit = clamp(p.optInt("launch_limit", 1), 1, 100);
-            cfg.queueCount = clamp(p.optInt("queue_count", 1), 1, 6);
+            // 用户 2026-11-03 要求按自己的出征队列数：App 卡片默认按游戏编队槽数（通常 5）显示上车槽，
+            // 服务端默认也取 5（缺省 1 会与 UI 不一致，导致只允许 1 条队列）；仍 clamp 1..6，
+            // effectiveQueueCount 再按世界容量夹取。
+            cfg.queueCount = clamp(p.optInt("queue_count", 5), 1, 6);
             cfg.joinEnabled = optSubBool(p, sub, "join", "join_enabled", true);
-            cfg.joinLimit = clamp(p.optInt("join_limit", 1), 1, 6);
+            // 2026-11-03：未显式给 join_limit 时跟随出征队列数（上车 1..N 都能上），仍 clamp 1..6
+            cfg.joinLimit = clamp(p.optInt("join_limit", cfg.queueCount), 1, 6);
             cfg.manualJoinWithAutoJoin = optBool(p, "manual_join_with_auto_join", false);
             cfg.minLevel = clamp(p.optInt("min_level", 1), 1, 8);
             cfg.maxLevel = clamp(p.optInt("max_level", 8), 1, 8);
@@ -5194,6 +5210,8 @@ public final class ServerTasks {
             cfg.paramsMap.putAll(ServerBearTasks.paramsToMap(p));
             cfg.formationConfigured = ServerBearTasks.hasGenericFormationConfig(cfg.paramsMap);
             cfg.formationLibraryJson = p.optString("formation_library", "");
+            // 2026-11-03：巨兽「上车编队 1..N」与巨熊同构（复用 ServerBearTasks 解析，避免复制逻辑）
+            cfg.joinFormations = ServerBearTasks.parseJoinFormations(p);
             return cfg;
         }
 
@@ -5329,6 +5347,93 @@ public final class ServerTasks {
                 ? "squad_index(" + cfg.squadIndex + ")" : "hero_ids(" + cfg.heroIds + ")";
         return new BehemothFormationChoice(payload, label,
                 behemothFormationReady(payload) ? "" : "空编队(无英雄/兵力)");
+    }
+
+    // ---------- 3.x 巨兽上车编队 1..N（App join_formations，2026-11-03） ----------
+
+    /**
+     * 第 {@code attemptIndex} 个启用的巨兽上车槽（零基；巨兽用 {@code state.joinCount} 作下标）。
+     *
+     * @return 槽；无配置/越界/全部 disabled → null（调用方回退旧 chooseBehemothFormation）
+     */
+    static ServerBearTasks.JoinFormationConfig behemothJoinSlot(BehemothConfig cfg, int attemptIndex) {
+        return cfg == null
+                ? null : ServerBearTasks.joinFormationAt(cfg.joinFormations, attemptIndex);
+    }
+
+    /** 槽标签（日志/文案用）：{@code 上车编队2[ROLE#12]} / {@code 上车编队1[AUTO]}。 */
+    static String behemothJoinSlotLabel(ServerBearTasks.JoinFormationConfig slot) {
+        if (slot == null) return "上车编队";
+        boolean role = isRoleJoinSlot(slot);
+        return "上车编队" + slot.id + "[" + (role ? "ROLE" : "AUTO")
+                + (role && slot.formationId > 0L ? "#" + slot.formationId : "") + "]";
+    }
+
+    /** 槽是否 ROLE（有 formation_id 或显式 mode=ROLE/NORMAL/CUSTOM）。 */
+    static boolean isRoleJoinSlot(ServerBearTasks.JoinFormationConfig slot) {
+        if (slot == null) return false;
+        if (slot.formationId > 0L) return true;
+        return FormationResolver.MODE_ROLE.equals(FormationResolver.modeOf(slot.params));
+    }
+
+    /**
+     * 槽 → FormationResolver 参数：ROLE 只用槽自身参数（避免发起队 soldiers 污染上车编队）；
+     * AUTOMATIC 槽参数优先，其次发起队/功能顶层 {@code ratio}/{@code total}（无则库内自动比例）。
+     */
+    static Map<String, Object> behemothJoinSlotParams(BehemothConfig cfg,
+                                                     ServerBearTasks.JoinFormationConfig slot) {
+        Map<String, Object> params = new LinkedHashMap<>();
+        if (slot == null) return params;
+        if (isRoleJoinSlot(slot)) {
+            if (slot.params != null) params.putAll(slot.params);
+            params.put("formation_mode", FormationResolver.MODE_ROLE);
+            if (slot.formationId > 0L) params.put("formation_id", slot.formationId);
+            return params;
+        }
+        if (cfg != null && cfg.paramsMap != null) {
+            for (String key : new String[]{"ratio", "soldier_ratio", "total",
+                    "troop_total", "squad_index"}) {
+                Object v = cfg.paramsMap.get(key);
+                if (v != null) params.put(key, v);
+            }
+        }
+        if (slot.params != null) params.putAll(slot.params);
+        params.put("formation_mode", FormationResolver.MODE_AUTOMATIC);
+        params.remove("formation_id");
+        params.remove("formationId");
+        params.remove("formation_ids");
+        params.remove("formationIds");
+        return params;
+    }
+
+    /**
+     * 选巨兽「上车」编队：有启用槽 → 用槽参数走 {@link FormationResolver}（ROLE=库内编队，
+     * AUTOMATIC=按槽/顶层 ratio+total 自动编队）；槽缺省或解析失败 → 回退
+     * {@link #chooseBehemothFormation}（旧行为；文案/日志均带槽标签）。
+     */
+    static BehemothFormationChoice chooseBehemothJoinFormation(TaskContext tc, BehemothConfig cfg,
+                                                               int attemptIndex) {
+        ServerBearTasks.JoinFormationConfig slot = behemothJoinSlot(cfg, attemptIndex);
+        if (slot == null) return chooseBehemothFormation(tc, cfg);   // 无启用槽：零行为变化
+        String slotLabel = behemothJoinSlotLabel(slot);
+        FormationLibrary lib = FormationResolver.libraryFor(tc, "behemoth");
+        FormationResolver.ResolveOutcome out = FormationResolver.resolveOutcome(
+                tc.engine, lib, behemothJoinSlotParams(cfg, slot));
+        if (out.ready()) {
+            Map<String, Object> payload = out.formation.toFormationPayload();
+            if (payload != null && !payload.isEmpty()) {
+                return new BehemothFormationChoice(payload,
+                        slotLabel + " " + out.formation.describe(), "");
+            }
+        }
+        BehemothFormationChoice fallback = chooseBehemothFormation(tc, cfg);
+        String why = out.reason == null || out.reason.trim().isEmpty()
+                ? "编队不可用" : out.reason.trim();
+        return new BehemothFormationChoice(fallback.payload,
+                slotLabel + "→回退 " + fallback.label,
+                "槽编队不可用（" + why + "）"
+                        + (behemothFormationReady(fallback.payload)
+                        ? "" : "；回退编队不可用：" + fallback.reason));
     }
 
     /** 旧编队：hero_ids 优先（≤3）→ 客户端队 squad_index → 默认队1（与既有 Exec.formation 行为一致）。 */

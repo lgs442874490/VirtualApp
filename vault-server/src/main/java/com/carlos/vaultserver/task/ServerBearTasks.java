@@ -1490,9 +1490,17 @@ public final class ServerBearTasks {
 
     /** 已启用的上车编队 id 升序（网页版 1-6 固定顺序）；无配置 → 空。 */
     static List<Integer> enabledJoinFormationIds(BearConfig cfg) {
+        return cfg == null ? new ArrayList<>() : enabledJoinFormationIds(cfg.joinFormations);
+    }
+
+    /**
+     * 已启用的上车编队 id 升序（编队槽列表版；巨兽/巨熊共用）。
+     * {@code enabled=false} 的槽不参与“第 N 次尝试”选取（直接跳过，不发请求/不计失败）。
+     */
+    static List<Integer> enabledJoinFormationIds(List<JoinFormationConfig> slots) {
         List<Integer> ids = new ArrayList<>();
-        if (cfg == null || cfg.joinFormations == null) return ids;
-        for (JoinFormationConfig slot : cfg.joinFormations) {
+        if (slots == null) return ids;
+        for (JoinFormationConfig slot : slots) {
             if (slot != null && slot.enabled && !ids.contains(slot.id)) ids.add(slot.id);
         }
         ids.sort(Integer::compareTo);
@@ -1501,11 +1509,20 @@ public final class ServerBearTasks {
 
     /** 第 n 个上车尝试使用的编队槽（按启用 id 升序；越界 → null=走旧逻辑）。 */
     static JoinFormationConfig joinFormationAt(BearConfig cfg, int attemptIndex) {
-        if (attemptIndex < 0) return null;
-        List<Integer> ids = enabledJoinFormationIds(cfg);
+        return cfg == null ? null : joinFormationAt(cfg.joinFormations, attemptIndex);
+    }
+
+    /**
+     * 第 n 个上车尝试使用的编队槽（编队槽列表版；巨兽/巨熊共用）。
+     *
+     * @param attemptIndex 零基下标（巨兽=state.joinCount）；越界/无配置 → null（调用方走旧逻辑）
+     */
+    static JoinFormationConfig joinFormationAt(List<JoinFormationConfig> slots, int attemptIndex) {
+        if (slots == null || attemptIndex < 0) return null;
+        List<Integer> ids = enabledJoinFormationIds(slots);
         if (attemptIndex >= ids.size()) return null;
         int want = ids.get(attemptIndex);
-        for (JoinFormationConfig slot : cfg.joinFormations) {
+        for (JoinFormationConfig slot : slots) {
             if (slot != null && slot.id == want) return slot;
         }
         return null;
@@ -2444,12 +2461,22 @@ public final class ServerBearTasks {
             int endMinute = endHour * 60 + endMin;
             int duration = endMinute - startMinute;
             if (duration <= 0) duration = ACTIVITY_MINUTES;  // 不支持跨零点：非法配置回落到 30 分钟
+            // 2026-11-03：App「上车编队 1..N」按启用槽数决定本场上车数；未显式给 join_count 时
+            // 跟随启用的 join_formations 槽数（无 join_formations → 仍默认 1，旧行为零变化）。
+            List<JoinFormationConfig> joinSlots = parseJoinFormations(p);
+            int enabledSlots = 0;
+            for (JoinFormationConfig slot : joinSlots) {
+                if (slot != null && slot.enabled) enabledSlots++;
+            }
+            int joinCountDefault = joinSlots.isEmpty() ? 1 : Math.max(1, enabledSlots);
+            int joinCount = p.has("join_count")
+                    ? p.optInt("join_count", joinCountDefault) : joinCountDefault;
             BearConfig cfg = new BearConfig(
                     optBool(p, "launch_enabled", true),
                     optBool(p, "join_enabled", true),
                     optBool(p, "prepare_recall", false),
                     optBool(p, "launch_without_reserve", false),
-                    p.optInt("join_count", 1),
+                    joinCount,
                     p.optInt("prepare_time_index", DEFAULT_PREPARE_TIME_INDEX),
                     p.optInt("window_weekday", 5),
                     startMinute, duration,
@@ -2459,7 +2486,7 @@ public final class ServerBearTasks {
             cfg.paramsMap.putAll(paramsToMap(p));
             cfg.formationConfigured = hasGenericFormationConfig(cfg.paramsMap);
             cfg.formationLibraryJson = p.optString("formation_library", "");
-            cfg.joinFormations = parseJoinFormations(p);
+            cfg.joinFormations = joinSlots;
             return cfg;
         }
     }

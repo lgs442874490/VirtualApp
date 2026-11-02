@@ -37,7 +37,8 @@ import java.util.Map;
  *   <li>编队 tab 卡条（80×56 圆角 12，图标/名称/badge）；</li>
  *   <li>统计行（当前兵力/上限 + 编队名）；</li>
  *   <li>战争增益行（容量 32×32 / 宠物 32×32 / 编队设置 30×30）；</li>
- *   <li>3 英雄格（105×180 圆角 16：头像/职业角标/代数 S/等级/五星/队长/×，空位=职业占位）；</li>
+ *   <li>3 英雄格（三卡等宽铺满，约 140×156 圆角 16：头像/职业角标/代数 S/等级/五星/队长/×，
+ *       空位=职业占位）；</li>
  *   <li>banner（tone 0 不显示 / 1 info / 2 warn）；</li>
  *   <li>3 兵种行（数量或比例 + 滑杆 ±，只读时无控件）；</li>
  *   <li>士兵比例 chips；</li>
@@ -572,19 +573,22 @@ public final class FormationBoardView {
 
         LinearLayout row = ManagerUi.row(act);
         row.setGravity(Gravity.TOP);
-        int pad = ManagerUi.dp(act, 54);
+        // 三卡等宽铺满：左右各 10dp、卡间距 10dp；高度 156dp（原 54dp 边距 + 18dp 间距 + 180dp
+        // 导致每张仅约 105dp 宽，头像过窄）。463dp 卡宽下每张约 (463-20-20)/3 ≈ 141dp。
+        int pad = ManagerUi.dp(act, 10);
         row.setPadding(pad, 0, pad, 0);
+        final int cardH = ManagerUi.dp(act, 156);
         for (int i = 0; i < 3; i++) {
             long heroId = i < ordered.size() ? ordered.get(i) : 0L;
             boolean isCaptain = heroId > 0 && captain != null
                     && heroId == captain.longValue();
             View card = heroCard(heroId, slotProf[i], isCaptain);
-            LinearLayout.LayoutParams clp = ManagerUi.lp(0, ManagerUi.dp(act, 180), 1f);
-            if (i < 2) clp.rightMargin = ManagerUi.dp(act, 18);
+            LinearLayout.LayoutParams clp = ManagerUi.lp(0, cardH, 1f);
+            if (i < 2) clp.rightMargin = ManagerUi.dp(act, 10);
             row.addView(card, clp);
         }
         root.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ManagerUi.dp(act, 180)));
+                ViewGroup.LayoutParams.MATCH_PARENT, cardH));
     }
 
     private static int firstFree(boolean[] used) {

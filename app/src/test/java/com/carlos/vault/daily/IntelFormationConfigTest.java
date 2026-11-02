@@ -27,20 +27,20 @@ public class IntelFormationConfigTest {
             assertEquals("盾英雄默认自动", 0L, c.heroShield);
             assertEquals("矛英雄默认自动", 0L, c.heroLancer);
             assertEquals("弓英雄默认自动", 0L, c.heroMarksman);
-            assertEquals("盾比例默认 10", 10, c.ratioInfantry);
-            assertEquals("矛比例默认 10", 10, c.ratioLancer);
-            assertEquals("弓比例默认 80", 80, c.ratioMarksman);
+            assertEquals("盾比例默认 50", 50, c.ratioInfantry);
+            assertEquals("矛比例默认 20", 20, c.ratioLancer);
+            assertEquals("弓比例默认 30", 30, c.ratioMarksman);
             assertEquals("总兵力默认自动", 0L, c.total);
             assertTrue("全默认", c.isDefault());
-            assertEquals("10:10:80", c.ratioText());
+            assertEquals("50:20:30", c.ratioText());
         }
     }
 
     @Test
     public void defaults_matchDesignContract() throws Exception {
-        assertEquals(10, IntelFormationConfig.DEFAULT_INFANTRY);
-        assertEquals(10, IntelFormationConfig.DEFAULT_LANCER);
-        assertEquals(80, IntelFormationConfig.DEFAULT_MARKSMAN);
+        assertEquals(50, IntelFormationConfig.DEFAULT_INFANTRY);
+        assertEquals(20, IntelFormationConfig.DEFAULT_LANCER);
+        assertEquals(30, IntelFormationConfig.DEFAULT_MARKSMAN);
         assertEquals("intel_hero_shield", IntelFormationConfig.KEY_HERO_SHIELD);
         assertEquals("intel_hero_lancer", IntelFormationConfig.KEY_HERO_LANCER);
         assertEquals("intel_hero_marksman", IntelFormationConfig.KEY_HERO_MARKSMAN);
@@ -124,13 +124,18 @@ public class IntelFormationConfigTest {
         p.put("sub", new JSONObject().put("events", true));
 
         IntelFormationConfig c = new IntelFormationConfig();
-        c.ratioInfantry = 10;
-        c.ratioLancer = 10;
-        c.ratioMarksman = 80;
+        c.ratioInfantry = 20;
+        c.ratioLancer = 30;
+        c.ratioMarksman = 50;
         JSONObject out = c.write(p);
         assertEquals("AUTOMATIC", out.optString("formation_mode"));
         assertNotNull(out.optJSONObject("sub"));
         assertTrue(out.optJSONObject("sub").optBoolean("events"));
+        JSONObject ratio = out.optJSONObject(IntelFormationConfig.KEY_RATIO);
+        assertNotNull("非默认比例应落 intel_ratio", ratio);
+        assertEquals(20, ratio.optInt("infantry"));
+        assertEquals(30, ratio.optInt("lancer"));
+        assertEquals(50, ratio.optInt("marksman"));
     }
 
     @Test
@@ -181,28 +186,28 @@ public class IntelFormationConfigTest {
         p.put(IntelFormationConfig.KEY_RATIO, ratio(0, 0, 0));
 
         IntelFormationConfig c = IntelFormationConfig.read(p);
-        assertEquals(10, c.ratioInfantry);
-        assertEquals(10, c.ratioLancer);
-        assertEquals(80, c.ratioMarksman);
+        assertEquals(50, c.ratioInfantry);
+        assertEquals(20, c.ratioLancer);
+        assertEquals(30, c.ratioMarksman);
     }
 
     @Test
     public void read_brokenRatioTypeFallsBackToDefault() throws Exception {
         JSONObject p = new JSONObject();
-        p.put(IntelFormationConfig.KEY_RATIO, "10:10:80");   // 类型错误（字符串）
+        p.put(IntelFormationConfig.KEY_RATIO, "50:20:30");   // 类型错误（字符串）
 
         IntelFormationConfig c = IntelFormationConfig.read(p);
-        assertEquals(10, c.ratioInfantry);
-        assertEquals(80, c.ratioMarksman);
+        assertEquals(50, c.ratioInfantry);
+        assertEquals(30, c.ratioMarksman);
     }
 
     // ==================== 比例校验 ====================
 
     @Test
     public void validateRatio_acceptsDefaults() throws Exception {
-        assertNull(IntelFormationConfig.validateRatio(10, 10, 80));
+        assertNull(IntelFormationConfig.validateRatio(50, 20, 30));
         assertNull("合计 >0 即可（服务端按相对权重）",
-                IntelFormationConfig.validateRatio(50, 20, 30));
+                IntelFormationConfig.validateRatio(5, 2, 3));
         assertNull("允许单项为 0", IntelFormationConfig.validateRatio(0, 0, 100));
     }
 
