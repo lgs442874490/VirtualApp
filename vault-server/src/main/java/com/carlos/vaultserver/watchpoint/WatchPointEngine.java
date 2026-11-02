@@ -105,7 +105,7 @@ public final class WatchPointEngine {
         public final int x;
         public final int y;
 
-        CityInfo(long uid, long aid, long lv, String nick, int x, int y) {
+        public CityInfo(long uid, long aid, long lv, String nick, int x, int y) {
             this.uid = uid;
             this.aid = aid;
             this.lv = lv;
@@ -124,6 +124,57 @@ public final class WatchPointEngine {
 
     public static WatchPointEngine shared() {
         return SHARED;
+    }
+
+    /**
+     * 城缓存查询（2026-11-02 小工具）：按 uid / 昵称子串 / 联盟简称（昵称前缀 [xxx]）/ aid / 最低炉子等级过滤。
+     * 供 API {@code /v1/vault/watchpoint action=lookup} 使用；无共享实例返回空列表。
+     */
+    public static java.util.List<CityInfo> lookup(String uid, String nick, String abbr,
+                                                  long aid, long minLv, int limit) {
+        java.util.List<CityInfo> out = new java.util.ArrayList<>();
+        WatchPointEngine e = SHARED;
+        if (e == null) return out;
+        String u = uid == null ? "" : uid.trim();
+        String n = nick == null ? "" : nick.trim();
+        String ab = abbr == null ? "" : abbr.trim();
+        if (limit <= 0 || limit > 1000) limit = 1000;   // 别让 limit=10^6 把整图缓存全吐出来
+        // 简称优先当「联盟 aid」用：玩家目录 aabbr→aid 或官方联盟搜索；解析不到才退回昵称前缀 [818]
+        long abbrAid = 0L;
+        if (!ab.isEmpty()) {
+            PlayerDirectory dir = PlayerDirectory.shared();
+            Long known = dir == null ? null : dir.aidOfAbbr(ab);
+            if (known != null && known > 0L) {
+                abbrAid = known;
+            } else if (e.keeper != null) {
+                try {
+                    abbrAid = e.keeper.resolveAllianceAid(e.store.fpid, 0L, ab);
+                } catch (Throwable ignore) {
+                    abbrAid = 0L;
+                }
+                if (abbrAid > 0L && dir != null) dir.rememberAbbr(ab, abbrAid);
+            }
+            if (abbrAid <= 0L && ab.matches("\\d{7,}")) {
+                // 直接塞 aid（≥7 位）也认，便于脚本/老数据
+                try { abbrAid = Long.parseLong(ab); } catch (NumberFormatException ignore) { }
+            }
+        }
+        for (City c : e.cityByUid.values()) {
+            if (c == null) continue;
+            if (!u.isEmpty() && !String.valueOf(c.uid).equals(u)) continue;
+            if (aid > 0L && c.aid != aid) continue;
+            if (minLv > 0L && c.lv < minLv) continue;
+            String nn = c.nick == null ? "" : c.nick;   // 城缓存可能没有昵称，别 NPE
+            if (abbrAid > 0L) {
+                if (c.aid != abbrAid) continue;
+            } else if (!ab.isEmpty() && !ab.equalsIgnoreCase(abbrFromNick(nn))) {
+                continue;
+            }
+            if (!n.isEmpty() && !nn.contains(n)) continue;
+            out.add(new CityInfo(c.uid, c.aid, c.lv, nn, c.x, c.y));
+            if (limit > 0 && out.size() >= limit) break;
+        }
+        return out;
     }
 
     /** 坐标 → 城（整图扫描缓存；未扫描到/未启用返回 null）。任意线程可调。 */
@@ -285,6 +336,69 @@ public final class WatchPointEngine {
     private final java.util.concurrent.atomic.AtomicLong statOkProtect = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong statTimeouts = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong statAlerts = new java.util.concurrent.atomic.AtomicLong();
+    /** 2026-11-02 侦查限流：每个攻击者 5 分钟内最多推送 3 条侦查类告警（出征类不受限）。 */
+    static final long SCOUT_WINDOW_MS = 5L * 60L * 1000L;
+    static final int SCOUT_MAX_PER_WINDOW = 3;
+    private final Map<Long, java.util.ArrayDeque<Long>> scoutAlertTimes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** uid:marchId → 最近一次计侦查配额的时刻（防轮询重放重复扣配额）。 */
+    private final Map<String, Long> scoutCounted = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 侦查告警配额（纯函数，便于单测）：窗口内未满 max 则放行并记账，否则拒绝。 */
+    static boolean scoutQuotaAllow(Map<Long, java.util.ArrayDeque<Long>> map, long uid,
+                                   long now, long windowMs, int max) {
+        if (max <= 0 || map == null || uid <= 0L) return true;
+        java.util.ArrayDeque<Long> q = map.computeIfAbsent(uid, k -> new java.util.ArrayDeque<>());
+        synchronized (q) {
+            while (!q.isEmpty() && now - q.peekFirst() > windowMs) q.pollFirst();
+            if (q.size() >= max) return false;
+            q.addLast(now);
+        }
+        // 打完就跑的散人很多，过期队列要清掉，否则 map 只增不减
+        if (map.size() > 256) {
+            map.entrySet().removeIf(en -> {
+                java.util.ArrayDeque<Long> dq = en.getValue();
+                synchronized (dq) {
+                    while (!dq.isEmpty() && now - dq.peekFirst() > windowMs) dq.pollFirst();
+                    return dq.isEmpty();
+                }
+            });
+        }
+        return true;
+    }
+
+    /**
+     * 同一条行军只记一次侦查配额（2026-11-02 修）：监视轮询每 4s 会把同一条在途行军重放一遍，
+     * 若每次重放都扣配额，一条侦查 12 秒就能把「5 分钟 3 条」刷光，真实侦查反被静默。
+     * 返回 true=这条行军第一次计配额（需要继续做配额判定）。
+     */
+    boolean scoutCountOnce(long uid, long marchId, long now) {
+        if (uid <= 0L || marchId <= 0L) return true;
+        String k = uid + ":" + marchId;
+        Long prev = scoutCounted.get(k);
+        if (prev != null && now - prev < SCOUT_WINDOW_MS) return false;
+        scoutCounted.put(k, now);
+        if (scoutCounted.size() > 4096) {
+            scoutCounted.entrySet().removeIf(e -> now - e.getValue() > SCOUT_WINDOW_MS);
+        }
+        return true;
+    }
+
+    /** 该告警 key 是否已在去重窗口内（同一条行军的重复轮询，不产生新通知也不该占配额）。 */
+    private boolean recentlyAlerted(String key) {
+        Long prev = alerted.get(key);
+        return prev != null && System.currentTimeMillis() - prev < ALERT_DEDUPE_MS;
+    }
+
+    /** 兵力分级文案（纯函数）：低于阈值→⚪ 佯攻；≥阈值→🔴 威胁进攻；阈值 0→普通兵力展示。 */
+    static String troopsTag(long troops, long feintBelow) {
+        if (troops <= 0L) return "";
+        if (feintBelow <= 0L) return "｜兵力约 " + troops;
+        return troops < feintBelow
+                ? "｜⚪ 佯攻（兵力约 " + troops + " < " + feintBelow + "）"
+                : "｜🔴 威胁进攻（兵力约 " + troops + " ≥ " + feintBelow + "）";
+    }
+
     /** 2026-10-28 误报修复计数：自循环行军 / 目标联盟未知的来袭候选 / 随从告警静默。 */
     private final java.util.concurrent.atomic.AtomicLong statSelfIgnored = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong statUnknownTargetIgnored = new java.util.concurrent.atomic.AtomicLong();
@@ -985,6 +1099,10 @@ public final class WatchPointEngine {
                     (int) asLong(epIndex.get("y"), -1L), troopsOf(m), asLong(m.get("endtime"), 0L));
         } catch (Throwable ignored) {
         }
+        // 2026-11-02：行军状态过滤——2=在途 / 3=到达 / 4=回程；只对在途告警，
+        // 否则「进攻后返回」会被当成「打自己」（终点=自己城）重复通知。
+        long marchState = asLong(m.get("state"), 0L);
+        if (marchState >= 3L) return;
         if (!store.alertTypes.contains(type)) return;
         Map<?, ?> sp = asMap(m.get("startpoint"));
         Map<?, ?> ep = asMap(m.get("endpoint"));
@@ -1086,11 +1204,41 @@ public final class WatchPointEngine {
 
     /** 联盟标注（纯函数）：aid&gt;0 → " [标签]"；联盟未知(aid&lt;=0) → "（联盟未知）"，不再留空白。 */
     static String allySuffix(long aid, Map<Long, String> aidLabels) {
-        if (aid > 0L) {
-            String label = aidLabels == null ? null : aidLabels.get(aid);
-            return " [" + (label == null || label.isEmpty() ? "盟" + aid : label) + "]";
+        return allySuffix(aid, aidLabels, null);
+    }
+
+    /**
+     * 联盟标注（2026-11-02）：地图城堡昵称形如 {@code [818]小淑女i}，简称就在昵称前缀里。
+     * 取标签优先级：保护目录 aidLabels → 昵称 [简称] → {@code 盟<aid>} → 联盟未知。
+     */
+    static String allySuffix(long aid, Map<Long, String> aidLabels, String nick) {
+        String label = aid > 0L && aidLabels != null ? aidLabels.get(aid) : null;
+        if (label == null || label.isEmpty()) label = abbrFromNick(nick);
+        if (label != null && !label.isEmpty()) return " [" + label + "]";
+        return aid > 0L ? " [盟" + aid + "]" : "（联盟未知）";
+    }
+
+    /** 城堡昵称里的联盟简称：{@code "[818]小淑女i"} → {@code "818"}；无前缀/异常返回空串。 */
+    static String abbrFromNick(String nick) {
+        if (nick == null) return "";
+        String s = nick.trim();
+        if (!s.startsWith("[")) return "";
+        int end = s.indexOf(']');
+        if (end <= 1) return "";
+        String a = s.substring(1, end).trim();
+        return a.isEmpty() || a.length() > 12 ? "" : a;
+    }
+
+    /** 城昵称：城缓存为空时用玩家目录（uid→昵称）兜底；都取不到返回 null。 */
+    private static String nickOf(City c) {
+        if (c == null) return null;
+        if (c.nick != null && !c.nick.isEmpty()) return c.nick;
+        PlayerDirectory dir = PlayerDirectory.shared();
+        if (dir != null) {
+            PlayerDirectory.Entry e = dir.byUid(c.uid);
+            if (e != null && e.nick != null && !e.nick.isEmpty()) return e.nick;
         }
-        return "（联盟未知）";
+        return c.nick;
     }
 
     private boolean isMonitoredUid(long uid) {
@@ -1102,12 +1250,22 @@ public final class WatchPointEngine {
 
     private void alertOutgoing(long owner, long marchId, long type, int ex, int ey, long endtime, long troops) {
         String key = "out:" + owner + ":" + marchId;
+        if (recentlyAlerted(key)) return;   // 同一条行军的轮询重放：不推送也不再扣配额
+        long nowMs = System.currentTimeMillis();
+        if (type == 1L && scoutCountOnce(owner, marchId, nowMs)
+                && !scoutQuotaAllow(scoutAlertTimes, owner, nowMs,
+                        SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
+            FileLog.info("[{}] 侦查告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
+                    String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
+            return;
+        }
         City ownerCity = cityByUid.get(owner);
         City target = cityNear(ex, ey);
         String nick = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "uid" + owner;
         String text = outgoingAlertText(nick, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
-                type, target == null ? null : target.nick, target == null ? 0L : target.aid,
-                ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText());
+                type, nickOf(target), target == null ? 0L : target.aid,
+                ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText(),
+                store.feintTroopsBelow);
         alert(key, text);
         trackAttacker(owner, ownerCity);
     }
@@ -1119,17 +1277,27 @@ public final class WatchPointEngine {
     static String outgoingAlertText(String nick, long ownerAid, Map<Long, String> aidLabels,
                                     long type, String targetNick, long targetAid,
                                     int ex, int ey, long etaSeconds, long troops, String nowTime) {
+        return outgoingAlertText(nick, ownerAid, aidLabels, type, targetNick, targetAid,
+                ex, ey, etaSeconds, troops, nowTime, 0L);
+    }
+
+    static String outgoingAlertText(String nick, long ownerAid, Map<Long, String> aidLabels,
+                                    long type, String targetNick, long targetAid,
+                                    int ex, int ey, long etaSeconds, long troops, String nowTime,
+                                    long feintBelow) {
         StringBuilder sb = new StringBuilder();
         sb.append("🚨 观察点·敌情\n");
-        sb.append("监视目标出兵：").append(nick).append(allySuffix(ownerAid, aidLabels)).append("\n");
+        sb.append("监视目标出兵：").append(nick).append(allySuffix(ownerAid, aidLabels, nick)).append("\n");
         sb.append("行为：").append(typeLabel(type)).append("\n");
         sb.append("目标：(").append(ex).append(",").append(ey).append(")");
         if (targetNick != null) {
             sb.append(" ").append(targetNick.isEmpty() ? "?" : targetNick)
-                    .append(allySuffix(targetAid, aidLabels));
+                    .append(allySuffix(targetAid, aidLabels, targetNick));
+        } else {
+            sb.append(" （目标城未在本次扫描范围）");
         }
         sb.append("\nETA：").append(hms(etaSeconds));
-        if (troops > 0) sb.append("｜兵力约 ").append(troops);
+        sb.append(troopsTag(troops, feintBelow));
         sb.append("\n时间：").append(nowTime);
         return sb.toString();
     }
@@ -1140,11 +1308,21 @@ public final class WatchPointEngine {
         String key = (type == 99L || type == 100L || type == 102L || type == 10L || type == 12L)
                 ? "in-rally:" + ex + ":" + ey
                 : "in:" + owner + ":" + marchId;
+        if (recentlyAlerted(key)) return;
+        long nowMs = System.currentTimeMillis();
+        if (type == 1L && scoutCountOnce(owner, marchId, nowMs)
+                && !scoutQuotaAllow(scoutAlertTimes, owner, nowMs,
+                        SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
+            FileLog.info("[{}] 侦查告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
+                    String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
+            return;
+        }
         City target = cityNear(ex, ey);
         String who = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "uid" + owner;
         String text = incomingAlertText(who, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
-                type, target == null ? null : target.nick, target == null ? 0L : target.aid,
-                ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText());
+                type, nickOf(target), target == null ? 0L : target.aid,
+                ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText(),
+                store.feintTroopsBelow);
         alert(key, text);
         trackAttacker(owner, ownerCity);
     }
@@ -1156,20 +1334,52 @@ public final class WatchPointEngine {
     static String incomingAlertText(String attackerNick, long attackerAid, Map<Long, String> aidLabels,
                                     long type, String targetNick, long targetAid,
                                     int ex, int ey, long etaSeconds, long troops, String nowTime) {
+        return incomingAlertText(attackerNick, attackerAid, aidLabels, type, targetNick, targetAid,
+                ex, ey, etaSeconds, troops, nowTime, 0L);
+    }
+
+    static String incomingAlertText(String attackerNick, long attackerAid, Map<Long, String> aidLabels,
+                                    long type, String targetNick, long targetAid,
+                                    int ex, int ey, long etaSeconds, long troops, String nowTime,
+                                    long feintBelow) {
         StringBuilder sb = new StringBuilder();
         sb.append("🚨 观察点·来袭\n");
-        sb.append("攻击者：").append(attackerNick).append(allySuffix(attackerAid, aidLabels));
+        sb.append("攻击者：").append(attackerNick).append(allySuffix(attackerAid, aidLabels, attackerNick));
         sb.append("\n行为：").append(typeLabel(type)).append("\n");
         sb.append("目标：");
         if (targetNick != null) {
             sb.append(targetNick.isEmpty() ? "?" : targetNick)
-                    .append(allySuffix(targetAid, aidLabels)).append(" ");
+                    .append(allySuffix(targetAid, aidLabels, targetNick)).append(" ");
+        } else {
+            sb.append("（目标城未在扫描范围）");
         }
         sb.append("(").append(ex).append(",").append(ey).append(")");
         sb.append("\nETA：").append(hms(etaSeconds));
-        if (troops > 0) sb.append("｜兵力约 ").append(troops);
+        sb.append(troopsTag(troops, feintBelow));
         sb.append("\n时间：").append(nowTime);
         return sb.toString();
+    }
+
+    /** 2026-11-02：整图扫描完成后，若玩家目录过期则后台重建（uid/fid/简称/aid 互查）。 */
+    private void refreshPlayerDirectory() {
+        try {
+            PlayerDirectory dir = PlayerDirectory.shared();
+            if (dir == null) return;
+            java.util.List<CityInfo> cities = new java.util.ArrayList<>(cityByUid.size());
+            for (City c : cityByUid.values()) {
+                cities.add(new CityInfo(c.uid, c.aid, c.lv, c.nick, c.x, c.y));
+            }
+            String fpid = store.fpid;
+            if (fpid == null || fpid.isEmpty()) {
+                java.util.List<VaultStore.Account> accs = vaultStore == null
+                        ? java.util.Collections.emptyList() : vaultStore.snapshot();
+                if (!accs.isEmpty()) fpid = accs.get(0).fpid;
+            }
+            // sid 传 0 = 同账号任意在线角色（store.kid 是区服 ID，不是 sid，别混用）
+            dir.refreshAsync(keeper, fpid, 0L, cities);
+        } catch (Throwable t) {
+            FileLog.info("[{}] 玩家目录刷新失败：{}", LOG, String.valueOf(t));
+        }
     }
 
     // ------------------------------------------------------------------ 整图扫描（迁城定位/基线）
@@ -1307,6 +1517,7 @@ public final class WatchPointEngine {
         FileLog.info("[{}] 保护矩形友盟城数（完整度 {}）：{}", LOG, completeness, health.toString().trim());
         if (found > 0) store.save();
         checkTrackedAttackers(completeness);
+        refreshPlayerDirectory();
         FileLog.info("[{}] 整图扫描完成：{}/{} 格/{} 城，完整度={}，耗时 {}ms，监视目标命中 {}/{}（缺失 {}）",
                 LOG, String.valueOf(scan.ended), String.valueOf(SCAN_TILES),
                 String.valueOf(cityByUid.size()), completeness, String.valueOf(cost),

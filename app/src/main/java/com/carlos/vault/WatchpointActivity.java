@@ -41,6 +41,7 @@ public class WatchpointActivity extends Activity {
     private LinearLayout rectsBox;
     private EditText friendsEt;
     private EditText alertsEt;
+    private EditText feintEt;
     private UiStyle.Switch enabledSw;
     private TextView envHint;
     private TextView statusText;
@@ -159,13 +160,17 @@ public class WatchpointActivity extends Activity {
         box.addView(rectsBox);
 
         // 友盟 aid / 告警类型
-        box.addView(UiStyle.sectionTitle(this, "友盟 aid（逗号分隔）"));
-        friendsEt = input("例如 89700055,89700652");
+        box.addView(UiStyle.sectionTitle(this, "友盟简称（逗号分隔，如 USY,KFC）"));
+        friendsEt = input("联盟简称，服务端自动换算 aid");
         box.addView(cardWrap(friendsEt));
 
         box.addView(UiStyle.sectionTitle(this, "告警类型（逗号分隔）"));
         alertsEt = input("例如 1,2,99,100,102");
         box.addView(cardWrap(alertsEt));
+
+        box.addView(UiStyle.sectionTitle(this, "出征兵力判定阈值（低于=佯攻，≥=威胁进攻标红）"));
+        feintEt = input("默认 1000；0=不区分");
+        box.addView(cardWrap(feintEt));
 
         // 保存
         LinearLayout saveRow = new LinearLayout(this);
@@ -262,8 +267,9 @@ public class WatchpointActivity extends Activity {
                 if (o != null) rects.add(o);
             }
         }
-        friendsEt.setText(csv(data.optJSONArray("friendAids")));
+        friendsEt.setText(friendAbbrsOf(data));
         alertsEt.setText(csv(data.optJSONArray("alertTypes")));
+        feintEt.setText(String.valueOf(data.optLong("feintTroopsBelow", 1000L)));
         renderTargets();
         renderRects();
         if (!envEnabled) {
@@ -365,11 +371,43 @@ public class WatchpointActivity extends Activity {
         LinearLayout form = new LinearLayout(this);
         form.setOrientation(LinearLayout.VERTICAL);
         form.setPadding(dp(18), dp(6), dp(18), 0);
-        EditText uid = field("uid（必填，>0）", cur == null ? "" : String.valueOf(cur.optLong("uid")));
+        EditText fid = field("账号ID（fid，填完点下方“查询”）", "");
+        form.addView(fid);
+        TextView query = new TextView(this);
+        query.setText("按账号ID查询角色/坐标");
+        query.setTextSize(13f);
+        query.setTextColor(UiStyle.BRAND);
+        query.setPadding(dp(4), dp(6), dp(4), dp(10));
+        form.addView(query);
+        EditText uid = field("uid（由查询自动填入）", cur == null ? "" : String.valueOf(cur.optLong("uid")));
         EditText nick = field("昵称（可选）", cur == null ? "" : cur.optString("nick", ""));
         EditText x = field("x 坐标（0~1200）", cur == null ? "" : String.valueOf(cur.optInt("x")));
         EditText y = field("y 坐标（0~1200）", cur == null ? "" : String.valueOf(cur.optInt("y")));
         for (EditText e : new EditText[]{uid, nick, x, y}) form.addView(e);
+        query.setOnClickListener(v -> {
+            String f = text(fid);
+            if (f.isEmpty()) {
+                toast("请先填账号ID（游戏领主档案里的那串数字）");
+                return;
+            }
+            toast("查询中，首次可能需要 10-30 秒建立目录…");
+            VaultSync.watchpointLookupFid(this, f, (code, msg, data) -> runOnUiThread(() -> {
+                if (code != 0 || data == null) {
+                    toast("查询失败：" + (code == -1 ? "网络/服务端未升级" : safe(msg)));
+                    return;
+                }
+                JSONArray arr = data.optJSONArray("cities");
+                if (arr == null || arr.length() == 0) {
+                    toast("没查到该账号对应的角色（目录未刷新时稍后重试）");
+                    return;
+                }
+                JSONObject c = arr.optJSONObject(0);
+                uid.setText(String.valueOf(c.optLong("uid")));
+                nick.setText(c.optString("nick", ""));
+                x.setText(String.valueOf(c.optInt("x")));
+                y.setText(String.valueOf(c.optInt("y")));
+            }));
+        });
         AlertDialog dlg = new AlertDialog.Builder(this)
                 .setTitle(index >= 0 ? "编辑监视目标" : "添加监视目标")
                 .setView(form)
@@ -485,10 +523,21 @@ public class WatchpointActivity extends Activity {
             toast(err);
             return;
         }
+        // 2026-11-02：阈值校验必须在 busy=true 之前，否则 return 后 busy 永远不复位，界面锁死
+        Integer feint = null;
+        String feintRaw = text(feintEt);
+        if (!feintRaw.isEmpty()) {
+            int v = parseInt(feintRaw);
+            if (v == Integer.MIN_VALUE || v < 0) {
+                toast("出征兵力阈值需为 ≥0 的整数（0=不区分）");
+                return;
+            }
+            feint = v;
+        }
         busy = true;
         statusText.setText("正在保存到服务器…");
-        VaultSync.watchpointSet(this, enabledSw == null ? enabled : enabledSw.isOn(), ta, ra,
-                friends, alerts, wecomEnabled, (code, msg, data) -> runOnUiThread(() -> {
+        VaultSync.watchpointSetAbbrs(this, enabledSw == null ? enabled : enabledSw.isOn(), ta, ra,
+                friends, alerts, wecomEnabled, feint, (code, msg, data) -> runOnUiThread(() -> {
                     busy = false;
                     if (code == 0 && data != null) {
                         toast("已保存（服务器 5 秒内热载）");
@@ -515,6 +564,28 @@ public class WatchpointActivity extends Activity {
         } catch (Throwable t) {
             return Integer.MIN_VALUE;
         }
+    }
+
+    /**
+     * 友盟 aid 列表 → 简称串：优先服务端下发的 {@code friendAbbrs}（它已按 aidLabels/玩家目录解析），
+     * 回退 aidLabels 反查，最后才用 aid 数字占位。
+     */
+    private static String friendAbbrsOf(JSONObject data) {
+        if (data == null) return "";
+        JSONArray fa = data.optJSONArray("friendAids");
+        if (fa == null || fa.length() == 0) return "";
+        JSONArray abbrs = data.optJSONArray("friendAbbrs");
+        JSONObject labels = data.optJSONObject("aidLabels");
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < fa.length(); i++) {
+            String k = String.valueOf(fa.optLong(i));
+            String lab = abbrs != null && i < abbrs.length() ? abbrs.optString(i, "") : "";
+            if (lab == null) lab = "";
+            if (lab.isEmpty() && labels != null) lab = labels.optString(k, "");
+            if (sb.length() > 0) sb.append(',');
+            sb.append(lab == null || lab.isEmpty() ? k : lab);
+        }
+        return sb.toString();
     }
 
     private static String csv(JSONArray arr) {

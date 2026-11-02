@@ -10,6 +10,30 @@ public interface SessionControl {
     /** 账号库变更后重对齐会话（sync / token 更新后调用）。 */
     void reconcile();
 
+    /**
+     * 玩家信息解析（2026-11-02 观察点查询工具）：借在线会话发 req_players_base_info，
+     * 返回该 uid 的 result 条目（nickName/alliance{aid,abbr,name}/stove_lv 等）。默认不支持返回 null。
+     */
+    default Map<String, Object> resolvePlayerInfo(String fpid, long sid, long uid) {
+        return null;
+    }
+
+    /**
+     * 批量玩家信息解析（2026-11-02 观察点查询工具）：一次 req_players_base_info 可带多个 uid。
+     * 返回 uid → 条目；默认不支持返回空表。
+     */
+    default Map<Long, Map<String, Object>> resolvePlayers(String fpid, long sid, List<Long> uids) {
+        return java.util.Collections.emptyMap();
+    }
+
+    /**
+     * 联盟简称 → aid（2026-11-02）：先查玩家目录缓存，再用官方联盟搜索协议
+     * {@code req_alliance_search_by_key{key}} 反查。默认不支持返回 0。
+     */
+    default long resolveAllianceAid(String fpid, long sid, String abbr) {
+        return 0L;
+    }
+
     /** 按需建会话并开始登录（账号页登录/手动触发用）；账号不存在或无 token 返回 false。 */
     boolean ensureSession(String fpid);
 

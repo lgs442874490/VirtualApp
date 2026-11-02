@@ -1968,6 +1968,155 @@ public final class SessionKeeper implements SessionControl,
         return "";
     }
 
+    /**
+     * 玩家信息解析（2026-11-02 观察点查询工具）：返回 req_players_base_info.result.&lt;uid&gt; 的原始条目
+     * （nickName / stove_lv / power / alliance{aid,abbr,name}）。线程纪律同 resolvePlayerName：
+     * 只准从工作线程调用，失败返回 null。
+     */
+    @Override
+    public java.util.Map<String, Object> resolvePlayerInfo(String fpid, long sid, long uid) {
+        if (fpid == null || fpid.isEmpty() || uid <= 0) return null;
+        for (LiveSession ls : sessions.values()) {
+            if (!fpid.equals(ls.fpid)) continue;
+            if (sid > 0 && ls.resolveSid() != sid) continue;
+            if (!WjdrEngine.STATE_ONLINE.equals(ls.state)) continue;
+            try {
+                com.carlos.vault.wjdr.protocol.GameMessage pbi = ls.engine.request(
+                        "req_players_base_info",
+                        com.carlos.vaultserver.task.Exec.args("uids",
+                                java.util.Collections.singletonList(uid)));
+                Object result = pbi == null || pbi.getContent() == null
+                        ? null : pbi.getContent().get("result");
+                if (result instanceof Map) {
+                    for (Object v : ((Map<?, ?>) result).values()) {
+                        java.util.Map<String, Object> info =
+                                com.carlos.vaultserver.task.Exec.mapOf(v);
+                        if (info != null && !info.isEmpty()) return info;
+                    }
+                }
+            } catch (Throwable t) {
+                FileLog.info("玩家信息解析失败 fpid={} uid={}：{}", fpid, String.valueOf(uid),
+                        String.valueOf(t));
+            }
+            return null;
+        }
+        return null;
+    }
+
+    /** 批量玩家信息解析（一次请求多 uid；线程纪律同 resolvePlayerName）。 */
+    @Override
+    public java.util.Map<Long, java.util.Map<String, Object>> resolvePlayers(
+            String fpid, long sid, java.util.List<Long> uids) {
+        java.util.Map<Long, java.util.Map<String, Object>> out = new java.util.LinkedHashMap<>();
+        if (fpid == null || fpid.isEmpty() || uids == null || uids.isEmpty()) return out;
+        for (LiveSession ls : sessions.values()) {
+            if (!fpid.equals(ls.fpid)) continue;
+            if (sid > 0 && ls.resolveSid() != sid) continue;
+            if (!WjdrEngine.STATE_ONLINE.equals(ls.state)) continue;
+            try {
+                com.carlos.vault.wjdr.protocol.GameMessage pbi = ls.engine.request(
+                        "req_players_base_info",
+                        com.carlos.vaultserver.task.Exec.args("uids",
+                                new java.util.ArrayList<>(uids)));
+                Object result = pbi == null || pbi.getContent() == null
+                        ? null : pbi.getContent().get("result");
+                if (result instanceof Map) {
+                    for (Object e : ((Map<?, ?>) result).entrySet()) {
+                        Map.Entry<?, ?> en = (Map.Entry<?, ?>) e;
+                        long k = 0L;
+                        try {
+                            k = (long) Double.parseDouble(String.valueOf(en.getKey()).trim());
+                        } catch (Throwable ignored) {
+                        }
+                        java.util.Map<String, Object> info =
+                                com.carlos.vaultserver.task.Exec.mapOf(en.getValue());
+                        if (k > 0L && info != null && !info.isEmpty()) out.put(k, info);
+                    }
+                }
+            } catch (Throwable t) {
+                FileLog.info("批量玩家解析失败 fpid={} n={}：{}", fpid, String.valueOf(uids.size()),
+                        String.valueOf(t));
+            }
+            return out;
+        }
+        return out;
+    }
+
+    /**
+     * 联盟简称 → aid（2026-11-02）：玩家目录缓存优先，未命中走官方联盟搜索协议
+     * {@code req_alliance_search_by_key{key}}（游戏内「查询联盟」同款），失败再试
+     * {@code req_alliance_search_init{language}} 全量列表。成功写回目录缓存。
+     */
+    @Override
+    public long resolveAllianceAid(String fpid, long sid, String abbr) {
+        if (abbr == null || abbr.trim().isEmpty()) return 0L;
+        final String key = abbr.trim();
+        com.carlos.vaultserver.watchpoint.PlayerDirectory dir =
+                com.carlos.vaultserver.watchpoint.PlayerDirectory.shared();
+        Long cached = dir == null ? null : dir.aidOfAbbr(key);
+        if (cached != null && cached > 0L) return cached;
+        for (LiveSession ls : sessions.values()) {
+            if (fpid != null && !fpid.isEmpty() && !fpid.equals(ls.fpid)) continue;
+            if (sid > 0 && ls.resolveSid() != sid) continue;
+            if (!WjdrEngine.STATE_ONLINE.equals(ls.state)) continue;
+            long aid = searchAllianceByKey(ls, key);
+            if (aid > 0L) {
+                if (dir != null) dir.rememberAbbr(key, aid);
+                FileLog.info("联盟简称解析 abbr={} → aid={}", key, String.valueOf(aid));
+                return aid;
+            }
+            return 0L;
+        }
+        return 0L;
+    }
+
+    private long searchAllianceByKey(LiveSession ls, String key) {
+        try {
+            com.carlos.vault.wjdr.protocol.GameMessage rsp = ls.engine.request(
+                    "req_alliance_search_by_key",
+                    com.carlos.vaultserver.task.Exec.args("key", key));
+            boolean[] exact = {false};
+            long aid = findAidInAlliances(rsp, key, exact);
+            if (aid > 0L) return exact[0] ? aid : 0L;   // 模糊命中不采信（防 RUS 误配 US）
+            com.carlos.vault.wjdr.protocol.GameMessage init = ls.engine.request(
+                    "req_alliance_search_init",
+                    com.carlos.vaultserver.task.Exec.args("language", "zh_cn"));
+            exact[0] = false;
+            aid = findAidInAlliances(init, key, exact);
+            return exact[0] ? aid : 0L;
+        } catch (Throwable t) {
+            FileLog.info("联盟简称查询失败 abbr={}：{}", key, String.valueOf(t));
+            return 0L;
+        }
+    }
+
+    /**
+     * 从搜索响应里找联盟 aid：**精确匹配（abbr/name 全等）优先**；模糊只接受前缀匹配，
+     * 且通过 {@code exact[0]} 告知调用方是否精确——模糊结果不写缓存（防 "RUS" 误配 "US"）。
+     */
+    private static long findAidInAlliances(com.carlos.vault.wjdr.protocol.GameMessage rsp,
+                                           String key, boolean[] exact) {
+        if (rsp == null || rsp.getContent() == null) return 0L;
+        Object list = rsp.getContent().get("alliances");
+        long fuzzy = 0L;
+        for (java.util.Map<String, Object> m : com.carlos.vaultserver.task.Exec.mapsOf(list)) {
+            if (m == null) continue;
+            long aid = com.carlos.vaultserver.task.Exec.longOf(m.get("aid"));
+            if (aid <= 0L) continue;
+            String abbr = m.get("abbr") == null ? "" : String.valueOf(m.get("abbr")).trim();
+            String name = m.get("name") == null ? "" : String.valueOf(m.get("name")).trim();
+            if (abbr.equalsIgnoreCase(key) || name.equalsIgnoreCase(key)) {
+                if (exact != null) exact[0] = true;
+                return aid;
+            }
+            if (fuzzy <= 0L && ((!abbr.isEmpty() && abbr.startsWith(key))
+                    || (!name.isEmpty() && name.startsWith(key)))) {
+                fuzzy = aid;
+            }
+        }
+        return fuzzy;
+    }
+
     /** 名称规则（对齐线上 RoleRenameSupport）：3~12 字、首尾无空格、无控制字符。 */
     static String validateRenameName(String raw) {
         String name = raw == null ? "" : raw;

@@ -100,6 +100,58 @@ public class WatchPointAlertFilterTest {
                 WatchPointEngine.shouldAlertMonitor(FRIEND_AID, FRIEND_AID));
     }
 
+    // ==================== ③b 联盟简称：昵称前缀 [818] 优先，目录优先于昵称（2026-11-02） ====================
+
+    @Test
+    public void allySuffix_prefersLabelsThenNickPrefix() {
+        // 昵称带 [818] 前缀 → 直接用简称
+        assertEquals(" [818]", WatchPointEngine.allySuffix(999L, labels(), "[818]小淑女i"));
+        // 目录里有 → 目录优先
+        assertEquals(" [yYz]", WatchPointEngine.allySuffix(FRIEND_AID, labels(), "[818]小淑女i"));
+        // 都没有 → 盟<aid>
+        assertEquals(" [盟999]", WatchPointEngine.allySuffix(999L, labels(), "无前缀昵称"));
+        // 联盟未知且无昵称 → （联盟未知）
+        assertEquals("（联盟未知）", WatchPointEngine.allySuffix(0L, null, null));
+    }
+
+    @Test
+    public void abbrFromNick_extractsBracketPrefix() {
+        assertEquals("818", WatchPointEngine.abbrFromNick("[818]小淑女i"));
+        assertEquals("USY", WatchPointEngine.abbrFromNick(" [USY] 和平种田 "));
+        assertEquals("", WatchPointEngine.abbrFromNick("和平种田"));
+        assertEquals("", WatchPointEngine.abbrFromNick("[未闭合"));
+        assertEquals("", WatchPointEngine.abbrFromNick("[]x"));
+        assertEquals("", WatchPointEngine.abbrFromNick(null));
+    }
+
+    // ==================== ③c 侦查限流 + 兵力分级（2026-11-02） ====================
+
+    @Test
+    public void scoutQuota_allowsThreePerFiveMinutes() {
+        java.util.Map<Long, java.util.ArrayDeque<Long>> m = new java.util.HashMap<>();
+        long t = 1_000_000L;
+        assertTrue(WatchPointEngine.scoutQuotaAllow(m, 42L, t, 300_000L, 3));
+        assertTrue(WatchPointEngine.scoutQuotaAllow(m, 42L, t + 1_000L, 300_000L, 3));
+        assertTrue(WatchPointEngine.scoutQuotaAllow(m, 42L, t + 2_000L, 300_000L, 3));
+        assertFalse("第 4 条侦查 5 分钟内被限流",
+                WatchPointEngine.scoutQuotaAllow(m, 42L, t + 3_000L, 300_000L, 3));
+        // 不同人互不影响
+        assertTrue(WatchPointEngine.scoutQuotaAllow(m, 43L, t + 3_000L, 300_000L, 3));
+        // 窗口滑过后恢复
+        assertTrue(WatchPointEngine.scoutQuotaAllow(m, 42L, t + 301_000L, 300_000L, 3));
+        // max<=0 关闭限流
+        assertTrue(WatchPointEngine.scoutQuotaAllow(m, 42L, t, 300_000L, 0));
+    }
+
+    @Test
+    public void troopsTag_gradesFeintAndThreat() {
+        assertEquals("", WatchPointEngine.troopsTag(0L, 1000L));
+        assertEquals("｜兵力约 500", WatchPointEngine.troopsTag(500L, 0L));
+        assertEquals("｜⚪ 佯攻（兵力约 999 < 1000）", WatchPointEngine.troopsTag(999L, 1000L));
+        assertEquals("｜🔴 威胁进攻（兵力约 1000 ≥ 1000）", WatchPointEngine.troopsTag(1000L, 1000L));
+        assertEquals("｜🔴 威胁进攻（兵力约 50000 ≥ 1000）", WatchPointEngine.troopsTag(50000L, 1000L));
+    }
+
     // ==================== ④ 随从告警开关 ====================
 
     @Test
