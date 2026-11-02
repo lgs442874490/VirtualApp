@@ -445,11 +445,22 @@ public class FunctionActivity extends Activity {
             if (fnSid > 0 && fnSid != serverid) {
                 serverid = fnSid;   // 回填本页角色 sid：后续卡片/保存与编队卡同源
             }
-            scrollBox.addView(FormationPicker.buildCard(this, account.fpid, serverid, fn.id, null));
-            if ("bear".equals(fn.id) || "behemoth".equals(fn.id)) {
-                // 巨熊/巨兽狩猎：特殊队列（打熊队 + 上车 1..N）
-                scrollBox.addView(FormationPicker.buildBearJoinCard(
-                        this, account.fpid, serverid, fn.id, null));
+            long fnUid = RoleStore.currentRoleUid(this, account.fpid);
+            try {
+                FormationStore.ensurePresets(this, account.fpid, serverid,
+                        fnUid > 0L ? String.valueOf(fnUid) : "");
+            } catch (Throwable ignored) {
+            }
+            if ("behemoth".equals(fn.id)) {
+                // 巨兽狩猎：每日冰原巨兽（当前 4-8 级），通过集结处理，只设一支「预设·巨兽」队。
+                scrollBox.addView(BehemothTeamCard.build(this, account.fpid, serverid, fn.id, null));
+            } else {
+                scrollBox.addView(FormationPicker.buildCard(this, account.fpid, serverid, fn.id, null));
+                if ("bear".equals(fn.id)) {
+                    // 巨熊：两天一次 30 分钟纯福利活动，设置打熊队 + 上车队（按出征队列数）。
+                    scrollBox.addView(FormationPicker.buildBearJoinCard(
+                            this, account.fpid, serverid, "bear", null));
+                }
             }
         }
         // 情报页不再显示通用「编队」卡：只保留「情报出征设置」这一个入口
