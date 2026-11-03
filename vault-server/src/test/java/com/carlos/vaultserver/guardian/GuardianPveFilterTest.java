@@ -88,4 +88,18 @@ public class GuardianPveFilterTest {
                 ServerGuardianEngine.decide(threat(2L, 300, 300, end), cfg(), System.currentTimeMillis());
         assertTrue("单人进攻仍按原规则判定", d.hit);
     }
+
+    @Test
+    public void rallyToConfirmedAlly_allyPointExemptFromPveFilter() {
+        // 2026-11-04：观察点城缓存只覆盖扫描区域；终点已确认是本盟盟友时不得因 cityAt=null 判 PvE，
+        // 否则没扫到的盟友城会被当成巨兽集结而漏守。
+        installCity(1001L, 777L, 100, 100);   // 缓存有数据，但 (300,300) 不在缓存里
+        long end = System.currentTimeMillis() / 1000L + 120L;
+        ServerGuardianEngine.Decision miss =
+                ServerGuardianEngine.decide(threat(102L, 300, 300, end), cfg(), System.currentTimeMillis());
+        assertFalse("未确认盟友时按原 PvE 口径拒绝", miss.hit);
+        ServerGuardianEngine.Decision ally = ServerGuardianEngine.decide(
+                threat(102L, 300, 300, end), cfg(), System.currentTimeMillis(), true);
+        assertTrue("已确认盟友 → 豁免 PvE 过滤，必须驻防", ally.hit);
+    }
 }

@@ -252,9 +252,14 @@ public class GuardianWarNotifyReceptionTest {
     }
 
     private static String liveCfg(int maxConcurrent, int retryIntervalMs) {
+        return liveCfg(maxConcurrent, retryIntervalMs, true);
+    }
+
+    private static String liveCfg(int maxConcurrent, int retryIntervalMs, boolean rallyEnabled) {
         return "{\"sub\":{\"enabled\":true,\"dry_run\":false},"
                 + "\"strategy\":{\"timing\":false,\"max_concurrent\":" + maxConcurrent + ","
                 + "\"queue_retry_interval_ms\":" + retryIntervalMs + ",\"queue_retry_max\":50,"
+                + "\"rally_enabled\":" + rallyEnabled + ","
                 + "\"formation\":{\"hero_ids\":[1]}}}";
     }
 
@@ -377,6 +382,51 @@ public class GuardianWarNotifyReceptionTest {
         engine.awaitIdleForTest(3_000L);
 
         assertEquals(0, countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
+    }
+
+    @Test
+    public void rallyOnAllyCoordOutsideCityCache_stillLaunches() {
+        // 2026-11-04 真机：观察点城缓存只覆盖扫描区域，没扫到的盟友城 cityAt=null。
+        // 只要终点在盟友坐标表里命中，就必须按真实威胁驻防（不得当巨兽/野外集结丢掉）。
+        // 本用例只验证「终点确认是盟友 → 不被 PvE 过滤丢弃」，集结真伪链另行覆盖
+        accountWithParams(liveCfg(6, 5_000, false));
+        seedCities();
+        TestEngine e = new TestEngine();
+        presetWorld(e, 5);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+
+        // 盟友坐标表（登录推送形状）：uid=2003 在 (600,600)，该点不在城缓存里
+        Map<String, Object> member = new LinkedHashMap<>();
+        member.put("uid", 2003L);
+        member.put("x", 600L);
+        member.put("y", 600L);
+        Map<String, Object> pos = new LinkedHashMap<>();
+        pos.put("member_pos", List.of(member));
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_POS_INFO, pos);
+        engine.awaitIdleForTest(1_000L);
+
+        Map<String, Object> atk = new LinkedHashMap<>();
+        atk.put("targetid", 0L);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", 13300L);
+        m.put("owner", ENEMY_UID);
+        m.put("type", 102L);
+        m.put("state", 2L);
+        m.put("endtime", now + 120L);
+        m.put("endpoint", point(600, 600));
+        m.put("atk_city", atk);
+        Map<String, Object> push = new LinkedHashMap<>();
+        push.put("to_marchs", List.of(m));
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD, push);
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("盟友坐标命中 → 集结也要驻防：" + ledgerText(), 1,
+                countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
+        assertEquals(1, engine.missionCount());
     }
 
     // ---------------- 目标数 > 队列数 ----------------

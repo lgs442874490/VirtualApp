@@ -1282,7 +1282,7 @@ public final class ServerGuardianEngine {
             if (t.endEpochSec > 0 && nowS - t.endEpochSec > THREAT_KEEP_AFTER_END_SEC) continue;
             if (t.endEpochSec <= 0 && t.firstSeenMs > 0
                     && nowMs - t.firstSeenMs > STALE_NO_ETA_THREAT_MILLIS) continue;
-            if (decide(t, cfg, nowMs).hit) return true;
+            if (decide(t, cfg, nowMs, isKnownAllyPoint(t)).hit) return true;
         }
         return false;
     }
@@ -1840,7 +1840,7 @@ public final class ServerGuardianEngine {
         // 批次 D：敌人再次压缩把我方压到晚到 → 继续追赶（与 speedup_enabled 解耦）
         Mission cm = missions.get(targetKey(cur));
         if (cm != null && cm.enemyMarchId == cur.marchId) maybeStartCatchup(engine, cur, cm, cfg);
-        Decision d = decide(cur, cfg, nowMs);
+        Decision d = decide(cur, cfg, nowMs, isKnownAllyPoint(cur));
         if (!d.hit) {
             noteThresholdReject(cur, d, cfg);
             cancelFire(cur.marchId);
@@ -2016,7 +2016,7 @@ public final class ServerGuardianEngine {
             if (t == null || attempted.contains(t.marchId) || submitted.contains(t.marchId)) continue;
             long fireAt = fireAtSec(t, cfg);
             if (fireAt > 0L && nowS < fireAt) continue;
-            if (decide(t, cfg, nowMs).hit) due.add(t);
+            if (decide(t, cfg, nowMs, isKnownAllyPoint(t)).hit) due.add(t);
             else {
                 cancelFire(t.marchId);
                 timingNotes.remove(t.marchId);
@@ -2062,8 +2062,18 @@ public final class ServerGuardianEngine {
      */
     void noteThresholdReject(Threat t, Decision d, Config cfg) {
         try {
-            if (t == null || d == null || cfg == null || cfg.troopsMin <= 0) return;
-            if (d.reason == null || !d.reason.startsWith("troops_")) return;
+            if (t == null || d == null || cfg == null || d.reason == null) return;
+            // 2026-11-04：巨兽/野外集结的拒绝也要留痕（否则真机只能看到「什么都没发生」，
+            // 分不清是没收到推送还是被判 PvE）。同威胁只记一次。
+            if (d.reason.startsWith("pve_rally")) {
+                String prev = thresholdNotes.put(t.marchId, d.reason);
+                if (d.reason.equals(prev)) return;
+                ledger("skip_pve_rally", t, null,
+                        d.reason + "，不驻防（若终点是本盟盟友会自动豁免）");
+                return;
+            }
+            if (cfg.troopsMin <= 0) return;
+            if (!d.reason.startsWith("troops_")) return;
             String note = (t.troopsKnown ? "troops=" + t.troops : "troops=unknown") + "；" + d.reason;
             String prev = thresholdNotes.put(t.marchId, note);
             if (note.equals(prev)) return;
@@ -2395,7 +2405,7 @@ public final class ServerGuardianEngine {
         if (t == null) return;
         Config cfg = config;
         long nowMs = clockMs.getAsLong();
-        Decision d = decide(t, cfg, nowMs);
+        Decision d = decide(t, cfg, nowMs, isKnownAllyPoint(t));
         if (!d.hit) {
             // 2026-11-04：巨兽/野外集结留痕（同威胁只记一次，防 update 刷屏）。
             if (d.reason != null && d.reason.startsWith("pve_rally")) {
@@ -5094,6 +5104,15 @@ public final class ServerGuardianEngine {
      * 都发射补驻防（用户口径：核心是驻防成功，2 秒也要尽量发）。
      */
     static Decision decide(Threat t, Config cfg, long nowMs) {
+        return decide(t, cfg, nowMs, false);
+    }
+
+    /**
+     * @param allyPoint 终点已被确认是「本盟盟友」（成员坐标命中/目标 uid 是盟友）——
+     *                  此时不得再用观察点城缓存判 PvE：缓存只覆盖扫描过的区域，
+     *                  未覆盖的盟友城会被 cityAt=null 误判成巨兽/野外集结而漏守。
+     */
+    static Decision decide(Threat t, Config cfg, long nowMs, boolean allyPoint) {
         if (t == null) return Decision.no("no_threat");
         if (cfg == null || !cfg.enabled) return Decision.no("disabled");
         if (cfg.attackTypes == null || !cfg.attackTypes.contains(t.type)) {
@@ -5102,7 +5121,8 @@ public final class ServerGuardianEngine {
         // 2026-11-04 真机记录分析：与战争通知同口径——集结类（100/102）只有终点命中
         // 观察点城缓存里的「城」才算敌情；巨兽/野外集结终点是 boss/资源点，cityAt=null。
         // 否则会把巨兽集结当盟友城威胁，反复查询/记账（真机 10 分钟 47 条 rally_probe_zero）。
-        if (RALLY_THREAT_TYPES.contains(t.type) && t.hasXY
+        // allyPoint=true（终点确定是盟友）时豁免本过滤——缓存没扫到的盟友城不能漏守。
+        if (!allyPoint && RALLY_THREAT_TYPES.contains(t.type) && t.hasXY
                 && com.carlos.vaultserver.watchpoint.WatchPointEngine.cityCacheReady()) {
             try {
                 if (com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(t.x, t.y) == null) {
@@ -5315,6 +5335,30 @@ public final class ServerGuardianEngine {
             }
         }
         return bestUid;
+    }
+
+    /**
+     * 终点是否已被确认是「本盟盟友」（2026-11-04）：目标 uid 在成员表 / 坐标命中成员坐标 /
+     * 配置的 ally_uid、target_uid 命中。命中时豁免「集结目标不是城」的 PvE 过滤——
+     * 观察点城缓存只覆盖扫描区域，未覆盖的盟友城不能被 cityAt=null 误判成巨兽而漏守。
+     */
+    boolean isKnownAllyPoint(Threat t) {
+        if (t == null) return false;
+        Config cfg = config;
+        long allyUid = cfg == null ? 0L : cfg.allyUid;
+        long targetUid = cfg == null ? 0L : cfg.targetUid;
+        if (t.targetUid > 0L) {
+            if (t.targetUid == allyUid || t.targetUid == targetUid) return true;
+            if (allies.containsKey(t.targetUid)) return true;
+        }
+        if (t.hasXY && t.x > 0 && t.y > 0) {
+            long uid = allyUidByPoint(t.x, t.y);
+            if (uid > 0L) return true;
+            if (cfg != null && cfg.hasTargetPoint() && t.x == cfg.targetX && t.y == cfg.targetY) {
+                return true;
+            }
+        }
+        return false;
     }
 
     long allyUidByPoint(int x, int y) {
