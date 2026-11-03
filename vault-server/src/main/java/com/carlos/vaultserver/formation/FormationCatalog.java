@@ -912,6 +912,13 @@ public final class FormationCatalog {
     }
 
     /** 与 Exec.baseSoldiers 同口径：各兵种最高档 id 的可用数量（不重复计入低档，防超发）。 */
+    /**
+     * 各兵种可用量（2026-11-04 用户口径：能满编尽量满编，没有能带多少带多少）。
+     *
+     * <p>旧实现只统计「最高档」：实测号上有 T11 盾 400 + T10 盾 69605 时只算出 400，
+     * 驻防只带 400 盾（甚至因为档位对不上请求超量 → 401）。现按兵种累计**全部档位**，
+     * 再由 {@link #soldierPairsFor} 从高档往低档装兵。
+     */
     static long[] baseStock(Map<Long, Long> soldiers, long[] bestIds) {
         long[] out = new long[3];
         if (soldiers == null) return out;
@@ -921,19 +928,7 @@ public final class FormationCatalog {
             if (id <= 0 || cnt <= 0) continue;
             int line = (int) (id / 10000);
             if (line < 1 || line > 3) continue;
-            if (bestIds != null && bestIds[line - 1] > 0 && id == bestIds[line - 1]) {
-                out[line - 1] += cnt;
-            }
-        }
-        // 兜底：bestIds 缺失/未命中（老数据）→ 按线累计全部档位
-        long sum = out[0] + out[1] + out[2];
-        if (sum <= 0) {
-            for (Map.Entry<Long, Long> e : soldiers.entrySet()) {
-                long id = e.getKey() == null ? 0L : e.getKey();
-                long cnt = e.getValue() == null ? 0L : e.getValue();
-                int line = (int) (id / 10000);
-                if (id > 0 && cnt > 0 && line >= 1 && line <= 3) out[line - 1] += cnt;
-            }
+            out[line - 1] += cnt;
         }
         return out;
     }
