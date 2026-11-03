@@ -391,17 +391,17 @@ public class FormationStoreTest {
         assertFalse("默认关闭", c.enabled);
         assertTrue("默认演练模式（只记录不派兵）", c.dryRun);
         assertTrue("默认 enemy 召回撤防", c.recall);
-        assertEquals(0L, c.allyUid);
-        assertEquals(0L, c.targetUid);
-        assertEquals(0, c.targetX);
-        assertEquals(0, c.targetY);
-        assertEquals("默认提前量 38 秒", 38, c.dSec);
-        assertFalse(c.hasTargetPoint());
+        assertEquals("默认 6 队列全可用", 6, c.maxConcurrent);
+        assertFalse("对等加速默认关（省道具）", c.speedupEnabled);
+        assertTrue("集结默认也驻防", c.rallyEnabled);
+        assertEquals("队列重试默认 12 次", 12, c.queueRetryMax);
+        assertTrue(c.catchUp);
+        assertTrue(c.preemptGather);
         assertTrue(c.modeText().contains("演练"));
         // null 安全
         FnParams.GuardianCfg n = FnParams.guardianCfg(null);
         assertTrue(n.dryRun);
-        assertEquals(38, n.dSec);
+        assertEquals(6, n.maxConcurrent);
     }
 
     @Test
@@ -410,19 +410,18 @@ public class FormationStoreTest {
                 .put("enabled", true)
                 .put("dry_run", false)
                 .put("recall", false)
-                .put("ally_uid", 123861751L)
-                .put("target_uid", 98765432L)
-                .put("target_point", new JSONObject().put("x", 687).put("y", 698))
-                .put("d_sec", 45);
+                .put("max_concurrent", 4)
+                .put("speedup_enabled", true)
+                .put("rally_enabled", false)
+                .put("queue_retry_max", 3);
         FnParams.GuardianCfg c = FnParams.guardianCfg(p);
         assertTrue(c.enabled);
         assertFalse("显式实发", c.dryRun);
         assertFalse(c.recall);
-        assertEquals(123861751L, c.allyUid);
-        assertEquals(98765432L, c.targetUid);
-        assertEquals(687, c.targetX);
-        assertEquals(698, c.targetY);
-        assertEquals(45, c.dSec);
+        assertEquals(4, c.maxConcurrent);
+        assertTrue(c.speedupEnabled);
+        assertFalse(c.rallyEnabled);
+        assertEquals(3, c.queueRetryMax);
         assertTrue(c.modeText().contains("实发"));
     }
 
@@ -431,20 +430,23 @@ public class FormationStoreTest {
         // 旧 FnDetail 开关写在 sub/strategy；服务器 first(sub,st,top) 口径 → App 同口径
         JSONObject p = new JSONObject()
                 .put("sub", new JSONObject().put("intercept", true))
-                .put("strategy", new JSONObject().put("d_sec", "60"));
+                .put("strategy", new JSONObject().put("speedup_enabled", true));
         FnParams.GuardianCfg c = FnParams.guardianCfg(p);
         assertTrue("旧 intercept 兼容为 enabled", c.enabled);
-        assertEquals("strategy 里的 d_sec 生效", 60, c.dSec);
+        assertTrue("strategy 里的 speedup_enabled 生效", c.speedupEnabled);
         assertTrue("dry_run 缺省演练", c.dryRun);
     }
 
     @Test
-    public void guardianCfg_dSecClamp() throws Exception {
-        assertEquals("越界回落 38", 38,
-                FnParams.guardianCfg(new JSONObject().put("d_sec", 5)).dSec);
-        assertEquals(38, FnParams.guardianCfg(new JSONObject().put("d_sec", 9999)).dSec);
-        assertEquals(10, FnParams.guardianCfg(new JSONObject().put("d_sec", 10)).dSec);
-        assertEquals(600, FnParams.guardianCfg(new JSONObject().put("d_sec", 600)).dSec);
+    public void guardianCfg_clamps() throws Exception {
+        assertEquals("并发越界回落 6", 6,
+                FnParams.guardianCfg(new JSONObject().put("max_concurrent", 9)).maxConcurrent);
+        assertEquals("并发下限 1", 1,
+                FnParams.guardianCfg(new JSONObject().put("max_concurrent", 0)).maxConcurrent);
+        assertEquals("重试上限 60", 60,
+                FnParams.guardianCfg(new JSONObject().put("queue_retry_max", 999)).queueRetryMax);
+        assertEquals("重试下限 0", 0,
+                FnParams.guardianCfg(new JSONObject().put("queue_retry_max", -5)).queueRetryMax);
     }
 
     @Test
@@ -455,22 +457,27 @@ public class FormationStoreTest {
                 .put("ratio", new JSONObject().put("infantry", 40).put("lancer", 30)
                         .put("marksman", 30))
                 .put("intercept", true)
+                .put("ally_uid", 123L)
+                .put("target_uid", 456L)
                 .put("target_point", new JSONObject().put("x", 1).put("y", 2));
         FnParams.GuardianCfg c = new FnParams.GuardianCfg();
         c.enabled = true;
         c.dryRun = true;
-        c.allyUid = 100;
-        c.dSec = 38;
+        c.maxConcurrent = 5;
+        c.speedupEnabled = true;
         JSONObject out = FnParams.applyGuardianCfg(prev, c);
         assertEquals("编队字段保留", "ROLE", out.getString("formation_mode"));
         assertEquals(1, out.getInt("formation_id"));
         assertEquals(40, out.getJSONObject("ratio").getInt("infantry"));
         assertTrue(out.getBoolean("enabled"));
         assertTrue(out.getBoolean("dry_run"));
-        assertEquals(100L, out.getLong("ally_uid"));
-        assertEquals(38, out.getInt("d_sec"));
+        assertEquals(5, out.getInt("max_concurrent"));
+        assertTrue(out.getBoolean("speedup_enabled"));
+        assertFalse("uid 类旧键清掉（目标自动识别）", out.has("ally_uid"));
+        assertFalse(out.has("target_uid"));
+        assertFalse("坐标旧键清掉", out.has("target_point"));
+        assertFalse("d_sec 旧键清掉", out.has("d_sec"));
         assertFalse("顶层旧 intercept 清掉（避免 OR 残留）", out.has("intercept"));
-        assertFalse("坐标 0=不指定 → 移除 target_point", out.has("target_point"));
         // 批次11：本地模式镜像开关（演练=dry_run → 只监测不驻防）
         JSONObject sub = out.getJSONObject("sub");
         assertTrue("监测开", sub.getBoolean("watch"));
@@ -491,13 +498,16 @@ public class FormationStoreTest {
     }
 
     @Test
-    public void applyGuardianCfg_writesTargetPoint() throws Exception {
+    public void applyGuardianCfg_removesLegacyUidKeys() throws Exception {
+        JSONObject prev = new JSONObject()
+                .put("ally_uid", 123L)
+                .put("target_uid", 456L)
+                .put("d_sec", 38);
         FnParams.GuardianCfg c = new FnParams.GuardianCfg();
-        c.targetX = 687;
-        c.targetY = 698;
-        JSONObject out = FnParams.applyGuardianCfg(new JSONObject(), c);
-        assertEquals(687, out.getJSONObject("target_point").getInt("x"));
-        assertEquals(698, out.getJSONObject("target_point").getInt("y"));
+        JSONObject out = FnParams.applyGuardianCfg(prev, c);
+        assertFalse("保存即清理旧 uid/坐标/提前量键", out.has("ally_uid"));
+        assertFalse(out.has("target_uid"));
+        assertFalse(out.has("d_sec"));
     }
 
     @Test

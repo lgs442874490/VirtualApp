@@ -318,7 +318,10 @@ public class GuardianAllyUidTest {
 
         assertEquals("未匹配盟友不发射", 0,
                 countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
-        assertEquals("skip_no_ally", lastLedger().getString("ev"));
+        // 2026-11-04 硬性规则：证明不了是本盟 → 在「本盟校验」阶段就拦下
+        String ev0 = lastLedger().getString("ev");
+        assertTrue("应是本盟校验拒绝：" + ev0,
+                "skip_not_own_ally".equals(ev0) || "skip_no_ally".equals(ev0));
         assertEquals(0L, lastLedger().getLong("targetUid"));
     }
 
@@ -384,7 +387,8 @@ public class GuardianAllyUidTest {
         // 2026-10-31：登录缓存可能补到盟友坐标/观察点兜底 → 记录“未命中”即可（都不得发射）
         String ev = ledger().toString();
         assertTrue("应记录未命中的保守跳过：" + ev,
-                ev.contains("skip_allies_unknown") || ev.contains("skip_no_ally"));
+                ev.contains("skip_not_own_ally") || ev.contains("skip_allies_unknown")
+                        || ev.contains("skip_no_ally"));
         assertEquals("仍不得发射", 0, countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
 
         // 1 分钟内同威胁 update：账本节流不新增（同一事件计数不增长）
@@ -398,7 +402,9 @@ public class GuardianAllyUidTest {
         engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
                 attackPush(13084L, end, 524, 420));
         engine.awaitIdleForTest(2_000L);
-        assertEquals("超过 1 分钟再记 1 条", 2, ledgerCount("skip_allies_unknown"));
+        // 2026-11-04 硬性规则：非本盟在本盟校验阶段就记 skip_not_own_ally（同样 1 条/分钟节流）
+        assertEquals("超过 1 分钟再记 1 条", 2,
+                ledgerCount("skip_not_own_ally") + ledgerCount("skip_allies_unknown"));
     }
 
     // ---------------- 5. 多 uid 同坐标 / ally_uid 优先 / 容差 ----------------

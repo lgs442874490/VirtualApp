@@ -34,6 +34,14 @@ public interface SessionControl {
         return 0L;
     }
 
+    /**
+     * FID（游戏内玩家ID）→ 服务器 uid（2026-11-04）：App 侧只让用户填 FID，
+     * 需要 uid 的接口（如监视名单 add）用本方法换算。默认不支持返回 0。
+     */
+    default long resolveUidByFid(String fpid, String fid) {
+        return 0L;
+    }
+
     /** 按需建会话并开始登录（账号页登录/手动触发用）；账号不存在或无 token 返回 false。 */
     boolean ensureSession(String fpid);
 

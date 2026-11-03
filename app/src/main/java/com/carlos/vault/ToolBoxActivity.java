@@ -306,13 +306,13 @@ public class ToolBoxActivity extends Activity {
                 confirmThen("将消耗高级迁城道具迁到附近 (+1,0)。\n确认执行？",
                         () -> com.carlos.vault.daily.GuardProbe.moveCity(this, null))));
         EditText pu = new EditText(this);
-        pu.setHint("撤防目标uid");
+        // 2026-11-04：用户只知道游戏内 FID，不知道服务器 uid → 输入 FID，探针内部换算
+        pu.setHint("撤防目标 FID（游戏内玩家ID，可留空=全部驻扎）");
         pu.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
-        pu.setText("20718040");
         box.addView(pu);
         box.addView(btn("⑦ 撤回驻防（embassy_repatriation · 无消耗）", v ->
-                confirmThen("撤回我方在该盟友城的驻防（req_embassy_repatriation {target_uid}）。\n"
-                                + "确认执行？",
+                confirmThen("撤回我方在该盟友城的驻防（按 FID 换算 uid 后匹配驻扎行军）。\n"
+                                + "留空=撤回全部驻扎。确认执行？",
                         () -> com.carlos.vault.daily.GuardProbe.repatriateProbe(this, null,
                                 pu.getText().toString().trim()))));
 

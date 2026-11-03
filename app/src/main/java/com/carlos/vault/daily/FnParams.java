@@ -5,6 +5,7 @@ import android.content.SharedPreferences;
 
 import com.carlos.vault.VaultSync;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 /**
@@ -334,6 +335,13 @@ public final class FnParams {
     public static final long GUARDIAN_MAX_RALLY_TROOPS_MIN = 10_000_000L;
 
     /** 守护盟友配置（默认=关闭 + 演练；实发必须 App 侧二次确认后才写入 dry_run=false）。 */
+    /**
+     * 守护盟友配置（2026-11-04 精简：只保留用户真正需要调的项）。
+     *
+     * <p>不再有「盟友 uid / 目标 uid / 目标坐标」——守护只从联盟态势/战争通知里实时识别
+     * 「谁在打本盟哪个城」，用户既不知道 uid 也无法预知被打目标；配置页不再出现任何 uid。
+     * 旧键（ally_uid/target_uid/target_point/d_sec）保存时会被主动清掉。
+     */
     public static final class GuardianCfg {
         public boolean enabled = false;
         /** 演练模式：只记录不派兵（默认 true，服务器同口径）。 */
@@ -346,11 +354,18 @@ public final class FnParams {
         public boolean forceOnline = false;
         /** 来袭兵力预警下限（敌方 squad_list.soldier 合计；0=不限；兵力未知时守护侧保守不派）。 */
         public long troopsMin = 0L;
-        public long allyUid = 0L;
-        public long targetUid = 0L;
-        public int targetX = 0;
-        public int targetY = 0;
-        public int dSec = GUARDIAN_DEFAULT_D_SEC;
+        /** 同角色最多同时驻防目标数（1..6；守护账号 6 队列全可用，默认 6）。 */
+        public int maxConcurrent = 6;
+        /** 对等加速：敌方加速时我方在途驻防同步加速（默认关，会消耗加速道具）。 */
+        public boolean speedupEnabled = false;
+        /** 集结也驻防（默认开；巨兽/野外集结仍按目标是否本盟城过滤）。 */
+        public boolean rallyEnabled = true;
+        /** 队列/并发无位时的有界重试次数（默认 12；0=不重试）。 */
+        public int queueRetryMax = 12;
+        /** 追赶加速：我方晚于敌方到达时主动追到先到（默认开）。 */
+        public boolean catchUp = true;
+        /** 队列满时召回采集队腾位（默认开）。 */
+        public boolean preemptGather = true;
         /**
          * 批次 K：允许钻石加速（真实花钻；默认关）。
          * 顺序：先用道具 → 没道具才 req_shop_quick_buy 买道具再加速；
@@ -359,10 +374,6 @@ public final class FnParams {
         public boolean diamondSpeedup = false;
         /** 批次 K：集结兵力阈值（> 该兵力视为威胁集结并驻防；默认 300000）。 */
         public long rallyTroopsMin = GUARDIAN_DEFAULT_RALLY_TROOPS_MIN;
-
-        public boolean hasTargetPoint() {
-            return targetX > 0 && targetY > 0;
-        }
 
         public String modeText() {
             return dryRun ? "演练模式（只记录不派兵）" : "实发模式（命中后自动派兵驻防）";
@@ -424,24 +435,14 @@ public final class FnParams {
             long rally = gNum(sub, st, p, "rally_troops_min", GUARDIAN_DEFAULT_RALLY_TROOPS_MIN);
             c.rallyTroopsMin = Math.max(0L, Math.min(GUARDIAN_MAX_RALLY_TROOPS_MIN, rally));
             c.troopsMin = Math.max(0L, gNum(sub, st, p, "troops_min", 0L));
-            c.allyUid = Math.max(0L, gNum(sub, st, p, "ally_uid", 0L));
-            c.targetUid = Math.max(0L, gNum(sub, st, p, "target_uid", 0L));
-            Object tp = gFirst(sub, st, p, "target_point");
-            long tx = 0, ty = 0;
-            if (tp instanceof JSONObject) {
-                tx = ((JSONObject) tp).optLong("x", 0);
-                ty = ((JSONObject) tp).optLong("y", 0);
-            } else if (tp instanceof org.json.JSONArray) {
-                org.json.JSONArray arr = (org.json.JSONArray) tp;
-                if (arr.length() >= 2) {
-                    tx = arr.optLong(0, 0);
-                    ty = arr.optLong(1, 0);
-                }
-            }
-            c.targetX = (int) Math.max(0, Math.min(Integer.MAX_VALUE, tx));
-            c.targetY = (int) Math.max(0, Math.min(Integer.MAX_VALUE, ty));
-            long d = gNum(sub, st, p, "d_sec", GUARDIAN_DEFAULT_D_SEC);
-            c.dSec = (d >= 10L && d <= 600L) ? (int) d : GUARDIAN_DEFAULT_D_SEC;
+            long mc = gNum(sub, st, p, "max_concurrent", 6L);
+            c.maxConcurrent = (int) Math.max(1L, Math.min(6L, mc));
+            c.speedupEnabled = gBool(sub, st, p, "speedup_enabled", false);
+            c.rallyEnabled = gBool(sub, st, p, "rally_enabled", true);
+            long qr = gNum(sub, st, p, "queue_retry_max", 12L);
+            c.queueRetryMax = (int) Math.max(0L, Math.min(60L, qr));
+            c.catchUp = gBool(sub, st, p, "catch_up", true);
+            c.preemptGather = gBool(sub, st, p, "preempt_gather", true);
         } catch (Throwable ignored) {
         }
         return c;
@@ -466,9 +467,23 @@ public final class FnParams {
             out.put("recall", cfg.recall);
             out.put("force_online", cfg.forceOnline);
             out.put("troops_min", Math.max(0, cfg.troopsMin));
-            out.put("ally_uid", Math.max(0, cfg.allyUid));
-            out.put("target_uid", Math.max(0, cfg.targetUid));
-            out.put("d_sec", Math.max(10, Math.min(600, cfg.dSec)));
+            // 2026-11-04：目标由联盟态势实时识别，uid/坐标类旧键一律清掉（用户无法得知 uid）
+            out.remove("ally_uid");
+            out.remove("target_uid");
+            out.remove("target_point");
+            out.remove("d_sec");
+            out.put("max_concurrent", Math.max(1, Math.min(6, cfg.maxConcurrent)));
+            // 硬性规则 2026-11-04：驻防只给本盟，跨盟只能进攻 → 不保留任何"额外守护对象"输入口
+            out.remove("protect_fids");
+            out.put("rally_enabled", cfg.rallyEnabled);
+            out.put("catch_up", cfg.catchUp);
+            out.put("preempt_gather", cfg.preemptGather);
+            out.put("queue_retry_max", Math.max(0, Math.min(60, cfg.queueRetryMax)));
+            if (cfg.speedupEnabled) {
+                out.put("speedup_enabled", true);
+            } else {
+                out.remove("speedup_enabled");
+            }
             // 批次 K：钻石开关关闭时不下发任何钻石相关参数（默认关；开启才写）
             // 批次 K：集结兵力阈值（默认 300000；0=不按兵力判定，服务端同口径）
             out.put("rally_troops_min",
@@ -481,14 +496,6 @@ public final class FnParams {
                 if (oldSub != null) oldSub.remove("diamond_speedup_enabled");
                 JSONObject oldSt = out.optJSONObject("strategy");
                 if (oldSt != null) oldSt.remove("diamond_speedup_enabled");
-            }
-            if (cfg.hasTargetPoint()) {
-                JSONObject pt = new JSONObject();
-                pt.put("x", cfg.targetX);
-                pt.put("y", cfg.targetY);
-                out.put("target_point", pt);
-            } else {
-                out.remove("target_point");
             }
             // 旧 intercept 开关由 enabled/dry_run 接管（服务器 enabled||intercept，故顶层移除）。
             // 同时镜像到 App 本地模式读取的 sub 开关（GuardianEngine：watch=监测、intercept=自动驻防）：

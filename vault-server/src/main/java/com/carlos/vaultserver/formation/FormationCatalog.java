@@ -619,16 +619,75 @@ public final class FormationCatalog {
         if (engine == null) return out;
         try {
             CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
-            if (lib == null || !lib.ready() || lib.queue() == null) return out;
-            for (AssetSnapshot.QueueMarch march : lib.queue().marches) {
-                if (march == null || march.heroIds == null) continue;
-                for (Long id : march.heroIds) {
-                    if (id != null && id > 0L) out.add(id);
+            if (lib != null && lib.ready() && lib.queue() != null) {
+                for (AssetSnapshot.QueueMarch march : lib.queue().marches) {
+                    if (march == null || march.heroIds == null) continue;
+                    for (Long id : march.heroIds) {
+                        if (id != null && id > 0L) out.add(id);
+                    }
                 }
             }
         } catch (Throwable ignored) {
         }
+        // 2026-11-04 真机：资产库 queue.marches 可能为空（实测 occupied=6 但 marches=0）→
+        // 本方法恒返回空 → 自动编队选到正在驻防/出征的英雄 → 403 英雄被占用。
+        // 兜底：直接读本角色 notify_world_player_init.march_info 的 squad_list.hero_id。
+        try {
+            Object wpi = engine.notifyData("notify_world_player_init");
+            Map<String, Object> root = Exec.mapOf(wpi);
+            if (root != null) {
+                Object mi = root.get("march_info");
+                collectMarchHeroes(mi, out, 0);
+            }
+        } catch (Throwable ignored) {
+        }
         return out;
+    }
+
+    /** 递归收集 march_info（Map/List/嵌套包装）里的 squad_list.hero_id（在途/驻扎行军都算占用）。 */
+    private static void collectMarchHeroes(Object node, Set<Long> out, int depth) {
+        if (node == null || depth > 4 || out.size() >= 64) return;
+        if (node instanceof List) {
+            for (Object o : (List<?>) node) collectMarchHeroes(o, out, depth + 1);
+            return;
+        }
+        if (!(node instanceof Map)) return;
+        Map<?, ?> m = (Map<?, ?>) node;
+        Map<String, Object> march = Exec.mapOf(m);
+        if (march != null) {
+            Map<String, Object> squad = Exec.mapOf(march.get("squad_list"));
+            if (squad != null) {
+                Object raw = squad.get("hero_id");
+                if (raw == null) raw = squad.get("hero_ids");
+                if (raw instanceof List) {
+                    for (Object v : (List<?>) raw) {
+                        Map<String, Object> pair = Exec.mapOf(v);
+                        long id = pair == null || pair.isEmpty() ? Exec.longOf(v)
+                                : firstHeroId(pair);
+                        if (id > 0L) out.add(id);
+                    }
+                } else if (raw instanceof Map) {
+                    for (Object v : ((Map<?, ?>) raw).values()) {
+                        Map<String, Object> pair = Exec.mapOf(v);
+                        long id = pair == null || pair.isEmpty() ? Exec.longOf(v) : firstHeroId(pair);
+                        if (id > 0L) out.add(id);
+                    }
+                }
+            }
+        }
+        // 继续下钻未知包装（如 {"march_info":{"5001":{...}}}）
+        for (Object v : m.values()) {
+            if (v instanceof Map || v instanceof List) collectMarchHeroes(v, out, depth + 1);
+        }
+    }
+
+    /** 英雄对 {k,v} 取 v（新口径）→ 兼容 id / k。 */
+    private static long firstHeroId(Map<String, Object> pair) {
+        long id = Exec.longOf(pair.get("v"));
+        if (id <= 0L) id = Exec.longOf(pair.get("hero_id"));
+        if (id <= 0L) id = Exec.longOf(pair.get("id"));
+        if (id <= 0L) id = Exec.longOf(pair.get("k"));
+        return id;
     }
 
     /**
@@ -853,6 +912,13 @@ public final class FormationCatalog {
     }
 
     /** 与 Exec.baseSoldiers 同口径：各兵种最高档 id 的可用数量（不重复计入低档，防超发）。 */
+    /**
+     * 各兵种可用量（2026-11-04 用户口径：能满编尽量满编，没有能带多少带多少）。
+     *
+     * <p>旧实现只统计「最高档」：实测号上有 T11 盾 400 + T10 盾 69605 时只算出 400，
+     * 驻防只带 400 盾（甚至因为档位对不上请求超量 → 401）。现按兵种累计**全部档位**，
+     * 再由 {@link #soldierPairsFor} 从高档往低档装兵。
+     */
     static long[] baseStock(Map<Long, Long> soldiers, long[] bestIds) {
         long[] out = new long[3];
         if (soldiers == null) return out;
@@ -862,19 +928,7 @@ public final class FormationCatalog {
             if (id <= 0 || cnt <= 0) continue;
             int line = (int) (id / 10000);
             if (line < 1 || line > 3) continue;
-            if (bestIds != null && bestIds[line - 1] > 0 && id == bestIds[line - 1]) {
-                out[line - 1] += cnt;
-            }
-        }
-        // 兜底：bestIds 缺失/未命中（老数据）→ 按线累计全部档位
-        long sum = out[0] + out[1] + out[2];
-        if (sum <= 0) {
-            for (Map.Entry<Long, Long> e : soldiers.entrySet()) {
-                long id = e.getKey() == null ? 0L : e.getKey();
-                long cnt = e.getValue() == null ? 0L : e.getValue();
-                int line = (int) (id / 10000);
-                if (id > 0 && cnt > 0 && line >= 1 && line <= 3) out[line - 1] += cnt;
-            }
+            out[line - 1] += cnt;
         }
         return out;
     }

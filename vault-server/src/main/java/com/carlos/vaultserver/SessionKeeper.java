@@ -2592,6 +2592,45 @@ public final class SessionKeeper implements SessionControl,
     }
 
     /**
+     * FID（游戏内玩家ID）→ 服务器 uid（2026-11-04）：用户只知道 FID，不知道内部 uid。
+     *
+     * <p>用本账号在线会话优先、其次任一在线会话发 {@code req_player_info_by_fid}；
+     * 只在用户主动动作（如加监视名单）里调用，阻塞 ≤8s/次，绝不从推送线程调用。
+     *
+     * @return &gt;0=解析成功；0=未找到/无在线会话
+     */
+    public long resolveUidByFid(String fpid, String fid) {
+        String f = fid == null ? "" : fid.trim();
+        if (f.isEmpty()) return 0L;
+        java.util.List<WjdrEngine> engines = new java.util.ArrayList<>();
+        try {
+            LiveSession mine = sessionForAccount(fpid);
+            if (mine != null && mine.engine != null
+                    && WjdrEngine.STATE_ONLINE.equals(mine.engine.sessionState())) {
+                engines.add(mine.engine);
+            }
+        } catch (Throwable ignored) {
+        }
+        for (WjdrEngine e : onlineEngines()) {
+            if (e != null && !engines.contains(e)) engines.add(e);
+        }
+        for (WjdrEngine e : engines) {
+            try {
+                com.carlos.vault.wjdr.protocol.GameMessage r = e.request(
+                        "req_player_info_by_fid",
+                        com.carlos.vaultserver.task.Exec.args("fid", f), 8);
+                if (!com.carlos.vaultserver.task.Exec.ok(r) || r.getContent() == null) continue;
+                Map<String, Object> res = com.carlos.vaultserver.task.Exec.mapOf(
+                        r.getContent().get("result"));
+                long uid = res == null ? 0L : com.carlos.vaultserver.task.Exec.longOf(res.get("uid"));
+                if (uid > 0L) return uid;
+            } catch (Throwable ignored) {
+            }
+        }
+        return 0L;
+    }
+
+    /**
      * 观察点/地图扫描用：所有处于 {@link WjdrEngine#STATE_ONLINE} 的角色会话引擎快照（只读）。
      *
      * <p>返回的是引擎引用，调用方只应做两件事：{@code addMessageHook} 收推送、

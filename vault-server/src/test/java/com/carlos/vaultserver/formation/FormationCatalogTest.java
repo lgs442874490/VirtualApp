@@ -114,18 +114,18 @@ public class FormationCatalogTest {
     }
 
     @Test
-    public void capture_soldierStock_usesBestTierOnly() {
+    public void capture_soldierStock_sumsAllTiers() {
+        // 2026-11-04 用户口径：能带多少带多少 → 库存按兵种累计全部档位（不再只看最高档）
         presetSoldiers();
         FormationCatalog.capture(engine);
         long[] stock = FormationCatalog.soldierStock(engine);
-        assertEquals("盾=最高档 11000 的数量", 20000L, stock[0]);
+        assertEquals("盾=全部档位合计（20000 + 低档 999）", 20999L, stock[0]);
         assertEquals(1549L, stock[1]);
         assertEquals(28451L, stock[2]);
         long[] ids = FormationCatalog.bestSoldierIds(engine);
         assertEquals(11000L, ids[0]);
         assertEquals(21000L, ids[1]);
         assertEquals(31000L, ids[2]);
-        assertFalse("低档位不计入（同 Exec.baseSoldiers 口径）", stock[0] == 20000L + 999L);
     }
 
     @Test
@@ -150,7 +150,7 @@ public class FormationCatalogTest {
         assertTrue(first.containsKey("power"));
         @SuppressWarnings("unchecked")
         Map<String, Object> soldiers = (Map<String, Object>) snap.get("soldiers");
-        assertEquals(20000L, ((Number) soldiers.get("infantry")).longValue());
+        assertEquals("库存=全部档位合计", 20999L, ((Number) soldiers.get("infantry")).longValue());
         assertEquals(1549L, ((Number) soldiers.get("lancer")).longValue());
         assertEquals(28451L, ((Number) soldiers.get("marksman")).longValue());
         assertNotNull(soldiers.get("best_ids"));

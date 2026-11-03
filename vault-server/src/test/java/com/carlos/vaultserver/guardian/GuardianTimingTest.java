@@ -221,10 +221,10 @@ public class GuardianTimingTest {
      *  同时显式关闭 catch_up：卡秒用例只测发射时序，避免追赶账本干扰断言。 */
     private static final String LIVE_CFG = "{\"sub\":{\"enabled\":true,\"dry_run\":false,"
             + "\"catch_up\":false},"
-            + "\"strategy\":{\"timing\":true,\"formation\":{\"hero_ids\":[1]}}}";
+            + "\"strategy\":{\"timing\":true,\"require_ally\":false,\"formation\":{\"hero_ids\":[1]}}}";
     private static final String DRY_CFG = "{\"sub\":{\"enabled\":true,\"dry_run\":true,"
             + "\"catch_up\":false},"
-            + "\"strategy\":{\"timing\":true}}";
+            + "\"strategy\":{\"timing\":true,\"require_ally\":false}}";
 
     // ---------------- 纯函数：fireAt / 配置默认与关闭 ----------------
 
@@ -234,11 +234,11 @@ public class GuardianTimingTest {
                 new JSONObject("{\"sub\":{\"enabled\":true}}"));
         assertFalse("批次 D：卡秒默认关闭（立即发射优先）", def.timingEnabled);
         assertEquals("默认 fire margin=5s", 5L, def.fireMarginSec);
-        assertEquals("批次 D：默认并发=3", 3, def.maxConcurrent);
+        assertEquals("默认并发=6", 6, def.maxConcurrent);
         assertTrue("默认攻击类型含 2/102", def.attackTypes.contains(2L)
                 && def.attackTypes.contains(102L));
         assertTrue(def.describe().contains("timing=false"));
-        assertTrue(def.describe().contains("max_concurrent=3"));
+        assertTrue(def.describe().contains("max_concurrent=6"));
 
         ServerGuardianEngine.Threat t = new ServerGuardianEngine.Threat(
                 1L, ENEMY_UID, 2L, OWN_UID, 674, 684, true, 1000L, clock.get());
@@ -246,7 +246,7 @@ public class GuardianTimingTest {
                 ServerGuardianEngine.fireAtSec(t, def));
 
         ServerGuardianEngine.Config custom = ServerGuardianEngine.parseConfig(new JSONObject(
-                "{\"strategy\":{\"timing\":false,\"fire_margin_sec\":7,\"d_sec\":40,"
+                "{\"strategy\":{\"timing\":false,\"require_ally\":false,\"fire_margin_sec\":7,\"d_sec\":40,"
                         + "\"max_concurrent\":2}}"));
         assertFalse(custom.timingEnabled);
         assertEquals(7L, custom.fireMarginSec);
@@ -318,7 +318,7 @@ public class GuardianTimingTest {
     @Test
     public void timingOff_returnsToImmediateLaunch() {
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
-                + "\"strategy\":{\"timing\":false,\"formation\":{\"hero_ids\":[1]}}}");
+                + "\"strategy\":{\"timing\":false,\"require_ally\":false,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
         presetSoldiers(e);

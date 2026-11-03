@@ -529,14 +529,19 @@ public class FunctionActivity extends Activity {
         }
 
         // ① 子项实时状态与配置（含 每子项实时状态行/✓今日/上次动作/开关/策略）
-        scrollBox.addView(UiComponents.sectionHeader(this, "执行参数", null));
-        LinearLayout subCard = UiComponents.card(this);
-        subCard.setPadding(dp(10), dp(8), dp(10), dp(8));
-        subCard.addView(SubCardUi.build(this, account.fpid, serverid, fn.id));
-        scrollBox.addView(subCard);
-        // 打开页面即刷新：借常驻会话收取该功能最新状态（只读，不执行任务动作），
-        // 完成后原位重建子项卡（旧快照常停留在上次成功执行的时刻）。
-        refreshOnOpen(subCard);
+        // 2026-11-04：守护盟友的配置全部收进下方「守护盟友 · 配置」卡（服务器守护引擎的键），
+        // 不再渲染旧版 FnDetail 执行参数（watch/intercept/hold/pre_garrison/标定档等已废弃）。
+        LinearLayout subCard = null;
+        if (!"guardian".equals(fn.id)) {
+            scrollBox.addView(UiComponents.sectionHeader(this, "执行参数", null));
+            subCard = UiComponents.card(this);
+            subCard.setPadding(dp(10), dp(8), dp(10), dp(8));
+            subCard.addView(SubCardUi.build(this, account.fpid, serverid, fn.id));
+            scrollBox.addView(subCard);
+            // 打开页面即刷新：借常驻会话收取该功能最新状态（只读，不执行任务动作），
+            // 完成后原位重建子项卡（旧快照常停留在上次成功执行的时刻）。
+            refreshOnOpen(subCard);
+        }
 
         // 军医所专属设置卡（2026-10-28 bug3）：每批治疗数量（heal_count）+ 治疗后联盟求助
         // （request_help）——服务端 MedicService 循环治疗按这两个 params 顶层键读取，键名不可改。
@@ -1512,6 +1517,11 @@ public class FunctionActivity extends Activity {
 
         addKV(card, "配置", (cfg.enabled ? "已启用" : "未启用")
                 + " · " + (cfg.dryRun ? "演练模式（只记录不派兵）" : "实发模式"));
+        addKV(card, "驻防目标", "自动：按联盟态势/战争通知实时识别「谁在打本盟哪个城」"
+                + "（无需填 uid/坐标）");
+        addKV(card, "并发", "最多同时 " + cfg.maxConcurrent + " 路"
+                + " · 对等加速=" + (cfg.speedupEnabled ? "开" : "关")
+                + " · 集结驻防=" + (cfg.rallyEnabled ? "开" : "关"));
         addKV(card, "触发策略", "强制上线=" + (cfg.forceOnline ? "开" : "关")
                 + " · 来袭兵力下限=" + (cfg.troopsMin > 0 ? String.valueOf(cfg.troopsMin) : "不限"));
         addKV(card, "集结威胁阈值", cfg.rallyTroopsMin > 0
@@ -1594,36 +1604,42 @@ public class FunctionActivity extends Activity {
         modeTip.setPadding(0, dp(4), 0, 0);
         card.addView(modeTip);
 
-        // ③ 盟友 / 目标 uid / 目标坐标
-        final EditText allyEt = numField("盟友 uid（必填才能命中）", cfg.allyUid);
-        card.addView(fieldRow("盟友 uid", allyEt));
-        final EditText targetEt = numField("目标 uid（可选，精确过滤）", cfg.targetUid);
-        card.addView(fieldRow("目标 uid（可选）", targetEt));
-        LinearLayout xy = new LinearLayout(this);
-        xy.setOrientation(LinearLayout.HORIZONTAL);
-        xy.setGravity(Gravity.CENTER_VERTICAL);
-        final EditText xEt = numField("x", cfg.targetX);
-        final EditText yEt = numField("y", cfg.targetY);
-        xy.addView(fieldRow("目标坐标 x（可选）", xEt), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        xy.addView(fieldRow("y", yEt), new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        card.addView(xy);
+        // ③ 自动目标说明（2026-11-04：不再要 uid/坐标——用户既不知道 uid 也无法预知被打目标）
+        TextView autoTip = new TextView(this);
+        autoTip.setText("目标自动识别：敌方正在打本盟哪个盟友城，由服务器从联盟态势/战争通知实时判定，"
+                + "自动前往驻防。这里不需要填 uid、fid 或坐标。");
+        autoTip.setTextSize(11f);
+        autoTip.setTextColor(UiStyle.INK2);
+        autoTip.setPadding(0, dp(8), 0, dp(2));
+        card.addView(autoTip);
 
-        // ④ 提前量 / 撤退
-        final EditText dEt = numField("提前量秒数（默认 38）", cfg.dSec);
-        card.addView(fieldRow("提前量 d_sec", dEt));
+        // ④ 并发 / 对等加速 / 集结驻防 / 撤防
+        final EditText concEt = numField("1-6（默认 6）", cfg.maxConcurrent);
+        card.addView(fieldRow("同时驻防上限（队列数）", concEt));
+        TextView concTip = new TextView(this);
+        concTip.setText("守护账号只有 6 个行军队列；目标多于该数时按到达时间先发前 N 路，其余排队，"
+                + "有队列释放再补发。");
+        concTip.setTextSize(10.5f);
+        concTip.setTextColor(UiStyle.INK2);
+        concTip.setPadding(0, dp(2), 0, 0);
+        card.addView(concTip);
+
+        final UiStyle.Switch[] speedRef = new UiStyle.Switch[1];
+        speedRef[0] = new UiStyle.Switch(this, cfg.speedupEnabled, () -> { });
+        card.addView(switchRow("对等加速",
+                "敌方加速时我方在途驻防同步加速（会消耗加速道具；默认关）", speedRef[0]));
+
+        final UiStyle.Switch[] rallyRef = new UiStyle.Switch[1];
+        rallyRef[0] = new UiStyle.Switch(this, cfg.rallyEnabled, () -> { });
+        card.addView(switchRow("集结也驻防",
+                "敌方集结打本盟城时也派兵（巨兽/野外集结仍按「目标不是城」过滤；默认开）", rallyRef[0]));
+
         final UiStyle.Switch[] recallRef = new UiStyle.Switch[1];
         recallRef[0] = new UiStyle.Switch(this, cfg.recall, () -> { });
         card.addView(switchRow("敌人召回时撤防",
-                "recall=true：敌撤回后撤走我方驻防（默认开）", recallRef[0]));
+                "recall=true：敌撤回后撤走我方驻防（默认开；同目标仍有后续在途时不撤）", recallRef[0]));
 
-        // ④.5 触发策略（2026-10-24）：强制上线 + 来袭兵力预警阈值，均为独立可启用参数
-        final UiStyle.Switch[] forceRef = new UiStyle.Switch[1];
-        forceRef[0] = new UiStyle.Switch(this, cfg.forceOnline, () -> { });
-        card.addView(switchRow("风险时强制上线",
-                "盟友受攻击且兵力达阈值时，暂停/被顶号/掉线也允许抢登回连后派兵驻防（默认关；会顶掉其他设备）",
-                forceRef[0]));
+        // ⑤ 阈值 / 队列重试
         final EditText troopsEt = numField("敌方来袭兵力下限（0=不限）", cfg.troopsMin);
         card.addView(fieldRow("来袭兵力预警阈值", troopsEt));
         TextView troopsTip = new TextView(this);
@@ -1634,7 +1650,6 @@ public class FunctionActivity extends Activity {
         troopsTip.setPadding(0, dp(2), 0, 0);
         card.addView(troopsTip);
 
-        // ④.6 批次 K：集结兵力阈值（> 该兵力视为威胁集结并驻防）
         final EditText rallyEt = numField("集结兵力阈值（默认 300000）", cfg.rallyTroopsMin);
         card.addView(fieldRow("集结兵力阈值", rallyEt));
         TextView rallyTip = new TextView(this);
@@ -1645,22 +1660,30 @@ public class FunctionActivity extends Activity {
         rallyTip.setPadding(0, dp(2), 0, 0);
         card.addView(rallyTip);
 
-        // ④.7 批次 K：允许钻石加速（真实花钻；默认关，与 speedup_enabled 独立）
+        final EditText retryEt = numField("0-60（默认 12；0=不重试）", cfg.queueRetryMax);
+        card.addView(fieldRow("队列无位重试次数", retryEt));
+        TextView retryTip = new TextView(this);
+        retryTip.setText("队列/并发满时每 5s 重试一次，直到腾出位置（截止敌方落地后 60s）。");
+        retryTip.setTextSize(10.5f);
+        retryTip.setTextColor(UiStyle.INK2);
+        retryTip.setPadding(0, dp(2), 0, 0);
+        card.addView(retryTip);
+
+        // ⑥ 钻石加速 / 强制上线
         final UiStyle.Switch[] diamondRef = new UiStyle.Switch[1];
         diamondRef[0] = new UiStyle.Switch(this, cfg.diamondSpeedup, () -> { });
         card.addView(switchRow("允许钻石加速（真实花钻）",
                 "−25%≈400 钻/次 · −50%≈2000 钻/次；先用道具，没道具才买道具再加速"
                         + "（1×50%≈2×25%，优先 25%）；关闭时零钻石消耗（默认关）",
                 diamondRef[0]));
-        TextView diamondTip = new TextView(this);
-        diamondTip.setText("道具库存/本场已花钻石见上方「守护盟友 · 状态」卡（服务器账本统计，最近 50 条）。"
-                + "服务端 env 硬关（VAULT_GUARDIAN_DIAMOND=0）时本开关不生效。");
-        diamondTip.setTextSize(10.5f);
-        diamondTip.setTextColor(UiStyle.INK2);
-        diamondTip.setPadding(0, dp(2), 0, 0);
-        card.addView(diamondTip);
 
-        // ⑤ 保存（写 params.guardian；保留统一编队字段）
+        final UiStyle.Switch[] forceRef = new UiStyle.Switch[1];
+        forceRef[0] = new UiStyle.Switch(this, cfg.forceOnline, () -> { });
+        card.addView(switchRow("风险时强制上线",
+                "盟友受攻击且兵力达阈值时，暂停/被顶号/掉线也允许抢登回连后派兵驻防"
+                        + "（默认关；会顶掉其他设备）", forceRef[0]));
+
+        // ⑦ 保存（写 params.guardian；保留统一编队字段）
         TextView save = UiStyle.primaryBtn(this, "保存守护配置", () -> {
             String rallyErr = FnParams.validateRallyTroopsMin(rallyEt.getText() == null
                     ? "" : rallyEt.getText().toString());
@@ -1670,18 +1693,19 @@ public class FunctionActivity extends Activity {
             }
             FnParams.GuardianCfg next = FnParams.loadGuardianCfg(this, account.fpid, serverid);
             next.enabled = enRef[0].isOn();
+            next.dryRun = cfg.dryRun;
             next.diamondSpeedup = diamondRef[0].isOn();
-            next.rallyTroopsMin = FnParams.rallyTroopsMinOf(rallyEt.getText() == null
-                    ? "" : rallyEt.getText().toString());
+            next.speedupEnabled = speedRef[0].isOn();
+            next.rallyEnabled = rallyRef[0].isOn();
             next.recall = recallRef[0].isOn();
             next.forceOnline = forceRef[0].isOn();
             next.troopsMin = numOf(troopsEt);
-            next.allyUid = numOf(allyEt);
-            next.targetUid = numOf(targetEt);
-            next.targetX = (int) Math.min(Integer.MAX_VALUE, numOf(xEt));
-            next.targetY = (int) Math.min(Integer.MAX_VALUE, numOf(yEt));
-            long d = numOf(dEt);
-            next.dSec = (d >= 10 && d <= 600) ? (int) d : FnParams.GUARDIAN_DEFAULT_D_SEC;
+            next.rallyTroopsMin = FnParams.rallyTroopsMinOf(rallyEt.getText() == null
+                    ? "" : rallyEt.getText().toString());
+            long conc = numOf(concEt);
+            next.maxConcurrent = (int) (conc >= 1 && conc <= 6 ? conc : 6);
+            long retry = numOf(retryEt);
+            next.queueRetryMax = (int) (retry >= 0 && retry <= 60 ? retry : 12);
             FnParams.saveGuardianCfg(this, account.fpid, serverid, next);
             com.carlos.vault.VaultSync.onAccountsChanged(this);
             toast("守护配置已保存并同步服务器");

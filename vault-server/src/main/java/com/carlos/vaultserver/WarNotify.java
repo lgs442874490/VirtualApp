@@ -267,7 +267,103 @@ public final class WarNotify {
         return true;
     }
 
-    /** 一条行军候选命中处理：owner 命中监视名单 → 事件（冷却内丢弃）。 */
+    /**
+     * 一条行军候选的接收判定结果（2026-11-04：与守护盟友共用同一套「什么算敌情」口径）。
+     *
+     * <p>{@link #accepted}=false 时 {@link #reject} 是拒绝原因码，供调用方按各自日志口径输出：
+     * {@code no_owner / state / scout / follower / type / loopback / self / same_alliance / rally_not_city}。
+     */
+    public static final class MarchVerdict {
+        public final boolean accepted;
+        public final String reject;
+        public final long marchId;
+        public final long ownerUid;
+        public final long type;
+        public final long state;
+
+        private MarchVerdict(boolean accepted, String reject, long marchId, long ownerUid,
+                             long type, long state) {
+            this.accepted = accepted;
+            this.reject = reject;
+            this.marchId = marchId;
+            this.ownerUid = ownerUid;
+            this.type = type;
+            this.state = state;
+        }
+
+        static MarchVerdict ok(long marchId, long owner, long type, long state) {
+            return new MarchVerdict(true, null, marchId, owner, type, state);
+        }
+
+        static MarchVerdict no(String reject, long marchId, long owner, long type, long state) {
+            return new MarchVerdict(false, reject, marchId, owner, type, state);
+        }
+    }
+
+    /**
+     * 敌情接收口径（战争通知 + 守护盟友共用；2026-11-04 抽成纯函数，避免两套过滤漂移）。
+     *
+     * <p>通过条件（顺序即拒绝优先级）：
+     * <ol>
+     *   <li>有 id+owner；</li>
+     *   <li>未落地/未回程（{@code state<3}）；</li>
+     *   <li>不是侦查（type=1 交给观察点）、不是「加入集结」（type=99/mass_slave）；</li>
+     *   <li>是敌情类型（2/100/102；mass_march 协议放宽）；</li>
+     *   <li>终点≠起点（返程/援助回自己城）；</li>
+     *   <li>终点不是发起人自己的城；</li>
+     *   <li>发起城 aid ≠ 目标城 aid（同联盟不可能打自己人）；</li>
+     *   <li>集结类终点必须是「城」（巨兽/野外集结 = PvE，不算敌情）。</li>
+     * </ol>
+     * 不依赖观察点城缓存是否已扫全：缓存缺失（cityAt=null）时对应条件不拒绝，退回旧行为。
+     */
+    public static MarchVerdict classifyMarch(String proto, Map<String, Object> m) {
+        if (m == null) return MarchVerdict.no("no_owner", 0L, 0L, 0L, 0L);
+        long marchId = Exec.longOf(m.get("id"));
+        long owner = Exec.longOf(m.get("owner"));
+        long type = Exec.longOf(m.get("type"));
+        long state = Exec.longOf(m.get("state"));
+        if (marchId <= 0 || owner <= 0) {
+            return MarchVerdict.no("no_owner", marchId, owner, type, state);
+        }
+        int[] xy = endpointOf(m);
+        int[] sp = startPointOf(m);
+        // 2026-11-02 误报修复：只推敌情行军（侦查/进攻/集结）；采集/驻防/建设援助/狩猎一律不推。
+        // 典型误报：监视目标派队列去建联盟总部，返程被当成「出征」推送。
+        if (state >= 3L) return MarchVerdict.no("state", marchId, owner, type, state);
+        // 2026-11-03：侦查统一由「观察点·敌情」推送，战争警报不再重复推一次
+        if (type == 1L) return MarchVerdict.no("scout", marchId, owner, type, state);
+        // 「加入集结」不推（只提醒发起集结 / 集结出征）
+        if (isRallyFollower(m, type)) return MarchVerdict.no("follower", marchId, owner, type, state);
+        if (!isPvpMarch(type) && (proto == null || !proto.contains("mass_march"))) {
+            return MarchVerdict.no("type", marchId, owner, type, state);
+        }
+        // 回自己城（援助/建设返程、撤军）不是打谁
+        if (xy != null && sp != null && xy[0] == sp[0] && xy[1] == sp[1]) {
+            return MarchVerdict.no("loopback", marchId, owner, type, state);
+        }
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo tgtCity =
+                xy == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(xy[0], xy[1]);
+        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo atkCity =
+                sp == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(sp[0], sp[1]);
+        if (tgtCity != null && tgtCity.uid == owner) {
+            return MarchVerdict.no("self", marchId, owner, type, state);
+        }
+        long atkAid = atkCity == null ? 0L : atkCity.aid;
+        long tgtAid = tgtCity == null ? 0L : tgtCity.aid;
+        // 2026-11-03 误报修复：同一联盟不可能「集结/进攻自己人」——
+        // 这类帧其实是「加入集结/集结巨兽/联盟内部增援」，目标城联盟与发起人相同，直接跳过。
+        if (atkAid > 0L && tgtAid > 0L && atkAid == tgtAid) {
+            return MarchVerdict.no("same_alliance", marchId, owner, type, state);
+        }
+        // 集结类（含巨兽/野外集结）：目标是「城」才算敌情；没有目标城的集结（巨兽、资源点）不推
+        boolean rally = isRallyType(type) || (proto != null && proto.contains("mass_march"));
+        if (rally && (tgtCity == null || tgtAid <= 0L)) {
+            return MarchVerdict.no("rally_not_city", marchId, owner, type, state);
+        }
+        return MarchVerdict.ok(marchId, owner, type, state);
+    }
+
+    /** 一条行军候选命中处理：owner 命中监视名单 → 接收口径判定 → 事件（冷却内丢弃）。 */
     private void handleMarch(String fpid, long sid, String proto, VaultStore.WatchConfig cfg,
                              Map<String, Object> m) {
         long marchId = Exec.longOf(m.get("id"));
@@ -276,65 +372,16 @@ public final class WarNotify {
         VaultStore.WatchTarget watched = store.matchWatched(fpid, owner);
         if (watched == null) return;
 
-        long type = Exec.longOf(m.get("type"));
-        long state = Exec.longOf(m.get("state"));
+        MarchVerdict v = classifyMarch(proto, m);
+        if (!v.accepted) {
+            logMarchReject(proto, m, v);
+            return;
+        }
+        long type = v.type;
         long startSec = Exec.longOf(m.get("starttime"));
         long endSec = Exec.longOf(m.get("endtime"));
         int[] xy = endpointOf(m);
         int[] sp = startPointOf(m);
-        // 2026-11-02 误报修复：只推敌情行军（侦查/进攻/集结）；采集/驻防/建设援助/狩猎一律不推。
-        // 典型误报：监视目标派队列去建联盟总部，返程被当成「出征」推送。
-        if (state >= 3L) return;                       // 已到达/回程
-        // 2026-11-03：侦查统一由「观察点·敌情」推送，战争警报不再重复推一次
-        if (type == 1L) {
-            if (diagAllowed("scoutskip:" + proto)) {
-                FileLog.info("战争通知跳过（侦查走观察点告警）proto={} owner={}", proto,
-                        String.valueOf(owner));
-            }
-            return;
-        }
-        // 「加入集结」不推（只提醒发起集结 / 集结出征）
-        if (isRallyFollower(m, type)) {
-            if (diagAllowed("rattlefollow:" + proto)) {
-                FileLog.info("战争通知跳过（加入集结）proto={} owner={} type={}", proto,
-                        String.valueOf(owner), String.valueOf(type));
-            }
-            return;
-        }
-        if (!isPvpMarch(type) && (proto == null || !proto.contains("mass_march"))) {
-            if (diagAllowed("typeskip:" + proto)) {
-                FileLog.info("战争通知跳过（非敌情行军）proto={} owner={} type={} state={}",
-                        proto, String.valueOf(owner), String.valueOf(type), String.valueOf(state));
-            }
-            return;
-        }
-        // 回自己城（援助/建设返程、撤军）不是打谁
-        if (xy != null && sp != null && xy[0] == sp[0] && xy[1] == sp[1]) return;
-        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo tgtCity =
-                xy == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(xy[0], xy[1]);
-        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo atkCity =
-                sp == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(sp[0], sp[1]);
-        if (tgtCity != null && tgtCity.uid == owner) return;
-        long atkAid = atkCity == null ? 0L : atkCity.aid;
-        long tgtAid = tgtCity == null ? 0L : tgtCity.aid;
-        // 2026-11-03 误报修复：同一联盟不可能「集结/进攻自己人」——
-        // 这类帧其实是「加入集结/集结巨兽/联盟内部增援」，目标城联盟与发起人相同，直接跳过。
-        if (atkAid > 0L && tgtAid > 0L && atkAid == tgtAid) {
-            if (diagAllowed("sameally:" + proto)) {
-                FileLog.info("战争通知跳过（同联盟目标）proto={} owner={} aid={}", proto,
-                        String.valueOf(owner), String.valueOf(atkAid));
-            }
-            return;
-        }
-        // 集结类（含巨兽/野外集结）：目标是「城」才算敌情；没有目标城的集结（巨兽、资源点）不推
-        boolean rally = isRallyType(type) || (proto != null && proto.contains("mass_march"));
-        if (rally && (tgtCity == null || tgtAid <= 0L)) {
-            if (diagAllowed("rallynotcity:" + proto)) {
-                FileLog.info("战争通知跳过（集结目标不是城：巨兽/野外集结）proto={} owner={} ep={}",
-                        proto, String.valueOf(owner), xy == null ? "?" : (xy[0] + "," + xy[1]));
-            }
-            return;
-        }
         String action = actionOf(proto, type, false, 0);
         String behavior = behaviorOf(proto, type);
         String troops = troopsOf(m);
@@ -360,6 +407,54 @@ public final class WarNotify {
             return;
         }
         emitAction(fpid, cfg, t, endSec);
+    }
+
+    /** 接收口径拒绝日志（节流；文案与历史一致，便于沿用既有日志检索）。 */
+    private void logMarchReject(String proto, Map<String, Object> m, MarchVerdict v) {
+        long owner = v.ownerUid;
+        switch (v.reject == null ? "" : v.reject) {
+            case "scout":
+                if (diagAllowed("scoutskip:" + proto)) {
+                    FileLog.info("战争通知跳过（侦查走观察点告警）proto={} owner={}", proto,
+                            String.valueOf(owner));
+                }
+                return;
+            case "follower":
+                if (diagAllowed("rattlefollow:" + proto)) {
+                    FileLog.info("战争通知跳过（加入集结）proto={} owner={} type={}", proto,
+                            String.valueOf(owner), String.valueOf(v.type));
+                }
+                return;
+            case "type":
+                if (diagAllowed("typeskip:" + proto)) {
+                    FileLog.info("战争通知跳过（非敌情行军）proto={} owner={} type={} state={}",
+                            proto, String.valueOf(owner), String.valueOf(v.type),
+                            String.valueOf(v.state));
+                }
+                return;
+            case "same_alliance": {
+                int[] sp = startPointOf(m);
+                com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo atk =
+                        sp == null ? null
+                                : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(sp[0], sp[1]);
+                if (diagAllowed("sameally:" + proto)) {
+                    FileLog.info("战争通知跳过（同联盟目标）proto={} owner={} aid={}", proto,
+                            String.valueOf(owner), String.valueOf(atk == null ? 0L : atk.aid));
+                }
+                return;
+            }
+            case "rally_not_city": {
+                int[] xy = endpointOf(m);
+                if (diagAllowed("rallynotcity:" + proto)) {
+                    FileLog.info("战争通知跳过（集结目标不是城：巨兽/野外集结）proto={} owner={} ep={}",
+                            proto, String.valueOf(owner),
+                            xy == null ? "?" : (xy[0] + "," + xy[1]));
+                }
+                return;
+            }
+            default:
+                // state/loopback/self/no_owner：历史实现静默
+        }
     }
 
     /** del 命中：按跟踪表判撤回/到达；撤回即时结算，到达等宽限期（让战斗邮件先落地）。 */

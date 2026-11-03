@@ -681,16 +681,62 @@ public final class FormationResolver {
     private static ResolvedFormation build(WjdrEngine engine, String source, long formationId,
                                            String label, List<Long> heroIds, long[] soldiers) {
         List<Map<String, Object>> heroPairs = Exec.heroPairs(heroIds);
+        Map<Long, Long> counts = FormationCatalog.soldierCounts(engine);
         long[] bestIds = FormationCatalog.bestSoldierIds(engine);
-        List<Map<String, Object>> soldierPairs = new ArrayList<>();
-        for (int i = 0; i < 3; i++) {
-            if (soldiers[i] > 0) {
-                long sid = bestIds[i] > 0 ? bestIds[i] : defaultSoldierId(i);
-                soldierPairs.add(Exec.soldierPair(sid, soldiers[i]));
+        long[] actual = new long[3];
+        List<Map<String, Object>> soldierPairs = soldierPairsFor(counts, soldiers, bestIds, actual);
+        return ResolvedFormation.of(source, formationId, label, heroIds,
+                actual[0], actual[1], actual[2], heroPairs, soldierPairs);
+    }
+
+    /**
+     * 按兵种装兵（2026-11-04 用户口径：能满编尽量满编，没有能带多少带多少）。
+     *
+     * <p>旧实现只取「最高档」一个 id：号上 T11 盾 400 + T10 盾 69605 时只带 400 盾，
+     * 或档位对不上时请求超量 → 401。现从高档往低档依次装，跨档补足；某档不够就带下一档，
+     * 全部不够就带现有的，绝不因为凑不满而放弃出征。
+     *
+     * @param actualOut 输出各兵种实际装上的数量（下标 0/1/2=盾/矛/弓）
+     */
+    static List<Map<String, Object>> soldierPairsFor(Map<Long, Long> counts, long[] soldiers,
+                                                     long[] bestIds, long[] actualOut) {
+        List<Map<String, Object>> out = new ArrayList<>();
+        if (soldiers == null) return out;
+        for (int i = 0; i < 3 && i < soldiers.length; i++) {
+            long need = Math.max(0L, soldiers[i]);
+            if (need <= 0L) continue;
+            for (long sid : tierIdsDesc(counts, i + 1)) {
+                if (need <= 0L) break;
+                long avail = counts == null ? 0L : Math.max(0L,
+                        counts.getOrDefault(sid, 0L));
+                if (avail <= 0L) continue;
+                long take = Math.min(need, avail);
+                out.add(Exec.soldierPair(sid, take));
+                need -= take;
+                if (actualOut != null && i < actualOut.length) actualOut[i] += take;
+            }
+            // 库存明细完全缺失（老数据/未同步）才用最高档兜底；有明细但不够 → 就带现有的，
+            // 绝不多报数量（多报会 401「兵力不足」）
+            if (need > 0L && (counts == null || counts.isEmpty())) {
+                long sid = bestIds != null && i < bestIds.length && bestIds[i] > 0L
+                        ? bestIds[i] : defaultSoldierId(i);
+                out.add(Exec.soldierPair(sid, need));
+                if (actualOut != null && i < actualOut.length) actualOut[i] += need;
             }
         }
-        return ResolvedFormation.of(source, formationId, label, heroIds,
-                soldiers[0], soldiers[1], soldiers[2], heroPairs, soldierPairs);
+        return out;
+    }
+
+    /** 某兵种（line=1/2/3）的全部档位 id，按档位从高到低。 */
+    static List<Long> tierIdsDesc(Map<Long, Long> counts, int line) {
+        List<Long> ids = new ArrayList<>();
+        if (counts == null) return ids;
+        for (Long id : counts.keySet()) {
+            if (id == null || id <= 0L) continue;
+            if ((int) (id / 10000L) == line) ids.add(id);
+        }
+        ids.sort((a, b) -> Long.compare(b % 10000L, a % 10000L));
+        return ids;
     }
 
     private static long defaultSoldierId(int line) {

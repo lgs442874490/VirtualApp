@@ -294,7 +294,8 @@ public class NotifySettingsActivity extends Activity {
         LinearLayout card = UiComponents.card(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(12), dp(12), dp(12), dp(12));
-        addUidEt = field(card, "敌人 uid（必填）", "游戏内玩家 uid，纯数字");
+        // 2026-11-04：用户无法得知服务器内部 uid → 只填游戏内可见的 FID，服务端换算
+        addUidEt = field(card, "敌人 FID（必填）", "游戏内玩家ID，纯数字（见好友/战报页）");
         addUidEt.setInputType(InputType.TYPE_CLASS_NUMBER);
         addNameEt = field(card, "名称（可选）", "游戏昵称");
         addKidEt = field(card, "区服 kid（可选）", "如 888");
@@ -392,7 +393,7 @@ public class NotifySettingsActivity extends Activity {
             targetsBox.removeAllViews();
             int n = targets == null ? 0 : targets.length();
             if (n == 0) {
-                targetsBox.addView(hint("暂无监视目标 —— 用下方卡片添加（uid 见游戏好友/战报页）。"));
+                targetsBox.addView(hint("暂无监视目标 —— 用下方卡片添加（填游戏内 FID，见好友/战报页）。"));
             }
             for (int i = 0; i < n; i++) {
                 JSONObject t = targets.optJSONObject(i);
@@ -720,9 +721,9 @@ public class NotifySettingsActivity extends Activity {
 
     private void addTarget() {
         if (addTargetInFlight) return;
-        String uid = text(addUidEt);
-        if (!uid.matches("\\d+") || Long.parseLong(uid) <= 0) {
-            toast("uid 必须为大于 0 的数字");
+        String fid = text(addUidEt);
+        if (!fid.matches("\\d+") || Long.parseLong(fid) <= 0) {
+            toast("FID 必须为大于 0 的数字（游戏内玩家ID）");
             return;
         }
         addTargetInFlight = true;
@@ -730,10 +731,10 @@ public class NotifySettingsActivity extends Activity {
         addTargetBtn.setAlpha(0.5f);
         List<String> targets = scopeList();
         for (int i = 1; i < targets.size(); i++) {
-            VaultSync.watchAdd(this, targets.get(i), uid, text(addNameEt), text(addKidEt),
+            VaultSync.watchAdd(this, targets.get(i), fid, text(addNameEt), text(addKidEt),
                     text(addNoteEt), null);
         }
-        VaultSync.watchAdd(this, fpid, uid, text(addNameEt), text(addKidEt), text(addNoteEt),
+        VaultSync.watchAdd(this, fpid, fid, text(addNameEt), text(addKidEt), text(addNoteEt),
                 (code, message, data) -> runOnUiThread(() -> {
                     addTargetInFlight = false;
                     addTargetBtn.setEnabled(true);

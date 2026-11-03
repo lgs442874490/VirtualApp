@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -165,6 +166,18 @@ public class GuardianConcurrencyTest {
         e.responses.put(ServerGuardianEngine.PROTO_MARCH_DETAIL, m);
     }
 
+    private static void presetQueueCap(TestEngine e, int capacity) {
+        Map<String, Object> world = new LinkedHashMap<>();
+        world.put("capacity", (long) capacity);
+        Map<String, Object> wpi = new LinkedHashMap<>();
+        wpi.put("world", world);
+        e.notifies.put("notify_world_player_init", wpi);
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("code", 0);
+        detail.put("marchs", new ArrayList<>());
+        e.responses.put(ServerGuardianEngine.PROTO_MARCH_DETAIL, msg(0));
+    }
+
     private static GameMessage launchOk(long marchId, long endSec) {
         Map<String, Object> info = new LinkedHashMap<>();
         info.put("id", marchId);
@@ -177,6 +190,32 @@ public class GuardianConcurrencyTest {
         GameMessage m = new GameMessage();
         m.setContent(c);
         return m;
+    }
+
+    private static GameMessage msg(int code) {
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("code", code);
+        GameMessage m = new GameMessage();
+        m.setContent(c);
+        return m;
+    }
+
+    private static Map<String, Object> delPush(long id) {
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("to_marchs", List.of(Map.of("id", id)));
+        return c;
+    }
+
+    /** notify_new_mail_syn 最小样本（first_type=30 战斗/防守战报）。 */
+    private static Map<String, Object> mailPush(long first, long second, long mailId, String title) {
+        Map<String, Object> cover = new LinkedHashMap<>();
+        cover.put("first_type", first);
+        cover.put("second_type", second);
+        cover.put("mailid_new", mailId);
+        cover.put("title", title);
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("mail_cover_info", cover);
+        return c;
     }
 
     private int ledgerCount(String ev) {
@@ -194,6 +233,7 @@ public class GuardianConcurrencyTest {
     private static String liveCfg(int maxConcurrent) {
         return "{\"sub\":{\"enabled\":true,\"dry_run\":false},"
                 + "\"strategy\":{\"timing\":false,\"max_concurrent\":" + maxConcurrent + ","
+                + "\"require_ally\":false,"
                 + "\"formation\":{\"hero_ids\":[1]}}}";
     }
 
@@ -203,8 +243,8 @@ public class GuardianConcurrencyTest {
     public void parseConfig_maxConcurrent_defaultAndClamp() {
         ServerGuardianEngine.Config def = ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"sub\":{\"enabled\":true}}"));
-        assertEquals("批次 D 默认 3（多目标同时被攻）", 3, def.maxConcurrent);
-        assertTrue(def.describe().contains("max_concurrent=3"));
+        assertEquals("默认 6（守护账号 6 个队列全可用）", 6, def.maxConcurrent);
+        assertTrue(def.describe().contains("max_concurrent=6"));
 
         assertEquals(2, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"strategy\":{\"max_concurrent\":2}}")).maxConcurrent);
@@ -214,6 +254,60 @@ public class GuardianConcurrencyTest {
                 new JSONObject("{\"strategy\":{\"max_concurrent\":0}}")).maxConcurrent);
         assertEquals("字符串数字兼容", 2, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"strategy\":{\"max_concurrent\":\"2\"}}")).maxConcurrent);
+    }
+
+    // ---------------- 英雄冲突（301/401/403） ----------------
+
+    @Test
+    public void heroConflictCodes_blockHeroesAndSkipTargetCooldown() {
+        // 2026-11-04 真机：多目标并发 401/403 = 英雄占用；拉黑该组英雄 5 分钟换人，不冷却目标
+        assertTrue(ServerGuardianEngine.isHeroConflictCode(301L));
+        assertTrue(ServerGuardianEngine.isHeroConflictCode(401L));
+        assertTrue(ServerGuardianEngine.isHeroConflictCode(403L));
+        assertFalse(ServerGuardianEngine.isHeroConflictCode(415L));
+        assertFalse(ServerGuardianEngine.isHeroConflictCode(406L));
+
+        ServerGuardianEngine engine = engine();
+        Map<String, Object> formation = new LinkedHashMap<>();
+        java.util.List<Map<String, Object>> heroes = new ArrayList<>();
+        for (long id : new long[]{50024L, 50029L, 50028L}) {
+            Map<String, Object> p = new LinkedHashMap<>();
+            p.put("k", 1L);
+            p.put("v", id);
+            heroes.add(p);
+        }
+        formation.put("hero_id", heroes);
+        String note = engine.onLaunchFailure(null, 403L, formation, "u:562:461", 1000L);
+        assertTrue("应返回英雄冲突说明：" + note, note != null && note.contains("英雄"));
+        assertTrue("目标不应被冷却（换人后可立即再试）",
+                !engine.targetInCooldown("u:562:461", 1000L));
+        // 415 仍走原自适应路径
+        String adapt = engine.onLaunchFailure(null, 415L, formation, "u:562:461", 2000L);
+        assertTrue("415 仍返回编队自适应说明：" + adapt, adapt != null && adapt.contains("415"));
+        engine.shutdown();
+    }
+
+    @Test
+    public void inFlightHeroes_unionAndDedup() {
+        // 2026-11-04：多目标并发时把在途驻防英雄当"已占用"，自动编队换人（401/403 防护）
+        ServerGuardianEngine engine = engine();
+        assertTrue(engine.inFlightHeroes().isEmpty());
+        engine.recordMissionHeroesForTest(9001L, java.util.Arrays.asList(1L, 2L, 3L));
+        engine.recordMissionHeroesForTest(9002L, java.util.Arrays.asList(3L, 4L, 5L));
+        java.util.Set<Long> used = new java.util.HashSet<>(engine.inFlightHeroes());
+        assertEquals(5, used.size());
+        assertTrue(used.contains(1L) && used.contains(5L));
+        engine.shutdown();
+    }
+
+    @Test
+    public void differentAllianceRejection_longCooldown() {
+        // 2026-11-04：type=5 打非盟友被游戏 2815/1510 拒绝 → 长冷却该目标，不再反复尝试
+        ServerGuardianEngine engine = engine();
+        String note = engine.onLaunchFailure(null, 2815L, null, "u:777:777", 1000L);
+        assertTrue("应说明目标不同盟：" + note, note != null && note.contains("不同盟"));
+        assertTrue("目标应进入长冷却", engine.targetInCooldown("u:777:777", 1000L));
+        engine.shutdown();
     }
 
     // ---------------- 行为 ----------------
@@ -259,6 +353,148 @@ public class GuardianConcurrencyTest {
     }
 
     @Test
+    public void sameTargetDefaultConcurrency_doesNotLaunchSecondGarrison() {
+        // 2026-11-03 审查 P1-2：同目标第二个威胁不得再发一队（默认 6 队列）
+        // （旧实现会 missions.put 覆盖第一支 Mission，导致第一队失联）。
+        accountWithParams(liveCfg(3));
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                push(march(13080L, OWN_UID, now + 120L, 679, 686),
+                        march(13081L, OWN_UID, now + 121L, 679, 686)));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("同目标只保留 1 个 Mission", 1, engine.missionCount());
+        assertEquals("同目标只发 1 队驻防", 1,
+                countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
+        assertTrue("第二威胁应记 skip_existing_garrison",
+                ledgerCount("skip_existing_garrison") >= 1);
+        engine.shutdown();
+    }
+
+    @Test
+    public void enemyRecall_otherIncoming_keepsGarrison_thenRecallsWhenClear() {
+        // 2026-11-03 审查 P1-1（规则 3.4）：同目标仍有第二路在途时，敌召回不得撤防。
+        accountWithParams(liveCfg(3));
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        e.responses.put(ServerGuardianLauncher.PROTO_MARCH_RECALL, msg(0));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                push(march(13080L, OWN_UID, now + 120L, 679, 686),
+                        march(13081L, OWN_UID, now + 121L, 679, 686)));
+        engine.awaitIdleForTest(3_000L);
+        assertEquals(1, engine.missionCount());
+
+        // 第一路召回：第二路仍在途 → 保留驻防
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_DEL, delPush(13080L));
+        engine.awaitIdleForTest(3_000L);
+        assertEquals("仍有后续在途 → 不撤防", 0,
+                countProto(e, ServerGuardianLauncher.PROTO_MARCH_RECALL));
+        assertEquals(1, engine.missionCount());
+        assertTrue("应记 threat_recalled_keep_incoming",
+                ledgerCount("threat_recalled_keep_incoming") >= 1);
+
+        // 第二路也召回：目标无后续在途 → 撤防
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_DEL, delPush(13081L));
+        engine.awaitIdleForTest(3_000L);
+        assertEquals("无后续在途 → 撤防", 1,
+                countProto(e, ServerGuardianLauncher.PROTO_MARCH_RECALL));
+        assertEquals("撤防成功后清任务", 0, engine.missionCount());
+        engine.shutdown();
+    }
+
+    @Test
+    public void defeatedGarrison_allowsNewGarrisonForNextWave() {
+        // 2026-11-03 审查 P1-2 补强：战报判负后不得让残留 Mission 挡住同目标补防。
+        accountWithParams(liveCfg(3));
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                push(march(13080L, OWN_UID, now + 120L, 679, 686)));
+        engine.awaitIdleForTest(3_000L);
+        assertEquals(1, engine.missionCount());
+
+        // first_type=30 second_type=6 = 防守失败 → Mission.defeated
+        engine.onPush(e, ServerGuardianEngine.PROTO_NEW_MAIL,
+                mailPush(30L, 6L, 9001L, "防守失败"));
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                push(march(13081L, OWN_UID, now + 130L, 679, 686)));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("战败后应允许同目标补驻防", 2,
+                countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
+        assertTrue("应记 garrison_defeated_clear",
+                ledgerCount("garrison_defeated_clear") >= 1);
+    }
+
+    @Test
+    public void noEtaSecondThreat_keepsGarrisonOnFirstRecall() {
+        // 2026-11-03 审查 P1-1 补强：第二路 ETA 尚未补齐（endtime=0）时保守视为在途，不撤防。
+        accountWithParams(liveCfg(3));
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        e.responses.put(ServerGuardianLauncher.PROTO_MARCH_RECALL, msg(0));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                push(march(13080L, OWN_UID, now + 120L, 679, 686)));
+        engine.awaitIdleForTest(3_000L);
+
+        Map<String, Object> noEta = march(13081L, OWN_UID, now + 121L, 679, 686);
+        noEta.remove("endtime");
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD, push(noEta));
+        engine.awaitIdleForTest(3_000L);
+
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_DEL, delPush(13080L));
+        engine.awaitIdleForTest(3_000L);
+        assertEquals("第二路无 ETA 也视为在途 → 不撤防", 0,
+                countProto(e, ServerGuardianLauncher.PROTO_MARCH_RECALL));
+        assertEquals(1, engine.missionCount());
+        assertTrue(ledgerCount("threat_recalled_keep_incoming") >= 1);
+    }
+
+    @Test
+    public void recallMarchNotFound_clearsGarrison() {
+        // 2026-11-03 审查 P1-2 补强：2806=march 不存在 → 视为已消亡并清 Mission。
+        accountWithParams(liveCfg(3));
+        TestEngine e = new TestEngine();
+        presetQueueOk(e);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        e.responses.put(ServerGuardianLauncher.PROTO_MARCH_RECALL, msg(2806));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                push(march(13080L, OWN_UID, now + 120L, 679, 686)));
+        engine.awaitIdleForTest(3_000L);
+        assertEquals(1, engine.missionCount());
+
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_DEL, delPush(13080L));
+        engine.awaitIdleForTest(3_000L);
+        assertEquals("2806 视为已消亡，清 Mission", 0, engine.missionCount());
+        assertTrue(ledgerCount("garrison_gone") >= 1);
+    }
+
+    @Test
     public void maxConcurrentOne_sameTargetSecondSkipped() {
         accountWithParams(liveCfg(1));
         TestEngine e = new TestEngine();
@@ -274,7 +510,33 @@ public class GuardianConcurrencyTest {
         engine.awaitIdleForTest(3_000L);
         assertEquals("同目标并发 1：只发 1 队", 1, engine.missionCount());
         assertEquals(1, countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
-        assertTrue(ledgerCount("skip_busy") >= 1);
+        assertTrue("同目标第二威胁应被已有驻防拦住",
+                ledgerCount("skip_existing_garrison") >= 1);
+    }
+
+    @Test
+    public void sevenTargets_earliestSixLaunch_restSkipBusy() {
+        // 2026-11-04：守护账号只有 6 个行军队列；>6 目标按 ETA 升序取前 6，其余 skip_busy。
+        accountWithParams(liveCfg(6));
+        TestEngine e = new TestEngine();
+        presetQueueCap(e, 6);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        Map<String, Object>[] ms = new Map[7];
+        for (int i = 0; i < 7; i++) {
+            ms[i] = march(13080L + i, OWN_UID + i, now + 120L + i, 679 + i, 686 + i);
+        }
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD, push(ms));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("6 个队列 → 只发 6 队", 6,
+                countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
+        assertEquals(6, engine.missionCount());
+        assertTrue("第 7 个目标应 skip_busy", ledgerCount("skip_busy") >= 1);
+        engine.shutdown();
     }
 
     @Test
