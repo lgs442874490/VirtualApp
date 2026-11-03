@@ -36,21 +36,26 @@ public class WatchPointTargetTrackingTest {
     }
 
     @Test
-    public void relocationAlertPushedThenLatestQueuedForFlush() {
+    public void fiveRelocationsInOneWindowPushOnlyTheLast() {
         WatchPointStore store = storeWithTarget();
         WatchPointEngine e = new WatchPointEngine(null, store, null, null);
-        // 第一次迁城：立即推送（该目标 10 秒内还没推过）
-        e.noteTargetCity(UID, 532, 641, "[818]鲶鱼");
-        String text = e.lastAlertTextForTest();
-        assertTrue("首次迁城要推送: " + text, text.contains("新坐标") && text.contains("(532,641)"));
-        assertTrue("昵称要带上", text.contains("鲶鱼"));
-        // 10 秒内又换坐标：坐标照样更新（窗口跟着走），推送节流但最新坐标必须排队待发
+        // 2026-11-04 用户口径：1 分钟内高迁 5 次，只推最后一次（前 4 次都是无效推送）。
+        e.noteTargetCity(UID, 200, 200, "[818]鲶鱼");
         e.noteTargetCity(UID, 300, 300, "[818]鲶鱼");
-        assertEquals("坐标仍要更新", 300, store.monitorTargets.get(0).x);
-        assertTrue("节流窗口内不重复推送: " + e.lastAlertTextForTest(),
-                e.lastAlertTextForTest().contains("(532,641)"));
-        assertEquals("最新坐标必须排队，不能被节流吞掉", 1, e.pendingMoveCountForTest());
-        assertEquals(300, e.pendingMoveXForTest(UID));
+        e.noteTargetCity(UID, 400, 400, "[818]鲶鱼");
+        e.noteTargetCity(UID, 500, 500, "[818]鲶鱼");
+        e.noteTargetCity(UID, 600, 600, "[818]鲶鱼");
+        assertEquals("窗口内一次都不推", 0, e.alertCountForTest());
+        assertEquals("只保留最新坐标", 600, e.pendingMoveXForTest(UID));
+        assertEquals("坐标已跟随最新（监视窗口不落后）", 600, store.monitorTargets.get(0).x);
+        // 窗口到期：只推一条，原坐标=窗口起点，新坐标=最后一次
+        e.setMoveAlertWindowMsForTest(0);
+        e.flushPendingMoveAlertsForTest();
+        assertEquals("整个窗口只推一条", 1, e.alertCountForTest());
+        String text = e.lastAlertTextForTest();
+        assertTrue("推最后一次坐标: " + text, text.contains("原坐标 (100,100) → 新坐标 (600,600)"));
+        assertTrue("昵称要带上", text.contains("鲶鱼"));
+        assertEquals("推送后队列清空", 0, e.pendingMoveCountForTest());
     }
 
     @Test
@@ -60,8 +65,11 @@ public class WatchPointTargetTrackingTest {
         e.noteTargetCity(UID, 289, 578, "x");
         e.noteTargetCity(UID, 267, 605, "x");
         e.noteTargetCity(UID, 253, 608, "x");
+        assertEquals("抖动期间不推", 0, e.alertCountForTest());
+        e.setMoveAlertWindowMsForTest(0);
+        e.flushPendingMoveAlertsForTest();
         assertEquals("抖动只报一次", 1, e.alertCountForTest());
-        assertEquals("只保留最新一条待补推", 253, e.pendingMoveXForTest(UID));
+        assertTrue(e.lastAlertTextForTest().contains("(253,608)"));
     }
 
     @Test
@@ -74,6 +82,9 @@ public class WatchPointTargetTrackingTest {
         WatchPointStore.Target t = store.monitorTargets.get(0);
         assertEquals(720, t.x);
         assertEquals(880, t.y);
+        // 找到后也走 1 分钟聚合窗口：窗口到期只推最终坐标
+        e.setMoveAlertWindowMsForTest(0);
+        e.flushPendingMoveAlertsForTest();
         assertTrue(e.lastAlertTextForTest().contains("(720,880)"));
     }
 
@@ -93,6 +104,8 @@ public class WatchPointTargetTrackingTest {
         WatchPointStore store = storeWithTarget();
         WatchPointEngine e = new WatchPointEngine(null, store, null, null);
         e.noteTargetCity(UID, 600, 700, "时装小尓");
+        e.setMoveAlertWindowMsForTest(0);
+        e.flushPendingMoveAlertsForTest();
         String text = e.lastAlertTextForTest();
         assertTrue("标题: " + text, text.contains("📍 观察点·坐标更新"));
         assertTrue("实时昵称: " + text, text.contains("游戏昵称：时装小尓"));

@@ -348,14 +348,13 @@ public final class WatchPointEngine {
     private final Map<Long, Long> targetLostAt = new ConcurrentHashMap<>();
     private final Map<Long, Long> targetSearchAt = new ConcurrentHashMap<>();
     private final Map<Long, Long> targetAttackedAt = new ConcurrentHashMap<>();
-    /** 迁城通知节流：uid → 上次推送时刻（防同一目标短时抖动刷屏）。 */
-    private final Map<Long, Long> lastMoveAlertAt = new java.util.concurrent.ConcurrentHashMap<>();
     /**
-     * 迁城通知最小间隔（2026-11-04 由 60s 收到 10s）：窗口内只缓存「最新坐标」，到期补推，
-     * 用户口径「找到就推送新坐标」，绝不能再出现「最后一条坐标是旧的、新坐标被节流吞掉」。
+     * 坐标更新聚合窗口（2026-11-04 用户口径）：**1 分钟内高迁多次只推最后一次**。
+     * 第一次坐标变化开启窗口，窗口内只累计最新坐标；窗口到期（默认 60s）才推一条，
+     * 前面的中间坐标一律不推（用户：前面几次都是无效推送）。
      */
-    private static final long MOVE_ALERT_MIN_INTERVAL_MS = 10_000L;
-    /** 节流窗口内待补推的最新坐标（uid → pending）。 */
+    private volatile long moveAlertWindowMs = 60_000L;
+    /** 聚合窗口内待推的最新坐标（uid → pending；windowStart=窗口起点）。 */
     private final Map<Long, PendingMove> pendingMoveAlert = new java.util.concurrent.ConcurrentHashMap<>();
     /** 最近一次地图城对象（type=1）给出的实时昵称：uid → nick（2026-11-04：推送只用实时昵称）。 */
     private final Map<Long, String> liveNickByUid = new java.util.concurrent.ConcurrentHashMap<>();
@@ -370,22 +369,22 @@ public final class WatchPointEngine {
     /** 行军终点记忆 TTL（ms）：覆盖一次在途行军的最长时长。 */
     static final long MARCH_ENDPOINT_TTL_MS = 10L * 60_000L;
 
-    /** 节流窗口内待补推的坐标快照。 */
+    /** 聚合窗口内待推的坐标快照：ox/oy=窗口起点坐标（上次已推坐标），x/y=窗口内最新坐标。 */
     static final class PendingMove {
         final int ox;
         final int oy;
         final int x;
         final int y;
         final String nick;
-        final long atMs;
+        final long windowStart;
 
-        PendingMove(int ox, int oy, int x, int y, String nick, long atMs) {
+        PendingMove(int ox, int oy, int x, int y, String nick, long windowStart) {
             this.ox = ox;
             this.oy = oy;
             this.x = x;
             this.y = y;
             this.nick = nick;
-            this.atMs = atMs;
+            this.windowStart = windowStart;
         }
     }
     private final Map<String, Long> alerted = new ConcurrentHashMap<>();
@@ -1555,7 +1554,7 @@ public final class WatchPointEngine {
         noteTargetCity(uid, x, y, gameNick, false);
     }
 
-    /** force=true：已确认丢失后重新找到/整图扫描确认，跳过节流直接推送。 */
+    /** force 参数保留兼容（丢失后重新找到也走同一聚合窗口：1 分钟内只推最终坐标）。 */
     void noteTargetCity(long uid, int x, int y, String gameNick, boolean force) {
         if (uid <= 0L || x <= 0 || y <= 0) return;
         WatchPointStore.Target t = findTarget(uid);
@@ -1577,38 +1576,36 @@ public final class WatchPointEngine {
         int ox = t.x;
         int oy = t.y;
         int jump = Math.max(Math.abs(x - ox), Math.abs(y - oy));
-        // 坐标随时更新（监视窗口要跟着他走）；通知按目标短节流，且窗口内最新坐标必补推
+        // 坐标随时更新（监视窗口要跟着他走）；推送走「1 分钟聚合窗口」，窗口内只累计最新坐标
         t.x = x;
         t.y = y;
         store.save();
         if (jump <= 2 && !wasLost) return;   // 城点相邻格口径误差：静默校正
-        if (!force && !wasLost) {
-            Long last = lastMoveAlertAt.get(uid);
-            if (last != null && now - last < MOVE_ALERT_MIN_INTERVAL_MS) {
-                pendingMoveAlert.put(uid, new PendingMove(ox, oy, x, y, gameNick, now));
-                FileLog.info("[{}] 迁城通知节流（{} 秒内已推过，最新坐标排队待发）：uid={} → ({},{})",
-                        LOG, String.valueOf(MOVE_ALERT_MIN_INTERVAL_MS / 1000L),
-                        String.valueOf(uid), String.valueOf(x), String.valueOf(y));
-                return;
-            }
-        }
-        lastMoveAlertAt.put(uid, now);
-        pendingMoveAlert.remove(uid);
-        fireMoveAlert(uid, t, ox, oy, x, y, gameNick);
+        // 2026-11-04 用户口径：1 分钟内高迁多次只推最后一次（前面几次都是无效推送）。
+        // 第一次变化开启窗口（记录窗口起点坐标 ox/oy），窗口内后续变化只覆盖最新坐标，窗口到期才推。
+        PendingMove old = pendingMoveAlert.get(uid);
+        int baseX = old == null ? ox : old.ox;
+        int baseY = old == null ? oy : old.oy;
+        long windowStart = old == null ? now : old.windowStart;
+        pendingMoveAlert.put(uid, new PendingMove(baseX, baseY, x, y, gameNick, windowStart));
+        FileLog.info("[{}] 坐标已更新（{} 秒聚合窗口内只推最后一次）：uid={} 窗口起点 ({},{}) → 最新 ({},{})",
+                LOG, String.valueOf(moveAlertWindowMs / 1000L), String.valueOf(uid),
+                String.valueOf(baseX), String.valueOf(baseY),
+                String.valueOf(x), String.valueOf(y));
     }
 
-    /** 节流窗口到期后补推最新坐标（主循环每 80ms 调用；保证「最后一条」一定是新坐标）。 */
+    /** 聚合窗口到期后推「窗口内最后一次坐标」（主循环每 80ms 调用；保证只推最终坐标）。 */
     private void flushPendingMoveAlerts() {
         if (pendingMoveAlert.isEmpty()) return;
         long now = System.currentTimeMillis();
         for (Map.Entry<Long, PendingMove> en : pendingMoveAlert.entrySet()) {
             long uid = en.getKey();
             PendingMove p = en.getValue();
-            if (p == null || now - p.atMs < MOVE_ALERT_MIN_INTERVAL_MS) continue;
+            if (p == null || now - p.windowStart < moveAlertWindowMs) continue;
             if (!pendingMoveAlert.remove(uid, p)) continue;
             WatchPointStore.Target t = findTarget(uid);
             if (t == null) continue;
-            lastMoveAlertAt.put(uid, now);
+            if (p.x == p.ox && p.y == p.oy) continue;   // 窗口内绕回原坐标：无净变化，不推
             fireMoveAlert(uid, t, p.ox, p.oy, p.x, p.y, p.nick);
         }
     }
@@ -2368,6 +2365,16 @@ public final class WatchPointEngine {
     int pendingMoveXForTest(long uid) {
         PendingMove p = pendingMoveAlert.get(uid);
         return p == null ? -1 : p.x;
+    }
+
+    /** 单测：改聚合窗口（默认 60s；0=立即到期）。 */
+    void setMoveAlertWindowMsForTest(long ms) {
+        this.moveAlertWindowMs = Math.max(0L, ms);
+    }
+
+    /** 单测：触发一次聚合窗口到期检查。 */
+    void flushPendingMoveAlertsForTest() {
+        flushPendingMoveAlerts();
     }
 
     java.util.List<WjdrEngine> pickEnginesForTest(java.util.List<WjdrEngine> online) {

@@ -298,6 +298,8 @@ public class WatchPointThreeFixTest {
         feedCity(engine, sessions.get(0), 7001L, 888L, 20, 20, "实时新昵称");
         feedEmpty(engine, sessions.subList(1, sessions.size()), 459);
         engine.finishScanForTest();
+        engine.setMoveAlertWindowMsForTest(0);
+        engine.flushPendingMoveAlertsForTest();
 
         String text = engine.lastAlertTextForTest();
         // 2026-11-04 用户口径：📍 观察点·坐标更新 / 游戏昵称 / 原坐标 → 新坐标 / 时间；
@@ -412,6 +414,8 @@ public class WatchPointThreeFixTest {
         feedCity(engine, sessions.get(0), 8001L, 999L, 50, 60, "攻击者");
         feedEmpty(engine, sessions.subList(1, sessions.size()), 459);
         engine.finishScanForTest();
+        engine.setMoveAlertWindowMsForTest(0);
+        engine.flushPendingMoveAlertsForTest();
 
         String text = engine.lastAlertTextForTest();
         assertTrue("攻击者迁城: " + text, text.contains("攻击者迁城"));
