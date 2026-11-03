@@ -857,6 +857,64 @@ public final class FormationManagerDialogs {
         nameBox.addView(warn);
         card.addView(nameBox);
 
+        // ---------- 储存方案（游戏原文：按士兵数量储存 / 按士兵比例储存） ----------
+        // 选中即写回 draft.allocationMode；切到比例且比例和为 0 时补 50/20/30（契约 §4.2）。
+        final String[] schemeMode = {FormationModel.normalizeAllocationMode(
+                draft == null ? FormationModel.MODE_MANUAL : draft.allocationMode)};
+        TextView schemeLabel = ManagerUi.text(act, "储存方案", 11.5f, ManagerUi.TEXT3, false);
+        schemeLabel.setPadding(0, ManagerUi.dp(act, 10), 0, ManagerUi.dp(act, 4));
+        card.addView(schemeLabel);
+        final String[] schemeModes = {FormationModel.MODE_MANUAL,
+                FormationModel.MODE_PERCENTAGE};
+        final String[] schemeTexts = {"按士兵数量储存", "按士兵比例储存"};
+        final TextView[] schemeBtns = new TextView[2];
+        final Runnable syncScheme = () -> {
+            for (int i = 0; i < schemeBtns.length; i++) {
+                if (schemeBtns[i] == null) continue;
+                boolean on = schemeModes[i].equals(schemeMode[0]);
+                schemeBtns[i].setText((on ? "◉ " : "○ ") + schemeTexts[i]);
+                schemeBtns[i].setTextColor(on ? Color.WHITE : ManagerUi.TEXT2);
+                schemeBtns[i].setTypeface(null, on ? Typeface.BOLD : Typeface.NORMAL);
+                schemeBtns[i].setBackground(on
+                        ? ManagerUi.round(act, ManagerUi.PRIMARY, 10)
+                        : ManagerUi.stroke(act, ManagerUi.CARD, 10, ManagerUi.LINE_SOFT));
+            }
+        };
+        LinearLayout schemeRow = ManagerUi.row(act);
+        for (int i = 0; i < 2; i++) {
+            final int idx = i;
+            TextView btn = ManagerUi.text(act, "", 12, ManagerUi.TEXT2, false);
+            btn.setGravity(Gravity.CENTER);
+            btn.setPadding(0, ManagerUi.dp(act, 10), 0, ManagerUi.dp(act, 10));
+            btn.setOnClickListener(v -> {
+                String mode = schemeModes[idx];
+                if (mode.equals(schemeMode[0])) return;
+                schemeMode[0] = mode;
+                if (draft != null) {
+                    draft.allocationMode = mode;
+                    if (FormationModel.MODE_PERCENTAGE.equals(mode) && draft.ratioSum() <= 0) {
+                        draft.infantryRatio = 50;
+                        draft.lancerRatio = 20;
+                        draft.marksmanRatio = 30;
+                    }
+                }
+                syncScheme.run();
+            });
+            schemeBtns[i] = btn;
+            LinearLayout.LayoutParams blp = ManagerUi.lp(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+            if (i == 0) blp.rightMargin = ManagerUi.dp(act, 6);
+            schemeRow.addView(btn, blp);
+        }
+        card.addView(schemeRow);
+        syncScheme.run();
+        TextView schemeHint = ManagerUi.text(act,
+                "储存编队阵容时，可在【按士兵数量储存】和【按士兵比例储存】两种方案间选择其一。",
+                10.5f, ManagerUi.TEXT4, false);
+        schemeHint.setPadding(0, ManagerUi.dp(act, 6), 0, 0);
+        schemeHint.setLineSpacing(ManagerUi.dp(act, 1), 1f);
+        card.addView(schemeHint);
+
         final TextView ok = ManagerUi.smallButton(act, "确定", true, () -> {
             if (isNew[0]) {
                 String name = nameEt.getText().toString().trim();
@@ -949,6 +1007,22 @@ public final class FormationManagerDialogs {
                     sc.setHorizontalScrollBarEnabled(false);
                     sc.addView(inner);
                     tabsRow.addView(sc);
+                    // 库内编队较多（含 19 套预设）时限制列表高度，避免「储存方案/确定」被挤出屏幕
+                    final int maxListH = ManagerUi.dp(act, 168);
+                    sc.post(() -> {
+                        if (sc.getChildCount() == 0) return;
+                        int content = sc.getChildAt(0).getHeight();
+                        if (content <= maxListH) return;
+                        ViewGroup.LayoutParams lp = sc.getLayoutParams();
+                        if (lp != null && lp.height == maxListH) return;
+                        if (lp == null) {
+                            lp = new LinearLayout.LayoutParams(
+                                    ViewGroup.LayoutParams.MATCH_PARENT, maxListH);
+                        } else {
+                            lp.height = maxListH;
+                        }
+                        sc.setLayoutParams(lp);
+                    });
                 }
                 // 新建编队 chip
                 LinearLayout newRow = ManagerUi.row(act);

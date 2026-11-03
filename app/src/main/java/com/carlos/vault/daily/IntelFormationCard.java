@@ -20,26 +20,31 @@ import com.carlos.vault.VaultSync;
 import com.carlos.vault.daily.formation.FormationCatalogStore;
 import com.carlos.vault.daily.formation.FormationRules;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 功能页「情报出征设置」卡（设计 §4.2；仅 {@code fn.id=intel}，位于通用「编队」卡下方）。
  *
  * <p>三块内容：
  * <ol>
- *   <li><b>英雄下拉</b>（盾/矛/弓）：首项「自动（最强）」，其余 = 目录中该职业英雄
- *       （{@code 名字 · Lv · 战力}，按战力倒序）。写入 {@code intel_hero_shield/lancer/marksman}
- *       （0=自动）。目录未同步（{@code heroOptions()} 为空）时整块置灰，只读提示
+ *   <li><b>英雄下拉</b>（盾/矛/弓）：首项按职业区分——盾=「自动（最强盾）」、矛=「自动（波根）」、
+ *       弓=「自动（吉娜）」；其余 = 目录中该职业英雄（{@code 名字 · Lv · 星 · 战力}，
+ *       按 power→level→star→id 倒序，与服务端 {@code HERO_STRENGTH} 同口径；power=0 不展示战力）。
+ *       写入 {@code intel_hero_shield/lancer/marksman}（0=自动）。目录未同步
+ *       （{@code heroOptions()} 为空）时整块置灰，只读提示
  *       「英雄目录未同步：先登录/等待同步」，比例仍可编辑（设计 §4.2）。</li>
- *   <li><b>兵种比例</b>：三行数字输入（盾/矛/弓，0..100，默认 10/10/80）+ 合计/错误文案；
- *       保存写 {@code intel_ratio}（服务端按相对权重分配）。</li>
+ *   <li><b>兵种比例</b>：三行数字输入（盾/矛/弓，0..100，默认 50/20/30）+ 「5:2:3」快捷比例按钮
+ *       + 合计/错误文案；保存写 {@code intel_ratio}（服务端按相对权重分配）。</li>
  *   <li><b>保存 / 恢复默认</b>：保存写 params + {@link VaultSync#onAccountsChanged}；
- *       恢复默认清空 5 个 {@code intel_*} 键 → 回落到"最强盾/波根/吉娜 · 10:10:80"默认自动。</li>
+ *       恢复默认清空 5 个 {@code intel_*} 键 → 回落到"最强盾/波根/吉娜 · 50:20:30"默认自动。</li>
  * </ol>
  *
  * <p>若当前是指定编队（{@code formation_mode=ROLE} 且已绑定编队），顶部提示"本页出征设置仅在
@@ -64,7 +69,11 @@ public final class IntelFormationCard {
     private static final int[] HERO_PROFS = {PROF_SHIELD, PROF_LANCER, PROF_MARKSMAN};
     private static final String[] RATIO_LABELS = {"盾兵比例", "矛兵比例", "弓兵比例"};
 
-    private static final String AUTO_LABEL = "自动（最强）";
+    /** 「自动」项按职业区分（用户要求：盾=最强盾、矛=波根、弓=吉娜）。 */
+    private static final String AUTO_SHIELD = "自动（最强盾）";
+    private static final String AUTO_LANCER = "自动（波根）";
+    private static final String AUTO_MARKSMAN = "自动（吉娜）";
+    private static final String AUTO_FALLBACK = "自动（最强）";
     private static final String UNSYNCED_HINT = "英雄目录未同步：先登录/等待同步";
 
     private IntelFormationCard() {
@@ -116,11 +125,12 @@ public final class IntelFormationCard {
         // ---------- 标题 + 默认规则说明 ----------
         card.addView(text(act, "情报出征设置", 15, UiStyle.INK, true));
         TextView desc = text(act,
-                "默认出征：最强盾兵 / 波根(矛) / 吉娜(弓)，缺失时自动补对应职业最强；"
-                        + "默认兵力比例 " + IntelFormationConfig.quoteRatio(
+                "默认出征：最强盾 / 波根(矛) / 吉娜(弓) · "
+                        + IntelFormationConfig.quoteRatio(
                         IntelFormationConfig.DEFAULT_INFANTRY,
                         IntelFormationConfig.DEFAULT_LANCER,
-                        IntelFormationConfig.DEFAULT_MARKSMAN) + "。",
+                        IntelFormationConfig.DEFAULT_MARKSMAN)
+                        + "（缺失时自动补对应职业最强）",
                 11, UiStyle.INK2, false);
         desc.setPadding(0, dp(act, 3), 0, dp(act, 6));
         card.addView(desc);
@@ -180,9 +190,10 @@ public final class IntelFormationCard {
             card.addView(hint);
         }
         final long[] current = {cfg.heroShield, cfg.heroLancer, cfg.heroMarksman};
+        final Map<Long, Integer> fallbackLevels = heroLevelFallbacks(cat);
         for (int i = 0; i < HERO_LABELS.length; i++) {
-            heroRow(act, card, HERO_LABELS[i], HERO_PROFS[i], current, i, heroes, synced,
-                    fpid, sid, fnId, onChanged);
+            heroRow(act, card, HERO_LABELS[i], HERO_PROFS[i], current, i, heroes,
+                    fallbackLevels, synced, fpid, sid, fnId, onChanged);
         }
 
         // ---------- 兵种比例（3 行数字输入） ----------
@@ -191,6 +202,20 @@ public final class IntelFormationCard {
         ratioTitle.setPadding(0, dp(act, 8), 0, dp(act, 2));
         card.addView(ratioTitle);
 
+        // 快捷比例 5:2:3（=50/20/30，点击填入三行输入框；默认值同源 IntelFormationConfig）
+        LinearLayout quickRow = new LinearLayout(act);
+        quickRow.setOrientation(LinearLayout.HORIZONTAL);
+        quickRow.setGravity(Gravity.CENTER_VERTICAL);
+        quickRow.setPadding(0, dp(act, 2), 0, dp(act, 2));
+        TextView quickLabel = text(act, "快捷比例", 11, UiStyle.INK2, false);
+        LinearLayout.LayoutParams qllp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        qllp.rightMargin = dp(act, 8);
+        quickRow.addView(quickLabel, qllp);
+        final TextView quick523 = UiStyle.chip(act, "5:2:3", false);
+        quickRow.addView(quick523);
+        card.addView(quickRow);
+
         final TextView sumView = text(act, "", 11, UiStyle.INK2, false);
         sumView.setPadding(0, dp(act, 4), 0, dp(act, 2));
         final EditText[] ratioInputs = new EditText[3];
@@ -198,6 +223,12 @@ public final class IntelFormationCard {
         ratioInputs[0] = ratioRow(act, card, RATIO_LABELS[0], cfg.ratioInfantry, updateSum);
         ratioInputs[1] = ratioRow(act, card, RATIO_LABELS[1], cfg.ratioLancer, updateSum);
         ratioInputs[2] = ratioRow(act, card, RATIO_LABELS[2], cfg.ratioMarksman, updateSum);
+        quick523.setOnClickListener(v -> {
+            ratioInputs[0].setText(String.valueOf(IntelFormationConfig.DEFAULT_INFANTRY));
+            ratioInputs[1].setText(String.valueOf(IntelFormationConfig.DEFAULT_LANCER));
+            ratioInputs[2].setText(String.valueOf(IntelFormationConfig.DEFAULT_MARKSMAN));
+            updateSum.run();
+        });
         card.addView(sumView);
         refreshSum(sumView, ratioInputs);
 
@@ -284,26 +315,29 @@ public final class IntelFormationCard {
     // ==================== 英雄下拉 ====================
 
     /**
-     * 单个职业的英雄下拉行：首项「自动（最强）」+ 该职业英雄（战力倒序）。
+     * 单个职业的英雄下拉行：首项按职业区分的「自动（最强盾/波根/吉娜）」+ 该职业英雄
+     * （power→level→star→id 倒序，与服务端 HERO_STRENGTH 同口径）。
      * 选中即落库（写 {@code intel_hero_*}），比例输入框内容不受影响（不整页重建）。
      */
     private static void heroRow(final Activity act, final LinearLayout card, final String label,
                                 final int profession, final long[] current, final int idx,
-                                final List<FormationStore.Hero> heroes, final boolean synced,
+                                final List<FormationStore.Hero> heroes,
+                                final Map<Long, Integer> fallbackLevels, final boolean synced,
                                 final String fpid, final long sid, final String fnId,
                                 final Runnable onChanged) {
         final TextView row = new TextView(act);
         row.setTextSize(12);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setMinHeight(dp(act, 40));
-        setDropdownText(row, label, heroValue(heroes, current[idx]), synced);
+        setDropdownText(row, label,
+                heroValue(heroes, current[idx], profession, fallbackLevels), synced);
         card.addView(row);
         if (!synced) return;
         UiStyle.press(row);
         row.setOnClickListener(v -> {
             try {
                 showHeroDialog(act, label, profession, current[idx], heroes,
-                        (heroId, pickedLabel) -> {
+                        fallbackLevels, (heroId, pickedLabel) -> {
                             try {
                                 JSONObject p = FnParams.params(act, fpid, sid, fnId);
                                 IntelFormationConfig c = IntelFormationConfig.read(p);
@@ -333,6 +367,7 @@ public final class IntelFormationCard {
     private static void showHeroDialog(final Activity act, final String title, final int profession,
                                        final long currentId,
                                        final List<FormationStore.Hero> heroes,
+                                       final Map<Long, Integer> fallbackLevels,
                                        final OnHeroChosen cb) {
         final List<FormationStore.Hero> matched = new ArrayList<FormationStore.Hero>();
         if (heroes != null) {
@@ -341,19 +376,27 @@ public final class IntelFormationCard {
                 if (FormationRules.professionOf(h) == profession) matched.add(h);
             }
         }
+        // 强度排序（服务端 HERO_STRENGTH 同口径）：power > level > star > id，越大越强。
+        // level 缺失时用目录原始 effectiveLevel/training_lev 回退（仅展示/排序用）。
         Collections.sort(matched, new Comparator<FormationStore.Hero>() {
             @Override
             public int compare(FormationStore.Hero a, FormationStore.Hero b) {
-                if (a.power == b.power) return 0;
-                return a.power > b.power ? -1 : 1;   // 战力倒序
+                int c = cmpDesc(a.power, b.power);
+                if (c != 0) return c;
+                c = cmpDesc(displayLevel(a, fallbackLevels), displayLevel(b, fallbackLevels));
+                if (c != 0) return c;
+                c = cmpDesc(a.star, b.star);
+                if (c != 0) return c;
+                return cmpDesc(a.id, b.id);
             }
         });
+        final String autoLabel = autoLabel(profession);
         final String[] labels = new String[matched.size() + 1];
-        labels[0] = AUTO_LABEL;
+        labels[0] = autoLabel;
         int selected = 0;
         for (int i = 0; i < matched.size(); i++) {
             FormationStore.Hero h = matched.get(i);
-            labels[i + 1] = heroLabel(h);
+            labels[i + 1] = heroLabel(h, fallbackLevels);
             if (h.id == currentId) selected = i + 1;
         }
         new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
@@ -362,36 +405,113 @@ public final class IntelFormationCard {
                     d.dismiss();
                     if (cb == null) return;
                     if (which <= 0) {
-                        cb.onChosen(IntelFormationConfig.HERO_AUTO, AUTO_LABEL);
+                        cb.onChosen(IntelFormationConfig.HERO_AUTO, autoLabel);
                     } else {
                         FormationStore.Hero h = matched.get(which - 1);
-                        cb.onChosen(h.id, heroLabel(h));
+                        cb.onChosen(h.id, heroLabel(h, fallbackLevels));
                     }
                 })
                 .setNegativeButton("取消", null)
                 .show();
     }
 
-    /** 下拉行当前值文案：自动 / 英雄名 · Lv · 战力 / 目录缺失时保留 id 提示。 */
-    private static String heroValue(List<FormationStore.Hero> heroes, long heroId) {
-        if (heroId <= 0L) return AUTO_LABEL;
+    /** 「自动」项文案：盾=最强盾 / 矛=波根 / 弓=吉娜（未知职业回退「自动（最强）」）。 */
+    private static String autoLabel(int profession) {
+        if (profession == PROF_SHIELD) return AUTO_SHIELD;
+        if (profession == PROF_LANCER) return AUTO_LANCER;
+        if (profession == PROF_MARKSMAN) return AUTO_MARKSMAN;
+        return AUTO_FALLBACK;
+    }
+
+    /** 下拉行当前值文案：自动（按职业）/ 英雄名 · Lv · 星 · 战力 / 目录缺失时保留 id 提示。 */
+    private static String heroValue(List<FormationStore.Hero> heroes, long heroId,
+                                    int profession, Map<Long, Integer> fallbackLevels) {
+        if (heroId <= 0L) return autoLabel(profession);
         if (heroes != null) {
             for (FormationStore.Hero h : heroes) {
-                if (h != null && h.id == heroId) return heroLabel(h);
+                if (h != null && h.id == heroId) return heroLabel(h, fallbackLevels);
             }
         }
         return "英雄#" + heroId + "（目录中未找到，出征时按最强兜底）";
     }
 
-    /** {@code 名字 · Lv · 战力}（未归队补标记；与设计 §4.2 展示口径一致）。 */
-    private static String heroLabel(FormationStore.Hero h) {
-        if (h == null) return AUTO_LABEL;
+    /**
+     * {@code 名字 · Lv31 · 4星 · 战力xxx}（未归队补标记）。
+     *
+     * <p>power=0 时不显示「战力0」；level=0 时不显示 Lv；星级按 starDisplay 优先，
+     * 缺省用原始 star（30=5 星）折算。
+     */
+    private static String heroLabel(FormationStore.Hero h,
+                                    Map<Long, Integer> fallbackLevels) {
+        if (h == null) return AUTO_FALLBACK;
         StringBuilder sb = new StringBuilder();
         sb.append(h.name == null || h.name.trim().isEmpty() ? ("英雄" + h.id) : h.name.trim());
-        if (h.level > 0) sb.append(" · Lv").append(h.level);
-        sb.append(" · 战力").append(FormationRules.fmt(h.power));
+        int level = displayLevel(h, fallbackLevels);
+        if (level > 0) sb.append(" · Lv").append(level);
+        int stars = displayStars(h);
+        if (stars > 0) sb.append(" · ").append(stars).append("星");
+        if (h.power > 0L) sb.append(" · 战力").append(FormationRules.fmt(h.power));
         if (!h.available) sb.append(" · 未归队");
         return sb.toString();
+    }
+
+    // ==================== 英雄等级/星级回退 ====================
+
+    /**
+     * 目录原始等级回退（仅当 {@code Hero.level==0} 时用于展示/排序）：
+     * 读 state 原始 JSON 的 effectiveLevel / training_lev / lev，不改 FormationStore。
+     */
+    private static Map<Long, Integer> heroLevelFallbacks(FormationCatalogStore cat) {
+        Map<Long, Integer> out = new HashMap<Long, Integer>();
+        if (cat == null) return out;
+        try {
+            JSONObject raw = cat.raw();
+            JSONArray arr = raw.optJSONArray("heroes");
+            if (arr == null) arr = raw.optJSONArray("heroOptions");
+            if (arr == null) arr = raw.optJSONArray("hero_options");
+            if (arr == null) return out;
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                long id = o.optLong("id", 0L);
+                if (id <= 0L) continue;
+                int level = firstPositiveInt(o, "effectiveLevel", "effective_level",
+                        "training_lev", "trainingLev", "lev");
+                if (level > 0) out.put(id, level);
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /** 展示等级：Hero.level 优先，缺失时用目录原始等级回退。 */
+    private static int displayLevel(FormationStore.Hero h, Map<Long, Integer> fallbackLevels) {
+        if (h == null) return 0;
+        if (h.level > 0) return h.level;
+        Integer v = fallbackLevels == null ? null : fallbackLevels.get(h.id);
+        return v == null ? 0 : Math.max(0, v.intValue());
+    }
+
+    /** 展示星级（0..5）：starDisplay 优先，否则原始 star（30=5 星）折算。 */
+    private static int displayStars(FormationStore.Hero h) {
+        if (h == null) return 0;
+        int s = h.starDisplay > 0 ? h.starDisplay : h.star;
+        if (s > 5) s = (int) Math.round(s / 6.0);
+        return Math.max(0, Math.min(5, s));
+    }
+
+    /** 降序比较（服务端 HERO_STRENGTH：越大越强）。 */
+    private static int cmpDesc(long a, long b) {
+        return a > b ? -1 : (a < b ? 1 : 0);
+    }
+
+    private static int firstPositiveInt(JSONObject o, String... keys) {
+        if (o == null || keys == null) return 0;
+        for (String k : keys) {
+            int v = o.optInt(k, 0);
+            if (v > 0) return v;
+        }
+        return 0;
     }
 
     // ==================== 比例输入 ====================

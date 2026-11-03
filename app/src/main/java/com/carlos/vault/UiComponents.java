@@ -134,7 +134,10 @@ public final class UiComponents {
         int width = UiLayoutRules.contentWidthPx(
                 ctx.getResources().getDisplayMetrics().widthPixels,
                 ctx.getResources().getDisplayMetrics().density);
-        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(width,
+        // 窗口尺寸尚未就绪（极端时序/异常 displayMetrics）时规则返回 0：
+        // 降级为满宽，保证内容始终可见，而不是把正文压成 0 宽。
+        FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(
+                width > 0 ? width : ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.CENTER_HORIZONTAL);
         ViewGroup.LayoutParams old = content.getLayoutParams();
         if (old instanceof ViewGroup.MarginLayoutParams) {
@@ -260,10 +263,8 @@ public final class UiComponents {
         return button;
     }
 
-    /** 供自定义按钮复用的禁用文字色；正常色不变。 */
+    /** 供自定义按钮复用的禁用文字色；实现收敛在 {@link UiStyle#enabledTextColors}。 */
     public static ColorStateList enabledTextColors(int normal) {
-        return new ColorStateList(
-                new int[][]{new int[]{-android.R.attr.state_enabled}, new int[]{}},
-                new int[]{UiStyle.INK3, normal});
+        return UiStyle.enabledTextColors(normal);
     }
 }

@@ -440,25 +440,39 @@ public class FunctionActivity extends Activity {
         // T5（2026-10-25）：改为「编队摘要卡 + 编队管理入口」；sid≤0（账号页深链未传 serverid /
         // 角色未同步）先回退当前角色 sid，仍为 0 时卡片显示「等待角色同步」并禁用入口，
         // 避免用 sid=0 去读 srv:formation:catalog:{fpid}:0 导致目录恒空。
-        if (fn.formation) {
+        if (fn.formation && !"intel".equals(fn.id)) {
             long fnSid = formationSid();
             if (fnSid > 0 && fnSid != serverid) {
                 serverid = fnSid;   // 回填本页角色 sid：后续卡片/保存与编队卡同源
             }
-            scrollBox.addView(FormationPicker.buildCard(this, account.fpid, serverid, fn.id, null));
-            if ("bear".equals(fn.id)) {
-                // 巨熊另需「发起队 + 上车编队 1-6」（每支可独立自动/指定）
-                scrollBox.addView(FormationPicker.buildBearJoinCard(
-                        this, account.fpid, serverid, null));
+            long fnUid = RoleStore.currentRoleUid(this, account.fpid);
+            try {
+                FormationStore.ensurePresets(this, account.fpid, serverid,
+                        fnUid > 0L ? String.valueOf(fnUid) : "");
+            } catch (Throwable ignored) {
             }
-            if ("intel".equals(fn.id)) {
-                // 设计 §4.2（2026-10-31）：情报出征设置卡——三行英雄下拉（盾/矛/弓，
-                // 默认最强盾/波根/吉娜）+ 兵种比例（intel_ratio 10:10:80），写 intel_* params
-                // 由服务端 IntelFormationPlan 消费；位于通用「编队」摘要卡下方，其它功能页不受影响。
-                long intelUid = RoleStore.currentRoleUid(this, account.fpid);
-                scrollBox.addView(IntelFormationCard.build(this, account.fpid, serverid,
-                        intelUid > 0L ? String.valueOf(intelUid) : "", fn.id, null));
+            if ("behemoth".equals(fn.id)) {
+                // 巨兽狩猎：每日冰原巨兽（当前 4-8 级），通过集结处理，只设一支「预设·巨兽」队。
+                scrollBox.addView(BehemothTeamCard.build(this, account.fpid, serverid, fn.id, null));
+            } else {
+                scrollBox.addView(FormationPicker.buildCard(this, account.fpid, serverid, fn.id, null));
+                if ("bear".equals(fn.id)) {
+                    // 巨熊：两天一次 30 分钟纯福利活动，设置打熊队 + 上车队（按出征队列数）。
+                    scrollBox.addView(FormationPicker.buildBearJoinCard(
+                            this, account.fpid, serverid, "bear", null));
+                }
             }
+        }
+        // 情报页不再显示通用「编队」卡：只保留「情报出征设置」这一个入口
+        // （用户 2026-11-03：既然有情报出征设置，就不要编队模块了）。
+        if ("intel".equals(fn.id) && fn.formation) {
+            long fnSid = formationSid();
+            if (fnSid > 0 && fnSid != serverid) {
+                serverid = fnSid;   // 与编队卡同源：深链未传 serverid 时回填本页角色 sid
+            }
+            long intelUid = RoleStore.currentRoleUid(this, account.fpid);
+            scrollBox.addView(IntelFormationCard.build(this, account.fpid, serverid,
+                    intelUid > 0L ? String.valueOf(intelUid) : "", fn.id, null));
         }
         // 批次11：守护盟友配置页（用户确认放开 UI）——只读状态卡 + 配置卡
         if ("guardian".equals(fn.id)) {

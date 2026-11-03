@@ -97,21 +97,15 @@ public final class VaultSync {
     private static final byte[] SECRET_XOR_KEY = "vsync2026vault16".getBytes(Charset.forName("UTF-8"));
 
     /**
-     * 默认端点：103.236.96.82（NAT VPS，网关在 64868 端口做 SSH/HTTP/TLS 复用，落机内
-     * nginx 转发 vault-server；888syd.xyz 域名未备案，明文 Host/SNI 均被运营商 DPI 拦截，
-     * 故走 IP+复用端口）。2026-10 起升级为 HTTPS-to-IP：
+     * 默认端点：{@code https://cs.888syd.xyz}（2026-11-02 服务器迁移后；与 license 同域，
+     * Caddy 将 {@code /v1/vault/*} 反代到 vault-server，Let's Encrypt 正式证书走系统 CA）。
      *
-     * - Java/OkHttp 对 IP 字面量地址不发送 SNI，TLS 里不含域名 → 不触发备案拦截（实测）；
-     * - 证书为 10 年自签（IP SAN，见 vault-server/deploy/tls/），App 端只认 pin，
-     *   不依赖系统 CA，中间人拿不出同公钥的证书 → 防篡改防嗅探；
-     * - {@link #HTTP_PINNED} 仅用于 https://+本 IP 端点；其他 https 端点（如联调覆盖为
-     * cs.888syd.xyz）走系统 CA 校验的 {@link #HTTP}；http:// 端点两者皆可（无 TLS 参与）。
-     *
-     * 证书轮换：用同一把私钥重签（命令见 deploy/tls/README.md）→ pin 不变，服务器换证书即可；
-     * 换私钥则必须同步改 PROD_TLS_PIN 并发版。
+     * <p>旧端点 {@code https://103.236.96.82:64868}（IP + 自签 pin）已下线；保留
+     * {@link #HTTP_PINNED} 仅用于存量设备通过 {@code vault_endpoint.txt} 覆盖回旧 IP 的联调场景。
+     * 域名为系统 CA 校验的 {@link #HTTP}，不再使用自签 pin。
      */
-    private static final String PROD_HOST = "103.236.96.82";
-    private static final String DEFAULT_BASE_URL = "https://" + PROD_HOST + ":64868";
+    private static final String PROD_HOST = "cs.888syd.xyz";
+    private static final String DEFAULT_BASE_URL = "https://" + PROD_HOST;
 
     /** 服务器自签证书（CN/SAN=103.236.96.82，EC P-256）叶子公钥的 SPKI SHA-256 pin。 */
     private static final String PROD_TLS_PIN = "sha256/Di1/kXdjk27x3whwgGyei4CJHgMwXev8ty5APzZmKQQ=";
@@ -125,8 +119,8 @@ public final class VaultSync {
     /**
      * 信任管理器：不依赖 OkHttp CertificatePinner（其内部 chain cleaner 会用系统 CA
      * 清洗自签链导致空链、pin 必失败——真机 4.1.0 实测），直接在 TLS 握手期校验
-     * 叶子证书 SPKI SHA-256。本客户端（HTTP_PINNED）只用于 https://PROD_HOST 端点，
-     * 对所有经它的连接执行同一 pin，host 无歧义。
+     * 叶子证书 SPKI SHA-256。本客户端（HTTP_PINNED）只用于存量旧 IP 端点
+     * （https://103.236.96.82），对所有经它的连接执行同一 pin，host 无歧义。
      */
     private static final X509TrustManager PINNING_TM = new X509TrustManager() {
         @Override public void checkClientTrusted(X509Certificate[] chain, String authType) { }
@@ -1319,14 +1313,15 @@ public final class VaultSync {
     }
 
     /**
-     * 按 URL 选 OkHttp 客户端：生产端点（https://{@link #PROD_HOST}）走自签 pin 的
-     * {@link #HTTP_PINNED}，其它端点走系统 CA 校验的 {@link #HTTP}。
+     * 按 URL 选 OkHttp 客户端：新生产域名 {@code https://cs.888syd.xyz} 走系统 CA 校验的
+     * {@link #HTTP}；仅存量设备覆盖回旧 IP（103.236.96.82）时走自签 pin 的 {@link #HTTP_PINNED}。
      *
      * <p>热更新等非签名 GET 端点复用本选择（HotConfig 默认更新源即生产 https 端点，
      * 裸 OkHttpClient 会因自签证书握手失败）。
      */
     public static OkHttpClient clientFor(String url) {
-        return url != null && url.startsWith("https://" + PROD_HOST) ? HTTP_PINNED : HTTP;
+        // 新生产域名走系统 CA；仅存量设备显式覆盖回旧 IP 端点时继续用自签 pin。
+        return url != null && url.startsWith("https://103.236.96.82") ? HTTP_PINNED : HTTP;
     }
 
     /**
@@ -1440,7 +1435,7 @@ public final class VaultSync {
 
     /**
      * 端点解析（公开：热更等其它端点复用）：filesDir/vault_endpoint.txt 覆盖
-     * （adb run-as 写入，联调用）→ 默认 {@link #DEFAULT_BASE_URL}（生产 https 自签端点）。
+     * （adb run-as 写入，联调用）→ 默认 {@link #DEFAULT_BASE_URL}（生产 https 域名端点）。
      *
      * <p>返回值不含结尾斜杠，调用方直接拼 {@code /v1/vault/...}。
      */

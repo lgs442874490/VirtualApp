@@ -210,6 +210,66 @@ public class FormationCatalogTest {
         assertEquals(18L, heroes.get(0).star);
     }
 
+    // ==================== 契约 2026-11-02 §1：专武 elv / 第一个远征技能 skills ====================
+
+    @Test
+    public void heroInit_weaponLevelFromElv_andExpeditionSkillFromSkills() {
+        // skills 列表形状：[{id:heroId*10+槽位, lv:...}]；槽 1 = 第一个远征技能（槽 0=基础技能）
+        Map<String, Object> init = mapOf("data", mapOf("50011.0", mapOf(
+                "id", 50011L, "lev", 80L, "star", 30L, "elv", 10L,
+                "skills", List.of(mapOf("id", 500110L, "lv", 1L),
+                        mapOf("id", 500111L, "lv", 5L),
+                        mapOf("id", 500112L, "lv", 3L)))));
+        FormationCatalog.Hero h = FormationCatalog.heroesOf(init).get(0);
+        assertEquals("elv → weaponLevel", 10, h.weaponLevel);
+        assertEquals("槽 0 是基础技能，不取；槽 1 → 5 级", 5, h.expeditionSkillLevel);
+        Map<String, Object> m = h.toMap();
+        assertEquals(10, ((Number) m.get("weaponLevel")).intValue());
+        assertEquals(5, ((Number) m.get("expeditionSkillLevel")).intValue());
+
+        // skills Map 形状：key=skill id（带 .0），值内无 id（槽 1）
+        Map<String, Object> mapInit = mapOf("data", mapOf("50012.0", mapOf(
+                "id", 50012L, "skills", mapOf("500120.0", mapOf("lv", 1L),
+                        "500121.0", mapOf("lv", 4L)))));
+        FormationCatalog.Hero mapped = FormationCatalog.heroesOf(mapInit).get(0);
+        assertEquals(4, mapped.expeditionSkillLevel);
+        assertEquals("缺 elv → 0", 0, mapped.weaponLevel);
+
+        // 老帧只有槽 0 → 回退槽 0
+        Map<String, Object> slot0Only = mapOf("data", mapOf("50014.0", mapOf(
+                "id", 50014L, "skills", mapOf("500140.0", mapOf("lv", 2L)))));
+        assertEquals(2, FormationCatalog.heroesOf(slot0Only).get(0).expeditionSkillLevel);
+
+        // 越界夹取：elv 15 → 10，技能 9 → 5
+        Map<String, Object> clampInit = mapOf("data", mapOf("50013.0", mapOf(
+                "id", 50013L, "elv", 15L,
+                "skills", mapOf("500131.0", mapOf("id", 500131L, "lv", 9L)))));
+        FormationCatalog.Hero clamped = FormationCatalog.heroesOf(clampInit).get(0);
+        assertEquals(10, clamped.weaponLevel);
+        assertEquals(5, clamped.expeditionSkillLevel);
+    }
+
+    @Test
+    public void heroInit_legacyFrameWithoutSkillFields_defaultsZero() {
+        // 旧帧/旧服务端缺 elv/skills → 0，不抛异常
+        Map<String, Object> init = mapOf("data", mapOf("50019.0",
+                mapOf("id", 50019L, "lev", 56L, "star", 5L)));
+        FormationCatalog.Hero h = FormationCatalog.heroesOf(init).get(0);
+        assertEquals(0, h.weaponLevel);
+        assertEquals(0, h.expeditionSkillLevel);
+        // 直接构造（旧 6 参构造签名保留）也默认 0
+        FormationCatalog.Hero legacy = new FormationCatalog.Hero(
+                50022L, "无名", 1L, 0L, 0L, "");
+        assertEquals(0, legacy.weaponLevel);
+        assertEquals(0, legacy.expeditionSkillLevel);
+        assertEquals(0, ((Number) legacy.toMap().get("weaponLevel")).intValue());
+        assertEquals(0, ((Number) legacy.toMap().get("expeditionSkillLevel")).intValue());
+        // 缺字段/空 Map 的静态解析入口不抛异常
+        assertEquals(0, FormationCatalog.weaponLevelOf(null));
+        assertEquals(0, FormationCatalog.expeditionSkillLevelOf(null, 50011L));
+        assertEquals(0, FormationCatalog.expeditionSkillLevelOf(new LinkedHashMap<>(), 50011L));
+    }
+
     @Test
     public void soldierUpdate_incrementallyAdjustsStock() {
         Map<String, Object> soldier = new LinkedHashMap<>();

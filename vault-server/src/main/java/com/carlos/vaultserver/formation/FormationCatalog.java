@@ -89,6 +89,10 @@ public final class FormationCatalog {
         public final String availabilityState;
         /** 中文原因（英雄在家 / 前序占用 / 英雄未归队 …）。 */
         public final String availabilityReason;
+        /** 专武等级（0..10，读推送 {@code elv}；0=未同步/无专武；契约 2026-11-02 §1）。 */
+        public final int weaponLevel;
+        /** 队长第一个远征技能等级（0..5，读 {@code skills} 中 skill id={@code heroId*10+1} 的 lv）。 */
+        public final int expeditionSkillLevel;
 
         Hero(long id, String name, long level, long star, long power, String status) {
             this(id, name, level, star, power, status, 0L, true, "AVAILABLE", "英雄在家");
@@ -96,6 +100,13 @@ public final class FormationCatalog {
 
         Hero(long id, String name, long level, long star, long power, String status,
              long troopLevel, boolean available, String availabilityState, String availabilityReason) {
+            this(id, name, level, star, power, status, troopLevel, available,
+                    availabilityState, availabilityReason, 0, 0);
+        }
+
+        Hero(long id, String name, long level, long star, long power, String status,
+             long troopLevel, boolean available, String availabilityState,
+             String availabilityReason, int weaponLevel, int expeditionSkillLevel) {
             this.id = id;
             this.name = name == null ? "" : name;
             this.level = level;
@@ -112,13 +123,16 @@ public final class FormationCatalog {
             this.available = available;
             this.availabilityState = availabilityState == null ? "AVAILABLE" : availabilityState;
             this.availabilityReason = availabilityReason == null ? "" : availabilityReason;
+            this.weaponLevel = Math.max(0, Math.min(10, weaponLevel));
+            this.expeditionSkillLevel = Math.max(0, Math.min(5, expeditionSkillLevel));
         }
 
         /** 复制并按「是否在途行军」刷新可用性（RESERVED / AVAILABLE）。 */
         Hero withAvailability(boolean busy) {
             if (available == !busy) return this;
             return new Hero(id, name, level, star, power, status, capLevel,
-                    !busy, busy ? "RESERVED" : "AVAILABLE", busy ? "前序占用" : "英雄在家");
+                    !busy, busy ? "RESERVED" : "AVAILABLE", busy ? "前序占用" : "英雄在家",
+                    weaponLevel, expeditionSkillLevel);
         }
 
         /** 目录 v2 条目（契约 §3.2；额外保留旧键 status 供老 APK 过渡）。 */
@@ -138,6 +152,9 @@ public final class FormationCatalog {
             m.put("available", available);
             m.put("availabilityState", availabilityState);
             m.put("availabilityReason", availabilityReason);
+            // 契约 2026-11-02 §1：预设编队（打熊队/熊上车排序）依赖的两个字段
+            m.put("weaponLevel", weaponLevel);
+            m.put("expeditionSkillLevel", expeditionSkillLevel);
             // 旧 APK 字段（一版过渡；新客户端不读）
             m.put("status", status);
             return m;
@@ -909,12 +926,125 @@ public final class FormationCatalog {
         if (name.isEmpty()) name = HeroCatalog.name(id);
         long level = firstLong(m, "level", "lv", "lev");
         long star = firstLong(m, "star", "star_lv", "starLevel");
-        long power = firstLong(m, "power", "fight_num", "fight_capacity");
+        long power = firstLong(m, "power", "fight_num", "fight_capacity",
+                "fight", "fight_power", "combat_power", "power_value");
         String status = firstString(m, "status", "state");
         long trainingLev = firstLong(m, "training_lev", "trainingLev");
         long capLevel = Math.max(level, trainingLev);   // 容量按有效等级（同 MarchCapacityCalculator）
+        // 2026-11-03：生产帧部分英雄只有 training_lev（lev=1），目录展示/排序按有效等级，
+        // 避免情报英雄下拉全部显示 Lv1。
+        level = capLevel;
         return new Hero(id, name, level, star, power, status,
-                capLevel, true, "AVAILABLE", "英雄在家");
+                capLevel, true, "AVAILABLE", "英雄在家",
+                weaponLevelOf(m), expeditionSkillLevelOf(m, id));
+    }
+
+    /**
+     * 专武等级（契约 2026-11-02 §1）：读 {@code elv}（兼容 weaponLevel/weapon_level 等别名），
+     * 0..10；旧帧缺字段 → 0。
+     */
+    static int weaponLevelOf(Map<String, Object> hero) {
+        if (hero == null) return 0;
+        long v = Math.max(0L, firstLong(hero, "elv", "weaponLevel", "weapon_level",
+                "exclusiveWeaponLevel", "exclusive_weapon_level"));
+        return (int) Math.min(10L, v);
+    }
+
+    /**
+     * 队长第一个远征技能等级（契约 2026-11-02 §1）：{@code skills} 中 skill id =
+     * {@code heroId*10+1} 的 {@code lv}，0..5；旧帧缺字段/解析失败 → 0。
+     *
+     * <p>技能槽位口径（真机帧 {@code skills} 实测）：槽 0 = 基础技能（实测恒 1），
+     * 槽 1..3 = 远征技能 1..3，槽 4..6 = 探索技能，槽 7..8 = 专武技能；因此「第一个远征
+     * 技能」取槽 1；若帧里没有槽 1 再回退槽 0（老帧防御）。
+     *
+     * <p>宽容兼容三种实证形状：{@code [{"id":500111,"lv":5}]}、
+     * {@code {"500111.0":{"lv":5}}}、{@code {"500111.0":5}}。
+     */
+    static int expeditionSkillLevelOf(Map<String, Object> hero, long heroId) {
+        if (hero == null || heroId <= 0L) return 0;
+        Object raw = hero.get("skills");
+        if (raw == null) raw = hero.get("skill");
+        if (raw == null) return 0;
+        long target = heroId * 10L + 1L;   // skill id = heroId*10+1（第一个远征技能槽位）
+        List<Map<String, Object>> skills = new ArrayList<>();
+        if (raw instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) raw).entrySet()) {
+                long keyId = tolerantId(e.getKey());
+                Map<String, Object> inner = Exec.mapOf(e.getValue());
+                if (inner == null) {
+                    // 值直接是等级：{"500110.0": 5}
+                    if (keyId == target) {
+                        return (int) Math.min(5L, Math.max(0L, Exec.longOf(e.getValue())));
+                    }
+                    continue;
+                }
+                if (!inner.containsKey("id") && !inner.containsKey("skill_id")) {
+                    inner = new LinkedHashMap<>(inner);
+                    if (keyId > 0L) inner.put("id", keyId);
+                }
+                skills.add(inner);
+            }
+        } else {
+            skills.addAll(Exec.mapsOf(raw));
+        }
+        for (Map<String, Object> s : skills) {
+            if (s == null) continue;
+            long sid = firstLong(s, "id", "skill_id", "sid");
+            if (sid != target) continue;
+            long lv = firstLong(s, "lv", "level", "skill_lv", "skillLevel", "use_skill_lv");
+            return (int) Math.min(5L, Math.max(0L, lv));
+        }
+        // 老帧防御：没有槽 1 时回退槽 0
+        return target == heroId * 10L + 1L
+                ? expeditionSkillLevelOfSlot0(hero, heroId) : 0;
+    }
+
+    /** 槽 0 兜底（仅老帧/异常帧；正常帧第一个远征技能=槽 1）。 */
+    private static int expeditionSkillLevelOfSlot0(Map<String, Object> hero, long heroId) {
+        Object raw = hero == null ? null : hero.get("skills");
+        if (raw == null) return 0;
+        long target = heroId * 10L;
+        if (raw instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) raw).entrySet()) {
+                if (tolerantId(e.getKey()) != target) continue;
+                Map<String, Object> inner = Exec.mapOf(e.getValue());
+                if (inner == null) return (int) Math.min(5L, Math.max(0L, Exec.longOf(e.getValue())));
+                long sid = firstLong(inner, "id", "skill_id", "sid");
+                if (sid == 0L) {
+                    long lv = firstLong(inner, "lv", "level", "skill_lv", "skillLevel", "use_skill_lv");
+                    return (int) Math.min(5L, Math.max(0L, lv));
+                }
+                if (sid == target) {
+                    return (int) Math.min(5L, Math.max(0L,
+                            firstLong(inner, "lv", "level", "skill_lv", "skillLevel", "use_skill_lv")));
+                }
+            }
+        } else {
+            for (Map<String, Object> s : Exec.mapsOf(raw)) {
+                if (s == null) continue;
+                if (firstLong(s, "id", "skill_id", "sid") == target) {
+                    return (int) Math.min(5L, Math.max(0L,
+                            firstLong(s, "lv", "level", "skill_lv", "skillLevel", "use_skill_lv")));
+                }
+            }
+        }
+        return 0;
+    }
+
+    /** 键/值两栖数字解析：{@code "500110.0"}、{@code 500110}、{@code 500110L} 均可。 */
+    private static long tolerantId(Object raw) {
+        long direct = Exec.longOf(raw);
+        if (direct > 0L) return direct;
+        if (raw == null) return 0L;
+        String s = String.valueOf(raw).trim();
+        int dot = s.indexOf('.');
+        if (dot > 0) s = s.substring(0, dot);
+        try {
+            return Long.parseLong(s.trim());
+        } catch (Throwable t) {
+            return 0L;
+        }
     }
 
     private static String firstString(Map<String, Object> m, String... keys) {

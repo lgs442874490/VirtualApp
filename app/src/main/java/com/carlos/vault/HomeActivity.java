@@ -775,10 +775,11 @@ public class HomeActivity extends AccountVaultActivity {
         box.addView(quickHead);
         LinearLayout quick = new LinearLayout(this);
         quick.setOrientation(LinearLayout.HORIZONTAL);
-        int[] qIcons = {UiStyle.Icon.CLOUD, UiStyle.Icon.GIFT, UiStyle.Icon.USERS,
-                UiStyle.Icon.DOC, UiStyle.Icon.GRID};
-        String[] qLabels = {"资产", "补领", "切号", "日志", "工具箱"};
-        String[] qActs = {"assets", "daily", "switch", "log", "tools"};
+        // 2026-11-02：快捷入口仅保留 资产 / 编队管理 / 工具箱 / 日志（删除“切号”“补领”）。
+        int[] qIcons = {UiStyle.Icon.CLOUD, UiStyle.Icon.SHIELD,
+                UiStyle.Icon.GRID, UiStyle.Icon.DOC};
+        String[] qLabels = {"资产", "编队管理", "工具箱", "日志"};
+        String[] qActs = {"assets", "formation", "tools", "log"};
         for (int qi = 0; qi < qLabels.length; qi++) {
             final String act = qActs[qi];
             // 批次7：工具箱含 T3 高阶（敌情监控）与调试工具 → 无权限/无可用工具时不渲染
@@ -800,8 +801,8 @@ public class HomeActivity extends AccountVaultActivity {
             cell.addView(label);
             UiStyle.press(cell);
             cell.setOnClickListener(v -> {
-                if ("switch".equals(act)) showAccountSwitcher();
-                else if ("assets".equals(act)) openAssetCenter();
+                if ("assets".equals(act)) openAssetCenter();
+                else if ("formation".equals(act)) openFormationManager();
                 else quickAction(act);
             });
             LinearLayout.LayoutParams q2 = new LinearLayout.LayoutParams(0,
@@ -847,6 +848,48 @@ public class HomeActivity extends AccountVaultActivity {
                     .putExtra("uid", uid));
         } catch (Throwable t) {
             toast("打开资产中心失败：" + t.getMessage());
+        }
+    }
+
+    /**
+     * 编队管理（2026-11-02）：首页快捷入口直达编队管理页。
+     *
+     * <p>身份口径与资产中心一致：优先前台 {@code home:current_role}（fpid:sid[:uid]），
+     * 缺失时回退当前账号 + activeSid/activeRoleUid；无角色时提示先选角色。
+     */
+    private void openFormationManager() {
+        try {
+            String fpid = null;
+            long sid = 0L;
+            long uid = 0L;
+            String key = getSharedPreferences("home", MODE_PRIVATE)
+                    .getString("current_role", null);
+            if (key != null && key.contains(":")) {
+                int i = key.indexOf(':');
+                fpid = key.substring(0, i);
+                String rest = key.substring(i + 1);
+                int j = rest.indexOf(':');
+                sid = Long.parseLong(j < 0 ? rest : rest.substring(0, j));
+                if (j >= 0) {
+                    String us = rest.substring(j + 1);
+                    int k = us.indexOf(':');
+                    uid = Long.parseLong(k < 0 ? us : us.substring(0, k));
+                }
+            }
+            if (fpid == null || fpid.trim().isEmpty() || sid <= 0L) {
+                AccountStore.Account a = currentRoleAccount();
+                fpid = a == null ? null : a.fpid;
+                sid = currentRoleSid();
+                uid = currentRoleUid();
+            }
+            if (fpid == null || fpid.trim().isEmpty() || sid <= 0L) {
+                toast("请先选择角色");
+                return;
+            }
+            com.carlos.vault.daily.FormationManagerActivity.launch(this, fpid, sid,
+                    uid > 0 ? String.valueOf(uid) : "", null);
+        } catch (Throwable t) {
+            toast("打开编队管理失败：" + t.getMessage());
         }
     }
 

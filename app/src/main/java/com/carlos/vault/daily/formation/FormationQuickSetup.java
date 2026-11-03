@@ -17,11 +17,11 @@ import java.util.Locale;
  *
  * <p>5 步（与旧版服务端 {@code DailyQuickFormationService} 同口径）：
  * <ol>
- *   <li>{@code gather} 采集：前 {@code min(4, 队伍数)} 个启用队列改 ROLE + 对应资源内置模板；</li>
- *   <li>{@code behemoth} 巨兽：仅当队列数=1 时改 ROLE + 巨兽内置（否则跳过）；</li>
- *   <li>{@code intel} 情报：改 ROLE + 打野内置；</li>
- *   <li>{@code hunt} 狩猎：仅当队列数=1 时改 ROLE + 打野内置（否则跳过）；</li>
- *   <li>{@code hero_mission} 英雄的使命：改 ROLE + 巨兽内置（App 当前无该模块，仅写 params 前向兼容）。</li>
+ *   <li>{@code gather} 采集：前 {@code min(4, 队伍数)} 个启用队列改 ROLE + 对应资源预设编队；</li>
+ *   <li>{@code behemoth} 巨兽：仅当队列数=1 时改 ROLE + 巨兽预设（否则跳过）；</li>
+ *   <li>{@code intel} 情报：改 ROLE + 狩猎预设；</li>
+ *   <li>{@code hunt} 狩猎：仅当队列数=1 时改 ROLE + 狩猎预设（否则跳过）；</li>
+ *   <li>{@code hero_mission} 英雄的使命：改 ROLE + 巨兽预设（App 当前无该模块，仅写 params 前向兼容）。</li>
  * </ol>
  *
  * <p>结果状态用网页小写字符串：{@code applied|skipped|failed}；每步异常被捕获为 failed
@@ -89,7 +89,7 @@ public final class FormationQuickSetup {
      *
      * @param queueLimit           队伍数（1..5）
      * @param gatherQueueResources 启用的采集队列资源类型（MEAT/WOOD/COAL/IRON，按队列顺序）
-     * @param builtInsReady        6 个懒创建内置是否已就绪（容量已同步 + 有英雄目录）
+     * @param builtInsReady        19 套预设是否已就绪（容量已同步 + 有英雄目录）
      */
     public static List<Step> plan(int queueLimit, List<String> gatherQueueResources,
                                   boolean builtInsReady) {
@@ -113,8 +113,9 @@ public final class FormationQuickSetup {
             steps.add(new Step(MODULE_GATHER, STATUS_APPLIED,
                     String.format(Locale.ROOT, "已设置 %d 个采集队列", gatherTarget)));
         }
-        steps.add(oneQueueStep(MODULE_BEHEMOTH, limit));
-        steps.add(new Step(MODULE_INTEL, STATUS_APPLIED, "已绑定打野内置编队"));
+        // 巨兽只设一支「预设·巨兽」队（集结用），不再限制单队列
+        steps.add(new Step(MODULE_BEHEMOTH, STATUS_APPLIED, "已绑定巨兽预设编队"));
+        steps.add(new Step(MODULE_INTEL, STATUS_APPLIED, "已绑定狩猎预设编队"));
         steps.add(oneQueueStep(MODULE_HUNT, limit));
         // 网页版有「英雄的使命」模块；本 App 目前没有该功能入口 → 明确 skipped，
         // 不再谎报“已设置”写入一个没有消费方的 params 键。
@@ -125,7 +126,7 @@ public final class FormationQuickSetup {
         }
         steps.add(new Step(MODULE_HERO_MISSION,
                 hasHeroMission ? STATUS_APPLIED : STATUS_SKIPPED,
-                hasHeroMission ? "已绑定巨兽内置编队" : "当前版本暂无「英雄的使命」模块"));
+                hasHeroMission ? "已绑定巨兽预设编队" : "当前版本暂无「英雄的使命」模块"));
         return steps;
     }
 
@@ -134,7 +135,7 @@ public final class FormationQuickSetup {
             return new Step(module, STATUS_SKIPPED,
                     String.format(Locale.ROOT, MSG_MULTI_QUEUE_SKIP_FMT, queueLimit));
         }
-        return new Step(module, STATUS_APPLIED, "已绑定内置编队");
+        return new Step(module, STATUS_APPLIED, "已绑定预设编队");
     }
 
     /** 队伍数（取采集配置 {@code max_queues}，默认 3；clamp 1..5）。 */
@@ -171,7 +172,7 @@ public final class FormationQuickSetup {
     }
 
     /**
-     * 同上，但目录/内置编队按<b>角色 uid</b> 精确读取（多角色同区服不串目录；
+     * 同上，但目录/预设编队按<b>角色 uid</b> 精确读取（多角色同区服不串目录；
      * uid 空/0 时等价旧重载，读旧键）。
      */
     public static List<Step> run(Context ctx, String fpid, long sid, String uid) {
@@ -181,9 +182,9 @@ public final class FormationQuickSetup {
         boolean ready;
         List<FormationModel> lib;
         try {
-            FormationStore.ensureBuiltIns(ctx, fpid, sid, uid);
+            FormationStore.ensurePresets(ctx, fpid, sid, uid);
             lib = FormationStore.formations(ctx, fpid, sid);
-            ready = hasAllLazyBuiltIns(lib)
+            ready = hasAllPresets(lib)
                     && FormationStore.catalogOf(ctx, fpid, sid, uid).configured();
         } catch (Throwable t) {
             ready = false;
@@ -214,23 +215,23 @@ public final class FormationQuickSetup {
         long formationId;
         String fnId;
         if (MODULE_BEHEMOTH.equals(step.module)) {
-            formationId = FormationBuiltIns.ID_BEHEMOTH;
+            formationId = PresetFormations.ID_FIRST;                 // 预设·巨兽
             fnId = "behemoth";
         } else if (MODULE_INTEL.equals(step.module)) {
-            formationId = FormationBuiltIns.ID_WILD;
+            formationId = PresetFormations.ID_FIRST + 1L;            // 预设·狩猎
             fnId = "intel";
         } else if (MODULE_HUNT.equals(step.module)) {
-            formationId = FormationBuiltIns.ID_WILD;
+            formationId = PresetFormations.ID_FIRST + 1L;            // 预设·狩猎
             fnId = "hunt";
         } else {
-            formationId = FormationBuiltIns.ID_BEHEMOTH;
+            formationId = PresetFormations.ID_FIRST;                 // 预设·巨兽
             fnId = "hero_mission";
         }
         JSONObject p = FnParams.params(ctx, fpid, sid, fnId);
         FormationBinding.applyIds(p, new long[]{formationId});
         FnParams.saveParams(ctx, fpid, sid, fnId, p);
         return new Step(step.module, STATUS_APPLIED,
-                "已绑定「" + builtInName(formationId) + "」");
+                "已绑定「" + presetName(formationId) + "」");
     }
 
     private static Step applyGather(Context ctx, String fpid, long sid, int limit,
@@ -243,11 +244,11 @@ public final class FormationQuickSetup {
         for (GatherConfigV2.QueueCfg q : cfg.queues) {
             if (!q.enabled) continue;
             if (bound >= target) break;
-            long builtInId = FormationBuiltIns.idForGatherResource(q.resourceType);
-            if (builtInId <= 0) continue;
+            long presetId = gatherPresetId(q.resourceType);
+            if (presetId <= 0) continue;
             q.formationMode = FormationStore.MODE_ROLE;
-            q.formationId = builtInId;
-            if (firstFormationId == 0) firstFormationId = builtInId;
+            q.formationId = presetId;
+            if (firstFormationId == 0) firstFormationId = presetId;
             bound++;
         }
         try {
@@ -265,18 +266,27 @@ public final class FormationQuickSetup {
                 String.format(Locale.ROOT, "已设置 %d 个采集队列", bound));
     }
 
-    private static boolean hasAllLazyBuiltIns(List<FormationModel> lib) {
-        long[] ids = {FormationBuiltIns.ID_BEHEMOTH, FormationBuiltIns.ID_COAL,
-                FormationBuiltIns.ID_IRON, FormationBuiltIns.ID_MEAT,
-                FormationBuiltIns.ID_WOOD, FormationBuiltIns.ID_WILD};
-        for (long id : ids) {
+    /** 预设 id：采集肉/木/煤/铁（9100000006..9）与巨兽/狩猎是否齐备。 */
+    private static boolean hasAllPresets(List<FormationModel> lib) {
+        for (long id = PresetFormations.ID_FIRST; id <= PresetFormations.ID_LAST; id++) {
             if (FormationRules.findById(lib, id) == null) return false;
         }
         return true;
     }
 
-    private static String builtInName(long id) {
-        FormationModel f = FormationBuiltIns.byId(id);
+    /** 采集资源 → 预设编队 id：肉6/木7/煤8/铁9（契约 §2 预设表）。 */
+    static long gatherPresetId(String resourceType) {
+        if (resourceType == null) return 0L;
+        String r = resourceType.trim().toUpperCase(Locale.ROOT);
+        if ("MEAT".equals(r)) return PresetFormations.ID_FIRST + 5L;
+        if ("WOOD".equals(r)) return PresetFormations.ID_FIRST + 6L;
+        if ("COAL".equals(r)) return PresetFormations.ID_FIRST + 7L;
+        if ("IRON".equals(r)) return PresetFormations.ID_FIRST + 8L;
+        return 0L;
+    }
+
+    private static String presetName(long id) {
+        FormationModel f = PresetFormations.byId(id);
         return f == null ? String.valueOf(id) : f.name;
     }
 

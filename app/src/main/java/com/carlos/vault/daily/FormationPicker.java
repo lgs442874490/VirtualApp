@@ -16,6 +16,7 @@ import com.carlos.vault.daily.formation.FormationBinding;
 import com.carlos.vault.daily.formation.FormationCatalogStore;
 import com.carlos.vault.daily.formation.FormationModel;
 import com.carlos.vault.daily.formation.FormationRules;
+import com.carlos.vault.daily.formation.PresetFormations;
 import com.carlos.vault.daily.formation.ui.FormationBoardView;
 import com.carlos.vault.daily.formation.ui.FormationEntryCard;
 import com.carlos.vault.daily.formation.ui.FormationManagerDialogs;
@@ -32,8 +33,9 @@ import java.util.List;
  * <ol>
  *   <li>{@link #buildCard}：功能页「编队」摘要卡 → 委托 {@link FormationEntryCard}
  *       （摘要 + 「编队管理」入口 + 状态行 + 出征容量入口）；</li>
- *   <li>{@link #buildBearJoinCard}：巨熊「发起队 + 上车编队 1-6」（v2 目录 + 旧 params 双读）；</li>
- *   <li>{@link #pickFormationFor}：队列编队选择器（来源 tab 自动/内置/巨熊/游戏 + 只读
+ *   <li>{@link #buildBearJoinCard}：巨熊「打熊队 + 上车队 1..N」
+ *       （N=上车队数/出征队列数，1-6；v2 目录 + 旧 params 双读）；</li>
+ *   <li>{@link #pickFormationFor}：队列编队选择器（来源 tab 自动/预设/巨熊/游戏 + 只读
  *       {@link FormationBoardView} + `确认使用`）——旧回调签名不变，另加 v2 重载返回
  *       mode/formationIds/troops；</li>
  *   <li>{@link #showLibrary}：兼容旧调用方 → 打开 {@code FormationManagerActivity}（T4）。</li>
@@ -61,12 +63,12 @@ public final class FormationPicker {
                       long marksman, int[] ratios);
     }
 
-    /** 来源 tab（与网页版 §1.13 一致）。 */
+    /** 来源 tab（自动 / 预设 / 巨熊 / 游戏；已删除网页版「内置编队」层）。 */
     private static final String SRC_AUTO = "AUTO";
-    private static final String SRC_BUILTIN = "BUILTIN";
+    private static final String SRC_PRESET = "PRESET";
     private static final String SRC_BEAR = "BEAR";
     private static final String SRC_GAME = "GAME";
-    private static final String[] SRC_LABELS = {"自动编队", "内置编队", "巨熊编队", "游戏编队"};
+    private static final String[] SRC_LABELS = {"自动编队", "预设编队", "巨熊编队", "游戏编队"};
 
     private FormationPicker() {
     }
@@ -86,13 +88,24 @@ public final class FormationPicker {
                 cb == null ? null : cb::onChanged);
     }
 
-    // ==================== ② 巨熊：发起队 + 上车编队 1-6 ====================
+    // ==================== ② 巨熊：打熊队 + 上车队 1-6 ====================
 
-    /** 巨熊页「发起队 + 上车编队 1-6」卡片（每支独立：自动/指定 + 启停；模板入口进管理页）。 */
+    /** 旧签名（巨熊页）：等价 {@code fnId="bear"}。 */
     public static LinearLayout buildBearJoinCard(final Activity act, final String fpid,
                                                  final long sid, final OnChanged onChanged) {
+        return buildBearJoinCard(act, fpid, sid, "bear", onChanged);
+    }
+
+    /**
+     * 巨熊「打熊队 + 上车队 1..N」卡片（每支独立：自动/指定 + 启停）。
+     * N = 该功能 params 的 {@code queue_count}（上车队数/出征队列数，1-6；超出部分的槽位自动停用）。
+     */
+    public static LinearLayout buildBearJoinCard(final Activity act, final String fpid,
+                                                 final long sid, final String fnId,
+                                                 final OnChanged onChanged) {
         final long useSid = sid > 0 ? sid : activeRoleSid(act, fpid);
         final String uid = activeRoleUid(act, fpid);
+        final String useFn = FormationStore.normalizeFnId(fnId);
         final LinearLayout card = UiStyle.outlineCard(act);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(act, 14), dp(act, 12), dp(act, 14), dp(act, 12));
@@ -100,21 +113,26 @@ public final class FormationPicker {
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         lp.setMargins(dp(act, 18), dp(act, 10), dp(act, 18), 0);
         card.setLayoutParams(lp);
-        fillBearJoinCard(act, fpid, useSid, uid, card, onChanged);
+        fillBearJoinCard(act, fpid, useSid, uid, useFn, card, onChanged);
         return card;
     }
 
     private static void fillBearJoinCard(final Activity act, final String fpid, final long sid,
-                                         final String uid, final LinearLayout card,
+                                         final String uid, final String fnId,
+                                         final LinearLayout card,
                                          final OnChanged onChanged) {
         card.removeAllViews();
         final boolean ready = fpid != null && !fpid.trim().isEmpty() && sid > 0;
         final FormationCatalogStore cat = ready
                 ? FormationStore.catalogOf(act, fpid, sid, uid) : null;   // T7：uid 感知目录
-        final Runnable refresh = () -> fillBearJoinCard(act, fpid, sid, uid, card, onChanged);
+        final Runnable refresh = () -> fillBearJoinCard(act, fpid, sid, uid, fnId, card, onChanged);
+        final boolean isBehemoth = "behemoth".equals(fnId);
+        final int queueCount = FormationStore.fnQueueCount(act, fpid, sid, fnId);
 
-        card.addView(text(act, "巨熊编队", 15, UiStyle.INK, true));
-        TextView sub = text(act, "发起队 + 上车 1-6：每支可独立设为自动或指定编队", 11,
+        card.addView(text(act, "打熊队 + 上车队", 15, UiStyle.INK, true));
+        TextView sub = text(act,
+                "两天一次 30 分钟纯福利活动，只挨打不还手按伤害发奖；"
+                        + "打熊队负责伤害，上车队按出征队列数上满", 11,
                 UiStyle.INK2, false);
         sub.setPadding(0, dp(act, 3), 0, dp(act, 6));
         card.addView(sub);
@@ -126,45 +144,69 @@ public final class FormationPicker {
             return;
         }
 
-        // 模板状态 + 模板入口（模板应用/一键编队由 T1/T4 提供，这里只做入口）
-        boolean applied = false;
-        String bearText;
-        try {
-            JSONObject bear = cat.bearBinding();
-            applied = bear != null && bear.optBoolean("applied", false);
-            if (applied) {
-                String title = bear.optString("title", "");
-                int gen = bear.optInt("generation", 0);
-                String tier = bear.optString("tier", "");
-                bearText = "已应用：" + title + "（" + gen + " 代"
-                        + (tier.isEmpty() ? "" : " · " + tier) + "）";
-            } else {
+        // 巨熊模板（仅巨熊行动；模板会生成 1 开车队 + 6 上车队并写 bear params）
+        if (!isBehemoth) {
+            boolean applied = false;
+            String bearText;
+            try {
+                JSONObject bear = cat.bearBinding();
+                applied = bear != null && bear.optBoolean("applied", false);
+                if (applied) {
+                    String title = bear.optString("title", "");
+                    int gen = bear.optInt("generation", 0);
+                    String tier = bear.optString("tier", "");
+                    bearText = "已应用：" + title + "（" + gen + " 代"
+                            + (tier.isEmpty() ? "" : " · " + tier) + "）";
+                } else {
+                    bearText = "尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队（盾 5% / 矛 5% / 弓 90%）";
+                }
+            } catch (Throwable t) {
                 bearText = "尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队（盾 5% / 矛 5% / 弓 90%）";
             }
-        } catch (Throwable t) {
-            bearText = "尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队（盾 5% / 矛 5% / 弓 90%）";
+            TextView bearStatus = text(act, bearText, 11, applied ? UiStyle.OK_INK : UiStyle.INK2, false);
+            bearStatus.setPadding(0, 0, 0, dp(act, 6));
+            card.addView(bearStatus);
+            card.addView(UiStyle.dropdownRow(act, "巨熊编队模板", applied ? "更换模板" : "选择模板",
+                    () -> openManager(act, fpid, sid, uid, "bear")));
         }
-        TextView bearStatus = text(act, bearText, 11, applied ? UiStyle.OK_INK : UiStyle.INK2, false);
-        bearStatus.setPadding(0, 0, 0, dp(act, 6));
-        card.addView(bearStatus);
-        card.addView(UiStyle.dropdownRow(act, "巨熊编队模板", applied ? "更换模板" : "选择模板",
-                () -> openManager(act, fpid, sid, uid, "bear")));
 
-        // 发起队（沿用 bear 功能 params 的 formation_mode/formation_id）
-        String bearMode = FormationStore.fnMode(act, fpid, sid, "bear");
-        long bearId = FormationStore.fnFormationId(act, fpid, sid, "bear");
-        String bearValue = FormationStore.MODE_ROLE.equals(bearMode) && bearId > 0
-                ? "#" + bearId + " " + nameOf(act, fpid, sid, bearId) : "自动";
-        card.addView(UiStyle.dropdownRow(act, "发起队", bearValue,
+        // 上车队数（按用户自己的出征队列数：1-6；同时是服务器 queue_count）
+        card.addView(UiStyle.dropdownRow(act, "上车队数（按出征队列）",
+                queueCount + " 队（上车队 1-" + queueCount + "）",
+                () -> {
+                    final String[] items = new String[FormationStore.MAX_JOIN_SLOTS];
+                    for (int i = 0; i < items.length; i++) {
+                        items[i] = (i + 1) + " 队";
+                    }
+                    new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                            .setTitle("上车队数（按出征队列数量设置）")
+                            .setSingleChoiceItems(items, queueCount - 1, (d, which) -> {
+                                d.dismiss();
+                                FormationStore.saveFnQueueCount(act, fpid, sid, fnId, which + 1);
+                                sync(act);
+                                refresh.run();
+                                if (onChanged != null) onChanged.onChanged();
+                            })
+                            .setNegativeButton("取消", null)
+                            .show();
+                }));
+
+        // 打熊队（沿用该功能 params 的 formation_mode/formation_id）
+        String fnMode = FormationStore.fnMode(act, fpid, sid, fnId);
+        long fnIdValue = FormationStore.fnFormationId(act, fpid, sid, fnId);
+        String launchLabel = "打熊队";
+        String launchValue = FormationStore.MODE_ROLE.equals(fnMode) && fnIdValue > 0
+                ? "#" + fnIdValue + " " + nameOf(act, fpid, sid, fnIdValue) : "自动";
+        card.addView(UiStyle.dropdownRow(act, launchLabel, launchValue,
                 () -> pickFormationFor(act, fpid, sid, uid, null,
                         (mode, ids, inf, lanc, mark, ratios) -> {
                             if (FormationStore.MODE_ROLE.equals(mode) && ids.length > 0) {
-                                FormationStore.saveFnMode(act, fpid, sid, "bear", FormationStore.MODE_ROLE);
-                                FormationStore.saveFnFormation(act, fpid, sid, "bear", ids[0]);
-                                FormationStore.saveFnSoldiersOverride(act, fpid, sid, "bear", inf, lanc, mark);
+                                FormationStore.saveFnMode(act, fpid, sid, fnId, FormationStore.MODE_ROLE);
+                                FormationStore.saveFnFormation(act, fpid, sid, fnId, ids[0]);
+                                FormationStore.saveFnSoldiersOverride(act, fpid, sid, fnId, inf, lanc, mark);
                             } else {
-                                FormationStore.saveFnMode(act, fpid, sid, "bear", FormationStore.MODE_AUTOMATIC);
-                                FormationStore.saveFnAutoRatio(act, fpid, sid, "bear",
+                                FormationStore.saveFnMode(act, fpid, sid, fnId, FormationStore.MODE_AUTOMATIC);
+                                FormationStore.saveFnAutoRatio(act, fpid, sid, fnId,
                                         ratios[0], ratios[1], ratios[2], 0);
                             }
                             sync(act);
@@ -172,10 +214,10 @@ public final class FormationPicker {
                             if (onChanged != null) onChanged.onChanged();
                         })));
 
-        // 上车 1-6
-        for (int j = 1; j <= 6; j++) {
+        // 上车队 1..N（N=上车队数；每槽独立自动/指定 + 启停）
+        for (int j = 1; j <= queueCount; j++) {
             final int joinId = j;
-            JSONObject cfg = FormationStore.joinFormation(act, fpid, sid, joinId);
+            JSONObject cfg = FormationStore.joinFormation(act, fpid, sid, fnId, joinId);
             String mode = FormationStore.normalizeMode(cfg.optString("mode",
                     FormationStore.MODE_AUTOMATIC));
             long fid = cfg.optLong("formation_id", 0);
@@ -189,17 +231,17 @@ public final class FormationPicker {
             LinearLayout row = new LinearLayout(act);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
-            TextView dd = UiStyle.dropdownRow(act, "上车编队 " + joinId,
+            TextView dd = UiStyle.dropdownRow(act, "上车队 " + joinId,
                     value + (enabled ? "" : "（已停用）"),
                     () -> pickFormationFor(act, fpid, sid, uid, null,
                             (mode2, ids, inf, lanc, mark, ratios) -> {
                                 boolean cur = FormationStore.joinEnabled(
-                                        FormationStore.joinFormation(act, fpid, sid, joinId));
+                                        FormationStore.joinFormation(act, fpid, sid, fnId, joinId));
                                 if (FormationStore.MODE_ROLE.equals(mode2) && ids.length > 0) {
-                                    FormationStore.saveJoinFormation(act, fpid, sid, joinId,
+                                    FormationStore.saveJoinFormation(act, fpid, sid, fnId, joinId,
                                             FormationStore.MODE_ROLE, ids[0], cur);
                                 } else {
-                                    FormationStore.saveJoinFormation(act, fpid, sid, joinId,
+                                    FormationStore.saveJoinFormation(act, fpid, sid, fnId, joinId,
                                             FormationStore.MODE_AUTOMATIC, 0, cur);
                                 }
                                 sync(act);
@@ -210,7 +252,7 @@ public final class FormationPicker {
             row.addView(dd, new LinearLayout.LayoutParams(0,
                     ViewGroup.LayoutParams.WRAP_CONTENT, 1));
             row.addView(new UiStyle.Switch(act, enabled, () -> {
-                FormationStore.saveJoinEnabled(act, fpid, sid, joinId, !enabled);
+                FormationStore.saveJoinEnabled(act, fpid, sid, fnId, joinId, !enabled);
                 sync(act);
                 refresh.run();
                 if (onChanged != null) onChanged.onChanged();
@@ -238,7 +280,7 @@ public final class FormationPicker {
     }
 
     /**
-     * v2 选择器（1:1 §1.13）：来源 tab（自动编队/内置编队/巨熊编队/游戏编队）+ 只读
+     * v2 选择器（1:1 §1.13）：来源 tab（自动编队/预设编队/巨熊编队/游戏编队）+ 只读
      * {@link FormationBoardView} + `确认使用`。
      *
      * @param disabledIds 不可选编队 id（多队列互斥用，可空）
@@ -257,9 +299,9 @@ public final class FormationPicker {
             FormationBoardView.installCatalog(cat);
         } catch (Throwable ignored) {
         }
-        // 内置编队懒创建（幂等；容量+目录就绪才建 8 个，否则仅 2 个基础内置）
+        // 预设编队懒创建（幂等；目录就绪才建 19 套，未就绪不建）
         try {
-            FormationStore.ensureBuiltIns(act, fpid, sid, uid);   // T7：按角色目录懒填内置
+            FormationStore.ensurePresets(act, fpid, sid, uid);   // 按角色目录懒建 19 套预设编队
         } catch (Throwable ignored) {
         }
         final List<FormationModel> lib = FormationStore.formations(act, fpid, sid);
@@ -393,9 +435,14 @@ public final class FormationPicker {
         }
         List<FormationModel> list = host.listOf(host.source[0]);
         if (list.isEmpty()) {
-            String empty = SRC_GAME.equals(host.source[0])
-                    ? "暂未同步到游戏内编队；请先登录游戏并保存编队"
-                    : "还没有编队；可到「编队管理」创建自定义编队";
+            String empty;
+            if (SRC_GAME.equals(host.source[0])) {
+                empty = "暂未同步到游戏内编队；请先登录游戏并保存编队";
+            } else if (SRC_PRESET.equals(host.source[0])) {
+                empty = "登录后自动生成 19 套预设编队";
+            } else {
+                empty = "还没有编队；可到「编队管理」创建自定义编队";
+            }
             box.addView(UiStyle.emptyState(act, "🧩", "暂无编队", empty, "＋ 新建编队",
                     () -> openManagerNew(act, host.fpid, host.sid, host.uid)));
             return box;
@@ -434,22 +481,23 @@ public final class FormationPicker {
     // ==================== ③-b 触发器（网页版 §1.13 role-picker-trigger） ====================
 
     /**
-     * 来源描述（网页版 `sa`）：AUTOMATIC→`自动编队`；所选全为内置→`内置编队`；否则`角色编队`。
+     * 来源描述（网页版 `sa`）：AUTOMATIC→`自动编队`；所选全为预设→`预设编队`；否则`角色编队`。
+     * 已删除「内置编队」层，判断只用 {@link PresetFormations#isPreset(long)}。
      */
     public static String triggerSource(String mode, List<FormationModel> lib, long[] ids) {
         if (!FormationStore.MODE_ROLE.equals(FormationStore.normalizeMode(mode))) {
             return "自动编队";
         }
         if (ids == null || ids.length == 0) return "角色编队";
-        boolean allBuiltIn = true;
+        boolean allPreset = true;
         for (long id : ids) {
             FormationModel f = find(lib, id);
-            if (f == null || !f.builtIn) {
-                allBuiltIn = false;
+            if (f == null || !isPreset(f)) {
+                allPreset = false;
                 break;
             }
         }
-        return allBuiltIn ? "内置编队" : "角色编队";
+        return allPreset ? "预设编队" : "角色编队";
     }
 
     /**
@@ -601,10 +649,13 @@ public final class FormationPicker {
             List<FormationModel> out = new ArrayList<>();
             if (SRC_GAME.equals(src)) {
                 out.addAll(games);
+            } else if (SRC_PRESET.equals(src)) {
+                // 只列 19 套预设；排除游戏编队与巨熊模板生成的编队
+                for (FormationModel f : lib) {
+                    if (!f.isGame() && !isBear(f) && isPreset(f)) out.add(f);
+                }
             } else if (SRC_BEAR.equals(src)) {
                 for (FormationModel f : lib) if (isBear(f)) out.add(f);
-            } else if (SRC_BUILTIN.equals(src)) {
-                for (FormationModel f : lib) if (!isBear(f) && !f.isGame()) out.add(f);
             }
             return out;
         }
@@ -628,7 +679,7 @@ public final class FormationPicker {
 
         String badgeOf(FormationModel f) {
             if (f.isGame()) return f.name == null || f.name.isEmpty() ? "游戏" : f.name;
-            if (f.builtIn) return "内置";
+            if (isPreset(f)) return "预设";
             return "自定义";
         }
 
@@ -872,7 +923,7 @@ public final class FormationPicker {
     private static String indexSource(int idx) {
         switch (idx) {
             case 1:
-                return SRC_BUILTIN;
+                return SRC_PRESET;
             case 2:
                 return SRC_BEAR;
             case 3:
@@ -888,6 +939,16 @@ public final class FormationPicker {
             return f.isBear();
         } catch (Throwable t) {
             return f.name != null && f.name.startsWith("巨熊·");
+        }
+    }
+
+    /** 是否 19 套预设编队之一（{@link PresetFormations#isPreset(long)}）。 */
+    private static boolean isPreset(FormationModel f) {
+        if (f == null) return false;
+        try {
+            return PresetFormations.isPreset(f.id);
+        } catch (Throwable t) {
+            return false;
         }
     }
 

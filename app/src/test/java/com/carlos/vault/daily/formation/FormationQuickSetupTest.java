@@ -36,8 +36,9 @@ public class FormationQuickSetupTest {
         assertEquals("固定 5 步", 5, steps.size());
         assertEquals("applied", step(steps, "gather").status);
         assertTrue(step(steps, "gather").message.contains("3 个采集队列"));
-        assertEquals("多队列时巨兽跳过", "skipped", step(steps, "behemoth").status);
-        assertTrue(step(steps, "behemoth").message.contains("仅单队列"));
+        assertEquals("巨兽只设预设队，不再受队列数限制", "applied",
+                step(steps, "behemoth").status);
+        assertTrue(step(steps, "behemoth").message.contains("巨兽预设"));
         assertEquals("applied", step(steps, "intel").status);
         assertEquals("多队列时狩猎跳过", "skipped", step(steps, "hunt").status);
         // App 当前无「英雄的使命」模块（FnRegistry 无该功能）→ 明确 skipped，不谎报已设置
@@ -118,8 +119,9 @@ public class FormationQuickSetupTest {
         // 超过 5 clamp 到 5，但仍受「采集最多 4」限制
         List<FormationQuickSetup.Step> steps = FormationQuickSetup.plan(99, resources(6), true);
         assertTrue(steps.get(0).message.contains("4 个采集队列"));
-        assertEquals("clamp 后非单队列 → 跳过", "skipped",
+        assertEquals("巨兽只设预设队，不受队列数限制", "applied",
                 step(steps, "behemoth").status);
+        assertEquals("狩猎多队列仍跳过", "skipped", step(steps, "hunt").status);
     }
 
     @Test
