@@ -383,6 +383,12 @@ public final class ServerGuardianEngine {
         final int startX;
         final int startY;
         final boolean hasStart;
+        /**
+         * 2026-11-04 用户口径：来自「联盟态势」推送（notify_world_alliance_situation_*）的威胁，
+         * 本身就是「本盟盟友被打」的权威证据 → 直接驻防，不再要求城缓存/盟友表二次证明。
+         * 跨盟误派由游戏侧兜底（type=5 打非盟友会被 2815/1510 拒绝）。
+         */
+        volatile boolean fromAlliance;
         volatile long endEpochSec;
 
         Threat(long marchId, long ownerUid, long type, long targetUid,
@@ -439,6 +445,7 @@ public final class ServerGuardianEngine {
             Threat t = new Threat(marchId, owner, typeNew, target,
                     nx, ny, xy, end, Math.min(firstSeenMs, newer.firstSeenMs),
                     troopsNew, knownNew, powerNew, sxNew, syNew, hasStartNew);
+            t.fromAlliance = fromAlliance || newer.fromAlliance;
             return t;
         }
 
@@ -2433,7 +2440,9 @@ public final class ServerGuardianEngine {
             long selfAid = selfAllianceAid(engine);
             com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo tgt =
                     t.hasXY ? com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(t.x, t.y) : null;
-            boolean knownAlly = (t.targetUid > 0L && (t.targetUid == cfg.allyUid
+            // 联盟态势推送来的 = 本盟盟友被打（用户口径），不再要求二次证明；其它来源仍需可证明
+            boolean knownAlly = t.fromAlliance
+                    || (t.targetUid > 0L && (t.targetUid == cfg.allyUid
                     || t.targetUid == cfg.targetUid || allies.containsKey(t.targetUid)))
                     || (t.hasXY && t.x > 0 && t.y > 0 && allyUidByPoint(t.x, t.y) > 0L)
                     || (tgt != null && selfAid > 0L && tgt.aid > 0L && tgt.aid == selfAid);
@@ -4698,6 +4707,7 @@ public final class ServerGuardianEngine {
             Threat t = new Threat(id, owner, type, targetUid,
                     xy == null ? 0 : xy[0], xy == null ? 0 : xy[1], xy != null, end, nowMs,
                     troops[0], troops[1] > 0, power);
+            t.fromAlliance = true;   // 联盟态势推送 = 本盟盟友被打的权威证据
             Threat prev = merged.get(id);
             merged.put(id, prev == null ? t : prev.merge(t));
             if (merged.size() >= MAX_CANDIDATES) break;
@@ -5668,6 +5678,13 @@ public final class ServerGuardianEngine {
                            String targetKey, long nowMs) {
         // 2026-11-04 真机：多目标并发时 301/401/403 全是英雄占用（每队 3 英雄、不能同时上两队）。
         // 处理：把本组英雄拉黑 5 分钟 → 下一次自动编队换人；不冷却目标（目标本身没问题）。
+        // 2026-11-04：type=5 打非盟友 → 游戏侧 2815/1510 拒绝（驻防变攻击的最后一道保险）
+        if (code == 2815L || code == 1510L) {
+            if (targetKey != null && !targetKey.isEmpty()) {
+                targetCooldowns.put(targetKey, nowMs + LAUNCH_FAIL_COOLDOWN_MS * 10L);
+            }
+            return "目标不同盟(码" + code + ")，不驻防（游戏侧拒绝，已长冷却该目标）";
+        }
         if (isHeroConflictCode(code)) {
             java.util.List<Long> heroes = HeroAvailability.heroIdsOf(formation);
             HeroAvailability.block(engine, heroes, HERO_CONFLICT_BLOCK_MS);

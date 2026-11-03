@@ -464,6 +464,40 @@ public class GuardianWarNotifyReceptionTest {
                 ledgerCount("skip_not_own_ally") >= 1);
     }
 
+    @Test
+    public void allianceSituationThreat_noProof_stillGarrisons() {
+        // 2026-11-04 用户口径：联盟态势推送里出现的 = 本盟盟友被打 → 直接驻防，
+        // 不再要求「城缓存 aid / 盟友坐标表」二次证明（能守就不漏守）。
+        accountWithParams(liveCfg(6, 5_000, false));
+        // 故意不装观察点城缓存、不推盟友坐标表
+        TestEngine e = new TestEngine();
+        presetWorld(e, 5);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+
+        Map<String, Object> atk = new LinkedHashMap<>();
+        atk.put("targetid", 277228239L);
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id", 13500L);
+        m.put("owner", ENEMY_UID);
+        m.put("type", 2L);
+        m.put("state", 2L);
+        m.put("endtime", now + 120L);
+        m.put("endpoint", point(777, 777));
+        m.put("atk_city", atk);
+        Map<String, Object> push = new LinkedHashMap<>();
+        push.put("to_marchs", List.of(m));
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD, push);
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("联盟态势来源 = 本盟，直接驻防：" + ledgerText(), 1,
+                countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
+        assertEquals(0, ledgerCount("skip_not_own_ally"));
+    }
+
     // ---------------- 目标数 > 队列数 ----------------
 
     @Test

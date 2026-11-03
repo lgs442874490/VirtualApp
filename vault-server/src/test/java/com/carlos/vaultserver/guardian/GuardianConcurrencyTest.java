@@ -300,6 +300,16 @@ public class GuardianConcurrencyTest {
         engine.shutdown();
     }
 
+    @Test
+    public void differentAllianceRejection_longCooldown() {
+        // 2026-11-04：type=5 打非盟友被游戏 2815/1510 拒绝 → 长冷却该目标，不再反复尝试
+        ServerGuardianEngine engine = engine();
+        String note = engine.onLaunchFailure(null, 2815L, null, "u:777:777", 1000L);
+        assertTrue("应说明目标不同盟：" + note, note != null && note.contains("不同盟"));
+        assertTrue("目标应进入长冷却", engine.targetInCooldown("u:777:777", 1000L));
+        engine.shutdown();
+    }
+
     // ---------------- 行为 ----------------
 
     @Test
