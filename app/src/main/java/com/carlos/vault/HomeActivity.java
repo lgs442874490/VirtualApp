@@ -239,7 +239,12 @@ public class HomeActivity extends AccountVaultActivity {
         nlp.bottomMargin = dp(12);
         root.addView(nav, nlp);
 
-        currentRoleKey = getSharedPreferences("home", MODE_PRIVATE).getString("current_role", null);
+        // 账号是「当前选择」的主键（current_account），角色只是其下的角色：
+        // 切到无角色数据的账号时 current_role 写 fpid:0，页面也必须落到该账号上。
+        android.content.SharedPreferences home = getSharedPreferences("home", MODE_PRIVATE);
+        currentRoleKey = home.getString("current_role", null);
+        selectedAccountId = home.getString("current_account", null);
+        alignRoleToSelectedAccount();
         alignActiveRoleWithCurrent();
         loadFavs();   // 常用功能（S7 日常中心）先于任何 refreshTasks 加载
         buildTodayPage();
@@ -327,10 +332,13 @@ public class HomeActivity extends AccountVaultActivity {
     @Override
     protected void onResume() {
         super.onResume();
-        // 账号详情页也允许切角色（同写 activeRole + home:current_role）；本页的
-        // currentRoleKey 是进页时读的快照，返回时必须重读，否则 Hero/配置仍按旧角色。
-        currentRoleKey = getSharedPreferences("home", MODE_PRIVATE)
-                .getString("current_role", null);
+        // 账号详情页也允许切角色/切账号（同写 activeRole + home:current_role/current_account）；
+        // 本页的 currentRoleKey/selectedAccountId 是进页时读的快照，返回时必须重读，
+        // 否则 Hero/配置仍按旧账号或旧角色。
+        android.content.SharedPreferences home = getSharedPreferences("home", MODE_PRIVATE);
+        currentRoleKey = home.getString("current_role", null);
+        selectedAccountId = home.getString("current_account", null);
+        alignRoleToSelectedAccount();
         refreshAllPages();
         // 账号池轮询（M2）：仅 resumed 且账号 tab 可见时跑（切 tab/onPause 停）
         if (currentTab == 1) startPoolPolling();
@@ -950,29 +958,138 @@ public class HomeActivity extends AccountVaultActivity {
                 .setSingleChoiceItems(names, checked, (d, w) -> pick[0] = cand.get(w))
                 .setPositiveButton("切换", (d, w) -> {
                     AccountStore.Account target = pick[0];
-                    selectedAccountId = target.id;
-                    getSharedPreferences("home", MODE_PRIVATE).edit()
-                            .putString("current_account", selectedAccountId).apply();
                     long[] m = mainRoles[cand.indexOf(target)];
-                    if (m[0] > 0) {
-                        setCurrentRole(target.fpid, m[0], m[1]);
-                    } else {
-                        toast("已切换：" + target.label);
-                        refreshAllPages();
-                    }
+                    switchAccount(target, m[0], m[1]);
                 })
                 .setNegativeButton("取消", null)
                 .show();
     }
 
-    /** 当前选中账号（默认=工作区第一个）。 */
-    private AccountStore.Account currentSelected() {
-        if (selectedAccountId != null && accounts != null) {
-            for (AccountStore.Account a : accounts) {
-                if (selectedAccountId.equals(a.id) && a.token != null && !a.token.isEmpty()) return a;
+    /**
+     * 切换当前账号并立即刷新四页。
+     *
+     * <p><b>账号是主键</b>（2026-11-03 真机 bug 修复）：无论目标账号有没有角色数据，
+     * 都要把 {@code current_account} + {@code home:current_role} 一起写到该账号——
+     * 有主角色写 {@code fpid:sid[:uid]}，没有角色写 {@code fpid:0}。旧实现「无角色」
+     * 分支只弹 toast、不改 current_role，今日/日常页继续按旧账号角色渲染，表现为
+     * 「提示切换成功，实际数据还是旧账号的」。
+     */
+    private void switchAccount(AccountStore.Account target, long sid, long uid) {
+        if (target == null || target.fpid == null || target.fpid.isEmpty()) return;
+        selectedAccountId = target.id;
+        currentRoleKey = com.carlos.vault.daily.CurrentRoleKey.of(target.fpid, sid, uid);
+        getSharedPreferences("home", MODE_PRIVATE).edit()
+                .putString("current_account", target.id == null ? "" : target.id)
+                .putString("current_role", currentRoleKey)
+                .putLong("current_role_at", System.currentTimeMillis())
+                .apply();
+        if (sid > 0) {
+            // 角色事实源同步（功能开关读写/详情页兜底/防回滚），与 setCurrentRole 同口径
+            try {
+                RoleStore.setActiveRole(this, target.fpid, sid, uid);
+            } catch (Throwable ignored) {
+            }
+            try {
+                VaultSync.notifyRoleSwitched(this, target.fpid);
+            } catch (Throwable ignored) {
             }
         }
-        return firstWorkspace();
+        refreshAllPages();
+        String roleName = roleNameOf(target.fpid, sid, uid);
+        toast(sid > 0
+                ? "已切换账号：" + target.label + (roleName.isEmpty() ? "" : " · " + roleName)
+                : "已切换账号：" + target.label + "（暂无角色数据）");
+    }
+
+    /** 角色展示名（找不到返回空串）。 */
+    private String roleNameOf(String fpid, long sid, long uid) {
+        if (sid <= 0) return "";
+        try {
+            for (RoleStore.Role r : RoleStore.roles(this, fpid)) {
+                if (r.serverid == sid && (uid <= 0 || r.uid == uid)) {
+                    return RoleDisplay.roleListLabel(r);
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return "";
+    }
+
+    /**
+     * 启动/回前台对齐（账号为主键，2026-11-03）：{@code home:current_role} 必须属于
+     * {@code current_account} 指向的账号。
+     *
+     * <p>历史版本切号只写 {@code current_account}（或详情页只写 {@code current_role}），
+     * 会留下两者指向不同账号的分裂态；升级到本版后首次启动按账号重算：
+     * 有主角色 → {@code fpid:sid[:uid]}；无角色 → {@code fpid:0}。
+     * 两键已属于同一账号时不动（保留用户在该账号下的角色选择）。
+     */
+    private void alignRoleToSelectedAccount() {
+        try {
+            com.carlos.vault.daily.CurrentRoleKey.Parts p =
+                    com.carlos.vault.daily.CurrentRoleKey.parse(currentRoleKey);
+            AccountStore.Account pref = accountById(selectedAccountId);
+            if (pref == null) {
+                // 没有 current_account（老版本从未切过号）或该账号已被删：沿用 current_role
+                // 所属账号并补写 current_account——绝不能把用户的当前角色拽回工作区第一个。
+                AccountStore.Account roleAcc = p == null ? null : accountByFpid(p.fpid);
+                if (roleAcc != null) {
+                    selectedAccountId = roleAcc.id;
+                    getSharedPreferences("home", MODE_PRIVATE).edit()
+                            .putString("current_account", roleAcc.id).apply();
+                }
+                return;
+            }
+            if (p != null && pref.fpid != null && pref.fpid.equals(p.fpid)) return;  // 已一致
+            long sid = 0, uid = 0;
+            long[] m = mainRole(pref);
+            if (m[0] > 0) {
+                sid = m[0];
+                uid = m[1];
+            }
+            currentRoleKey = com.carlos.vault.daily.CurrentRoleKey.of(pref.fpid, sid, uid);
+            getSharedPreferences("home", MODE_PRIVATE).edit()
+                    .putString("current_role", currentRoleKey)
+                    .putLong("current_role_at", System.currentTimeMillis())
+                    .apply();
+            if (sid > 0) {
+                RoleStore.setActiveRole(this, pref.fpid, sid, uid);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 当前选中账号（默认=工作区第一个）。 */
+    private AccountStore.Account currentSelected() {
+        AccountStore.Account a = accountById(selectedAccountId);
+        return a != null ? a : firstWorkspace();
+    }
+
+    /** 按账号 id 严格解析（账存在且 token 可用）；找不到返回 null。 */
+    private AccountStore.Account accountById(String id) {
+        if (id == null || id.isEmpty() || accounts == null) return null;
+        for (AccountStore.Account a : accounts) {
+            if (a != null && id.equals(a.id) && a.token != null && !a.token.isEmpty()) return a;
+        }
+        return null;
+    }
+
+    /** 按 fpid 找账号（不做 token 校验，供 current_role 反查账号）。 */
+    private AccountStore.Account accountByFpid(String fpid) {
+        if (fpid == null || fpid.isEmpty() || accounts == null) return null;
+        for (AccountStore.Account a : accounts) {
+            if (a != null && fpid.equals(a.fpid)) return a;
+        }
+        return null;
+    }
+
+    /** 按 fpid 找账号 id（找不到返回 null）。 */
+    private String accountIdOf(String fpid) {
+        if (fpid == null || fpid.isEmpty() || accounts == null) return null;
+        for (AccountStore.Account a : accounts) {
+            if (a != null && fpid.equals(a.fpid) && a.id != null && !a.id.isEmpty()) return a.id;
+        }
+        return null;
     }
 
     private void quickAction(String which) {
@@ -1019,51 +1136,50 @@ public class HomeActivity extends AccountVaultActivity {
         return new String[]{"idle", "未开始"};
     }
 
-    /** 当前角色对应的账号（无则回退当前选中账号）。 */
+    /**
+     * 当前角色对应的账号：<b>账号选择优先</b>（current_account → 该账号），
+     * 没有账号选择时回退 current_role 里的 fpid（老版本行为），最后工作区第一个。
+     *
+     * <p>2026-11-03 修正：旧实现以 current_role 的 fpid 优先，切到「暂无角色数据」的
+     * 账号时 current_role 仍指向旧账号 ⇒ 今日/日常页继续显示旧账号（真机 bug）。
+     */
     private AccountStore.Account currentRoleAccount() {
-        if (currentRoleKey != null && currentRoleKey.contains(":")) {
-            String fpid = currentRoleKey.substring(0, currentRoleKey.indexOf(':'));
-            if (accounts != null) {
-                for (AccountStore.Account a : accounts) {
-                    if (a != null && fpid.equals(a.fpid)) return a;
-                }
-            }
+        if (selectedAccountId != null && !selectedAccountId.isEmpty()) {
+            AccountStore.Account sel = accountById(selectedAccountId);
+            if (sel != null) return sel;
         }
-        return currentSelected();
+        com.carlos.vault.daily.CurrentRoleKey.Parts p =
+                com.carlos.vault.daily.CurrentRoleKey.parse(currentRoleKey);
+        if (p != null) {
+            AccountStore.Account roleAcc = accountByFpid(p.fpid);
+            if (roleAcc != null) return roleAcc;
+        }
+        return firstWorkspace();
     }
 
     /**
      * 当前角色 sid（无记录则回退 activeSid）。
      *
      * <p>current_role 键格式：{@code "fpid:sid"}（旧）或 {@code "fpid:sid:uid"}（同服多角色，
-     * 2026-10-20 起）。uid 段缺失按 0 处理——调用方需要 uid 时走 {@link #currentRoleUid()}。
+     * 2026-10-20 起）；{@code sid=0} 表示该账号暂无角色数据。键必须属于当前账号才采纳，
+     * 防止历史分裂态把旧账号的 sid 串到新账号上。
      */
     private long currentRoleSid() {
-        if (currentRoleKey != null && currentRoleKey.contains(":")) {
-            try {
-                String rest = currentRoleKey.substring(currentRoleKey.indexOf(':') + 1);
-                int c = rest.indexOf(':');
-                return Long.parseLong(c < 0 ? rest : rest.substring(0, c));
-            } catch (Throwable ignored) {
-            }
-        }
         AccountStore.Account a = currentRoleAccount();
+        com.carlos.vault.daily.CurrentRoleKey.Parts p =
+                com.carlos.vault.daily.CurrentRoleKey.parse(currentRoleKey);
+        if (p != null && (a == null || a.fpid == null || a.fpid.equals(p.fpid))) return p.sid;
         return a == null ? 0 : activeSid(a);
     }
 
     /** 当前角色 uid（0=未知/旧格式未带 uid）。同服多角色靠它区分同一 sid 的两个角色。 */
     private long currentRoleUid() {
-        if (currentRoleKey != null && currentRoleKey.contains(":")) {
-            try {
-                int i1 = currentRoleKey.indexOf(':');
-                int i2 = currentRoleKey.indexOf(':', i1 + 1);
-                if (i2 > 0 && i2 < currentRoleKey.length() - 1) {
-                    return Long.parseLong(currentRoleKey.substring(i2 + 1));
-                }
-            } catch (Throwable ignored) {
-            }
-        }
         AccountStore.Account a = currentRoleAccount();
+        com.carlos.vault.daily.CurrentRoleKey.Parts p =
+                com.carlos.vault.daily.CurrentRoleKey.parse(currentRoleKey);
+        if (p != null && (a == null || a.fpid == null || a.fpid.equals(p.fpid)) && p.uid > 0) {
+            return p.uid;
+        }
         return a == null ? 0 : RoleStore.activeRoleUid(this, a.fpid);
     }
 
@@ -1137,12 +1253,19 @@ public class HomeActivity extends AccountVaultActivity {
      * uid 未知时保持旧格式 {@code "fpid:sid"}，兼容旧版本读取。
      */
     private void setCurrentRole(String fpid, long sid, long uid) {
-        currentRoleKey = fpid + ":" + sid + (uid > 0 ? ":" + uid : "");
-        getSharedPreferences("home", MODE_PRIVATE).edit()
+        currentRoleKey = com.carlos.vault.daily.CurrentRoleKey.of(fpid, sid, uid);
+        // 账号是主键：切到某角色时，当前账号必须同步切到该角色所属账号（详情页/角色选择器
+        // 都可能有跨账号入口），否则页面会按旧的 current_account 渲染另一个账号。
+        String accId = accountIdOf(fpid);
+        if (accId != null) selectedAccountId = accId;
+        android.content.SharedPreferences.Editor ed = getSharedPreferences("home", MODE_PRIVATE)
+                .edit()
                 .putString("current_role", currentRoleKey)
                 // 双源对齐时间戳（2026-10-20）：启动时按较新者对齐，防旧 current_role
                 // 覆盖用户刚切的 active 角色（真机：切隆科多后重启回滚成小鹿）
-                .putLong("current_role_at", System.currentTimeMillis()).apply();
+                .putLong("current_role_at", System.currentTimeMillis());
+        if (accId != null) ed.putString("current_account", accId);
+        ed.apply();
         // 关键：同步账号激活角色（RoleStore.activeRole）。activeRole 是功能开关读写
         // （fnOn/setFnOn 经 activeSid）、功能详情页 sid 兜底、多角色竞速会话的主角色指纹
         // 源（RoleSessionKeeper 竞速登录时 roleIdentitySeed 以 activeRole 判主角色）的
@@ -4674,7 +4797,22 @@ public class HomeActivity extends AccountVaultActivity {
         }
         if (roleName.isEmpty()) roleName = taskAccount.label;
         if (taskCap != null) {
-            taskCap.setText(total + " 项功能 · 已启用 " + enabled + " · 当前 " + roleName);
+            taskCap.setText(total + " 项功能 · 已启用 " + enabled + " · 当前 " + roleName
+                    + (sid <= 0 ? " · 暂无角色数据" : ""));
+        }
+        // 切到还没有角色数据的账号（未登录/未同步）时明确提示，避免把默认任务配置
+        // 误读成「页面还是旧账号的数据」（2026-11-03 切号真机 bug 的伴生困惑点）。
+        if (sid <= 0) {
+            TextView noRoleTip = new TextView(this);
+            noRoleTip.setText("该账号暂无角色数据（登录一次自动发现）；以下为默认任务配置");
+            noRoleTip.setTextSize(11.5f);
+            noRoleTip.setTextColor(UiStyle.INK2);
+            noRoleTip.setBackground(UiStyle.roundRectDp(this, UiStyle.SURFACE_2, 10));
+            noRoleTip.setPadding(dp(12), dp(9), dp(12), dp(9));
+            LinearLayout.LayoutParams tipLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            tipLp.topMargin = dp(8);
+            taskRows.addView(noRoleTip, tipLp);
         }
         // 分类chips：选中态跟随 taskCat（修复选中效果不切换）；药丸样式与账号页统一
         for (int i = 0; i < catChips.size(); i++) {
