@@ -100,6 +100,8 @@ public class FormationManagerActivity extends Activity {
     private FormationModel draft;
     private String editorBaseline;
     private boolean editorGameCopy;
+    /** 编辑的是 19 套预设之一：保存时另存为新编队，预设本体保持不变。 */
+    private boolean editorPresetCopy;
 
     // 轮询
     private int pollRound;
@@ -1035,7 +1037,7 @@ public class FormationManagerActivity extends Activity {
 
     private String boardPrimaryLabel() {
         if (saving) return "处理中…";
-        if (editorOpen) return "保存编队";
+        if (editorOpen) return editorPresetCopy ? "另存为新编队" : "保存编队";
         if (TAB_AUTO.equals(tab)) return "保存比例";
         if (TAB_GAME.equals(tab)) return "记忆当前编队";
         FormationModel f = selectedPageFormation();
@@ -1685,10 +1687,20 @@ public class FormationManagerActivity extends Activity {
         LinearLayout tips = ManagerUi.column(this);
         tips.setPadding(ManagerUi.dp(this, 12), ManagerUi.dp(this, 4),
                 ManagerUi.dp(this, 12), 0);
-        TextView tip = ManagerUi.text(this, editorGameCopy
-                        ? "游戏编队不可直接覆盖，已按副本编辑，保存后生成自定义编队"
-                        : "点击英雄格选择英雄；长按英雄可查看信息；主按钮保存编队",
-                10.5f, editorGameCopy ? ManagerUi.WARN_INK : ManagerUi.TEXT4, false);
+        String tipText;
+        int tipColor;
+        if (editorGameCopy) {
+            tipText = "游戏编队不可直接覆盖，已按副本编辑，保存后生成自定义编队";
+            tipColor = ManagerUi.WARN_INK;
+        } else if (editorPresetCopy) {
+            tipText = "预设编队始终按当前最强英雄实时更新；保存修改会另存为新编队"
+                    + "（名字默认用上阵英雄名），预设本身保持不变";
+            tipColor = ManagerUi.WARN_INK;
+        } else {
+            tipText = "点击英雄格选择英雄；长按英雄可查看信息；主按钮保存编队";
+            tipColor = ManagerUi.TEXT4;
+        }
+        TextView tip = ManagerUi.text(this, tipText, 10.5f, tipColor, false);
         tip.setLineSpacing(ManagerUi.dp(this, 1), 1f);
         tips.addView(tip);
         body.addView(tips);
@@ -1705,6 +1717,10 @@ public class FormationManagerActivity extends Activity {
         // 预设/自定义均可编辑、复制、删除（删除后下次 ensure 重建），不再有「内置」保护。
         TextView del = ManagerUi.smallButton(this, "删除编队", false, () -> {
             if (draft == null) return;
+            if (PresetFormations.isPreset(draft.id)) {
+                UiStyle.toast(this, "预设编队始终保留；如需自定义请编辑后「另存为新编队」");
+                return;
+            }
             if (draft.id <= 0) {
                 UiStyle.toast(this, "新建编队尚未保存");
                 return;
@@ -1721,7 +1737,8 @@ public class FormationManagerActivity extends Activity {
                 render();
             });
         });
-        del.setAlpha(draft != null && draft.id > 0 ? 1f : 0.45f);
+        del.setAlpha(draft != null && draft.id > 0
+                && !PresetFormations.isPreset(draft.id) ? 1f : 0.45f);
         row.addView(del);
         TextView copy = ManagerUi.smallButton(this, "复制编队", false, this::duplicateDraft);
         copy.setAlpha(draft != null && draft.id > 0 ? 1f : 0.45f);
@@ -1736,6 +1753,20 @@ public class FormationManagerActivity extends Activity {
         row.addView(cancel, clp);
         wrap.addView(row);
         return wrap;
+    }
+
+    /** 预设另存为新编队时的默认名：上阵英雄名（≤3）用「·」连接，空则「预设副本」。 */
+    private String presetCopyName(FormationModel f) {
+        List<Long> heroes = f == null ? new ArrayList<Long>() : f.distinctHeroIds();
+        StringBuilder sb = new StringBuilder();
+        for (Long id : heroes) {
+            if (id == null || id <= 0L) continue;
+            String n = heroName(id);
+            if (n == null || n.trim().isEmpty()) continue;
+            if (sb.length() > 0) sb.append("·");
+            sb.append(n.trim());
+        }
+        return sb.length() == 0 ? "预设副本" : FormationModel.truncateName(sb.toString());
     }
 
     /** 复制当前编队（新建副本并进入编辑）；预设与自定义均可复制。 */
@@ -1768,6 +1799,8 @@ public class FormationManagerActivity extends Activity {
         }
         editorOpen = true;
         editorGameCopy = false;
+        editorPresetCopy = source != null && !source.isGame()
+                && PresetFormations.isPreset(source.id);
         if (source == null) {
             draft = new FormationModel();
             draft.allocationMode = FormationModel.MODE_PERCENTAGE;
@@ -1804,9 +1837,11 @@ public class FormationManagerActivity extends Activity {
                 applyRatiosToCounts(draft, catalog.capacity());
                 draft.name = "";
                 editorGameCopy = false;
+                editorPresetCopy = false;
             } else {
                 draft = next.copy();
                 editorGameCopy = false;
+                editorPresetCopy = PresetFormations.isPreset(next.id);
                 if (draft.captainHeroId == null || !draft.hasHero(draft.captainHeroId)) {
                     draft.captainHeroId = draft.heroIds.isEmpty() ? null : draft.heroIds.get(0);
                 }
@@ -1837,13 +1872,14 @@ public class FormationManagerActivity extends Activity {
         draft = null;
         editorBaseline = null;
         editorGameCopy = false;
+        editorPresetCopy = false;
         reload();
         render();
     }
 
     private void openEditorSettings() {
         if (draft == null) return;
-        boolean canDelete = draft.id > 0;
+        boolean canDelete = draft.id > 0 && !PresetFormations.isPreset(draft.id);
         FormationManagerDialogs.showEditorSettingsDialog(this, draft, canDelete,
                 new FormationManagerDialogs.EditorSettings() {
                     @Override public void onConfirm(String name, String allocationMode) {
@@ -1875,6 +1911,11 @@ public class FormationManagerActivity extends Activity {
 
                     @Override public void onDelete() {
                         if (draft == null || draft.id <= 0) return;
+                        if (PresetFormations.isPreset(draft.id)) {
+                            UiStyle.toast(FormationManagerActivity.this,
+                                    "预设编队始终保留；如需自定义请「另存为新编队」");
+                            return;
+                        }
                         FormationManagerDialogs.showDeleteConfirm(
                                 FormationManagerActivity.this, draft, () -> {
                                     try {
@@ -1911,8 +1952,31 @@ public class FormationManagerActivity extends Activity {
         saving = true;
         render();
         FormationModel f = draft.copy();
-        if (targetId > 0) f.id = targetId;
-        else f.id = 0;
+        // 2026-11-03：预设编队是「实时最强」模板，永远保留；在预设上保存 = 另存为新编队，
+        // 名字默认取上阵英雄名（用户若在保存弹窗里手填了其它名字则尊重）。
+        boolean presetDraft = draft.id > 0 && PresetFormations.isPreset(draft.id);
+        boolean presetTarget = targetId > 0 && PresetFormations.isPreset(targetId);
+        boolean fromPreset = presetDraft || presetTarget;
+        String presetName = "";
+        if (presetTarget) {
+            FormationModel target = findLib(targetId);
+            if (target != null) presetName = target.name == null ? "" : target.name.trim();
+        } else if (presetDraft) {
+            FormationModel self = findLib(draft.id);
+            if (self != null) presetName = self.name == null ? "" : self.name.trim();
+        }
+        if (fromPreset) {
+            f.id = 0;
+            f.source = FormationModel.SOURCE_CUSTOM;
+            f.builtIn = false;
+            f.templateKey = null;   // 副本是普通自定义编队，不再享受实时重算
+            f.version = 1;
+            f.updatedAt = 0L;
+        } else if (targetId > 0) {
+            f.id = targetId;
+        } else {
+            f.id = 0;
+        }
         if (!FormationModel.MODE_PERCENTAGE.equals(
                 FormationModel.normalizeAllocationMode(f.allocationMode))) {
             f.allocationMode = FormationModel.MODE_MANUAL;
@@ -1927,7 +1991,12 @@ public class FormationManagerActivity extends Activity {
             }
             applyRatiosToCounts(f, boardCapacity());
         }
-        if (name != null && !name.trim().isEmpty()) f.name = name.trim();
+        String pickedName = name == null ? "" : name.trim();
+        boolean nameUnset = pickedName.isEmpty()
+                || (!presetName.isEmpty() && pickedName.equals(presetName))
+                || (fromPreset && f.name != null && pickedName.equals(f.name.trim()));
+        if (!pickedName.isEmpty()) f.name = pickedName;
+        if (fromPreset && nameUnset) f.name = presetCopyName(f);
         if (f.name == null) f.name = "";
         boolean created = f.id <= 0;
         FormationModel saved = null;
@@ -1949,15 +2018,20 @@ public class FormationManagerActivity extends Activity {
         }
         syncNow();
         toastCrossRefs(saved);
-        UiStyle.toast(this, created ? FormationRules.MSG_SAVED_CREATED
-                : FormationRules.MSG_SAVED_UPDATED);
+        if (fromPreset) {
+            UiStyle.toast(this, "已另存为新编队「" + saved.name + "」，预设编队保持不变");
+        } else {
+            UiStyle.toast(this, created ? FormationRules.MSG_SAVED_CREATED
+                    : FormationRules.MSG_SAVED_UPDATED);
+        }
         editorOpen = false;
         draft = null;
         editorBaseline = null;
         editorGameCopy = false;
+        editorPresetCopy = false;
         reload();
         tab = TAB_MINE;
-        mineFilter = MINE_ALL;
+        mineFilter = fromPreset ? MINE_CUSTOM : MINE_ALL;
         selectedMineId = saved.id;
         render();
     }

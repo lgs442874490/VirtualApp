@@ -633,9 +633,10 @@ public final class FormationStore {
         return target;
     }
 
-    /** 删除编队（契约 §2.2）：受保护内置不删；不存在静默返回。 */
+    /** 删除编队（契约 §2.2）：19 套预设永远保留；不存在静默返回。 */
     public static void deleteFormation(Context ctx, String fpid, long sid, long id) {
         if (ctx == null) return;
+        if (PresetFormations.isPreset(id)) return;   // 预设是实时最强模板，不允许删除
         List<FormationModel> lib = formations(ctx, fpid, sid);
         boolean removed = false;
         for (int i = lib.size() - 1; i >= 0; i--) {

@@ -195,8 +195,9 @@ public final class PresetFormations {
             }
             if (existing.heroIds.isEmpty() && !def.heroIds.isEmpty()) {
                 copyContent(def, existing);
-            } else if (untouched(existing) && differs(def, existing)) {
-                // 未编辑过的预设随英雄目录/容量更新（打熊队盾优先级、熊上车技能排序、兵力预算）
+            } else if (differs(def, existing)) {
+                // 2026-11-03：预设是「实时最强」模板，始终随英雄目录/容量刷新；
+                // 用户编辑预设时 App 会另存为新编队，不再修改预设本体，因此这里可以无条件覆盖内容。
                 copyContent(def, existing);
             }
         }

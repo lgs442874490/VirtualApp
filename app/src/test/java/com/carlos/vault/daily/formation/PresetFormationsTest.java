@@ -477,7 +477,7 @@ public class PresetFormationsTest {
     // ==================== ensure 幂等 / 不覆盖用户改动 / 补骨架英雄 ====================
 
     @Test
-    public void ensure_isIdempotent_andKeepsUserEdits() {
+    public void ensure_isIdempotent_andRefreshesPresetContent() {
         FormationCatalogStore cat = standardCatalog(30000L);
         List<FormationModel> lib = new ArrayList<FormationModel>();
         assertEquals(15, PresetFormations.ensure(lib, cat));
@@ -486,14 +486,15 @@ public class PresetFormationsTest {
         assertEquals(15, lib.size());
 
         FormationModel behemoth = find(lib, 9100000001L);
-        // 模拟用户经 saveFormation 保存过（updatedAt>0）→ 预设不再自动刷新
+        // 2026-11-03：预设是实时模板，即使旧数据里 updatedAt>0，内容也要按目录刷新；
+        // 用户编辑时 App 会另存为新编队，不会改预设本体。
         behemoth.updatedAt = 123456789L;
         behemoth.version = 2L;
         behemoth.name = "我改的巨兽";
         behemoth.infantry = 123;
         assertEquals(0, PresetFormations.ensure(lib, cat));
-        assertEquals("不覆盖用户改名", "我改的巨兽", behemoth.name);
-        assertEquals("不覆盖用户兵量", 123L, behemoth.infantry);
+        assertEquals("预设名称保持", "我改的巨兽", behemoth.name);
+        assertEquals("兵量按预设定义刷新（巨兽 MANUAL 1/0/0）", 1L, behemoth.infantry);
     }
 
     @Test
@@ -531,13 +532,16 @@ public class PresetFormationsTest {
                 hero(50008L, "吉娜", 3, 100));
         PresetFormations.ensure(lib, second);
         assertEquals(Arrays.asList(50004L, 50029L, 50008L), find(lib, 9100000001L).heroIds);
-        // 用户保存过则冻结
+        // 旧数据里即使有 updatedAt/version，也按实时模板刷新（用户编辑会另存新编队）
         behemoth.updatedAt = 1L;
         behemoth.version = 2L;
         behemoth.heroIds.clear();
         behemoth.heroIds.add(50004L);
         PresetFormations.ensure(lib, second);
-        assertEquals("已编辑预设不自动刷新", 1, find(lib, 9100000001L).heroIds.size());
+        assertEquals("预设始终刷新为最强盾/波根/吉娜", 3,
+                find(lib, 9100000001L).heroIds.size());
+        assertEquals(Arrays.asList(50004L, 50029L, 50008L),
+                find(lib, 9100000001L).heroIds);
     }
 
     // ==================== 公开 API 边界 ====================
