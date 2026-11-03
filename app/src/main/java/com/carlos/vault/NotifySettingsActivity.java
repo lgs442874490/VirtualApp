@@ -595,28 +595,24 @@ public class NotifySettingsActivity extends Activity {
             col.addView(cbAcc);
             accCbs.add(cbAcc);
             accFpids.add(fpidVal);
-            JSONArray rs = rolesOf.get(fpidVal);
+            // 子角色 = 账号池缓存 ∪ 本地角色表（账号池只在线的账号才带 roles，
+            // 只用池缓存会让「老大888」等账号没有子角色可勾——2026-11-03 真机复现）
             List<CheckBox> kids = new ArrayList<>();
-            if (rs != null) {
-                for (int j = 0; j < rs.length(); j++) {
-                    JSONObject ro = rs.optJSONObject(j);
-                    if (ro == null) continue;
-                    long uid = parseLong(ro.optString("uid", "0"));
-                    if (uid <= 0L) continue;
-                    String sid = ro.optString("sid", "");
-                    String nm = ro.optString("name", ro.optString("nickName", ""));
-                    CheckBox cbRole = new CheckBox(this);
-                    cbRole.setText("↳ " + (nm.isEmpty() ? ("uid" + uid) : nm)
-                            + (sid.isEmpty() ? "" : "  @k" + sid));
-                    cbRole.setTextSize(12.5f);
-                    cbRole.setPadding(dp(30), 0, 0, 0);
-                    cbRole.setChecked(scopeRoleUids.isEmpty()
-                            ? cbAcc.isChecked() : scopeRoleUids.contains(uid));
-                    col.addView(cbRole);
-                    roleCbs.add(cbRole);
-                    roleUids.add(uid);
-                    kids.add(cbRole);
-                }
+            for (Object[] ro : rolesFor(fpidVal, rolesOf.get(fpidVal))) {
+                long uid = (Long) ro[0];
+                String sid = ro[1] == null ? "" : ro[1].toString();
+                String nm = ro[2] == null ? "" : ro[2].toString();
+                CheckBox cbRole = new CheckBox(this);
+                cbRole.setText("↳ " + (nm.isEmpty() ? ("uid" + uid) : nm)
+                        + (sid.isEmpty() ? "" : "  @k" + sid));
+                cbRole.setTextSize(12.5f);
+                cbRole.setPadding(dp(30), 0, 0, 0);
+                cbRole.setChecked(scopeRoleUids.isEmpty()
+                        ? cbAcc.isChecked() : scopeRoleUids.contains(uid));
+                col.addView(cbRole);
+                roleCbs.add(cbRole);
+                roleUids.add(uid);
+                kids.add(cbRole);
             }
             final List<CheckBox> children = kids;
             cbAcc.setOnCheckedChangeListener((b, checked) -> {
@@ -676,6 +672,50 @@ public class NotifySettingsActivity extends Activity {
         } catch (Throwable t) {
             return 0L;
         }
+    }
+
+    /**
+     * 某账号下的可勾选角色：账号池缓存（{@code /accounts} 的 roles[]，只有在线账号才全）
+     * ∪ 本地角色表（{@link com.carlos.vault.daily.RoleStore}，服务器 /status 学到过即可），
+     * 按 uid 去重；返回元素 {@code {uid(Long), sid(String), 名称(String)}}。
+     *
+     * <p>为什么合并：2026-11-03 真机复现——账号池缓存只含「测试账号」的角色，其余账号
+     * 在树里没有子角色可勾，等于「能选账号不能选子角色」。本地角色表兜底后，
+     * 切号/同步学到的角色也能出现在树里。
+     */
+    private List<Object[]> rolesFor(String fpid, JSONArray poolRoles) {
+        java.util.LinkedHashMap<Long, Object[]> merged = new java.util.LinkedHashMap<>();
+        try {
+            if (poolRoles != null) {
+                for (int j = 0; j < poolRoles.length(); j++) {
+                    JSONObject ro = poolRoles.optJSONObject(j);
+                    if (ro == null) continue;
+                    long uid = parseLong(ro.optString("uid", "0"));
+                    if (uid <= 0L) continue;
+                    merged.put(uid, new Object[]{uid, ro.optString("sid", ""),
+                            ro.optString("name", ro.optString("nickName", ""))});
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            for (com.carlos.vault.daily.RoleStore.Role r
+                    : com.carlos.vault.daily.RoleStore.roles(this, fpid)) {
+                if (r == null || r.uid <= 0L) continue;
+                Object[] cur = merged.get(r.uid);
+                String name = r.name == null ? "" : r.name;
+                if (cur == null) {
+                    merged.put(r.uid, new Object[]{r.uid, String.valueOf(r.serverid), name});
+                } else if (cur[2] == null || cur[2].toString().isEmpty()) {
+                    cur[2] = name;
+                    if (cur[1] == null || cur[1].toString().isEmpty()) {
+                        cur[1] = String.valueOf(r.serverid);
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return new ArrayList<>(merged.values());
     }
 
     private void addTarget() {
