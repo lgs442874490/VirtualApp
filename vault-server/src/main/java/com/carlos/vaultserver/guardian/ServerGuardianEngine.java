@@ -2862,8 +2862,9 @@ public final class ServerGuardianEngine {
                 // 一天 930 次失败且无降噪；现在失败后下调英雄上限/兵力缩放，下一威胁即生效。
                 String adapt = onLaunchFailure(engine, r.code, formation, targetKey, nowMs);
                 if (adapt != null) {
-                    String text = "发射失败 " + adapt + "（本目标冷却 "
-                            + (LAUNCH_FAIL_COOLDOWN_MS / 1000L) + "s，不重试本威胁）";
+                    String text = "发射失败 " + adapt + (isHeroConflictCode(r.code)
+                            ? "" : "（本目标冷却 "
+                            + (LAUNCH_FAIL_COOLDOWN_MS / 1000L) + "s，不重试本威胁）");
                     long nowFail = System.currentTimeMillis();
                     String logKey = targetKey + "|" + r.code;
                     Long last = failLogAt.get(logKey);
@@ -5727,6 +5728,14 @@ public final class ServerGuardianEngine {
      */
     String onLaunchFailure(WjdrEngine engine, long code, Map<String, Object> formation,
                            String targetKey, long nowMs) {
+        // 2026-11-04 真机：多目标并发时 301/401/403 全是英雄占用（每队 3 英雄、不能同时上两队）。
+        // 处理：把本组英雄拉黑 5 分钟 → 下一次自动编队换人；不冷却目标（目标本身没问题）。
+        if (isHeroConflictCode(code)) {
+            java.util.List<Long> heroes = HeroAvailability.heroIdsOf(formation);
+            HeroAvailability.block(engine, heroes, HERO_CONFLICT_BLOCK_MS);
+            return "英雄占用(码" + code + "，" + heroes.size() + " 个英雄)，已拉黑 "
+                    + (HERO_CONFLICT_BLOCK_MS / 60_000L) + " 分钟换人";
+        }
         if (code != 415L && code != 406L) return null;
         String text;
         if (code == 415L) {
@@ -5742,6 +5751,14 @@ public final class ServerGuardianEngine {
         }
         return text;
     }
+
+    /** 英雄占用类业务码（301 英雄不在城 / 401·403 英雄已被其它队列占用）。 */
+    static boolean isHeroConflictCode(long code) {
+        return code == 301L || code == 401L || code == 403L;
+    }
+
+    /** 英雄冲突后的拉黑时长（5 分钟；到期自动复用，避免长期废掉英雄）。 */
+    static final long HERO_CONFLICT_BLOCK_MS = 5 * 60_000L;
 
     /** 测试/诊断：某目标当前是否处于 415/406 失败冷却期。 */
     boolean targetInCooldown(String targetKey, long nowMs) {

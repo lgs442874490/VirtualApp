@@ -19,6 +19,7 @@ import java.util.List;
 import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -252,6 +253,37 @@ public class GuardianConcurrencyTest {
                 new JSONObject("{\"strategy\":{\"max_concurrent\":0}}")).maxConcurrent);
         assertEquals("字符串数字兼容", 2, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"strategy\":{\"max_concurrent\":\"2\"}}")).maxConcurrent);
+    }
+
+    // ---------------- 英雄冲突（301/401/403） ----------------
+
+    @Test
+    public void heroConflictCodes_blockHeroesAndSkipTargetCooldown() {
+        // 2026-11-04 真机：多目标并发 401/403 = 英雄占用；拉黑该组英雄 5 分钟换人，不冷却目标
+        assertTrue(ServerGuardianEngine.isHeroConflictCode(301L));
+        assertTrue(ServerGuardianEngine.isHeroConflictCode(401L));
+        assertTrue(ServerGuardianEngine.isHeroConflictCode(403L));
+        assertFalse(ServerGuardianEngine.isHeroConflictCode(415L));
+        assertFalse(ServerGuardianEngine.isHeroConflictCode(406L));
+
+        ServerGuardianEngine engine = engine();
+        Map<String, Object> formation = new LinkedHashMap<>();
+        java.util.List<Map<String, Object>> heroes = new ArrayList<>();
+        for (long id : new long[]{50024L, 50029L, 50028L}) {
+            Map<String, Object> p = new LinkedHashMap<>();
+            p.put("k", 1L);
+            p.put("v", id);
+            heroes.add(p);
+        }
+        formation.put("hero_id", heroes);
+        String note = engine.onLaunchFailure(null, 403L, formation, "u:562:461", 1000L);
+        assertTrue("应返回英雄冲突说明：" + note, note != null && note.contains("英雄"));
+        assertTrue("目标不应被冷却（换人后可立即再试）",
+                !engine.targetInCooldown("u:562:461", 1000L));
+        // 415 仍走原自适应路径
+        String adapt = engine.onLaunchFailure(null, 415L, formation, "u:562:461", 2000L);
+        assertTrue("415 仍返回编队自适应说明：" + adapt, adapt != null && adapt.contains("415"));
+        engine.shutdown();
     }
 
     // ---------------- 行为 ----------------
