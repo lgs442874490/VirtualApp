@@ -622,6 +622,8 @@ public final class ServerGuardianEngine {
     private final Map<Long, Long> rallyUnknownNotesAt = new ConcurrentHashMap<>();
     /** 2026-11-04：战争通知同源接收的拒绝诊断节流（proto|原因 → 最近记日志 millis）。 */
     private final Map<String, Long> warRejectNotesAt = new ConcurrentHashMap<>();
+    /** 2026-11-04：我方在途驻防 marchId → 该队英雄（多目标并发时避免重复选同一组英雄 → 403）。 */
+    private final Map<Long, List<Long>> missionHeroes = new ConcurrentHashMap<>();
     /** 2026-11-04：守护对象 FID 换算出的 uid（guardExec 线程解析并缓存；跨联盟/友盟也守）。 */
     private volatile Set<Long> protectUids = java.util.Collections.emptySet();
     private volatile long protectUidsAtMs = 0L;
@@ -863,6 +865,10 @@ public final class ServerGuardianEngine {
                 Mission m = en.getValue();
                 return m.endtimeSec > 0 && nowS - m.endtimeSec > MISSION_KEEP_AFTER_END_SEC;
             });
+            // 2026-11-04：清理已结束驻防的英雄占用记录（防长期累积把英雄永久当占用）
+            java.util.Set<Long> live = new java.util.HashSet<>();
+            for (Mission m : missions.values()) live.add(m.marchId);
+            missionHeroes.keySet().removeIf(mid -> !live.contains(mid));
             thresholdNotes.keySet().removeIf(id -> !threats.containsKey(id));
             alliesUnknownNotesAt.keySet().removeIf(id -> !threats.containsKey(id));
             // 批次 I：集结表清理（取消/超 30 分钟；防累积）
@@ -2816,6 +2822,9 @@ public final class ServerGuardianEngine {
                 Mission mission = new Mission(t.marchId, r.marchId, r.endtimeSec, t.endEpochSec,
                         nowMs, t.targetUid, t.x, t.y, t.hasXY);
                 missions.put(targetKey, mission);
+                // 2026-11-04：记住本队英雄，下一次自动编队把它们当"已占用"排除（多目标并发 403 防护）
+                List<Long> usedHeroes = HeroAvailability.heroIdsOf(formation);
+                if (!usedHeroes.isEmpty()) missionHeroes.put(r.marchId, usedHeroes);
                 clearQueueRetry(marchId);
                 cancelRallyWait(marchId);
                 // 批次 I：记录最近实测单程，供集结出发秒/后续威胁估算
@@ -5616,6 +5625,20 @@ public final class ServerGuardianEngine {
         return r;
     }
 
+    /** 测试钩子：登记一条在途驻防的英雄占用。 */
+    void recordMissionHeroesForTest(long marchId, List<Long> heroIds) {
+        missionHeroes.put(marchId, heroIds);
+    }
+
+    /** 我方在途驻防占用的英雄（去重；自动编队时排除）。 */
+    java.util.Collection<Long> inFlightHeroes() {
+        java.util.Set<Long> out = new java.util.LinkedHashSet<>();
+        for (List<Long> v : missionHeroes.values()) {
+            if (v != null) out.addAll(v);
+        }
+        return out;
+    }
+
     /** 英雄职业数摘要（纯函数）：盾x/矛y/弓z（职业未知不计）。 */
     static String heroProfessionSummary(List<Long> heroIds) {
         int shield = 0, spear = 0, bow = 0;
@@ -5645,7 +5668,8 @@ public final class ServerGuardianEngine {
      */
     AutoFormation guardianAutoFormation(WjdrEngine engine) {
         if (engine == null) return null;
-        List<Long> heroes = FormationResolver.autoProfessionHeroes(engine);
+        // 2026-11-04：把我方在途驻防的英雄当"已占用"排除——同一组英雄不能同时上两个队列（401/403）
+        List<Long> heroes = FormationResolver.autoProfessionHeroes(engine, inFlightHeroes());
         if (heroes.isEmpty()) {
             FileLog.info("守护盟友自动编队不可用 {}:{}：英雄目录未同步/无可用英雄（notify_hero_init）",
                     fpid, String.valueOf(sid));

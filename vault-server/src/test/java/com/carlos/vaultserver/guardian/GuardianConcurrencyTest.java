@@ -286,6 +286,19 @@ public class GuardianConcurrencyTest {
         engine.shutdown();
     }
 
+    @Test
+    public void inFlightHeroes_unionAndDedup() {
+        // 2026-11-04：多目标并发时把在途驻防英雄当"已占用"，自动编队换人（401/403 防护）
+        ServerGuardianEngine engine = engine();
+        assertTrue(engine.inFlightHeroes().isEmpty());
+        engine.recordMissionHeroesForTest(9001L, java.util.Arrays.asList(1L, 2L, 3L));
+        engine.recordMissionHeroesForTest(9002L, java.util.Arrays.asList(3L, 4L, 5L));
+        java.util.Set<Long> used = new java.util.HashSet<>(engine.inFlightHeroes());
+        assertEquals(5, used.size());
+        assertTrue(used.contains(1L) && used.contains(5L));
+        engine.shutdown();
+    }
+
     // ---------------- 行为 ----------------
 
     @Test
