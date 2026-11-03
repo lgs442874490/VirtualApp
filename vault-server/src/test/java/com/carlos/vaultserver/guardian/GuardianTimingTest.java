@@ -221,10 +221,10 @@ public class GuardianTimingTest {
      *  同时显式关闭 catch_up：卡秒用例只测发射时序，避免追赶账本干扰断言。 */
     private static final String LIVE_CFG = "{\"sub\":{\"enabled\":true,\"dry_run\":false,"
             + "\"catch_up\":false},"
-            + "\"strategy\":{\"timing\":true,\"formation\":{\"hero_ids\":[1]}}}";
+            + "\"strategy\":{\"timing\":true,\"require_ally\":false,\"formation\":{\"hero_ids\":[1]}}}";
     private static final String DRY_CFG = "{\"sub\":{\"enabled\":true,\"dry_run\":true,"
             + "\"catch_up\":false},"
-            + "\"strategy\":{\"timing\":true}}";
+            + "\"strategy\":{\"timing\":true,\"require_ally\":false}}";
 
     // ---------------- 纯函数：fireAt / 配置默认与关闭 ----------------
 
@@ -246,7 +246,7 @@ public class GuardianTimingTest {
                 ServerGuardianEngine.fireAtSec(t, def));
 
         ServerGuardianEngine.Config custom = ServerGuardianEngine.parseConfig(new JSONObject(
-                "{\"strategy\":{\"timing\":false,\"fire_margin_sec\":7,\"d_sec\":40,"
+                "{\"strategy\":{\"timing\":false,\"require_ally\":false,\"fire_margin_sec\":7,\"d_sec\":40,"
                         + "\"max_concurrent\":2}}"));
         assertFalse(custom.timingEnabled);
         assertEquals(7L, custom.fireMarginSec);
@@ -318,7 +318,7 @@ public class GuardianTimingTest {
     @Test
     public void timingOff_returnsToImmediateLaunch() {
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
-                + "\"strategy\":{\"timing\":false,\"formation\":{\"hero_ids\":[1]}}}");
+                + "\"strategy\":{\"timing\":false,\"require_ally\":false,\"formation\":{\"hero_ids\":[1]}}}");
         TestEngine e = new TestEngine();
         presetQueueOk(e);
         presetSoldiers(e);

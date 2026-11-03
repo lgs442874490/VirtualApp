@@ -498,24 +498,6 @@ public class FormationStoreTest {
     }
 
     @Test
-    public void guardianCfg_protectFidsCsvAndArray() throws Exception {
-        // 2026-11-04：守护对象 FID（跨联盟/友盟也守）——CSV 与数组都兼容，非法项丢弃、去重、上限 20
-        FnParams.GuardianCfg c = FnParams.guardianCfg(new JSONObject()
-                .put("protect_fids", "35371154, 23954889，abc,35371154"));
-        assertEquals("35371154,23954889", c.protectFids);
-        FnParams.GuardianCfg c2 = FnParams.guardianCfg(new JSONObject()
-                .put("protect_fids", new org.json.JSONArray().put("111").put(222).put("x")));
-        assertEquals("111,222", c2.protectFids);
-        // 保存：CSV → JSONArray；空则移除键
-        JSONObject out = FnParams.applyGuardianCfg(new JSONObject(), c);
-        assertEquals(2, out.getJSONArray("protect_fids").length());
-        assertEquals("35371154", out.getJSONArray("protect_fids").getString(0));
-        FnParams.GuardianCfg empty = new FnParams.GuardianCfg();
-        assertFalse(FnParams.applyGuardianCfg(new JSONObject().put("protect_fids",
-                new org.json.JSONArray().put("1")), empty).has("protect_fids"));
-    }
-
-    @Test
     public void applyGuardianCfg_removesLegacyUidKeys() throws Exception {
         JSONObject prev = new JSONObject()
                 .put("ally_uid", 123L)

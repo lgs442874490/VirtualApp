@@ -252,14 +252,19 @@ public class GuardianWarNotifyReceptionTest {
     }
 
     private static String liveCfg(int maxConcurrent, int retryIntervalMs) {
-        return liveCfg(maxConcurrent, retryIntervalMs, true);
+        return liveCfg(maxConcurrent, retryIntervalMs, true, true);
     }
 
     private static String liveCfg(int maxConcurrent, int retryIntervalMs, boolean rallyEnabled) {
+        return liveCfg(maxConcurrent, retryIntervalMs, rallyEnabled, true);
+    }
+
+    private static String liveCfg(int maxConcurrent, int retryIntervalMs, boolean rallyEnabled,
+                                  boolean requireAlly) {
         return "{\"sub\":{\"enabled\":true,\"dry_run\":false},"
                 + "\"strategy\":{\"timing\":false,\"max_concurrent\":" + maxConcurrent + ","
                 + "\"queue_retry_interval_ms\":" + retryIntervalMs + ",\"queue_retry_max\":50,"
-                + "\"rally_enabled\":" + rallyEnabled + ","
+                + "\"rally_enabled\":" + rallyEnabled + ",\"require_ally\":" + requireAlly + ","
                 + "\"formation\":{\"hero_ids\":[1]}}}";
     }
 
@@ -430,13 +435,10 @@ public class GuardianWarNotifyReceptionTest {
     }
 
     @Test
-    public void protectFid_crossAllianceTarget_launchesGarrison() {
-        // 2026-11-04：炎黄(ZON) 要守 隆科多(KFC)——跨联盟。配置里填游戏内 FID，
-        // 服务端换算 uid 后把该城视为友方（否则会被 skip_not_own_ally 拦下）。
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
-                + "\"strategy\":{\"timing\":false,\"max_concurrent\":6,"
-                + "\"protect_fids\":[\"35371154\"],"
-                + "\"formation\":{\"hero_ids\":[1]}}}");
+    public void crossAllianceTarget_neverGarrisoned() {
+        // 【硬性规则 2026-11-04】驻防只给本盟；跨盟只能进攻，绝不驻防。
+        // 炎黄(ZON) 打隆科多(KFC) 这种跨盟目标必须被 skip_not_own_ally 拦下，且没有任何发射。
+        accountWithParams(liveCfg(6, 5_000, false));
         WatchPointStore wps = new WatchPointStore(Paths.get(tmp.getRoot().getAbsolutePath()));
         WatchPointEngine wpe = new WatchPointEngine(null, wps, null, null);
         wpe.seedCityForTest(OWN_UID, SELF_AID, OWN_X, OWN_Y, "[本]城");
@@ -449,34 +451,24 @@ public class GuardianWarNotifyReceptionTest {
         presetSoldiers(e);
         long now = System.currentTimeMillis() / 1000L;
         e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
-        Map<String, Object> result = new LinkedHashMap<>();
-        result.put("uid", 35371154L);
-        result.put("nickName", "隆科多");
-        Map<String, Object> body = new LinkedHashMap<>();
-        body.put("code", 0);
-        body.put("result", result);
-        GameMessage lookup = new GameMessage();
-        lookup.setContent(body);
-        e.responses.put("req_player_info_by_fid", lookup);
-
         ServerGuardianEngine engine = engine();
         engine.attach(e);
         engine.onPush(e, ServerGuardianEngine.PROTO_PLAYER_MARCH_ADD,
-                playerMarch(13400L, ENEMY_UID, 2L, ENEMY_X, ENEMY_Y,
-                        ALLY_X, ALLY_Y, 35371154L, now + 120L));
+                playerMarch(13401L, ENEMY_UID, 2L, ENEMY_X, ENEMY_Y,
+                        ALLY_X, ALLY_Y, ALLY_UID, now + 120L));
         engine.awaitIdleForTest(3_000L);
 
-        assertEquals("守护对象 FID 命中 → 跨联盟也要驻防：" + ledgerText(), 1,
+        assertEquals("跨盟目标绝不驻防：" + ledgerText(), 0,
                 countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
-        assertEquals(1, engine.missionCount());
-        assertEquals("不应被 skip_not_own_ally 拦下", 0, ledgerCount("skip_not_own_ally"));
+        assertTrue("应记 skip_not_own_ally：" + ledgerText(),
+                ledgerCount("skip_not_own_ally") >= 1);
     }
 
     // ---------------- 目标数 > 队列数 ----------------
 
     @Test
     public void sevenTargets_sixQueues_firstSixLaunchAndSeventhQueued() {
-        accountWithParams(liveCfg(6, 5_000));
+        accountWithParams(liveCfg(6, 5_000, true, false));
         seedCities();
         TestEngine e = new TestEngine();
         presetWorld(e, 5);
@@ -504,7 +496,7 @@ public class GuardianWarNotifyReceptionTest {
 
     @Test
     public void seventhTarget_launchesAfterQueueFreed() throws Exception {
-        accountWithParams(liveCfg(6, 1_000));
+        accountWithParams(liveCfg(6, 1_000, true, false));
         seedCities();
         TestEngine e = new TestEngine();
         presetWorld(e, 5);

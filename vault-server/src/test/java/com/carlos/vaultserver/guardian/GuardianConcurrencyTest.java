@@ -233,6 +233,7 @@ public class GuardianConcurrencyTest {
     private static String liveCfg(int maxConcurrent) {
         return "{\"sub\":{\"enabled\":true,\"dry_run\":false},"
                 + "\"strategy\":{\"timing\":false,\"max_concurrent\":" + maxConcurrent + ","
+                + "\"require_ally\":false,"
                 + "\"formation\":{\"hero_ids\":[1]}}}";
     }
 

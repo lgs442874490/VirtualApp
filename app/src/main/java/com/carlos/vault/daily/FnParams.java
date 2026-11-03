@@ -342,33 +342,6 @@ public final class FnParams {
      * 「谁在打本盟哪个城」，用户既不知道 uid 也无法预知被打目标；配置页不再出现任何 uid。
      * 旧键（ally_uid/target_uid/target_point/d_sec）保存时会被主动清掉。
      */
-    /** FID 列表 → 逗号分隔文本（数组/CSV 都兼容；只留纯数字、去重、上限 20）。 */
-    public static String joinFids(Object raw) {
-        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
-        if (raw instanceof JSONArray) {
-            JSONArray arr = (JSONArray) raw;
-            for (int i = 0; i < arr.length() && out.size() < 20; i++) {
-                String v = String.valueOf(arr.opt(i) == null ? "" : arr.opt(i)).trim();
-                if (v.matches("\\d{1,20}")) out.add(v);
-            }
-        } else if (raw != null) {
-            for (String v : String.valueOf(raw).split("[,，\\s]+")) {
-                String t = v.trim();
-                if (t.matches("\\d{1,20}") && out.size() < 20) out.add(t);
-            }
-        }
-        return String.join(",", out);
-    }
-
-    /** 逗号分隔 FID → JSONArray（保存用；非法项丢弃）。 */
-    public static JSONArray splitFids(String csv) {
-        JSONArray arr = new JSONArray();
-        String joined = joinFids(csv);
-        if (joined.isEmpty()) return arr;
-        for (String v : joined.split(",")) arr.put(v);
-        return arr;
-    }
-
     public static final class GuardianCfg {
         public boolean enabled = false;
         /** 演练模式：只记录不派兵（默认 true，服务器同口径）。 */
@@ -383,11 +356,6 @@ public final class FnParams {
         public long troopsMin = 0L;
         /** 同角色最多同时驻防目标数（1..6；守护账号 6 队列全可用，默认 6）。 */
         public int maxConcurrent = 6;
-        /**
-         * 守护对象 FID（可选，逗号分隔；2026-11-04）：本盟成员由联盟态势自动识别，
-         * 这里填的是「跨联盟/友盟也要守」的对象——用户只知道游戏内 FID，服务端换算 uid。
-         */
-        public String protectFids = "";
         /** 对等加速：敌方加速时我方在途驻防同步加速（默认关，会消耗加速道具）。 */
         public boolean speedupEnabled = false;
         /** 集结也驻防（默认开；巨兽/野外集结仍按目标是否本盟城过滤）。 */
@@ -469,8 +437,6 @@ public final class FnParams {
             c.troopsMin = Math.max(0L, gNum(sub, st, p, "troops_min", 0L));
             long mc = gNum(sub, st, p, "max_concurrent", 6L);
             c.maxConcurrent = (int) Math.max(1L, Math.min(6L, mc));
-            Object pf = gFirst(sub, st, p, "protect_fids");
-            c.protectFids = joinFids(pf);
             c.speedupEnabled = gBool(sub, st, p, "speedup_enabled", false);
             c.rallyEnabled = gBool(sub, st, p, "rally_enabled", true);
             long qr = gNum(sub, st, p, "queue_retry_max", 12L);
@@ -507,9 +473,8 @@ public final class FnParams {
             out.remove("target_point");
             out.remove("d_sec");
             out.put("max_concurrent", Math.max(1, Math.min(6, cfg.maxConcurrent)));
-            org.json.JSONArray pf = splitFids(cfg.protectFids);
-            if (pf.length() > 0) out.put("protect_fids", pf);
-            else out.remove("protect_fids");
+            // 硬性规则 2026-11-04：驻防只给本盟，跨盟只能进攻 → 不保留任何"额外守护对象"输入口
+            out.remove("protect_fids");
             out.put("rally_enabled", cfg.rallyEnabled);
             out.put("catch_up", cfg.catchUp);
             out.put("preempt_gather", cfg.preemptGather);

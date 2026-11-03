@@ -762,7 +762,7 @@ public class ServerGuardianEngineTest {
 
     @Test
     public void dryRun_recordsThreatAndLedgerWithoutRequest() {
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":true}}");
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":true,\"require_ally\":false}}");
         TestEngine e = new TestEngine();
         ServerGuardianEngine engine = engine();
         engine.attach(e);
@@ -861,7 +861,7 @@ public class ServerGuardianEngineTest {
 
     @Test
     public void offline_skipsWithoutRequest() {
-        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false}}");
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,\"require_ally\":false}}");
         TestEngine e = new TestEngine();
         e.online = false;
         ServerGuardianEngine engine = engine();
