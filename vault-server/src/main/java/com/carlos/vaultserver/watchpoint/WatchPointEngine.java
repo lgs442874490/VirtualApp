@@ -185,6 +185,15 @@ public final class WatchPointEngine {
         return c == null ? null : new CityInfo(c.uid, c.aid, c.lv, c.nick, c.x, c.y);
     }
 
+    /**
+     * 整图城缓存是否已有数据（2026-11-04）：守护用「集结终点是否城」过滤巨兽/野外集结，
+     * 但缓存未完成首扫时 cityAt 恒 null；此时不得据此拒绝真实威胁，应退回旧判定。
+     */
+    public static boolean cityCacheReady() {
+        WatchPointEngine e = SHARED;
+        return e != null && !e.cityByPoint.isEmpty();
+    }
+
     /** 坐标是否落在保护矩形（友盟聚集地）内；未启用/无矩形返回 false。 */
     public static boolean inProtectRect(int x, int y) {
         WatchPointEngine e = SHARED;

@@ -2249,7 +2249,16 @@ public final class ServerGuardianEngine {
         Config cfg = config;
         long nowMs = clockMs.getAsLong();
         Decision d = decide(t, cfg, nowMs);
-        if (!d.hit) return;
+        if (!d.hit) {
+            // 2026-11-04：巨兽/野外集结留痕（同威胁只记一次，防 update 刷屏）。
+            if (d.reason != null && d.reason.startsWith("pve_rally")) {
+                String prev = thresholdNotes.put(t.marchId, d.reason);
+                if (!d.reason.equals(prev)) {
+                    ledger("skip_pve_rally", t, null, d.reason + "，不驻防");
+                }
+            }
+            return;
+        }
         // 批次 I：集结单独成链（真伪 → 5 分钟等待 → 出发秒评估）；等待期零请求、卡秒不生效
         boolean rally = cfg.rallyEnabled && RALLY_THREAT_TYPES.contains(t.type);
         if (rally) {
@@ -4899,6 +4908,19 @@ public final class ServerGuardianEngine {
         if (cfg == null || !cfg.enabled) return Decision.no("disabled");
         if (cfg.attackTypes == null || !cfg.attackTypes.contains(t.type)) {
             return Decision.no("not_attack（type=" + t.type + " 不在 attack_types=" + cfg.attackTypes + "）");
+        }
+        // 2026-11-04 真机记录分析：与战争通知同口径——集结类（100/102）只有终点命中
+        // 观察点城缓存里的「城」才算敌情；巨兽/野外集结终点是 boss/资源点，cityAt=null。
+        // 否则会把巨兽集结当盟友城威胁，反复查询/记账（真机 10 分钟 47 条 rally_probe_zero）。
+        if (RALLY_THREAT_TYPES.contains(t.type) && t.hasXY
+                && com.carlos.vaultserver.watchpoint.WatchPointEngine.cityCacheReady()) {
+            try {
+                if (com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(t.x, t.y) == null) {
+                    return Decision.no("pve_rally（集结目标不是城：巨兽/野外集结）");
+                }
+            } catch (Throwable ignored) {
+                // 观察点未安装/异常：不因此拒绝真实威胁，继续原判定
+            }
         }
         long nowS = nowMs / 1000L;
         if (t.endEpochSec <= 0) return Decision.no("no_eta");
