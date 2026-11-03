@@ -1302,7 +1302,7 @@ public class ServerGuardianEngineTest {
 
     @Test
     public void diamondSwitchOn_buysThenUses50Percent() {
-        // 开关打开 + 道具 0 + 购买成功：请求序列必须是 quick_buy(301901,count=1) → speedup(301901)
+        // 开关打开 + 道具 0 + 购买成功：2×25% 也来不及（120s vs 64s）→ quick_buy(301901) → speedup(301901)
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false,"
                 + "\"speedup_enabled\":true,\"diamond_speedup_enabled\":true,"
                 + "\"catch_up\":false},"
@@ -1318,7 +1318,7 @@ public class ServerGuardianEngineTest {
         e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP, speedupOk(nowS + 60L));
 
         engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_UPDATE,
-                attackPush(13080L, ENEMY_UID, 1001L, nowS + 80L, 679, 686));
+                attackPush(13080L, ENEMY_UID, 1001L, nowS + 64L, 679, 686));
         engine.awaitIdleForTest(3_000L);
 
         // 请求序列：先买后加速（与 App「买完同一轮 speedup」同序）
@@ -2293,9 +2293,18 @@ public class ServerGuardianEngineTest {
         GuardianSpeedupPlanner.Step need50 = ServerGuardianEngine.pickSpeedupStep(
                 120_000L, 80_000L, 0, 0, 0, 0, 0, 0, 0, true, margin);
         assertEquals(GuardianSpeedupPlanner.Action.NEED_DIAMOND, need50.action);
-        assertEquals("25% 不达 → 买 301901", 301901L,
+        assertEquals("1 颗 25% 不达、2 颗 25% 可达 → 仍优先 301900（800 钻 vs 2000 钻）", 301900L,
                 ServerGuardianEngine.diamondBuyItem(need50, false, 120_000L, 80_000L,
                         0, 0, 0, 0, 0, true, margin));
+
+        // 2×25% 也来不及（160→90，敌 90/margin 2），但 1×50% 可先到（80 ≤ 88）→ 才买 301901
+        assertEquals("2×25% 不达、1×50% 可达 → 买 301901", 301901L,
+                ServerGuardianEngine.diamondBuyItem(need50, false, 160_000L, 90_000L,
+                        0, 0, 0, 0, 0, true, margin));
+        // 预算只够 1 颗时不能按 2×25% 规划：1×25% 不达 → 直接买 50%
+        assertEquals("预算只剩 1 颗 → 1×25% 不达则买 301901", 301901L,
+                ServerGuardianEngine.diamondBuyItem(need50, false, 120_000L, 80_000L,
+                        0, 0, 0, 0, 0, true, margin, 1));
         assertEquals("梭哈必买 301900", 301900L,
                 ServerGuardianEngine.diamondBuyItem(need50, true, 120_000L, 80_000L,
                         0, 0, 0, 0, 0, true, margin));

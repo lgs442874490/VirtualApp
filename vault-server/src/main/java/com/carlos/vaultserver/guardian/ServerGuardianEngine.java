@@ -459,6 +459,11 @@ public final class ServerGuardianEngine {
         final boolean hasPoint;
         /** 批次 J：已记账 garrison_done（本次驻防完成，不重复记账）。 */
         volatile boolean garrisonDone;
+        /**
+         * 2026-11-03 审查 P1-2 补强：战报判负（我方驻防可能已消亡）→ 允许同目标下一波重新驻防。
+         * 旧实现只在 tick TTL/撤防成功时清 Mission，战败后会挡住合法补防最长 600s。
+         */
+        volatile boolean defeated;
         /** 批次 J：目标最近一次确认「无在途敌方行军」的起始时刻（0=有在途）。 */
         volatile long targetIdleSinceMs;
         /** 批次 J：已提交召回（防重复召回风暴）；失败会复位以便 60s 后重试。 */
@@ -1123,8 +1128,10 @@ public final class ServerGuardianEngine {
     private boolean hasIncomingThreat(Mission m, long nowS) {
         if (m == null) return false;
         for (Threat t : threats.values()) {
-            if (t == null || t.endEpochSec <= 0L) continue;
-            if (t.endEpochSec <= nowS - RECALL_THRESHOLD_SEC) continue;   // 已落地/过期
+            if (t == null) continue;
+            // 有 endtime 且已落地/过期 → 不算在途；无 endtime（ETA 尚未补齐）保守视为在途，
+            // 避免“第二路推送先到、ETA 后补”的窗口里误撤防（规则 3.4）。
+            if (t.endEpochSec > 0L && t.endEpochSec <= nowS - RECALL_THRESHOLD_SEC) continue;
             if (sameTarget(m, t)) return true;
         }
         return false;
@@ -1144,11 +1151,8 @@ public final class ServerGuardianEngine {
      * <p>邮件与敌方到达时刻按「最近一次敌方到达 ≤10min」关联；同一任务只记一次。
      * 只在守护战争态口径（guardian 实盘 + 未回滚）下记账，旧「战报只记账」语义不变。
      */
-    void maybeNoteGarrisonDone(GuardReportCodes.ReportMail mail, Config cfg) {
+    void maybeNoteGarrisonDone(GuardReportCodes.ReportMail mail, Config cfg, String verdict) {
         if (mail == null || cfg == null || !cfg.enabled) return;
-        VaultStore.Account acc = vault == null ? null : vault.find(fpid);
-        GuardianWar.Settings ws = GuardianWar.resolve(acc, sid, roleUid);
-        if (!ws.enabled) return;
         long nowS = clockMs.getAsLong() / 1000L;
         Mission best = null;
         long bestGap = Long.MAX_VALUE;
@@ -1163,11 +1167,27 @@ public final class ServerGuardianEngine {
             }
         }
         if (best == null) return;
+        // 2026-11-03 审查 P1-2 补强：战报判负 → 标记 defeated，允许同目标下一波重新驻防。
+        // 不依赖守护战争态开关（即使 war 关闭，下一波也不能被残留 Mission 挡 600s）。
+        if (GuardReportCodes.LOSS.equals(verdict)) {
+            best.defeated = true;
+            String lossNote = "驻防战报判负，允许同目标补防：我方 end=" + best.endtimeSec
+                    + " 敌 end=" + best.enemyEndSec + " ownMarchId=" + best.marchId
+                    + " enemyMarchId=" + best.enemyMarchId
+                    + " mail=" + mail.firstType + "/" + mail.secondType;
+            ledger("garrison_defeated", null, null, lossNote);
+            FileLog.warn("守护驻防判负 {}:{} uid={} {}", fpid, String.valueOf(sid),
+                    String.valueOf(roleUid), lossNote);
+        }
+        VaultStore.Account acc = vault == null ? null : vault.find(fpid);
+        GuardianWar.Settings ws = GuardianWar.resolve(acc, sid, roleUid);
+        if (!ws.enabled) return;
         best.garrisonDone = true;
         String note = "驻防完成（先到+战报）：我方 end=" + best.endtimeSec + " < 敌 end="
                 + best.enemyEndSec + " ownMarchId=" + best.marchId
                 + " enemyMarchId=" + best.enemyMarchId
-                + " mail=" + mail.firstType + "/" + mail.secondType;
+                + " mail=" + mail.firstType + "/" + mail.secondType
+                + (verdict == null ? "" : " verdict=" + verdict);
         ledger("garrison_done", null, null, note);
         FileLog.info("守护驻防完成 {}:{} uid={} {}", fpid, String.valueOf(sid),
                 String.valueOf(roleUid), note);
@@ -1935,6 +1955,14 @@ public final class ServerGuardianEngine {
             ledger("threat_recalled", t, null, "敌召回（无我方驻防任务）");
             return;
         }
+        // 2026-11-03 审查 P1-1（规则 3.4）：仅在“该目标已无后续在途敌方出征”时才撤防。
+        // 此前敌召回单路 del 即撤，第二路仍在途时会把驻防骗回，第二波零驻防。
+        // 正确写法与 warGarrisonRecallTick 的 hasIncomingThreat 校验对齐。
+        if (hasIncomingThreat(m, nowS)) {
+            ledger("threat_recalled_keep_incoming", t, null,
+                    "敌召回，但同目标仍有后续在途敌方行军 → 保留驻防（规则 3.4）");
+            return;
+        }
         Config cfg = config;
         if (!cfg.recall) {
             ledger("threat_recalled_keep", t, null, "敌召回；配置 recall=false 保留驻防");
@@ -2340,6 +2368,28 @@ public final class ServerGuardianEngine {
         String lateTag = remainS <= 0L
                 ? "late_reinforce（已落地 " + Math.max(0L, -remainS) + "s，补驻防）→ " : "";
         String targetKey = targetKey(t);
+        // 2026-11-03 审查 P1-2：同目标已有在途/驻扎驻防 → 不重复发射（类注释不变式）。
+        // 此前只靠 activeTargets（单线程 guardExec 内 add/remove，实际不拦截）+ missions.size()，
+        // 同目标第二个威胁会再发一队并 missions.put 覆盖第一支 Mission，导致第一队失联/召回错队。
+        Mission existingMission = missions.get(targetKey);
+        if (existingMission != null && existingMission.defeated) {
+            // 2026-11-03 审查 P1-2 补强：旧驻防战报判负 → 先清 Mission，允许本波重新驻防。
+            if (missions.remove(targetKey, existingMission)) {
+                ledger("garrison_defeated_clear", t, null,
+                        "旧驻防战报判负，清除 Mission 并允许补驻防 marchId="
+                                + existingMission.marchId + "（enemyMarchId="
+                                + existingMission.enemyMarchId + "）");
+            }
+            existingMission = null;
+        }
+        if (existingMission != null) {
+            ledger("skip_existing_garrison", t, null,
+                    "目标已有我方驻防 marchId=" + existingMission.marchId
+                            + "（enemyMarchId=" + existingMission.enemyMarchId
+                            + "，endtime=" + existingMission.endtimeSec + "），本威胁不重复发射");
+            clearQueueRetry(marchId);
+            return;
+        }
         // 批次 G：targetUid=0（type=102 集结常见）→ 按盟友坐标反查 uid 供 launcher 的 target_uid 变体；
         // 反查不到/坐标表为空则不发射（防 2810 风暴），可 require_ally=false/env off 回旧行为。
         long resolvedTargetUid = t.targetUid;
@@ -2972,6 +3022,13 @@ public final class ServerGuardianEngine {
         max = Math.max(1, Math.min(CATCHUP_MAX_ROUNDS_HARD, max));
         try {
             refreshStock(engine);
+            // 2026-11-03 审查 P1-3：库存未知（背包快照未同步）绝不花钻石。
+            // 与 executeSpeedupRound 的 stock_unknown 安全闸同口径；此前 -1 会直接落入 quickBuy 分支。
+            if (stock25 < 0L || stock50 < 0L) {
+                ledger("rally_speedup_skip", t, null,
+                        "集结前置加速：背包库存未知（快照未同步），不花钻石，止损");
+                return 0;
+            }
             while (shots < max && m.endtimeSec > 0L && m.endtimeSec > enemyEndSec - 1L) {
                 long item;
                 int bought = diamondBoughtByMarch.getOrDefault(m.marchId, 0);
@@ -2981,17 +3038,19 @@ public final class ServerGuardianEngine {
                     item = GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
                 } else if (cfg.diamondSpeedupEnabled
                         && (cfg.diamondMaxPerMarch <= 0 || bought < cfg.diamondMaxPerMarch)) {
+                    // 2026-11-03 审查 P1-4：优先买 −25%（301900，约 400 钻/次）；
+                    // 1×50% ≡ 2×25%，无道具时连续买 25% 到先到/预算耗尽，不再直接买 2000 钻的 50%。
                     ServerGuardianLauncher.QuickBuyResult br =
-                            launcher.quickBuy(engine, GuardianSpeedupPlanner.ITEM_SPEEDUP_50, 1L);
+                            launcher.quickBuy(engine, GuardianSpeedupPlanner.ITEM_SPEEDUP_25, 1L);
                     if (!br.ok) {
                         ledger("rally_speedup_buy_failed", t, null,
                                 "集结前置加速：钻石购买失败 code=" + br.code + "（" + br.text + "）");
                         break;
                     }
                     diamondBoughtByMarch.put(m.marchId, bought + 1);
-                    stock50 = Math.max(0L, stock50) + 1L;
-                    item = GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
-                    ledger("rally_speedup_buy", t, null, "集结前置加速：钻石购买 301901 成功（已买 "
+                    stock25 = Math.max(0L, stock25) + 1L;
+                    item = GuardianSpeedupPlanner.ITEM_SPEEDUP_25;
+                    ledger("rally_speedup_buy", t, null, "集结前置加速：钻石购买 301900(−25%) 成功（已买 "
                             + (bought + 1) + "/" + (cfg.diamondMaxPerMarch <= 0 ? "unlimited"
                             : String.valueOf(cfg.diamondMaxPerMarch)) + "）");
                 } else {
@@ -3054,6 +3113,14 @@ public final class ServerGuardianEngine {
                 FileLog.info("守护盟友撤防 {}:{} {}", fpid, String.valueOf(sid), text);
                 ledger("recalled", null, null, text);
                 writeMod("🧹" + text);
+                return true;
+            } else if (code == ServerGuardianLauncher.CODE_MARCH_NOT_FOUND) {
+                // 2026-11-03 审查 P1-2 补强：行军不存在 = 已返回/已消亡，清理 Mission，
+                // 避免残留 Mission 挡住同目标下一波，也避免 warGarrisonRecallTick 无限重试。
+                missions.entrySet().removeIf(en -> en.getValue().marchId == mission.marchId);
+                FileLog.info("守护盟友撤防目标已不存在 {}:{}（视为已消亡，清理 Mission）",
+                        fpid, String.valueOf(sid));
+                ledger("garrison_gone", null, null, text + "；march 不存在，视为已消亡，清理 Mission");
                 return true;
             } else {
                 FileLog.warn("守护盟友撤防失败 {}:{} {}", fpid, String.valueOf(sid), text);
@@ -3199,12 +3266,37 @@ public final class ServerGuardianEngine {
                                long ourRemainMs, long enemyRemainMs, long stock25, long stock50,
                                int usedThisMarch, int maxPerMarch, int usedThisRound,
                                boolean diamondAllowed, long marginMs) {
+        // 兼容旧调用/单测：默认按“还能买 2 颗”做 2×25% 探测。
+        return diamondBuyItem(step, burst, ourRemainMs, enemyRemainMs, stock25, stock50,
+                usedThisMarch, maxPerMarch, usedThisRound, diamondAllowed, marginMs, 2);
+    }
+
+    /**
+     * 2026-11-03 审查 P1-4：在“预算还够买 2 颗”时先探测 2×25% 是否可达；可达则买 301900
+     * （随后下一轮再买第二颗），不可达/预算只够 1 颗时再按原逻辑探测 1×25%，否则买 301901。
+     * 这样避免“1 颗 25% 不够、但 2 颗 25% 够”的场景直接买 50%（2000 钻 vs 800 钻）。
+     *
+     * @param buysLeft 本行军剩余可购买次数（diamond_max_per_march − 已购；&lt;=0 表示不限/未提供）
+     */
+    static long diamondBuyItem(GuardianSpeedupPlanner.Step step, boolean burst,
+                               long ourRemainMs, long enemyRemainMs, long stock25, long stock50,
+                               int usedThisMarch, int maxPerMarch, int usedThisRound,
+                               boolean diamondAllowed, long marginMs, int buysLeft) {
         if (burst) return GuardianSpeedupPlanner.ITEM_SPEEDUP_25;
-        GuardianSpeedupPlanner.Step probe = GuardianSpeedupPlanner.next(
+        if (buysLeft >= 2) {
+            GuardianSpeedupPlanner.Step probe2 = GuardianSpeedupPlanner.next(
+                    new GuardianSpeedupPlanner.Input(ourRemainMs, enemyRemainMs, marginMs,
+                            Math.max(0L, stock25) + 2L, Math.max(0L, stock50),
+                            usedThisMarch, maxPerMarch, usedThisRound, diamondAllowed));
+            if (probe2.action == GuardianSpeedupPlanner.Action.USE_25) {
+                return GuardianSpeedupPlanner.ITEM_SPEEDUP_25;
+            }
+        }
+        GuardianSpeedupPlanner.Step probe1 = GuardianSpeedupPlanner.next(
                 new GuardianSpeedupPlanner.Input(ourRemainMs, enemyRemainMs, marginMs,
                         Math.max(0L, stock25) + 1L, Math.max(0L, stock50),
                         usedThisMarch, maxPerMarch, usedThisRound, diamondAllowed));
-        return probe.action == GuardianSpeedupPlanner.Action.USE_25
+        return probe1.action == GuardianSpeedupPlanner.Action.USE_25
                 ? GuardianSpeedupPlanner.ITEM_SPEEDUP_25
                 : GuardianSpeedupPlanner.ITEM_SPEEDUP_50;
     }
@@ -3430,8 +3522,10 @@ public final class ServerGuardianEngine {
                 finishCatchup(enemyMarchId, t, "no_item");
                 return;
             }
+            int buysLeft = cfg.diamondMaxPerMarch <= 0 ? 2
+                    : Math.max(0, cfg.diamondMaxPerMarch - bought);
             long buyItem = diamondBuyItem(step, burst, ourRemain, enemyRemain, stock25, stock50,
-                    usedMarch, cfg.maxSpeedupsPerMarch, c.rounds, diamondOk, marginMs);
+                    usedMarch, cfg.maxSpeedupsPerMarch, c.rounds, diamondOk, marginMs, buysLeft);
             ServerGuardianLauncher.QuickBuyResult br = launcher.quickBuy(engine, buyItem, 1);
             c.rounds++;
             if (!br.ok) {
@@ -3650,9 +3744,11 @@ public final class ServerGuardianEngine {
                     return;
                 }
                 long buyAtMs = serverNowMs(engine);
+                int buysLeft = cfg.diamondMaxPerMarch <= 0 ? 2
+                        : Math.max(0, cfg.diamondMaxPerMarch - bought);
                 long buyItem = diamondBuyItem(step, burst, ourRemain, enemyRemain,
                         stock25, stock50, usedMarch, cfg.maxSpeedupsPerMarch, usedRound,
-                        diamondOk, marginMs);
+                        diamondOk, marginMs, buysLeft);
                 ServerGuardianLauncher.QuickBuyResult br =
                         launcher.quickBuy(engine, buyItem, 1L);
                 long buyLatencyMs = buyAtMs - compressAtMs;
@@ -4312,9 +4408,10 @@ public final class ServerGuardianEngine {
             String dedupe = mailKey(mail);
             if (dedupe != null && !seenReportKeys.add(dedupe)) continue;   // 同邮件重复推送
             if (seenReportKeys.size() > 500) seenReportKeys.clear();
-            // 批次 J：我方先到 + 战报/驻防邮件（first_type=30）→ 账本 garrison_done
-            maybeNoteGarrisonDone(mail, cfg);
             String verdict = mapping.verdictOf(mail.firstType, mail.secondType);
+            // 批次 J：我方先到 + 战报/驻防邮件（first_type=30）→ 账本 garrison_done；
+            // 2026-11-03 审查 P1-2：判负同时标记 Mission.defeated，允许同目标补防。
+            maybeNoteGarrisonDone(mail, cfg, verdict);
             String title = clip(mail.title, 80);
             String note = "first=" + mail.firstType + " second=" + mail.secondType
                     + " verdict=" + (verdict == null ? "unknown(未收录)" : verdict)

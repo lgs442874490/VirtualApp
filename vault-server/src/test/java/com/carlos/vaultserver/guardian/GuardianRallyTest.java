@@ -275,6 +275,13 @@ public class GuardianRallyTest {
             + "\"strategy\":{\"require_ally\":false,\"rally_troops_min\":300000,"
             + "\"formation\":{\"hero_ids\":[1]}}}";
 
+    /** 2026-11-03 审查 P1-3/P1-4：钻石加速开启（默认关，仅本组用例显式打开）。 */
+    private static final String DIAMOND_CFG =
+            "{\"sub\":{\"enabled\":true,\"dry_run\":false,\"catch_up\":false,"
+                    + "\"diamond_speedup_enabled\":true},"
+                    + "\"strategy\":{\"require_ally\":false,\"rally_troops_min\":300000,"
+                    + "\"formation\":{\"hero_ids\":[1]}}}";
+
     private ServerGuardianEngine.Rally rally(long soldierMax, long soldierCount,
                                              boolean hasSoldierInfo, boolean hasJoinInfo,
                                              boolean someoneFull, boolean cancelled) {
@@ -458,6 +465,72 @@ public class GuardianRallyTest {
         assertTrue("账本含前置加速发数: " + lastLedger().getString("note"),
                 lastLedger().getString("note").contains("前置加速=2发"));
         assertEquals(1, engine.missionCount());
+    }
+
+    // ---------------- 4.5 2026-11-03 审查 P1-3/P1-4：钻石安全闸与 25% 优先 ----------------
+
+    @Test
+    public void earlySpeedup_stockUnknown_neverBuysDiamond() {
+        // 背包快照未同步（stock=-1）→ 即使钻石开关开，也必须零 quick_buy / 零加速，只记账止损。
+        accountWithParams(DIAMOND_CFG);
+        TestEngine e = new TestEngine();
+        presetQueue(e, 5);
+        presetSoldiers(e);                       // 不预置 notify_backpack_init → 库存未知
+        long nowS = clock.get() / 1000L;
+        e.launchEnd = nowS + 331L;               // 我方晚于敌（敌 nowS+320）
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPushAt(e, ServerGuardianEngine.PROTO_MASS_ADD,
+                massAdd(13090L, nowS, 100_000L, 400_000L, true, true), clock.get());
+        engine.onPushAt(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                attackPush(13090L, nowS + 320L), clock.get());
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("先发射驻防", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
+        assertEquals("库存未知绝不花钻石", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+        assertEquals("库存未知也不发加速", 0,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        assertTrue("必须记账 rally_speedup_skip",
+                ledgerCount("rally_speedup_skip") >= 1);
+    }
+
+    @Test
+    public void earlySpeedup_noItems_buys25PercentFirst() {
+        // 背包已同步但 25/50 都为 0 + 钻石开 → 优先买 301900(−25%) 并立即使用，不买 301901。
+        accountWithParams(DIAMOND_CFG);
+        TestEngine e = new TestEngine();
+        presetQueue(e, 5);
+        presetSoldiers(e);
+        presetStock(e, 0L);                      // 背包已同步：25/50 均为 0
+        Map<String, Object> buyOk = new LinkedHashMap<>();
+        buyOk.put("code", 0L);
+        e.responses.put(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY, msg(buyOk));
+        long nowS = clock.get() / 1000L;
+        e.launchEnd = nowS + 331L;
+        e.speedupEnds.add(nowS + 315L);          // 一发 25% 后先到（敌 end-1=319）
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPushAt(e, ServerGuardianEngine.PROTO_MASS_ADD,
+                massAdd(13091L, nowS, 100_000L, 400_000L, true, true), clock.get());
+        engine.onPushAt(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD,
+                attackPush(13091L, nowS + 320L), clock.get());
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("买 1 颗", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+        Map<String, Object> buyArgs = e.argLog.get(
+                e.requested.indexOf(ServerGuardianLauncher.PROTO_SHOP_QUICK_BUY));
+        assertEquals("无道具时优先买 −25% 301900", 301900L,
+                ((Number) buyArgs.get("id")).longValue());
+        assertEquals("立即使用刚买的 301900", 1,
+                requestCount(e, ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        Map<String, Object> spArgs = e.argLog.get(
+                e.requested.indexOf(ServerGuardianLauncher.PROTO_WORLD_MARCH_SPEEDUP));
+        assertEquals(301900L, ((Number) spArgs.get("itemid")).longValue());
+        assertTrue("应记 rally_speedup_buy",
+                ledgerCount("rally_speedup_buy") >= 1);
     }
 
     // ---------------- 5. 取消 / 无法判定 ----------------
