@@ -71,6 +71,15 @@ public class GuardianPveFilterTest {
     }
 
     @Test
+    public void foreignAllianceCity_isNotOurAlly() {
+        installCity(1001L, 777L, 100, 100);
+        assertFalse("同 aid → 本盟盟友", ServerGuardianEngine.isForeignAllianceCity(100, 100, 777L));
+        assertTrue("不同 aid → 非本盟", ServerGuardianEngine.isForeignAllianceCity(100, 100, 888L));
+        assertFalse("本盟 aid 未知 → 不据此拒绝", ServerGuardianEngine.isForeignAllianceCity(100, 100, 0L));
+        assertFalse("城未知 → 不据此拒绝", ServerGuardianEngine.isForeignAllianceCity(300, 300, 777L));
+    }
+
+    @Test
     public void singleAttackToNonCity_stillThreat() {
         // type=2 单人进攻不受“集结目标不是城”过滤影响（可能是非城目标/野怪，但守护原有语义保留）
         installCity(1001L, 777L, 100, 100);

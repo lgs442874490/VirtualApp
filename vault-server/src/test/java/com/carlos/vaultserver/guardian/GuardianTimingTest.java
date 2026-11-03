@@ -234,11 +234,11 @@ public class GuardianTimingTest {
                 new JSONObject("{\"sub\":{\"enabled\":true}}"));
         assertFalse("批次 D：卡秒默认关闭（立即发射优先）", def.timingEnabled);
         assertEquals("默认 fire margin=5s", 5L, def.fireMarginSec);
-        assertEquals("批次 D：默认并发=3", 3, def.maxConcurrent);
+        assertEquals("默认并发=6", 6, def.maxConcurrent);
         assertTrue("默认攻击类型含 2/102", def.attackTypes.contains(2L)
                 && def.attackTypes.contains(102L));
         assertTrue(def.describe().contains("timing=false"));
-        assertTrue(def.describe().contains("max_concurrent=3"));
+        assertTrue(def.describe().contains("max_concurrent=6"));
 
         ServerGuardianEngine.Threat t = new ServerGuardianEngine.Threat(
                 1L, ENEMY_UID, 2L, OWN_UID, 674, 684, true, 1000L, clock.get());

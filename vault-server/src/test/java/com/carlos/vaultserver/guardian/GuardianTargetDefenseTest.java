@@ -331,7 +331,7 @@ public class GuardianTargetDefenseTest {
         ServerGuardianEngine.Config cfg = ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"sub\":{\"enabled\":true}}"));
         assertFalse("批次 D：卡秒默认关", cfg.timingEnabled);
-        assertEquals(3, cfg.maxConcurrent);
+        assertEquals(6, cfg.maxConcurrent);
 
         accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
                 + "\"strategy\":{\"require_ally\":false,\"rally_enabled\":false,"
@@ -357,8 +357,8 @@ public class GuardianTargetDefenseTest {
     // ---------------- 3. 多目标并发 + 队列夹取 + ETA 排序 ----------------
 
     @Test
-    public void maxConcurrent_default3_clamp6_andQueueClamp() {
-        assertEquals(3, ServerGuardianEngine.parseConfig(
+    public void maxConcurrent_default6_clamp6_andQueueClamp() {
+        assertEquals(6, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"sub\":{\"enabled\":true}}")).maxConcurrent);
         assertEquals(6, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"strategy\":{\"max_concurrent\":9}}")).maxConcurrent);

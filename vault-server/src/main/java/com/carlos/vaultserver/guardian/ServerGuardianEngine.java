@@ -141,6 +141,29 @@ public final class ServerGuardianEngine {
 
     static final Set<String> ALLIANCE_MARCH_PROTOS = Set.of(
             PROTO_ALLIANCE_ADD, PROTO_ALLIANCE_UPDATE, PROTO_ALLIANCE_INIT);
+    /**
+     * 2026-11-04：战争通知的其余敌情接收源（与 {@link com.carlos.vaultserver.WarNotify} 同源）。
+     * <ul>
+     *   <li>{@code notify_player_march_add/_update}：敌情行军推送（march{owner,startpoint,endpoint,type,state}）；</li>
+     *   <li>{@code notify_world_situation_info_add/_up}：观察点世界态势（slot{march,power}）。</li>
+     * </ul>
+     * 过滤口径不复制一份，统一走 {@link com.carlos.vaultserver.WarNotify#classifyMarch}，
+     * 保证「什么算打自己盟友」与战争通知 1:1（巨兽/野外集结、同联盟、侦查、加入集结都不算）。
+     */
+    static final String PROTO_PLAYER_MARCH_ADD = "notify_player_march_add";
+    static final String PROTO_PLAYER_MARCH_UPDATE = "notify_player_march_update";
+    static final String PROTO_PLAYER_MARCH_DEL = "notify_player_march_del";
+    static final String PROTO_WORLD_SITUATION_ADD = "notify_world_situation_info_add";
+    static final String PROTO_WORLD_SITUATION_UP = "notify_world_situation_info_up";
+    /** 战争通知同源「敌情入账」协议（add/update；del 单独处理）。 */
+    static final Set<String> WAR_NOTIFY_THREAT_PROTOS = Set.of(
+            PROTO_PLAYER_MARCH_ADD, PROTO_PLAYER_MARCH_UPDATE,
+            PROTO_WORLD_SITUATION_ADD, PROTO_WORLD_SITUATION_UP);
+    /** 战争通知同源「敌情解除」协议（del；另兼容任意 {@code notify_player_march_*_del} 变体）。 */
+    static final Set<String> WAR_NOTIFY_DEL_PROTOS = Set.of(PROTO_PLAYER_MARCH_DEL);
+    /** 战争通知同源协议前缀（del 兼容用）。 */
+    static final String[] WAR_NOTIFY_PREFIXES = {
+            "notify_player_march", "notify_world_situation_info"};
 
     // ---------------- 行为常量 ----------------
 
@@ -190,8 +213,8 @@ public final class ServerGuardianEngine {
     static final long STALE_NO_ETA_THREAT_MILLIS = 10 * 60_000L;
     /** 任务表保留：endtime 之后保留 10 分钟（等战报/敌情结束；P0 不主动撤已驻扎）。 */
     static final long MISSION_KEEP_AFTER_END_SEC = 600L;
-    /** 批次 D：默认同角色最多同时 3 个在途驻防任务（多目标同时被攻）；上限 6。 */
-    static final int DEFAULT_MAX_CONCURRENT_MISSIONS = 3;
+    /** 批次 D：默认同角色最多同时 6 个在途驻防任务（守护账号 6 个行军队列全可用）；上限 6。 */
+    static final int DEFAULT_MAX_CONCURRENT_MISSIONS = 6;
     static final int MAX_CONCURRENT_MISSIONS = DEFAULT_MAX_CONCURRENT_MISSIONS;
     static final int MAX_CONCURRENT_CAP = 6;
     /** 账本上限。 */
@@ -356,6 +379,10 @@ public final class ServerGuardianEngine {
         final boolean troopsKnown;
         /** 敌方战力（march.power 或观察哨外层 slot.power；0=未知）。 */
         final long power;
+        /** 2026-11-04：敌方出征起点（notify_player_march_* 的 startpoint；未知=0/false）。 */
+        final int startX;
+        final int startY;
+        final boolean hasStart;
         volatile long endEpochSec;
 
         Threat(long marchId, long ownerUid, long type, long targetUid,
@@ -367,6 +394,14 @@ public final class ServerGuardianEngine {
         Threat(long marchId, long ownerUid, long type, long targetUid,
                int x, int y, boolean hasXY, long endEpochSec, long firstSeenMs,
                long troops, boolean troopsKnown, long power) {
+            this(marchId, ownerUid, type, targetUid, x, y, hasXY, endEpochSec, firstSeenMs,
+                    troops, troopsKnown, power, 0, 0, false);
+        }
+
+        Threat(long marchId, long ownerUid, long type, long targetUid,
+               int x, int y, boolean hasXY, long endEpochSec, long firstSeenMs,
+               long troops, boolean troopsKnown, long power,
+               int startX, int startY, boolean hasStart) {
             this.marchId = marchId;
             this.ownerUid = ownerUid;
             this.type = type;
@@ -379,6 +414,9 @@ public final class ServerGuardianEngine {
             this.troops = troops;
             this.troopsKnown = troopsKnown;
             this.power = power;
+            this.startX = startX;
+            this.startY = startY;
+            this.hasStart = hasStart;
         }
 
         /** 合并同一行军的新旧推送（endtime 前移=敌加速；坐标/target 以新值为准）。 */
@@ -395,9 +433,12 @@ public final class ServerGuardianEngine {
             long troopsNew = newer.troopsKnown ? newer.troops : troops;
             boolean knownNew = newer.troopsKnown || troopsKnown;
             long powerNew = newer.power > 0 ? newer.power : power;
+            boolean hasStartNew = newer.hasStart || hasStart;
+            int sxNew = newer.hasStart ? newer.startX : startX;
+            int syNew = newer.hasStart ? newer.startY : startY;
             Threat t = new Threat(marchId, owner, typeNew, target,
                     nx, ny, xy, end, Math.min(firstSeenMs, newer.firstSeenMs),
-                    troopsNew, knownNew, powerNew);
+                    troopsNew, knownNew, powerNew, sxNew, syNew, hasStartNew);
             return t;
         }
 
@@ -574,6 +615,9 @@ public final class ServerGuardianEngine {
     private final Map<Long, ScheduledFuture<?>> rallyTasks = new ConcurrentHashMap<>();
     private final Map<Long, Long> rallyWaitNotesAt = new ConcurrentHashMap<>();
     private final Map<Long, Long> rallyUnknownNotesAt = new ConcurrentHashMap<>();
+    /** 2026-11-04：战争通知同源接收的拒绝诊断节流（proto|原因 → 最近记日志 millis）。 */
+    private final Map<String, Long> warRejectNotesAt = new ConcurrentHashMap<>();
+    static final long WAR_REJECT_NOTE_THROTTLE_MS = 10 * 60_000L;
     /** 最近一次成功发射的实测单程秒数（我方 endtime − 发射时刻），用于出发秒评估。 */
     private volatile long lastTravelSec;
 
@@ -953,6 +997,22 @@ public final class ServerGuardianEngine {
         } catch (Throwable ignored) {
         }
         return Math.max(1, Math.min(MAX_CONCURRENT_CAP, base));
+    }
+
+    /**
+     * 当前威胁表里按 ETA 的排队序号（1=最紧急；仅诊断/账本用，不参与发射决策）。
+     * 2026-11-04：目标数 &gt; 队列数时，用户需要从账本看出「谁先谁后、为什么被排队」。
+     */
+    int pendingRank(Threat t) {
+        if (t == null) return 0;
+        long eta = t.endEpochSec > 0 ? t.endEpochSec : Long.MAX_VALUE;
+        int rank = 1;
+        for (Threat o : threats.values()) {
+            if (o == null || o.marchId == t.marchId) continue;
+            long oe = o.endEpochSec > 0 ? o.endEpochSec : Long.MAX_VALUE;
+            if (oe < eta || (oe == eta && o.marchId < t.marchId)) rank++;
+        }
+        return rank;
     }
 
     /**
@@ -1730,39 +1790,126 @@ public final class ServerGuardianEngine {
             return;
         }
 
+        // 2026-11-04：战争通知同源接收（敌情行军/观察点态势）→ 与联盟态势完全同一条入账链。
+        // 用户口径：驻防必须「明确知道打的是自己盟友」，所以先过 WarNotify 的接收口径
+        // （巨兽/野外集结、同联盟互打、侦查、加入集结、返程一律不算），再按目标城 aid 判定是否本盟。
+        if (WAR_NOTIFY_DEL_PROTOS.contains(proto)) {
+            for (long id : parseDeletedMarchIds(content)) handleThreatGone(engine, id);
+            return;
+        }
+        if (proto.endsWith("_del") && isWarNotifyProto(proto)) {
+            for (long id : parseDeletedMarchIds(content)) handleThreatGone(engine, id);
+            return;
+        }
+        if (WAR_NOTIFY_THREAT_PROTOS.contains(proto)) {
+            ingestWarNotifyThreats(engine, proto, content, cfg, nowMs);
+            return;
+        }
+
         if (!ALLIANCE_MARCH_PROTOS.contains(proto)) return;
 
         // 批次 C-A6：同批多威胁按敌方 endtime 升序（最紧急优先下单），保持 attempted/submitted 去重。
         List<Threat> parsedThreats = parseThreats(content);
-        parsedThreats.sort(java.util.Comparator.comparingLong(
-                x -> x != null && x.endEpochSec > 0 ? x.endEpochSec : Long.MAX_VALUE));
-        for (Threat t : parsedThreats) {
-            if (t.marchId <= 0 || t.ownerUid <= 0) continue;
-            Threat prev = threats.get(t.marchId);
-            Threat cur = prev == null ? t : prev.merge(t);
-            threats.put(cur.marchId, cur);
-            // 批次 K：记录敌方压缩档位（endtime 比值≈0.5=敌方 −50%；25%=0.75）→ 梭哈判定
-            if (prev != null) recordEnemyCompression(prev, cur, nowMs);
-            // 批次 J：同步我方驻防任务的敌方到达时刻（garrison_done/召回判定以最新威胁为准）
-            Mission wm = missions.get(targetKey(cur));
-            if (wm != null && wm.enemyMarchId == cur.marchId && cur.endEpochSec > 0L) {
-                wm.enemyEndSec = cur.endEpochSec;
-            }
-            // P1：敌方加速（endtime 前移/压缩）→ 若我方驻防已发射且在途 → 异步对等加速
-            if (prev != null) maybeSubmitSpeedup(engine, prev, cur, cfg, nowMs);
-            // 批次 D：敌人再次压缩把我方压到晚到 → 继续追赶（与 speedup_enabled 解耦）
-            Mission cm = missions.get(targetKey(cur));
-            if (cm != null && cm.enemyMarchId == cur.marchId) maybeStartCatchup(engine, cur, cm, cfg);
-            Decision d = decide(cur, cfg, nowMs);
-            if (!d.hit) {
-                noteThresholdReject(cur, d, cfg);
-                cancelFire(cur.marchId);
-                timingNotes.remove(cur.marchId);
+        parsedThreats.sort(THREAT_ETA_ORDER);
+        for (Threat t : parsedThreats) ingestThreat(engine, t, cfg, nowMs);
+    }
+
+    /** 同批多威胁排序：ETA 升序（最紧急优先；无 ETA 排最后）。 */
+    static final java.util.Comparator<Threat> THREAT_ETA_ORDER =
+            java.util.Comparator.comparingLong(
+                    x -> x != null && x.endEpochSec > 0 ? x.endEpochSec : Long.MAX_VALUE);
+
+    /**
+     * 单条威胁入账（联盟态势 / 战争通知同源两条链共用，2026-11-04 抽出）。
+     * 只解析+记账+调度，不发请求（请求都在 guardExec）。
+     */
+    void ingestThreat(WjdrEngine engine, Threat t, Config cfg, long nowMs) {
+        if (t == null || t.marchId <= 0 || t.ownerUid <= 0) return;
+        Threat prev = threats.get(t.marchId);
+        Threat cur = prev == null ? t : prev.merge(t);
+        threats.put(cur.marchId, cur);
+        // 批次 K：记录敌方压缩档位（endtime 比值≈0.5=敌方 −50%；25%=0.75）→ 梭哈判定
+        if (prev != null) recordEnemyCompression(prev, cur, nowMs);
+        // 批次 J：同步我方驻防任务的敌方到达时刻（garrison_done/召回判定以最新威胁为准）
+        Mission wm = missions.get(targetKey(cur));
+        if (wm != null && wm.enemyMarchId == cur.marchId && cur.endEpochSec > 0L) {
+            wm.enemyEndSec = cur.endEpochSec;
+        }
+        // P1：敌方加速（endtime 前移/压缩）→ 若我方驻防已发射且在途 → 异步对等加速
+        if (prev != null) maybeSubmitSpeedup(engine, prev, cur, cfg, nowMs);
+        // 批次 D：敌人再次压缩把我方压到晚到 → 继续追赶（与 speedup_enabled 解耦）
+        Mission cm = missions.get(targetKey(cur));
+        if (cm != null && cm.enemyMarchId == cur.marchId) maybeStartCatchup(engine, cur, cm, cfg);
+        Decision d = decide(cur, cfg, nowMs);
+        if (!d.hit) {
+            noteThresholdReject(cur, d, cfg);
+            cancelFire(cur.marchId);
+            timingNotes.remove(cur.marchId);
+            return;
+        }
+        // 批次 C-A3：未到卡秒时刻 → 注册/重排一次性延迟任务；已到 → 立即提交 guardExec
+        scheduleOrFire(engine, cur, cfg, nowMs);
+    }
+
+    /**
+     * 战争通知同源接收（2026-11-04）：{@code notify_player_march_*} / {@code notify_world_situation_info_*}。
+     *
+     * <p>候选提取用守护自己的 {@link #marchesOf}（兼容 slot{march,power} 外层战力），
+     * 是否算敌情统一走 {@link com.carlos.vaultserver.WarNotify#classifyMarch}——
+     * 与企微战争通知完全同一套过滤，避免「通知说被打、守护不驻防」或反之。
+     * 我方自己的队列（owner=本角色 uid）直接忽略。
+     */
+    void ingestWarNotifyThreats(WjdrEngine engine, String proto, Map<String, Object> content,
+                                Config cfg, long nowMs) {
+        long selfUid = safeLastUid();
+        long selfAid = cfg != null && cfg.requireAlly ? selfAllianceAid(engine) : 0L;
+        List<Threat> parsed = new ArrayList<>();
+        for (Map<String, Object> m : marchesOf(content)) {
+            com.carlos.vaultserver.WarNotify.MarchVerdict v =
+                    com.carlos.vaultserver.WarNotify.classifyMarch(proto, m);
+            if (!v.accepted) {
+                noteWarReject(proto, v.reject);
                 continue;
             }
-            // 批次 C-A3：未到卡秒时刻 → 注册/重排一次性延迟任务；已到 → 立即提交 guardExec
-            scheduleOrFire(engine, cur, cfg, nowMs);
+            if (selfUid > 0L && v.ownerUid == selfUid) continue;      // 我方队列，不是威胁
+            int[] xy = endpointOf(m);
+            int[] sp = startPointOf(m);
+            // 本盟自己人的出征（发起城 aid=本盟）不是威胁：观察点态势里也会带盟友队列，
+            // 不先剔掉会在 executeThreat 里刷 skip_not_own_ally（安全但噪声大）。
+            if (selfAid > 0L && sp != null && sp[0] > 0 && sp[1] > 0) {
+                com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo atk =
+                        com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(sp[0], sp[1]);
+                if (atk != null && atk.aid > 0L && atk.aid == selfAid) continue;
+            }
+            long[] troops = troopsOf(m);
+            parsed.add(new Threat(v.marchId, v.ownerUid, v.type, targetUidOf(m),
+                    xy == null ? 0 : xy[0], xy == null ? 0 : xy[1], xy != null,
+                    firstLong(m, "endtime", "end_time", "endTime"), nowMs,
+                    troops[0], troops[1] > 0, firstLong(m, "power"),
+                    sp == null ? 0 : sp[0], sp == null ? 0 : sp[1], sp != null));
         }
+        parsed.sort(THREAT_ETA_ORDER);
+        for (Threat t : parsed) ingestThreat(engine, t, cfg, nowMs);
+    }
+
+    /** 是否战争通知同源协议（前缀判定；del 变体兼容用）。 */
+    static boolean isWarNotifyProto(String proto) {
+        if (proto == null) return false;
+        for (String p : WAR_NOTIFY_PREFIXES) {
+            if (proto.startsWith(p)) return true;
+        }
+        return false;
+    }
+
+    /** 战争通知同源接收的拒绝诊断（节流；只记首次，防观察点态势刷屏）。 */
+    private void noteWarReject(String proto, String reject) {
+        if (reject == null) return;
+        String key = proto + "|" + reject;
+        Long at = warRejectNotesAt.get(key);
+        long now = clockMs.getAsLong();
+        if (at != null && now - at < WAR_REJECT_NOTE_THROTTLE_MS) return;
+        warRejectNotesAt.put(key, now);
+        FileLog.info("守护盟友[接收] 跳过 proto={} 原因={}（战争通知同口径）", proto, reject);
     }
 
     // =====================================================================
@@ -2259,6 +2406,21 @@ public final class ServerGuardianEngine {
             }
             return;
         }
+        // 2026-11-04：明确「打自己盟友」——与战争通知同口径，用观察点城缓存的 target city.aid
+        // 对比本盟 aid；目标城属于其它联盟 → 不是我们该守的盟友，直接跳过。
+        // 安全阀：已知盟友成员（坐标表命中）/配置的 ally_uid/target_uid 一律不据此拒绝，
+        // 防城缓存 aid 过期把真盟友误判成外人（宁可多守，不可漏守）。
+        if (cfg.requireAlly && t.hasXY) {
+            long selfAid = selfAllianceAid(engine);
+            boolean knownAlly = (t.targetUid > 0L && (t.targetUid == cfg.allyUid
+                    || t.targetUid == cfg.targetUid || allies.containsKey(t.targetUid)));
+            if (!knownAlly && isForeignAllianceCity(t.x, t.y, selfAid)) {
+                ledger("skip_not_own_ally", t, null,
+                        "目标城(" + t.x + "," + t.y + ") aid≠本盟 aid=" + selfAid + "，不驻防");
+                clearQueueRetry(marchId);
+                return;
+            }
+        }
         // 批次 I：集结单独成链（真伪 → 5 分钟等待 → 出发秒评估）；等待期零请求、卡秒不生效
         boolean rally = cfg.rallyEnabled && RALLY_THREAT_TYPES.contains(t.type);
         if (rally) {
@@ -2470,9 +2632,25 @@ public final class ServerGuardianEngine {
         int maxConcurrent = effectiveMaxConcurrent(cfg);
         if (!activeTargets.add(targetKey) || missions.size() >= maxConcurrent) {
             activeTargets.remove(targetKey);
-            ledger("skip_busy", t, null,
-                    "已有驻防任务在跑（missions=" + missions.size()
-                            + "/" + maxConcurrent + "）");
+            // 2026-11-04（用户实测场景 4：目标数 > 6 而守护账号只有 6 个队列）：
+            // 不再直接放弃——同批按 ETA 升序前 N 个先发，其余进入有界重试；任一驻防任务结束/
+            // 撤防腾出并发额度后，重试链会重新 decide 并补发（截止仍为敌 end+60s）。
+            int rank = pendingRank(t);
+            String why = "已有驻防任务在跑（missions=" + missions.size() + "/" + maxConcurrent
+                    + "，本威胁排队第 " + rank + "）";
+            if (cfg.queueRetryMax > 0) {
+                int retry = scheduleQueueRetry(engine, t, cfg, nowMs, -1);
+                if (retry == QUEUE_RETRY_SCHEDULED) {
+                    ledger("skip_busy", t, null, why + " → 已排队，等队列/额度释放后补发");
+                    attempted.remove(marchId);
+                    return;
+                }
+                if (retry == QUEUE_RETRY_GIVEUP) {
+                    ledger("skip_busy", t, null, why + " → 排队超限，放弃");
+                    return;
+                }
+            }
+            ledger("skip_busy", t, null, why);
             clearQueueRetry(marchId);
             return;
         }
@@ -2724,7 +2902,7 @@ public final class ServerGuardianEngine {
         Long last = queueRetryNotesAt.get(t.marchId);
         if (last != null && nowMs - last < QUEUE_RETRY_NOTE_THROTTLE_MS) return;
         queueRetryNotesAt.put(t.marchId, nowMs);
-        String note = "队列无空位" + (free < 0 ? "（容量/占用未知）" : " free=" + free)
+        String note = "队列/并发无空位" + (free < 0 ? "（容量/占用未知）" : " free=" + free)
                 + "，每 " + Math.max(1L, cfg.queueRetryIntervalMs / 1000L) + "s 重试（第 "
                 + attempt + "/" + cfg.queueRetryMax + " 次，截止 敌end+"
                 + LATE_REINFORCE_WINDOW_SEC + "s）";
@@ -4777,7 +4955,8 @@ public final class ServerGuardianEngine {
             if (arr instanceof List) collectMarches(arr, out, depth + 1);
         }
         if (isMarchLike(m)) out.add(Exec.mapOf(m));
-        for (String wrap : new String[]{"data", "info", "content", "detail"}) {
+        // 2026-11-04：notify_player_march_add/_update 实测形状 {march:{...}} / {march_info:{...}}
+        for (String wrap : new String[]{"march", "march_info", "data", "info", "content", "detail"}) {
             Object w = m.get(wrap);
             if (w instanceof Map || w instanceof List) collectMarches(w, out, depth + 1);
         }
@@ -4885,6 +5064,17 @@ public final class ServerGuardianEngine {
             if (p != null) return p;
         }
         return pointOf(m);
+    }
+
+    /** 行军起点坐标（2026-11-04）：{@code startpoint{x,y}} → {@code start_point/start{x,y}}；取不到 null。 */
+    static int[] startPointOf(Map<String, Object> m) {
+        if (m == null) return null;
+        int[] p = pointOf(Exec.mapOf(m.get("startpoint")));
+        if (p != null) return p;
+        p = pointOf(Exec.mapOf(m.get("start_point")));
+        if (p != null) return p;
+        Map<String, Object> start = Exec.mapOf(m.get("start"));
+        return start == null ? null : pointOf(start);
     }
 
     private static int[] pointOf(Map<String, Object> m) {
@@ -5085,6 +5275,21 @@ public final class ServerGuardianEngine {
             return me == null ? 0L : me.aid;
         } catch (Throwable ignored) {
             return 0L;
+        }
+    }
+
+    /**
+     * 目标坐标是否为「其它联盟的城」（2026-11-04）：与战争通知同口径，用观察点城缓存的 aid
+     * 对比本盟 aid；本盟 aid 未知/城未知/目标 aid 未知 → false（不据此拒绝，走原盟友解析）。
+     */
+    static boolean isForeignAllianceCity(int x, int y, long selfAid) {
+        if (x <= 0 || y <= 0 || selfAid <= 0L) return false;
+        try {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo c =
+                    com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(x, y);
+            return c != null && c.aid > 0L && c.aid != selfAid;
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 

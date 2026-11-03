@@ -165,6 +165,18 @@ public class GuardianConcurrencyTest {
         e.responses.put(ServerGuardianEngine.PROTO_MARCH_DETAIL, m);
     }
 
+    private static void presetQueueCap(TestEngine e, int capacity) {
+        Map<String, Object> world = new LinkedHashMap<>();
+        world.put("capacity", (long) capacity);
+        Map<String, Object> wpi = new LinkedHashMap<>();
+        wpi.put("world", world);
+        e.notifies.put("notify_world_player_init", wpi);
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("code", 0);
+        detail.put("marchs", new ArrayList<>());
+        e.responses.put(ServerGuardianEngine.PROTO_MARCH_DETAIL, msg(0));
+    }
+
     private static GameMessage launchOk(long marchId, long endSec) {
         Map<String, Object> info = new LinkedHashMap<>();
         info.put("id", marchId);
@@ -229,8 +241,8 @@ public class GuardianConcurrencyTest {
     public void parseConfig_maxConcurrent_defaultAndClamp() {
         ServerGuardianEngine.Config def = ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"sub\":{\"enabled\":true}}"));
-        assertEquals("批次 D 默认 3（多目标同时被攻）", 3, def.maxConcurrent);
-        assertTrue(def.describe().contains("max_concurrent=3"));
+        assertEquals("默认 6（守护账号 6 个队列全可用）", 6, def.maxConcurrent);
+        assertTrue(def.describe().contains("max_concurrent=6"));
 
         assertEquals(2, ServerGuardianEngine.parseConfig(
                 new JSONObject("{\"strategy\":{\"max_concurrent\":2}}")).maxConcurrent);
@@ -286,7 +298,7 @@ public class GuardianConcurrencyTest {
 
     @Test
     public void sameTargetDefaultConcurrency_doesNotLaunchSecondGarrison() {
-        // 2026-11-03 审查 P1-2：默认 max_concurrent=3 时，同目标第二个威胁不得再发一队
+        // 2026-11-03 审查 P1-2：同目标第二个威胁不得再发一队（默认 6 队列）
         // （旧实现会 missions.put 覆盖第一支 Mission，导致第一队失联）。
         accountWithParams(liveCfg(3));
         TestEngine e = new TestEngine();
@@ -444,6 +456,31 @@ public class GuardianConcurrencyTest {
         assertEquals(1, countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
         assertTrue("同目标第二威胁应被已有驻防拦住",
                 ledgerCount("skip_existing_garrison") >= 1);
+    }
+
+    @Test
+    public void sevenTargets_earliestSixLaunch_restSkipBusy() {
+        // 2026-11-04：守护账号只有 6 个行军队列；>6 目标按 ETA 升序取前 6，其余 skip_busy。
+        accountWithParams(liveCfg(6));
+        TestEngine e = new TestEngine();
+        presetQueueCap(e, 6);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        Map<String, Object>[] ms = new Map[7];
+        for (int i = 0; i < 7; i++) {
+            ms[i] = march(13080L + i, OWN_UID + i, now + 120L + i, 679 + i, 686 + i);
+        }
+        engine.onPush(e, ServerGuardianEngine.PROTO_ALLIANCE_ADD, push(ms));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("6 个队列 → 只发 6 队", 6,
+                countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
+        assertEquals(6, engine.missionCount());
+        assertTrue("第 7 个目标应 skip_busy", ledgerCount("skip_busy") >= 1);
+        engine.shutdown();
     }
 
     @Test
