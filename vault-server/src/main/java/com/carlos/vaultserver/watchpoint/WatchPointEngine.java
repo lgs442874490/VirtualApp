@@ -2083,11 +2083,9 @@ public final class WatchPointEngine {
                 String.valueOf(cost), String.valueOf(found),
                 String.valueOf(store.monitorTargets.size()), String.valueOf(missing));
         if (missing > 0) {
-            // 丢失的目标已由 handleTargetLost 起了「周边优先 + 全图」的搜索，这里只做低频汇总，
-            // 不再每 15 分钟刷一条（同一批缺失 30 分钟内只报一次）。
-            alert("scan-missing:" + (scan.startedAt / (30L * 60_000L)),
-                    "⚠️ 观察点·本轮整图仍未找到\n" + missing + " 个监视目标（已记录最后坐标，继续搜索中）"
-                            + "\n时间：" + nowText());
+            // 2026-11-04 用户口径：丢失/搜索过程不推送（「直接找，找到推新坐标就行」），只记日志。
+            FileLog.info("[{}] 本轮整图未找到 {} 个监视目标（继续静默搜索，不推送）", LOG,
+                    String.valueOf(missing));
         }
         nextScanAt = store.fullScanIntervalMs > 0
                 ? System.currentTimeMillis() + store.fullScanIntervalMs : Long.MAX_VALUE;
