@@ -2344,8 +2344,11 @@ public final class ServerGuardianEngine {
             collectMaps(content.get("obj"), items);
             collectMaps(content.get("change"), items);
             for (Map<String, Object> item : items) {
+                boolean queueLike = item.containsKey("owner") && item.containsKey("endpoint");
                 Map<String, Object> city = firstMap(item, "map_city", "city", "mapCity");
-                if (city != null && !city.isEmpty()) {
+                // 2026-11-04：队列/行军对象也带 map_city（归属城快照），其 point 是队列位置而不是城坐标。
+                // 以前无条件 observeCity → 观察点城缓存被写成行军位置（监视目标坐标乱跳），必须排除。
+                if (!queueLike && city != null && !city.isEmpty()) {
                     int[] cp = pointOfAny(item, "point");
                     if (cp != null) {
                         Object aidRaw = city.get("aid");
@@ -2358,7 +2361,6 @@ public final class ServerGuardianEngine {
                                 cp[0], cp[1], nickRaw == null ? "" : String.valueOf(nickRaw));
                     }
                 }
-                boolean queueLike = item.containsKey("owner") && item.containsKey("endpoint");
                 if (!queueLike) continue;
                 int[] pt = pointOfAny(item, "endpoint", "end_point", "point");
                 if (pt == null || pt[0] != p.x || pt[1] != p.y) continue;

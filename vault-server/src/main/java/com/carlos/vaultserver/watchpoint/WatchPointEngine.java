@@ -255,7 +255,10 @@ public final class WatchPointEngine {
         }
     }
 
-    /** 测试钩子：注入一个城市坐标（仅单测使用；生产由整图扫描填充）。 */
+    /**
+     * 注入一个城市坐标（单测 + 守护模块 observeCity 生产路径：守护坐标查询看到的城）。
+     * 2026-11-04：昵称同步进实时昵称缓存，推送优先用它。
+     */
     public void seedCityForTest(long uid, long aid, int x, int y, String nick) {
         City c = new City();
         c.uid = uid;
@@ -264,7 +267,10 @@ public final class WatchPointEngine {
         c.y = y;
         c.nick = nick == null ? "" : nick;
         cityByPoint.put(x + "," + y, c);
-        if (uid > 0L) cityByUid.put(uid, c);
+        if (uid > 0L) {
+            cityByUid.put(uid, c);
+            if (!c.nick.isEmpty()) liveNickByUid.put(uid, c.nick);
+        }
     }
 
     /** 测试钩子：注入一个保护矩形（仅单测使用）。 */
@@ -342,10 +348,46 @@ public final class WatchPointEngine {
     private final Map<Long, Long> targetLostAt = new ConcurrentHashMap<>();
     private final Map<Long, Long> targetSearchAt = new ConcurrentHashMap<>();
     private final Map<Long, Long> targetAttackedAt = new ConcurrentHashMap<>();
-    /** 迁城通知节流：uid → 上次推送时刻（每个目标每 60 秒最多一条迁城通知）。 */
+    /** 迁城通知节流：uid → 上次推送时刻（防同一目标短时抖动刷屏）。 */
     private final Map<Long, Long> lastMoveAlertAt = new java.util.concurrent.ConcurrentHashMap<>();
-    /** 迁城通知最小间隔：一分钟只推一次（用户口径 2026-11-02）。 */
-    private static final long MOVE_ALERT_MIN_INTERVAL_MS = 60_000L;
+    /**
+     * 迁城通知最小间隔（2026-11-04 由 60s 收到 10s）：窗口内只缓存「最新坐标」，到期补推，
+     * 用户口径「找到就推送新坐标」，绝不能再出现「最后一条坐标是旧的、新坐标被节流吞掉」。
+     */
+    private static final long MOVE_ALERT_MIN_INTERVAL_MS = 10_000L;
+    /** 节流窗口内待补推的最新坐标（uid → pending）。 */
+    private final Map<Long, PendingMove> pendingMoveAlert = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 最近一次地图城对象（type=1）给出的实时昵称：uid → nick（2026-11-04：推送只用实时昵称）。 */
+    private final Map<Long, String> liveNickByUid = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 非城对象（含 map_city 的行军/队列对象）诊断去重：已记过日志的 uid。 */
+    private final Set<Long> nonCityLogged = ConcurrentHashMap.newKeySet();
+    /**
+     * 监视目标的在途行军终点（2026-11-04）：uid → "x,y" → 过期时刻。
+     * 地图对象里可能混入「城快照(map_city)+行军终点(point)」的伪城对象，按终点坐标排除，避免坐标乱跳。
+     */
+    private final Map<Long, Map<String, Long>> marchEndpointsByUid =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** 行军终点记忆 TTL（ms）：覆盖一次在途行军的最长时长。 */
+    static final long MARCH_ENDPOINT_TTL_MS = 10L * 60_000L;
+
+    /** 节流窗口内待补推的坐标快照。 */
+    static final class PendingMove {
+        final int ox;
+        final int oy;
+        final int x;
+        final int y;
+        final String nick;
+        final long atMs;
+
+        PendingMove(int ox, int oy, int x, int y, String nick, long atMs) {
+            this.ox = ox;
+            this.oy = oy;
+            this.x = x;
+            this.y = y;
+            this.nick = nick;
+            this.atMs = atMs;
+        }
+    }
     private final Map<String, Long> alerted = new ConcurrentHashMap<>();
     private final ExecutorService alertExec = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "watchpoint-alert");
@@ -539,6 +581,7 @@ public final class WatchPointEngine {
                 } else {
                     pollTick(engines);
                 }
+                flushPendingMoveAlerts();
                 maybeLogStats();
                 Thread.sleep(80L);
             } catch (InterruptedException e) {
@@ -1059,9 +1102,18 @@ public final class WatchPointEngine {
         }
     }
 
+    /**
+     * 世界地图对象 → 城缓存。
+     *
+     * <p>2026-11-04（生产 04:27 坐标乱跳根因）：world_mapobj 的 {@code type} 与行军 {@code type}
+     * 同名字段。侦查等行军单位也会带 {@code map_city}（归属城快照）+ 行军 {@code point} 下发，
+     * 只判 {@code type==1} 拦不住（侦查行军 type 也是 1），会把「行军当前位置」当城坐标：
+     * 同一监视目标实测 30 秒内在 (573,428)/(739,380)/(179,250) 间跳，用户按坐标找不到人。
+     * 城对象只有 {@code map_city/point/type}，没有 owner/startpoint/endpoint/move_xxx/squad_list 等
+     * 行军字段 → 命中任一即判定「非城」丢弃（不再把行军位置当城坐标）。
+     */
     private void parseCity(Map<?, ?> item, Set<Long> seenUids) {
-        // 2026-11-02：world_mapobj type: 1=城 2=资源矿 3=行军…；只有 type=1 才是城。
-        // 行军/资源对象里也可能带 map_city（归属城快照），按对象 point 记坐标会让城「到处乱跳」。
+        // 2026-11-02：world_mapobj type: 1=城 2=资源矿 3=怪物…；只有 type=1 才可能是城。
         if (item.containsKey("type")) {
             long objType = asLong(item.get("type"), 0L);
             if (objType > 0L && objType != 1L) return;
@@ -1073,6 +1125,16 @@ public final class WatchPointEngine {
         if (city.isEmpty()) return;
         long uid = asLong(city.get("uid"), 0L);
         if (uid <= 0) return;
+        // 2026-11-04：行军/队列对象（含 map_city 归属城快照）不是城——按对象 point 记会得到行军位置。
+        if (looksLikeMarch(item)) {
+            logNonCityItem(uid, item);
+            return;
+        }
+        // 2026-11-04：world_mapobj 是 union，城只会有 map_city；带 map_camp/map_resource 等的不是城。
+        if (hasNonCitySubtype(item)) {
+            logNonCityItem(uid, item);
+            return;
+        }
         City c = new City();
         c.uid = uid;
         c.aid = asLong(city.get("aid"), 0L);
@@ -1082,12 +1144,109 @@ public final class WatchPointEngine {
         c.x = (int) asLong(point.get("x"), 0L);
         c.y = (int) asLong(point.get("y"), 0L);
         if (c.x <= 0 && c.y <= 0) return;
+        // 2026-11-04：命中监视目标自己的在途行军终点 → 伪城对象（城快照+行军终点），不是他的城。
+        // 只在「坐标要变化」时判定：观测点与当前城坐标一致时不能再否决（否则真城会被判成伪城）。
+        WatchPointStore.Target mt0 = findTarget(uid);
+        if (mt0 != null && (mt0.x != c.x || mt0.y != c.y) && isMarchEndpointOf(uid, c.x, c.y)) {
+            logNonCityItem(uid, item);
+            return;
+        }
         cityByUid.put(uid, c);
         cityByPoint.put(c.x + "," + c.y, c);
         seenUids.add(uid);
         if (scan.active) scan.cityCount++;
+        // 2026-11-04：实时昵称缓存（推送优先用它，不用配置/目录里的旧名）
+        if (c.nick != null && !c.nick.isEmpty()) liveNickByUid.put(uid, c.nick);
         // 2026-11-02：任何一次回包看到监视目标的新坐标 → 立刻更新 + 通知（不用等整图扫完）
-        if (isMonitoredUid(uid)) noteTargetCity(uid, c.x, c.y, c.nick);
+        if (isMonitoredUid(uid)) {
+            WatchPointStore.Target mt = findTarget(uid);
+            if (mt != null && (mt.x != c.x || mt.y != c.y)) {
+                // 诊断留痕：坐标变化来自哪个对象（线上核对「行军对象混入」用）
+                FileLog.info("[{}] 监视目标城对象：uid={} ({},{}) nick={} scan={} type={} keys={}",
+                        LOG, String.valueOf(uid), String.valueOf(c.x), String.valueOf(c.y),
+                        c.nick, String.valueOf(scan.active), String.valueOf(item.get("type")),
+                        item.keySet());
+            }
+            noteTargetCity(uid, c.x, c.y, c.nick);
+        }
+    }
+
+    /** 行军/队列对象特征字段：城对象不会有这些字段。 */
+    private static final String[] MARCH_SHAPE_KEYS = {
+            "owner", "startpoint", "endpoint", "move_startpoint", "move_endpoint",
+            "squad_list", "march_id", "mass_id", "target_type", "endtime", "target"
+    };
+
+    /** 是否行军/队列形状（2026-11-04：type=1 的侦查行军也会带 map_city，必须靠字段形状排除）。 */
+    static boolean looksLikeMarch(Map<?, ?> item) {
+        if (item == null) return true;
+        for (String k : MARCH_SHAPE_KEYS) {
+            if (item.containsKey(k)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * 2026-11-04：是否带了「非城」的地图子对象（world_mapobj 是 union：城只会有 map_city）。
+     * 行军营地等伪城对象常同时带 map_camp/map_resource 等字段——命中即不是城。
+     * {@code map_expression} 是地图表情叠层，允许与城共存（不据此判非城）。
+     */
+    static boolean hasNonCitySubtype(Map<?, ?> item) {
+        if (item == null) return true;
+        for (Object k : item.keySet()) {
+            String s = String.valueOf(k);
+            if (s.startsWith("map_") && !"map_city".equals(s) && !"map_expression".equals(s)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 记录监视目标在途行军的终点（含 move_endpoint 当前目标点）；自循环/回自己城的不记。 */
+    void rememberMarchEndpoint(long uid, int sx, int sy, int ex, int ey, Map<?, ?> moveEnd) {
+        if (uid <= 0L || ex <= 0 || ey <= 0) return;
+        if (sx > 0 && sy > 0 && sx == ex && sy == ey) return;   // 自循环（起点=终点）
+        WatchPointStore.Target t = findTarget(uid);
+        if (t != null && t.x == ex && t.y == ey) return;        // 终点就是当前城坐标：别把真城当伪城
+        long now = System.currentTimeMillis();
+        long exp = now + MARCH_ENDPOINT_TTL_MS;
+        Map<String, Long> pts = marchEndpointsByUid.computeIfAbsent(
+                uid, k -> new java.util.concurrent.ConcurrentHashMap<>());
+        // e: 精确终点（与伪城对象 point 同源，必须精确匹配；容差过大会把城边的行军终点当成城）
+        pts.put("e:" + ex + "," + ey, exp);
+        if (moveEnd != null && !moveEnd.isEmpty()) {
+            int mx = (int) Math.round(asLong(moveEnd.get("x"), 0L));
+            int my = (int) Math.round(asLong(moveEnd.get("y"), 0L));
+            if (mx > 0 && my > 0) pts.put("m:" + mx + "," + my, exp);   // m: 行军当前目标点（double 取整，±1）
+        }
+        if (pts.size() > 256) pts.entrySet().removeIf(e -> e.getValue() < now);
+    }
+
+    /** 该坐标是否命中监视目标的在途行军终点：终点精确匹配；move_endpoint 允许 ±1 格取整误差。 */
+    boolean isMarchEndpointOf(long uid, int x, int y) {
+        Map<String, Long> pts = marchEndpointsByUid.get(uid);
+        if (pts == null || pts.isEmpty()) return false;
+        long now = System.currentTimeMillis();
+        Long exact = pts.get("e:" + x + "," + y);
+        if (exact != null && exact >= now) return true;
+        for (int dx = -1; dx <= 1; dx++) {
+            for (int dy = -1; dy <= 1; dy++) {
+                Long exp = pts.get("m:" + (x + dx) + "," + (y + dy));
+                if (exp != null && exp >= now) return true;
+            }
+        }
+        return false;
+    }
+
+    /** 非城对象诊断（只对监视目标记一次，避免刷日志）。 */
+    private void logNonCityItem(long uid, Map<?, ?> item) {
+        if (uid <= 0L || !isMonitoredUid(uid)) return;
+        if (!nonCityLogged.add(uid)) return;
+        FileLog.info("[{}] 忽略非城地图对象（含 map_city，疑行军/队列，不作为城坐标）：uid={} "
+                        + "type={} keys={} point={}",
+                LOG, String.valueOf(uid), String.valueOf(item == null ? null : item.get("type")),
+                item == null ? "null" : item.keySet(),
+                item == null ? "null" : String.valueOf(item.get("point")));
     }
 
     /**
@@ -1197,6 +1356,10 @@ public final class WatchPointEngine {
         // 否则「进攻后返回」会被当成「打自己」（终点=自己城）重复通知。
         long endtime = asLong(m.get("endtime"), 0L);
         long marchState = asLong(m.get("state"), 0L);
+        // 2026-11-04：记录监视目标的在途行军终点（伪城对象识别用，见 isMarchEndpointOf）
+        if (marchState == 2L && isMonitoredUid(owner)) {
+            rememberMarchEndpoint(owner, sx, sy, ex, ey, asMap(m.get("move_endpoint")));
+        }
         // 2026-11-02：采集行军（type=4）本身就是「这个点在采」的证据 → 记录采集人，供采集点被攻击告警用
         if (type == 4L && marchState == 2L) {
             recordResource(ex, ey, owner,
@@ -1353,9 +1516,14 @@ public final class WatchPointEngine {
         return a.isEmpty() || a.length() > 12 ? "" : a;
     }
 
-    /** 城昵称：城缓存为空时用玩家目录（uid→昵称）兜底；都取不到返回 null。 */
-    private static String nickOf(City c) {
+    /**
+     * 城昵称（2026-11-04 用户口径）：优先「实时地图昵称」（最近一次城对象 nickName）→ 城缓存 →
+     * 玩家目录兜底；都取不到返回 null。绝不再优先用配置/目录里两天前的旧昵称。
+     */
+    private String nickOf(City c) {
         if (c == null) return null;
+        String live = liveNickByUid.get(c.uid);
+        if (live != null && !live.isEmpty()) return live;
         if (c.nick != null && !c.nick.isEmpty()) return c.nick;
         PlayerDirectory dir = PlayerDirectory.shared();
         if (dir != null) {
@@ -1363,6 +1531,12 @@ public final class WatchPointEngine {
             if (e != null && e.nick != null && !e.nick.isEmpty()) return e.nick;
         }
         return c.nick;
+    }
+
+    /** 实时昵称（uid → 最近一次地图城对象昵称）；没有返回空串。 */
+    String liveNick(long uid) {
+        String n = liveNickByUid.get(uid);
+        return n == null ? "" : n;
     }
 
     /** 监视目标条目（无则 null）。 */
@@ -1374,14 +1548,14 @@ public final class WatchPointEngine {
     }
 
     /**
-     * 记录监视目标的最新坐标（2026-11-02）：任一地图回包/任一他发起的行军都能喂进来。
-     * 坐标变了 → 更新配置 + 企微通知；从「丢失」状态恢复时补一条恢复通知。
+     * 记录监视目标的最新坐标（2026-11-02）：任一地图城对象都能喂进来。
+     * 坐标变了 → 更新配置 + 企微通知；2026-11-04：昵称实时回写、丢失/恢复不再单独推送。
      */
     void noteTargetCity(long uid, int x, int y, String gameNick) {
         noteTargetCity(uid, x, y, gameNick, false);
     }
 
-    /** force=true 用于「已确认丢失后重新找到」：不再走两次确认，直接推送。 */
+    /** force=true：已确认丢失后重新找到/整图扫描确认，跳过节流直接推送。 */
     void noteTargetCity(long uid, int x, int y, String gameNick, boolean force) {
         if (uid <= 0L || x <= 0 || y <= 0) return;
         WatchPointStore.Target t = findTarget(uid);
@@ -1391,20 +1565,19 @@ public final class WatchPointEngine {
         boolean wasLost = targetLostAt.remove(uid) != null;
         targetSearchAt.remove(uid);
         targetMisses.remove(uid);
-        if (t.x == x && t.y == y) {
-            if (wasLost) {
-                String label = t.nick == null || t.nick.isEmpty() ? "监视目标" : t.nick;
-                alert("relocate:" + uid + ":" + x + ":" + y + ":" + (now / 600_000L),
-                        "📡 观察点·重新锁定目标\n" + label + "\n"
-                                + (gameNick == null || gameNick.isEmpty() ? "" : "游戏昵称：" + gameNick + "\n")
-                                + "坐标 (" + x + "," + y + ")（位置未变，已恢复视野）\n时间：" + nowText());
+        // 2026-11-04：实时游戏昵称回写（推送/日志/App 配置页统一用实时名，不再用旧缓存名）
+        if (gameNick != null && !gameNick.isEmpty()) {
+            liveNickByUid.put(uid, gameNick);
+            if (!gameNick.equals(t.nick)) {
+                t.nick = gameNick;
+                store.save();
             }
-            return;
         }
+        if (t.x == x && t.y == y) return;   // 位置未变：静默（丢失后恢复也不单独推送）
         int ox = t.x;
         int oy = t.y;
         int jump = Math.max(Math.abs(x - ox), Math.abs(y - oy));
-        // 坐标随时更新（监视窗口要跟着他走），但通知按目标节流
+        // 坐标随时更新（监视窗口要跟着他走）；通知按目标短节流，且窗口内最新坐标必补推
         t.x = x;
         t.y = y;
         store.save();
@@ -1412,32 +1585,64 @@ public final class WatchPointEngine {
         if (!force && !wasLost) {
             Long last = lastMoveAlertAt.get(uid);
             if (last != null && now - last < MOVE_ALERT_MIN_INTERVAL_MS) {
-                FileLog.info("[{}] 迁城通知节流（1 分钟内已推过）：uid={} → ({},{})", LOG,
+                pendingMoveAlert.put(uid, new PendingMove(ox, oy, x, y, gameNick, now));
+                FileLog.info("[{}] 迁城通知节流（{} 秒内已推过，最新坐标排队待发）：uid={} → ({},{})",
+                        LOG, String.valueOf(MOVE_ALERT_MIN_INTERVAL_MS / 1000L),
                         String.valueOf(uid), String.valueOf(x), String.valueOf(y));
                 return;
             }
         }
         lastMoveAlertAt.put(uid, now);
-        fireMoveAlert(uid, t, ox, oy, x, y, gameNick, wasLost);
+        pendingMoveAlert.remove(uid);
+        fireMoveAlert(uid, t, ox, oy, x, y, gameNick);
     }
 
-    /** 推送迁城/定位通知（确认后调用）。 */
+    /** 节流窗口到期后补推最新坐标（主循环每 80ms 调用；保证「最后一条」一定是新坐标）。 */
+    private void flushPendingMoveAlerts() {
+        if (pendingMoveAlert.isEmpty()) return;
+        long now = System.currentTimeMillis();
+        for (Map.Entry<Long, PendingMove> en : pendingMoveAlert.entrySet()) {
+            long uid = en.getKey();
+            PendingMove p = en.getValue();
+            if (p == null || now - p.atMs < MOVE_ALERT_MIN_INTERVAL_MS) continue;
+            if (!pendingMoveAlert.remove(uid, p)) continue;
+            WatchPointStore.Target t = findTarget(uid);
+            if (t == null) continue;
+            lastMoveAlertAt.put(uid, now);
+            fireMoveAlert(uid, t, p.ox, p.oy, p.x, p.y, p.nick);
+        }
+    }
+
+    /**
+     * 推送坐标更新（2026-11-04 用户口径）：
+     * <pre>
+     * 📍 观察点·坐标更新
+     * 游戏昵称：时装小尓
+     * 原坐标 (739,380) → 新坐标 (179,250)
+     * 时间：04:27:21
+     * </pre>
+     * 不带原因、不带丢失/重新找到说明、不带 uid/区服等编号。
+     */
     private void fireMoveAlert(long uid, WatchPointStore.Target t, int ox, int oy,
-                               int x, int y, String gameNick, boolean wasLost) {
-        String label = t.nick == null || t.nick.isEmpty() ? "监视目标" : t.nick;
-        String nickLine = gameNick == null || gameNick.isEmpty() ? "" : "游戏昵称：" + gameNick + "\n";
-        String reason = relocationReason(uid);
-        String head = (ox <= 0 || oy <= 0)
-                ? "📍 观察点·已定位监视目标\n" + label
-                : "📍 观察点·监视目标新坐标\n" + label
-                        + "\n原坐标 (" + ox + "," + oy + ") → 新坐标 (" + x + "," + y + ")";
-        alert("move:" + uid + ":" + x + ":" + y,
-                head + "\n" + nickLine + reason
-                        + (wasLost ? "（此前一度丢失视野，已重新找到）" : "")
-                        + "\n时间：" + nowText());
-        FileLog.info("[{}] 监视目标坐标更新：uid={} ({},{}) → ({},{}) {}", LOG,
+                               int x, int y, String gameNick) {
+        String nick = gameNick == null ? "" : gameNick.trim();
+        if (nick.isEmpty()) nick = liveNick(uid);
+        if (nick.isEmpty() && t != null && t.nick != null) nick = t.nick.trim();
+        if (nick.isEmpty()) nick = "未知名玩家";
+        StringBuilder sb = new StringBuilder("📍 观察点·坐标更新\n");
+        sb.append("游戏昵称：").append(nick).append('\n');
+        if (ox > 0 && oy > 0) {
+            sb.append("原坐标 (").append(ox).append(',').append(oy).append(") → 新坐标 (")
+                    .append(x).append(',').append(y).append(")\n");
+        } else {
+            sb.append("新坐标 (").append(x).append(',').append(y).append(")\n");
+        }
+        sb.append("时间：").append(nowText());
+        alert("move:" + uid + ":" + x + ":" + y, sb.toString());
+        // 原因只留运维日志，不再进推送
+        FileLog.info("[{}] 监视目标坐标更新：uid={} ({},{}) → ({},{}) 游戏昵称={} 原因={}", LOG,
                 String.valueOf(uid), String.valueOf(ox), String.valueOf(oy),
-                String.valueOf(x), String.valueOf(y), reason);
+                String.valueOf(x), String.valueOf(y), nick, relocationReason(uid));
     }
 
     /** 迁城原因文案：近 30 分钟内有敌军进攻其城 → 疑似被破城随机飞走。 */
@@ -1450,26 +1655,23 @@ public final class WatchPointEngine {
 
     /**
      * 监视目标在监视窗口内连续未出现（丢失视野）：
-     * ① 先看已知视野（城缓存里是否已有他的新坐标）→ 有就直接通知；
-     * ② 没有就发起「以最后坐标为中心」的搜索扫描，先扫周边再扫全图未知区域，扫到即通知。
+     * ① 先看已知视野（城缓存里是否已有他的新坐标）→ 有就直接按新坐标推送；
+     * ② 没有就发起「以最后坐标为中心」的搜索扫描，先扫周边再扫全图未知区域，扫到即推送新坐标。
+     *
+     * <p>2026-11-04 用户口径：**丢失/搜索过程不推送**（不再发「📡 目标暂时丢失」），只推最终新坐标。
      */
     void handleTargetLost(WatchPointStore.Target t) {
         long now = System.currentTimeMillis();
         City known = cityByUid.get(t.uid);
         if (known != null && (known.x != t.x || known.y != t.y)) {
-            // 已知视野里就有 → 直接通知新坐标（不再等两次确认）
+            // 已知视野里就有 → 直接推送新坐标（不发起扫描）
             noteTargetCity(t.uid, known.x, known.y, known.nick, true);
             return;
         }
         if (targetLostAt.putIfAbsent(t.uid, now) == null) {
-            FileLog.info("[{}] 监视目标丢失视野：{} 最后坐标 ({},{})，开始搜索", LOG,
+            // 只记日志，不推送（用户：不需要推送他失踪了你在找他）
+            FileLog.info("[{}] 监视目标丢失视野：{} 最后坐标 ({},{})，静默搜索", LOG,
                     t.display(), String.valueOf(t.x), String.valueOf(t.y));
-            String label = t.nick == null || t.nick.isEmpty() ? "监视目标" : t.nick;
-            alert("lost:" + t.uid + ":" + (now / 600_000L),
-                    "📡 观察点·目标暂时丢失\n" + label
-                            + "\n最后坐标 (" + t.x + "," + t.y + ")"
-                            + "\n已开始搜索：先查他最后出现的位置周边，再扫全图未知区域；找到会立即通知新坐标。"
-                            + "\n时间：" + nowText());
         }
         Long lastSearch = targetSearchAt.get(t.uid);
         if (lastSearch == null || now - lastSearch > 90_000L) {
@@ -1499,7 +1701,10 @@ public final class WatchPointEngine {
         if (marchKey != null) alerted.put(marchKey, nowMs);   // 标记：另一通道不再重复推
         City ownerCity = cityByUid.get(owner);
         City target = cityNear(ex, ey);
-        String nick = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "未知名玩家";
+        // 2026-11-04：攻击者名优先实时地图昵称（不用配置/目录旧名）
+        String nick = nickOf(ownerCity);
+        if (nick == null || nick.isEmpty()) nick = liveNick(owner);
+        if (nick == null || nick.isEmpty()) nick = "未知名玩家";
         String text = outgoingAlertText(nick, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
                 type, nickOf(target), target == null ? 0L : target.aid,
                 ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText(),
@@ -1556,7 +1761,10 @@ public final class WatchPointEngine {
         }
         if (marchKey != null) alerted.put(marchKey, nowMs);
         City target = cityNear(ex, ey);
-        String who = ownerCity != null && !ownerCity.nick.isEmpty() ? ownerCity.nick : "未知名玩家";
+        // 2026-11-04：攻击者名优先实时地图昵称
+        String who = nickOf(ownerCity);
+        if (who == null || who.isEmpty()) who = liveNick(owner);
+        if (who == null || who.isEmpty()) who = "未知名玩家";
         String text = incomingAlertText(who, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
                 type, nickOf(target), target == null ? 0L : target.aid,
                 ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText(),
@@ -1614,13 +1822,18 @@ public final class WatchPointEngine {
             return;
         }
         City atk = cityByUid.get(owner);
-        String atkNick = atk != null && atk.nick != null && !atk.nick.isEmpty()
-                ? atk.nick : "未知名玩家";
+        // 2026-11-04：攻击人/被攻击人名优先实时地图昵称（不用配置/目录旧名）
+        String atkNick = nickOf(atk);
+        if (atkNick == null || atkNick.isEmpty()) atkNick = liveNick(owner);
+        if (atkNick == null || atkNick.isEmpty()) atkNick = "未知名玩家";
         long atkAid = atk == null ? 0L : atk.aid;
         PlayerDirectory dir = PlayerDirectory.shared();
         PlayerDirectory.Entry de = dir == null ? null : dir.byUid(rp.uid);
-        String victimNick = de != null && de.nick != null && !de.nick.isEmpty()
-                ? de.nick : "未知名玩家";
+        String victimNick = liveNick(rp.uid);
+        if (victimNick == null || victimNick.isEmpty()) {
+            victimNick = de != null && de.nick != null && !de.nick.isEmpty()
+                    ? de.nick : "未知名玩家";
+        }
         long victimAid = rp.aid > 0L ? rp.aid : (de == null ? 0L : de.aid);
         alert(key, gatherAlertText(atkNick, atkAid, sx, sy, type, ex, ey,
                 endtime - now / 1000L, troops, victimNick, victimAid,
@@ -2146,6 +2359,17 @@ public final class WatchPointEngine {
 
     String lastAlertTextForTest() {
         return lastAlertText;
+    }
+
+    /** 节流窗口内排队的迁城通知数（2026-11-04：窗口内最新坐标必须排队待发）。 */
+    int pendingMoveCountForTest() {
+        return pendingMoveAlert.size();
+    }
+
+    /** 排队的迁城通知目标坐标（无则 -1）。 */
+    int pendingMoveXForTest(long uid) {
+        PendingMove p = pendingMoveAlert.get(uid);
+        return p == null ? -1 : p.x;
     }
 
     java.util.List<WjdrEngine> pickEnginesForTest(java.util.List<WjdrEngine> online) {

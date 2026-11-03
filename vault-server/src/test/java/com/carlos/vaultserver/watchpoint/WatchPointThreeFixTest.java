@@ -109,12 +109,132 @@ public class WatchPointThreeFixTest {
         Map<String, Object> obj = new LinkedHashMap<>();
         obj.put("map_city", city);
         obj.put("point", pt);
+        feedItem(engine, session, obj);
+    }
+
+    private static void feedItem(WatchPointEngine engine, int session, Map<String, Object> obj) {
         List<Object> dl = new ArrayList<>();
         dl.add(obj);
         Map<String, Object> c = new LinkedHashMap<>();
         c.put("datalist", dl);
         c.put("end_flag", true);
         engine.feedResponseForTest(session, "notify_world_mapobjs", c);
+    }
+
+    private static Map<String, Object> pt(long x, long y) {
+        Map<String, Object> p = new LinkedHashMap<>();
+        p.put("x", x);
+        p.put("y", y);
+        return p;
+    }
+
+    private static void feedMarch(WatchPointEngine engine, int session, Map<String, Object> march) {
+        List<Object> dl = new ArrayList<>();
+        dl.add(march);
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("datalist", dl);
+        c.put("end_flag", true);
+        engine.feedResponseForTest(session, "notify_world_marchs", c);
+    }
+
+    // ==================== 2026-11-04：行军对象不得当城 ====================
+
+    @Test
+    public void marchEndpointIsNotTreatedAsTargetCity() {
+        WatchPointStore st = store();
+        st.monitorTargets.add(new WatchPointStore.Target(7001L, "目标A", 10, 10));
+        WatchPointEngine engine = engine(st);
+        FakeEngine fe = new FakeEngine(FPID, KID, 1L);
+        List<Integer> sessions = primeScan(engine, fe);
+        // 该目标的侦查行军：起点=城(10,10)，终点=(500,600)
+        Map<String, Object> march = new LinkedHashMap<>();
+        march.put("id", 1L);
+        march.put("owner", 7001L);
+        march.put("type", 1L);
+        march.put("state", 2L);
+        march.put("startpoint", pt(10, 10));
+        march.put("endpoint", pt(500, 600));
+        feedMarch(engine, sessions.get(0), march);
+        // 伪城对象：城快照(uid=7001) + 行军终点 point=(500,600) → 不得当城坐标
+        feedCity(engine, sessions.get(1), 7001L, 888L, 500, 600, "目标A");
+        feedEmpty(engine, sessions.subList(2, sessions.size()), 458);
+        engine.finishScanForTest();
+
+        assertEquals("行军终点不得改写监视城坐标", 10, st.monitorTargets.get(0).x);
+        assertEquals(10, st.monitorTargets.get(0).y);
+    }
+
+    @Test
+    public void marchShapedObjectWithMapCityDoesNotMoveTarget() {
+        WatchPointStore st = store();
+        st.monitorTargets.add(new WatchPointStore.Target(7001L, "目标A", 10, 10));
+        WatchPointEngine engine = engine(st);
+        FakeEngine fe = new FakeEngine(FPID, KID, 1L);
+        List<Integer> sessions = primeScan(engine, fe);
+
+        // 生产 04:27 形态：侦查行军对象 type=1 + map_city（归属城快照）+ 行军 point/startpoint/endpoint。
+        // 只按 type==1 判定会把「行军当前位置」写成城坐标 → 用户按坐标找不到人。
+        Map<String, Object> city = new LinkedHashMap<>();
+        city.put("uid", 7001L);
+        city.put("aid", 888L);
+        city.put("nickName", "目标A");
+        Map<String, Object> pt = new LinkedHashMap<>();
+        pt.put("x", 500L);
+        pt.put("y", 600L);
+        Map<String, Object> obj = new LinkedHashMap<>();
+        obj.put("type", 1L);
+        obj.put("map_city", city);
+        obj.put("point", pt);
+        obj.put("owner", 7001L);
+        obj.put("startpoint", pt);
+        obj.put("endpoint", pt);
+        feedItem(engine, sessions.get(0), obj);
+        feedEmpty(engine, sessions.subList(1, sessions.size()), 459);
+        engine.finishScanForTest();
+
+        assertEquals("行军对象不得改写监视城坐标", 10, st.monitorTargets.get(0).x);
+        assertEquals(10, st.monitorTargets.get(0).y);
+        assertFalse("不得按行军位置推坐标更新: " + engine.lastAlertTextForTest(),
+                engine.lastAlertTextForTest().contains("(500,600)"));
+    }
+
+    @Test
+    public void marchEndpointVetoIsExactNotTolerance() {
+        WatchPointStore st = store();
+        st.monitorTargets.add(new WatchPointStore.Target(7001L, "目标A", 10, 10));
+        WatchPointEngine engine = engine(st);
+        engine.rememberMarchEndpoint(7001L, 10, 10, 500, 600, null);
+        assertTrue("终点精确命中要否决", engine.isMarchEndpointOf(7001L, 500, 600));
+        assertFalse("±2 容差会把城边的行军终点误判成城，必须精确匹配",
+                engine.isMarchEndpointOf(7001L, 502, 602));
+        // 观测点=当前城坐标时不得否决（否则真城会被判成伪城，监视目标永久丢失）
+        WatchPointStore st2 = store();
+        st2.monitorTargets.add(new WatchPointStore.Target(7001L, "目标A", 10, 10));
+        WatchPointEngine engine2 = engine(st2);
+        List<Integer> sessions = primeScan(engine2, new FakeEngine(FPID, KID, 1L));
+        engine2.rememberMarchEndpoint(7001L, 10, 10, 500, 600, null);
+        feedCity(engine2, sessions.get(0), 7001L, 888L, 10, 10, "目标A");
+        feedEmpty(engine2, sessions.subList(1, sessions.size()), 459);
+        engine2.finishScanForTest();
+        assertEquals("当前城坐标必须保持", 10, st2.monitorTargets.get(0).x);
+    }
+
+    @Test
+    public void cityShapedObjectIsAccepted() {
+        assertFalse("城对象（map_city+point）不能被当成行军",
+                WatchPointEngine.looksLikeMarch(new LinkedHashMap<>()));
+        Map<String, Object> cityObj = new LinkedHashMap<>();
+        cityObj.put("type", 1L);
+        cityObj.put("point", new LinkedHashMap<>());
+        cityObj.put("map_city", new LinkedHashMap<>());
+        assertFalse(WatchPointEngine.looksLikeMarch(cityObj));
+        assertFalse("城对象只有 map_city 子对象", WatchPointEngine.hasNonCitySubtype(cityObj));
+        Map<String, Object> campObj = new LinkedHashMap<>(cityObj);
+        campObj.put("map_camp", new LinkedHashMap<>());
+        assertTrue("带 map_camp 的不是城", WatchPointEngine.hasNonCitySubtype(campObj));
+        Map<String, Object> marchObj = new LinkedHashMap<>(cityObj);
+        marchObj.put("owner", 1L);
+        assertTrue(WatchPointEngine.looksLikeMarch(marchObj));
     }
 
     // ==================== Q1：完整度 ====================
@@ -169,20 +289,28 @@ public class WatchPointThreeFixTest {
     }
 
     @Test
-    public void completeScan_moveAlertHasNewCoordsAndReason() {
+    public void completeScan_moveAlertHasNewCoordsAndLiveNicknameNoReason() {
         WatchPointStore st = store();
-        st.monitorTargets.add(new WatchPointStore.Target(7001L, "目标A", 10, 10));
+        st.monitorTargets.add(new WatchPointStore.Target(7001L, "旧缓存名", 10, 10));
         WatchPointEngine engine = engine(st);
         FakeEngine fe = new FakeEngine(FPID, KID, 1L);
         List<Integer> sessions = primeScan(engine, fe);
-        feedCity(engine, sessions.get(0), 7001L, 888L, 20, 20, "目标A");
+        feedCity(engine, sessions.get(0), 7001L, 888L, 20, 20, "实时新昵称");
         feedEmpty(engine, sessions.subList(1, sessions.size()), 459);
         engine.finishScanForTest();
 
         String text = engine.lastAlertTextForTest();
-        assertTrue("新坐标告警: " + text, text.contains("新坐标") && text.contains("(20,20)"));
-        assertTrue("必须说明原因（迁城/被打飞）: " + text, text.contains("原因："));
+        // 2026-11-04 用户口径：📍 观察点·坐标更新 / 游戏昵称 / 原坐标 → 新坐标 / 时间；
+        // 不再推原因、不再推丢失/重新找到说明。
+        assertTrue("标题应为坐标更新: " + text, text.contains("📍 观察点·坐标更新"));
+        assertTrue("必须带实时游戏昵称: " + text, text.contains("游戏昵称：实时新昵称"));
+        assertFalse("不能再推旧缓存昵称: " + text, text.contains("旧缓存名"));
+        assertTrue("含老/新坐标: " + text, text.contains("原坐标 (10,10) → 新坐标 (20,20)"));
+        assertFalse("不再推送原因: " + text, text.contains("原因"));
+        assertFalse("不再推送丢失/重新找到说明: " + text, text.contains("丢失"));
+        assertFalse("推送里不带 uid: " + text, text.contains("uid"));
         assertEquals(20, st.monitorTargets.get(0).x);
+        assertEquals("实时昵称要回写配置", "实时新昵称", st.monitorTargets.get(0).nick);
     }
 
     // ==================== Q2：多角色 ====================
