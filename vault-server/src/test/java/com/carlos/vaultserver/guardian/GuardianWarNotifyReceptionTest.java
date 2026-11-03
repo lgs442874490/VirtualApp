@@ -429,6 +429,49 @@ public class GuardianWarNotifyReceptionTest {
         assertEquals(1, engine.missionCount());
     }
 
+    @Test
+    public void protectFid_crossAllianceTarget_launchesGarrison() {
+        // 2026-11-04：炎黄(ZON) 要守 隆科多(KFC)——跨联盟。配置里填游戏内 FID，
+        // 服务端换算 uid 后把该城视为友方（否则会被 skip_not_own_ally 拦下）。
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
+                + "\"strategy\":{\"timing\":false,\"max_concurrent\":6,"
+                + "\"protect_fids\":[\"35371154\"],"
+                + "\"formation\":{\"hero_ids\":[1]}}}");
+        WatchPointStore wps = new WatchPointStore(Paths.get(tmp.getRoot().getAbsolutePath()));
+        WatchPointEngine wpe = new WatchPointEngine(null, wps, null, null);
+        wpe.seedCityForTest(OWN_UID, SELF_AID, OWN_X, OWN_Y, "[本]城");
+        wpe.seedCityForTest(ALLY_UID, OTHER_AID, ALLY_X, ALLY_Y, "[外盟]城");
+        wpe.seedCityForTest(ENEMY_UID, ENEMY_AID, ENEMY_X, ENEMY_Y, "[敌]城");
+        WatchPointEngine.install(wpe);
+
+        TestEngine e = new TestEngine();
+        presetWorld(e, 5);
+        presetSoldiers(e);
+        long now = System.currentTimeMillis() / 1000L;
+        e.responses.put(ServerGuardianLauncher.PROTO_WORLD_MARCH, launchOk(555L, now + 60L));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("uid", 35371154L);
+        result.put("nickName", "隆科多");
+        Map<String, Object> body = new LinkedHashMap<>();
+        body.put("code", 0);
+        body.put("result", result);
+        GameMessage lookup = new GameMessage();
+        lookup.setContent(body);
+        e.responses.put("req_player_info_by_fid", lookup);
+
+        ServerGuardianEngine engine = engine();
+        engine.attach(e);
+        engine.onPush(e, ServerGuardianEngine.PROTO_PLAYER_MARCH_ADD,
+                playerMarch(13400L, ENEMY_UID, 2L, ENEMY_X, ENEMY_Y,
+                        ALLY_X, ALLY_Y, 35371154L, now + 120L));
+        engine.awaitIdleForTest(3_000L);
+
+        assertEquals("守护对象 FID 命中 → 跨联盟也要驻防：" + ledgerText(), 1,
+                countProto(e, ServerGuardianLauncher.PROTO_WORLD_MARCH));
+        assertEquals(1, engine.missionCount());
+        assertEquals("不应被 skip_not_own_ally 拦下", 0, ledgerCount("skip_not_own_ally"));
+    }
+
     // ---------------- 目标数 > 队列数 ----------------
 
     @Test

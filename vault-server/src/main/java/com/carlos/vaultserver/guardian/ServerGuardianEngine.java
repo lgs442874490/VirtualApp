@@ -279,6 +279,11 @@ public final class ServerGuardianEngine {
         boolean allyUseProtectRect = false;
         /** 保护矩形内/附近按最近盟友坐标匹配的最大曼哈顿距离（默认 20）。 */
         long allyRectMaxDist = 20L;
+        /**
+         * 2026-11-04：额外守护对象 FID 列表（跨联盟/友盟也守；用户只填游戏内可见的 FID）。
+         * 引擎在 guardExec 上用 req_player_info_by_fid 换算 uid 并缓存（10 分钟节流）。
+         */
+        List<String> protectFids = new ArrayList<>();
         /** 2026-10-31：集结兵力缺失时，查目标坐标的行军携带兵力（同网页“查询坐标”功能）。 */
         boolean rallyProbeTroops = true;
         /** 目标坐标查询等待毫秒（默认 2500，clamp 500..8000）。 */
@@ -617,6 +622,10 @@ public final class ServerGuardianEngine {
     private final Map<Long, Long> rallyUnknownNotesAt = new ConcurrentHashMap<>();
     /** 2026-11-04：战争通知同源接收的拒绝诊断节流（proto|原因 → 最近记日志 millis）。 */
     private final Map<String, Long> warRejectNotesAt = new ConcurrentHashMap<>();
+    /** 2026-11-04：守护对象 FID 换算出的 uid（guardExec 线程解析并缓存；跨联盟/友盟也守）。 */
+    private volatile Set<Long> protectUids = java.util.Collections.emptySet();
+    private volatile long protectUidsAtMs = 0L;
+    static final long PROTECT_FID_RESOLVE_MS = 10 * 60_000L;
     static final long WAR_REJECT_NOTE_THROTTLE_MS = 10 * 60_000L;
     /** 最近一次成功发射的实测单程秒数（我方 endtime − 发射时刻），用于出发秒评估。 */
     private volatile long lastTravelSec;
@@ -2399,11 +2408,71 @@ public final class ServerGuardianEngine {
     }
 
     /** 执行一条威胁：重新校验规则 → 门控 → dry_run 记录 / 立即发射。 */
+    /**
+     * 守护对象 FID → uid（2026-11-04）：用户只填游戏内 FID；在 guardExec 线程换算并缓存 10 分钟。
+     * 用于「跨联盟/友盟也守」——本盟成员由联盟态势自动识别，额外对象靠这张白名单。
+     */
+    void resolveProtectUids(WjdrEngine engine) {
+        try {
+            Config cfg = config;
+            List<String> fids = cfg == null ? null : cfg.protectFids;
+            if (fids == null || fids.isEmpty()) {
+                protectUids = java.util.Collections.emptySet();
+                protectUidsAtMs = 0L;
+                return;
+            }
+            long now = clockMs.getAsLong();
+            if (protectUidsAtMs > 0L && now - protectUidsAtMs < PROTECT_FID_RESOLVE_MS) return;
+            protectUidsAtMs = now;
+            Set<Long> out = new LinkedHashSet<>();
+            for (String fid : fids) {
+                try {
+                    com.carlos.vault.wjdr.protocol.GameMessage r = engine.request(
+                            "req_player_info_by_fid", Exec.args("fid", fid), 8);
+                    if (!Exec.ok(r) || r.getContent() == null) continue;
+                    Map<String, Object> res = Exec.mapOf(r.getContent().get("result"));
+                    long uid = res == null ? 0L : Exec.longOf(res.get("uid"));
+                    if (uid > 0L) out.add(uid);
+                } catch (Throwable ignored) {
+                }
+            }
+            if (!out.isEmpty()) {
+                protectUids = out;
+                FileLog.info("守护盟友对象 FID 解析 {}:{} {} → uid={}", fpid, String.valueOf(sid),
+                        fids, protectUids);
+            }
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 目标城 uid（观察点缓存；未知 0）——守护对象白名单判定用。 */
+    long targetCityUid(Threat t) {
+        if (t == null || !t.hasXY) return 0L;
+        try {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo ci =
+                    com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(t.x, t.y);
+            return ci == null ? 0L : ci.uid;
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    /** 该威胁是否命中「守护对象 FID 白名单」（target uid 或目标城 uid）。 */
+    boolean isProtectTarget(Threat t) {
+        if (t == null) return false;
+        Set<Long> pu = protectUids;
+        if (pu.isEmpty()) return false;
+        if (t.targetUid > 0L && pu.contains(t.targetUid)) return true;
+        long cityUid = targetCityUid(t);
+        return cityUid > 0L && pu.contains(cityUid);
+    }
+
     void executeThreat(WjdrEngine engine, long marchId) {
         if (stopped) return;
         Threat t = threats.get(marchId);
         if (t == null) return;
         Config cfg = config;
+        resolveProtectUids(engine);   // 守护对象 FID→uid（10 分钟节流；失败保留旧值）
         long nowMs = clockMs.getAsLong();
         Decision d = decide(t, cfg, nowMs, isKnownAllyPoint(t));
         if (!d.hit) {
@@ -2423,7 +2492,8 @@ public final class ServerGuardianEngine {
         if (cfg.requireAlly && t.hasXY) {
             long selfAid = selfAllianceAid(engine);
             boolean knownAlly = (t.targetUid > 0L && (t.targetUid == cfg.allyUid
-                    || t.targetUid == cfg.targetUid || allies.containsKey(t.targetUid)));
+                    || t.targetUid == cfg.targetUid || allies.containsKey(t.targetUid)))
+                    || isProtectTarget(t);
             if (!knownAlly && isForeignAllianceCity(t.x, t.y, selfAid)) {
                 ledger("skip_not_own_ally", t, null,
                         "目标城(" + t.x + "," + t.y + ") aid≠本盟 aid=" + selfAid + "，不驻防");
@@ -2589,6 +2659,15 @@ public final class ServerGuardianEngine {
             if (t.hasXY && t.x > 0 && t.y > 0) {
                 resolvedTargetUid = allyUidByPoint(t.x, t.y);
                 if (resolvedTargetUid > 0L) allyVia = "ally_coord";
+            }
+            // 2026-11-04：守护对象 FID 白名单（跨联盟/友盟）——目标城 uid 命中即视为友方
+            if (resolvedTargetUid <= 0L && isProtectTarget(t)) {
+                long pu = targetCityUid(t);
+                if (pu <= 0L) pu = t.targetUid;
+                if (pu > 0L) {
+                    resolvedTargetUid = pu;
+                    allyVia = "protect_fid";
+                }
             }
             // 2026-10-31（用户建议）：参考观察点整图缓存——坐标→城 uid/联盟 aid；保护矩形内视为友方。
             if (resolvedTargetUid <= 0L && cfg.allyUseWatchpoint && t.hasXY) {
@@ -4293,6 +4372,27 @@ public final class ServerGuardianEngine {
         return 0L;
     }
 
+    /**
+     * 解析守护对象 FID 列表（2026-11-04）：JSONArray / 逗号分隔字符串都兼容；
+     * 只保留纯数字、去重、上限 20 个（防配置刷爆请求）。
+     */
+    static List<String> parseProtectFids(Object raw) {
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<>();
+        if (raw instanceof org.json.JSONArray) {
+            org.json.JSONArray arr = (org.json.JSONArray) raw;
+            for (int i = 0; i < arr.length() && out.size() < 20; i++) {
+                String v = String.valueOf(arr.opt(i) == null ? "" : arr.opt(i)).trim();
+                if (v.matches("\\d{1,20}")) out.add(v);
+            }
+        } else if (raw != null) {
+            for (String v : String.valueOf(raw).split("[,，\\s]+")) {
+                String t = v.trim();
+                if (t.matches("\\d{1,20}") && out.size() < 20) out.add(t);
+            }
+        }
+        return new ArrayList<>(out);
+    }
+
     /** 解析 roleParams `guardian` JSON（纯函数；缺省/异常一律关闭+dry_run；env 灰度可覆盖）。 */
     static Config parseConfig(JSONObject p) {
         Config c = Config.disabled();
@@ -4405,6 +4505,7 @@ public final class ServerGuardianEngine {
             c.allyUseProtectRect = bool(sub, st, p, "ally_use_protect_rect", false);
             c.allyRectMaxDist = Math.max(0L, Math.min(60L,
                     num(sub, st, p, "ally_rect_max_dist", 20L)));
+            c.protectFids = parseProtectFids(first(sub, st, p, "protect_fids"));
             c.rallyProbeTroops = bool(sub, st, p, "rally_probe_troops", true);
             c.rallyProbeTimeoutMs = Math.max(500L, Math.min(8000L,
                     num(sub, st, p, "rally_probe_timeout_ms", 2500L)));
@@ -5351,6 +5452,7 @@ public final class ServerGuardianEngine {
             if (t.targetUid == allyUid || t.targetUid == targetUid) return true;
             if (allies.containsKey(t.targetUid)) return true;
         }
+        if (isProtectTarget(t)) return true;
         if (t.hasXY && t.x > 0 && t.y > 0) {
             long uid = allyUidByPoint(t.x, t.y);
             if (uid > 0L) return true;

@@ -1634,6 +1634,20 @@ public class FunctionActivity extends Activity {
         card.addView(switchRow("集结也驻防",
                 "敌方集结打本盟城时也派兵（巨兽/野外集结仍按「目标不是城」过滤；默认开）", rallyRef[0]));
 
+        // 2026-11-04：守护对象 FID（跨联盟/友盟也守；本盟成员自动识别，不用填）
+        final EditText protectEt = new EditText(this);
+        protectEt.setHint("如 35371154,23954889（可留空）");
+        protectEt.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        protectEt.setText(cfg.protectFids);
+        card.addView(fieldRow("守护对象 FID（可选，逗号分隔）", protectEt));
+        TextView protectTip = new TextView(this);
+        protectTip.setText("本盟成员由联盟态势自动识别，不用填；这里只填「跨联盟/友盟也要守」的对象，"
+                + "填游戏内玩家ID（FID），服务端自动换算。");
+        protectTip.setTextSize(10.5f);
+        protectTip.setTextColor(UiStyle.INK2);
+        protectTip.setPadding(0, dp(2), 0, 0);
+        card.addView(protectTip);
+
         final UiStyle.Switch[] recallRef = new UiStyle.Switch[1];
         recallRef[0] = new UiStyle.Switch(this, cfg.recall, () -> { });
         card.addView(switchRow("敌人召回时撤防",
@@ -1700,6 +1714,8 @@ public class FunctionActivity extends Activity {
             next.recall = recallRef[0].isOn();
             next.forceOnline = forceRef[0].isOn();
             next.troopsMin = numOf(troopsEt);
+            next.protectFids = FnParams.joinFids(protectEt.getText() == null
+                    ? "" : protectEt.getText().toString());
             next.rallyTroopsMin = FnParams.rallyTroopsMinOf(rallyEt.getText() == null
                     ? "" : rallyEt.getText().toString());
             long conc = numOf(concEt);
