@@ -619,16 +619,75 @@ public final class FormationCatalog {
         if (engine == null) return out;
         try {
             CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
-            if (lib == null || !lib.ready() || lib.queue() == null) return out;
-            for (AssetSnapshot.QueueMarch march : lib.queue().marches) {
-                if (march == null || march.heroIds == null) continue;
-                for (Long id : march.heroIds) {
-                    if (id != null && id > 0L) out.add(id);
+            if (lib != null && lib.ready() && lib.queue() != null) {
+                for (AssetSnapshot.QueueMarch march : lib.queue().marches) {
+                    if (march == null || march.heroIds == null) continue;
+                    for (Long id : march.heroIds) {
+                        if (id != null && id > 0L) out.add(id);
+                    }
                 }
             }
         } catch (Throwable ignored) {
         }
+        // 2026-11-04 真机：资产库 queue.marches 可能为空（实测 occupied=6 但 marches=0）→
+        // 本方法恒返回空 → 自动编队选到正在驻防/出征的英雄 → 403 英雄被占用。
+        // 兜底：直接读本角色 notify_world_player_init.march_info 的 squad_list.hero_id。
+        try {
+            Object wpi = engine.notifyData("notify_world_player_init");
+            Map<String, Object> root = Exec.mapOf(wpi);
+            if (root != null) {
+                Object mi = root.get("march_info");
+                collectMarchHeroes(mi, out, 0);
+            }
+        } catch (Throwable ignored) {
+        }
         return out;
+    }
+
+    /** 递归收集 march_info（Map/List/嵌套包装）里的 squad_list.hero_id（在途/驻扎行军都算占用）。 */
+    private static void collectMarchHeroes(Object node, Set<Long> out, int depth) {
+        if (node == null || depth > 4 || out.size() >= 64) return;
+        if (node instanceof List) {
+            for (Object o : (List<?>) node) collectMarchHeroes(o, out, depth + 1);
+            return;
+        }
+        if (!(node instanceof Map)) return;
+        Map<?, ?> m = (Map<?, ?>) node;
+        Map<String, Object> march = Exec.mapOf(m);
+        if (march != null) {
+            Map<String, Object> squad = Exec.mapOf(march.get("squad_list"));
+            if (squad != null) {
+                Object raw = squad.get("hero_id");
+                if (raw == null) raw = squad.get("hero_ids");
+                if (raw instanceof List) {
+                    for (Object v : (List<?>) raw) {
+                        Map<String, Object> pair = Exec.mapOf(v);
+                        long id = pair == null || pair.isEmpty() ? Exec.longOf(v)
+                                : firstHeroId(pair);
+                        if (id > 0L) out.add(id);
+                    }
+                } else if (raw instanceof Map) {
+                    for (Object v : ((Map<?, ?>) raw).values()) {
+                        Map<String, Object> pair = Exec.mapOf(v);
+                        long id = pair == null || pair.isEmpty() ? Exec.longOf(v) : firstHeroId(pair);
+                        if (id > 0L) out.add(id);
+                    }
+                }
+            }
+        }
+        // 继续下钻未知包装（如 {"march_info":{"5001":{...}}}）
+        for (Object v : m.values()) {
+            if (v instanceof Map || v instanceof List) collectMarchHeroes(v, out, depth + 1);
+        }
+    }
+
+    /** 英雄对 {k,v} 取 v（新口径）→ 兼容 id / k。 */
+    private static long firstHeroId(Map<String, Object> pair) {
+        long id = Exec.longOf(pair.get("v"));
+        if (id <= 0L) id = Exec.longOf(pair.get("hero_id"));
+        if (id <= 0L) id = Exec.longOf(pair.get("id"));
+        if (id <= 0L) id = Exec.longOf(pair.get("k"));
+        return id;
     }
 
     /**
