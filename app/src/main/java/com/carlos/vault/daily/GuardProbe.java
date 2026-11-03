@@ -629,8 +629,13 @@ public final class GuardProbe {
 
     // ------------------------------------------------------------------ 迁城（A-23 c2s，烧高迁）
 
-    /** 撤回驻防探针：req_embassy_repatriation {target_uid}（普通联盟族优先，兵工厂族兜底）。 */
-    public static void repatriateProbe(Context ctx, String sessionKey, String targetUidStr) {
+    /**
+     * 撤回驻防探针（2026-11-04：入参改为游戏内可见的 FID，内部再换 uid）。
+     *
+     * <p>用户无法得知服务器内部 uid，工具只让填 FID；这里用 {@code req_player_info_by_fid}
+     * 换成 uid 再按 help_city.target 匹配驻扎行军。
+     */
+    public static void repatriateProbe(Context ctx, String sessionKey, String targetFidStr) {
         init(ctx);
         runAsync(() -> {
             try {
@@ -638,8 +643,20 @@ public final class GuardProbe {
                 if (f == null) { log("撤防探针：无在线会话"); return; }
                 WjdrEngine engine = f.engine;
                 long targetUid = 0;
-                try { targetUid = Long.parseLong(targetUidStr.trim()); } catch (Throwable ignored) { }
-                log("撤防探针 @" + f.fpid + ":" + f.sid + (targetUid > 0 ? " target=" + targetUid : "（全部驻扎）"));
+                String fid = targetFidStr == null ? "" : targetFidStr.trim();
+                if (!fid.isEmpty()) {
+                    Map<String, Object> r = null;
+                    try {
+                        GameMessage lookup = engine.request("req_player_info_by_fid",
+                                ExecUtil.args("fid", fid));
+                        if (ExecUtil.ok(lookup)) r = ExecUtil.mapOf(lookup.getContent().get("result"));
+                    } catch (Throwable ignored) {
+                    }
+                    targetUid = r == null ? 0L : ExecUtil.longOf(r.get("uid"));
+                    if (targetUid <= 0L) log("撤防：FID " + fid + " 未查到玩家（按全部驻扎处理）");
+                }
+                log("撤防探针 @" + f.fpid + ":" + f.sid
+                        + (targetUid > 0 ? " fid=" + fid + "→uid=" + targetUid : "（全部驻扎）"));
                 // 协议考证（原版工具 recallDecision）：驻扎(state=3)撤离 = req_world_march_off_work {id}；
                 // req_embassy_repatriation {target_uid} 非此用途（实测 code=0 空操作 / 2894 不存在）。
                 // 数据源：world detail 查询不含驻扎行军（实测 code=2），驻扎的在 notify_world_player_init 快照里

@@ -1280,13 +1280,25 @@ public final class VaultHttpApi {
         if ("list".equals(action)) return watchListData(fpid);
         if ("add".equals(action)) {
             String uid = str(fields, "uid");
+            String fid = str(fields, "fid");
+            // 2026-11-04：用户只知道游戏内 FID，不知道内部 uid → 只给 fid 时服务端换算
+            if ((uid == null || uid.trim().isEmpty() || "0".equals(uid.trim()))
+                    && fid != null && !fid.trim().isEmpty()) {
+                long resolved = keeper == null ? 0L : keeper.resolveUidByFid(fpid, fid);
+                if (resolved <= 0L) {
+                    throw new BizError(3002, "FID " + fid + " 未查到玩家（请确认 FID 与角色区服一致，"
+                            + "或先让该账号在线）");
+                }
+                uid = String.valueOf(resolved);
+                FileLog.info("监视名单 FID 换算 fpid={} fid={} → uid={}", fpid, fid, uid);
+            }
             int r = store.addWatchTarget(fpid, uid, str(fields, "name"),
                     str(fields, "kid"), str(fields, "note"));
             switch (r) {
                 case 0: break;
                 case 1: throw new BizError(CODE_ACCOUNT_NOT_FOUND, "账号不存在: " + fpid);
-                case 2: throw new BizError(3002, "uid 必须为大于 0 的数字");
-                default: throw new BizError(3002, "该 uid 已在监视名单中");
+                case 2: throw new BizError(3002, "uid/FID 必须为大于 0 的数字");
+                default: throw new BizError(3002, "该玩家已在监视名单中");
             }
             FileLog.info("监视名单新增 fpid={} uid={}", fpid, uid);
             JSONObject data = watchListData(fpid);

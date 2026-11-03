@@ -927,11 +927,14 @@ public final class VaultSync {
         watchPost(ctx, watchFields("list", fpid), done, "vault-watch-list");
     }
 
-    /** 新增监视目标（uid 必填；name/kid/note 可选）。回调在 OkHttp 线程。 */
-    public static void watchAdd(Context ctx, String fpid, String uid, String name,
+    /**
+     * 新增监视目标（2026-11-04：入参改为游戏内 FID，服务端换算 uid）。
+     * name/kid/note 可选；回调在 OkHttp 线程。
+     */
+    public static void watchAdd(Context ctx, String fpid, String fid, String name,
                                 String kid, String note, Callback done) {
         Map<String, Object> f = watchFields("add", fpid);
-        f.put("uid", uid == null ? "" : uid);
+        f.put("fid", fid == null ? "" : fid);
         f.put("name", name == null ? "" : name);
         f.put("kid", kid == null ? "" : kid);
         f.put("note", note == null ? "" : note);

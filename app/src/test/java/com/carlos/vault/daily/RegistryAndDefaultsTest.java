@@ -120,7 +120,11 @@ public class RegistryAndDefaultsTest {
      */
     @Test
     public void fnDetail_everyRegistryFnHasSubs() {
+        // 2026-11-04：守护盟友的配置已全部收进「守护盟友 · 配置」卡（params.guardian），
+        // 旧版 FnDetail 执行参数（watch/intercept/hold/pre_garrison/标定档）废弃，
+        // 因此它是唯一允许没有子项目录的功能。
         for (FnRegistry.Fn f : FnRegistry.all()) {
+            if ("guardian".equals(f.id)) continue;
             assertFalse("FnDetail 缺少功能 " + f.id + " 的子项目录",
                     FnDetail.of(f.id).isEmpty());
         }

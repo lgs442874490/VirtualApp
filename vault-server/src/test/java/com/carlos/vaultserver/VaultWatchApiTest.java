@@ -58,6 +58,10 @@ public class VaultWatchApiTest {
         @Override public RoleOpResult roleAction(String fpid, String sid, String uid, String action) {
             return RoleOpResult.ok("RUNNING");
         }
+        /** 测试用 FID 换算：778899 → 57347368（其它 FID 查不到）。 */
+        @Override public long resolveUidByFid(String fpid, String fid) {
+            return "778899".equals(fid) ? 57347368L : 0L;
+        }
     }
 
     @Before
@@ -132,6 +136,23 @@ public class VaultWatchApiTest {
     }
 
     // ---------------- 监视名单 CRUD ----------------
+
+    @Test
+    public void watch_addByFid_resolvesUid() throws Exception {
+        // 2026-11-04：用户只知道游戏内 FID，不知道内部 uid → add 支持只传 fid
+        JSONObject r = post("/v1/vault/watch", "vaultWatch",
+                fields("action", "add", "fpid", FPID, "fid", "778899",
+                        "name", "仇人A", "kid", "888"));
+        assertEquals(0, r.getInt("code"));
+        JSONArray targets = r.getJSONObject("data").getJSONArray("targets");
+        assertEquals(1, targets.length());
+        assertEquals("FID 应换算成 uid 落库", "57347368", targets.getJSONObject(0).getString("uid"));
+        // 查不到的 FID → 3002（中文提示）
+        JSONObject bad = post("/v1/vault/watch", "vaultWatch",
+                fields("action", "add", "fpid", FPID, "fid", "000000"));
+        assertEquals(3002, bad.getInt("code"));
+        assertTrue(String.valueOf(bad.optString("message")).contains("FID"));
+    }
 
     @Test
     public void watch_addListUpdateRemove() throws Exception {
