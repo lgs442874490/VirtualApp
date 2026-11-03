@@ -89,23 +89,31 @@ public class MarchCoordinatorTest {
     public void arenaExclusiveWindow_blocksAllMarches() throws Exception {
         // M3 竞技场独占窗 = 原版 ArenaExclusiveGate 的行军域近似。
         // 注意：读写锁同线程可重入，独占效果必须跨线程验证。
+        // 2026-11-03 修 flaky：原先靠 sleep(500) 保证持锁窗口，机器负载高时第三/四次
+        // tryAcquire（各 100ms）会跨过窗口而拿到锁 → 断言偶发失败（真机 5 次必现 1 次）。
+        // 改为「显式 release 闸门」：主线程断言全部完成后再放行持锁线程。
         MarchCoordinator c = MarchCoordinator.forKey("fp-arena", 1L);
         CountDownLatch held = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
         AtomicReference<AutoCloseable> arenaRef = new AtomicReference<>();
         Thread t = new Thread(() -> {
             try {
                 arenaRef.set(c.tryAcquire("arena", 1000)); // ARENA 写 + MARCH 写
                 held.countDown();
-                Thread.sleep(500);
+                release.await();
                 arenaRef.get().close();
             } catch (Exception ignored) {
             }
         });
         t.start();
         held.await();
-        assertNull(c.tryAcquire("gather", 100));
-        assertNull(c.tryAcquire("act_feast", 100));
-        assertNull(c.tryAcquire("behemoth", 100));
+        try {
+            assertNull(c.tryAcquire("gather", 100));
+            assertNull(c.tryAcquire("act_feast", 100));
+            assertNull(c.tryAcquire("behemoth", 100));
+        } finally {
+            release.countDown();   // 任何断言失败都放行，避免线程泄漏
+        }
         t.join();
         AutoCloseable after = c.tryAcquire("gather", 500);
         assertNotNull(after);
