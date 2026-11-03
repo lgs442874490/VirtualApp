@@ -99,37 +99,18 @@ public class GuardianPreGarrisonTest {
     // ------------------------------------------------------------------ 默认关闭不改变现有行为 + FnDetail chips
 
     @Test
-    public void fnDetail_newSubsPresent_withDefaultsOff() {
+    public void fnDetail_guardianSubsRemoved() {
+        // 2026-11-04：守护盟友旧版执行参数（watch/intercept/hold_garrison_min/pre_garrison/
+        // power_min/eta_max/delta_ms/dist_near/dist_mid）已废弃，配置全部收进
+        // 「守护盟友 · 配置」卡（params.guardian）。FnDetail 不再有 guardian 子项。
         java.util.List<com.carlos.vault.daily.FnDetail.Sub> subs =
                 com.carlos.vault.daily.FnDetail.of("guardian");
-        com.carlos.vault.daily.FnDetail.Sub hold = sub(subs, "hold_garrison_min");
-        assertNotNull("常驻戒备子项存在", hold);
-        assertFalse("常驻戒备默认关", hold.defOn);
-        assertEquals("策略首档=关闭（默认 0 不撤防路径不变）", "0", hold.strategies[0][0]);
-        assertEquals(5, hold.strategies.length);
-
-        com.carlos.vault.daily.FnDetail.Sub pre = sub(subs, "pre_garrison");
-        assertNotNull("预驻防子项存在", pre);
-        assertFalse("预驻防默认关", pre.defOn);
-        assertEquals("策略首档=关闭", "0", pre.strategies[0][0]);
-        assertEquals(2, pre.strategies.length);
-
-        com.carlos.vault.daily.FnDetail.Sub prio = sub(subs, "pre_garrison_targets");
-        assertNotNull("目标优先级子项存在", prio);
-        assertEquals("默认受威胁优先", "threat", prio.strategies[0][0]);
-        assertEquals(2, prio.strategies.length);
-    }
-
-    @Test
-    public void fnDetail_existingSubsUntouched() {
-        java.util.List<com.carlos.vault.daily.FnDetail.Sub> subs =
-                com.carlos.vault.daily.FnDetail.of("guardian");
-        // 原有子项顺序与 id 不变（增量改动，不破坏既有配置/页面）
-        assertEquals("watch", subs.get(0).id);
-        assertEquals("intercept", subs.get(1).id);
-        assertEquals("0", sub(subs, "power_min").strategies[0][0]);
-        assertEquals("300", sub(subs, "eta_max").strategies[0][0]);
-        assertEquals("1000", sub(subs, "delta_ms").strategies[0][0]);
+        assertTrue("守护盟友不再有旧执行参数子项（配置在专用卡片）", subs.isEmpty());
+        assertNull("常驻戒备子项已移除", sub(subs, "hold_garrison_min"));
+        assertNull("预驻防子项已移除", sub(subs, "pre_garrison"));
+        assertNull("目标优先级子项已移除", sub(subs, "pre_garrison_targets"));
+        assertNull("旧 watch 子项已移除", sub(subs, "watch"));
+        assertNull("旧 intercept 子项已移除", sub(subs, "intercept"));
     }
 
     // ------------------------------------------------------------------ 合成预驻防 Track（威胁表注册）
