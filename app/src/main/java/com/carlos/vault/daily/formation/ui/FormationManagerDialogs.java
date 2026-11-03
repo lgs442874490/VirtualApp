@@ -23,6 +23,7 @@ import com.carlos.vault.daily.FormationStore;
 import com.carlos.vault.daily.formation.BearFormationTemplates;
 import com.carlos.vault.daily.formation.FormationCatalogStore;
 import com.carlos.vault.daily.formation.FormationModel;
+import com.carlos.vault.daily.formation.PresetFormations;
 import com.carlos.vault.daily.formation.FormationQuickSetup;
 import com.carlos.vault.daily.formation.FormationRules;
 import com.carlos.vault.wjdr.asset.HeroCatalog;
@@ -978,7 +979,7 @@ public final class FormationManagerDialogs {
                     for (final FormationModel f : items) {
                         final boolean selected = !isNew[0] && f.id == targetId[0];
                         TextView chip = ManagerUi.text(act,
-                                f.name + "（" + (f.builtIn ? "内置" : "自定义") + "）",
+                                f.name + "（" + (PresetFormations.isPreset(f.id) ? "预设" : "自定义") + "）",
                                 11.5f, selected ? Color.WHITE : ManagerUi.TEXT2, selected);
                         chip.setSingleLine(true);
                         chip.setEllipsize(android.text.TextUtils.TruncateAt.END);

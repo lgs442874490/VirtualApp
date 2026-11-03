@@ -311,15 +311,18 @@ public final class FormationResolver {
     private static ResolveOutcome tryRoleCandidate(WjdrEngine engine, FormationLibrary lib,
                                                    Map<String, Object> p, long formationId,
                                                    Set<Long> usedHeroes, List<String> failures) {
-        FormationSpec spec = lib.byId(formationId);
-        if (spec == null) {
+        FormationSpec stored = lib.byId(formationId);
+        if (stored == null) {
             failures.add("编队 #" + formationId + " 不存在（编队库 " + lib.ids() + "）");
             return null;
         }
-        if (spec.isGame()) {
+        if (stored.isGame()) {
             failures.add("编队 #" + formationId + " 是游戏内编队（只读），请在 App 里生成副本后使用");
             return null;
         }
+        // 预设编队（PRESET_* / id 9100000001..19）：按当前英雄目录实时重算英雄（必须在 usable 前）
+        FormationSpec spec = PresetLiveResolver.refresh(stored, engine);
+        boolean presetRatioMode = PresetLiveResolver.isPercentagePreset(spec);
         if (!spec.usable()) {
             failures.add("编队 #" + formationId + " 没有英雄或 id 非法");
             return null;
@@ -362,7 +365,8 @@ public final class FormationResolver {
         }
         // ⑤ 兵量：显式兵量/比例 → fitFormation（超容量同比缩放、超库存缩放，不再 SKIP）
         List<String> notes = new ArrayList<>();
-        long[] override = soldiersOf(p);
+        // PERCENTAGE 预设：忽略库内预算兵量与队列 total，强制「预设比例 × 实时容量」
+        long[] override = presetRatioMode ? null : soldiersOf(p);
         long[] merged = new long[]{
                 Math.max(0L, spec.infantry),
                 Math.max(0L, spec.lancer),
@@ -381,7 +385,7 @@ public final class FormationResolver {
         long bp = percentageBasisPoints(engine);
         long[] soldiers;
         String sourceNote;
-        if (overrideAny || spec.hasExplicitSoldiers()) {
+        if (!presetRatioMode && (overrideAny || spec.hasExplicitSoldiers())) {
             // MANUAL：configuredTotal → expandedFixedTarget（容量扩张）→ 最大余数按兵量权重重分配
             long configuredTotal = merged[0] + merged[1] + merged[2];
             long target = configuredTotal;
@@ -404,10 +408,12 @@ public final class FormationResolver {
             soldiers = allocateLargestRemainders(target, merged);
             sourceNote = overrideAny ? "功能级 soldiers 覆盖" : "编队库兵量";
         } else {
-            long total = totalOf(p);
-            if (total <= 0L) total = spec.total;
-            boolean ratioInformed = hasExplicitRatio(p) || spec.ratioExplicit;
-            long[] weights = ratioArray(ratioOf(p, spec.ratio), DEFAULT_RATIO);
+            long total = presetRatioMode ? 0L : totalOf(p);
+            if (!presetRatioMode && total <= 0L) total = spec.total;
+            boolean ratioInformed = presetRatioMode || hasExplicitRatio(p) || spec.ratioExplicit;
+            long[] weights = presetRatioMode
+                    ? ratioArray(spec.ratio, DEFAULT_RATIO)
+                    : ratioArray(ratioOf(p, spec.ratio), DEFAULT_RATIO);
             if (total > 0L) {
                 // 旧 App/队列级 total 语义：目标总量按比例权重分配（兼容既有行为）
                 long target = total;
@@ -429,7 +435,8 @@ public final class FormationResolver {
                     return null;
                 }
                 soldiers = allocatePercentages(capacity, weights);
-                sourceNote = "按比例分配（容量" + capacity + " × "
+                sourceNote = (presetRatioMode ? "预设实时按比例分配（容量" : "按比例分配（容量")
+                        + capacity + " × "
                         + weights[0] + ":" + weights[1] + ":" + weights[2] + "）";
             } else if (ratioInformed) {
                 // 容量未知：退化为"库存上限内按比例分配"（旧行为，不阻塞），只 WARN
