@@ -67,6 +67,8 @@ public class NotificationNoIdsTest {
         store.monitorTargets.add(t);
         WatchPointEngine e = new WatchPointEngine(null, store, null, null);
         e.noteTargetCity(31374667L, 600, 700, "[818]鲱鱼罐头");
+        e.setMoveAlertWindowMsForTest(0);
+        e.flushPendingMoveAlertsForTest();
         String text = e.lastAlertTextForTest();
         assertTrue("要带昵称: " + text, text.contains("[818]鲱鱼罐头"));
         assertFalse("不能出现 uid: " + text, text.contains("uid"));
