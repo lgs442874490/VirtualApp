@@ -10,27 +10,11 @@ import org.junit.Test;
 
 /**
  * P1 /accounts 新增字段解析单测（契约 §二，纯 JVM）：
- * {@code account.recovery}、{@code roles[].antibanEnabled}、
+ * {@code account.recovery}、
  * {@code roles[].pause_resume_at}（ISO-8601/数值/缺字段容错）、
  * 池角色定位 {@link AccountPoolCache#findRole}。
  */
 public class AccountPoolCacheP1Test {
-
-    // ---------- antibanEnabled（缺字段 → false） ----------
-
-    @Test
-    public void antibanOf_trueFalseAndMissing() throws Exception {
-        assertTrue(AccountPoolCache.antibanOf(new JSONObject("{\"antibanEnabled\":true}")));
-        assertFalse(AccountPoolCache.antibanOf(new JSONObject("{\"antibanEnabled\":false}")));
-        // 旧服务端缺字段 → false（默认关闭）
-        assertFalse(AccountPoolCache.antibanOf(new JSONObject("{\"sid\":\"888\"}")));
-    }
-
-    @Test
-    public void antibanOf_nullAndGarbageSafe() {
-        assertFalse(AccountPoolCache.antibanOf(null));
-        assertFalse(AccountPoolCache.antibanOf(new JSONObject()));
-    }
 
     // ---------- pause_resume_at：ISO-8601 解析 ----------
 

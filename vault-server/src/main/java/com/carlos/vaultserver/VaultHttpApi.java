@@ -671,7 +671,6 @@ public final class VaultHttpApi {
         o.put("level", r.level);
         o.put("power", r.power);
         o.put("enabled", r.enabled);
-        o.put("antibanEnabled", r.antibanEnabled);   // P1：防封保护开关
         o.put("pause_resume_at", isoOrNull(r.pauseResumeAt));   // P1：暂停自动恢复时刻（ISO-8601，可空）
         o.put("state", roleStateJson(keeper.roleRuntime(a == null ? "" : a.fpid, r.sid, r.uid)));
         // R2 Phase 2：按角色返回生效任务开关（uid 优先 → 旧 sid 表回退），供 App 角色管理展示。
@@ -721,7 +720,7 @@ public final class VaultHttpApi {
         return s;
     }
 
-    /** POST /v1/vault/role-action：单角色动作（M1 §3.2 + P1 antiban/pause/rename/remove/enabled）。 */
+    /** POST /v1/vault/role-action：单角色动作（M1 §3.2 + P1 pause/rename/remove/enabled）。 */
     private JSONObject handleRoleAction(Map<String, Object> fields) throws Exception {
         String fpid = str(fields, "fpid");
         String sid = str(fields, "sid");

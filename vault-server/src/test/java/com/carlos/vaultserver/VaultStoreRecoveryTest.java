@@ -15,8 +15,8 @@ import java.util.ArrayList;
 import java.util.List;
 
 /**
- * P1 恢复策略 / 防封开关 / 暂停恢复计划（VaultStore 持久化层，2026-10-21 契约 §一）：
- * 默认值、旧数据加载容错、落盘重载、恢复设置校验文案、removeRole/antiban/enabled 落库、
+ * P1 恢复策略 / 暂停恢复计划（VaultStore 持久化层，2026-10-21 契约 §一）：
+ * 默认值、旧数据加载容错、落盘重载、恢复设置校验文案、removeRole/enabled 落库、
  * pauseResumeAt 生命周期（pause 置位 / stop-login 清除）、sync 不冲掉服务器侧设置。
  */
 public class VaultStoreRecoveryTest {
@@ -62,9 +62,8 @@ public class VaultStoreRecoveryTest {
         assertEquals(5, a.takeoverRetryIntervalSeconds);
         assertEquals(3, a.takeoverMaxAttempts);
         assertEquals(15, a.takeoverCooldownMinutes);
-        // 角色级新字段默认：防封关、无恢复计划
+        // 角色级新字段默认：无恢复计划
         VaultStore.RoleEntry e = a.roles.get(VaultStore.roleKey(SID, UID_A));
-        assertFalse(e.antibanEnabled);
         assertEquals(0, e.pauseResumeAt);
     }
 
@@ -72,7 +71,6 @@ public class VaultStoreRecoveryTest {
     public void recoveryAndRoleFields_persistAcrossReload() {
         seed(UID_A, UID_B);
         store.updateRecoverySettings(FPID, false, 3600, 30, 7, 120);
-        store.setRoleAntiban(FPID, SID, UID_A, true);
         store.applyRolePauseSchedule(FPID, SID, UID_A, 499999999999L);
 
         VaultStore reloaded = new VaultStore(tmp.getRoot().toPath());
@@ -84,19 +82,17 @@ public class VaultStoreRecoveryTest {
         assertEquals(7, a.takeoverMaxAttempts);
         assertEquals(120, a.takeoverCooldownMinutes);
         VaultStore.RoleEntry ea = a.roles.get(VaultStore.roleKey(SID, UID_A));
-        assertTrue(ea.antibanEnabled);
         assertEquals(499999999999L, ea.pauseResumeAt);
         assertTrue("暂停保留期望在线", ea.desiredOnline);
         assertEquals(VaultStore.RUN_PAUSED, ea.runState);
         // 未设置的角色保持默认
         VaultStore.RoleEntry eb = a.roles.get(VaultStore.roleKey(SID, UID_B));
-        assertFalse(eb.antibanEnabled);
         assertEquals(0, eb.pauseResumeAt);
     }
 
     @Test
     public void legacyVaultJson_missingRecoveryFields_defaultsApplied() throws Exception {
-        // 生产旧库（v4.1.5）无恢复策略/防封字段：加载容错回默认，不炸不漂
+        // 生产旧库（v4.1.5）无恢复策略字段：加载容错回默认，不炸不漂
         java.nio.file.Files.write(tmp.getRoot().toPath().resolve("vault.json"),
                 ("{\"accounts\":[{\"fpid\":\"" + FPID + "\",\"token\":\"tk\",\"keep\":true,"
                         + "\"activeSid\":\"" + SID + "\",\"activeUid\":\"" + UID_A + "\","
@@ -115,7 +111,6 @@ public class VaultStoreRecoveryTest {
         assertEquals(15, a.takeoverCooldownMinutes);
         VaultStore.RoleEntry e = a.roles.get(VaultStore.roleKey(SID, UID_A));
         assertNotNull(e);
-        assertFalse(e.antibanEnabled);
         assertEquals(0, e.pauseResumeAt);
         // 非法值兜底回默认（加载容错）
         reloaded = reloadWith("\"takeoverInitialDelaySeconds\":-5,\"takeoverRetryIntervalSeconds\":999,"
@@ -169,7 +164,7 @@ public class VaultStoreRecoveryTest {
                 VaultStore.validateRecovery(30, 5, 3, 20));
     }
 
-    // ---------- 角色管理增强落库：remove / antiban / name / enabled ----------
+    // ---------- 角色管理增强落库：remove / name / enabled ----------
 
     @Test
     public void removeRole_clearsEntryAndActivePointersWhenActive() {
@@ -185,15 +180,13 @@ public class VaultStoreRecoveryTest {
     }
 
     @Test
-    public void roleMutators_antiban_name_enabled_persist() {
+    public void roleMutators_name_enabled_persist() {
         seed(UID_A, UID_B);
-        assertTrue(store.setRoleAntiban(FPID, SID, UID_A, true));
         assertTrue(store.setRoleName(FPID, SID, UID_A, "隆科多二世"));
         assertTrue(store.setRoleEnabled(FPID, SID, UID_B, false));
 
         VaultStore reloaded = new VaultStore(tmp.getRoot().toPath());
         reloaded.load();
-        assertTrue(reloaded.find(FPID).roles.get(VaultStore.roleKey(SID, UID_A)).antibanEnabled);
         assertEquals("隆科多二世",
                 reloaded.find(FPID).roles.get(VaultStore.roleKey(SID, UID_A)).name);
         assertFalse(reloaded.find(FPID).roles.get(VaultStore.roleKey(SID, UID_B)).enabled);
@@ -232,12 +225,11 @@ public class VaultStoreRecoveryTest {
     // ---------- sync 不冲掉服务器侧设置（App 不携带这些字段） ----------
 
     @Test
-    public void sync_preservesServerRecoverySettingsAndRoleAntiban() {
+    public void sync_preservesServerRecoverySettings() {
         seed(UID_A);
         store.updateRecoverySettings(FPID, false, 7200, 10, 1, 30);
-        store.setRoleAntiban(FPID, SID, UID_A, true);
 
-        // App 全量 sync（不带恢复策略/防封字段）
+        // App 全量 sync（不带恢复策略字段）
         VaultStore.Account in = new VaultStore.Account(FPID);
         in.keep = true;
         in.auto = true;
@@ -255,6 +247,5 @@ public class VaultStoreRecoveryTest {
         assertFalse("恢复设置跨 sync 保留", a.takeoverRecoveryEnabled);
         assertEquals(7200, a.takeoverInitialDelaySeconds);
         assertEquals(30, a.takeoverCooldownMinutes);
-        assertTrue("防封开关跨 sync 保留", a.roles.get(VaultStore.roleKey(SID, UID_A)).antibanEnabled);
     }
 }

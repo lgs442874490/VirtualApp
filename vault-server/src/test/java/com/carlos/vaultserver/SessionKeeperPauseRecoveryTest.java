@@ -43,7 +43,6 @@ public class SessionKeeperPauseRecoveryTest {
         boolean online;
         int failLogins;
         boolean closed;
-        int riskCheckSupplements;
 
         RecoveryTestEngine() {
             super(null);
@@ -131,11 +130,6 @@ public class SessionKeeperPauseRecoveryTest {
         public void close() {
             online = false;
             closed = true;
-        }
-
-        @Override
-        public void performAntibanRiskCheckIfPending() {
-            riskCheckSupplements++;
         }
     }
 

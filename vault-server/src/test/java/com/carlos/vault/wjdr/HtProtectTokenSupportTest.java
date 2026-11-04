@@ -12,7 +12,7 @@ import java.util.Base64;
 import java.util.HexFormat;
 
 /**
- * 易盾风控检测令牌（P1 防封保护，对齐线上 HtProtectTokenSupport）：
+ * 易盾风控检测令牌（防封登录默认链路，对齐线上 HtProtectTokenSupport）：
  * 已知 payload+mask 的线上捕获样本复现、随机 mask 往返、长度校验、Base64URL 无填充。
  */
 public class HtProtectTokenSupportTest {

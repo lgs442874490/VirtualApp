@@ -202,16 +202,6 @@ public final class AccountPoolCache {
         }
     }
 
-    /** 角色防封保护开关（P1 §二 {@code roles[].antibanEnabled}）；缺字段/异常 → false。 */
-    public static boolean antibanOf(JSONObject role) {
-        if (role == null) return false;
-        try {
-            return role.optBoolean("antibanEnabled", false);
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
     /**
      * 角色暂停自动恢复时刻（P1 §二 {@code roles[].pause_resume_at}，ISO-8601 可空）。
      * 兼容口径：ISO-8601（{@code Z}/{@code ±HH[:MM]} 偏移/无偏移按 UTC）、纯数字按
@@ -336,7 +326,7 @@ public final class AccountPoolCache {
     }
 
     /**
-     * 按 (sid, uid) 在账号池账号对象里找服务端角色行（P1：防封/恢复设置读取与
+     * 按 (sid, uid) 在账号池账号对象里找服务端角色行（P1：恢复设置读取与
      * HomeActivity 行匹配共用）。uid 任一侧未知时按 sid 兜底（同服同 sid 多角色
      * uid 未同步的行可能串状态——已知限制，随角色元数据同步自愈）。
      */

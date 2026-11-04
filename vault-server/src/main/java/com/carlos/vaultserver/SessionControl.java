@@ -185,7 +185,7 @@ public interface SessionControl {
 
     /**
      * 角色显式动作（P1 2026-10-21 带参重载）：在 M1 五动作之上新增
-     * antiban（payload.enabled）/ pause（升级为按恢复策略自动恢复）/ rename（payload.name）/
+     * pause（升级为按恢复策略自动恢复）/ rename（payload.name）/
      * remove / enabled（payload.enabled）；旧假实现走 4 参默认降级。
      */
     default RoleOpResult roleAction(String fpid, String sid, String uid, String action,

@@ -13,7 +13,7 @@ import com.carlos.vault.daily.RoleStore;
 import org.json.JSONObject;
 
 /**
- * P1 角色动作 UI 帮助类（重命名 / 移除角色 / 启用·收纳 / 防封开关确认）：
+ * P1 角色动作 UI 帮助类（重命名 / 移除角色 / 启用·收纳）：
  * 账号页角色行与角色管理弹层（{@link RoleManagerSheet}）共用同一份实现——
  * 弹窗文案走 {@link RoleActionRules}（契约逐字），网络走 {@link VaultSync}
  * 新增的 P1 动作通道，成功/失败 toast 口径一致（成功优先服务端 message，
@@ -33,38 +33,6 @@ public final class PoolRoleActions {
 
     private interface Invoke {
         void run(VaultSync.Callback cb);
-    }
-
-    // ---------- 防封保护（§三.1） ----------
-
-    /**
-     * 防封开关动作入口：开启先弹确认（标题/正文/按钮逐字对齐契约），关闭直接调用。
-     * 成功 toast 服务端 message（「已开启/已关闭防封风控安全保护」）。
-     */
-    public static void toggleAntiban(final Activity act, final AccountStore.Account a,
-                                     final RoleStore.Role r, final boolean enable,
-                                     final OnDone onDone) {
-        if (!enable) {
-            actAntiban(act, a, r, false, onDone);
-            return;
-        }
-        new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle(RoleActionRules.ANTIBAN_CONFIRM_TITLE)
-                .setMessage(RoleActionRules.antibanConfirmBody(RoleDisplay.roleName(r.name)))
-                .setPositiveButton(RoleActionRules.ANTIBAN_CONFIRM_POSITIVE,
-                        (d, w) -> actAntiban(act, a, r, true, onDone))
-                .setNegativeButton(RoleActionRules.ANTIBAN_CONFIRM_NEGATIVE, null)
-                .show();
-    }
-
-    private static void actAntiban(final Activity act, final AccountStore.Account a,
-                                   final RoleStore.Role r, final boolean enable,
-                                   final OnDone onDone) {
-        runRoleAction(act, a, r, enable ? RoleActionRules.ANTIBAN_ON_TOAST
-                        : RoleActionRules.ANTIBAN_OFF_TOAST,
-                "防封保护设置失败：", null, onDone,
-                cb -> VaultSync.roleActionAntiban(act, a.fpid, String.valueOf(r.serverid),
-                        String.valueOf(r.uid), enable, cb));
     }
 
     // ---------- 重命名（§三.4） ----------

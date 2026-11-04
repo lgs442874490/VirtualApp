@@ -763,17 +763,6 @@ public final class VaultSync {
     // ---------- P1 角色动作扩展（契约《账号池P1-功能契约》§二） ----------
 
     /**
-     * 防封保护开关（P1 §二.1，role-action op {@code antiban}，payload {@code enabled}）。
-     * 在线/离线均可切；响应 {@code message}「已开启/已关闭防封风控安全保护」。
-     * 回调在 OkHttp 线程。
-     */
-    public static void roleActionAntiban(Context ctx, String fpid, String sid, String uid,
-                                         boolean enabled, Callback done) {
-        roleActionWithPayload(ctx, fpid, sid, uid, "antiban", p -> p.put("enabled", enabled),
-                done, "vault-role-antiban");
-    }
-
-    /**
      * 暂停（自动恢复）（P1 §二.2）：沿用现有 role-action pause 通道，服务端置
      * PAUSED + pauseResumeAt=now+initialDelay；失败（3002）message 为中文原因
      * （如「顶号恢复未开启，无法暂停」/「账号当前离线，无法暂停」），UI 直接 toast。

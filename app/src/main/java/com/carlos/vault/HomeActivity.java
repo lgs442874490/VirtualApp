@@ -3082,10 +3082,9 @@ public class HomeActivity extends AccountVaultActivity {
 
     // ==================== 账号页（v2 原型）：在线判定 / 游戏头像 / 表格化角色行 ====================
 
-    /** 角色表各列宽度（dp）。昵称列吃剩余宽度，其余定宽以保证逐行对齐（状态列容纳「● 已暂停·待恢复」）。
-     *  P1：COL_AB=防封保护开关列（UiStyle.Switch 原生 46dp 宽）。 */
+    /** 角色表各列宽度（dp）。昵称列吃剩余宽度，其余定宽以保证逐行对齐（状态列容纳「● 已暂停·待恢复」）。 */
     private static final int COL_ONLINE = 74, COL_ZONE = 24, COL_DONE = 38, COL_LAST = 38,
-            COL_GO = 74, COL_AB = 46;
+            COL_GO = 74;
 
     /**
      * 「在线」判定：该账号当前是否持有<b>有效登录态</b>。
@@ -3297,7 +3296,6 @@ public class HomeActivity extends AccountVaultActivity {
                 new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         r.addView(colHead("今日完成", COL_DONE, Gravity.END));
         r.addView(colHead("上次登录", COL_LAST, Gravity.END));
-        r.addView(colHead("防封", COL_AB, Gravity.CENTER));
         r.addView(colHead("", COL_GO, Gravity.END));
         return r;
     }
@@ -3362,7 +3360,7 @@ public class HomeActivity extends AccountVaultActivity {
      *
      * <p>点击口径（2026-10-28 用户新 bug）：<b>整卡/角色行=进入账号详情</b>（showAccountDetail），
      * 只有右上⚙「角色管理」才弹 {@link #showRoleManager}；批量模式下整卡=勾选切换；
-     * 长按整卡=账号菜单。子控件（勾选框/恢复设置/齿轮/角色行动作按钮/防封开关）各自消费点击，
+     * 长按整卡=账号菜单。子控件（勾选框/恢复设置/齿轮/角色行动作按钮）各自消费点击，
      * 不会被整卡点击抢占。
      */
     private android.view.View accountGroupCard(final AccountStore.Account a, final String[] st,
@@ -3600,9 +3598,9 @@ public class HomeActivity extends AccountVaultActivity {
      *       与「登录」按钮（保留现有行为，stale 横幅提示）；</li>
      *   <li>被顶号/待恢复 → 行下 banner「账号被顶号 · 待恢复 mm:ss」（倒计时随轮询刷新）。</li>
      * </ul>
-     * P1 扩展（契约 §三）：「防封」列 = UiStyle.Switch（状态来自 pool 数据
-     * {@code roles[].antibanEnabled}，开启前确认弹窗）；「已暂停·待恢复」态附
-     * pause_resume_at 倒计时；长按行 = 角色动作菜单（重命名/移除/启用收纳）。
+     * P1 扩展（契约 §三）：「已暂停·待恢复」态附 pause_resume_at 倒计时；
+     * 长按行 = 角色动作菜单（重命名/移除/启用收纳）。防封登录已并入默认登录链路，
+     * 角色行不再展示防封开关（2026-11-05 用户口径）。
      * 点<b>行</b>（非动作按钮区域）= 进入账号详情（2026-10-28 用户口径；角色管理只走卡片右上⚙）；
      * 动作按钮走 role-action（进行中禁点，失败 toast 服务端
      * message，成功后立即刷新）。点「上线」直接 role-action login（M2d：同账号
@@ -3665,38 +3663,7 @@ public class HomeActivity extends AccountVaultActivity {
         row.addView(cellText(done + "/" + total, COL_DONE, 11.5f, dcol, Gravity.END, true));
         row.addView(cellText(shortTime(lastTs), COL_LAST, 10.5f, UiStyle.INK2, Gravity.END, false));
 
-        // ⑤.5 防封保护开关（P1 契约 §三.1）：在线/离线均可切换；状态来自池数据
-        // （roles[].antibanEnabled），刷新后同步；无池数据（旧服务端）占位对齐不渲染。
-        LinearLayout abBox = new LinearLayout(this);
-        abBox.setGravity(Gravity.CENTER);
-        abBox.setLayoutParams(new LinearLayout.LayoutParams(dp(COL_AB),
-                ViewGroup.LayoutParams.WRAP_CONTENT));
-        row.addView(abBox);
-        if (gate(FeatureGate.Feature.AUTOMATION_STATUS)
-                && poolRole != null && poolState != null && !poolState.degraded) {
-            final boolean abOn = com.carlos.vault.AccountPoolCache.antibanOf(poolRole);
-            if (!poolState.enabled) {
-                // 已收纳：开关随行置灰禁点（契约 §三.4）
-                UiStyle.Switch sw = new UiStyle.Switch(this, abOn, null);
-                sw.setEnabled(false);
-                sw.setAlpha(.4f);
-                abBox.addView(sw);
-            } else {
-                final UiStyle.Switch[] abRef = new UiStyle.Switch[1];
-                abRef[0] = new UiStyle.Switch(this, abOn, () -> {
-                    // Switch 点击即翻转：先回弹到池数据状态（成功后轮询刷新驱动真实值），
-                    // 开启走确认弹窗（逐字契约），关闭直接调用
-                    final boolean want = abRef[0].isOn();
-                    abRef[0].setOn(abOn);
-                    PoolRoleActions.toggleAntiban(HomeActivity.this, a, r, want,
-                            () -> runOnUiThread(() -> {
-                                pollPoolOnce();
-                                refreshAccounts();
-                            }));
-                });
-                abBox.addView(abRef[0]);
-            }
-        }
+        // ⑤ 防封登录已并入默认登录链路（2026-11-05 用户口径）：不再渲染防封开关列。
 
         // ⑥ 动作列（M2）：按状态矩阵渲染；进行中整列「执行中」禁点
         LinearLayout goBox = new LinearLayout(this);
