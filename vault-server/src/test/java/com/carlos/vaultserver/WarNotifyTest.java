@@ -215,6 +215,23 @@ public class WarNotifyTest {
         assertFalse(e.optString("eventId").isEmpty());
     }
 
+    /** 2026-11-04：监视名单是用户级的——敌方行军帧从其它账号/非生效范围角色回来也必须推送。 */
+    @Test
+    public void onPush_watchedOwnerFromOtherAccountOutOfScopeStillEmits() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        // 名单生效范围只选了主账号的某个角色
+        store.updateWatchRoleScope(List.of(35371154L));
+        // 帧从另一个账号（86885582）的会话回来，角色不在生效范围，但 owner 命中全局监视名单
+        war.onPush("86885582", 888L, 23954889L, "notify_player_march_add",
+                playerMarchAdd(121, ENEMY_UID, 2, nowS, nowS + 300, 12, 34));
+        assertEquals("跨账号视野的监视目标也要推送", 1, events.size());
+        assertEquals(ENEMY_UID, events.after(0).get(0).optLong("targetUid"));
+        // 不在范围、也不是监视目标的行军仍然静默（保留范围过滤的降噪作用）
+        war.onPush("86885582", 888L, 23954889L, "notify_player_march_add",
+                playerMarchAdd(122, 999L, 2, nowS, nowS + 300, 1, 1));
+        assertEquals(1, events.size());
+    }
+
     @Test
     public void onPush_unwatchedOrDisabledEmitsNothing() {
         long nowS = System.currentTimeMillis() / 1000L;
@@ -368,13 +385,16 @@ public class WarNotifyTest {
     @Test
     public void onPush_roleScopeFiltersNotifications() {
         long nowS = System.currentTimeMillis() / 1000L;
-        // 只让 uid=42 这个角色生效；其它角色（如 7）看到同一目标也不推
+        // 只让 uid=42 这个角色生效
         store.updateWatchRoleScope(List.of(42L));
-        Map<String, Object> march = playerMarchAdd(906, ENEMY_UID, 2, nowS, nowS + 600, 12, 34);
-        war.onPush(FPID, 888L, 7L, "notify_world_marchs", march);
-        assertEquals("不在生效角色范围 → 不推", 0, events.size());
-        war.onPush(FPID, 888L, 42L, "notify_world_marchs", march);
-        assertEquals("生效角色 → 正常推", 1, events.size());
+        // 不在生效角色范围、且不是监视目标 → 不推（保留范围过滤的降噪作用）
+        war.onPush(FPID, 888L, 7L, "notify_world_marchs",
+                playerMarchAdd(905, 999L, 2, nowS, nowS + 600, 12, 34));
+        assertEquals("不在范围且非监视目标 → 不推", 0, events.size());
+        // 2026-11-04：监视目标优先——即使从非生效角色会话回来也要推（跨账号视野漏报修复）
+        war.onPush(FPID, 888L, 7L, "notify_world_marchs",
+                playerMarchAdd(906, ENEMY_UID, 2, nowS, nowS + 600, 12, 34));
+        assertEquals("监视目标不受角色范围限制 → 推", 1, events.size());
         // 清空范围 = 全部角色（换目标避开冷却）
         store.updateWatchRoleScope(List.of());
         long secondR = addSecondTarget();

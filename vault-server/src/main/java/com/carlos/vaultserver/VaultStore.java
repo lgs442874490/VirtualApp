@@ -1181,6 +1181,23 @@ public final class VaultStore {
         return null;
     }
 
+    /**
+     * 全局监视命中（2026-11-04）：跨账号查找 enabled 的监视目标。
+     * 背景：战争通知按「收到推送的会话账号」查名单，但观察点的整图/保护查询会分摊到其它账号会话，
+     * 敌方行军帧一旦从非名单账号的会话回来就会被静默丢弃（生产 17:2x 监视目标打人漏报）。
+     */
+    public WatchTarget matchWatchedAnyAccount(long ownerUid) {
+        if (ownerUid <= 0) return null;
+        String u = String.valueOf(ownerUid);
+        synchronized (lock) {
+            for (Account a : accounts) {
+                WatchTarget t = findTargetLocked(a, u);
+                if (t != null && t.enabled) return t.copy();
+            }
+            return null;
+        }
+    }
+
     /** 监视命中（推送匹配用）：enabled 且 uid 相等。返回命中条目快照，未命中 null。 */
     public WatchTarget matchWatched(String fpid, long ownerUid) {
         if (ownerUid <= 0) return null;

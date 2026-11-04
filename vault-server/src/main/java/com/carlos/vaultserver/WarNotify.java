@@ -207,8 +207,12 @@ public final class WarNotify {
         try {
             VaultStore.WatchConfig cfg = store.watchConfig();
             if (selfUid > 0L && cfg.roleUidScope != null && !cfg.roleUidScope.isEmpty()
-                    && !cfg.roleUidScope.contains(selfUid)) {
-                return;   // 该角色不在名单生效范围内
+                    && !cfg.roleUidScope.contains(selfUid)
+                    && !hasGloballyWatchedOwner(content)) {
+                // 2026-11-04：角色不在「名单生效范围」时不再无条件丢弃——
+                // 观察点的整图/保护查询会分摊到其它账号会话，敌方行军帧可能从非名单角色回来；
+                // 只要 owner 命中任意账号的监视名单，仍然处理（否则监视目标打人会漏报）。
+                return;
             }
             handlePush(fpid, sid, proto, content);
         } catch (Throwable t) {
@@ -246,7 +250,9 @@ public final class WarNotify {
             for (Map<String, Object> m : candidates) {
                 long owner = Exec.longOf(m.get("owner"));
                 if (owner <= 0L) continue;
-                if (store.matchWatched(fpid, owner) != null && !watchedOwners.contains(owner)) {
+                if ((store.matchWatched(fpid, owner) != null
+                        || store.matchWatchedAnyAccount(owner) != null)
+                        && !watchedOwners.contains(owner)) {
                     watchedOwners.add(owner);
                 }
                 if (!owners.contains(owner) && owners.size() < 6) owners.add(owner);
@@ -363,6 +369,18 @@ public final class WarNotify {
         return MarchVerdict.ok(marchId, owner, type, state);
     }
 
+    /** 内容里是否含命中任意账号监视名单的 owner（跨账号会话过滤用）。 */
+    private boolean hasGloballyWatchedOwner(Map<String, Object> content) {
+        try {
+            for (Map<String, Object> m : marchCandidates(content)) {
+                long owner = Exec.longOf(m.get("owner"));
+                if (owner > 0L && store.matchWatchedAnyAccount(owner) != null) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
     /** 一条行军候选命中处理：owner 命中监视名单 → 接收口径判定 → 事件（冷却内丢弃）。 */
     private void handleMarch(String fpid, long sid, String proto, VaultStore.WatchConfig cfg,
                              Map<String, Object> m) {
@@ -370,6 +388,10 @@ public final class WarNotify {
         long owner = Exec.longOf(m.get("owner"));
         if (marchId <= 0 || owner <= 0) return;
         VaultStore.WatchTarget watched = store.matchWatched(fpid, owner);
+        if (watched == null) {
+            // 2026-11-04：名单是用户级（跨账号）的——从其它账号会话看到的监视目标也要推
+            watched = store.matchWatchedAnyAccount(owner);
+        }
         if (watched == null) return;
 
         MarchVerdict v = classifyMarch(proto, m);
