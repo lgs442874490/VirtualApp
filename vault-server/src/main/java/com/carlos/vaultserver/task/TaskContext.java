@@ -132,6 +132,26 @@ public final class TaskContext {
         return def;
     }
 
+    /** 子项开关是否显式存在（用于新旧配置兼容判定）。 */
+    public boolean hasSub(String fnId, String subId) {
+        try {
+            JSONObject sub = fnParams(fnId).optJSONObject("sub");
+            return sub != null && sub.has(subId);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** 子项策略是否显式存在（用于新旧配置兼容判定）。 */
+    public boolean hasStrategy(String fnId, String subId) {
+        try {
+            JSONObject st = fnParams(fnId).optJSONObject("strategy");
+            return st != null && st.has(subId);
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     /** 子项策略（App FnParams.strategy 同款：strategy:{subId:value}）。 */
     public String strategy(String fnId, String subId, String def) {
         try {

@@ -126,6 +126,15 @@ public final class WatchPointEngine {
         return SHARED;
     }
 
+    /** 友盟 aid 集合（只读快照；供采集召回等同口径排除友军）。 */
+    public static Set<Long> friendAids() {
+        WatchPointEngine e = SHARED;
+        if (e == null || e.store == null || e.store.friendAids == null) {
+            return Collections.emptySet();
+        }
+        return Collections.unmodifiableSet(e.store.friendAids);
+    }
+
     /**
      * 城缓存查询（2026-11-02 小工具）：按 uid / 昵称子串 / 联盟简称（昵称前缀 [xxx]）/ aid / 最低炉子等级过滤。
      * 供 API {@code /v1/vault/watchpoint action=lookup} 使用；无共享实例返回空列表。

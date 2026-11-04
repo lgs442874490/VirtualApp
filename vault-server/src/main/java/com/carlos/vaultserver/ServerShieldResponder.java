@@ -2,6 +2,7 @@ package com.carlos.vaultserver;
 
 import com.carlos.vault.wjdr.GameServerClock;
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vault.wjdr.asset.AssetSnapshot;
 import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
 import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
@@ -11,6 +12,7 @@ import com.carlos.vaultserver.task.ServerTasks;
 import com.carlos.vaultserver.task.StateKeys;
 import com.carlos.vaultserver.task.TaskContext;
 import com.carlos.vaultserver.task.TaskOutcome;
+import com.carlos.vaultserver.watchpoint.WatchPointEngine;
 
 import org.json.JSONObject;
 
@@ -80,12 +82,41 @@ public final class ServerShieldResponder {
     /** 单条采集行军撤矿的最小重试间隔（同 marchId）。 */
     static final long GATHER_RECALL_COOLDOWN_MILLIS = 10 * 60_000L;
 
-    /** WAR/RECON 行军推送源。 */
+    /** 采集极限场景：召回失败重试间隔 / 最大尝试次数 / watch 空闲回收。 */
+    static final long GATHER_WATCH_RETRY_MS = 60_000L;
+    static final int GATHER_WATCH_MAX_ATTEMPTS = 2;
+    static final long GATHER_WATCH_IDLE_MS = 5 * 60_000L;
+    /** 采集点兜底轮询默认间隔。 */
+    static final long GATHER_POLL_DEFAULT_SEC = 60L;
+
+    /** 护盾道具 id（2026-11-05 真机抓包/商店目录实证）。 */
+    static final long SHIELD_ITEM_2H = 302301L;
+    static final long SHIELD_ITEM_8H = 302302L;
+    static final long SHIELD_ITEM_12H = 302305L;
+    /** 2 小时护盾实测价格（钻石；以实际扣钻推送为准）。 */
+    static final long DIAMOND_SHIELD_PRICE = 400L;
+    /** 钻石购盾日预算（默认 3 个/日）。 */
+    static final int DIAMOND_BUY_DAILY_MAX = 3;
+    /** 护盾账本状态回写节流。 */
+    static final long SHIELD_LEDGER_WRITE_MS = 5_000L;
+
+    /** WAR/RECON 行军推送源（含 del，用于敌方行军撤回/消失）。 */
     static final Set<String> SITUATION_PROTOS = Set.of(
             "notify_world_situation_info_add",
             "notify_world_situation_info_up",
+            "notify_world_situation_info_del",
             "notify_world_alliance_situation_add",
-            "notify_world_alliance_situation_update");
+            "notify_world_alliance_situation_update",
+            "notify_world_alliance_situation_del");
+
+    /** 护盾/背包/资源账本推送源。 */
+    static final Set<String> LEDGER_PROTOS = Set.of(
+            "notify_backpack_init",
+            "notify_backpack_update",
+            "notify_resource_init",
+            "notify_resource_update",
+            "notify_city_item_init",
+            "notify_city_item_update");
 
     /** 开盾成功后的幂等窗：8 小时免费护盾时长内不重复开。 */
     static final long SHIELD_ACTIVE_MILLIS = 8 * 3600_000L;
@@ -114,16 +145,77 @@ public final class ServerShieldResponder {
         }
     }
 
-    /** 自己正在采集的行军（来源：核心资产库 QUEUE；type=4 且 state=3 才算“采集驻留”）。 */
+    /** 自己正在采集的行军（来源：核心资产库 QUEUE；type=4，state=2 在途 / state=3 采集中）。 */
     static final class GatherMarch {
         final long marchId;
         final int x;
         final int y;
+        /** 2=在途，3=采集中。 */
+        final long state;
+        /** state=2：抵达时刻；state=3：采集结束时刻。 */
+        final long endtimeSec;
+        final long aid;
 
         GatherMarch(long marchId, int x, int y) {
+            this(marchId, x, y, 3L, 0L, 0L);
+        }
+
+        GatherMarch(long marchId, int x, int y, long state, long endtimeSec, long aid) {
             this.marchId = marchId;
             this.x = x;
             this.y = y;
+            this.state = state;
+            this.endtimeSec = endtimeSec;
+            this.aid = aid;
+        }
+    }
+
+    /** 敌方同点行军缓存（采集队/出征；用于极限场景判定）。 */
+    static final class EnemyMarch {
+        final long marchId;
+        long owner;
+        long aid;
+        long type;
+        int x;
+        int y;
+        long endtimeSec;
+        long state;
+        /** squad_list.soldier 合计；-1=未知。 */
+        long troops = -1L;
+        boolean landed;
+        boolean accelerated;
+        long lastSeenMs;
+
+        EnemyMarch(long marchId) {
+            this.marchId = marchId;
+        }
+    }
+
+    /** 单条我方采集行军的极限场景 watch。 */
+    static final class GatherWatch {
+        final long marchId;
+        int x;
+        int y;
+        long state;
+        long aid;
+        long arrivalSec;
+        long gatherEndSec;
+        long scheduledAtSec;
+        long scheduledEnemyId;
+        long lastSeenMs;
+        long lastAttemptMs;
+        int attempts;
+        boolean recalled;
+        boolean failed;
+        long lastPollMs;
+
+        GatherWatch(long marchId, int x, int y, long state, long endtimeSec) {
+            this.marchId = marchId;
+            this.x = x;
+            this.y = y;
+            this.state = state;
+            if (state == 2L) this.arrivalSec = endtimeSec;
+            if (state == 3L) this.gatherEndSec = endtimeSec;
         }
     }
 
@@ -181,6 +273,22 @@ public final class ServerShieldResponder {
     private final AtomicBoolean gatherDirty = new AtomicBoolean(false);
     /** 已撤矿 marchId → 最近一次撤矿时刻（防同威胁重复请求；10min 冷却）。 */
     private final Map<Long, Long> gatherRecalledAt = new ConcurrentHashMap<>();
+    /** 敌方同点行军缓存：marchId → 最近状态（推送线程写，tick 线程读）。 */
+    private final Map<Long, EnemyMarch> enemyMarches = new ConcurrentHashMap<>();
+    /** 我方采集 watch：marchId → 状态机（tick 线程独占写）。 */
+    private final Map<Long, GatherWatch> gatherWatches = new ConcurrentHashMap<>();
+    /** 背包护盾账本：itemId → count（init + update 增量）。 */
+    private final Map<Long, Long> shieldBackpack = new ConcurrentHashMap<>();
+    /** 护盾账本是否已从 init 初始化。 */
+    private volatile boolean shieldLedgerReady;
+    /** 当前生效护盾：itemId / endtime（秒）；endtime<=0 表示无。 */
+    private volatile long shieldActiveItem;
+    private volatile long shieldActiveEnd;
+    /** 账本状态上次回写时刻。 */
+    private volatile long shieldLedgerWriteMs;
+    /** 钻石购盾日预算：yyyyMMdd / 当日已买次数（内存 + 状态键兜底）。 */
+    private volatile String diamondBuyDay = "";
+    private volatile int diamondBuysToday;
     /** 风险写入/清除互斥（推送线程 vs 会话线程），保证"处理旧风险时新推送不丢"。 */
     private final Object riskLock = new Object();
     /** 卡秒挂起下一次判定时刻（本机毫秒；0=无挂起）。 */
@@ -244,12 +352,17 @@ public final class ServerShieldResponder {
     void attach(WjdrEngine engine) {
         engineRef = engine;
         engine.addMessageHook((proto, content) -> {
-            if (!SITUATION_PROTOS.contains(proto)) return;
             try {
-                onPush(content, engine.lastUid(), engine);
+                if (SITUATION_PROTOS.contains(proto)) {
+                    if (proto.endsWith("_del")) onSituationDel(content);
+                    else onPush(content, engine.lastUid(), engine);
+                } else if (LEDGER_PROTOS.contains(proto)) {
+                    onLedgerPush(proto, content);
+                }
             } catch (Throwable ignored) {
             }
         });
+        initLedgerFromEngine(engine);
     }
 
     /**
@@ -263,6 +376,7 @@ public final class ServerShieldResponder {
 
     /** 推送入口（带引擎：采集行军来源需要读核心资产库；engine 可 null=测试无资产库）。 */
     void onPush(Map<String, Object> content, long ownUid, WjdrEngine engine) {
+        trackEnemyMarches(content, ownUid);
         Risk r = riskOf(content, ownUid);
         if (r != null) {
             synchronized (riskLock) {
@@ -280,6 +394,219 @@ public final class ServerShieldResponder {
         }
     }
 
+    /** 敌方 situation_del：按 marchId 移除缓存。 */
+    void onSituationDel(Map<String, Object> content) {
+        for (Map<String, Object> m : marchesOf(content)) {
+            long id = Exec.longOf(m.get("id"));
+            if (id > 0) enemyMarches.remove(id);
+        }
+    }
+
+    /** 把 situation 推送中的敌方同点行军写入缓存（供采集极限场景判定）。 */
+    void trackEnemyMarches(Map<String, Object> content, long ownUid) {
+        if (content == null || ownUid <= 0) return;
+        long now = nowMs.getAsLong();
+        for (Map<String, Object> m : marchesOf(content)) {
+            long type = Exec.longOf(m.get("type"));
+            if (type != MARCH_WAR && type != MARCH_GATHER && type != MARCH_ALLIANCE_GATHER) continue;
+            if (isPveMarch(m)) continue;
+            long id = Exec.longOf(m.get("id"));
+            long owner = Exec.longOf(m.get("owner"));
+            if (id <= 0 || owner <= 0 || owner == ownUid) continue;
+            int[] pt = enemyPoint(m);
+            int x = pt[0], y = pt[1];
+            long end = Exec.longOf(m.get("endtime"));
+            long aid = Exec.longOf(m.get("aid"));
+            long state = Exec.longOf(m.get("state"));
+            EnemyMarch e = enemyMarches.get(id);
+            if (e == null) {
+                e = new EnemyMarch(id);
+                enemyMarches.put(id, e);
+            }
+            if (end > 0 && e.endtimeSec > 0 && end < e.endtimeSec - 1) e.accelerated = true;
+            e.owner = owner;
+            if (aid > 0) e.aid = aid;
+            e.type = type;
+            if (x > 0 || y > 0) {
+                e.x = x;
+                e.y = y;
+            }
+            if (end > 0) e.endtimeSec = end;
+            if (state > 0) e.state = state;
+            long troops = troopsOf(m);
+            if (troops >= 0L) e.troops = troops;
+            e.landed = (end > 0 && end <= serverNowSec(engineRef)) || state == 3L;
+            e.lastSeenMs = now;
+        }
+        long ttl = Math.max(120_000L, EVENT_TTL_MILLIS);
+        enemyMarches.entrySet().removeIf(en -> now - en.getValue().lastSeenMs > ttl);
+    }
+
+    /** 敌方行军终点坐标（endpoint 优先，退化 target.map_resource）。 */
+    private static int[] enemyPoint(Map<String, Object> m) {
+        Map<String, Object> p = firstPoint(m);
+        if (p != null) {
+            long x = Exec.longOf(p.get("x")), y = Exec.longOf(p.get("y"));
+            if (x > 0 || y > 0) return new int[]{(int) x, (int) y};
+        }
+        Map<String, Object> target = Exec.mapOf(m.get("target"));
+        Map<String, Object> res = target == null ? null : Exec.mapOf(target.get("map_resource"));
+        if (res != null) {
+            return new int[]{(int) Exec.longOf(res.get("x")), (int) Exec.longOf(res.get("y"))};
+        }
+        return new int[]{0, 0};
+    }
+
+    /** PvE 行军过滤（巨兽/野怪等），避免采集召回误判。 */
+    private static boolean isPveMarch(Map<String, Object> m) {
+        if (m == null) return false;
+        if (hasNonEmptyMap(m, "map_boss") || hasNonEmptyMap(m, "map_monster")
+                || hasNonEmptyMap(m, "map_world_item")) return true;
+        Map<String, Object> target = Exec.mapOf(m.get("target"));
+        return target != null && (hasNonEmptyMap(target, "map_boss")
+                || hasNonEmptyMap(target, "map_monster")
+                || hasNonEmptyMap(target, "map_world_item"));
+    }
+
+    private static boolean hasNonEmptyMap(Map<String, Object> m, String key) {
+        Map<String, Object> v = m == null ? null : Exec.mapOf(m.get(key));
+        return v != null && !v.isEmpty();
+    }
+
+    // ---------------- 护盾账本（init + update） ----------------
+
+    /** 从引擎已缓存的 notify 初始化账本（attach 时调用）。 */
+    void initLedgerFromEngine(WjdrEngine engine) {
+        if (engine == null) return;
+        try {
+            boolean any = false;
+            Map<String, Object> bp = engine.notifyContent("notify_backpack_init");
+            if (bp != null) { applyBackpackInit(bp); any = true; }
+            Map<String, Object> rp = engine.notifyContent("notify_resource_init");
+            if (rp != null) { applyResourceInit(rp); any = true; }
+            Map<String, Object> ci = engine.notifyContent("notify_city_item_init");
+            if (ci != null) { applyCityItemInit(ci); any = true; }
+            shieldLedgerReady = any;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 护盾/背包/资源推送入口（钩子线程）。 */
+    void onLedgerPush(String proto, Map<String, Object> content) {
+        try {
+            if ("notify_backpack_init".equals(proto)) applyBackpackInit(content);
+            else if ("notify_backpack_update".equals(proto)) applyBackpackUpdate(content);
+            else if ("notify_resource_init".equals(proto)) applyResourceInit(content);
+            else if ("notify_resource_update".equals(proto)) applyResourceUpdate(content);
+            else if ("notify_city_item_init".equals(proto)) applyCityItemInit(content);
+            else if ("notify_city_item_update".equals(proto)) applyCityItemUpdate(content);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static List<Map<String, Object>> itemList(Map<String, Object> content) {
+        if (content == null) return Collections.emptyList();
+        Object data = content.get("data");
+        if (data == null) data = content.get("items");
+        if (data instanceof List) return Exec.mapsOf(data);
+        if (data instanceof Map) return new ArrayList<>(Exec.mapsOf(((Map<?, ?>) data).values()));
+        return Collections.emptyList();
+    }
+
+    void applyBackpackInit(Map<String, Object> content) {
+        if (content == null) return;
+        shieldBackpack.clear();
+        for (Map<String, Object> it : itemList(content)) {
+            long id = Exec.longOf(it.get("id"));
+            long cnt = Exec.longOf(it.get("count"));
+            if (id > 0) shieldBackpack.put(id, Math.max(0L, cnt));
+        }
+    }
+
+    void applyBackpackUpdate(Map<String, Object> content) {
+        if (content == null) return;
+        String type = String.valueOf(content.get("type"));
+        boolean del = "del".equals(type) || "delete".equals(type);
+        for (Map<String, Object> it : itemList(content)) {
+            long id = Exec.longOf(it.get("id"));
+            long cnt = Math.max(0L, Exec.longOf(it.get("count")));
+            if (id <= 0) continue;
+            long old = shieldBackpack.getOrDefault(id, 0L);
+            shieldBackpack.put(id, del ? Math.max(0L, old - cnt) : old + cnt);
+        }
+    }
+
+    void applyResourceInit(Map<String, Object> content) {
+        // 钻石余额不用于决策，保留接口给后续展示/预算；当前只处理 101 增量。
+        applyResourceUpdate(content);
+    }
+
+    void applyResourceUpdate(Map<String, Object> content) {
+        // 当前仅钻石购盾需要计数；余额展示可由 App 实时读取，不在此持久化。
+    }
+
+    void applyCityItemInit(Map<String, Object> content) {
+        if (content == null) return;
+        for (Map<String, Object> it : itemList(content)) {
+            if (Exec.longOf(it.get("id")) == 101L) {
+                shieldActiveItem = Exec.longOf(it.get("itemid"));
+                shieldActiveEnd = Exec.longOf(it.get("endtime"));
+                return;
+            }
+        }
+        shieldActiveItem = 0L;
+        shieldActiveEnd = 0L;
+    }
+
+    void applyCityItemUpdate(Map<String, Object> content) {
+        if (content == null) return;
+        Map<String, Object> info = Exec.mapOf(content.get("info"));
+        if (info == null) info = content;
+        if (Exec.longOf(info.get("id")) != 101L) return;
+        shieldActiveItem = Exec.longOf(info.get("itemid"));
+        shieldActiveEnd = Exec.longOf(info.get("endtime"));
+    }
+
+    long shieldCount(long itemId) {
+        return Math.max(0L, shieldBackpack.getOrDefault(itemId, 0L));
+    }
+
+    boolean shieldActive(WjdrEngine engine) {
+        return shieldActiveEnd > 0L && shieldActiveEnd > serverNowSec(engine);
+    }
+
+    /** 把护盾账本写入 App 状态键（节流）。 */
+    void writeShieldLedgerState(TaskContext tc, boolean force) {
+        // 没有账本数据（旧测试/未登录）时不污染状态键。
+        if (!shieldLedgerReady && shieldBackpack.isEmpty() && shieldActiveEnd <= 0L) return;
+        long now = nowMs.getAsLong();
+        if (!force && now - shieldLedgerWriteMs < SHIELD_LEDGER_WRITE_MS) return;
+        shieldLedgerWriteMs = now;
+        try {
+            JSONObject mod = readShieldState();
+            mod.put("shield_active_item", shieldActiveItem);
+            mod.put("shield_active_end", shieldActiveEnd);
+            mod.put("shield_count_302301", shieldCount(SHIELD_ITEM_2H));
+            mod.put("shield_count_302302", shieldCount(SHIELD_ITEM_8H));
+            mod.put("shield_count_302305", shieldCount(SHIELD_ITEM_12H));
+            mod.put("shield_state_ts", now);
+            writeShieldState(mod);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void writeShieldState(JSONObject mod) {
+        String json = mod.toString();
+        if (roleUid > 0L) {
+            store.putString(shieldStateKey(), json);
+            if (mirrorLegacy()) store.putString(shieldStateLegacyKey(), json);
+        } else {
+            store.putString(shieldStateLegacyKey(), json);
+        }
+        store.flush();
+    }
+
     /**
      * 会话线程 tick 驱动：先处理采集点遭袭（提醒/可选撤矿），再处理开盾风险。
      * 返回 true 表示本轮有动作（发请求/跳过留痕），false=无动作/挂起/冷却/陈旧。
@@ -292,6 +619,16 @@ public final class ServerShieldResponder {
         GatherAlert g = gatherAlert;
         if (g != null && gatherDirty.compareAndSet(true, false)) {
             acted = handleGather(engine, g, now);
+        }
+        VaultStore.Account acc = vault.find(fpid);
+        TaskContext tc = acc == null ? null : taskContext(engine, acc);
+        if (tc != null) {
+            try {
+                if (gatherWatchTick(engine, tc, now)) acted = true;
+            } catch (Throwable t) {
+                FileLog.warn("采集极限场景 watch 异常 fpid={}：{}", fpid, brief(String.valueOf(t)));
+            }
+            writeShieldLedgerState(tc, false);
         }
         boolean fresh = dirty.compareAndSet(true, false);   // 先消费脏标记再读风险：避免与推送线程竞态丢事件
         Risk r = risk;
@@ -334,9 +671,10 @@ public final class ServerShieldResponder {
             return true;
         }
         String prefix = "WAR".equals(r.kind) ? "被进攻" : "被侦查";
-        // 卡秒 ETA：eta_sec=0 保持"收到即开"旧行为；>0 时等到"到达前 eta_sec 秒"再开
-        long etaSec = numOf(tc.strategy("battle_shield", "eta_sec", "0"));
-        if (etaSec > 0) {
+        // 两种模式：immediate（收到即开）/ before_arrival（到达前 N 秒，默认 2、最小 2）。
+        boolean immediate = "immediate".equals(shieldMode(tc));
+        long etaSec = shieldEtaSec(tc);
+        if (!immediate) {
             if (r.endtimeSec > 0) {
                 long remain = r.endtimeSec - serverNowSec(engine);
                 if (remain > etaSec) {
@@ -368,8 +706,10 @@ public final class ServerShieldResponder {
             clearRisk(r);
             return false;
         }
-        // 兵力阈值：已知且低于 → 跳过留痕；未知 → 保护优先照常触发并留痕
-        long troopsMin = numOf(tc.strategy("battle_shield", "troops_min", "0"));
+        // 防骚扰：新配置看 shield_anti_harass；旧配置（无该键）保留 troops_min 原行为。
+        boolean antiHarass = tc.subOn("battle_shield", "shield_anti_harass", false)
+                || !tc.hasSub("battle_shield", "shield_anti_harass");
+        long troopsMin = antiHarass ? shieldTroopsMin(tc) : 0L;
         if (troopsMin > 0) {
             if (r.troops < 0) {
                 FileLog.info("反应式开盾 fpid={} 兵力未知，按保护优先照常触发（阈值{}）",
@@ -396,21 +736,414 @@ public final class ServerShieldResponder {
         return true;
     }
 
-    /** 真正下发免费盾请求（复用整轮执行器：free_id 动态取，码表归 SKIPPED）。 */
+    /**
+     * 真正下发开盾请求：已有护盾 → 免费盾 → 背包盾 → 钻石购盾（默认关）。
+     * 顺序遵循需求：免费优先、其次背包、最后才花钻石。
+     */
     private void openShield(TaskContext tc, long now) {
-        // 执行器内部已捕获 Exception 并分类，此处再兜一层 Throwable，防止 tick 链被打断
-        TaskOutcome r;
-        try {
-            r = ServerTasks.freeShield(tc);
-        } catch (Throwable t) {
-            r = ServerTasks.classifyException(t, "战斗护盾");
+        if (!shieldLedgerReady) initLedgerFromEngine(tc.engine);
+        long nowSec = serverNowSec(tc.engine);
+        String prefix = ("WAR".equals(lastEventKind) ? "被进攻" : "被侦查");
+        if (shieldActive(tc.engine)) {
+            nextAttemptAt.set(now + Math.max(60_000L,
+                    (shieldActiveEnd - nowSec) * 1000L));
+            saveState(tc, prefix + " → 已有护盾生效中（剩余" + Math.max(0L, shieldActiveEnd - nowSec)
+                    + "秒），不重复开");
+            writeShieldLedgerState(tc, true);
+            return;
         }
-        nextAttemptAt.set(now + (r.category == TaskOutcome.Category.CLAIMED
-                ? SHIELD_ACTIVE_MILLIS : RETRY_COOLDOWN_MILLIS));
-        String text = ("WAR".equals(lastEventKind) ? "被进攻" : "被侦查") + " → " + r.message;
-        saveState(tc, text);
-        FileLog.info("反应式开盾 fpid={} 事件={} 结果={}：{}", fpid, lastEventKind,
-                String.valueOf(r.category), r.message);
+        // 1) 免费盾（每日免费 8h；不可用则继续）
+        TaskOutcome free;
+        try {
+            free = ServerTasks.freeShield(tc);
+        } catch (Throwable t) {
+            free = ServerTasks.classifyException(t, "战斗护盾");
+        }
+        if (free.category == TaskOutcome.Category.CLAIMED) {
+            shieldActiveItem = SHIELD_ITEM_8H;
+            shieldActiveEnd = nowSec + 8 * 3600L;
+            nextAttemptAt.set(now + 8 * 3600_000L);
+            saveState(tc, prefix + " → " + free.message);
+            writeShieldLedgerState(tc, true);
+            FileLog.info("反应式开盾 fpid={} 事件={} 结果=CLAIMED(免费)：{}",
+                    fpid, lastEventKind, free.message);
+            return;
+        }
+        // 2) 背包盾（2h → 8h → 12h，优先最短可用，避免浪费长盾）
+        long item = 0L;
+        long hours = 0L;
+        if (shieldCount(SHIELD_ITEM_2H) > 0L) { item = SHIELD_ITEM_2H; hours = 2L; }
+        else if (shieldCount(SHIELD_ITEM_8H) > 0L) { item = SHIELD_ITEM_8H; hours = 8L; }
+        else if (shieldCount(SHIELD_ITEM_12H) > 0L) { item = SHIELD_ITEM_12H; hours = 12L; }
+        if (item > 0L) {
+            int code = useItem(tc, item);
+            if (code == 0) {
+                shieldBackpack.put(item, Math.max(0L, shieldCount(item) - 1L));
+                shieldActiveItem = item;
+                shieldActiveEnd = nowSec + hours * 3600L;
+                nextAttemptAt.set(now + hours * 3600_000L);
+                saveState(tc, prefix + " → 已使用背包 " + shieldName(item) + "（code=0）");
+                writeShieldLedgerState(tc, true);
+                FileLog.info("反应式开盾 fpid={} 事件={} 来源=背包 item={} code=0",
+                        fpid, lastEventKind, String.valueOf(item));
+                return;
+            }
+            FileLog.warn("反应式开盾 fpid={} 背包盾 item={} 使用失败 code={}",
+                    fpid, String.valueOf(item), String.valueOf(code));
+        }
+        // 3) 钻石购盾（默认关；日预算/单次 1 个）
+        boolean buyDiamond = tc.subOn("battle_shield", "shield_buy_diamond", false);
+        if (buyDiamond) {
+            int code = buyAndUseShield(tc, nowSec);
+            if (code == 0) {
+                shieldActiveItem = SHIELD_ITEM_2H;
+                shieldActiveEnd = nowSec + 2 * 3600L;
+                nextAttemptAt.set(now + 2 * 3600_000L);
+                saveState(tc, prefix + " → 背包无盾，已用 " + DIAMOND_SHIELD_PRICE
+                        + " 钻石购买并开启 2 小时护盾（code=0）");
+                writeShieldLedgerState(tc, true);
+                FileLog.info("反应式开盾 fpid={} 事件={} 来源=钻石 item={} price={} code=0",
+                        fpid, lastEventKind, String.valueOf(SHIELD_ITEM_2H),
+                        String.valueOf(DIAMOND_SHIELD_PRICE));
+                return;
+            }
+            saveState(tc, prefix + " → 背包无盾，钻石购盾失败 code=" + code
+                    + "（不再重试，5 分钟后可再试）");
+            nextAttemptAt.set(now + RETRY_COOLDOWN_MILLIS);
+            FileLog.warn("反应式开盾 fpid={} 钻石购盾失败 code={}", fpid, String.valueOf(code));
+            writeShieldLedgerState(tc, true);
+            return;
+        }
+        // 4) 无可用护盾（保留免费盾失败原因，App 状态可读）
+        nextAttemptAt.set(now + RETRY_COOLDOWN_MILLIS);
+        saveState(tc, prefix + " → 免费盾不可用（" + free.message + "）、背包无盾，"
+                + "且钻石购盾关闭；未开盾");
+        writeShieldLedgerState(tc, true);
+        FileLog.info("反应式开盾 fpid={} 事件={} 无可用护盾", fpid, lastEventKind);
+    }
+
+    /** 使用背包护盾道具（req_use_item{id,count:1,extra:{}}）；返回业务码。 */
+    int useItem(TaskContext tc, long itemId) {
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("id", itemId);
+            args.put("count", 1);
+            args.put("extra", new LinkedHashMap<String, Object>());
+            GameMessage rsp = tc.engine.request("req_use_item", args, 8);
+            return Exec.codeOf(rsp);
+        } catch (Throwable t) {
+            FileLog.warn("使用护盾道具异常 fpid={} item={}：{}", fpid, String.valueOf(itemId),
+                    brief(String.valueOf(t)));
+            return -1;
+        }
+    }
+
+    /** 钻石购盾：先买 2 小时盾入背包，再显式使用；返回最终业务码。 */
+    int buyAndUseShield(TaskContext tc, long nowSec) {
+        if (!allowDiamondBuy(nowSec)) {
+            FileLog.warn("钻石购盾跳过 fpid={}：今日已达上限 {}", fpid, String.valueOf(DIAMOND_BUY_DAILY_MAX));
+            return -2;
+        }
+        int buyCode;
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("id", SHIELD_ITEM_2H);
+            args.put("count", 1);
+            args.put("use", false);
+            args.put("extra", new LinkedHashMap<String, Object>());
+            GameMessage rsp = tc.engine.request("req_shop_quick_buy", args, 10);
+            buyCode = Exec.codeOf(rsp);
+        } catch (Throwable t) {
+            FileLog.warn("钻石购盾请求异常 fpid={}：{}", fpid, brief(String.valueOf(t)));
+            return -1;
+        }
+        if (buyCode != 0) return buyCode;
+        shieldBackpack.put(SHIELD_ITEM_2H, shieldCount(SHIELD_ITEM_2H) + 1L);
+        recordDiamondBuy(nowSec);
+        int useCode = useItem(tc, SHIELD_ITEM_2H);
+        if (useCode == 0) {
+            shieldBackpack.put(SHIELD_ITEM_2H, Math.max(0L, shieldCount(SHIELD_ITEM_2H) - 1L));
+        }
+        return useCode;
+    }
+
+    boolean allowDiamondBuy(long nowSec) {
+        String day = dayKey(nowSec);
+        if (!day.equals(diamondBuyDay)) {
+            diamondBuyDay = day;
+            diamondBuysToday = loadDiamondBuys(day);
+        }
+        return diamondBuysToday < DIAMOND_BUY_DAILY_MAX;
+    }
+
+    void recordDiamondBuy(long nowSec) {
+        String day = dayKey(nowSec);
+        if (!day.equals(diamondBuyDay)) {
+            diamondBuyDay = day;
+            diamondBuysToday = loadDiamondBuys(day);
+        }
+        diamondBuysToday++;
+        saveDiamondBuys(day, diamondBuysToday);
+    }
+
+    /** 日预算持久化：跨进程/重登录仍生效。 */
+    int loadDiamondBuys(String day) {
+        try {
+            String raw = store.getString(diamondBuyKey(day));
+            if (raw == null || raw.isEmpty()) return 0;
+            return Math.max(0, Integer.parseInt(raw.trim()));
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    void saveDiamondBuys(String day, int count) {
+        try {
+            store.putString(diamondBuyKey(day), String.valueOf(Math.max(0, count)));
+            store.flush();
+        } catch (Throwable ignored) {
+        }
+    }
+
+    String diamondBuyKey(String day) {
+        return roleUid > 0L
+                ? "srv:shield_diamond_buy:" + fpid + ":" + sid + ":" + roleUid + ":" + day
+                : "srv:shield_diamond_buy:" + fpid + ":" + sid + ":" + day;
+    }
+
+    static String dayKey(long nowSec) {
+        return new java.text.SimpleDateFormat("yyyyMMdd", java.util.Locale.CHINA)
+                .format(new java.util.Date(nowSec * 1000L));
+    }
+
+    static String shieldName(long itemId) {
+        if (itemId == SHIELD_ITEM_2H) return "2小时护盾";
+        if (itemId == SHIELD_ITEM_8H) return "8小时护盾";
+        if (itemId == SHIELD_ITEM_12H) return "12小时护盾";
+        return "护盾" + itemId;
+    }
+
+    // ---------------- 采集极限场景（2026-11-05：抢先/加速/跟随/落位/兜底） ----------------
+
+    /**
+     * 采集极限场景主循环：同步我方 state=2/3 行军 → 敌方同点判定 → 到点召回 → 兜底轮询。
+     * 返回 true 表示本轮有动作（召回/状态写入）。
+     */
+    boolean gatherWatchTick(WjdrEngine engine, TaskContext tc, long nowMs) {
+        if (tc == null || engine == null) return false;
+        if (!tc.subOn("battle_shield", "enabled", true)) return false;
+        if (!tc.subOn("battle_shield", "gather_recall", false)) return false;
+        // 未写新键的旧配置继续走 handleGather 的“收到即撤矿”，避免两套逻辑互相覆盖。
+        if (!tc.hasStrategy("battle_shield", "gather_mode")) return false;
+        long nowSec = serverNowSec(engine);
+        syncGatherWatches(engine, nowSec, nowMs);
+        boolean acted = false;
+        for (GatherWatch w : new ArrayList<>(gatherWatches.values())) {
+            if (w == null || w.recalled || w.failed) continue;
+            if (w.scheduledAtSec > 0 && nowSec < w.scheduledAtSec) continue;
+            if (evaluateGatherWatch(engine, tc, w, nowSec, nowMs)) acted = true;
+        }
+        long pollSec = gatherPollSec(tc);
+        for (GatherWatch w : new ArrayList<>(gatherWatches.values())) {
+            if (w == null || w.recalled || w.failed) continue;
+            if (pollSec <= 0 || nowMs - w.lastPollMs < pollSec * 1000L) continue;
+            w.lastPollMs = nowMs;
+            if (pollGatherTile(engine, tc, w, nowSec, nowMs)) acted = true;
+        }
+        return acted;
+    }
+
+    /** 从核心资产库同步我方采集行军（state=2 在途 / state=3 采集中）。 */
+    void syncGatherWatches(WjdrEngine engine, long nowSec, long nowMs) {
+        List<GatherMarch> own = marchSource == null
+                ? Collections.<GatherMarch>emptyList() : marchSource.ownGatheringMarches(engine);
+        Set<Long> seen = new java.util.HashSet<>();
+        for (GatherMarch m : own) {
+            if (m == null || m.marchId <= 0 || (m.x <= 0 && m.y <= 0)) continue;
+            seen.add(m.marchId);
+            GatherWatch w = gatherWatches.get(m.marchId);
+            if (w == null) {
+                w = new GatherWatch(m.marchId, m.x, m.y, m.state, m.endtimeSec);
+                if (m.state == 3L && w.arrivalSec <= 0) w.arrivalSec = nowSec;
+                w.aid = m.aid;
+                w.lastPollMs = nowMs;   // 新建 watch 不立刻查地图，等一个轮询周期
+                gatherWatches.put(m.marchId, w);
+            } else {
+                if (m.state == 3L && w.state != 3L) {
+                    w.arrivalSec = nowSec;
+                    w.gatherEndSec = m.endtimeSec;
+                }
+                if (m.endtimeSec > 0) {
+                    if (m.state == 2L) w.arrivalSec = m.endtimeSec;
+                    if (m.state == 3L) w.gatherEndSec = m.endtimeSec;
+                }
+                w.x = m.x;
+                w.y = m.y;
+                w.state = m.state;
+                w.aid = m.aid;
+            }
+            w.lastSeenMs = nowMs;
+        }
+        gatherWatches.entrySet().removeIf(en -> nowMs - en.getValue().lastSeenMs > GATHER_WATCH_IDLE_MS);
+    }
+
+    /** 单条 watch 判定：立即 / E-N 触发 / 采集结束后不触发。 */
+    boolean evaluateGatherWatch(WjdrEngine engine, TaskContext tc, GatherWatch w,
+                                long nowSec, long nowMs) {
+        EnemyMarch e = findEarliestEnemy(tc, w, nowSec);
+        if (e == null) {
+            w.scheduledAtSec = 0L;
+            w.scheduledEnemyId = 0L;
+            return false;
+        }
+        long E = e.endtimeSec;
+        // 采集中且敌方在采集结束后才到：不召回
+        if (w.state == 3L && w.gatherEndSec > 0L && E > 0L && E >= w.gatherEndSec) {
+            w.scheduledAtSec = 0L;
+            w.scheduledEnemyId = 0L;
+            return false;
+        }
+        boolean immediate = "immediate".equals(gatherMode(tc));
+        if (immediate || E <= 0L || E <= nowSec) {
+            return triggerGatherWatch(engine, tc, w, e,
+                    "采集点极限场景：敌方#"+e.marchId+" 已落地/立即模式", nowSec, nowMs);
+        }
+        long n = gatherEtaSec(tc);
+        long at = E - n;
+        if (at <= nowSec) {
+            return triggerGatherWatch(engine, tc, w, e,
+                    "采集点极限场景：敌方#"+e.marchId+" 到达前"+n+"秒", nowSec, nowMs);
+        }
+        if (w.scheduledAtSec != at || w.scheduledEnemyId != e.marchId) {
+            w.scheduledAtSec = at;
+            w.scheduledEnemyId = e.marchId;
+            String scene = (w.state == 2L && at < w.arrivalSec) ? "场景一（在途召回）" : "场景二（落位后撤矿）";
+            saveStateText(tc, "gather", scene + "：敌方#" + e.marchId + " 预计" + (E - nowSec)
+                    + "秒后到达 @(" + w.x + "," + w.y + ")，计划到达前" + n + "秒召回");
+            FileLog.info("采集极限场景挂起 fpid={} marchId={} enemy={} E={} N={} at={} state={}",
+                    fpid, String.valueOf(w.marchId), String.valueOf(e.marchId),
+                    String.valueOf(E), String.valueOf(n), String.valueOf(at), String.valueOf(w.state));
+        }
+        return false;
+    }
+
+    /** 找同点、最早到达、未被阈值过滤的敌方行军。 */
+    EnemyMarch findEarliestEnemy(TaskContext tc, GatherWatch w, long nowSec) {
+        EnemyMarch best = null;
+        boolean anti = tc.subOn("battle_shield", "gather_anti_harass", false);
+        long threshold = anti ? gatherTroopsMin(tc) : 0L;
+        Set<Long> friends = WatchPointEngine.friendAids();
+        for (EnemyMarch e : enemyMarches.values()) {
+            if (e == null || e.owner <= 0L) continue;
+            if (e.x != w.x || e.y != w.y) continue;
+            if (e.type != MARCH_WAR && e.type != MARCH_GATHER && e.type != MARCH_ALLIANCE_GATHER) continue;
+            if (w.aid > 0L && e.aid > 0L && w.aid == e.aid) continue;   // 同联盟不召回
+            if (w.aid > 0L && e.aid > 0L && friends.contains(w.aid)
+                    && friends.contains(e.aid)) continue;               // 同阵营友盟不召回
+            if (threshold > 0L && e.troops >= 0L && e.troops < threshold) {
+                continue;   // 低于防骚扰阈值
+            }
+            if (e.endtimeSec <= 0L) return e;   // 未知到达：保护优先
+            if (best == null || e.endtimeSec < best.endtimeSec) best = e;
+        }
+        return best;
+    }
+
+    /** 执行召回：state=2 在途 recall，state=3 撤矿 off_work；失败最多重试 2 次。 */
+    boolean triggerGatherWatch(WjdrEngine engine, TaskContext tc, GatherWatch w, EnemyMarch e,
+                               String reason, long nowSec, long nowMs) {
+        if (w.recalled) return false;
+        if (w.attempts > 0 && nowMs - w.lastAttemptMs < GATHER_WATCH_RETRY_MS) return false;
+        w.attempts++;
+        w.lastAttemptMs = nowMs;
+        String proto = w.state == 2L ? "req_world_march_recall" : "req_world_march_off_work";
+        int code;
+        try {
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("id", w.marchId);
+            GameMessage rsp = engine.request(proto, args, 8);
+            code = Exec.codeOf(rsp);
+        } catch (Throwable t) {
+            code = -1;
+            FileLog.warn("采集极限场景召回异常 fpid={} marchId={}：{}",
+                    fpid, String.valueOf(w.marchId), brief(String.valueOf(t)));
+        }
+        if (code == 0) {
+            w.recalled = true;
+            w.scheduledAtSec = 0L;
+            gatherRecalledAt.put(w.marchId, nowMs);
+            saveStateText(tc, "gather", reason + " → " + (w.state == 2L ? "已在途召回" : "已撤矿")
+                    + " marchId=" + w.marchId + (e == null ? "" : " enemy=" + e.marchId));
+            FileLog.info("采集极限场景召回成功 fpid={} marchId={} proto={} enemy={}",
+                    fpid, String.valueOf(w.marchId), proto, e == null ? "-" : String.valueOf(e.marchId));
+        } else if (w.attempts >= GATHER_WATCH_MAX_ATTEMPTS) {
+            w.failed = true;
+            saveStateText(tc, "gather", reason + " → 召回失败 code=" + code
+                    + "（已重试 " + w.attempts + " 次，停止）marchId=" + w.marchId);
+            FileLog.warn("采集极限场景召回失败 fpid={} marchId={} code={} attempts={}",
+                    fpid, String.valueOf(w.marchId), String.valueOf(code), String.valueOf(w.attempts));
+        } else {
+            w.scheduledAtSec = nowSec + GATHER_WATCH_RETRY_MS / 1000L;
+            saveStateText(tc, "gather", reason + " → 召回失败 code=" + code
+                    + "，60秒后重试 marchId=" + w.marchId);
+            FileLog.warn("采集极限场景召回失败待重试 fpid={} marchId={} code={}",
+                    fpid, String.valueOf(w.marchId), String.valueOf(code));
+        }
+        return true;
+    }
+
+    /** 兜底：req_world_mapobj 查采集点，march_id 非己方 → 点位已被占据。 */
+    boolean pollGatherTile(WjdrEngine engine, TaskContext tc, GatherWatch w,
+                           long nowSec, long nowMs) {
+        if (w == null || w.x <= 0 || w.y <= 0) return false;
+        long kid = engine.lastServerId();
+        if (kid <= 0L) return false;
+        try {
+            Map<String, Object> point = new LinkedHashMap<>();
+            point.put("x", w.x);
+            point.put("y", w.y);
+            Map<String, Object> args = new LinkedHashMap<>();
+            args.put("kid", kid);
+            args.put("point", point);
+            GameMessage rsp = engine.request("req_world_mapobj", args, 8);
+            if (rsp == null || Exec.codeOf(rsp) != 0) return false;
+            Map<String, Object> obj = Exec.mapOf(rsp.getContent().get("mapobj"));
+            if (obj == null) return false;
+            if (Exec.longOf(obj.get("type")) != TARGET_RESOURCE) return false;
+            Map<String, Object> res = Exec.mapOf(obj.get("map_resource"));
+            long mid = res == null ? 0L : Exec.longOf(res.get("march_id"));
+            if (mid > 0L && mid != w.marchId) {
+                return triggerGatherWatch(engine, tc, w, null,
+                        "地图复核：@" + w.x + "," + w.y + " 已被其他行军占据", nowSec, nowMs);
+            }
+        } catch (Throwable t) {
+            FileLog.warn("采集点兜底查询异常 fpid={} @{}:{}：{}",
+                    fpid, String.valueOf(w.x), String.valueOf(w.y), brief(String.valueOf(t)));
+        }
+        return false;
+    }
+
+    /** 采集召回模式：immediate / before_arrival（默认 before_arrival）。 */
+    String gatherMode(TaskContext tc) {
+        String v = tc.strategy("battle_shield", "gather_mode", "");
+        return "immediate".equals(v) ? "immediate" : "before_arrival";
+    }
+
+    /** 采集召回提前量：gather_eta_sec 优先；默认/非法/小于 2 → 2。 */
+    long gatherEtaSec(TaskContext tc) {
+        String v = tc.strategy("battle_shield", "gather_eta_sec", "");
+        return parseEta(v, "gather_eta_sec");
+    }
+
+    long gatherTroopsMin(TaskContext tc) {
+        return parseThreshold(tc.strategy("battle_shield", "gather_troops_min", "0"),
+                "gather_troops_min");
+    }
+
+    long gatherPollSec(TaskContext tc) {
+        long v = parseEta(tc.strategy("battle_shield", "gather_watch_poll_sec", "60"),
+                "gather_watch_poll_sec");
+        return Math.max(10L, v);
     }
 
     // ---------------- 采集点遭袭（2026-10-24：对齐网页版 GATHERING_ATTACK） ----------------
@@ -450,7 +1183,9 @@ public final class ServerShieldResponder {
             text.append(" · 在采队伍");
             for (GatherMarch m : g.ownMarches) text.append(" #").append(m.marchId);
         }
-        boolean recall = tc.subOn("battle_shield", "gather_recall", false);
+        // 新配置（gather_mode）交给 gatherWatchTick 统一处理；旧配置保留原“收到即撤矿”行为。
+        boolean recall = tc.subOn("battle_shield", "gather_recall", false)
+                && !tc.hasStrategy("battle_shield", "gather_mode");
         String result = "";
         if (recall && !g.ownMarches.isEmpty()) {
             List<String> done = new ArrayList<>();
@@ -491,7 +1226,7 @@ public final class ServerShieldResponder {
         return true;
     }
 
-    /** 自己正在采集（type=4、state=3）的行军：生产读核心资产库 QUEUE。 */
+    /** 自己采集行军（type=4、state=2 在途 / state=3 采集中）：生产读核心资产库 QUEUE。 */
     private List<GatherMarch> ownGatheringFromAssetLibrary(WjdrEngine engine) {
         try {
             if (engine == null) return Collections.emptyList();
@@ -500,9 +1235,11 @@ public final class ServerShieldResponder {
             List<GatherMarch> out = new ArrayList<>();
             for (AssetSnapshot.QueueMarch m : lib.queue().marches) {
                 if (m == null) continue;
-                if (m.type != MARCH_GATHER || m.state != 3L) continue;   // 4=采集、3=已到达/采集中
+                if (m.type != MARCH_GATHER) continue;                    // 只处理个人采集；联盟矿不自动召回
+                if (m.state != 2L && m.state != 3L) continue;            // 在途 / 采集中
                 if (m.endX <= 0 || m.endY <= 0) continue;
-                out.add(new GatherMarch(m.id, (int) m.endX, (int) m.endY));
+                out.add(new GatherMarch(m.id, (int) m.endX, (int) m.endY,
+                        m.state, m.endTime, m.aid));
             }
             return out;
         } catch (Throwable ignored) {
@@ -587,11 +1324,11 @@ public final class ServerShieldResponder {
         if (!tc.subOn("battle_shield", "enabled", true)) return false;
         if (!tc.subOn("battle_shield", "reactive", true)) return false;
         if (!tc.subOn("battle_shield", "force_online", false)) return false;
-        long etaSec = numOf(tc.strategy("battle_shield", "eta_sec", "0"));
+        boolean immediate = "immediate".equals(shieldMode(tc));
         if (r.endtimeSec > 0) {
             long remain = r.endtimeSec - serverNowSec(engineRef);
-            // 卡秒模式只对"尚未到达"的风险强制上线；eta=0 模式到达后保鲜窗内仍算新鲜
-            return etaSec > 0 ? remain > 0 : remain > -EVENT_TTL_SEC;
+            // 卡秒模式只对"尚未到达"的风险强制上线；立即模式到达后保鲜窗内仍算新鲜
+            return immediate ? remain > -EVENT_TTL_SEC : remain > 0;
         }
         return nowMs.getAsLong() - lastEventAt <= EVENT_TTL_MILLIS;
     }
@@ -626,6 +1363,71 @@ public final class ServerShieldResponder {
         return nowMs.getAsLong() / 1000L;
     }
 
+    /** 开盾模式：新键 shield_mode 优先；旧 eta_sec=0 兼容为 immediate；缺省 before_arrival。 */
+    String shieldMode(TaskContext tc) {
+        String v = tc.strategy("battle_shield", "shield_mode", "");
+        if ("immediate".equals(v) || "before_arrival".equals(v)) return v;
+        String legacy = tc.strategy("battle_shield", "eta_sec", null);
+        if (legacy != null && numOf(legacy) <= 0L) return "immediate";
+        return "before_arrival";
+    }
+
+    /** 开盾提前量：shield_eta_sec 优先，旧 eta_sec 兼容；默认/非法/小于 2 → 2。 */
+    long shieldEtaSec(TaskContext tc) {
+        String v = tc.strategy("battle_shield", "shield_eta_sec", "");
+        if (!v.isEmpty()) return parseEta(v, "shield_eta_sec");
+        String legacy = tc.strategy("battle_shield", "eta_sec", "");
+        if (!legacy.isEmpty()) return parseEta(legacy, "eta_sec");
+        return 2L;
+    }
+
+    /** 开盾兵力阈值：shield_troops_min 优先，旧 troops_min 兼容；默认 0。 */
+    long shieldTroopsMin(TaskContext tc) {
+        String v = tc.strategy("battle_shield", "shield_troops_min", "");
+        if (!v.isEmpty()) return parseThreshold(v, "shield_troops_min");
+        return parseThreshold(tc.strategy("battle_shield", "troops_min", "0"), "troops_min");
+    }
+
+    /** 秒数校验：空/非数字/负数/&lt;2 → 2；&gt;600 → 600；并告警。 */
+    static long parseEta(String s, String key) {
+        if (s == null) return 2L;
+        String t = s.trim();
+        if (t.isEmpty()) return 2L;
+        long v;
+        try {
+            v = Long.parseLong(t);
+        } catch (Exception e) {
+            FileLog.warn("battle_shield.{} 非数字，回退 2：{}", key, t);
+            return 2L;
+        }
+        if (v < 2L) {
+            FileLog.warn("battle_shield.{} 小于 2 秒，回退 2：{}", key, String.valueOf(v));
+            return 2L;
+        }
+        if (v > 600L) {
+            FileLog.warn("battle_shield.{} 超过 600 秒，夹取 600：{}", key, String.valueOf(v));
+            return 600L;
+        }
+        return v;
+    }
+
+    /** 兵力阈值校验：空/非数字/负数 → 0（=不限）；并告警。 */
+    static long parseThreshold(String s, String key) {
+        if (s == null || s.trim().isEmpty()) return 0L;
+        String t = s.trim();
+        try {
+            long v = Long.parseLong(t);
+            if (v < 0L) {
+                FileLog.warn("battle_shield.{} 为负数，回退 0：{}", key, t);
+                return 0L;
+            }
+            return v;
+        } catch (Exception e) {
+            FileLog.warn("battle_shield.{} 非数字，回退 0：{}", key, t);
+            return 0L;
+        }
+    }
+
     /** strategy 数值（如 "60000"/"60000.0"）→ long；无法解析 → 0（=不限/不卡秒）。 */
     private static long numOf(String s) {
         if (s == null) return 0L;
@@ -658,14 +1460,7 @@ public final class ServerShieldResponder {
             mod.put(subId, text);
             mod.put(subId + "_ts", System.currentTimeMillis());
             mod.put(subId + "_trg", "反应式");
-            String json = mod.toString();
-            if (roleUid > 0L) {
-                store.putString(shieldStateKey(), json);
-                if (mirrorLegacy()) store.putString(shieldStateLegacyKey(), json);
-            } else {
-                store.putString(shieldStateLegacyKey(), json);
-            }
-            store.flush();
+            writeShieldState(mod);
         } catch (Throwable ignored) {
         }
     }
@@ -859,5 +1654,11 @@ public final class ServerShieldResponder {
             if (city != null) return Exec.longOf(city.get("uid"));
         }
         return 0;
+    }
+
+    private static String brief(String s) {
+        if (s == null) return "";
+        String t = s.replace('\n', ' ').trim();
+        return t.length() > 120 ? t.substring(0, 120) + "…" : t;
     }
 }
