@@ -2292,6 +2292,7 @@ public final class WatchPointEngine {
         scan.order = scanOrder(centerX, centerY);
         cityByUid.clear();
         cityByPoint.clear();
+        buildingByPoint.clear();
         FileLog.info("[{}] 触发整图扫描：{}（484 格，预计 15–20s{}）", LOG, scan.reason,
                 centerX > 0 && centerY > 0 ? "，优先周边 (" + centerX + "," + centerY + ")" : "");
     }
@@ -2427,6 +2428,25 @@ public final class WatchPointEngine {
                 }
             } else {
                 rectEmptyStreak.remove(r.name);
+            }
+        }
+        // 诊断（2026-11-04）：输出监视目标周边的联盟建筑（建设/破坏判定核对用，低频，每次完整扫描一条/目标）
+        for (WatchPointStore.Target t : store.monitorTargets) {
+            StringBuilder bs = new StringBuilder();
+            for (Map.Entry<String, Building> en : buildingByPoint.entrySet()) {
+                String[] xy = en.getKey().split(",");
+                try {
+                    int bx = Integer.parseInt(xy[0]);
+                    int by = Integer.parseInt(xy[1]);
+                    if (Math.abs(bx - t.x) <= 40 && Math.abs(by - t.y) <= 40) {
+                        bs.append('(').append(bx).append(',').append(by).append(')')
+                                .append(en.getValue().kind).append(" aid=").append(en.getValue().aid).append(' ');
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+            if (bs.length() > 0) {
+                FileLog.info("[{}] 目标 {} 周边联盟建筑：{}", LOG, t.display(), bs.toString().trim());
             }
         }
         FileLog.info("[{}] 保护矩形友盟城数（完整度 {}）：{}", LOG, completeness, health.toString().trim());
