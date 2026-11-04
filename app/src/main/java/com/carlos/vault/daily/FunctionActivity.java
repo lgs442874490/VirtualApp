@@ -479,6 +479,12 @@ public class FunctionActivity extends Activity {
             scrollBox.addView(buildGuardianStatusCard());
             scrollBox.addView(buildGuardianConfigCard());
         }
+        // 2026-11-05：战斗护盾专用配置卡（自动召回 / 自动开盾 / 当前护盾）。
+        // 通用 SubCardUi 只支持开关+固定档 chips，无法表达两种模式+秒数/阈值输入+护盾数量，
+        // 故 battle_shield 改走专用卡，并在下方子项分支中排除旧 chips，避免两套编辑面。
+        if ("battle_shield".equals(fn.id)) {
+            scrollBox.addView(buildBattleShieldConfigCard());
+        }
 
         // ⓪ 登录好礼专属：十四天签到网格（游戏同款元素）
         if ("login_rewards".equals(fn.id)) {
@@ -531,8 +537,9 @@ public class FunctionActivity extends Activity {
         // ① 子项实时状态与配置（含 每子项实时状态行/✓今日/上次动作/开关/策略）
         // 2026-11-04：守护盟友的配置全部收进下方「守护盟友 · 配置」卡（服务器守护引擎的键），
         // 不再渲染旧版 FnDetail 执行参数（watch/intercept/hold/pre_garrison/标定档等已废弃）。
+        // 2026-11-05：战斗护盾改走专用配置卡（模式/秒数/阈值/护盾数量），旧 chips 不再渲染。
         LinearLayout subCard = null;
-        if (!"guardian".equals(fn.id)) {
+        if (!"guardian".equals(fn.id) && !"battle_shield".equals(fn.id)) {
             scrollBox.addView(UiComponents.sectionHeader(this, "执行参数", null));
             subCard = UiComponents.card(this);
             subCard.setPadding(dp(10), dp(8), dp(10), dp(8));
@@ -1724,6 +1731,311 @@ public class FunctionActivity extends Activity {
         c.dryRun = dryRun;
         FnParams.saveGuardianCfg(this, account.fpid, serverid, c);
         com.carlos.vault.VaultSync.onAccountsChanged(this);
+    }
+
+    // ================= 战斗护盾：自动召回 + 自动开盾（2026-11-05） =================
+    //
+    // 键口径与《自动召回与自动开盾-需求文档-20261105》§6 一致：
+    //   sub:      gather_recall / gather_anti_harass / reactive / shield_anti_harass /
+    //             shield_buy_diamond（另保留旧键 enabled/free/gather_attack/force_online 的入口）
+    //   strategy: gather_mode / gather_eta_sec / gather_troops_min
+    //             shield_mode / shield_eta_sec / shield_troops_min
+    // 秒数 2..600（默认 2），阈值 0..10000000（0=不限）；非法输入只 toast、不落盘。
+    // 护盾状态由服务端写 modState("battle_shield")：shield_active_item / shield_active_end /
+    // shield_count_302301 / shield_count_302302 / shield_count_302305。
+
+    /** 战斗护盾专用配置卡（自动召回 / 自动开盾 / 当前护盾）。 */
+    private LinearLayout buildBattleShieldConfigCard() {
+        final String F = FnParams.FN_BATTLE_SHIELD;
+        final String fpid = account.fpid;
+        final long sid = serverid;
+        final String troopsDef = FnParams.BS_DEFAULT_TROOPS_MIN;
+
+        // —— 读取现值（缺省即需求默认值）——
+        final boolean enabled = FnParams.subOn(this, fpid, sid, F, "enabled", true);
+        final boolean free = FnParams.subOn(this, fpid, sid, F, "free", true);
+        final boolean gatherAttack = FnParams.subOn(this, fpid, sid, F, "gather_attack", true);
+        final boolean gatherRecall = FnParams.subOn(this, fpid, sid, F, "gather_recall", false);
+        final String gatherMode = FnParams.strategy(this, fpid, sid, F, "gather_mode",
+                FnParams.BS_MODE_BEFORE_ARRIVAL);
+        final String gatherEta = FnParams.strategy(this, fpid, sid, F, "gather_eta_sec",
+                FnParams.BS_DEFAULT_ETA_SEC);
+        final boolean gatherAnti = FnParams.subOn(this, fpid, sid, F, "gather_anti_harass", false);
+        final String gatherTroops = FnParams.strategy(this, fpid, sid, F, "gather_troops_min", troopsDef);
+        final boolean reactive = FnParams.subOn(this, fpid, sid, F, "reactive", true);
+        // 旧配置兼容：eta_sec=0 表示立即开盾；>0 表示抵达前 N 秒。
+        final String legacyEta = FnParams.strategy(this, fpid, sid, F, "eta_sec", "");
+        final boolean legacyImmediate = !legacyEta.isEmpty() && "0".equals(legacyEta.trim());
+        final String shieldMode = FnParams.strategy(this, fpid, sid, F, "shield_mode",
+                legacyImmediate ? FnParams.BS_MODE_IMMEDIATE : FnParams.BS_MODE_BEFORE_ARRIVAL);
+        final String shieldEtaDefault = legacyEta.isEmpty() || legacyImmediate
+                ? FnParams.BS_DEFAULT_ETA_SEC : legacyEta;
+        final String shieldEta = FnParams.strategy(this, fpid, sid, F, "shield_eta_sec",
+                shieldEtaDefault);
+        final boolean shieldAnti = FnParams.subOn(this, fpid, sid, F, "shield_anti_harass", false);
+        final String shieldTroops = FnParams.strategy(this, fpid, sid, F, "shield_troops_min", troopsDef);
+        final boolean buyDiamond = FnParams.subOn(this, fpid, sid, F, "shield_buy_diamond", false);
+        final boolean forceOnline = FnParams.subOn(this, fpid, sid, F, "force_online", false);
+
+        LinearLayout card = UiComponents.card(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        TextView title = new TextView(this);
+        title.setText("战斗护盾 · 配置");
+        title.setTextSize(14);
+        title.setTypeface(Typeface.DEFAULT_BOLD);
+        title.setTextColor(UiStyle.INK);
+        card.addView(title);
+        TextView intro = new TextView(this);
+        intro.setText("服务端执行：模式二选一；卡秒默认抵达前 2 秒（最小 2 / 最大 600）；"
+                + "兵力阈值 0=不限，仅在防骚扰开启时生效。");
+        intro.setTextSize(10.5f);
+        intro.setTextColor(UiStyle.INK2);
+        intro.setPadding(0, dp(4), 0, 0);
+        card.addView(intro);
+
+        // —— 基础开关（保留旧入口，避免专用卡替换通用卡后丢失原有能力） ——
+        card.addView(configSection("基础"));
+        final UiStyle.Switch[] enabledRef = new UiStyle.Switch[1];
+        enabledRef[0] = new UiStyle.Switch(this, enabled, () -> { });
+        card.addView(switchRow("总开关", "关闭后每日免费护盾与自动开盾全部停止（默认开）", enabledRef[0]));
+        final UiStyle.Switch[] freeRef = new UiStyle.Switch[1];
+        freeRef[0] = new UiStyle.Switch(this, free, () -> { });
+        card.addView(switchRow("每日免费护盾", "每日 8 小时免费护盾（被袭击时生效，默认开）", freeRef[0]));
+
+        // —— 自动召回 ——
+        card.addView(configSection("自动召回"));
+        final UiStyle.Switch[] gatherAttackRef = new UiStyle.Switch[1];
+        gatherAttackRef[0] = new UiStyle.Switch(this, gatherAttack, () -> { });
+        card.addView(switchRow("采集点遭袭提醒", "采集点被敌方行军攻击时提醒并写状态（默认开）",
+                gatherAttackRef[0]));
+        final UiStyle.Switch[] gatherRecallRef = new UiStyle.Switch[1];
+        gatherRecallRef[0] = new UiStyle.Switch(this, gatherRecall, () -> { });
+        card.addView(switchRow("自动召回", "采集点遭袭时自动召回在采队伍（默认关）", gatherRecallRef[0]));
+
+        final int gatherModeId = 0x7A01;
+        final RadioGroup gatherModeGroup = modeRadioGroup(gatherModeId, "立即召回", "抵达前 N 秒",
+                FnParams.BS_MODE_IMMEDIATE.equals(gatherMode));
+        card.addView(modeRow("召回模式",
+                "立即召回：收到告警马上召回；抵达前 N 秒：按敌方抵达时间 N 秒前召回", gatherModeGroup));
+
+        final EditText gatherEtaEt = numTextField("秒数（默认 2，最小 2）", gatherEta);
+        card.addView(fieldRow("召回提前量（秒）", gatherEtaEt));
+        final UiStyle.Switch[] gatherAntiRef = new UiStyle.Switch[1];
+        gatherAntiRef[0] = new UiStyle.Switch(this, gatherAnti, () -> { });
+        card.addView(switchRow("防骚扰过滤",
+                "开启后，已知兵力低于阈值的骚扰不召回（默认关；兵力未知按保护优先召回）",
+                gatherAntiRef[0]));
+        final EditText gatherTroopsEt = numTextField("兵力阈值（0=不限）", gatherTroops);
+        card.addView(fieldRow("召回兵力阈值", gatherTroopsEt));
+
+        // —— 自动开盾 ——
+        card.addView(configSection("自动开盾"));
+        final UiStyle.Switch[] reactiveRef = new UiStyle.Switch[1];
+        reactiveRef[0] = new UiStyle.Switch(this, reactive, () -> { });
+        card.addView(switchRow("自动开盾", "城堡被侦查/进攻/集结时自动开盾（默认开）", reactiveRef[0]));
+
+        final int shieldModeId = 0x7A03;
+        final RadioGroup shieldModeGroup = modeRadioGroup(shieldModeId, "立即开盾", "抵达前 N 秒",
+                FnParams.BS_MODE_IMMEDIATE.equals(shieldMode));
+        card.addView(modeRow("开盾模式",
+                "立即开盾：收到告警马上开盾；抵达前 N 秒：按敌方抵达时间 N 秒前开盾", shieldModeGroup));
+
+        final EditText shieldEtaEt = numTextField("秒数（默认 2，最小 2）", shieldEta);
+        card.addView(fieldRow("开盾提前量（秒）", shieldEtaEt));
+        final UiStyle.Switch[] shieldAntiRef = new UiStyle.Switch[1];
+        shieldAntiRef[0] = new UiStyle.Switch(this, shieldAnti, () -> { });
+        card.addView(switchRow("防骚扰过滤",
+                "开启后，已知兵力低于阈值的骚扰不开盾（默认关；兵力未知按保护优先开盾）",
+                shieldAntiRef[0]));
+        final EditText shieldTroopsEt = numTextField("兵力阈值（0=不限）", shieldTroops);
+        card.addView(fieldRow("开盾兵力阈值", shieldTroopsEt));
+        final UiStyle.Switch[] buyDiamondRef = new UiStyle.Switch[1];
+        buyDiamondRef[0] = new UiStyle.Switch(this, buyDiamond, () -> { });
+        card.addView(switchRow("背包无盾时钻石购盾",
+                "仅在背包无护盾且风险触发时购买 2 小时护盾（真实花钻，默认关；单次最多 1 个）",
+                buyDiamondRef[0]));
+
+        // —— 当前护盾（服务端状态；只读） ——
+        card.addView(configSection("当前护盾"));
+        addBattleShieldStatus(card);
+        TextView statusCap = new TextView(this);
+        statusCap.setText("护盾数量由服务端账本同步；数据未同步时显示提示。");
+        statusCap.setTextSize(10.5f);
+        statusCap.setTextColor(UiStyle.INK3);
+        statusCap.setPadding(0, dp(4), 0, 0);
+        card.addView(statusCap);
+
+        // —— 其他（保留旧触发策略入口） ——
+        card.addView(configSection("其他"));
+        final UiStyle.Switch[] forceRef = new UiStyle.Switch[1];
+        forceRef[0] = new UiStyle.Switch(this, forceOnline, () -> { });
+        card.addView(switchRow("风险时强制上线",
+                "被顶号/暂停/掉线时，遇自身被攻击风险允许抢登回连后开盾（默认关；会顶掉其他设备）",
+                forceRef[0]));
+
+        // —— 保存：先校验全部输入，任一非法只提示、不落盘 ——
+        TextView save = UiStyle.primaryBtn(this, "保存护盾配置", () -> {
+            String gatherEtaRaw = textOf(gatherEtaEt);
+            String gatherTroopsRaw = textOf(gatherTroopsEt);
+            String shieldEtaRaw = textOf(shieldEtaEt);
+            String shieldTroopsRaw = textOf(shieldTroopsEt);
+            String err = FnParams.validateEtaSec(gatherEtaRaw);
+            if (err != null) {
+                toast("自动召回：" + err);
+                return;
+            }
+            err = FnParams.validateTroopsMin(gatherTroopsRaw, "召回兵力阈值");
+            if (err != null) {
+                toast(err);
+                return;
+            }
+            err = FnParams.validateEtaSec(shieldEtaRaw);
+            if (err != null) {
+                toast("自动开盾：" + err);
+                return;
+            }
+            err = FnParams.validateTroopsMin(shieldTroopsRaw, "开盾兵力阈值");
+            if (err != null) {
+                toast(err);
+                return;
+            }
+
+            FnParams.saveSubOn(this, fpid, sid, F, "enabled", enabledRef[0].isOn());
+            FnParams.saveSubOn(this, fpid, sid, F, "free", freeRef[0].isOn());
+            FnParams.saveSubOn(this, fpid, sid, F, "gather_attack", gatherAttackRef[0].isOn());
+            FnParams.saveSubOn(this, fpid, sid, F, "gather_recall", gatherRecallRef[0].isOn());
+            FnParams.saveStrategy(this, fpid, sid, F, "gather_mode",
+                    gatherModeGroup.getCheckedRadioButtonId() == gatherModeId
+                            ? FnParams.BS_MODE_IMMEDIATE : FnParams.BS_MODE_BEFORE_ARRIVAL);
+            FnParams.saveStrategy(this, fpid, sid, F, "gather_eta_sec", gatherEtaRaw);
+            FnParams.saveSubOn(this, fpid, sid, F, "gather_anti_harass", gatherAntiRef[0].isOn());
+            FnParams.saveStrategy(this, fpid, sid, F, "gather_troops_min", gatherTroopsRaw);
+            FnParams.saveSubOn(this, fpid, sid, F, "reactive", reactiveRef[0].isOn());
+            FnParams.saveStrategy(this, fpid, sid, F, "shield_mode",
+                    shieldModeGroup.getCheckedRadioButtonId() == shieldModeId
+                            ? FnParams.BS_MODE_IMMEDIATE : FnParams.BS_MODE_BEFORE_ARRIVAL);
+            FnParams.saveStrategy(this, fpid, sid, F, "shield_eta_sec", shieldEtaRaw);
+            FnParams.saveSubOn(this, fpid, sid, F, "shield_anti_harass", shieldAntiRef[0].isOn());
+            FnParams.saveStrategy(this, fpid, sid, F, "shield_troops_min", shieldTroopsRaw);
+            FnParams.saveSubOn(this, fpid, sid, F, "shield_buy_diamond", buyDiamondRef[0].isOn());
+            FnParams.saveSubOn(this, fpid, sid, F, "force_online", forceRef[0].isOn());
+            VaultSync.onAccountsChanged(this);
+            toast("护盾配置已保存并同步服务器");
+            setContentView(buildUi());
+        });
+        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(46));
+        slp.topMargin = dp(12);
+        card.addView(save, slp);
+        return card;
+    }
+
+    /** 卡片内小节标题（自动召回 / 自动开盾 / 当前护盾 / 其他）。 */
+    private TextView configSection(String text) {
+        TextView tv = new TextView(this);
+        tv.setText(text);
+        tv.setTextSize(12.5f);
+        tv.setTypeface(Typeface.DEFAULT_BOLD);
+        tv.setTextColor(UiStyle.BRAND_TEXT);
+        tv.setPadding(0, dp(14), 0, dp(0));
+        return tv;
+    }
+
+    /** 两段单选（模式）控件：RadioGroup 自带选中态，不即时落盘、不重建页面。 */
+    private RadioGroup modeRadioGroup(int firstId, String first, String second, boolean secondSelected) {
+        RadioGroup g = new RadioGroup(this);
+        g.setOrientation(RadioGroup.HORIZONTAL);
+        g.setPadding(0, dp(4), 0, 0);
+        RadioButton a = new RadioButton(this);
+        a.setId(firstId);
+        a.setText(first);
+        a.setTextSize(12.5f);
+        a.setTextColor(UiStyle.INK);
+        RadioButton b = new RadioButton(this);
+        b.setId(firstId + 1);
+        b.setText(second);
+        b.setTextSize(12.5f);
+        b.setTextColor(UiStyle.INK);
+        g.addView(a);
+        g.addView(b);
+        g.check(secondSelected ? firstId + 1 : firstId);
+        return g;
+    }
+
+    /** 行：标题 + 副题 + 模式单选。 */
+    private LinearLayout modeRow(String title, String sub, RadioGroup group) {
+        LinearLayout row = new LinearLayout(this);
+        row.setOrientation(LinearLayout.VERTICAL);
+        row.setPadding(0, dp(6), dp(6), 0);
+        TextView t = new TextView(this);
+        t.setText(title);
+        t.setTextSize(11.5f);
+        t.setTextColor(UiStyle.INK2);
+        row.addView(t);
+        TextView s = new TextView(this);
+        s.setText(sub);
+        s.setTextSize(10.5f);
+        s.setTextColor(UiStyle.INK3);
+        s.setPadding(0, dp(2), 0, 0);
+        row.addView(s);
+        row.addView(group);
+        return row;
+    }
+
+    /** 文本型数字输入框：保留 "0" 等默认值（不因 >0 判断被清空）。 */
+    private EditText numTextField(String hint, String value) {
+        EditText et = UiStyle.searchInput(this, hint);
+        et.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        et.setText(value == null ? "" : value);
+        return et;
+    }
+
+    /** 输入框文本（null 安全，去首尾空白）。 */
+    private String textOf(EditText et) {
+        return et == null || et.getText() == null ? "" : et.getText().toString().trim();
+    }
+
+    /** 只读护盾状态：生效护盾（剩余分钟）+ 背包 302301/302302/302305 数量。 */
+    private void addBattleShieldStatus(LinearLayout card) {
+        org.json.JSONObject mod = FnParams.modState(this, account.fpid, serverid,
+                FnParams.FN_BATTLE_SHIELD);
+        boolean synced = mod.has("shield_active_item") || mod.has("shield_active_end")
+                || mod.has("shield_count_302301") || mod.has("shield_count_302302")
+                || mod.has("shield_count_302305");
+        if (!synced) {
+            addKV(card, "当前护盾", "未同步（服务端状态未拉到）");
+            return;
+        }
+        long nowSec = System.currentTimeMillis() / 1000L;
+        long item = mod.optLong("shield_active_item", 0L);
+        long end = mod.optLong("shield_active_end", 0L);
+        String activeText;
+        if (item > 0L && end > nowSec) {
+            long remainMin = Math.max(1L, (end - nowSec + 59L) / 60L);
+            activeText = shieldItemName(item) + " · 剩余 " + remainMin + " 分钟";
+        } else if (item > 0L && end <= 0L) {
+            activeText = shieldItemName(item) + " · 已生效（剩余时间未知）";
+        } else if (item > 0L) {
+            activeText = shieldItemName(item) + " · 已过期";
+        } else {
+            activeText = "当前未生效";
+        }
+        addKV(card, "当前护盾", activeText);
+        addKV(card, "背包护盾", "2小时×" + mod.optLong("shield_count_302301", 0L)
+                + " · 8小时×" + mod.optLong("shield_count_302302", 0L)
+                + " · 12小时×" + mod.optLong("shield_count_302305", 0L));
+        String reactive = mod.optString("reactive", "");
+        String gather = mod.optString("gather", "");
+        addKV(card, "自动开盾状态", reactive.isEmpty() ? "暂无（未触发/未同步）" : reactive);
+        addKV(card, "自动召回状态", gather.isEmpty() ? "暂无（未触发/未同步）" : gather);
+    }
+
+    /** 护盾道具 id → 名称（302301=2小时、302302=8小时、302305=12小时）。 */
+    private static String shieldItemName(long itemId) {
+        if (itemId == 302301L) return "2小时护盾";
+        if (itemId == 302302L) return "8小时护盾";
+        if (itemId == 302305L) return "12小时护盾";
+        return itemId > 0L ? ("护盾道具 " + itemId) : "护盾";
     }
 
     /** 行：标题/副题 + 右侧控件。 */
