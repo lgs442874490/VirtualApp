@@ -949,6 +949,8 @@ public final class ServerShieldResponder {
             if (pollSec <= 0 || nowMs - w.lastPollMs < pollSec * 1000L) continue;
             w.lastPollMs = nowMs;
             if (pollGatherTile(engine, tc, w, nowSec, nowMs)) acted = true;
+            // 每拍最多查一个采集点，避免 6 队同时同步请求阻塞会话线程。
+            break;
         }
         return acted;
     }
