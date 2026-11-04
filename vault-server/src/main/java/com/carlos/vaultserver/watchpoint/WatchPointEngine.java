@@ -1489,8 +1489,8 @@ public final class WatchPointEngine {
                 return;
             }
             // A1 情报：侦查 / 驻防·增援(含援助 type6) / 发起集结（统一 5 分钟前 3 条）
+            // 注意：驻防/援助的目标本来就是同联盟城，不能套用「同联盟不推」的进攻过滤。
             if (type == 1L || type == 5L || type == 6L || type == 100L) {
-                if (!shouldAlertMonitor(ownerAid, targetAid)) return;
                 String marchKey = "m:" + owner + ":" + id;
                 if (recentlyAlerted(marchKey)) return;
                 long now = System.currentTimeMillis();
