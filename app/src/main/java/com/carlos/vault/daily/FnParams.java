@@ -411,6 +411,73 @@ public final class FnParams {
         }
     }
 
+    // ================= 自动召回 / 自动开盾（battle_shield，2026-11-05） =================
+    //
+    // 键口径与 design/自动召回与自动开盾-需求文档-20261105.md §6 一致：
+    //   sub:      gather_recall / gather_anti_harass / reactive / shield_anti_harass /
+    //             shield_buy_diamond（另有兼容旧键 enabled/free/gather_attack/force_online）
+    //   strategy: gather_mode / gather_eta_sec / gather_troops_min
+    //             shield_mode / shield_eta_sec / shield_troops_min
+    // 服务端会按同一份键读取并二次校验；App 侧只做保存前校验，非法值绝不落盘。
+
+    /** 战斗护盾功能 id（与服务端 ServerShieldResponder / ServerTasks 一致）。 */
+    public static final String FN_BATTLE_SHIELD = "battle_shield";
+    /** 抵达前卡秒模式：立即执行。 */
+    public static final String BS_MODE_IMMEDIATE = "immediate";
+    /** 抵达前卡秒模式：抵达前 N 秒（默认）。 */
+    public static final String BS_MODE_BEFORE_ARRIVAL = "before_arrival";
+    /** 卡秒默认值（需求 CN-02）。 */
+    public static final String BS_DEFAULT_ETA_SEC = "2";
+    /** 兵力阈值默认值（0=不限）。 */
+    public static final String BS_DEFAULT_TROOPS_MIN = "0";
+    /** 卡秒下限（需求 CN-03：<2 一律拒绝）。 */
+    public static final long BS_ETA_SEC_MIN = 2L;
+    /** 卡秒上限（需求 VL-05：建议最大 600）。 */
+    public static final long BS_ETA_SEC_MAX = 600L;
+    /** 兵力阈值上限。 */
+    public static final long BS_TROOPS_MIN_MAX = 10_000_000L;
+
+    /**
+     * 自动召回/自动开盾的抵达前秒数校验（纯函数，便于单测）。
+     *
+     * @return null=合法；否则中文错误文案（空/非数字/负数/&lt;2/&gt;600）
+     */
+    public static String validateEtaSec(String raw) {
+        String v = raw == null ? "" : raw.trim();
+        if (v.isEmpty()) return "请输入秒数";
+        long n;
+        try {
+            n = Long.parseLong(v);
+        } catch (Throwable t) {
+            return "秒数必须是数字";
+        }
+        if (n < 0L) return "秒数不能为负数";
+        if (n < BS_ETA_SEC_MIN) return "秒数不得低于 2 秒";
+        if (n > BS_ETA_SEC_MAX) return "秒数不能超过 600 秒";
+        return null;
+    }
+
+    /**
+     * 兵力阈值校验（纯函数，便于单测）：空/非数字/负数均拒绝，0=不限合法。
+     *
+     * @param label 字段名，用于拼错误文案（如「召回兵力阈值」）
+     * @return null=合法；否则中文错误文案
+     */
+    public static String validateTroopsMin(String raw, String label) {
+        String lab = label == null || label.trim().isEmpty() ? "兵力阈值" : label.trim();
+        String v = raw == null ? "" : raw.trim();
+        if (v.isEmpty()) return "请输入兵力阈值（0=不限）";
+        long n;
+        try {
+            n = Long.parseLong(v);
+        } catch (Throwable t) {
+            return lab + "必须是数字";
+        }
+        if (n < 0L) return lab + "不能为负数";
+        if (n > BS_TROOPS_MIN_MAX) return lab + "过大";
+        return null;
+    }
+
     /**
      * 解析守护盟友 params JSON（纯函数）。
      * 落点兼容 top-level（App 配置页新写法）/ sub / strategy（旧 FnDetail 开关），

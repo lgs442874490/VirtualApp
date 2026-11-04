@@ -81,10 +81,20 @@ public class ServerShieldResponderTest {
         }
 
         @Override
+        public long lastServerId() {
+            return SID;
+        }
+
+        @Override
         public GameMessage request(String proto, Map<String, Object> args) {
             requested.add(proto);
             argLog.add(args);
             return responses.get(proto);
+        }
+
+        @Override
+        public GameMessage request(String proto, Map<String, Object> args, int timeoutSec) {
+            return request(proto, args);
         }
     }
 
@@ -101,10 +111,13 @@ public class ServerShieldResponderTest {
         a.token = "tk";
         a.auto = auto;
         a.activeSid = String.valueOf(SID);
-        if (battleShieldParams != null) {
-            a.roleParams.put(String.valueOf(SID),
-                    new LinkedHashMap<>(Map.of("battle_shield", battleShieldParams)));
+        // 2026-11-05：新默认是 before_arrival 2 秒；旧用例语义是“收到即开”，
+        // 用显式旧键 eta_sec=0 保留原行为；新默认另立用例覆盖。
+        if (battleShieldParams == null) {
+            battleShieldParams = "{\"strategy\":{\"eta_sec\":\"0\"}}";
         }
+        a.roleParams.put(String.valueOf(SID),
+                new LinkedHashMap<>(Map.of("battle_shield", battleShieldParams)));
         List<VaultStore.Account> in = new ArrayList<>();
         in.add(a);
         vault.replaceAll(in);
@@ -656,6 +669,34 @@ public class ServerShieldResponderTest {
         return List.of(new ServerShieldResponder.GatherMarch(marchId, x, y));
     }
 
+    private static List<ServerShieldResponder.GatherMarch> gatherState(long marchId, int x, int y,
+                                                                       long state, long endSec) {
+        return List.of(new ServerShieldResponder.GatherMarch(marchId, x, y, state, endSec, 0L));
+    }
+
+    /** 采集点敌方行军推送（可指定 endtime）。 */
+    private static Map<String, Object> gatherPushAt(long marchId, long type, long ownUid,
+                                                    int x, int y, long endSec) {
+        Map<String, Object> target = new LinkedHashMap<>();
+        target.put("type", 2);
+        Map<String, Object> resource = new LinkedHashMap<>();
+        resource.put("uid", ownUid);
+        target.put("map_resource", resource);
+        Map<String, Object> endpoint = new LinkedHashMap<>();
+        endpoint.put("x", x);
+        endpoint.put("y", y);
+        Map<String, Object> march = new LinkedHashMap<>();
+        march.put("id", marchId);
+        march.put("owner", 49422287L);
+        march.put("type", type);
+        march.put("endtime", endSec);
+        march.put("endpoint", endpoint);
+        march.put("target", target);
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("to_marchs", List.of(march));
+        return c;
+    }
+
     @Test
     public void gatherAttack_notifiesAndRecallsOwnGatheringMarch_whenEnabled() {
         account(true, "{\"sub\":{\"gather_attack\":true,\"gather_recall\":true}}");
@@ -721,6 +762,194 @@ public class ServerShieldResponderTest {
 
         String text = new JSONObject(modText()).getString("gather");
         assertTrue("坐标兜底应识别并带出在采队伍：" + text, text.contains("#7001"));
+    }
+
+    // ---------- 采集极限场景（2026-11-05） ----------
+
+    @Test
+    public void gatherWatch_scenario1_inTransit_recallBeforeArrival() {
+        account(true, "{\"sub\":{\"gather_recall\":true},"
+                + "\"strategy\":{\"gather_mode\":\"before_arrival\",\"gather_eta_sec\":\"2\"}}");
+        TestEngine e = new TestEngine();
+        e.responses.put("req_world_march_recall", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        r.setMarchSourceForTest(engine -> gatherState(7001L, 120, 340, 2L, 1_000_100L));
+
+        // 敌方采集队 1_000_090 到，早于我方 1_000_100；N=2 → 应在 1_000_088 挂起
+        r.onPush(gatherPushAt(14001L, 4, OWN_UID, 120, 340, 1_000_090L), OWN_UID, e);
+        r.tick(e);
+        assertTrue("未到触发点不应发请求: " + e.requested, e.requested.isEmpty());
+
+        nowMs.addAndGet(90_000L);
+        sec.addAndGet(90L);
+        assertTrue(r.tick(e));
+        assertTrue("场景一应在途召回: " + e.requested, e.requested.contains("req_world_march_recall"));
+    }
+
+    @Test
+    public void gatherWatch_scenario2_follower_offWorkBeforeEnemy() {
+        account(true, "{\"sub\":{\"gather_recall\":true},"
+                + "\"strategy\":{\"gather_mode\":\"before_arrival\",\"gather_eta_sec\":\"2\"}}");
+        TestEngine e = new TestEngine();
+        e.responses.put("req_world_march_off_work", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        r.setMarchSourceForTest(engine -> gatherState(7002L, 121, 341, 3L, 1_000_500L));
+
+        // 我方已落位、采集 1_000_500 结束；敌方 1_000_300 到 → 场景二
+        r.onPush(gatherPushAt(14002L, 4, OWN_UID, 121, 341, 1_000_300L), OWN_UID, e);
+        r.tick(e);
+        assertTrue("未到 E-N 不应发请求: " + e.requested, e.requested.isEmpty());
+
+        nowMs.addAndGet(300_000L);
+        sec.addAndGet(300L);
+        assertTrue(r.tick(e));
+        assertTrue("场景二应撤矿: " + e.requested, e.requested.contains("req_world_march_off_work"));
+    }
+
+    @Test
+    public void gatherWatch_antiHarassBelowThreshold_noRecall() {
+        account(true, "{\"sub\":{\"gather_recall\":true,\"gather_anti_harass\":true},"
+                + "\"strategy\":{\"gather_mode\":\"before_arrival\",\"gather_eta_sec\":\"2\","
+                + "\"gather_troops_min\":\"5000\"}}");
+        TestEngine e = new TestEngine();
+        ServerShieldResponder r = responder();
+        r.setMarchSourceForTest(engine -> gatherState(7006L, 125, 345, 3L,
+                System.currentTimeMillis() / 1000L + 1_000L));
+
+        Map<String, Object> push = withTroops(gatherPushAt(14006L, 4, OWN_UID, 125, 345,
+                System.currentTimeMillis() / 1000L + 500L), 1_000L);
+        r.onPush(push, OWN_UID, e);
+        r.tick(e);
+
+        assertTrue("低于防骚扰阈值不应召回: " + e.requested, e.requested.isEmpty());
+    }
+
+    @Test
+    public void gatherWatch_enemyAfterGatherEnd_noRecall() {
+        account(true, "{\"sub\":{\"gather_recall\":true},"
+                + "\"strategy\":{\"gather_mode\":\"before_arrival\",\"gather_eta_sec\":\"2\"}}");
+        TestEngine e = new TestEngine();
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        r.setMarchSourceForTest(engine -> gatherState(7003L, 122, 342, 3L, 1_000_100L));
+
+        // 敌方 1_000_500 才到，晚于采集结束 1_000_100 → 不召回
+        r.onPush(gatherPushAt(14003L, 4, OWN_UID, 122, 342, 1_000_500L), OWN_UID, e);
+        r.tick(e);
+        assertTrue("采集结束后才到不召回: " + e.requested, e.requested.isEmpty());
+    }
+
+    @Test
+    public void gatherWatch_landedEnemy_immediateOffWork() {
+        account(true, "{\"sub\":{\"gather_recall\":true},"
+                + "\"strategy\":{\"gather_mode\":\"before_arrival\",\"gather_eta_sec\":\"2\"}}");
+        TestEngine e = new TestEngine();
+        e.responses.put("req_world_march_off_work", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        r.setMarchSourceForTest(engine -> gatherState(7004L, 123, 343, 3L, 1_000_500L));
+
+        // 敌方已经落地（E <= now）→ 立即撤矿
+        r.onPush(gatherPushAt(14004L, 2, OWN_UID, 123, 343, 999_900L), OWN_UID, e);
+        assertTrue(r.tick(e));
+        assertTrue("已落地应立即撤矿: " + e.requested, e.requested.contains("req_world_march_off_work"));
+    }
+
+    @Test
+    public void gatherWatch_mapobjFallback_occupiedRecalls() {
+        account(true, "{\"sub\":{\"gather_recall\":true},"
+                + "\"strategy\":{\"gather_mode\":\"before_arrival\",\"gather_eta_sec\":\"2\"}}");
+        TestEngine e = new TestEngine();
+        GameMessage mapobj = new GameMessage();
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("code", 0);
+        Map<String, Object> obj = new LinkedHashMap<>();
+        obj.put("type", 2L);
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("march_id", 999L);   // 非己方
+        obj.put("map_resource", res);
+        content.put("mapobj", obj);
+        mapobj.setContent(content);
+        e.responses.put("req_world_mapobj", mapobj);
+        e.responses.put("req_world_march_off_work", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        r.setMarchSourceForTest(engine -> gatherState(7005L, 124, 344, 3L, 1_000_500L));
+
+        r.tick(e);   // 新建 watch：本拍不查地图
+        assertTrue("首个周期不查地图: " + e.requested, e.requested.isEmpty());
+        nowMs.addAndGet(61_000L);
+        sec.addAndGet(61L);
+        assertTrue(r.tick(e));
+        assertTrue("兜底应先查地图: " + e.requested, e.requested.contains("req_world_mapobj"));
+        assertTrue("点位被占应撤矿", e.requested.contains("req_world_march_off_work"));
+    }
+
+    @Test
+    public void shieldDefault_beforeArrival2s_waitsThenOpens() {
+        account(true, "{\"sub\":{\"reactive\":true}}");   // 无 eta 键 → 新默认 2 秒
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+        assertTrue("默认应挂起而不是立即开", e.requested.isEmpty());
+        assertTrue(new JSONObject(modText()).getString("reactive").contains("等待卡秒"));
+
+        nowMs.addAndGet(299_000L);
+        sec.addAndGet(299L);
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+    }
+
+    @Test
+    public void shieldBackpack_usedBeforeDiamond() {
+        account(true, "{\"sub\":{\"reactive\":true},"
+                + "\"strategy\":{\"eta_sec\":\"0\"}}");
+        TestEngine e = new TestEngine();
+        Map<String, Object> bp = new LinkedHashMap<>();
+        bp.put("data", List.of(new LinkedHashMap<>(Map.of("id", 302301L, "count", 1L))));
+        e.notifies.put("notify_backpack_init", bp);
+        e.responses.put("req_use_item", msg(0));
+        ServerShieldResponder r = responder();
+        r.initLedgerFromEngine(e);
+
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertTrue("应优先用背包盾", e.requested.contains("req_use_item"));
+        assertFalse("有背包盾不买钻石", e.requested.contains("req_shop_quick_buy"));
+        assertTrue(new JSONObject(modText()).getString("reactive").contains("背包"));
+    }
+
+    @Test
+    public void shieldDiamondBuy_buys2hThenUses() {
+        account(true, "{\"sub\":{\"reactive\":true,\"shield_buy_diamond\":true},"
+                + "\"strategy\":{\"eta_sec\":\"0\"}}");
+        TestEngine e = new TestEngine();
+        Map<String, Object> bp = new LinkedHashMap<>();
+        bp.put("data", List.of());
+        e.notifies.put("notify_backpack_init", bp);
+        e.responses.put("req_shop_quick_buy", msg(0));
+        e.responses.put("req_use_item", msg(0));
+        ServerShieldResponder r = responder();
+        r.initLedgerFromEngine(e);
+
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertTrue("无盾且开关开 → 买 2 小时盾: " + e.requested, e.requested.contains("req_shop_quick_buy"));
+        assertTrue("买后应使用: " + e.requested, e.requested.contains("req_use_item"));
+        assertTrue(new JSONObject(modText()).getString("reactive").contains("钻石"));
     }
 
     @Test
