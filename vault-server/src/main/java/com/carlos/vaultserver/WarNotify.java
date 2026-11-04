@@ -335,6 +335,11 @@ public final class WarNotify {
         int[] sp = startPointOf(m);
         // 2026-11-04：打野/巨兽/采集等 PvE 行军不推（资源类由观察点单独推）。
         if (isPveMarch(m)) return MarchVerdict.no("type", marchId, owner, type, state);
+        // 2026-11-04：目标是联盟总部/旗子/王城 → 由观察点按归属推「建设/破坏」，这里不重复推。
+        if (xy != null
+                && com.carlos.vaultserver.watchpoint.WatchPointEngine.buildingAt(xy[0], xy[1]) != null) {
+            return MarchVerdict.no("type", marchId, owner, type, state);
+        }
         // 2026-11-02 误报修复：只推敌情行军（侦查/进攻/集结）；采集/驻防/建设援助/狩猎一律不推。
         // 典型误报：监视目标派队列去建联盟总部，返程被当成「出征」推送。
         if (state >= 3L) return MarchVerdict.no("state", marchId, owner, type, state);

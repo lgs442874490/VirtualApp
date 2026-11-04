@@ -349,6 +349,23 @@ public final class WatchPointEngine {
             new java.util.concurrent.ConcurrentHashMap<>();
     /** 联盟 aid → 联盟全名（保护更新文案用；来自地图王城/要塞对象的 aname）。 */
     private final Map<Long, String> allianceNames = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 联盟建筑缓存（2026-11-04）：坐标 → 总部/旗子/王城（归属 aid）。用于区分建设 vs 破坏。 */
+    static final class Building {
+        final String kind;
+        final long aid;
+        Building(String kind, long aid) {
+            this.kind = kind;
+            this.aid = aid;
+        }
+    }
+    private final Map<String, Building> buildingByPoint = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 坐标 → 联盟建筑（总部/旗子/王城）；无返回 null。任意线程可调。 */
+    public static Building buildingAt(int x, int y) {
+        WatchPointEngine e = SHARED;
+        if (e == null || x <= 0 || y <= 0) return null;
+        return e.buildingByPoint.get(x + "," + y);
+    }
     private final Map<String, Long> gatherCounted = new java.util.concurrent.ConcurrentHashMap<>();
     /** 采集点缓存有效期（2026-11-04）：超过该时长未刷新视为「人已走」，不再据此告警。 */
     static final long GATHER_POINT_TTL_MS = 20L * 60_000L;
@@ -1053,6 +1070,7 @@ public final class WatchPointEngine {
                         parseCity((Map<?, ?>) o, ctx.cityUids);
                         parseResource((Map<?, ?>) o);
                         parseAllianceMeta((Map<?, ?>) o);
+                        parseAllianceBuilding((Map<?, ?>) o);
                     }
                 }
             }
@@ -1061,12 +1079,14 @@ public final class WatchPointEngine {
                 parseCity(obj, ctx.cityUids);
                 parseResource(obj);
                 parseAllianceMeta(obj);
+                parseAllianceBuilding(obj);
             }
             Map<?, ?> change = asMap(content.get("change"));
             if (!change.isEmpty()) {
                 parseCity(change, ctx.cityUids);
                 parseResource(change);
                 parseAllianceMeta(change);
+                parseAllianceBuilding(change);
             }
             if (truthy(content.get("end_flag"))) {
                 ctx.ended = true;
@@ -1115,6 +1135,32 @@ public final class WatchPointEngine {
             long aid = asLong(o.get("aid"), 0L);
             String aname = str(o.get("aname"));
             if (aid > 0L && !aname.isEmpty()) allianceNames.put(aid, aname);
+        }
+    }
+
+    /** 联盟建筑（总部/旗子/王城）→ 坐标缓存，用于「建设 vs 破坏」按目标归属判定。 */
+    private void parseAllianceBuilding(Map<?, ?> item) {
+        Map<?, ?> point = asMap(item.get("point"));
+        int x = (int) asLong(point.get("x"), 0L);
+        int y = (int) asLong(point.get("y"), 0L);
+        if (x <= 0 || y <= 0) return;
+        String kind = null;
+        Map<?, ?> o = asMap(item.get("map_alliance_hall"));
+        if (!o.isEmpty()) kind = "总部";
+        if (kind == null) {
+            o = asMap(item.get("map_alliance_flag"));
+            if (!o.isEmpty()) kind = "旗子";
+        }
+        if (kind == null) {
+            o = asMap(item.get("map_capital"));
+            if (!o.isEmpty()) kind = "王城";
+        }
+        if (kind == null) return;
+        long aid = asLong(o.get("aid"), 0L);
+        buildingByPoint.put(x + "," + y, new Building(kind, aid));
+        if (buildingByPoint.size() > 20000) {
+            // 简单防膨胀：扫描会周期性重建，这里只做上限保护
+            buildingByPoint.clear();
         }
     }
 
@@ -1436,8 +1482,8 @@ public final class WatchPointEngine {
                 statSelfIgnored.incrementAndGet();
                 return;
             }
-            // 资源类：建设(type8)/破坏(联盟旗·总部字段)；采集已在上方处理
-            String resBeh = resourceBehavior(m, type);
+            // 资源类：按目标归属区分「建设(自己/同阵营)」与「破坏(敌对/中立)」；采集已在上方处理
+            String resBeh = resourceBehavior(m, type, ownerAid, ex, ey);
             if (resBeh != null) {
                 maybeResourceAlert(owner, id, resBeh, ex, ey, endtime, troopsOf(m));
                 return;
@@ -2069,8 +2115,8 @@ public final class WatchPointEngine {
     }
 
     /**
-     * 资源类行为（2026-11-04）：采集=type4；建设=type8；破坏=攻击联盟旗/总部字段；
-     * 巨兽/打野/援助(type6)返回 null（援助归 A1 驻防/增援，不单独推）。
+     * 资源类行为（静态兜底，无目标归属信息）：采集=type4；建设=type8；破坏=联盟旗/总部攻击字段。
+     * 巨兽/打野/援助(type6)返回 null。
      */
     static String resourceBehavior(Map<?, ?> m, long type) {
         if (m == null) return null;
@@ -2078,6 +2124,30 @@ public final class WatchPointEngine {
         if (type == 4L) return "采集";
         if (type == 8L) return "建设";
         return null;
+    }
+
+    /**
+     * 资源类行为（2026-11-04 用户口径，按目标归属区分）：
+     * <ul>
+     *   <li>目标是<b>自己家/同阵营</b>的联盟总部/旗子 → 建设（type6/8）；</li>
+     *   <li>目标是<b>敌对/中立</b>总部/旗子 → 破坏（type2/6/8）；</li>
+     *   <li>采集=type4；打野/巨兽不推；type6 援助归 A1 驻防/增援。</li>
+     * </ul>
+     */
+    String resourceBehavior(Map<?, ?> m, long type, long ownerAid, int ex, int ey) {
+        Building b = buildingByPoint.get(ex + "," + ey);
+        if (b != null) {
+            if (type == 4L) return "采集";
+            boolean own = ownerAid > 0L && b.aid > 0L
+                    && (b.aid == ownerAid
+                        || (store.friendAids.contains(ownerAid) && store.friendAids.contains(b.aid)));
+            if (own) {
+                return (type == 6L || type == 8L) ? "建设" : null;
+            }
+            // 敌对/中立联盟建筑：打掉就是破坏（进攻/集结类仍走 A1/A2）
+            return (type == 2L || type == 6L || type == 8L) ? "破坏" : null;
+        }
+        return resourceBehavior(m, type);
     }
 
     /** 破坏联盟旗/总部（普通/集结）字段。 */
@@ -2654,6 +2724,11 @@ public final class WatchPointEngine {
     int pendingMoveXForTest(long uid) {
         PendingMove p = pendingMoveAlert.get(uid);
         return p == null ? -1 : p.x;
+    }
+
+    /** 单测：注入联盟建筑（x,y → 总部/旗子，归属 aid）。 */
+    void seedBuildingForTest(int x, int y, String kind, long aid) {
+        buildingByPoint.put(x + "," + y, new Building(kind, aid));
     }
 
     /** 单测：改聚合窗口（默认 60s；0=立即到期）。 */

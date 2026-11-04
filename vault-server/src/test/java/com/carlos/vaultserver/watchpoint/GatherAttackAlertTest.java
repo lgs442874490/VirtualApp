@@ -56,6 +56,29 @@ public class GatherAttackAlertTest {
         assertNull("打野/巨兽不推", WatchPointEngine.resourceBehavior(new LinkedHashMap<>(), 3L));
     }
 
+    /** 2026-11-04 用户口径：同类型行军，去自己家=建设，去敌对/中立家=破坏。 */
+    @Test
+    public void buildingBehaviorDependsOnOwnership() {
+        WatchPointStore store = new WatchPointStore(Paths.get("/tmp"));
+        store.friendAids.add(89700055L);   // SYD
+        store.friendAids.add(89700483L);   // KFC
+        WatchPointEngine e = new WatchPointEngine(null, store, null, null);
+        e.seedBuildingForTest(281, 603, "总部", 0L);          // 中立荒原总部
+        e.seedBuildingForTest(300, 600, "总部", 89700055L);   // 自己家
+        e.seedBuildingForTest(400, 600, "总部", 89700483L);   // 同阵营友盟
+        e.seedBuildingForTest(500, 600, "总部", 12345678L);   // 敌对
+        Map<String, Object> empty = new LinkedHashMap<>();
+        assertEquals("中立总部=破坏", "破坏", e.resourceBehavior(empty, 8L, 89700055L, 281, 603));
+        assertEquals("自己家=建设", "建设", e.resourceBehavior(empty, 8L, 89700055L, 300, 600));
+        assertEquals("同阵营友盟=建设", "建设", e.resourceBehavior(empty, 8L, 89700055L, 400, 600));
+        assertEquals("敌对总部=破坏", "破坏", e.resourceBehavior(empty, 8L, 89700055L, 500, 600));
+        assertEquals("敌对总部进攻=破坏", "破坏", e.resourceBehavior(empty, 2L, 89700055L, 500, 600));
+        assertEquals("无建筑信息时 type8=建设（兜底）", "建设",
+                e.resourceBehavior(empty, 8L, 89700055L, 900, 900));
+        assertEquals("采集", "采集", e.resourceBehavior(empty, 4L, 89700055L, 512, 688));
+        assertNull("援助 type6 无建筑 → A1", e.resourceBehavior(empty, 6L, 89700055L, 900, 900));
+    }
+
     @Test
     public void onlyAttacksOnOccupiedPointsCount() {
         WatchPointStore store = new WatchPointStore(Paths.get("/tmp"));
