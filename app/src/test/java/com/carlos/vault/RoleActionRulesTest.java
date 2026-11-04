@@ -2,56 +2,15 @@ package com.carlos.vault;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
 /**
  * P1 角色动作文案/规则单测（契约 §三，纯 JVM）：
- * 防封确认弹窗（标题/正文/按钮逐字）、移除确认（强调不删游戏内角色）、
- * 改名校验（3~12 字符、首尾空格、控制字符）、暂停成功 toast、消耗提示。
+ * 移除确认（强调不删游戏内角色）、改名校验（3~12 字符、首尾空格、控制字符）、
+ * 暂停成功 toast、消耗提示。
  */
 public class RoleActionRulesTest {
-
-    // ---------- 防封确认（§三.1 逐字） ----------
-
-    @Test
-    public void antibanConfirmTitle_exact() {
-        assertEquals("开启防封保护确认", RoleActionRules.ANTIBAN_CONFIRM_TITLE);
-        assertEquals("确认开启", RoleActionRules.ANTIBAN_CONFIRM_POSITIVE);
-        assertEquals("取消", RoleActionRules.ANTIBAN_CONFIRM_NEGATIVE);
-    }
-
-    @Test
-    public void antibanConfirmBody_exactWithRoleName() {
-        assertEquals("确定为角色【小鹿矿工5号】开启防封保护吗？开启后，该角色在登录游戏时"
-                + "将自动模拟真实客户端上报设备环境（req_settings_set_device），并在进入游戏"
-                + " 10 秒后执行易盾安全校验（req_dun163_risk_check）。⚠ 注意事项："
-                + "1. 采用官方受信任特征与动态 Nonce 掩码重封装机制；"
-                + "2. 开关变更将在下一次角色登录/启动时生效；"
-                + "3. 未开启时，角色仍按原来的极简协议链路登录启动。",
-                RoleActionRules.antibanConfirmBody("小鹿矿工5号"));
-    }
-
-    @Test
-    public void antibanConfirmBody_containsKeyPhrases_anyName() {
-        String b = RoleActionRules.antibanConfirmBody("隆科多");
-        assertTrue(b.startsWith("确定为角色【隆科多】开启防封保护吗？"));
-        assertTrue(b.contains("req_settings_set_device"));
-        assertTrue(b.contains("req_dun163_risk_check"));
-        assertTrue(b.contains("开关变更将在下一次角色登录/启动时生效"));
-    }
-
-    @Test
-    public void antibanConfirmBody_nullNameSafe() {
-        assertTrue(RoleActionRules.antibanConfirmBody(null).startsWith("确定为角色【】"));
-    }
-
-    @Test
-    public void antibanSuccessToasts_exact() {
-        assertEquals("已开启防封风控安全保护", RoleActionRules.ANTIBAN_ON_TOAST);
-        assertEquals("已关闭防封风控安全保护", RoleActionRules.ANTIBAN_OFF_TOAST);
-    }
 
     // ---------- 暂停（§三.2 逐字） ----------
 

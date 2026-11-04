@@ -1,29 +1,17 @@
 package com.carlos.vault.wjdr;
 
 import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
 
 import java.util.List;
 
 /**
- * 引擎防封保护（P1 2026-10-21 契约 §二.8）：
- * 开关注入、req_settings_set_device 载荷映射（platform/deviceModel/systemVersion/qualityLevel
- * 与线上 sendSettingsSetDevice 同款）、离线补做入口不误发。
+ * 引擎防封登录（2026-11-05 起为默认登录链路，无开关）：
+ * req_settings_set_device 载荷映射（platform/deviceModel/systemVersion/qualityLevel
+ * 与线上 sendSettingsSetDevice 同款）。
  */
 public class WjdrEngineAntibanTest {
-
-    @Test
-    public void antibanFlag_defaultOff_toggleVisible() {
-        WjdrEngine engine = new WjdrEngine(null);
-        assertFalse(engine.antibanEnabled());
-        engine.setAntibanEnabled(true);
-        assertTrue(engine.antibanEnabled());
-        engine.setAntibanEnabled(false);
-        assertFalse(engine.antibanEnabled());
-    }
 
     @Test
     public void deviceParams_platformMapping() {
@@ -47,13 +35,5 @@ public class WjdrEngineAntibanTest {
                 WjdrEngine.buildDeviceParams("android", "  ", null));
         assertEquals(List.of("2", "m", "13", "2"),
                 WjdrEngine.buildDeviceParams("android", "m", "2"));
-    }
-
-    @Test
-    public void riskCheckIfPending_offlineOrDisabled_neverThrows() {
-        WjdrEngine engine = new WjdrEngine(null);   // 未初始化连接（离线态）
-        engine.performAntibanRiskCheckIfPending();  // 关闭+离线：静默 no-op
-        engine.setAntibanEnabled(true);
-        engine.performAntibanRiskCheckIfPending();  // 离线：静默 no-op（不发协议）
     }
 }

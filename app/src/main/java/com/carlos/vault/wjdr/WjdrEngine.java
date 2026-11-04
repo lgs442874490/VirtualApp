@@ -202,10 +202,8 @@ public class WjdrEngine {
     private volatile String lastFailure;
     private volatile java.util.function.Consumer<String> stateListener;
 
-    // ================= 防封保护（P1 2026-10-21；对齐线上 GameAccountSessionService.Antiban） =================
+    // ================= 防封登录（默认链路 2026-11-05；对齐线上 GameAccountSessionService.Antiban） =================
 
-    /** 防封开关（角色级，由 SessionKeeper/宿主注入；登录/在线期间生效）。 */
-    private volatile boolean antibanEnabled;
     /** 会话代次（每次 initialize 递增）：作废旧调度里过期在线周期的风控检测任务。 */
     private final java.util.concurrent.atomic.AtomicLong sessionEpoch =
             new java.util.concurrent.atomic.AtomicLong();
@@ -233,15 +231,6 @@ public class WjdrEngine {
             }
         }
         return s;
-    }
-
-    /** 防封保护开关（登录时上报设备环境 + online 后易盾风控检测）。 */
-    public void setAntibanEnabled(boolean enabled) {
-        this.antibanEnabled = enabled;
-    }
-
-    public boolean antibanEnabled() {
-        return antibanEnabled;
     }
 
     /**
@@ -279,7 +268,6 @@ public class WjdrEngine {
 
     /** online 后 10 秒异步易盾风控检测（本次在线仅一次；失败只记日志不影响运行）。 */
     private void scheduleAntibanRiskCheck(long delaySeconds) {
-        if (!antibanEnabled) return;
         if (!dun163RiskCheckPerformed.compareAndSet(false, true)) return;
         long epoch = sessionEpoch.get();
         long uid = lastUid;
@@ -317,13 +305,6 @@ public class WjdrEngine {
             WjdrLog.w("[防封保护] 风控检测调度失败（已忽略） uid={} message={}",
                     String.valueOf(uid), String.valueOf(t));
         }
-    }
-
-    /** 在线状态下开启防封时的立即补做入口（本次在线未做过才真正发出）。 */
-    public void performAntibanRiskCheckIfPending() {
-        if (!antibanEnabled) return;
-        if (!STATE_ONLINE.equals(sessionState)) return;
-        scheduleAntibanRiskCheck(0L);
     }
 
     /**
@@ -435,8 +416,8 @@ public class WjdrEngine {
                 if (result.level <= 0) result.level = deepFindNum(load.getContent(), 0, "level", "stove_lv", "furnace_lv", "lv");
                 result.power = deepFindNum(load.getContent(), 0, "power", "fight_num", "fight_capacity");
                 result.alliance = extractAllianceName(load.getContent());
-                // 防封保护（P1）：loaddata 成功后、online 前上报设备环境（失败不阻断登录）
-                if (antibanEnabled) sendSettingsSetDevice(result.uid);
+                // 防封登录（默认链路）：loaddata 成功后、online 前上报设备环境（失败不阻断登录）
+                sendSettingsSetDevice(result.uid);
 
                 GameMessage info = lockedRequest("req_players_base_info",
                         mapOf("uids", (Object) java.util.Collections.singletonList(result.uid)), seconds(15));
@@ -445,8 +426,8 @@ public class WjdrEngine {
                 // 角色元数据源2：players 列表内本角色的条目（与 gameName 同一匹配规则）
                 extractPlayerMeta(info.getContent(), result.uid, result);
                 markOnline();
-                // 防封保护（P1）：online 后 10 秒异步易盾风控检测（本次在线仅一次，不阻塞登录）
-                if (antibanEnabled) scheduleAntibanRiskCheck(ANTIBAN_RISK_CHECK_DELAY_SECONDS);
+                // 防封登录（默认链路）：online 后 10 秒异步易盾风控检测（本次在线仅一次，不阻塞登录）
+                scheduleAntibanRiskCheck(ANTIBAN_RISK_CHECK_DELAY_SECONDS);
                 return result;
             } finally {
                 requestLock.unlock();

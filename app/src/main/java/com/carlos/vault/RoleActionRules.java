@@ -1,20 +1,12 @@
 package com.carlos.vault;
 
 /**
- * P1 角色动作（防封/暂停/重命名/移除/收纳）的<b>纯文案与校验规则</b>
+ * P1 角色动作（暂停/重命名/移除/收纳）的<b>纯文案与校验规则</b>
  * （契约 P1 §三，逐字对齐线上——文案常量集中此处，JVM 单测直跑锁定）。
  *
  * <p>UI 层（HomeActivity/弹层）只做视图拼装，规则改这里即可全局生效。
  */
 public final class RoleActionRules {
-
-    // ---------- 防封保护（§三.1） ----------
-    public static final String ANTIBAN_CONFIRM_TITLE = "开启防封保护确认";
-    public static final String ANTIBAN_CONFIRM_POSITIVE = "确认开启";
-    public static final String ANTIBAN_CONFIRM_NEGATIVE = "取消";
-    /** 成功 toast：优先取服务端 message（同文案），此为缺失兜底。 */
-    public static final String ANTIBAN_ON_TOAST = "已开启防封风控安全保护";
-    public static final String ANTIBAN_OFF_TOAST = "已关闭防封风控安全保护";
 
     // ---------- 暂停自动恢复（§三.2） ----------
     /** 暂停成功固定 toast（契约逐字；失败 toast 服务端 message）。 */
@@ -40,20 +32,6 @@ public final class RoleActionRules {
     public static final String SHELVED_BADGE = "已收纳";
 
     private RoleActionRules() {
-    }
-
-    /**
-     * 防封开启确认正文（契约 §三.1 逐字，【角色名】替换为实际名称）。
-     * 关闭不弹确认（仅开启前确认，契约口径）。
-     */
-    public static String antibanConfirmBody(String roleName) {
-        return "确定为角色【" + (roleName == null ? "" : roleName)
-                + "】开启防封保护吗？开启后，该角色在登录游戏时将自动模拟真实客户端上报设备环境"
-                + "（req_settings_set_device），并在进入游戏 10 秒后执行易盾安全校验"
-                + "（req_dun163_risk_check）。⚠ 注意事项："
-                + "1. 采用官方受信任特征与动态 Nonce 掩码重封装机制；"
-                + "2. 开关变更将在下一次角色登录/启动时生效；"
-                + "3. 未开启时，角色仍按原来的极简协议链路登录启动。";
     }
 
     /** 移除角色确认正文（契约 §三.4 逐字，强调不删除游戏内角色）。 */

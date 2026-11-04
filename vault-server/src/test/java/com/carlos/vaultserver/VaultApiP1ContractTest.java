@@ -26,8 +26,8 @@ import java.util.Map;
 
 /**
  * P1 服务端 API 契约（2026-10-21，HTTP 全链路，假 SessionControl）：
- * /accounts 输出 account.recovery + roles[].antibanEnabled/pause_resume_at（ISO）；
- * /role-action 新 op 的响应扩展（pauseResumeAt/rename 字段/antiban payload 下发）；
+ * /accounts 输出 account.recovery + roles[].pause_resume_at（ISO）；
+ * /role-action 新 op 的响应扩展（pauseResumeAt/rename 字段）；
  * /account-action op recovery-settings（校验文案/持久化/recovery 回显/回调）。
  */
 public class VaultApiP1ContractTest {
@@ -94,7 +94,7 @@ public class VaultApiP1ContractTest {
                                        Map<String, Object> payload) {
             actionCalls.add(new Object[]{fpid, sid, uid, action, payload});
             if (!Arrays.asList("login", "start", "pause", "resume", "logout", "stop",
-                    "antiban", "rename", "remove", "enabled").contains(action)) {
+                    "rename", "remove", "enabled").contains(action)) {
                 return RoleOpResult.fail(3002, "未知 action: " + action);
             }
             RoleOpResult r = RoleOpResult.ok("RUNNING");
@@ -108,8 +108,6 @@ public class VaultApiP1ContractTest {
                 r.usedDiamond = true;
                 r.diamondCost = 400L;
                 r.itemId = 610001L;
-            } else if ("antiban".equals(action)) {
-                r.message = "已开启防封风控安全保护";
             }
             return r;
         }
@@ -188,12 +186,11 @@ public class VaultApiP1ContractTest {
         }
     }
 
-    // ---------- /accounts：account.recovery + roles[].antibanEnabled/pause_resume_at ----------
+    // ---------- /accounts：account.recovery + roles[].pause_resume_at ----------
 
     @Test
-    public void accountsShape_recoveryAndAntibanAndPauseResumeAt() throws Exception {
+    public void accountsShape_recoveryAndPauseResumeAt() throws Exception {
         store.updateRecoverySettings(FPID, false, 45 * 60, 10, 5, 60);
-        store.setRoleAntiban(FPID, SID, UID_A, true);
         store.applyRolePauseSchedule(FPID, SID, UID_B, 1700000000000L);
         keeper.runtime(FPID, SID, UID_A, true, "RUNNING");
 
@@ -211,10 +208,8 @@ public class VaultApiP1ContractTest {
 
         JSONArray roles = acc.getJSONArray("roles");
         JSONObject ra = roles.getJSONObject(0);
-        assertTrue(ra.getBoolean("antibanEnabled"));
         assertEquals("无恢复计划 → 空", "", ra.getString("pause_resume_at"));
         JSONObject rb = roles.getJSONObject(1);
-        assertFalse(rb.getBoolean("antibanEnabled"));
         assertEquals("ISO-8601 时刻", "2023-11-14T22:13:20Z", rb.getString("pause_resume_at"));
         assertEquals("暂停/待恢复 online=false", false,
                 rb.getJSONObject("state").getBoolean("online"));
@@ -265,20 +260,6 @@ public class VaultApiP1ContractTest {
         assertEquals(610001, data.getLong("itemId"));
         assertEquals("隆科多二世", keeper.actionCalls.get(0)[4] == null
                 ? null : ((Map<?, ?>) keeper.actionCalls.get(0)[4]).get("name"));
-    }
-
-    @Test
-    public void roleAction_antiban_enabledForwarded() throws Exception {
-        Map<String, Object> f = new LinkedHashMap<>();
-        f.put("fpid", FPID);
-        f.put("sid", SID);
-        f.put("uid", UID_A);
-        f.put("action", "antiban");
-        f.put("enabled", true);
-        JSONObject data = post("/v1/vault/role-action", "vaultRoleAction", f).getJSONObject("data");
-        assertEquals("已开启防封风控安全保护", data.getString("message"));
-        Map<?, ?> payload = (Map<?, ?>) keeper.actionCalls.get(0)[4];
-        assertEquals(Boolean.TRUE, payload.get("enabled"));
     }
 
     @Test

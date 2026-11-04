@@ -21,7 +21,7 @@ import java.util.Map;
 
 /**
  * P1 角色管理增强（2026-10-21 契约 §二.1/§二.3-§二.5）：
- * antiban 持久化与在线补做风控、rename 校验/在线协议/51 道具不足 use_diamond 重试/离线报错、
+ * rename 校验/在线协议/51 道具不足 use_diamond 重试/离线报错、
  * remove 停会话清 active、enabled 收纳与启用。引擎替身可脚本化协议响应。
  */
 public class SessionKeeperRoleOpsTest {
@@ -43,7 +43,6 @@ public class SessionKeeperRoleOpsTest {
     static final class OpsTestEngine extends WjdrEngine {
         boolean online;
         boolean closed;
-        boolean riskCheckSupplement;
         final List<String> protocols = new ArrayList<>();
         final List<Map<String, Object>> payloads = new ArrayList<>();
         final List<GameMessage> scripted = new ArrayList<>();
@@ -151,11 +150,6 @@ public class SessionKeeperRoleOpsTest {
             online = false;
             closed = true;
         }
-
-        @Override
-        public void performAntibanRiskCheckIfPending() {
-            riskCheckSupplement = true;
-        }
     }
 
     @Before
@@ -200,50 +194,6 @@ public class SessionKeeperRoleOpsTest {
         Map<String, Object> p = new LinkedHashMap<>();
         p.put(key, value);
         return p;
-    }
-
-    // ---------- op antiban（契约 §二.1） ----------
-
-    @Test
-    public void antiban_persists_andMessagesToggle() {
-        syncAccount();
-        loginOnline(UID_A);
-
-        SessionControl.RoleOpResult r = keeper.roleAction(FPID, SID, UID_A, "antiban",
-                payload("enabled", true));
-        assertEquals(0, r.code);
-        assertEquals("已开启防封风控安全保护", r.message);
-        assertTrue(store.find(FPID).roles.get(VaultStore.roleKey(SID, UID_A)).antibanEnabled);
-        assertTrue("引擎开关同步", engines.get(0).antibanEnabled());
-
-        r = keeper.roleAction(FPID, SID, UID_A, "antiban", payload("enabled", false));
-        assertEquals(0, r.code);
-        assertEquals("已关闭防封风控安全保护", r.message);
-        assertFalse(store.find(FPID).roles.get(VaultStore.roleKey(SID, UID_A)).antibanEnabled);
-        assertFalse(engines.get(0).antibanEnabled());
-    }
-
-    @Test
-    public void antiban_onlineEnable_triggersImmediateRiskCheck() {
-        syncAccount();
-        loginOnline(UID_A);
-        assertFalse(engines.get(0).riskCheckSupplement);
-        keeper.roleAction(FPID, SID, UID_A, "antiban", payload("enabled", true));
-        assertTrue("在线开启 → 立即补做风控检测", engines.get(0).riskCheckSupplement);
-        // 关闭不补做
-        engines.get(0).riskCheckSupplement = false;
-        keeper.roleAction(FPID, SID, UID_A, "antiban", payload("enabled", false));
-        assertFalse(engines.get(0).riskCheckSupplement);
-    }
-
-    @Test
-    public void antiban_offlineRole_persistsWithoutEngine() {
-        syncAccount();
-        SessionControl.RoleOpResult r = keeper.roleAction(FPID, SID, UID_A, "antiban",
-                payload("enabled", true));
-        assertEquals(0, r.code);
-        assertEquals("已开启防封风控安全保护", r.message);
-        assertTrue(store.find(FPID).roles.get(VaultStore.roleKey(SID, UID_A)).antibanEnabled);
     }
 
     // ---------- op rename（契约 §二.3） ----------

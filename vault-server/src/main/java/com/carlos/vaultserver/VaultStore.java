@@ -89,8 +89,6 @@ public final class VaultStore {
         /** desiredOnline 最近一次置位时刻（诊断用；恢复不看它，desired 的全部恢复）。 */
         public long desiredAt;
         public String runState = RUN_STOPPED;
-        /** 防封保护（P1 2026-10-21）：登录时上报设备环境 + 进入游戏后易盾风控检测。 */
-        public boolean antibanEnabled;
         /** 暂停自动恢复时刻（epoch millis；0=无）。PAUSED 态下到期即按恢复策略重新登录。 */
         public long pauseResumeAt;
 
@@ -108,7 +106,6 @@ public final class VaultStore {
             c.desiredOnline = desiredOnline;
             c.desiredAt = desiredAt;
             c.runState = runState;
-            c.antibanEnabled = antibanEnabled;
             c.pauseResumeAt = pauseResumeAt;
             return c;
         }
@@ -438,8 +435,7 @@ public final class VaultStore {
                                 String rs = ro.optString("runState", RUN_STOPPED);
                                 e.runState = RUN_PAUSED.equals(rs) || RUN_RUNNING.equals(rs)
                                         ? rs : RUN_STOPPED;
-                                // P1 扩展（旧数据缺字段 → 缺省 false/0，加载容错）
-                                e.antibanEnabled = ro.optBoolean("antibanEnabled", false);
+                                // P1 扩展（旧数据缺字段 → 缺省 0，加载容错）
                                 e.pauseResumeAt = ro.optLong("pauseResumeAt", 0);
                                 a.roles.put(roleKey(e.sid, e.uid), e);
                             }
@@ -583,7 +579,6 @@ public final class VaultStore {
                     ro.put("desiredOnline", r.desiredOnline);
                     ro.put("desiredAt", r.desiredAt);
                     ro.put("runState", r.runState);
-                    ro.put("antibanEnabled", r.antibanEnabled);
                     ro.put("pauseResumeAt", r.pauseResumeAt);
                     rls.put(e.getKey(), ro);
                 }
@@ -949,7 +944,7 @@ public final class VaultStore {
         }
     }
 
-    // ---------- P1（2026-10-21）：暂停自动恢复 / 防封保护 / 角色管理增强 ----------
+    // ---------- P1（2026-10-21）：暂停自动恢复 / 角色管理增强 ----------
 
     /** 冷却时长合法值（线上 GameAccountRecoveryPolicy.ALLOWED_COOLDOWN_MINUTES 同款）。 */
     public static final int[] ALLOWED_COOLDOWN_MINUTES = {15, 30, 60, 120, 1440};
@@ -998,19 +993,6 @@ public final class VaultStore {
             a.takeoverRetryIntervalSeconds = clampInt(retryIntervalSeconds, 1, 300, 5);
             a.takeoverMaxAttempts = clampInt(maxAttempts, 0, 10, 3);
             a.takeoverCooldownMinutes = parseCooldown(cooldownMinutes);
-            saveLocked();
-            return true;
-        }
-    }
-
-    /** 角色防封开关持久化（服务器侧自有字段，sync 不覆盖）。 */
-    public boolean setRoleAntiban(String fpid, String sid, String uid, boolean enabled) {
-        synchronized (lock) {
-            Account a = findLocked(fpid);
-            if (a == null) return false;
-            RoleEntry e = a.roles.get(roleKey(sid, uid));
-            if (e == null) return false;
-            e.antibanEnabled = enabled;
             saveLocked();
             return true;
         }

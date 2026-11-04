@@ -1571,7 +1571,7 @@ public final class SessionKeeper implements SessionControl,
         return roleAction(fpid, sid, uid, action, null);
     }
 
-    /** 角色动作分发（P1 2026-10-21 带参）：新增 antiban/pause(升级)/rename/remove/enabled。 */
+    /** 角色动作分发（P1 2026-10-21 带参）：pause(升级)/rename/remove/enabled。 */
     @Override
     public RoleOpResult roleAction(String fpid, String sid, String uid, String action,
                                    Map<String, Object> payload) {
@@ -1591,8 +1591,6 @@ public final class SessionKeeper implements SessionControl,
                     return stopRoleLocked(fpid, sid, uid, true);
                 case "stop":
                     return stopRoleLocked(fpid, sid, uid, false);
-                case "antiban":
-                    return antibanRoleLocked(fpid, sid, uid, payload);
                 case "rename":
                     return renameRoleLocked(fpid, sid, uid, payload);
                 case "remove":
@@ -1842,33 +1840,6 @@ public final class SessionKeeper implements SessionControl,
     }
 
     // ---------- P1 角色管理增强（2026-10-21 契约 §二.1-§二.6） ----------
-
-    /** op antiban：持久化防封开关；在线角色开启时若本次在线未做风控检测则立即补做。 */
-    private RoleOpResult antibanRoleLocked(String fpid, String sid, String uid,
-                                           Map<String, Object> payload) {
-        boolean enabled = payloadEnabled(payload, false);
-        VaultStore.Account acc = store.find(fpid);
-        if (acc == null) return RoleOpResult.fail(1004, "账号不存在: " + fpid);
-        VaultStore.RoleEntry role = resolveOnSnapshot(acc, sid, uid);
-        if (role == null) {
-            return RoleOpResult.fail(RoleOpResult.CODE_ROLE_NOT_FOUND,
-                    "角色不存在: sid=" + sid + " uid=" + uid);
-        }
-        store.setRoleAntiban(fpid, role.sid, role.uid, enabled);
-        LiveSession ls = sessions.get(sessionKey(fpid, role.sid, role.uid));
-        if (ls != null) {
-            ls.engine.setAntibanEnabled(enabled);
-            // 在线切换开启：本次在线尚未做风控检测 → 立即补做（引擎内一次性闸门防重）
-            if (enabled && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
-                ls.engine.performAntibanRiskCheckIfPending();
-            }
-        }
-        FileLog.info("防封保护{} fpid={} 角色={}", enabled ? "开启" : "关闭",
-                fpid, sessionKey(fpid, role.sid, role.uid));
-        RoleOpResult r = RoleOpResult.ok(currentRunStateOf(ls));
-        r.message = enabled ? "已开启防封风控安全保护" : "已关闭防封风控安全保护";
-        return r;
-    }
 
     private static String currentRunStateOf(LiveSession ls) {
         if (ls == null || !ls.wantOnline) return VaultStore.RUN_STOPPED;
