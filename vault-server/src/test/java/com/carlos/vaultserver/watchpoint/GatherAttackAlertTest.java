@@ -43,7 +43,9 @@ public class GatherAttackAlertTest {
         WatchPointEngine e = new WatchPointEngine(null, store, null, null);
         e.recordResource(512, 688, 19694427L, 89700055L, 12345L);
         assertTrue("别人来打这个采集点", e.isGatherAttack(31374667L, 512, 688, 2L));
-        assertTrue("集结主体也算", e.isGatherAttack(31374667L, 512, 688, 102L));
+        assertFalse("集结主体不可能打采集点（2026-11-04 用户口径）",
+                e.isGatherAttack(31374667L, 512, 688, 102L));
+        assertFalse("集结也不可能打采集点", e.isGatherAttack(31374667L, 512, 688, 100L));
         assertFalse("自己不能打自己", e.isGatherAttack(19694427L, 512, 688, 2L));
         assertFalse("侦查不算攻击", e.isGatherAttack(31374667L, 512, 688, 1L));
         assertFalse("没人的矿点不算", e.isGatherAttack(31374667L, 100, 100, 2L));

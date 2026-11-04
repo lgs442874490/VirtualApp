@@ -342,6 +342,10 @@ public final class WatchPointEngine {
     private final Map<Long, java.util.ArrayDeque<Long>> gatherAlertTimes =
             new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, Long> gatherCounted = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 采集点缓存有效期（2026-11-04）：超过该时长未刷新视为「人已走」，不再据此告警。 */
+    static final long GATHER_POINT_TTL_MS = 20L * 60_000L;
+    /** 采集点告警跳过诊断去重。 */
+    private final Set<String> gatherSkipLogged = ConcurrentHashMap.newKeySet();
 
     /** 监视目标跟踪（2026-11-02）：最后出现时刻 / 丢失时刻 / 上次搜索扫描时刻 / 最近被进攻时刻。 */
     private final Map<Long, Long> targetSeenAt = new ConcurrentHashMap<>();
@@ -1082,18 +1086,28 @@ public final class WatchPointEngine {
         if (x <= 0 || y <= 0) return;
         long uid = asLong(res.get("uid"), 0L);
         long marchId = asLong(res.get("march_id"), 0L);
-        if (uid <= 0L && marchId <= 0L) return;   // 空矿点不缓存
+        if (uid <= 0L && marchId <= 0L) {
+            // 2026-11-04：空矿点必须清掉旧采集者，否则过期的「谁在采」会让后续任何经过该点的
+            // 行军都被误报成「采集点被攻击」（生产大量盟友互打误报的来源之一）。
+            resByPoint.remove(x + "," + y);
+            return;
+        }
         recordResource(x, y, uid, asLong(res.get("aid"), 0L), marchId);
     }
 
     /** 写入采集点缓存（空矿点会被后续「无人采集」覆盖掉）。 */
     void recordResource(int x, int y, long uid, long aid, long marchId) {
+        recordResourceAt(x, y, uid, aid, marchId, System.currentTimeMillis());
+    }
+
+    /** 带时间戳的采集点写入（单测可造过期数据）。 */
+    void recordResourceAt(int x, int y, long uid, long aid, long marchId, long atMs) {
         if (x <= 0 || y <= 0) return;
         ResPoint rp = new ResPoint();
         rp.uid = uid;
         rp.aid = aid;
         rp.marchId = marchId;
-        rp.atMs = System.currentTimeMillis();
+        rp.atMs = atMs;
         resByPoint.put(x + "," + y, rp);
         if (resByPoint.size() > 20000) {
             long now = System.currentTimeMillis();
@@ -1368,9 +1382,10 @@ public final class WatchPointEngine {
         // 攻击采集点：终点不是城、而是有人在采的矿点 → 单独一条「采集点被攻击」（每人 5 分钟 3 条）。
         // 只推与本人相关的：攻击者是监视目标，或被打的是友盟采集点（否则全图采集点互殴会刷屏）。
         ResPoint rp = resByPoint.get(ex + "," + ey);
-        if (rp != null && rp.uid > 0L && rp.uid != owner
-                && (type == 2L || type == 100L || type == 102L)) {
-            if (marchState == 2L && gatherRelevant(owner, rp)) {
+        // 2026-11-04 用户口径：采集点被攻击只能是「出征」(type=2)，集结/集结主体(100/102)不可能打采集点。
+        if (rp != null && rp.uid > 0L && rp.uid != owner && type == 2L) {
+            if (marchState == 2L && gatherRelevant(owner, rp)
+                    && gatherAttackValid(m, owner, rp, ex, ey)) {
                 gatherAttackAlert(owner, id, type, sx, sy, ex, ey, endtime, troopsOf(m), rp);
             }
             return;   // 采集点攻击走专门文案，不再重复发「目标城未知」的攻城告警
@@ -1775,11 +1790,102 @@ public final class WatchPointEngine {
         return resByPoint;
     }
 
-    /** 终点是不是「有人在采的矿点」且来的是攻击（供 onMarch 判定，便于单测）。 */
+    /** 终点是不是「有人在采的矿点」且来的是出征（2026-11-04：只有 type=2 出征，集结类不算）。 */
     boolean isGatherAttack(long owner, int ex, int ey, long type) {
         ResPoint rp = resByPoint.get(ex + "," + ey);
-        return rp != null && rp.uid > 0L && rp.uid != owner
-                && (type == 2L || type == 100L || type == 102L);
+        return rp != null && rp.uid > 0L && rp.uid != owner && type == 2L;
+    }
+
+    /**
+     * 采集点「被攻击」是否可信（2026-11-04 生产误报修复）：
+     * <ul>
+     *   <li>盟友之间无法互相攻击 → 攻击者/采集者同联盟（或昵称同 [abbr]）一律不推；</li>
+     *   <li>只有「出征」(type=2) 才可能打采集点；集结类已在调用方排除；</li>
+     *   <li>巨兽/野外/采集/打野等 PvE 行军终点也可能落在矿点上 → 不算打采集点；</li>
+     *   <li>采集点缓存超过 TTL 未刷新（人早走了）→ 不可信。</li>
+     * </ul>
+     */
+    boolean gatherAttackValid(Map<?, ?> m, long owner, ResPoint rp, int ex, int ey) {
+        if (rp == null) return false;
+        if (isPveMarch(m)) {
+            logGatherSkip(owner, rp, ex, ey, "PvE 行军（巨兽/野外集结/采集/打野）");
+            return false;
+        }
+        long atkAid = aidOf(owner);
+        long vicAid = rp.aid > 0L ? rp.aid : aidOf(rp.uid);
+        if (atkAid > 0L && vicAid > 0L) {
+            if (atkAid == vicAid) {
+                logGatherSkip(owner, rp, ex, ey, "同联盟（盟友无法互相攻击）");
+                return false;
+            }
+            // 2026-11-04：同阵营友盟之间也不会互相攻击（生产 SHE→KFC 等 1 兵「集结主体」误报）
+            if (store.friendAids.contains(atkAid) && store.friendAids.contains(vicAid)) {
+                logGatherSkip(owner, rp, ex, ey, "同阵营友盟（友军之间不互相攻击）");
+                return false;
+            }
+        }
+        if (atkAid <= 0L || vicAid <= 0L) {
+            // 联盟未知时用昵称里的 [abbr] 兜底（游戏昵称通常带联盟简称）
+            String atkAbbr = abbrFromNick(displayNick(owner));
+            String vicAbbr = abbrFromNick(displayNick(rp.uid));
+            if (!atkAbbr.isEmpty() && atkAbbr.equalsIgnoreCase(vicAbbr)) {
+                logGatherSkip(owner, rp, ex, ey, "同联盟简称（盟友无法互相攻击）");
+                return false;
+            }
+        }
+        if (System.currentTimeMillis() - rp.atMs > GATHER_POINT_TTL_MS) {
+            logGatherSkip(owner, rp, ex, ey, "采集点缓存过期（>"
+                    + (GATHER_POINT_TTL_MS / 60_000L) + " 分钟未刷新）");
+            return false;
+        }
+        return true;
+    }
+
+    /** 巨兽/野外集结/采集/打野等 PvE 行军的特征字段（命中任一即不是「打采集点」）。 */
+    static final String[] PVE_MARCH_KEYS = {
+            "mass_boss", "atk_monster", "mass_icefield_hunter_boss", "atk_monster_auto",
+            "transaction_slg", "collect", "collect_resource", "recon_resource", "recon_monster",
+            "mass_alliance_trap", "atk_world_boss", "mass_world_boss", "pet_catch", "truck_escort",
+            "alliance_collect_resource", "build_trap", "frostfire_war_atk_monster",
+            "frostfire_war_collect", "frostfire_war_burst_collect", "frostfire_war_atk_center"
+    };
+
+    /** 是否 PvE 行军（巨兽/野外集结/采集/打野等）。 */
+    static boolean isPveMarch(Map<?, ?> m) {
+        if (m == null) return true;
+        for (String k : PVE_MARCH_KEYS) {
+            if (m.containsKey(k)) return true;
+        }
+        return false;
+    }
+
+    /** uid → 联盟 aid：优先实时城缓存，其次玩家目录；未知 0。 */
+    private long aidOf(long uid) {
+        City c = cityByUid.get(uid);
+        if (c != null && c.aid > 0L) return c.aid;
+        PlayerDirectory dir = PlayerDirectory.shared();
+        PlayerDirectory.Entry e = dir == null ? null : dir.byUid(uid);
+        return e == null ? 0L : e.aid;
+    }
+
+    /** 展示昵称：实时地图昵称优先，其次玩家目录；未知空串。 */
+    private String displayNick(long uid) {
+        String n = liveNick(uid);
+        if (!n.isEmpty()) return n;
+        PlayerDirectory dir = PlayerDirectory.shared();
+        PlayerDirectory.Entry e = dir == null ? null : dir.byUid(uid);
+        return e == null || e.nick == null ? "" : e.nick;
+    }
+
+    /** 采集点告警跳过留痕（去重，便于线上核对误报来源）。 */
+    private void logGatherSkip(long owner, ResPoint rp, int ex, int ey, String why) {
+        String key = owner + ":" + rp.uid + ":" + why;
+        if (gatherSkipLogged.size() > 2000) gatherSkipLogged.clear();
+        if (!gatherSkipLogged.add(key)) return;
+        FileLog.info("[{}] 采集点告警跳过（{}）：攻击者 uid={} aid={} 采集者 uid={} aid={} 资源点=({},{})",
+                LOG, why, String.valueOf(owner), String.valueOf(aidOf(owner)),
+                String.valueOf(rp.uid), String.valueOf(rp.aid),
+                String.valueOf(ex), String.valueOf(ey));
     }
 
     /** 这条采集点告警是否与本人相关：攻击者是监视目标，或被打的是友盟的人。 */

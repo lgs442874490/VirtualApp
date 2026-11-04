@@ -107,6 +107,128 @@ public class GatherAttackEndToEndTest {
                 text.contains("uid") || text.contains("aid") || text.contains("march"));
     }
 
+    /** 2026-11-04 用户口径：盟友之间无法互相攻击 → 同联盟「采集点被攻击」必为误报。 */
+    @Test
+    public void sameAllianceGatherAttackIsSilent() {
+        WatchPointStore store = store();
+        WatchPointEngine engine = new WatchPointEngine(null, store, null, null);
+        FakeEngine fe = new FakeEngine();
+        engine.pollTickForTest(List.of(fe));
+        int session = fe.sessions.get(0);
+        // 攻击者城缓存 aid 与采集者相同（同为友盟 SYD）
+        engine.seedCityForTest(WATCHED, 89700055L, 278, 607, "[SYD]攻击者");
+
+        Map<String, Object> gather = new LinkedHashMap<>();
+        gather.put("march", march(9201L, VICTIM, 4L, 2L, 600, 700, 512, 688, 89700055L));
+        engine.feedResponseForTest(session, "notify_world_marchs", gather);
+
+        Map<String, Object> attack = new LinkedHashMap<>();
+        attack.put("march", march(9202L, WATCHED, 2L, 2L, 278, 607, 512, 688, 0L));
+        engine.feedResponseForTest(session, "notify_world_marchs", attack);
+
+        assertEquals("同联盟不可能互相攻击，不能推送", 0, engine.alertCountForTest());
+    }
+
+    /** 2026-11-04：同阵营友盟（不同联盟）之间也不会互相攻击 → 不推。 */
+    @Test
+    public void friendlyCoalitionGatherAttackIsSilent() {
+        WatchPointStore store = store();
+        store.friendAids.add(89700055L);   // SYD
+        store.friendAids.add(89700483L);   // KFC
+        WatchPointEngine engine = new WatchPointEngine(null, store, null, null);
+        FakeEngine fe = new FakeEngine();
+        engine.pollTickForTest(List.of(fe));
+        int session = fe.sessions.get(0);
+        // 攻击者 SYD、采集者 KFC：都在友盟集合里
+        engine.seedCityForTest(WATCHED, 89700055L, 278, 607, "[SYD]攻击者");
+
+        Map<String, Object> gather = new LinkedHashMap<>();
+        gather.put("march", march(9251L, VICTIM, 4L, 2L, 600, 700, 512, 688, 89700483L));
+        engine.feedResponseForTest(session, "notify_world_marchs", gather);
+
+        Map<String, Object> attack = new LinkedHashMap<>();
+        attack.put("march", march(9252L, WATCHED, 2L, 2L, 278, 607, 512, 688, 0L));
+        engine.feedResponseForTest(session, "notify_world_marchs", attack);
+
+        assertEquals("同阵营友盟之间不能互相攻击，不能推送", 0, engine.alertCountForTest());
+    }
+
+    /** 2026-11-04：巨兽/野外（PvE）出征终点落在矿点上，不算打采集点。 */
+    @Test
+    public void pveMarchOnGatherPointIsSilent() {
+        WatchPointStore store = store();
+        WatchPointEngine engine = new WatchPointEngine(null, store, null, null);
+        FakeEngine fe = new FakeEngine();
+        engine.pollTickForTest(List.of(fe));
+        int session = fe.sessions.get(0);
+
+        Map<String, Object> gather = new LinkedHashMap<>();
+        gather.put("march", march(9301L, VICTIM, 4L, 2L, 600, 700, 512, 688, FRIEND_AID));
+        engine.feedResponseForTest(session, "notify_world_marchs", gather);
+
+        Map<String, Object> attack = march(9302L, WATCHED, 2L, 2L, 278, 607, 512, 688, 0L);
+        attack.put("atk_monster", new LinkedHashMap<>());   // 出征打巨兽/野怪
+        Map<String, Object> wrapper = new LinkedHashMap<>();
+        wrapper.put("march", attack);
+        engine.feedResponseForTest(session, "notify_world_marchs", wrapper);
+
+        assertEquals("PvE 行军不能报采集点被攻击", 0, engine.alertCountForTest());
+    }
+
+    /** 2026-11-04：采集点缓存过期（人早走了）后，经过该点的行军不再误报。 */
+    @Test
+    public void staleGatherPointIsSilent() {
+        WatchPointStore store = store();
+        WatchPointEngine engine = new WatchPointEngine(null, store, null, null);
+        FakeEngine fe = new FakeEngine();
+        engine.pollTickForTest(List.of(fe));
+        int session = fe.sessions.get(0);
+        // 21 分钟前的采集记录（超过 20 分钟 TTL）
+        engine.recordResourceAt(512, 688, VICTIM, FRIEND_AID, 9400L,
+                System.currentTimeMillis() - 21L * 60_000L);
+
+        Map<String, Object> attack = new LinkedHashMap<>();
+        attack.put("march", march(9402L, WATCHED, 2L, 2L, 278, 607, 512, 688, 0L));
+        engine.feedResponseForTest(session, "notify_world_marchs", attack);
+
+        assertEquals("过期采集点不能推送", 0, engine.alertCountForTest());
+    }
+
+    /** 2026-11-04：矿点变空（无人采集）必须清掉旧采集者，后续行军不得再按「被攻击」推。 */
+    @Test
+    public void emptyResourceClearsStaleGatherer() {
+        WatchPointStore store = store();
+        WatchPointEngine engine = new WatchPointEngine(null, store, null, null);
+        FakeEngine fe = new FakeEngine();
+        engine.pollTickForTest(List.of(fe));
+        int session = fe.sessions.get(0);
+
+        Map<String, Object> gather = new LinkedHashMap<>();
+        gather.put("march", march(9501L, VICTIM, 4L, 2L, 600, 700, 512, 688, FRIEND_AID));
+        engine.feedResponseForTest(session, "notify_world_marchs", gather);
+        assertTrue(engine.resByPointForTest().containsKey("512,688"));
+
+        // 地图对象：空矿点（uid=0/march_id=0）
+        Map<String, Object> res = new LinkedHashMap<>();
+        res.put("id", 1250101L);
+        Map<String, Object> item = new LinkedHashMap<>();
+        item.put("type", 2L);
+        item.put("point", point(512, 688));
+        item.put("map_resource", res);
+        List<Object> dl = new ArrayList<>();
+        dl.add(item);
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("datalist", dl);
+        content.put("end_flag", true);
+        engine.feedResponseForTest(session, "notify_world_mapobjs", content);
+        assertFalse("空矿点必须清掉旧采集者", engine.resByPointForTest().containsKey("512,688"));
+
+        Map<String, Object> attack = new LinkedHashMap<>();
+        attack.put("march", march(9502L, WATCHED, 2L, 2L, 278, 607, 512, 688, 0L));
+        engine.feedResponseForTest(session, "notify_world_marchs", attack);
+        assertEquals("无人采集的矿点不能报被攻击", 0, engine.alertCountForTest());
+    }
+
     @Test
     public void unrelatedGatherAttackIsSilent() {
         WatchPointStore store = store();
