@@ -2068,12 +2068,15 @@ public final class WatchPointEngine {
         trackAttacker(owner, atk);
     }
 
-    /** 资源类行为（2026-11-04）：采集=type4；建设=type8；破坏=攻击联盟旗/总部字段；巨兽/打野返回 null（不推）。 */
+    /**
+     * 资源类行为（2026-11-04）：采集=type4；建设=type6/8（建造/援助）；破坏=攻击联盟旗/总部字段；
+     * 巨兽/打野返回 null（不推）。type 6/8 为生产监听到的非战斗建设类行军。
+     */
     static String resourceBehavior(Map<?, ?> m, long type) {
         if (m == null) return null;
         if (isAllianceBuildingAttack(m)) return "破坏";
         if (type == 4L) return "采集";
-        if (type == 8L) return "建设";
+        if (type == 6L || type == 8L) return "建设";
         return null;
     }
 

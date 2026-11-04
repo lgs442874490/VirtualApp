@@ -6,7 +6,9 @@ import java.nio.file.Paths;
 import java.util.LinkedHashMap;
 import java.util.Map;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -37,6 +39,20 @@ public class GatherAttackAlertTest {
         assertFalse("通知里不能带 uid/aid 编号: " + text,
                 text.contains("uid") || text.contains("aid") || text.contains("march"));
         assertTrue("资源点坐标: " + text, text.contains("(512,688)"));
+    }
+
+    @Test
+    public void resourceBehaviorMapping() {
+        assertEquals("采集", WatchPointEngine.resourceBehavior(new LinkedHashMap<>(), 4L));
+        assertEquals("建设(type6)", "建设", WatchPointEngine.resourceBehavior(new LinkedHashMap<>(), 6L));
+        assertEquals("建设(type8)", "建设", WatchPointEngine.resourceBehavior(new LinkedHashMap<>(), 8L));
+        Map<String, Object> flag = new LinkedHashMap<>();
+        flag.put("atk_alliance_flag", new LinkedHashMap<>());
+        assertEquals("破坏旗", "破坏", WatchPointEngine.resourceBehavior(flag, 2L));
+        Map<String, Object> hall = new LinkedHashMap<>();
+        hall.put("mass_alliance_hall", new LinkedHashMap<>());
+        assertEquals("破坏总部(集结)", "破坏", WatchPointEngine.resourceBehavior(hall, 102L));
+        assertNull("打野/巨兽不推", WatchPointEngine.resourceBehavior(new LinkedHashMap<>(), 3L));
     }
 
     @Test
