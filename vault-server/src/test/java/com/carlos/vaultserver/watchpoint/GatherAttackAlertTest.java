@@ -27,14 +27,16 @@ public class GatherAttackAlertTest {
                 512, 688, 185, 197860L,
                 "小淑女i", 89700055L,
                 "22:30:00", labels, 1000L);
-        assertTrue(text, text.contains("采集点被攻击"));
-        assertTrue("攻击人坐标: " + text, text.contains("(278,607)"));
-        assertTrue("出征信息: " + text, text.contains("进攻") && text.contains("ETA"));
-        assertTrue("被攻击人: " + text, text.contains("小淑女i") && text.contains("[SYD]"));
+        assertTrue("标题: " + text, text.contains("🚨 资源·受袭"));
+        assertTrue("攻击人简称在昵称前: " + text, text.contains("攻击人：[818]鲱鱼罐头"));
+        assertTrue("攻击人坐标: " + text, text.contains("坐标 (278,607)"));
+        assertTrue("出征信息: " + text, text.contains("出征信息：进攻"));
+        assertTrue("兵力: " + text, text.contains("兵力：197860"));
+        assertTrue("ETA: " + text, text.contains("ETA：3分5秒"));
+        assertTrue("被攻击人: " + text, text.contains("被攻击人：[SYD]小淑女i"));
         assertFalse("通知里不能带 uid/aid 编号: " + text,
                 text.contains("uid") || text.contains("aid") || text.contains("march"));
         assertTrue("资源点坐标: " + text, text.contains("(512,688)"));
-        assertTrue("兵力和 ETA: " + text, text.contains("威胁进攻") || text.contains("兵力约"));
     }
 
     @Test

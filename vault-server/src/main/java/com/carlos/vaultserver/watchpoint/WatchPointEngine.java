@@ -341,6 +341,14 @@ public final class WatchPointEngine {
     /** 采集点被攻击告警配额：每个攻击者 5 分钟最多 3 条（与侦查同口径，独立计数）。 */
     private final Map<Long, java.util.ArrayDeque<Long>> gatherAlertTimes =
             new java.util.concurrent.ConcurrentHashMap<>();
+    /** 2026-11-04：A1 情报行为（侦查/驻防/发起集结）统一限流：每人 5 分钟 3 条。 */
+    private final Map<Long, java.util.ArrayDeque<Long>> intelAlertTimes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** 2026-11-04：资源类行为（采集/建设/破坏）限流：每人 5 分钟 3 条。 */
+    private final Map<Long, java.util.ArrayDeque<Long>> resAlertTimes =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** 联盟 aid → 联盟全名（保护更新文案用；来自地图王城/要塞对象的 aname）。 */
+    private final Map<Long, String> allianceNames = new java.util.concurrent.ConcurrentHashMap<>();
     private final Map<String, Long> gatherCounted = new java.util.concurrent.ConcurrentHashMap<>();
     /** 采集点缓存有效期（2026-11-04）：超过该时长未刷新视为「人已走」，不再据此告警。 */
     static final long GATHER_POINT_TTL_MS = 20L * 60_000L;
@@ -1044,6 +1052,7 @@ public final class WatchPointEngine {
                     if (o instanceof Map) {
                         parseCity((Map<?, ?>) o, ctx.cityUids);
                         parseResource((Map<?, ?>) o);
+                        parseAllianceMeta((Map<?, ?>) o);
                     }
                 }
             }
@@ -1051,11 +1060,13 @@ public final class WatchPointEngine {
             if (!obj.isEmpty()) {
                 parseCity(obj, ctx.cityUids);
                 parseResource(obj);
+                parseAllianceMeta(obj);
             }
             Map<?, ?> change = asMap(content.get("change"));
             if (!change.isEmpty()) {
                 parseCity(change, ctx.cityUids);
                 parseResource(change);
+                parseAllianceMeta(change);
             }
             if (truthy(content.get("end_flag"))) {
                 ctx.ended = true;
@@ -1093,6 +1104,18 @@ public final class WatchPointEngine {
             return;
         }
         recordResource(x, y, uid, asLong(res.get("aid"), 0L), marchId);
+    }
+
+    /** 联盟元数据（2026-11-04）：从王城/要塞对象取 aid→联盟全名，供保护更新文案用。 */
+    private void parseAllianceMeta(Map<?, ?> item) {
+        for (String k : new String[]{"map_capital", "map_major_fort", "map_middle_fort",
+                "map_minor_fort", "map_alliance_hall"}) {
+            Map<?, ?> o = asMap(item.get(k));
+            if (o.isEmpty()) continue;
+            long aid = asLong(o.get("aid"), 0L);
+            String aname = str(o.get("aname"));
+            if (aid > 0L && !aname.isEmpty()) allianceNames.put(aid, aname);
+        }
     }
 
     /** 写入采集点缓存（空矿点会被后续「无人采集」覆盖掉）。 */
@@ -1374,15 +1397,18 @@ public final class WatchPointEngine {
             rememberMarchEndpoint(owner, sx, sy, ex, ey, asMap(m.get("move_endpoint")));
         }
         // 2026-11-02：采集行军（type=4）本身就是「这个点在采」的证据 → 记录采集人，供采集点被攻击告警用
+        // 2026-11-04 用户口径：监视目标资源类行为（采集/建设/破坏），每人 5 分钟前 3 条。
         if (type == 4L && marchState == 2L) {
             recordResource(ex, ey, owner,
                     asLong(asMap(m.get("collect")).get("target_aid"), asLong(m.get("aid"), 0L)), id);
+            if (ctx.kind == Kind.MONITOR && isMonitoredUid(owner) && ctx.rect.contains(sx, sy)
+                    && !(sx == ex && sy == ey)) {
+                maybeResourceAlert(owner, id, "采集", ex, ey, endtime, troopsOf(m));
+            }
             return;
         }
-        // 攻击采集点：终点不是城、而是有人在采的矿点 → 单独一条「采集点被攻击」（每人 5 分钟 3 条）。
-        // 只推与本人相关的：攻击者是监视目标，或被打的是友盟采集点（否则全图采集点互殴会刷屏）。
+        // 攻击采集点（A3 资源·受袭）：只认出征(type=2)，且攻击者/采集者不能同联盟/同友盟。
         ResPoint rp = resByPoint.get(ex + "," + ey);
-        // 2026-11-04 用户口径：采集点被攻击只能是「出征」(type=2)，集结/集结主体(100/102)不可能打采集点。
         if (rp != null && rp.uid > 0L && rp.uid != owner && type == 2L) {
             if (marchState == 2L && gatherRelevant(owner, rp)
                     && gatherAttackValid(m, owner, rp, ex, ey)) {
@@ -1391,7 +1417,6 @@ public final class WatchPointEngine {
             return;   // 采集点攻击走专门文案，不再重复发「目标城未知」的攻城告警
         }
         if (marchState >= 3L) return;
-        if (!store.alertTypes.contains(type)) return;
         // 只告警「打城」：地图行军的 atk_city/recon_city 在 map_info 数据里为空，用终点坐标是否命中已知城坐标判定
         City targetCity = cityNear(ex, ey);
         long targetUid = targetCity == null ? 0L : targetCity.uid;
@@ -1403,8 +1428,6 @@ public final class WatchPointEngine {
                 && (type == 2L || type == 100L || type == 102L)) {
             targetAttackedAt.put(targetCity.uid, System.currentTimeMillis());
         }
-        // 2026-10-28 误报修复①：自循环/自家城行军（起点=终点、目标是发起者自己的城）
-        // 典型场景：集结随从/部队往返自己的城或集结点 → 不是"打谁"，MONITOR/PROTECT 都不告警。
         boolean selfMarch = isSelfMarch(sx, sy, ex, ey, targetUid, owner);
         if (ctx.kind == Kind.MONITOR) {
             if (!ctx.rect.contains(sx, sy)) return;
@@ -1413,26 +1436,37 @@ public final class WatchPointEngine {
                 statSelfIgnored.incrementAndGet();
                 return;
             }
-            if (store.cityTargetOnly && targetCity == null) return;
-            // 2026-11-03：集结类（99/100/102/10/12）只有目标是「城」才算敌情——
-            // 集结巨兽/野外集结终点没有城，推出来就是「集结自己人」的误报。
-            if (isRallyType(type) && targetCity == null) return;
-            // 同联盟目标（增援/自家城/内部动作）不算“打谁”，避免噪音
-            if (!shouldAlertMonitor(ownerAid, targetAid)) return;
-            // 2026-11-03 去重：监视目标的「进攻/集结」统一由战争警报推送（含结算/破城），
-            // 观察点这里只推侦查，避免同一条行军两边各推一次。
-            if (type != 1L) return;
-            String marchKey = "m:" + owner + ":" + id;
-            if (recentlyAlerted(marchKey)) return;   // 来袭通道已推过同一条行军
-            alertOutgoing(owner, id, type, ex, ey, endtime, troopsOf(m), marchKey);
+            // 资源类：建设(type8)/破坏(联盟旗·总部字段)；采集已在上方处理
+            String resBeh = resourceBehavior(m, type);
+            if (resBeh != null) {
+                maybeResourceAlert(owner, id, resBeh, ex, ey, endtime, troopsOf(m));
+                return;
+            }
+            // A1 情报：侦查 / 驻防·增援 / 发起集结（统一 5 分钟前 3 条）
+            if (type == 1L || type == 5L || type == 100L) {
+                if (!shouldAlertMonitor(ownerAid, targetAid)) return;
+                String marchKey = "m:" + owner + ":" + id;
+                if (recentlyAlerted(marchKey)) return;
+                long now = System.currentTimeMillis();
+                if (!scoutQuotaAllow(intelAlertTimes, owner, now, SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
+                    FileLog.info("[{}] 情报告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
+                            String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
+                    return;
+                }
+                alertOutgoing(owner, id, type, ex, ey, endtime, troopsOf(m), marchKey);
+                return;
+            }
+            // 进攻/集结出征由战争警报统一推送（A2），观察点不重复推
+            return;
         } else if (ctx.kind == Kind.PROTECT) {
             if (!ctx.rect.contains(ex, ey)) return;
             if (selfMarch) {
                 statSelfIgnored.incrementAndGet();
                 return;
             }
-            // 2026-10-28 误报修复②：来袭只对「已知友盟城」告警。
-            // targetCity 缺失或 aid<=0（联盟未知，如本次 12:18 的自循环误报）→ 仅 INFO 记录候选，不推送。
+            // A2 敌袭：只报「进攻(2)/集结出征(102)」
+            if (type != 2L && type != 102L) return;
+            // 来袭只对「已知友盟城」告警；联盟未知目标仅 INFO 记录候选，不推送。
             if (targetCity == null || targetAid <= 0L) {
                 statUnknownTargetIgnored.incrementAndGet();
                 logUnknownIncomingCandidate(type, owner, ex, ey);
@@ -1442,15 +1476,7 @@ public final class WatchPointEngine {
                     store.friendAids, type, store.incomingRallyFollowerAlerts);
             // 监视目标发起的行军由战争警报统一推（避免同一条行军重复通知）
             if (alert && isMonitoredUid(owner)) alert = false;
-            // 2026-11-03：加入集结（99 随从 / 10、12 集结中）不推，只保留发起(100)与集结出征(102)
-            if (alert && (type == 99L || type == 10L || type == 12L)) alert = false;
-            if (!alert) {
-                if (!store.incomingRallyFollowerAlerts && (type == 99L || type == 100L)
-                        && store.friendAids.contains(targetAid)) {
-                    statRallyFollowerIgnored.incrementAndGet();
-                }
-                return;
-            }
+            if (!alert) return;
             String marchKey = "m:" + owner + ":" + id;
             if (recentlyAlerted(marchKey)) return;   // 敌情通道已推过同一条行军
             alertIncoming(owner, ownerCity, id, type, ex, ey, endtime, troopsOf(m), marchKey);
@@ -1517,6 +1543,24 @@ public final class WatchPointEngine {
         if (label != null && !label.isEmpty()) return " [" + label + "]";
         // 2026-11-02 用户要求：通知里不带 aid/uid，联盟未知时只给文字，不给数字
         return aid > 0L ? "" : "（联盟未知）";
+    }
+
+    /**
+     * 联盟简称前缀（2026-11-04 用户口径：所有联盟简称放在游戏昵称前面）：
+     * {@code [SYD]昵称}；无简称返回空串（只显示昵称）。
+     */
+    static String allyPrefix(long aid, Map<Long, String> aidLabels, String nick) {
+        String label = aid > 0L && aidLabels != null ? aidLabels.get(aid) : null;
+        if (label == null || label.isEmpty()) label = abbrFromNick(nick);
+        return label == null || label.isEmpty() ? "" : "[" + label + "]";
+    }
+
+    /** 带联盟简称前缀的显示名：[SYD]昵称（无简称则原样）。 */
+    static String prefixed(long aid, Map<Long, String> aidLabels, String nick) {
+        String n = nick == null ? "" : nick.trim();
+        String pre = allyPrefix(aid, aidLabels, n);
+        if (pre.isEmpty()) return n;
+        return n.startsWith("[") ? n : pre + n;
     }
 
     /** 城堡昵称里的联盟简称：{@code "[818]小淑女i"} → {@code "818"}；无前缀/异常返回空串。 */
@@ -1665,6 +1709,87 @@ public final class WatchPointEngine {
                 : "原因：主动迁城 / 被盟友传送 / 未知";
     }
 
+    /** 保护名 → 联盟 aid（支持 THY-1/THY-2 这类同盟拆分矩形）。 */
+    private long aidForProtectName(String name) {
+        if (name == null) return 0L;
+        String n = name.trim();
+        for (Map.Entry<Long, String> e : store.aidLabels.entrySet()) {
+            if (n.equalsIgnoreCase(e.getValue())) return e.getKey();
+        }
+        int dash = n.indexOf('-');
+        if (dash > 0) {
+            String base = n.substring(0, dash);
+            for (Map.Entry<Long, String> e : store.aidLabels.entrySet()) {
+                if (base.equalsIgnoreCase(e.getValue())) return e.getKey();
+            }
+        }
+        return 0L;
+    }
+
+    /**
+     * 保护矩形为空（连续 2 次完整扫描）→ 按该联盟当前城群重算聚集地中心：
+     * 自动把矩形移到新中心并推送「📍 观察点·保护更新」（2026-11-04 用户口径）。
+     */
+    private void relocateProtectRect(WatchPointStore.Rect r, int streak) {
+        long aid = aidForProtectName(r.name);
+        if (aid <= 0L) {
+            FileLog.info("[{}] 保护矩形 {} 连续 {} 次为空，但无法解析联盟 aid，跳过迁移",
+                    LOG, r.name, String.valueOf(streak));
+            return;
+        }
+        java.util.List<City> cs = new java.util.ArrayList<>();
+        for (City c : cityByUid.values()) {
+            if (c != null && c.aid == aid && c.x > 0 && c.y > 0) cs.add(c);
+        }
+        if (cs.size() < 5) {
+            FileLog.info("[{}] 保护矩形 {} 连续 {} 次为空，联盟 aid={} 城数不足 {}，跳过迁移",
+                    LOG, r.name, String.valueOf(streak), String.valueOf(aid), String.valueOf(cs.size()));
+            return;
+        }
+        int nx = medianCity(cs, true);
+        int ny = medianCity(cs, false);
+        int ox = (r.x1 + r.x2) / 2;
+        int oy = (r.y1 + r.y2) / 2;
+        if (Math.max(Math.abs(nx - ox), Math.abs(ny - oy)) < 5) {
+            return;   // 基本没搬，不刷屏
+        }
+        int w = Math.max(10, r.x2 - r.x1);
+        int h = Math.max(10, r.y2 - r.y1);
+        int x1 = clampInt(nx - w / 2, 0, MAP_MAX - w);
+        int y1 = clampInt(ny - h / 2, 0, MAP_MAX - h);
+        String aname = allianceNames.getOrDefault(aid, "");
+        String abbr = store.aidLabels.getOrDefault(aid, "");
+        if (abbr == null || abbr.isEmpty()) abbr = r.name == null ? "" : r.name.trim();
+        String label = (abbr.isEmpty() ? "" : "[" + abbr + "]") + aname;
+        if (label.isEmpty()) label = "联盟" + aid;
+        alert("rect-move:" + r.name + ":" + (scan.startedAt / 3_600_000L),
+                "📍 观察点·保护更新\n联盟：" + label
+                        + "\n原坐标 (" + ox + "," + oy + ") → 新坐标 (" + nx + "," + ny + ")"
+                        + "\n时间：" + nowText());
+        r.x1 = x1;
+        r.y1 = y1;
+        r.x2 = x1 + w;
+        r.y2 = y1 + h;
+        store.save();
+        rectEmptyStreak.remove(r.name);
+        FileLog.info("[{}] 保护矩形 {} 已迁移：({},{}) → ({},{})，新矩形 ({},{})-({},{})",
+                LOG, r.name, String.valueOf(ox), String.valueOf(oy), String.valueOf(nx),
+                String.valueOf(ny), String.valueOf(r.x1), String.valueOf(r.y1),
+                String.valueOf(r.x2), String.valueOf(r.y2));
+    }
+
+    /** 城群坐标中位数（抗离群点）。 */
+    private static int medianCity(java.util.List<City> cs, boolean xAxis) {
+        int[] a = new int[cs.size()];
+        for (int i = 0; i < cs.size(); i++) a[i] = xAxis ? cs.get(i).x : cs.get(i).y;
+        java.util.Arrays.sort(a);
+        return a[a.length / 2];
+    }
+
+    private static int clampInt(int v, int lo, int hi) {
+        return Math.max(lo, Math.min(hi, v));
+    }
+
     /**
      * 监视目标在监视窗口内连续未出现（丢失视野）：
      * ① 先看已知视野（城缓存里是否已有他的新坐标）→ 有就直接按新坐标推送；
@@ -1704,12 +1829,6 @@ public final class WatchPointEngine {
         String key = "out:" + owner + ":" + marchId;
         if (recentlyAlerted(key)) return;   // 同一条行军的轮询重放：不推送也不再扣配额
         long nowMs = System.currentTimeMillis();
-        if (type == 1L && !scoutQuotaAllow(scoutAlertTimes, owner, nowMs,
-                        SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
-            FileLog.info("[{}] 侦查告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
-                    String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
-            return;
-        }
         if (marchKey != null) alerted.put(marchKey, nowMs);   // 标记：另一通道不再重复推
         City ownerCity = cityByUid.get(owner);
         City target = cityNear(ex, ey);
@@ -1740,21 +1859,32 @@ public final class WatchPointEngine {
                                     long type, String targetNick, long targetAid,
                                     int ex, int ey, long etaSeconds, long troops, String nowTime,
                                     long feintBelow) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("🚨 观察点·敌情\n");
-        sb.append("监视目标出兵：").append(nick).append(allySuffix(ownerAid, aidLabels, nick)).append("\n");
-        sb.append("行为：").append(typeLabel(type)).append("\n");
-        sb.append("目标：(").append(ex).append(",").append(ey).append(")");
-        if (targetNick != null) {
-            sb.append(" ").append(targetNick.isEmpty() ? "?" : targetNick)
-                    .append(allySuffix(targetAid, aidLabels, targetNick));
+        // 2026-11-04 用户口径：🚨 敌情·{行为}；简称放昵称前；目标/坐标未知显示（未知）。
+        StringBuilder sb = new StringBuilder("🚨 敌情·").append(a1Behavior(type)).append('\n');
+        sb.append("发起人：").append(prefixed(ownerAid, aidLabels, nick)).append('\n');
+        boolean hasTarget = targetNick != null && !targetNick.isEmpty();
+        sb.append("目标：").append(hasTarget ? prefixed(targetAid, aidLabels, targetNick) : "（未知）").append('\n');
+        if (ex > 0 && ey > 0) {
+            sb.append("坐标：(").append(ex).append(',').append(ey).append(")\n");
         } else {
-            sb.append(" （目标城未在本次扫描范围）");
+            sb.append("坐标：（未知）\n");
         }
-        sb.append("\nETA：").append(hms(etaSeconds));
-        sb.append(troopsTag(troops, feintBelow));
-        sb.append("\n时间：").append(nowTime);
+        sb.append("时间：").append(nowTime);
         return sb.toString();
+    }
+
+    /** A1 情报行为：1 侦查 / 5 驻防·增援 / 100 发起集结。 */
+    static String a1Behavior(long type) {
+        if (type == 1L) return "侦查";
+        if (type == 5L) return "驻防/增援";
+        if (type == 100L) return "发起集结";
+        return typeLabel(type);
+    }
+
+    /** A2 敌袭行为：2 进攻 / 102 集结出征。 */
+    static String a2Behavior(long type) {
+        if (type == 102L) return "集结出征";
+        return "进攻";
     }
 
     private void alertIncoming(long owner, City ownerCity, long marchId, long type,
@@ -1765,12 +1895,6 @@ public final class WatchPointEngine {
                 : "in:" + owner + ":" + marchId;
         if (recentlyAlerted(key)) return;
         long nowMs = System.currentTimeMillis();
-        if (type == 1L && !scoutQuotaAllow(scoutAlertTimes, owner, nowMs,
-                        SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
-            FileLog.info("[{}] 侦查告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
-                    String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
-            return;
-        }
         if (marchKey != null) alerted.put(marchKey, nowMs);
         City target = cityNear(ex, ey);
         // 2026-11-04：攻击者名优先实时地图昵称
@@ -1944,20 +2068,72 @@ public final class WatchPointEngine {
         trackAttacker(owner, atk);
     }
 
+    /** 资源类行为（2026-11-04）：采集=type4；建设=type8；破坏=攻击联盟旗/总部字段；巨兽/打野返回 null（不推）。 */
+    static String resourceBehavior(Map<?, ?> m, long type) {
+        if (m == null) return null;
+        if (isAllianceBuildingAttack(m)) return "破坏";
+        if (type == 4L) return "采集";
+        if (type == 8L) return "建设";
+        return null;
+    }
+
+    /** 破坏联盟旗/总部（普通/集结）字段。 */
+    static boolean isAllianceBuildingAttack(Map<?, ?> m) {
+        if (m == null) return false;
+        for (String k : new String[]{"atk_alliance_flag", "atk_alliance_hall",
+                "mass_alliance_flag", "mass_alliance_hall"}) {
+            if (m.containsKey(k)) return true;
+        }
+        return false;
+    }
+
+    /** 资源类推送（📍 资源·{采集|建设|破坏}），每人 5 分钟前 3 条。 */
+    private void maybeResourceAlert(long owner, long marchId, String beh,
+                                    int ex, int ey, long endtime, long troops) {
+        String key = "res:" + owner + ":" + marchId;
+        if (recentlyAlerted(key)) return;
+        long now = System.currentTimeMillis();
+        if (!scoutQuotaAllow(resAlertTimes, owner, now, SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
+            FileLog.info("[{}] 资源告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
+                    String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
+            return;
+        }
+        City c = cityByUid.get(owner);
+        String nick = nickOf(c);
+        if (nick == null || nick.isEmpty()) nick = liveNick(owner);
+        if (nick == null || nick.isEmpty()) nick = "未知名玩家";
+        alert(key, resourceAlertText(nick, c == null ? 0L : c.aid, beh, ex, ey,
+                endtime - now / 1000L, troops, nowText(), store.aidLabels));
+    }
+
+    /** 资源类文案（2026-11-04 用户口径）。 */
+    static String resourceAlertText(String nick, long aid, String beh, int ex, int ey,
+                                    long etaSeconds, long troops, String nowTime,
+                                    Map<Long, String> aidLabels) {
+        StringBuilder sb = new StringBuilder("📍 资源·").append(beh).append('\n');
+        sb.append("发起人：").append(prefixed(aid, aidLabels, nick)).append('\n');
+        sb.append("目标点：(").append(ex).append(',').append(ey).append(")\n");
+        sb.append("兵力：").append(troops > 0L ? String.valueOf(troops) : "未知").append('\n');
+        sb.append("ETA：").append(hms(etaSeconds)).append('\n');
+        sb.append("时间：").append(nowTime);
+        return sb.toString();
+    }
+
     /** 采集点被攻击文案（纯函数，便于单测）。 */
     static String gatherAlertText(String atkNick, long atkAid, int sx, int sy, long type,
                                   int ex, int ey, long etaSeconds, long troops,
                                   String victimNick, long victimAid, String nowTime,
                                   Map<Long, String> aidLabels, long feintBelow) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("🚨 观察点·采集点被攻击\n");
-        sb.append("攻击人：").append(atkNick).append(allySuffix(atkAid, aidLabels, atkNick))
-                .append("  坐标 (").append(sx).append(",").append(sy).append(")\n");
-        sb.append("出征信息：").append(typeLabel(type)).append("｜ETA ").append(hms(etaSeconds));
-        sb.append(troopsTag(troops, feintBelow)).append("\n");
-        sb.append("被攻击人：").append(victimNick).append(allySuffix(victimAid, aidLabels, victimNick));
-        sb.append("\n资源点：(").append(ex).append(",").append(ey).append(")");
-        sb.append("\n时间：").append(nowTime);
+        // 2026-11-04 用户口径：🚨 资源·受袭（每人 5 分钟只推前 3 次）。
+        StringBuilder sb = new StringBuilder("🚨 资源·受袭\n");
+        sb.append("攻击人：").append(prefixed(atkAid, aidLabels, atkNick))
+                .append("  坐标 (").append(sx).append(',').append(sy).append(")\n");
+        sb.append("出征信息：").append(typeLabel(type)).append('\n');
+        sb.append("兵力：").append(troops > 0L ? String.valueOf(troops) : "未知").append('\n');
+        sb.append("ETA：").append(hms(etaSeconds)).append('\n');
+        sb.append("被攻击人：").append(prefixed(victimAid, aidLabels, victimNick)).append('\n');
+        sb.append("资源点：(").append(ex).append(',').append(ey).append(")\n");
+        sb.append("时间：").append(nowTime);
         return sb.toString();
     }
 
@@ -1976,22 +2152,28 @@ public final class WatchPointEngine {
                                     long type, String targetNick, long targetAid,
                                     int ex, int ey, long etaSeconds, long troops, String nowTime,
                                     long feintBelow) {
-        StringBuilder sb = new StringBuilder();
-        sb.append("🚨 观察点·来袭\n");
-        sb.append("攻击者：").append(attackerNick).append(allySuffix(attackerAid, aidLabels, attackerNick));
-        sb.append("\n行为：").append(typeLabel(type)).append("\n");
+        // 2026-11-04 用户口径：🚨 敌袭·{行为}；级别/攻击者/兵力/目标/ETA/时间。
+        StringBuilder sb = new StringBuilder("🚨 敌袭·").append(a2Behavior(type)).append('\n');
+        sb.append("级别：").append(levelTag(troops, feintBelow)).append('\n');
+        sb.append("攻击者：").append(prefixed(attackerAid, aidLabels, attackerNick)).append('\n');
+        sb.append("兵力：").append(troops > 0L ? String.valueOf(troops) : "未知").append('\n');
         sb.append("目标：");
-        if (targetNick != null) {
-            sb.append(targetNick.isEmpty() ? "?" : targetNick)
-                    .append(allySuffix(targetAid, aidLabels, targetNick)).append(" ");
+        if (targetNick != null && !targetNick.isEmpty()) {
+            sb.append(prefixed(targetAid, aidLabels, targetNick));
         } else {
-            sb.append("（目标城未在扫描范围）");
+            sb.append("（未知）");
         }
-        sb.append("(").append(ex).append(",").append(ey).append(")");
-        sb.append("\nETA：").append(hms(etaSeconds));
-        sb.append(troopsTag(troops, feintBelow));
-        sb.append("\n时间：").append(nowTime);
+        sb.append('(').append(ex).append(',').append(ey).append(")\n");
+        sb.append("ETA：").append(hms(etaSeconds)).append('\n');
+        sb.append("时间：").append(nowTime);
         return sb.toString();
+    }
+
+    /** 级别：⚪ 佯攻 / 🔴 威胁进攻（兵力未知=未知）。 */
+    static String levelTag(long troops, long feintBelow) {
+        if (troops <= 0L) return "未知";
+        if (feintBelow <= 0L) return "🔴 威胁进攻";
+        return troops < feintBelow ? "⚪ 佯攻" : "🔴 威胁进攻";
     }
 
     /** 2026-11-02：整图扫描完成后，若玩家目录过期则后台重建（uid/fid/简称/aid 互查）。 */
@@ -2164,12 +2346,10 @@ public final class WatchPointEngine {
             if (n == 0) {
                 int streak = rectEmptyStreak.merge(r.name, 1, Integer::sum);
                 if (streak >= 2) {
-                    alert("rect-empty:" + r.name + ":" + (scan.startedAt / 3_600_000L),
-                            "⚠️ 观察点·保护矩形为空\n" + r.name + " " + r.display()
-                                    + " 内没有友盟城（连续 " + streak + " 次完整扫描；聚集地可能已迁移，建议重扫）"
-                                    + "\n时间：" + nowText());
+                    // 2026-11-04 用户口径：保护矩形为空时自动解析该联盟新聚集地并推送「保护更新」。
+                    relocateProtectRect(r, streak);
                 } else {
-                    FileLog.info("[{}] 保护矩形 {} 首次完整扫描为空（连续 {} 次），暂不告警",
+                    FileLog.info("[{}] 保护矩形 {} 首次完整扫描为空（连续 {} 次），暂不处理",
                             LOG, r.name, String.valueOf(streak));
                 }
             } else {

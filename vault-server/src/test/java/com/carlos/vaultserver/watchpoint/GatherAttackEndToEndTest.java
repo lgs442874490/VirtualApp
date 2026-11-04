@@ -99,7 +99,7 @@ public class GatherAttackEndToEndTest {
 
         assertEquals("应当推送一条采集点被攻击", 1, engine.alertCountForTest());
         String text = engine.lastAlertTextForTest();
-        assertTrue(text, text.contains("采集点被攻击"));
+        assertTrue(text, text.contains("🚨 资源·受袭"));
         assertTrue("攻击人坐标: " + text, text.contains("(278,607)"));
         assertTrue("资源点坐标: " + text, text.contains("(512,688)"));
         assertTrue("出征信息: " + text, text.contains("出征信息"));

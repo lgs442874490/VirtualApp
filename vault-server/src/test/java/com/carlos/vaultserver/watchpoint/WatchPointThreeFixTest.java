@@ -267,25 +267,37 @@ public class WatchPointThreeFixTest {
     }
 
     @Test
-    public void completeEmptyRect_alertsOnlyOnSecondCompleteScan() {
+    public void emptyRectRelocatesToAllianceNewCluster() {
         WatchPointStore st = store();
+        st.aidLabels.put(89700728L, "THY");
         st.protectRects.add(new WatchPointStore.Rect("THY-1", 0, 0, 100, 100));
         WatchPointEngine engine = engine(st);
         FakeEngine fe = new FakeEngine(FPID, KID, 1L);
 
+        // 第一次完整空扫：矩形内无友盟城；联盟城群已在 (500,500) 附近 → 暂不迁移
         List<Integer> s1 = primeScan(engine, fe);
-        feedEmpty(engine, s1, 460);
+        for (int i = 0; i < 5; i++) {
+            feedCity(engine, s1.get(i), 9100L + i, 89700728L, 500 + i, 500 + i, "THY" + i);
+        }
+        feedEmpty(engine, s1.subList(5, s1.size()), 460);
         engine.finishScanForTest();
-        assertEquals("第一次完整空扫不告警", 0, engine.alertCountForTest());
+        assertEquals("第一次空扫不迁移", 0, engine.alertCountForTest());
 
+        // 第二次完整空扫 → 自动解析新聚集地、迁移矩形并推送「保护更新」
         List<Integer> s2 = primeScan(engine, fe);
-        feedEmpty(engine, s2, 460);
+        for (int i = 0; i < 5; i++) {
+            feedCity(engine, s2.get(i), 9100L + i, 89700728L, 500 + i, 500 + i, "THY" + i);
+        }
+        feedEmpty(engine, s2.subList(5, s2.size()), 460);
         engine.finishScanForTest();
-        assertEquals("连续第二次完整空扫才告警", 1, engine.alertCountForTest());
+
         String text = engine.lastAlertTextForTest();
-        assertTrue("文案含矩形: " + text, text.contains("保护矩形为空") && text.contains("THY-1"));
-        assertFalse("推送里不再带完整度等技术信息: " + text, text.contains("完整度"));
-        assertTrue("文案含连续次数: " + text, text.contains("连续 2 次"));
+        assertTrue("保护更新: " + text, text.contains("📍 观察点·保护更新"));
+        assertTrue("联盟: " + text, text.contains("联盟：[THY]"));
+        assertTrue("旧/新坐标: " + text, text.contains("(50,50)") && text.contains("(502,502)"));
+        WatchPointStore.Rect moved = st.protectRects.get(0);
+        assertEquals("矩形中心已迁移", 502, (moved.x1 + moved.x2) / 2);
+        assertEquals(502, (moved.y1 + moved.y2) / 2);
     }
 
     @Test

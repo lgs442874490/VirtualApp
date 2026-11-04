@@ -333,6 +333,8 @@ public final class WarNotify {
         }
         int[] xy = endpointOf(m);
         int[] sp = startPointOf(m);
+        // 2026-11-04：打野/巨兽/采集等 PvE 行军不推（资源类由观察点单独推）。
+        if (isPveMarch(m)) return MarchVerdict.no("type", marchId, owner, type, state);
         // 2026-11-02 误报修复：只推敌情行军（侦查/进攻/集结）；采集/驻防/建设援助/狩猎一律不推。
         // 典型误报：监视目标派队列去建联盟总部，返程被当成「出征」推送。
         if (state >= 3L) return MarchVerdict.no("state", marchId, owner, type, state);
@@ -415,6 +417,7 @@ public final class WarNotify {
             t.startServerSec = startSec;
             t.behavior = behavior;
             t.troops = troops;
+            t.troopsCount = troopsTotalOf(m);
             t.marchType = type;
             if (sp != null) {
                 t.sx = sp[0];
@@ -549,10 +552,7 @@ public final class WarNotify {
         FileLog.info("战争结算 {} uid={} {} 行军{} 耗时{}s 破城{}（事件 {}）",
                 fpid, t.targetUid, t.action, t.marchId, duration, s.breach,
                 stored.optString("eventId"));
-        if (cfg.wecomEnabled && !cfg.webhookUrl.isEmpty() && !inQuietHours(cfg, now)) {
-            if (asyncWecom) wecomExec.execute(() -> sendWecom(cfg, t, stored));
-            else sendWecom(cfg, t, stored);
-        }
+        // 2026-11-04 用户口径：A2 与结算共用通道、只推「发起」一条；结算只入库供 App 看，不再推企微。
     }
 
     // ---------------------------------------------------------------- 事件发射
@@ -600,6 +600,7 @@ public final class WarNotify {
         e.put("behavior", t.behavior);
         e.put("marchType", t.marchType);
         e.put("troops", t.troops);
+        e.put("troopsTotal", t.troopsCount);
         if (t.hasXY) {
             e.put("endpoint", new JSONObject().put("x", t.ex).put("y", t.ey));
         }
@@ -812,7 +813,20 @@ public final class WarNotify {
      * 打野(302)、建设援助等一律不推。侦查(1)由观察点负责，这里也返回 false。
      */
     static boolean isPvpMarch(long type) {
-        return type == 2L || type == 100L || type == 102L;
+        // 2026-11-04 用户口径：A2 敌袭只报「进攻(2)/集结出征(102)」；发起集结(100)归 A1 情报。
+        return type == 2L || type == 102L;
+    }
+
+    /** PvE 行军（打野/巨兽等）——2026-11-04 用户口径：不推送。 */
+    static boolean isPveMarch(Map<String, Object> m) {
+        if (m == null) return true;
+        for (String k : new String[]{"mass_boss", "atk_monster", "mass_icefield_hunter_boss",
+                "atk_monster_auto", "transaction_slg", "collect", "collect_resource",
+                "recon_resource", "mass_alliance_trap", "atk_world_boss", "mass_world_boss",
+                "pet_catch", "truck_escort", "alliance_collect_resource", "build_trap"}) {
+            if (m.containsKey(k)) return true;
+        }
+        return false;
     }
 
     /** 是否为「加入集结」帧：带 mass_slave（随从）或 type=99。 */
@@ -904,6 +918,29 @@ public final class WarNotify {
         return sb.toString();
     }
 
+    /** 兵力总数（数字；A2 文案用）。 */
+    static long troopsTotalOf(Map<String, Object> m) {
+        Map<String, Object> squad = Exec.mapOf(m.get("squad_list"));
+        Object soldier = squad == null ? null : squad.get("soldier");
+        long total = 0;
+        if (soldier instanceof Map) {
+            for (Map.Entry<?, ?> en : ((Map<?, ?>) soldier).entrySet()) {
+                Object v = en.getValue();
+                if (v instanceof Number) total += Math.max(0L, ((Number) v).longValue());
+                else {
+                    Map<String, Object> vm = Exec.mapOf(v);
+                    if (vm != null) total += Math.max(0L, Exec.longOf(vm.get("count")));
+                }
+            }
+        } else if (soldier instanceof List) {
+            for (Object o : (List<?>) soldier) {
+                Map<String, Object> vm = Exec.mapOf(o);
+                if (vm != null) total += Math.max(0L, Exec.longOf(vm.get("count")));
+            }
+        }
+        return total;
+    }
+
     /** 士兵 id → 显示名：1盾2矛3弓 + T等级（id%10000/100）；未知兵种=兵{id/10000}。 */
     static String soldierLabel(long id) {
         long kind = id / 10000L;
@@ -951,57 +988,60 @@ public final class WarNotify {
      * 结算事件（phase=settle）以「🏁 进攻结算」行替代到达倒计时。
      */
     String wecomText(String fpid, JSONObject event) {
-        String behavior = event.optString("behavior", "");
-        if (behavior.isEmpty()) behavior = event.optString("action", "");
-        StringBuilder sb = new StringBuilder("⚔️ 战争警报·").append(behavior.isEmpty() ? "动静" : behavior);
-        // 2026-11-02 用户要求：通知里不带 uid/aid 等编号，只留昵称与坐标
-        String attackerName = event.optString("attackerName", "");
-        sb.append("\n发起人：").append(attackerName.isEmpty() ? "未知名玩家" : attackerName);
-        sb.append("\n发起人坐标：");
-        Object sp = event.optJSONObject("startPoint");
-        if (sp instanceof JSONObject) {
-            sb.append('(').append(((JSONObject) sp).optInt("x"))
-                    .append(',').append(((JSONObject) sp).optInt("y")).append(')');
-        } else {
-            sb.append("未知");
-        }
-        sb.append("\n目标：");
+        // 2026-11-04 用户口径：A2 敌袭（只推发起，不推结算）。
+        long marchType = event.optLong("marchType", 0L);
+        String behavior = marchType == 102L ? "集结出征" : "进攻";
+        long total = event.optLong("troopsTotal", 0L);
+        StringBuilder sb = new StringBuilder("🚨 敌袭·").append(behavior).append('\n');
+        sb.append("级别：").append(total <= 0L ? "未知"
+                : (total < 1000L ? "⚪ 佯攻" : "🔴 威胁进攻")).append('\n');
+        sb.append("攻击者：").append(attackerLabel(event)).append('\n');
+        sb.append("兵力：").append(total > 0L ? String.valueOf(total) : "未知").append('\n');
+        sb.append("目标：");
         Object ep = event.optJSONObject("endpoint");
         if (ep instanceof JSONObject) {
             int tx = ((JSONObject) ep).optInt("x");
             int ty = ((JSONObject) ep).optInt("y");
-            // 2026-11-02：目标行带上被攻击人的昵称 + 联盟简称（地图昵称通常自带 [SYD] 前缀）
             String label = targetLabelAt(tx, ty);
-            if (!label.isEmpty()) sb.append(label);
+            sb.append(label.isEmpty() ? "（未知）" : label);
             sb.append('(').append(tx).append(',').append(ty).append(')');
         } else {
-            sb.append("未知");
+            sb.append("（未知）");
         }
-        String troops = event.optString("troops", "");
-        sb.append("\n兵力：").append(troops.isEmpty() ? TROOPS_UNKNOWN : troops);
-        boolean settle = PHASE_SETTLE.equals(event.optString("phase", ""));
-        long endSec = event.optLong("endtime", 0);
-        if (!settle && endSec > 0) {
-            long nowS = System.currentTimeMillis() / 1000L;
-            sb.append("\n到达：").append(Beijing.fmt("HH:mm:ss").format(new java.util.Date(endSec * 1000L)));
-            if (endSec > nowS) {
-                long eta = endSec - nowS;
-                sb.append("（约 ");
-                if (eta >= 60) sb.append(eta / 60).append(" 分 ");
-                sb.append(eta % 60).append(" 秒后）");
-            }
-        }
-        if (settle) {
-            sb.append("\n🏁 进攻结算：").append(displayOutcome(event.optString("outcome", "")))
-                    .append("，从发起到完成耗时").append(fmtDuration(event.optLong("durationSeconds", 0)));
-            String breach = event.optString("breach", "");
-            if (!breach.isEmpty()) {
-                sb.append("；破城：").append(breach);
-                String codes = event.optString("battleCodes", "");
-                if (!codes.isEmpty()) sb.append("（战报 ").append(codes).append('）');
-            }
-        }
+        long endSec = event.optLong("endtime", 0L);
+        long nowS = System.currentTimeMillis() / 1000L;
+        sb.append("\nETA：").append(hmsShort(Math.max(0L, endSec - nowS))).append('\n');
+        sb.append("时间：").append(Beijing.fmt("HH:mm:ss").format(new java.util.Date()));
         return sb.toString();
+    }
+
+    /** 攻击者显示名：联盟简称放前面（[SYD]昵称）。 */
+    private static String attackerLabel(JSONObject event) {
+        String name = event.optString("attackerName", "");
+        if (name.isEmpty()) name = "未知名玩家";
+        if (name.startsWith("[")) return name;
+        String abbr = "";
+        Object sp = event.optJSONObject("startPoint");
+        if (sp instanceof JSONObject) {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo c =
+                    com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(
+                            ((JSONObject) sp).optInt("x"), ((JSONObject) sp).optInt("y"));
+            if (c != null) {
+                com.carlos.vaultserver.watchpoint.PlayerDirectory dir =
+                        com.carlos.vaultserver.watchpoint.PlayerDirectory.shared();
+                if (dir != null && c.aid > 0L) abbr = dir.abbrOfAid(c.aid);
+            }
+        }
+        return abbr == null || abbr.isEmpty() ? name : "[" + abbr + "]" + name;
+    }
+
+    /** ETA 文案：N分M秒 / H时M分。 */
+    static String hmsShort(long seconds) {
+        long s = Math.max(0L, seconds);
+        long h = s / 3600L;
+        long m = (s % 3600L) / 60L;
+        long sec = s % 60L;
+        return h > 0 ? h + "时" + m + "分" : m + "分" + sec + "秒";
     }
 
     /** outcome 事件值 → 文案：撤回→已撤回、已到达→已到达（余原样）。 */
@@ -1138,6 +1178,8 @@ public final class WarNotify {
         String behavior = BEH_MARCH;
         /** 兵力汇总文案（未知=无 squad 数据）。 */
         String troops = TROOPS_UNKNOWN;
+        /** 兵力总数（A2 文案用）。 */
+        volatile long troopsCount;
         /** 侦查推送超限被静默：初始事件未推送，其撤回/到达结算也不再推送。 */
         volatile boolean muted;
         /** 发起人显示名（昵称解析成功后异步升级；初值=监视备注/名称/uid）。 */

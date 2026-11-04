@@ -180,36 +180,38 @@ public class WatchPointAlertFilterTest {
     @Test
     public void incomingAlertText_marksUnknownAlliance() {
         String text = WatchPointEngine.incomingAlertText(
-                "酒当歌", 0L, labels(), 99L,
+                "酒当歌", 0L, labels(), 2L,
                 "莲花emira", FRIEND_AID, 493, 580, 66L, 85442L, "12:18:53");
-        assertTrue("攻击者联盟未知必须标注，实际=" + text, text.contains("攻击者：酒当歌（联盟未知）"));
-        assertTrue("友盟目标带 [abbr]", text.contains("莲花emira [yYz]"));
-        assertTrue(text.contains("集结随从"));
-        assertTrue(text.contains("(493,580)"));
-        assertTrue(text.contains("ETA：1分6秒"));
-        assertTrue(text.contains("兵力约 85442"));
+        assertTrue("标题: " + text, text.contains("🚨 敌袭·进攻"));
+        assertTrue("级别: " + text, text.contains("级别：🔴 威胁进攻"));
+        assertTrue("攻击者: " + text, text.contains("攻击者：酒当歌"));
+        assertTrue("兵力: " + text, text.contains("兵力：85442"));
+        assertTrue("友盟目标简称在昵称前: " + text, text.contains("目标：[yYz]莲花emira(493,580)"));
+        assertTrue("ETA: " + text, text.contains("ETA：1分6秒"));
 
         String known = WatchPointEngine.incomingAlertText(
-                "技术分析", OTHER_AID, labels(), 99L,
+                "技术分析", OTHER_AID, labels(), 102L,
                 "莲花emira", FRIEND_AID, 528, 460, 60L, 0L, "21:34:00");
-        assertTrue("已知联盟显示 [标签]，不出现联盟未知", known.contains("攻击者：技术分析 [Hey]"));
+        assertTrue("已知联盟简称在昵称前: " + known, known.contains("攻击者：[Hey]技术分析"));
+        assertTrue("集结出征行为: " + known, known.contains("🚨 敌袭·集结出征"));
         assertFalse(known.contains("（联盟未知）"));
     }
 
     @Test
     public void outgoingAlertText_marksUnknownAllianceOnAttackerAndTarget() {
         String text = WatchPointEngine.outgoingAlertText(
-                "酒当歌", 0L, labels(), 2L, null, 0L,
+                "酒当歌", 0L, labels(), 1L, null, 0L,
                 500, 600, 120L, 1000L, "12:20:00");
-        assertTrue("敌情攻击者联盟未知标注，实际=" + text,
-                text.contains("监视目标出兵：酒当歌（联盟未知）"));
-        assertTrue("目标城未知时不带联盟标注（仅坐标）", text.contains("目标：(500,600)"));
+        assertTrue("标题: " + text, text.contains("🚨 敌情·侦查"));
+        assertTrue("发起人: " + text, text.contains("发起人：酒当歌"));
+        assertTrue("目标未知: " + text, text.contains("目标：（未知）"));
+        assertTrue("坐标: " + text, text.contains("坐标：(500,600)"));
 
         String targetUnknown = WatchPointEngine.outgoingAlertText(
-                "大陆元帥車宝山", 0L, labels(), 2L, "某城", 0L,
+                "大陆元帥車宝山", 0L, labels(), 100L, "某城", 0L,
                 500, 600, 120L, 0L, "12:20:00");
-        assertTrue("敌情目标联盟未知标注，实际=" + targetUnknown,
-                targetUnknown.contains("某城（联盟未知）"));
+        assertTrue("发起集结行为: " + targetUnknown, targetUnknown.contains("🚨 敌情·发起集结"));
+        assertTrue("目标: " + targetUnknown, targetUnknown.contains("目标：某城"));
     }
 
     // ==================== ⑥ 配置开关默认值（watchpoint.json） ====================

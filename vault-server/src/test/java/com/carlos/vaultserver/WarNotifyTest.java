@@ -315,7 +315,7 @@ public class WarNotifyTest {
     @Test
     public void isPvpMarch_onlyAttackAndRallyLeader() {
         assertTrue(WarNotify.isPvpMarch(2L));
-        assertTrue("发起集结", WarNotify.isPvpMarch(100L));
+        assertFalse("发起集结归 A1 情报（观察点）", WarNotify.isPvpMarch(100L));
         assertTrue("集结出征", WarNotify.isPvpMarch(102L));
         assertFalse("侦查走观察点", WarNotify.isPvpMarch(1L));
         assertFalse("加入集结不推", WarNotify.isPvpMarch(99L));
@@ -832,7 +832,7 @@ public class WarNotifyTest {
         installCity(9002L, 2002L, 5, 6);
         try {
             war.onPush(FPID, 888L, "notify_player_march_add",
-                    playerMarchAdd(212, ENEMY_UID, 100, nowS, nowS + 100, 5, 6));
+                    playerMarchAdd(212, ENEMY_UID, 102, nowS, nowS + 100, 5, 6));
         } finally {
             com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
         }
@@ -857,7 +857,7 @@ public class WarNotifyTest {
         installCity(9002L, 2002L, 5, 6);
         try {
             war.onPush(FPID, 888L, "notify_player_march_add",
-                    playerMarchAdd(222, ENEMY_UID, 100, nowS, nowS + 100, 5, 6));
+                    playerMarchAdd(222, ENEMY_UID, 102, nowS, nowS + 100, 5, 6));
         } finally {
             com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
         }
@@ -1045,15 +1045,15 @@ public class WarNotifyTest {
                 fullMarch(301, ENEMY_UID, 2, nowS - 60, nowS + 300, 3, 4, 5, 6, squad)));
         assertEquals(1, notifier.sent.size());
         String text = notifier.sent.get(0);
-        assertTrue(text.contains("⚔️ 战争警报·进攻城堡"));
-        assertTrue(text.contains("发起人：宿敌"));
+        assertTrue("标题: " + text, text.contains("🚨 敌袭·进攻"));
+        assertTrue("级别: " + text, text.contains("级别：🔴 威胁进攻"));
+        assertTrue("攻击者: " + text, text.contains("攻击者：宿敌"));
         assertFalse("通知里不带 uid/aid 编号: " + text,
                 text.contains("uid") || text.contains("aid"));
-        assertTrue(text.contains("发起人坐标：(5,6)"));
-        assertTrue(text.contains("目标：(3,4)"));
-        assertTrue(text.contains("兵力：盾T10×1200 矛T9×800（合计2000）"));
-        assertTrue(text.contains("到达："));                     // HH:mm:ss（约 N 分 M 秒后）
-        assertTrue(text.contains("分 ") && text.contains(" 秒后）"));
+        assertTrue("兵力总数: " + text, text.contains("兵力：2000"));
+        assertTrue("目标坐标: " + text, text.contains("(3,4)"));
+        assertTrue("ETA: " + text, text.contains("ETA："));
+        assertTrue("时间: " + text, text.contains("时间："));
         assertFalse("不再附来源协议名（技术噪声）: " + text, text.contains("来源："));
     }
 
@@ -1090,14 +1090,12 @@ public class WarNotifyTest {
                 fullMarch(311, ENEMY_UID, 2, nowS - 300, nowS - 10, 3, 4, 5, 6, null)));
         war.onPush(FPID, 888L, "notify_new_mail_syn", mailContent(30, 6));
         war.onPush(FPID, 888L, "notify_player_march_del", delContent(311));
-        assertEquals(2, notifier.sent.size());
+        // 2026-11-04：结算不再推企微（只推发起一条），但结算事件仍入库
+        assertEquals("只推发起一条", 1, notifier.sent.size());
         String init = notifier.sent.get(0);
-        String settle = notifier.sent.get(1);
-        assertFalse(init.contains("🏁"));                       // 初始文案无结算行
-        assertTrue(settle.contains("🏁 进攻结算：已到达"));
-        assertTrue(settle.contains("从发起到完成耗时"));
-        assertTrue(settle.contains("破城：" + WarNotify.BREACH_YES + "（战报 30/6）"));
-        assertFalse(settle.contains("到达："));                  // 结算文案无到达倒计时
+        assertTrue(init.contains("🚨 敌袭·进攻"));
+        assertFalse("结算内容不进推送", init.contains("🏁 进攻结算"));
+        assertEquals("结算事件仍入库供 App 看", 2, events.size());
     }
 
     @Test
