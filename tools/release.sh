@@ -69,7 +69,8 @@ PATCHED_AAR="tools/engine/lib-release.aar.patched"
 
 restore_all() {
   git checkout -- "$CFG" 2>/dev/null || true
-  # 仓库 AAR 是 committed 原版；构建期临时换入补丁版，退出前必须按字节还原
+  # 仓库 AAR 已 committed 为补丁版时这是空操作；若本次门禁 2 临时换入了补丁版，
+  # 退出前必须按字节还原成 committed 内容
   git checkout -- "$AAR" 2>/dev/null || true
 }
 trap restore_all EXIT
@@ -82,9 +83,13 @@ if ! ./gradlew :app:testDebugUnitTest --offline --console=plain; then
 fi
 
 # ---- 门禁 2：补丁引擎 AAR 就位并校验哈希 ----
-# 背景：仓库 AAR 内 libvbox.so 是原版（a0f06e48…），Android 14+ renameat2 丢 flags
+# 背景：仓库原版 AAR 里 libvbox.so 是原版（a0f06e48…），Android 14+ renameat2 丢 flags
 # ⇒ EINVAL ⇒ 容器内游戏下载/更新失败。修复版 so=0dd16cb7…，发版必须强制换入。
+# 同一份补丁 AAR 的 classes.jar 还带两处 autofill 字节码补丁（Android 13+ 不再跳过
+# AutoFillManagerStub 注册，见 2026-11-04 ANR 事故），故 APK 内必须是补丁 AAR。
+# 幂等：仓库 AAR 已经是补丁版（sha256 ccc44319…）时只校验哈希、不重复换入。
 echo "[release] 门禁 2/3：补丁引擎 AAR…"
+EXPECT_AAR_SHA256="ccc4431945e4ea5cc7da4d3400380fa148e6e499af9f7935970962829e825b10"
 if [ ! -f "$PATCHED_AAR" ]; then
   echo "[release] 缺少 $PATCHED_AAR（tools/engine/），发版中止"
   exit 1
@@ -93,12 +98,18 @@ if ! (cd tools/engine && shasum -a 256 -c SHA256SUMS >/dev/null 2>&1); then
   echo "[release] tools/engine/SHA256SUMS 校验失败（AAR 可能被改动），发版中止"
   exit 1
 fi
-cp "$PATCHED_AAR" "$AAR"
-# flatDir AAR 会被 Gradle transforms-3 缓存吞掉：停 daemon + 删缓存，确保 APK 用的是补丁 so
-./gradlew --stop >/dev/null 2>&1 || true
-# 注意：macOS 是 BSD find，不支持 -maxdepth；这里不限制深度，直接删所有 lib-release 缓存目录
-find "$HOME/.gradle/caches/transforms-3" -type d -name "*lib-release*" \
-  -exec rm -rf {} + 2>/dev/null || true
+CUR_AAR_SHA="$(shasum -a 256 "$AAR" | awk '{print $1}')"
+if [ "$CUR_AAR_SHA" = "$EXPECT_AAR_SHA256" ]; then
+  echo "[release] 仓库 AAR 已是补丁版（${EXPECT_AAR_SHA256:0:16}…），仅校验哈希，不换入"
+else
+  echo "[release] 仓库 AAR sha256=${CUR_AAR_SHA:0:16}…（非补丁版），换入 $PATCHED_AAR"
+  cp "$PATCHED_AAR" "$AAR"
+  # flatDir AAR 会被 Gradle transforms-3 缓存吞掉：停 daemon + 删缓存，确保 APK 用的是补丁 so
+  ./gradlew --stop >/dev/null 2>&1 || true
+  # 注意：macOS 是 BSD find，不支持 -maxdepth；这里不限制深度，直接删所有 lib-release 缓存目录
+  find "$HOME/.gradle/caches/transforms-3" -type d -name "*lib-release*" \
+    -exec rm -rf {} + 2>/dev/null || true
+fi
 
 # ---- 构建（clean 保证 merged native libs 不残留旧 so） ----
 echo "[release] 构建 release…"

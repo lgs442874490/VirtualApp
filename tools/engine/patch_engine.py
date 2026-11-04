@@ -16,7 +16,12 @@ classes 只有 3836 个（少了上述微信修复类），不能作为 4.2.10 �
       committed 原版里的 libvbox.so 是 a0f06e48…，不是补丁 so）；
   2. 对 `classes.jar` 里两个 `.class` 打字节码补丁（见下）。
 
-其余条目原样保留（解压后逐字节一致），classes 数保持 3854（=基座）。
+其余条目原样保留（解压后逐字节一致），classes 数保持与基座一致。
+
+**幂等**：基座 `app/sdk/lib-release.aar` 允许已经是补丁版（本脚本产物，sha256
+ccc44319…，即仓库已把补丁 AAR 直接 committed 的情形）。此时两处原模式已不存在，
+脚本通过 `patched` 特征字节识别为「基座已是补丁版」，`--check-only` 与重建都正常
+通过并明确打印该状态，不会因「模式命中 0 次」报错。
 
 两处字节码补丁
 --------------
@@ -87,13 +92,18 @@ REQUIRED_CLASSES = [
     "com/lody/virtual/client/hook/proxies/am/WxBindLog.class",
 ]
 
-# 两处字节码补丁：entry / 定位模式 / 替换字节 / 打完后应出现的字节（相对模式起点）
+# 两处字节码补丁：entry / 定位模式 / 替换字节 / 打完后的特征字节 / 期望字节（相对模式起点）
+#
+# "patched" 字段用于**幂等识别**：基座 AAR 被换成本脚本产物（即 app/sdk/lib-release.aar
+# 已是补丁版）时，原始模式 "find" 已经不存在，必须靠 "patched" 认出“已经打过了”，
+# 而不是报“模式命中 0 次”错误。
 PATCHES = [
     {
         "label": "InvocationStubManager: isTiramisu() 恒 false（解除 Android 13+ 注册 guard）",
         "entry": "com/lody/virtual/client/core/InvocationStubManager.class",
         "find": bytes.fromhex("b801299a"),
         "replacement": bytes.fromhex("0300009a"),
+        "patched": bytes.fromhex("0300009a"),
         "expect": [
             (0, bytes.fromhex("030000")),  # iconst_0; nop; nop
             (3, bytes.fromhex("9a")),      # ifne 保留，但栈上为 0 -> 不跳转
@@ -106,12 +116,18 @@ PATCHES = [
         # goto +211：goto 指令在 code offset 4，目标 code offset 215
         "replacement": bytes.fromhex("a700d3")
         + bytes.fromhex("b2003703bd0039b6003f4c")[3:],
+        "patched": bytes.fromhex("a700d3")
+        + bytes.fromhex("b2003703bd0039b6003f4c")[3:],
         "expect": [
             (0, bytes.fromhex("a700d3")),       # goto
             (215 - 4, bytes.fromhex("2a")),     # 目标 215 = aload_0（addMethodProxy 段入口）
         ],
     },
 ]
+
+# 幂等状态
+STATE_UNPATCHED = "unpatched"
+STATE_PATCHED = "patched"
 
 
 # ---------------------------------------------------------------- 通用小工具
@@ -166,15 +182,41 @@ def find_all(haystack: bytes, needle: bytes):
 # ---------------------------------------------------------------- 字节码补丁
 
 
+def detect_state(class_bytes: bytes, patch: dict):
+    """判断一个 .class 是「未打补丁」还是「已打补丁」；返回 (state, 命中偏移)。
+
+    幂等关键：基座 AAR 被换成补丁版后，`find` 模式已不存在，但 `patched` 特征存在。
+    """
+    find_positions = find_all(class_bytes, patch["find"])
+    patched_positions = find_all(class_bytes, patch["patched"])
+    if len(find_positions) == 1 and not patched_positions:
+        return STATE_UNPATCHED, find_positions[0]
+    if len(patched_positions) == 1 and not find_positions:
+        return STATE_PATCHED, patched_positions[0]
+    raise RuntimeError(
+        f"{patch['entry']}: 补丁状态无法判定 —— 原模式 {patch['find'].hex()} 命中 "
+        f"{len(find_positions)} 次、补丁特征 {patch['patched'].hex()} 命中 "
+        f"{len(patched_positions)} 次（各期望恰好 1 次）。"
+        f"基座 AAR 既不是 committed 原版，也不是本脚本的产物。"
+    )
+
+
 def apply_patch(class_bytes: bytes, patch: dict):
-    """按模式定位并修改一个 .class；返回 (新字节, 命中偏移)。"""
-    positions = find_all(class_bytes, patch["find"])
-    if len(positions) != 1:
-        raise RuntimeError(
-            f"{patch['entry']}: 模式 {patch['find'].hex()} 命中 {len(positions)} 次（期望 1 次）。"
-            f"基座 AAR 可能不是 committed 原版，或已被打过补丁。"
-        )
-    pos = positions[0]
+    """按模式定位并修改一个 .class；返回 (新字节, 命中偏移)。
+
+    已打过补丁时原样返回（幂等），不报错。
+    """
+    state, pos = detect_state(class_bytes, patch)
+    if state == STATE_PATCHED:
+        for rel, expected in patch["expect"]:
+            actual = bytes(class_bytes[pos + rel : pos + rel + len(expected)])
+            if actual != expected:
+                raise RuntimeError(
+                    f"{patch['entry']}: 已标记为补丁版但偏移 {pos}+{rel} "
+                    f"期望 {expected.hex()} 实际 {actual.hex()}"
+                )
+        print(f"  [skip] {patch['entry']} 已是补丁版（幂等，未改动）")
+        return class_bytes, pos
     out = bytearray(class_bytes)
     out[pos : pos + len(patch["replacement"])] = patch["replacement"]
     for rel, expected in patch["expect"]:
@@ -189,8 +231,24 @@ def apply_patch(class_bytes: bytes, patch: dict):
     return bytes(out), pos
 
 
+def jar_patch_states(classes_jar_bytes: bytes):
+    """返回 {entry: STATE_*}，用于判断基座 classes.jar 是否已经是补丁版。"""
+    states = {}
+    with zipfile.ZipFile(io.BytesIO(classes_jar_bytes)) as zf:
+        names = set(zf.namelist())
+        for patch in PATCHES:
+            if patch["entry"] not in names:
+                raise RuntimeError(f"classes.jar 缺少目标类：{patch['entry']}")
+            state, _ = detect_state(zf.read(patch["entry"]), patch)
+            states[patch["entry"]] = state
+    return states
+
+
 def patch_classes_jar(classes_jar_bytes: bytes):
-    """在 classes.jar 内按模式打两处补丁；其余条目原样重打包。"""
+    """在 classes.jar 内按模式打两处补丁；其余条目原样重打包。
+
+    幂等：基座已是补丁版时原样返回（字节层面完全一致）。
+    """
     patches_by_entry = {p["entry"]: p for p in PATCHES}
     with zipfile.ZipFile(io.BytesIO(classes_jar_bytes)) as zin:
         infos = zin.infolist()
@@ -327,11 +385,15 @@ def verify_aar(base_bytes: bytes, out_bytes: bytes, expect_classes):
                     unexpected.append(name)
             assert not unexpected, f"非补丁类被改动：{unexpected[:5]}"
             for name, patch in patch_entries.items():
-                orig, patched, pos = None, o_map[name], None
-                # 用原字节重新打一遍补丁，确认产物与该结果完全一致
-                orig = b_map[name]
-                replayed, pos = apply_patch(orig, patch)
-                assert patched == replayed, f"{name} 补丁结果与重放不一致"
+                patched = o_map[name]
+                # 幂等：基座本身已是补丁版时，产物应与基座逐字节一致；
+                # 否则用原字节重新打一遍补丁，确认产物与该结果完全一致。
+                state, _ = detect_state(b_map[name], patch)
+                if state == STATE_PATCHED:
+                    assert patched == b_map[name], f"{name} 基座已是补丁版但产物被改动"
+                else:
+                    replayed, _ = apply_patch(b_map[name], patch)
+                    assert patched == replayed, f"{name} 补丁结果与重放不一致"
             print(f"  [ok] classes.jar 仅 {len(patch_entries)} 个补丁类不同，内容与补丁重放一致")
 
             names = set(o_map)
@@ -384,6 +446,31 @@ def main() -> int:
     print(f"基座 AAR：{BASE_AAR}")
     print(f"  sha256 = {base_sha}")
 
+    # 基座是否已经是补丁版（幂等支持）：
+    # app/sdk/lib-release.aar 被换成补丁版后，两处原模式都已不存在，
+    # 必须能识别出来并正常通过，而不是报“模式命中 0 次”。
+    with zipfile.ZipFile(io.BytesIO(base_bytes)) as bz:
+        base_classes = bz.read(CLASSES_JAR)
+        base_so_sha = sha256_bytes(bz.read(SO_ENTRY))
+    states = jar_patch_states(base_classes)
+    n_patched = sum(1 for s in states.values() if s == STATE_PATCHED)
+    base_is_patched = n_patched == len(states)
+    if base_is_patched:
+        print(
+            f"  [i] 基座已是补丁版：classes.jar 两处 autofill 字节码补丁均已存在"
+            f"（{', '.join(sorted(states))}）"
+        )
+    elif n_patched:
+        raise SystemExit(
+            f"基座 AAR 补丁状态不一致（部分已打）：{states}。请换回 committed 原版后重跑。"
+        )
+    else:
+        print("  [i] 基座是未打补丁的原版：将执行两处字节码补丁")
+    if base_so_sha == EXPECTED_SO_SHA256:
+        print(f"  [i] 基座 libvbox.so 已是补丁 so（{EXPECTED_SO_SHA256}）")
+    else:
+        print(f"  [i] 基座 libvbox.so 是原版（{base_so_sha[:16]}…），将从 patched AAR 取补丁 so")
+
     if args.check_only:
         if not OUT_AAR.exists():
             raise SystemExit(f"找不到产物：{OUT_AAR}")
@@ -398,9 +485,7 @@ def main() -> int:
         print("  [ok] SHA256SUMS 与产物一致")
         return 0
 
-    # 1) 读取基座 classes.jar
-    with zipfile.ZipFile(io.BytesIO(base_bytes)) as bz:
-        base_classes = bz.read(CLASSES_JAR)
+    # 1) 基座 classes 数
     n_base = count_classes(base_classes)
     print(f"  基座 classes 数 = {n_base}")
     if args.expect_classes is not None and n_base != args.expect_classes:
@@ -410,9 +495,11 @@ def main() -> int:
     print("定位补丁 libvbox.so：")
     so_bytes, so_source = find_patched_so(args)
 
-    # 3) 打字节码补丁
+    # 3) 打字节码补丁（幂等：基座已是补丁版时原样保留）
     print("打字节码补丁：")
     patched_classes = patch_classes_jar(base_classes)
+    if base_is_patched:
+        print("  [i] 基座已是补丁版，两处补丁均跳过（产物 = 基座字节）")
 
     # 4) 重建 AAR
     print("重建 AAR：")

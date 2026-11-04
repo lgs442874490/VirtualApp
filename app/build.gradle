@@ -201,3 +201,67 @@ tasks.configureEach { t ->
         }
     }
 }
+
+// ================= 引擎补丁 AAR 强制门禁（autofill ANR 修复必须进包） =================
+// 背景（2026-11-04）：容器内 View.layout → notifyEnterOrExitForAutoFillIfNeeded →
+// AutofillManager.startSessionLocked 死等 5s → Input dispatch ANR → 分身进程被杀。
+// 修复（libvbox.so 换补丁版 + classes.jar 两处 autofill 字节码补丁）早已在
+// tools/engine/lib-release.aar.patched 里，但 2026-11-04 那次手工 assembleRelease
+// 绕过了 tools/release.sh 门禁 2，产物里 so 是原版、dex 里仍跳过 AutoFillManagerStub
+// 注册 ⇒ 事故复发。
+//
+// 因此把校验下沉到 Gradle：挂在 preBuild（所有 variant、debug/release、任意 worktree、
+// 手工 assembleXxx 都必须先过），仓库 AAR 不是补丁版就直接 fail，并打印修复指引。
+// 纯 Gradle 实现（java.security.MessageDigest），不联网、不依赖外部命令。
+def ENGINE_AAR_FILE = file('sdk/lib-release.aar')
+def ENGINE_AAR_SHA256 = 'ccc4431945e4ea5cc7da4d3400380fa148e6e499af9f7935970962829e825b10'
+
+def sha256Hex = { File f ->
+    def md = java.security.MessageDigest.getInstance('SHA-256')
+    f.withInputStream { ins ->
+        byte[] buf = new byte[65536]
+        int n
+        while ((n = ins.read(buf)) > 0) {
+            md.update(buf, 0, n)
+        }
+    }
+    return md.digest().collect { String.format('%02x', it) }.join()
+}
+
+tasks.register('verifyEngineAar') {
+    group = 'verification'
+    description = '校验 app/sdk/lib-release.aar 是补丁引擎 AAR（含 autofill ANR 修复），否则构建失败'
+    // 不声明 inputs/outputs：每次构建都真跑一遍，避免被 up-to-date 检查跳过
+    doLast {
+        if (!ENGINE_AAR_FILE.exists()) {
+            throw new GradleException(
+                    "【引擎门禁】找不到引擎 AAR：${ENGINE_AAR_FILE}\n" +
+                    "请执行：git checkout -- app/sdk/lib-release.aar")
+        }
+        def actual = sha256Hex(ENGINE_AAR_FILE)
+        if (actual != ENGINE_AAR_SHA256) {
+            throw new GradleException("""
+【引擎门禁】app/sdk/lib-release.aar 不是补丁版引擎 AAR，构建已中止。
+  实际 sha256 = ${actual}
+  期望 sha256 = ${ENGINE_AAR_SHA256}
+为什么必须拦：仓库原版 AAR（sha256 06531a73…）里 libvbox.so 是原版、classes.jar
+里 InvocationStubManager 仍按 BuildCompat.isTiramisu() 跳过 AutoFillManagerStub 注册，
+用它构建出的 APK 会在容器内触发 autofill startSession 5s 死等 → Input dispatch ANR
+→ 分身闪退（2026-11-04 事故）。
+修复（任选其一，都不需要联网）：
+  1) python3 tools/engine/patch_engine.py       # 以当前 AAR 为基座重建补丁包
+     cp tools/engine/lib-release.aar.patched app/sdk/lib-release.aar
+  2) tools/release.sh                            # 发版流程，门禁 2 会自动就位并校验
+  3) 直接取现成产物：cp tools/engine/lib-release.aar.patched app/sdk/lib-release.aar
+完成后 sha256 应等于 ${ENGINE_AAR_SHA256}
+""")
+        }
+        logger.lifecycle("[gate] 引擎 AAR 校验通过：lib-release.aar = ${ENGINE_AAR_SHA256}（补丁版，含 autofill ANR 修复）")
+    }
+}
+
+afterEvaluate {
+    // preBuild 是所有 variant 的 assemble/compile 链路起点；挂在这里保证任何构建方式都过闸
+    tasks.named('preBuild').configure { dependsOn 'verifyEngineAar' }
+}
+
