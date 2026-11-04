@@ -44,8 +44,9 @@ public class GatherAttackAlertTest {
     @Test
     public void resourceBehaviorMapping() {
         assertEquals("采集", WatchPointEngine.resourceBehavior(new LinkedHashMap<>(), 4L));
-        assertEquals("建设(type6)", "建设", WatchPointEngine.resourceBehavior(new LinkedHashMap<>(), 6L));
+        assertNull("type6 援助归 A1，不单独推", WatchPointEngine.resourceBehavior(new LinkedHashMap<>(), 6L));
         assertEquals("建设(type8)", "建设", WatchPointEngine.resourceBehavior(new LinkedHashMap<>(), 8L));
+        assertEquals("援助行为", "驻防/增援", WatchPointEngine.a1Behavior(6L));
         Map<String, Object> flag = new LinkedHashMap<>();
         flag.put("atk_alliance_flag", new LinkedHashMap<>());
         assertEquals("破坏旗", "破坏", WatchPointEngine.resourceBehavior(flag, 2L));

@@ -1442,8 +1442,8 @@ public final class WatchPointEngine {
                 maybeResourceAlert(owner, id, resBeh, ex, ey, endtime, troopsOf(m));
                 return;
             }
-            // A1 情报：侦查 / 驻防·增援 / 发起集结（统一 5 分钟前 3 条）
-            if (type == 1L || type == 5L || type == 100L) {
+            // A1 情报：侦查 / 驻防·增援(含援助 type6) / 发起集结（统一 5 分钟前 3 条）
+            if (type == 1L || type == 5L || type == 6L || type == 100L) {
                 if (!shouldAlertMonitor(ownerAid, targetAid)) return;
                 String marchKey = "m:" + owner + ":" + id;
                 if (recentlyAlerted(marchKey)) return;
@@ -1876,7 +1876,7 @@ public final class WatchPointEngine {
     /** A1 情报行为：1 侦查 / 5 驻防·增援 / 100 发起集结。 */
     static String a1Behavior(long type) {
         if (type == 1L) return "侦查";
-        if (type == 5L) return "驻防/增援";
+        if (type == 5L || type == 6L) return "驻防/增援";
         if (type == 100L) return "发起集结";
         return typeLabel(type);
     }
@@ -2069,14 +2069,14 @@ public final class WatchPointEngine {
     }
 
     /**
-     * 资源类行为（2026-11-04）：采集=type4；建设=type6/8（建造/援助）；破坏=攻击联盟旗/总部字段；
-     * 巨兽/打野返回 null（不推）。type 6/8 为生产监听到的非战斗建设类行军。
+     * 资源类行为（2026-11-04）：采集=type4；建设=type8；破坏=攻击联盟旗/总部字段；
+     * 巨兽/打野/援助(type6)返回 null（援助归 A1 驻防/增援，不单独推）。
      */
     static String resourceBehavior(Map<?, ?> m, long type) {
         if (m == null) return null;
         if (isAllianceBuildingAttack(m)) return "破坏";
         if (type == 4L) return "采集";
-        if (type == 6L || type == 8L) return "建设";
+        if (type == 8L) return "建设";
         return null;
     }
 
