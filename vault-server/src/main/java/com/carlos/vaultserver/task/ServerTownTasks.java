@@ -1029,14 +1029,19 @@ public final class ServerTownTasks {
                         break;
                     }
                     int code = Exec.codeOf(r);
-                    if (code == 11784 || code == 11801) {
-                        // 藏宝点已有宠物 / 该宠物已在此点：换下一只/下一个点。
+                    if (code == 11784) {
+                        // 11784=该藏宝点已有宠物：本轮放弃这个点，换下一个藏宝点（不是换宠物）。
+                        break;
+                    }
+                    if (code == 11801) {
+                        // 11801=该宠物已在此点：换下一只宠物。
                         continue;
                     }
                     if (code == 11783 || code == 11785 || code == 11782) {
                         // 2026-11-05 对齐网页版 DailyPetAdventureService:421-436：
-                        // 11783=宠物忙 / 11785=活力不足 / 11782=宠物未解锁 → 换下一只宠物继续，
-                        // 不能整轮 break（旧实现一只报错就停，永远卡在同一只宠物上、任务派不满）。
+                        // 11783=宠物忙 / 11785=活力不足 / 11782=宠物未解锁 → 本轮不再试这只宠物
+                        // （it.remove() 防“每个闲置点都把同一批失败宠物重试一遍”的 N×3 请求放大）。
+                        it.remove();
                         continue;
                     }
                     failCode = code;
@@ -1523,6 +1528,12 @@ public final class ServerTownTasks {
 
     private static final String ARENA_DAY_KEY_PREFIX = "srv:arena:day:";
 
+    /** 竞技场当日台账键：按角色 uid 隔离（同服双角色不再共享场次/胜负/领奖状态）。 */
+    static String arenaDayKey(TaskContext tc) {
+        return ARENA_DAY_KEY_PREFIX + tc.fpid + ":" + tc.sid
+                + (tc.roleUid > 0L ? ":" + tc.roleUid : "");
+    }
+
     public static TaskOutcome arena(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         ArenaDay day = null;
@@ -1625,10 +1636,12 @@ public final class ServerTownTasks {
     /** 挑战阶段（日场次上限内）：对手按战力升序；胜负读 report.win，不再用 Exec.ok 当胜场。 */
     private static void arenaFight(TaskContext tc, Exec.Multi m, ArenaDay day, int budget, long now)
             throws Exception {
-        // 1:1 网页版（DailyArenaService.fight/ensureOpponents/refreshUnavailable）：
-        // ① 对手失效（2904/2920/2921）→ 主动 req_arena_refresh_opponent 后重取一次对手，而不是直接放弃；
-        // ② opponent_type 只按 type==1 判机器人（type=0 是真人；旧实现把 type=0 发成 1，服务端恒回 2904）；
-        // ③ opponent_id 用对手记录 id（网页版 raw.id）；uid 是玩家标识，不能当对手记录 id。
+        // 1:1 网页版口径（DailyArenaStateOpponent.from / refreshUnavailable）：
+        // ① opponent_type 只按 type==1 判机器人（type=0 是真人；旧实现把 type=0 发成 1，服务端恒回 2904）；
+        // ② opponent_id 用对手记录 id（raw.id）；uid 是玩家标识，不能当对手记录 id；
+        // ③ 对手失效(2904/2920/2921)且当日免费刷新未用完（refresh_opponent_times<5，网页版
+        //    freeOpponentRefreshLimit 默认 5）时主动 req_arena_refresh_opponent 后重取一次；
+        //    免费次数用完则不刷（网页版 allowDiamondOpponentRefresh 默认 false，不花钻石）。
         boolean refreshed = false;
         for (int pass = 0; pass < 2; pass++) {
             GameMessage opp = tc.engine.request("req_arena_get_opponent", null);
@@ -1664,6 +1677,7 @@ public final class ServerTownTasks {
             int fights = 0, wins = 0, losses = 0, unknownWins = 0;
             StringBuilder failCodes = new StringBuilder();
             boolean stale = false;
+            boolean stopAfterSkip = false;   // 已写具体 SKIP（次数用完/太频繁），循环后直接返回，防兜底文案覆盖
             for (Map<String, Object> o : list) {
                 if (fights >= budget
                         || day.fightsSent >= arenaDailyFightCap(day.boughtTimes)) break;
@@ -1691,17 +1705,19 @@ public final class ServerTownTasks {
                     day.exhausted = true;
                     day.mergeBase(arenaBaseOf(f.getContent()), now);
                     m.skip("挑战次数已用完(码" + code + ")");
+                    stopAfterSkip = true;
                     break;
                 } else if (code == 2903) {
                     // 太频繁：不计入当日场次，退避到下一轮 30s 节奏
                     day.fightsSent = Math.max(0, day.fightsSent - 1);
                     m.skip("挑战过于频繁(2903)，待下一轮");
+                    stopAfterSkip = true;
                     break;
                 } else if (code == 2904 || code == 2920 || code == 2921) {
-                    // 对手过期/不可用：不计场次，主动刷新对手后重取一次（网页版 refreshUnavailable 同款）
+                    // 对手过期/不可用：不计场次；本轮结束前按免费刷新次数决定是否主动刷新
                     day.fightsSent = Math.max(0, day.fightsSent - 1);
                     stale = true;
-                    m.skip("对手已失效(码" + code + ")·刷新后重试");
+                    m.skip("对手已失效(码" + code + ")");
                     break;
                 } else {
                     day.mergeBase(arenaBaseOf(f.getContent()), now);
@@ -1720,22 +1736,38 @@ public final class ServerTownTasks {
                 m.subOk("fight", "挑战" + fights + "胜" + wins);
                 return;
             }
+            if (stopAfterSkip) {
+                // 本轮已写过具体原因（次数用完/太频繁），不再用兜底文案覆盖子结果。
+                return;
+            }
             if (failCodes.length() > 0) {
                 m.skip("挑战失败码" + failCodes.toString().trim());
                 m.subSkip("fight", "失败码" + failCodes.toString().trim());
                 return;
             }
             if (stale && !refreshed) {
-                // 网页版 DailyArenaService.refreshUnavailable：免费刷新次数未用完先免费刷新；
-                // 无免费次数时服务端会直接拒绝（不静默花钻石），失败即结束本轮。
-                GameMessage rf = tc.engine.request("req_arena_refresh_opponent", null);
-                if (Exec.ok(rf)) {
-                    refreshed = true;
-                    m.subSkip("fight", "对手已刷新，重取列表");
-                    continue;
+                ArenaBase base = arenaBaseOf(tc.engine.notifyData("notify_arena_init"));
+                int used = base == null ? 0 : base.refreshTimes;
+                if (used < ArenaBase.FREE_REFRESH_LIMIT) {
+                    GameMessage rf = tc.engine.request("req_arena_refresh_opponent", null);
+                    if (Exec.ok(rf)) {
+                        refreshed = true;
+                        m.subSkip("fight", "免费刷新对手(" + (used + 1) + "/"
+                                + ArenaBase.FREE_REFRESH_LIMIT + ")");
+                        continue;
+                    }
+                    m.skip("对手已失效且免费刷新失败(码" + Exec.codeOf(rf) + ")");
+                    m.subSkip("fight", "刷新失败");
+                    return;
                 }
-                m.skip("对手已失效且刷新失败(码" + Exec.codeOf(rf) + ")");
-                m.subSkip("fight", "刷新失败");
+                m.skip("对手已失效，免费刷新次数已用完(" + used + "/"
+                        + ArenaBase.FREE_REFRESH_LIMIT + ")·下一轮重拉");
+                m.subSkip("fight", "刷新次数用尽");
+                return;
+            }
+            if (stale) {
+                m.skip("本轮对手已失效，下一轮重新拉取对手");
+                m.subSkip("fight", "对手失效");
                 return;
             }
             // 兜底：不产出空 Multi（空聚合 = SKIPPED 无文案，等价"从来没执行过"）。
@@ -2158,19 +2190,31 @@ public final class ServerTownTasks {
 
     /** 竞技场服务端 base（notify_arena_init.base / req_arena_fight 响应 base，DailyArenaState.java:237-244）。 */
     static final class ArenaBase {
+        /** 每日免费刷新对手上限（1:1 网页版 DailyArenaConfig.freeOpponentRefreshLimit 默认 5）。 */
+        static final int FREE_REFRESH_LIMIT = 5;
+
         final int freeUsed;
         final int buyTimes;
         final int leftTimes;
         final boolean dailyRewardClaimed;
         final long lastResetTs;
+        /** 当日已用免费刷新对手次数（notify_arena_init.base.refresh_opponent_times）。 */
+        final int refreshTimes;
 
+        /** 兼容旧 5 参调用（测试/历史代码）：免费刷新次数未知按 0。 */
         ArenaBase(int freeUsed, int buyTimes, int leftTimes,
                   boolean dailyRewardClaimed, long lastResetTs) {
+            this(freeUsed, buyTimes, leftTimes, dailyRewardClaimed, lastResetTs, 0);
+        }
+
+        ArenaBase(int freeUsed, int buyTimes, int leftTimes,
+                  boolean dailyRewardClaimed, long lastResetTs, int refreshTimes) {
             this.freeUsed = Math.max(0, freeUsed);
             this.buyTimes = Math.max(0, buyTimes);
             this.leftTimes = Math.max(0, leftTimes);
             this.dailyRewardClaimed = dailyRewardClaimed;
             this.lastResetTs = lastResetTs;
+            this.refreshTimes = Math.max(0, refreshTimes);
         }
     }
 
@@ -2196,7 +2240,8 @@ public final class ServerTownTasks {
                 : dr != null && ("true".equalsIgnoreCase(String.valueOf(dr))
                 || "1".equals(String.valueOf(dr)));
         return new ArenaBase((int) Math.max(0, freeUsed), (int) Math.max(0, buyTimes),
-                (int) Math.max(0, leftTimes), claimed, arenaNum(base, "last_reset_ts"));
+                (int) Math.max(0, leftTimes), claimed, arenaNum(base, "last_reset_ts"),
+                (int) Math.max(0, arenaNum(base, "refresh_opponent_times")));
     }
 
     private static boolean arenaHasCounts(Map<String, Object> m) {
@@ -2250,7 +2295,7 @@ public final class ServerTownTasks {
         static ArenaDay load(TaskContext tc, long nowMillis) {
             String today = arenaBeijingDay(nowMillis);
             try {
-                String raw = tc.store.getString(ARENA_DAY_KEY_PREFIX + tc.fpid + ":" + tc.sid);
+                String raw = tc.store.getString(arenaDayKey(tc));
                 if (raw != null && !raw.isEmpty()) {
                     JSONObject o = new JSONObject(raw);
                     if (today.equals(o.optString("day", ""))) {
@@ -2304,7 +2349,7 @@ public final class ServerTownTasks {
                 o.put("bought_times", boughtTimes);
                 o.put("diamond_spent", diamondSpent);
                 o.put("buy_price", buyPrice);
-                tc.store.putString(ARENA_DAY_KEY_PREFIX + tc.fpid + ":" + tc.sid, o.toString());
+                tc.store.putString(arenaDayKey(tc), o.toString());
             } catch (Throwable ignored) {
             }
         }

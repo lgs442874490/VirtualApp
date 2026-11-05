@@ -381,7 +381,10 @@ public final class VaultSync {
                         cacheAccounts(app, data.optJSONArray("accounts"), requestTs);
                         JSONObject states = data.optJSONObject("states");
                         if (states != null && states.length() > 0) {
-                            writeDailyState(app, states);
+                            // 2026-11-05：quest 家族两段键补 uid 时优先用服务端本响应里的
+                            // accounts[].activeUid（投影来源），避免本地 currentRoleUid 与服务端
+                            // activeUid 短暂不一致时把旧角色数据写进新角色键。
+                            writeDailyState(app, states, data.optJSONArray("accounts"));
                             Log.i(TAG, "采集状态回写 " + states.length() + " 键");
                         }
                     }
@@ -543,11 +546,16 @@ public final class VaultSync {
      * 本地 {@link com.carlos.vault.daily.QuestStore} 已按角色 uid 隔离（{@code <family>:<fpid>:<sid>:<uid>}）。
      * 这里对恰好两段角色键补当前角色 uid，其余形状原样返回（已带 uid / 非角色键不受影响）。
      */
-    private static String questKeyWithRole(Context app, String key) {
+    private static String questKeyWithRole(Context app, String key,
+                                          java.util.Map<String, Long> activeUids) {
         try {
             String[] p = key.split(":");
             if (p.length != 3) return key;
-            long uid = com.carlos.vault.daily.RoleStore.currentRoleUid(app, p[1]);
+            String fpid = p[1];
+            Long srvUid = activeUids == null ? null : activeUids.get(fpid);
+            long uid = srvUid != null && srvUid > 0L
+                    ? srvUid
+                    : com.carlos.vault.daily.RoleStore.currentRoleUid(app, fpid);
             if (uid <= 0L) return key;
             return key + ":" + uid;
         } catch (Throwable t) {
@@ -555,7 +563,29 @@ public final class VaultSync {
         }
     }
 
-    private static void writeDailyState(Context app, JSONObject states) {
+    /** accounts[].activeUid → fpid:uid（服务端投影来源；缺失/0 的账号不进表）。 */
+    private static java.util.Map<String, Long> activeUidMap(JSONArray accounts) {
+        java.util.Map<String, Long> out = new java.util.HashMap<>();
+        if (accounts == null) return out;
+        try {
+            for (int i = 0; i < accounts.length(); i++) {
+                JSONObject o = accounts.optJSONObject(i);
+                if (o == null) continue;
+                String fpid = o.optString("fpid", "");
+                long uid = 0L;
+                try {
+                    uid = Long.parseLong(o.optString("activeUid", "").trim());
+                } catch (Throwable ignored) {
+                }
+                if (!fpid.isEmpty() && uid > 0L) out.put(fpid, uid);
+            }
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    private static void writeDailyState(Context app, JSONObject states, JSONArray accounts) {
+        java.util.Map<String, Long> activeUids = activeUidMap(accounts);
         try {
             android.content.SharedPreferences ds =
                     app.getSharedPreferences("daily_state", Context.MODE_PRIVATE);
@@ -574,13 +604,13 @@ public final class VaultSync {
                     edDl.putInt(k, (int) states.optLong(k, 0));
                     dlDirty = true;
                 } else if (k.startsWith("act:") || k.startsWith("boxes:")) {
-                    edDs.putInt(questKeyWithRole(app, k), states.optInt(k));
+                    edDs.putInt(questKeyWithRole(app, k, activeUids), states.optInt(k));
                     dsDirty = true;
                 } else if (k.startsWith("questts:")) {
-                    edDs.putLong(questKeyWithRole(app, k), states.optLong(k));
+                    edDs.putLong(questKeyWithRole(app, k, activeUids), states.optLong(k));
                     dsDirty = true;
                 } else if (k.startsWith("questprog:") || k.startsWith("questdone:")) {
-                    edDs.putString(questKeyWithRole(app, k), states.optString(k, ""));
+                    edDs.putString(questKeyWithRole(app, k, activeUids), states.optString(k, ""));
                     dsDirty = true;
                 } else {
                     edDs.putString(k, states.optString(k, ""));

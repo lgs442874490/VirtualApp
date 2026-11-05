@@ -61,6 +61,8 @@ public class FunctionActivity extends Activity {
     public static final String EXTRA_ACCOUNT_ID = "account_id";
     public static final String EXTRA_FN_ID = "fn_id";
     public static final String EXTRA_SERVERID = "serverid";
+    /** 目标角色 uid（角色行入口透传；0=未传，回退当前激活角色）。同服双角色靠它区分。 */
+    public static final String EXTRA_ROLE_UID = "role_uid";
 
     private AccountStore store;
     private DailyConfigStore configStore;
@@ -68,6 +70,8 @@ public class FunctionActivity extends Activity {
     private AccountStore.Account account;
     private FnRegistry.Fn fn;
     private long serverid;
+    /** 本页目标角色 uid（0=未传，回退 RoleStore.currentRoleUid）。 */
+    private long roleUid;
     private TextView logView;
     private TextView claimView;
     private UiStyle.Switch toggle;
@@ -94,6 +98,7 @@ public class FunctionActivity extends Activity {
         String accId = getIntent().getStringExtra(EXTRA_ACCOUNT_ID);
         String fnId = getIntent().getStringExtra(EXTRA_FN_ID);
         serverid = getIntent().getLongExtra(EXTRA_SERVERID, 0);
+        roleUid = getIntent().getLongExtra(EXTRA_ROLE_UID, 0L);
         if (serverid <= 0) {
             // 未显式传区服：取该凭证当前启用角色
             long active = RoleStore.activeRole(this, getIntent().getStringExtra(EXTRA_ACCOUNT_ID) == null ? "" : findFpid());
@@ -598,8 +603,10 @@ public class FunctionActivity extends Activity {
         if (boxRow != null) boxRow.removeAllViews();
         long sid = serverid;
         // 同账号同服多角色按 uid 隔离读取（R2 Phase2 口径），避免隆科多/小鹿矿工5 这类同服双角色互相串号。
-        QuestStore.State st = QuestStore.load(this, account.fpid, sid,
-                RoleStore.currentRoleUid(this, account.fpid));
+        // 本页可能由“任意角色行”打开（HomeActivity.openFnDetail 带 r.uid），优先用入口透传的目标 uid；
+        // 缺省才回退当前激活角色（深链/旧入口）。
+        long questUid = roleUid > 0L ? roleUid : RoleStore.currentRoleUid(this, account.fpid);
+        QuestStore.State st = QuestStore.load(this, account.fpid, sid, questUid);
         if (boxRow != null) {
             if (st.integral < 0) {
                 actTitle.setText("活跃度：尚未同步（打开今日页自动同步，或执行一次）");
