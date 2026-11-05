@@ -295,12 +295,6 @@ public final class FormationCatalogStore {
         return m == null ? new JSONObject() : m;
     }
 
-    /** 巨熊模板绑定（{@code bear:{applied,templateId,title,generation,tier,launchFormationId,joinFormationIds}}）。 */
-    public JSONObject bearBinding() {
-        JSONObject b = raw().optJSONObject("bear");
-        return b == null ? new JSONObject() : b;
-    }
-
     /** 目录里是否含至少一个英雄（旧口径 {@code hasCatalog}）。 */
     public boolean hasHeroes() {
         return !heroOptions().isEmpty();

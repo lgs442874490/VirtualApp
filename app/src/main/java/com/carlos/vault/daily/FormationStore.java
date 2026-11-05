@@ -3,7 +3,6 @@ package com.carlos.vault.daily;
 import android.content.Context;
 import android.content.SharedPreferences;
 
-import com.carlos.vault.daily.formation.BearFormationTemplates;
 import com.carlos.vault.daily.formation.FormationBinding;
 import com.carlos.vault.daily.formation.PresetFormations;
 import com.carlos.vault.daily.formation.FormationCatalogStore;
@@ -13,8 +12,6 @@ import com.carlos.vault.daily.formation.FormationRules;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedReader;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -1285,114 +1282,97 @@ public final class FormationStore {
         return o;
     }
 
-    // ==================== 巨熊模板 / 游戏编队副本 / 一键编队（契约外补充 API） ====================
+    // ==================== 巨熊编队模板（复用预设，2026-11-06） ====================
 
-    /** 30 套巨熊模板（assets {@code formation/bear_templates.json} 优先，缺失/损坏回落内置常量）。 */
-    public static List<BearFormationTemplates.Template> bearTemplates(Context ctx) {
-        if (ctx != null) {
-            BufferedReader reader = null;
-            try {
-                reader = new BufferedReader(new InputStreamReader(
-                        ctx.getAssets().open(BearFormationTemplates.ASSET_PATH), "UTF-8"));
-                StringBuilder sb = new StringBuilder();
-                String line;
-                while ((line = reader.readLine()) != null) sb.append(line).append('\n');
-                List<BearFormationTemplates.Template> parsed =
-                        BearFormationTemplates.parse(sb.toString());
-                if (!parsed.isEmpty()) return parsed;
-            } catch (Throwable ignored) {
-                // assets 未就绪 → 回落内置常量
-            } finally {
-                if (reader != null) {
-                    try {
-                        reader.close();
-                    } catch (Throwable ignored) {
-                    }
-                }
-            }
+    /** 巨熊编队模板是否已应用：bear 发起编队指向预设「打熊队」。 */
+    public static boolean bearPresetApplied(Context ctx, String fpid, long sid, String fnId) {
+        try {
+            JSONObject p = FnParams.params(ctx, fpid, sid, normalizeFnId(fnId));
+            return MODE_ROLE.equals(p.optString("formation_mode", ""))
+                    && p.optLong("formation_id", 0L) == PresetFormations.ID_BEAR_TEAM;
+        } catch (Throwable t) {
+            return false;
         }
-        return BearFormationTemplates.all();
     }
 
     /**
-     * 应用巨熊模板（网页 B1 / §1.11）：删除已有「巨熊·」编队后生成 1 开车队 + 6 上车队并保存；
-     * 同时把巨熊配置改为 6 个 ROLE 引用（{@code join_formations}）+ 本地模板状态。
+     * 纯函数：把「巨熊编队模板」写进 bear params（不依赖 Android，JVM 单测可直跑）。
      *
-     * @return 已保存的 7 支编队（含分配后 id）；模板不存在返回空列表
+     * <p>写入内容：
+     * <ul>
+     *   <li>发起队：顶层 {@code formation_mode=ROLE} + {@code formation_id/formation_ids}=打熊队预设；</li>
+     *   <li>上车队 1-6：{@code join_formations}=[{"id":1-6,"mode":"ROLE","formation_id":熊上车N,"enabled":true}]；</li>
+     *   <li>{@code join_count}=出征队列数（显式 queue_count 优先保留，否则跟随推断值）；</li>
+     *   <li>清 {@code soldiers}（各队用自己的兵量）与旧版 {@code launch_formation/template_state}。</li>
+     * </ul>
+     * 就地修改并返回同一对象。
      */
-    public static List<FormationModel> applyBearTemplate(Context ctx, String fpid, long sid,
-                                                         String templateId) {
-        return applyBearTemplate(ctx, fpid, sid, "", templateId);
-    }
-
-    /** 应用巨熊模板（v2，uid 感知）：模板英雄可用性/懒填用 uid 键目录（多角色不串）。 */
-    public static List<FormationModel> applyBearTemplate(Context ctx, String fpid, long sid,
-                                                         String uid, String templateId) {
-        if (ctx == null) return new ArrayList<>();
-        BearFormationTemplates.Template t = null;
-        for (BearFormationTemplates.Template item : bearTemplates(ctx)) {
-            if (templateId != null && templateId.equals(item.id)) {
-                t = item;
-                break;
-            }
-        }
-        if (t == null) return new ArrayList<>();
-        List<FormationModel> lib = formations(ctx, fpid, sid);
-        for (int i = lib.size() - 1; i >= 0; i--) {
-            if (lib.get(i).isBear()) lib.remove(i);
-        }
-        List<FormationModel> built = BearFormationTemplates.buildFormations(
-                t, catalogOf(ctx, fpid, sid, uid).heroOptions());
-        long next = nextFormationId(lib);
-        long now = System.currentTimeMillis();
-        for (FormationModel m : built) {
-            m.id = next++;
-            m.version = 1;
-            m.updatedAt = now;
-            lib.add(m);
-        }
-        writeModels(ctx, fpid, sid, lib, null);
-
-        // 上游联动：6 个上车槽改 ROLE 引用（网页 B1 / index jd()）
-        JSONArray joinIds = new JSONArray();
-        for (int n = 1; n <= built.size() - 1; n++) {
-            long id = built.get(n).id;
-            joinIds.put(id);
-            saveJoinFormation(ctx, fpid, sid, n, MODE_ROLE, id, true);
-        }
-        JSONObject p = FnParams.params(ctx, fpid, sid, "bear");
-        JSONObject launch = new JSONObject();
+    public static JSONObject applyBearPresetParams(JSONObject params, int queueCount) {
+        JSONObject p = params == null ? new JSONObject() : params;
         try {
-            launch.put("mode", MODE_ROLE);
-            launch.put("formation_id", built.get(0).id);
-            p.put("launch_formation", launch);
-            JSONObject state = new JSONObject();
-            state.put("template_id", t.id);
-            state.put("title", t.title);
-            state.put("generation", t.generation);
-            state.put("tier", t.tier);
-            state.put("applied_at", now);
-            state.put("launch_formation_id", built.get(0).id);
-            state.put("join_formation_ids", joinIds);
-            p.put("template_state", state);
-            FnParams.saveParams(ctx, fpid, sid, "bear", p);
+            FormationBinding.applyIds(p, new long[]{PresetFormations.ID_BEAR_TEAM});
+            JSONArray joins = new JSONArray();
+            for (int slot = 1; slot <= PresetFormations.BEAR_TEMPLATE_JOIN_COUNT; slot++) {
+                JSONObject slotCfg = new JSONObject();
+                slotCfg.put("id", slot);
+                slotCfg.put("mode", MODE_ROLE);
+                slotCfg.put("formation_id", PresetFormations.bearTemplateJoinId(slot));
+                slotCfg.put("enabled", true);
+                joins.put(slotCfg);
+            }
+            p.put("join_formations", joins);
+            int n = clampInt(queueCount, 1, MAX_JOIN_SLOTS);
+            p.put("join_count", n);
+            if (!p.has("queue_count")) p.put("queue_count", n);
+            p.remove("soldiers");
+            p.remove("launch_formation");
+            p.remove("template_state");
         } catch (Throwable ignored) {
         }
-        List<FormationModel> saved = new ArrayList<>();
-        for (FormationModel m : built) saved.add(m);
-        return saved;
+        return p;
     }
 
-    /** 本地巨熊模板应用状态（无则空对象）。 */
-    public static JSONObject bearTemplateState(Context ctx, String fpid, long sid) {
+    /**
+     * 一键应用「巨熊编队模板」= 预设「打熊队」（发起）+「熊上车1-6」（上车）。
+     *
+     * <p>与旧版 30 套模板（已删除）的区别：<b>不生成新编队</b>，直接把 bear 功能参数
+     * 指向预设 id（预设随角色最强英雄/容量实时刷新）；发起编队写<b>顶层</b>
+     * {@code formation_mode/formation_id/formation_ids}，服务器
+     * {@code FormationResolver.isConfigured} 只认顶层键。
+     *
+     * <p>同时：6 个上车槽写 ROLE 引用（1-6 = 熊上车1-6，enabled=true）；{@code join_count}
+     * 跟随该角色出征队列数（服务器本场上车上限），未知时用 1-6 的推断值；清掉功能级
+     * {@code soldiers} 覆盖（各队用自己预设的兵量），移除旧版嵌套 {@code launch_formation}。
+     *
+     * @return 成功返回可读摘要；编队库/预设未就绪（等待英雄数据同步）返回 null
+     */
+    public static String applyBearPresetTemplate(Context ctx, String fpid, long sid, String uid) {
+        if (ctx == null || fpid == null || fpid.isEmpty() || sid <= 0) return null;
         try {
-            JSONObject state = FnParams.params(ctx, fpid, sid, "bear")
-                    .optJSONObject("template_state");
-            return state == null ? new JSONObject() : state;
+            // 幂等懒建 19 套预设（目录未就绪时不建，下一步 findById 会返回 null）
+            ensurePresets(ctx, fpid, sid, uid);
+            List<FormationModel> lib = formations(ctx, fpid, sid);
+            if (FormationRules.findById(lib, PresetFormations.ID_BEAR_TEAM) == null) return null;
+            for (int slot = 1; slot <= PresetFormations.BEAR_TEMPLATE_JOIN_COUNT; slot++) {
+                if (FormationRules.findById(lib, PresetFormations.bearTemplateJoinId(slot)) == null) {
+                    return null;
+                }
+            }
+
+            JSONObject p = FnParams.params(ctx, fpid, sid, "bear");
+            // 本场上车上限=角色出征队列数（未配置 queue_count 时按目录游戏编队槽数推断）
+            int queueCount = fnQueueCount(ctx, fpid, sid, "bear");
+            applyBearPresetParams(p, queueCount);
+            FnParams.saveParams(ctx, fpid, sid, "bear", p);
+            return "已应用巨熊编队模板：打熊队 + 熊上车1-"
+                    + PresetFormations.BEAR_TEMPLATE_JOIN_COUNT
+                    + "（本场上车 " + clampInt(queueCount, 1, MAX_JOIN_SLOTS) + " 队）";
         } catch (Throwable t) {
-            return new JSONObject();
+            return null;
         }
     }
+
+    // ==================== 游戏编队副本 / 一键编队（契约外补充 API） ====================
 
     /**
      * 复制游戏编队为自定义（契约 §2.5 / 网页 R6）：名称 + 「（副本）」、id 新分配、source=CUSTOM。

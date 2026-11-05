@@ -19,7 +19,6 @@ import android.widget.TextView;
 import com.carlos.vault.AccountPoolCache;
 import com.carlos.vault.UiStyle;
 import com.carlos.vault.VaultSync;
-import com.carlos.vault.daily.formation.BearFormationTemplates;
 import com.carlos.vault.daily.formation.FormationCatalogStore;
 import com.carlos.vault.daily.formation.FormationModel;
 import com.carlos.vault.daily.formation.FormationQuickSetup;
@@ -44,7 +43,9 @@ import java.util.Map;
  * 编队管理页（1:1 网页版 {@code 编队管理}，契约 §4.3）。
  *
  * <p>4 主 tab（自动编队 / 游戏编队 / 预设编队 / 我的编队；默认「游戏编队」）+
- * 我的子 tab（全部/预设/自定义/巨熊编队），
+ * 我的子 tab（全部/采集/巨熊/自定义，2026-11-06 由「全部/预设/自定义/巨熊编队」调整：
+ * 采集=预设采集肉/木/煤/铁，巨熊=预设打熊队+熊上车1-6，预设分类由主 tab「预设编队」承载，
+ * 避免同一页出现两个「预设编队」入口），
  * 复用 {@link FormationBoardView} 编队板；游戏编队只读、编辑走副本；我的编队提供新建/编辑/
  * 复制/删除（编辑器内）。保存后经 {@link VaultSync#onAccountsChanged} 触发既有同步链路；
  * 容量未同步时按规格 §1.1 每 1500ms 轮询、最多 8 次；离线只读。
@@ -65,9 +66,10 @@ public class FormationManagerActivity extends Activity {
     public static final String FOCUS_NEW = "__new__";
 
     private static final String MINE_ALL = "ALL";
-    /** 我的编队子筛选：预设（{@link PresetFormations#isPreset(long)}）。 */
-    private static final String MINE_PRESET = "PRESET";
+    /** 我的编队子筛选：采集（预设采集肉/木/煤/铁，{@link PresetFormations#isGatherTeam(long)}）。 */
+    private static final String MINE_GATHER = "GATHER";
     private static final String MINE_CUSTOM = "CUSTOM";
+    /** 我的编队子筛选：巨熊（预设打熊队 + 熊上车1-6；兼容旧「巨熊·」生成队）。 */
     private static final String MINE_BEAR = "BEAR";
 
     private static final int POLL_MAX = 8;
@@ -346,16 +348,37 @@ public class FormationManagerActivity extends Activity {
         List<FormationModel> out = new ArrayList<FormationModel>();
         for (FormationModel f : lib) {
             if (f == null || f.isGame()) continue;
-            if (MINE_PRESET.equals(mineFilter)) {
-                if (!isPreset(f)) continue;
+            if (MINE_GATHER.equals(mineFilter)) {
+                if (!isGatherTeam(f)) continue;
             } else if (MINE_CUSTOM.equals(mineFilter)) {
-                if (isPreset(f)) continue;          // 预设单独归类，不再有「内置」层
+                // 自定义 = 非预设、非旧「巨熊·」生成队（预设/巨熊分别有独立分类）
+                if (isPreset(f) || f.isBear()) continue;
             } else if (MINE_BEAR.equals(mineFilter)) {
-                if (!f.isBear()) continue;
+                if (!isBearTeam(f)) continue;
             }
             out.add(f);
         }
         return out;
+    }
+
+    /** 是否采集队（预设采集肉/木/煤/铁）。 */
+    private static boolean isGatherTeam(FormationModel f) {
+        if (f == null) return false;
+        try {
+            return PresetFormations.isGatherTeam(f.id);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 是否巨熊编队模板队（预设打熊队+熊上车1-6；旧「巨熊·」生成队保留归类）。 */
+    private static boolean isBearTeam(FormationModel f) {
+        if (f == null) return false;
+        try {
+            return PresetFormations.isBearTemplateTeam(f.id) || f.isBear();
+        } catch (Throwable t) {
+            return f.name != null && f.name.startsWith("巨熊·");
+        }
     }
 
     /** 是否预设编队（19 套内置预设，由 T1 PresetFormations 判定，目录就绪后 ensure 落库）。 */
@@ -619,25 +642,21 @@ public class FormationManagerActivity extends Activity {
         wrap.setPadding(ManagerUi.dp(this, 4), 0, ManagerUi.dp(this, 4),
                 ManagerUi.dp(this, 4));
         int total = 0;
-        int preset = 0;
+        int gather = 0;
         int custom = 0;
         int bear = 0;
         for (FormationModel f : lib) {
             if (f == null || f.isGame()) continue;
             total++;
-            if (isPreset(f)) preset++;
-            else custom++;
-            if (f.isBear()) bear++;
+            if (isGatherTeam(f)) gather++;
+            if (!isPreset(f) && !f.isBear()) custom++;
+            if (isBearTeam(f)) bear++;
         }
-        // 子 tab：全部 / 预设 / 自定义 / 巨熊编队（不再有「内置」）
-        String[][] subs = {{MINE_ALL, "全部 " + total}, {MINE_PRESET, "预设 " + preset},
-                {MINE_CUSTOM, "自定义 " + custom}, {MINE_BEAR, "巨熊编队 " + bear}};
+        // 子 tab：全部 / 采集 / 巨熊 / 自定义（2026-11-06；「预设」已由主 tab「预设编队」承载）
+        String[][] subs = {{MINE_ALL, "全部 " + total}, {MINE_GATHER, "采集 " + gather},
+                {MINE_BEAR, "巨熊 " + bear}, {MINE_CUSTOM, "自定义 " + custom}};
         LinearLayout line = ManagerUi.row(this);
         for (int i = 0; i < subs.length; i++) {
-            if (i == 3) {
-                wrap.addView(line);
-                line = ManagerUi.row(this);
-            }
             final String key = subs[i][0];
             TextView btn = ManagerUi.subTab(this, subs[i][1], key.equals(mineFilter), () -> {
                 if (key.equals(mineFilter)) return;
@@ -647,7 +666,7 @@ public class FormationManagerActivity extends Activity {
             });
             LinearLayout.LayoutParams lp = ManagerUi.lp(0,
                     ManagerUi.dp(this, 44), 1f);
-            if (i != 2 && i != 3) lp.rightMargin = ManagerUi.dp(this, 6);
+            if (i < subs.length - 1) lp.rightMargin = ManagerUi.dp(this, 6);
             line.addView(btn, lp);
         }
         wrap.addView(line);
@@ -731,6 +750,10 @@ public class FormationManagerActivity extends Activity {
         }
     }
 
+    /**
+     * 我的编队·巨熊分类头部卡片（2026-11-06）：模板 = 预设「打熊队」（发起）+「熊上车1-6」（上车），
+     * 不再生成「巨熊·」新编队；「一键应用」把这两组预设写到巨熊行动参数（服务端只读顶层编队键）。
+     */
     private View buildBearEntry() {
         LinearLayout card = ManagerUi.row(this);
         card.setPadding(ManagerUi.dp(this, 12), ManagerUi.dp(this, 10),
@@ -743,37 +766,55 @@ public class FormationManagerActivity extends Activity {
         clp.topMargin = ManagerUi.dp(this, 4);
         card.setLayoutParams(clp);
 
-        LinearLayout col = ManagerUi.column(this);
-        col.addView(ManagerUi.text(this, "巨熊编队", 14, ManagerUi.TEXT, true));
-        JSONObject st = null;
+        boolean applied = false;
         try {
-            st = FormationStore.bearTemplateState(this, fpid, sid);
+            applied = FormationStore.bearPresetApplied(this, fpid, sid, "bear");
         } catch (Throwable ignored) {
         }
-        String subText;
-        if (st != null && st.optString("title", "").length() > 0) {
-            subText = "已应用：" + st.optString("title", "")
-                    + (st.optInt("generation", 0) > 0
-                    ? "（" + st.optInt("generation", 0) + " 代 · "
-                    + st.optString("tier", "") + "）" : "");
-        } else {
-            subText = "尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队"
-                    + "（盾 5% / 矛 5% / 弓 90%）";
-        }
+
+        LinearLayout col = ManagerUi.column(this);
+        col.addView(ManagerUi.text(this, "巨熊编队模板", 14, ManagerUi.TEXT, true));
+        String subText = applied
+                ? "已应用：打熊队（发起）+ 熊上车1-6（上车）；预设随角色最强英雄实时更新"
+                : "模板 = 预设「打熊队」（发起）+「熊上车1-6」（上车），应用后巨熊行动按此出征";
         TextView sub = ManagerUi.text(this, subText, 11, ManagerUi.TEXT3, false);
         sub.setPadding(0, ManagerUi.dp(this, 2), 0, 0);
         sub.setLineSpacing(ManagerUi.dp(this, 1), 1f);
         col.addView(sub);
         card.addView(col, ManagerUi.lp(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
-        boolean applied = st != null && st.optString("title", "").length() > 0;
-        TextView choose = ManagerUi.smallButton(this, applied ? "更换模板" : "选择模板",
-                false, this::openBearTemplate);
+        TextView choose = ManagerUi.smallButton(this, applied ? "重新应用" : "一键应用",
+                false, this::applyBearPresetTemplate);
         LinearLayout.LayoutParams blp = ManagerUi.lp(
                 ManagerUi.dp(this, 84), ManagerUi.dp(this, 36));
         blp.leftMargin = ManagerUi.dp(this, 8);
         card.addView(choose, blp);
         return card;
+    }
+
+    /** 一键应用巨熊编队模板（预设打熊队 + 熊上车1-6，服务端顶层编队参数）。 */
+    private void applyBearPresetTemplate() {
+        if (saving) return;
+        saving = true;
+        render();
+        String msg = null;
+        try {
+            msg = FormationStore.applyBearPresetTemplate(this, fpid, sid, uidText());
+        } catch (Throwable t) {
+            UiStyle.toast(this, "应用模板失败：" + t.getMessage());
+        }
+        saving = false;
+        if (msg == null) {
+            render();   // 恢复底部按钮（saving=true 时显示“处理中…”）
+            UiStyle.toast(this, "等待角色英雄数据同步完成后再应用模板");
+        } else {
+            mineFilter = MINE_BEAR;
+            selectedMineId = 0;
+            reload();
+            render();
+            syncNow();
+            UiStyle.toast(this, msg);
+        }
     }
 
     private View emptyStateForTab() {
@@ -784,10 +825,9 @@ public class FormationManagerActivity extends Activity {
             return ManagerUi.emptyBlock(this, "✦", "暂无预设编队",
                     "登录后自动生成 19 套预设编队");
         } else if (MINE_BEAR.equals(mineFilter)) {
-            text = "还没有巨熊编队；点击上方「选择模板」生成 1 支开车队与 6 支上车队";
-        } else if (MINE_PRESET.equals(mineFilter)) {
-            return ManagerUi.emptyBlock(this, "✦", "暂无预设编队",
-                    "登录后自动生成 19 套预设编队");
+            text = "还没有巨熊编队；登录后自动生成预设中的打熊队与熊上车1-6";
+        } else if (MINE_GATHER.equals(mineFilter)) {
+            text = "还没有采集队；登录后自动生成预设中的采集肉/木/煤/铁";
         } else if (MINE_CUSTOM.equals(mineFilter)) {
             text = "还没有自定义编队；自动编队无需预先创建编队";
         } else {
@@ -1314,7 +1354,7 @@ public class FormationManagerActivity extends Activity {
                 FormationModel f = selectedPageFormation();
                 if (f == null) {
                     UiStyle.toast(FormationManagerActivity.this,
-                            TAB_PRESET.equals(tab) || MINE_PRESET.equals(mineFilter)
+                            TAB_PRESET.equals(tab)
                                     ? "登录后自动生成 19 套预设编队"
                                     : "还没有编队；可同步游戏编队或创建自定义编队");
                     return;
@@ -1632,47 +1672,6 @@ public class FormationManagerActivity extends Activity {
         render();
         syncNow();
         FormationManagerDialogs.showQuickFormationResult(this, steps);
-    }
-
-    private void openBearTemplate() {
-        String current = "";
-        try {
-            JSONObject st = FormationStore.bearTemplateState(this, fpid, sid);
-            current = st == null ? "" : st.optString("template_id", "");
-        } catch (Throwable ignored) {
-        }
-        FormationManagerDialogs.showBearTemplateDialog(this, catalog, current,
-                templateId -> applyBearTemplate(templateId));
-    }
-
-    private void applyBearTemplate(final String templateId) {
-        if (saving) return;
-        saving = true;
-        render();
-        try {
-            List<FormationModel> created = FormationStore.applyBearTemplate(this, fpid, sid, uidText(),
-                    templateId);
-            if (created == null || created.isEmpty()) {
-                UiStyle.toast(this, "模板应用失败：模板不存在或数据未同步");
-            } else {
-                String title = templateId;
-                for (BearFormationTemplates.Template t : FormationStore.bearTemplates(this)) {
-                    if (t.id.equals(templateId)) {
-                        title = t.title;
-                        break;
-                    }
-                }
-                UiStyle.toast(this, "已按「" + title + "」更新巨熊开车队与 6 支上车队");
-            }
-        } catch (Throwable t) {
-            UiStyle.toast(this, "应用模板失败：" + t.getMessage());
-        }
-        saving = false;
-        reload();
-        mineFilter = MINE_BEAR;
-        selectedMineId = 0;
-        render();
-        syncNow();
     }
 
     // ==================== 编辑器 ====================

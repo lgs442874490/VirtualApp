@@ -123,8 +123,6 @@ public final class FormationPicker {
                                          final OnChanged onChanged) {
         card.removeAllViews();
         final boolean ready = fpid != null && !fpid.trim().isEmpty() && sid > 0;
-        final FormationCatalogStore cat = ready
-                ? FormationStore.catalogOf(act, fpid, sid, uid) : null;   // T7：uid 感知目录
         final Runnable refresh = () -> fillBearJoinCard(act, fpid, sid, uid, fnId, card, onChanged);
         final boolean isBehemoth = "behemoth".equals(fnId);
         final int queueCount = FormationStore.fnQueueCount(act, fpid, sid, fnId);
@@ -144,30 +142,36 @@ public final class FormationPicker {
             return;
         }
 
-        // 巨熊模板（仅巨熊行动；模板会生成 1 开车队 + 6 上车队并写 bear params）
+        // 巨熊编队模板（仅巨熊行动）：复用预设「打熊队」+「熊上车1-6」，一键写入 bear 参数。
+        // 说明：不再生成「巨熊·」新编队；服务器只读顶层 formation_mode/formation_id，
+        // 旧的嵌套 launch_formation 会被忽略（生产 11-02/11-04 发车回退 squad_index(1) 的诱因）。
         if (!isBehemoth) {
-            boolean applied = false;
-            String bearText;
-            try {
-                JSONObject bear = cat.bearBinding();
-                applied = bear != null && bear.optBoolean("applied", false);
-                if (applied) {
-                    String title = bear.optString("title", "");
-                    int gen = bear.optInt("generation", 0);
-                    String tier = bear.optString("tier", "");
-                    bearText = "已应用：" + title + "（" + gen + " 代"
-                            + (tier.isEmpty() ? "" : " · " + tier) + "）";
-                } else {
-                    bearText = "尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队（盾 5% / 矛 5% / 弓 90%）";
-                }
-            } catch (Throwable t) {
-                bearText = "尚未选择模板；应用后自动生成 1 支开车队与 6 支上车队（盾 5% / 矛 5% / 弓 90%）";
-            }
-            TextView bearStatus = text(act, bearText, 11, applied ? UiStyle.OK_INK : UiStyle.INK2, false);
+            final boolean applied = FormationStore.bearPresetApplied(act, fpid, sid, fnId);
+            String bearText = applied
+                    ? "已应用：打熊队（发起）+ 熊上车1-6（上车），随角色最强英雄实时更新"
+                    : "未应用：一键把预设「打熊队」设为发起队、「熊上车1-6」设为上车队";
+            TextView bearStatus = text(act, bearText, 11,
+                    applied ? UiStyle.OK_INK : UiStyle.INK2, false);
             bearStatus.setPadding(0, 0, 0, dp(act, 6));
             card.addView(bearStatus);
-            card.addView(UiStyle.dropdownRow(act, "巨熊编队模板", applied ? "更换模板" : "选择模板",
-                    () -> openManager(act, fpid, sid, uid, "bear")));
+            TextView apply = UiStyle.primaryBtn(act,
+                    applied ? "重新应用巨熊编队模板" : "一键应用巨熊编队模板", () -> {
+                        String msg = FormationStore.applyBearPresetTemplate(act, fpid, sid, uid);
+                        if (msg == null) {
+                            UiStyle.toast(act, "等待角色英雄数据同步完成后再应用模板");
+                            return;
+                        }
+                        sync(act);
+                        refresh.run();
+                        if (onChanged != null) onChanged.onChanged();
+                        UiStyle.toast(act, msg);
+                    });
+            LinearLayout.LayoutParams applyLp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            applyLp.bottomMargin = dp(act, 6);
+            card.addView(apply, applyLp);
+            card.addView(UiStyle.dropdownRow(act, "巨熊编队模板",
+                    "我的编队 · 巨熊 ›", () -> openManager(act, fpid, sid, uid, "bear")));
         }
 
         // 上车队数（按用户自己的出征队列数：1-6；同时是服务器 queue_count）
@@ -650,11 +654,12 @@ public final class FormationPicker {
             if (SRC_GAME.equals(src)) {
                 out.addAll(games);
             } else if (SRC_PRESET.equals(src)) {
-                // 只列 19 套预设；排除游戏编队与巨熊模板生成的编队
+                // 只列 19 套预设；排除游戏编队与旧版「巨熊·」生成队（预设巨熊模板队仍属预设，保留）
                 for (FormationModel f : lib) {
-                    if (!f.isGame() && !isBear(f) && isPreset(f)) out.add(f);
+                    if (!f.isGame() && !f.isBear() && isPreset(f)) out.add(f);
                 }
             } else if (SRC_BEAR.equals(src)) {
+                // 巨熊来源 = 预设巨熊编队模板队（打熊队 + 熊上车1-6）+ 旧版「巨熊·」生成队（兼容）
                 for (FormationModel f : lib) if (isBear(f)) out.add(f);
             }
             return out;
@@ -936,7 +941,8 @@ public final class FormationPicker {
     private static boolean isBear(FormationModel f) {
         if (f == null) return false;
         try {
-            return f.isBear();
+            // 2026-11-06：巨熊编队模板改为复用预设（打熊队 + 熊上车1-6），旧「巨熊·」队保留兼容
+            return f.isBear() || PresetFormations.isBearTemplateTeam(f.id);
         } catch (Throwable t) {
             return f.name != null && f.name.startsWith("巨熊·");
         }
