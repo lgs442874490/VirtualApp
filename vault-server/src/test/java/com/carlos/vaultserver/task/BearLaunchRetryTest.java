@@ -21,7 +21,7 @@ import java.util.Map;
  * 批次5 · 巨熊行动今晚窗口增强纯函数单测（task-16）：
  * <ul>
  *   <li>5204 降档立即重试 1 次（620→320、1820→620，最低档/已用过/窗口剩余不足→不重试）；</li>
- *   <li>401/2878 延时 60s 重试 1 次（已用过/窗口剩余不足→不重试；其它码不重试）；</li>
+ *   <li>401/2878/403/415 延时 60s 重试 1 次（已用过/窗口剩余不足→不重试；其它码不重试）；</li>
  *   <li>编队配置（hero_ids/squad_index）解析与来源文案；</li>
  *   <li>20:50-21:00 预热刷新节流/文案；发车/对账 mod 文案可读性；</li>
  *   <li>重试/预热唤醒时刻与状态跨场次归一。</li>
@@ -111,7 +111,7 @@ public class BearLaunchRetryTest {
         assertTrue(retry.reason.contains("窗口剩余"));
     }
 
-    // ======================= 2. 401/2878 延时重试 =======================
+    // ======================= 2. 401/2878/403/415 延时重试 =======================
 
     @Test
     public void retry401_scheduled60sLater() {
@@ -129,6 +129,26 @@ public class BearLaunchRetryTest {
                 2878, T_MID, activeWindow(), defaults(), freshState());
         assertTrue(retry.retry);
         assertEquals(T_MID + 60L, retry.retryAtSec);
+    }
+
+    @Test
+    public void retry403_scheduled60sLater() {
+        // 2026-11-06 生产排查：403（英雄被占用）曾直接封板；改为 60s 后重试 1 次（下轮重选编队）
+        ServerBearTasks.LaunchRetry retry = ServerBearTasks.launchRetryDecision(
+                403, T_MID, activeWindow(), defaults(), freshState());
+        assertTrue("403 应重试", retry.retry);
+        assertFalse("403 走延时重试", retry.immediate);
+        assertEquals(T_MID + ServerBearTasks.LAUNCH_RETRY_DELAY_SEC, retry.retryAtSec);
+    }
+
+    @Test
+    public void retry415_scheduled60sLater() {
+        // 2026-11-06 生产排查：415（编队人数/配置超限）曾直接封板；改为 60s 后重试 1 次
+        ServerBearTasks.LaunchRetry retry = ServerBearTasks.launchRetryDecision(
+                415, T_MID, activeWindow(), defaults(), freshState());
+        assertTrue("415 应重试", retry.retry);
+        assertFalse("415 走延时重试", retry.immediate);
+        assertEquals(T_MID + ServerBearTasks.LAUNCH_RETRY_DELAY_SEC, retry.retryAtSec);
     }
 
     @Test

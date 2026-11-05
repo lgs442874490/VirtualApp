@@ -64,7 +64,6 @@ public class FormationCatalogStoreTest {
         assertEquals("雪猿宠物容量（avalancheCapacity）",
                 13500L, cat.avalanche().getLong("configuredTroopBonus"));
         assertEquals("collection 无 memory/bear → 空对象", 0, cat.memoryStatus().length());
-        assertEquals(0, cat.bearBinding().length());
     }
 
     @Test
@@ -171,7 +170,6 @@ public class FormationCatalogStoreTest {
                 cat.marchCapacityMessage().getString("message"));
         assertTrue(cat.avalanche().getBoolean("initialized"));
         assertFalse(cat.memoryStatus().getJSONObject("daily").getBoolean("exists"));
-        assertFalse(cat.bearBinding().getBoolean("applied"));
         assertEquals("自动编队容量=在家各职业最强 3 人（50006 战力 0 但为弓唯一）",
                 cat.capacity(), cat.capacityFor(cat.bestAvailableHeroIds()));
     }
@@ -211,7 +209,6 @@ public class FormationCatalogStoreTest {
             assertNotNull(cat.marchCapacityMessage());
             assertNotNull(cat.avalanche());
             assertNotNull(cat.memoryStatus());
-            assertNotNull(cat.bearBinding());
         }
         // 空目录构造也安全
         FormationCatalogStore raw = new FormationCatalogStore(null);

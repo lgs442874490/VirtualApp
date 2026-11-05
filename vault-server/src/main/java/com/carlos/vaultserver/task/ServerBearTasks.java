@@ -62,7 +62,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * 未校准时回退本机时间）。纯函数（窗口/幂等键/参数构造/解析/触发判定）均为 static，便于单测不连真协议。
  *
  * <p><b>批次5（2026-10-23 今晚窗口增强）</b>：发车编队配置化（{@code hero_ids}/{@code squad_index}，缺省沿用队1）；
- * 5204 降一档准备时间立即重试 1 次、401/2878 记录后 60s 延时重试 1 次（均受窗口剩余约束）；
+ * 5204 降一档准备时间立即重试 1 次、401/2878/403/415 记录后 60s 延时重试 1 次（均受窗口剩余约束；
+ * 403/415 为 2026-11-06 生产排查补入）；
  * 发车尝试/成败/重试计划写日志与 {@code mod.bear.launch}，对账结果写 {@code mod.bear.join}（成员数/含自己）；
  * 20:50-21:00 每 60s 预热刷新目标/编队并写 {@code mod.bear.prepare}。幂等/未预约 SKIP/零钻石语义不变。
  */
@@ -95,6 +96,8 @@ public final class ServerBearTasks {
     /** 网页版错误码（DailyBearMarchExecutor:55-58）。 */
     static final int CODE_TRAP_MASS_TIME_EXPIRED = 5204;
     static final int CODE_HERO_OCCUPIED = 403;
+    /** 编队人数/配置超限（新号上阵位不足等；与 ServerFieldTasks.GATHER_ERR_FORMATION_LIMIT 同码）。 */
+    static final int CODE_FORMATION_LIMIT = 415;
     static final int CODE_ALREADY_JOINED = 2844;
     static final int CODE_WORLD_MARCH_LIMIT = 2878;
     /** 发车可重试码（批次5）：401=兵/队列等参数不足（生产采集/狩猎同口径按“队列不足”处理）。 */
@@ -1848,7 +1851,10 @@ public final class ServerBearTasks {
             return LaunchRetry.immediateDowngrade(next, "码5204 → 准备档 " + usedIndex
                     + "(" + prepareSeconds(usedIndex) + "s) 降为 " + next + "(" + prepareSeconds(next) + "s) 立即重试");
         }
-        if (code == CODE_LAUNCH_RETRY_401 || code == CODE_WORLD_MARCH_LIMIT) {
+        if (code == CODE_LAUNCH_RETRY_401 || code == CODE_WORLD_MARCH_LIMIT
+                || code == CODE_HERO_OCCUPIED || code == CODE_FORMATION_LIMIT) {
+            // 2026-11-06：403/415 也纳入「60s 延时重试 1 次」。下一轮会重新选取编队
+            // （配合 Exec.formation 的 3 英雄夹取），避免像生产 11-02/11-04 那样一次被拒即封板。
             if (state != null && state.delayRetries >= MAX_DELAY_RETRIES) {
                 return LaunchRetry.none("码" + code + " 的 60s 延时重试已用过 1 次");
             }
@@ -2372,6 +2378,8 @@ public final class ServerBearTasks {
                 return "服务端已关闭本场巨熊发车时间（码5204），继续尝试上车";
             case CODE_HERO_OCCUPIED:
                 return "英雄被占用/安全拒绝（码403）";
+            case CODE_FORMATION_LIMIT:
+                return "编队人数/配置超限（码415）";
             case CODE_ALREADY_JOINED:
                 return "已加入目标集结或通知滞后（码2844）";
             case CODE_WORLD_MARCH_LIMIT:

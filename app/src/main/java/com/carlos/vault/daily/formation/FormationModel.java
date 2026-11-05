@@ -124,9 +124,12 @@ public final class FormationModel {
         return id < 0 || SOURCE_GAME.equals(normalizeSource(source));
     }
 
-    /** 是否巨熊模板生成的编队（客户端只按名字前缀 `巨熊·` 识别，网页规格 §2.4）。 */
+    /** 旧「巨熊·」生成编队名称前缀（2026-11-06 起模板复用预设；仅用于识别历史数据）。 */
+    public static final String LEGACY_BEAR_NAME_PREFIX = "巨熊·";
+
+    /** 是否旧「巨熊·」模板生成的编队（客户端只按名字前缀识别，网页规格 §2.4）。 */
     public boolean isBear() {
-        return name != null && name.startsWith(BearFormationTemplates.NAME_PREFIX);
+        return name != null && name.startsWith(LEGACY_BEAR_NAME_PREFIX);
     }
 
     /** 是否使用比例分配。 */

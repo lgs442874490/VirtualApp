@@ -162,6 +162,21 @@ public final class Exec {
 
     // ---------- 出征编队（与 App 端一致） ----------
 
+    /** 每队英雄上限（游戏规则 3 人；客户端布阵 hero_arranges 可能带 5 人）。 */
+    static final int MAX_MARCH_HEROES = 3;
+
+    /**
+     * 编队英雄夹取（纯函数，便于 JVM 单测）：最多 {@code max} 名，保持原顺序。
+     *
+     * <p>根因（2026-11-06 生产排查）：{@code notify_battle_hero_arrange_data.hero_arranges}
+     * 里的客户端布阵含 5 名英雄，旧回退 {@link #formation(WjdrEngine, int)} 原样下发，
+     * 导致巨熊发车 {@code req_world_march type=411} 携带 5 英雄，被游戏 403/415 拒绝。
+     */
+    static List<Long> clampHeroes(List<Long> heroes, int max) {
+        if (heroes == null || heroes.isEmpty() || max <= 0 || heroes.size() <= max) return heroes;
+        return new ArrayList<>(heroes.subList(0, max));
+    }
+
     public static Map<Long, List<Long>> clientSquads(WjdrEngine engine) {
         Map<Long, List<Long>> out = new TreeMap<>();
         Map<String, Object> arrange = engine.notifyData("notify_battle_hero_arrange_data");
@@ -304,7 +319,7 @@ public final class Exec {
 
     /** 构造出征编队：优先用客户端第 N 队布阵英雄，兵种按 40/30/30 比例。 */
     public static Map<String, Object> formation(WjdrEngine engine, int squadIndex) {
-        List<Long> heroes = clientSquads(engine).get((long) squadIndex);
+        List<Long> heroes = clampHeroes(clientSquads(engine).get((long) squadIndex), MAX_MARCH_HEROES);
         if (heroes == null || heroes.isEmpty()) {
             List<Long> all = allHeroes(engine);
             heroes = all.subList(0, Math.min(3, all.size()));
@@ -312,8 +327,9 @@ public final class Exec {
         return formationWithHeroes(engine, heroes);
     }
 
-    /** 指定英雄构造编队（301=英雄不在城时用于轮换候选）。 */
+    /** 指定英雄构造编队（301=英雄不在城时用于轮换候选；统一夹取到每队 3 人上限）。 */
     public static Map<String, Object> formationWithHeroes(WjdrEngine engine, List<Long> heroes) {
+        heroes = clampHeroes(heroes, MAX_MARCH_HEROES);
         if (heroes == null || heroes.isEmpty()) return null;
         Map<Long, Long> sol = soldiers(engine);
         long[] base = baseSoldiers(engine);

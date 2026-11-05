@@ -82,6 +82,19 @@ public final class PresetFormations {
     public static final String NAME_SHIELD_BOW = "盾弓";
     public static final String NAME_SHIELD_SPEAR = "盾矛";
 
+    // ==================== 编队模板分类（2026-11-06） ====================
+
+    /** 巨熊编队模板·发起队 = 预设「打熊队」（id 9100000003）。 */
+    public static final long ID_BEAR_TEAM = ID_FIRST + 2L;
+    /** 采集队 id 起点：采集肉（采集木/煤/铁 = +1/+2/+3）。 */
+    public static final long ID_GATHER_FIRST = ID_FIRST + 5L;
+    /** 熊上车队 id 起点：熊上车1（熊上车1-6 = +0..+5）。 */
+    public static final long ID_BEAR_RIDE_FIRST = ID_FIRST + 9L;
+    /** 巨熊编队模板上车队数（熊上车1-6）。 */
+    public static final int BEAR_TEMPLATE_JOIN_COUNT = 6;
+    /** 采集队数量（采集肉/木/煤/铁）。 */
+    public static final int GATHER_TEAM_COUNT = 4;
+
     // ==================== 采集（6..9） ====================
 
     private static final String[] GATHER_NAMES = {"采集肉", "采集木", "采集煤", "采集铁"};
@@ -141,6 +154,51 @@ public final class PresetFormations {
     /** 是否预设编队 id（9100000001..9100000019）。 */
     public static boolean isPreset(long id) {
         return id >= ID_FIRST && id <= ID_LAST;
+    }
+
+    // ---------- 巨熊 / 采集分类（「编队管理-我的编队」与一键应用共用） ----------
+
+    /** 是否巨熊编队模板队：打熊队 + 熊上车1-6。 */
+    public static boolean isBearTemplateTeam(long id) {
+        return id == ID_BEAR_TEAM
+                || (id >= ID_BEAR_RIDE_FIRST
+                && id < ID_BEAR_RIDE_FIRST + BEAR_TEMPLATE_JOIN_COUNT);
+    }
+
+    /** 是否采集队：采集肉/木/煤/铁。 */
+    public static boolean isGatherTeam(long id) {
+        return id >= ID_GATHER_FIRST && id < ID_GATHER_FIRST + GATHER_TEAM_COUNT;
+    }
+
+    /** 巨熊编队模板 id 列表：index 0 = 打熊队（发起），1..6 = 熊上车1..6（上车）。 */
+    public static List<Long> bearTemplateIds() {
+        List<Long> out = new ArrayList<Long>();
+        out.add(Long.valueOf(ID_BEAR_TEAM));
+        for (int slot = 1; slot <= BEAR_TEMPLATE_JOIN_COUNT; slot++) {
+            out.add(Long.valueOf(bearTemplateJoinId(slot)));
+        }
+        return out;
+    }
+
+    /** 巨熊编队模板第 slot 支上车队 id（slot 1..6；越界返回 0）。 */
+    public static long bearTemplateJoinId(int slot) {
+        if (slot < 1 || slot > BEAR_TEMPLATE_JOIN_COUNT) return 0L;
+        return ID_BEAR_RIDE_FIRST + (slot - 1);
+    }
+
+    /** 采集队 id 列表：采集肉/木/煤/铁（顺序与 {@link #gatherTeamId(int)} 一致）。 */
+    public static List<Long> gatherTeamIds() {
+        List<Long> out = new ArrayList<Long>();
+        for (int i = 0; i < GATHER_TEAM_COUNT; i++) {
+            out.add(Long.valueOf(gatherTeamId(i)));
+        }
+        return out;
+    }
+
+    /** 第 index 支采集队 id（index 0..3；越界返回 0）。 */
+    public static long gatherTeamId(int index) {
+        if (index < 0 || index >= GATHER_TEAM_COUNT) return 0L;
+        return ID_GATHER_FIRST + index;
     }
 
     /**

@@ -280,6 +280,7 @@ public class GatherConfigActivity extends Activity {
         }
 
         box.addView(UiStyle.sectionTitle(this, "批量操作"));
+        box.addView(actionButton("一键应用采集队（采集肉/木/煤/铁）", this::applyGatherPresetTeams));
         box.addView(actionButton("应用队列1到全部", this::applyQueueOneToAll));
         box.addView(actionButton("恢复默认（旧行为等价）", this::resetDefaults));
         box.addView(actionButton("旧版参数（兼容） →", this::openLegacyParams));
@@ -872,6 +873,57 @@ public class GatherConfigActivity extends Activity {
     }
 
     // ==================== 批量操作 ====================
+
+    /**
+     * 一键应用采集队（2026-11-06）：把预设「采集肉/木/煤/铁」按启用队列的顺序依次绑定到
+     * 队列（最多 4 队），并把预设兵量落到队列；不改资源/等级。点右上角「保存」后生效。
+     */
+    private void applyGatherPresetTeams() {
+        if (cfg == null) return;
+        try {
+            FormationStore.ensurePresets(this, fpid, serverid, formationUid());
+        } catch (Throwable ignored) {
+        }
+        java.util.List<Long> ids = com.carlos.vault.daily.formation.PresetFormations.gatherTeamIds();
+        // 先收集启用队列 + 校验预设存在，全部就绪后再改，避免“改了一半”的中间态
+        java.util.List<GatherConfigV2.QueueCfg> targets = new java.util.ArrayList<GatherConfigV2.QueueCfg>();
+        java.util.List<com.carlos.vault.daily.formation.FormationModel> teams =
+                new java.util.ArrayList<com.carlos.vault.daily.formation.FormationModel>();
+        for (GatherConfigV2.QueueCfg q : cfg.queues) {
+            if (q == null || !q.enabled) continue;
+            if (targets.size() >= ids.size()) break;
+            long id = ids.get(targets.size());
+            com.carlos.vault.daily.formation.FormationModel f =
+                    FormationStore.formation(this, fpid, serverid, id);
+            if (f == null) {
+                UiStyle.toast(this, "采集队预设尚未生成，请先登录并同步角色英雄数据");
+                return;
+            }
+            targets.add(q);
+            teams.add(f);
+        }
+        if (targets.isEmpty()) {
+            UiStyle.toast(this, "请先启用至少一个采集队列，再应用采集队");
+            return;
+        }
+        StringBuilder names = new StringBuilder();
+        for (int i = 0; i < targets.size(); i++) {
+            GatherConfigV2.QueueCfg q = targets.get(i);
+            com.carlos.vault.daily.formation.FormationModel f = teams.get(i);
+            q.formationMode = GatherConfigV2.MODE_ROLE;
+            q.formationId = f.id;
+            if (f.infantry + f.lancer + f.marksman > 0) {
+                q.infantry = f.infantry;
+                q.lancer = f.lancer;
+                q.marksman = f.marksman;
+            }
+            if (names.length() > 0) names.append('/');
+            names.append(f.name == null || f.name.isEmpty() ? ("#" + f.id) : f.name);
+        }
+        markDirty();
+        renderContent();
+        UiStyle.toast(this, "已应用采集队 ×" + targets.size() + "（" + names + "），点右上角「保存」生效");
+    }
 
     /** 队列1的资源/等级/兵量复制到全部（指定编队不可复用，编队设置保持原样）。 */
     private void applyQueueOneToAll() {

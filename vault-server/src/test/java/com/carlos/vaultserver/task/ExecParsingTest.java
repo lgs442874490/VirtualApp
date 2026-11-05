@@ -9,10 +9,23 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /** 真机推送形状解析：英雄 map、兵力 {id:{count}}、最高档士兵。 */
 public class ExecParsingTest {
+
+    @Test
+    public void clampHeroes_marchPayloadAtMostThree() {
+        // 生产 11-02/11-04 根因：客户端布阵（hero_arranges）带 5 名英雄，411 原样下发被 403/415 拒绝
+        assertEquals(List.of(1L, 2L, 3L),
+                Exec.clampHeroes(List.of(1L, 2L, 3L, 4L, 5L), Exec.MAX_MARCH_HEROES));
+        assertEquals("≤3 原样返回", List.of(1L, 2L, 3L),
+                Exec.clampHeroes(List.of(1L, 2L, 3L), Exec.MAX_MARCH_HEROES));
+        assertEquals(List.of(1L), Exec.clampHeroes(List.of(1L), Exec.MAX_MARCH_HEROES));
+        assertNull("null 保持 null（调用方走 allHeroes 兜底）", Exec.clampHeroes(null, 3));
+        assertEquals(List.of(), Exec.clampHeroes(List.of(), 3));
+    }
 
     @Test
     public void heroesFrom_keyedMap() {
