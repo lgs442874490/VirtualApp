@@ -493,28 +493,46 @@ public class GatherQueuePlanTest {
         assertTrue("写 mod:gather:send 状态", mod != null && mod.contains("资产库未就绪"));
     }
 
-    // ==================== 8. B2-T4 采集暂停协调（情报优先/巨熊窗口） ====================
+    // ==================== 8. 采集暂停协调（巨熊窗口/情报预留） ====================
 
     @Test
     public void gatherPause_bearReserveWindow() {
         long now = 10_000L;
-        assertNotNull(ServerFieldTasks.gatherPauseReason(now + 100L, 0L, 0L, 0, now));
+        assertNotNull(ServerFieldTasks.gatherPauseReason(now + 100L, 0L, 0L, now));
         // 窗口 [reserve-600, reserve+1800)：now=10000，reserve=7000 → 窗口 [6400, 8800)，已结束
-        assertNull(ServerFieldTasks.gatherPauseReason(now - 3_000L, 0L, 0L, 0, now));
-        assertNull(ServerFieldTasks.gatherPauseReason(now + 2_500L, 0L, 0L, 0, now));
+        assertNull(ServerFieldTasks.gatherPauseReason(now - 3_000L, 0L, 0L, now));
+        assertNull(ServerFieldTasks.gatherPauseReason(now + 2_500L, 0L, 0L, now));
     }
 
     @Test
     public void gatherPause_bearMassWindow() {
         long now = 10_000L;
-        assertNotNull(ServerFieldTasks.gatherPauseReason(0L, now + 100L, now + 2000L, 0, now));
-        assertNull(ServerFieldTasks.gatherPauseReason(0L, now + 700L, now + 2000L, 0, now));
+        assertNotNull(ServerFieldTasks.gatherPauseReason(0L, now + 100L, now + 2000L, now));
+        assertNull(ServerFieldTasks.gatherPauseReason(0L, now + 700L, now + 2000L, now));
+    }
+
+    /** 2026-11-05 用户规则：情报待办不再让采集整轮停派；只预留 1 队空闲队列。 */
+    @Test
+    public void intelReserveSlots_rules() {
+        // 情报待办 2 条、空闲 6、情报上限 1、在途 0 → 预留 1 队（其余 5 队照常采集）
+        assertEquals(1, ServerFieldTasks.intelReserveSlots(2, 6, 1, 0));
+        // 空闲只有 1 队 → 仍保留 1 队给情报（情报优先；采集本轮 0 队）
+        assertEquals(1, ServerFieldTasks.intelReserveSlots(1, 1, 1, 0));
+        // 没有空闲 / 没有可派情报 → 不预留
+        assertEquals(0, ServerFieldTasks.intelReserveSlots(2, 0, 1, 0));
+        assertEquals(0, ServerFieldTasks.intelReserveSlots(0, 6, 1, 0));
+        // 情报已有一队在途（302）→ 不再重复预留
+        assertEquals(0, ServerFieldTasks.intelReserveSlots(2, 6, 1, 1));
+        // 情报配置 2 队、已派 1 队 → 预留 1 队
+        assertEquals(1, ServerFieldTasks.intelReserveSlots(2, 6, 2, 1));
+        // 超过 6 队上限时夹到 6 队
+        assertEquals(6, ServerFieldTasks.intelReserveSlots(3, 6, 9, 0));
     }
 
     @Test
-    public void gatherPause_intelPriority() {
-        assertNotNull(ServerFieldTasks.gatherPauseReason(0L, 0L, 0L, 2, 10_000L));
-        assertNull(ServerFieldTasks.gatherPauseReason(0L, 0L, 0L, 0, 10_000L));
+    public void gatherPause_withoutBearWindowIsNull() {
+        // 情报待办与否都不再触发采集暂停（只有巨熊窗口会让位）
+        assertNull(ServerFieldTasks.gatherPauseReason(0L, 0L, 0L, 10_000L));
     }
 
     @Test
@@ -553,6 +571,19 @@ public class GatherQueuePlanTest {
     public void gatherPause_notReadyIsNull() {
         assertNull(ServerFieldTasks.gatherPauseReason(
                 (com.carlos.vault.wjdr.asset.CoreAssetLibrary) null, 10_000L));
+    }
+
+    /** 2026-11-05：采集续派唤醒必须写角色键（Phase 2 非 active 角色才读得到）。 */
+    @Test
+    public void gatherWakeKey_roleScoped() {
+        TaskContext scoped = new TaskContext(new FakeEngine(), "48460403", 888L,
+                new StateStore(tmp.getRoot().toPath()), new HashMap<String, JSONObject>(),
+                "服务器", null, 35371154L);
+        assertEquals("srv:cad:48460403:888:35371154:gather",
+                ServerFieldTasks.gatherWakeKey(scoped));
+        TaskContext legacy = new TaskContext(new FakeEngine(), "48460403", 888L,
+                new StateStore(tmp.getRoot().toPath()), new HashMap<String, JSONObject>(), "服务器");
+        assertEquals("srv:cad:48460403:888:gather", ServerFieldTasks.gatherWakeKey(legacy));
     }
 
     @Test

@@ -1450,9 +1450,9 @@ public class FunctionActivity extends Activity {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         final NumberPicker queuePick = new NumberPicker(act);
         queuePick.setMinValue(1);
-        queuePick.setMaxValue(5);
+        queuePick.setMaxValue(6);
         queuePick.setWrapSelectorWheel(false);
-        queuePick.setValue(Math.max(1, Math.min(5, p.optInt("max_queues", 3))));
+        queuePick.setValue(Math.max(1, Math.min(6, p.optInt("max_queues", 3))));
         queueRow.addView(queuePick, new LinearLayout.LayoutParams(UiStyle.dp(act, 80), UiStyle.dp(act, 90)));
         box.addView(queueRow);
 
