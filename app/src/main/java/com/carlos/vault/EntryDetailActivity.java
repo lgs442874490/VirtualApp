@@ -299,10 +299,13 @@ public class EntryDetailActivity extends Activity {
                 "粘贴：号 ID----token", this::showTokenDialog));
         loginCard.addView(actionRow(UiStyle.Icon.CLOUD, "从服务器恢复登录",
                 "重装/清数据后，用服务器保存的 token 回填", this::restoreTokenFromServer));
-        loginCard.addView(actionRow(UiStyle.Icon.DOC, "提取并复制当前 token",
-                "读取游戏当前登录，复制为 号ID----token", this::confirmExtractToken));
         loginCard.addView(actionRow(UiStyle.Icon.CLOUD, "保存当前登录现场",
                 "把登录态存进本入口快照，切号不丢", this::captureSnapshot));
+        // 导出 token（迁移/备份）：本机日常登录已由上面的主路径覆盖（扫码/设置/恢复/快照），
+        // 保留它的唯一价值是「把凭据带出本机」——换设备导入、备份、排查 token 有效性，
+        // 因此刻意排在卡片末尾、与主操作区分开。
+        loginCard.addView(actionRow(UiStyle.Icon.DOC, "导出 token（迁移/备份）",
+                "复制为 号ID----token，用于换设备或排障", this::confirmExportToken));
         root.addView(loginCard);
 
         // 入口管理
@@ -1643,16 +1646,18 @@ public class EntryDetailActivity extends Activity {
         }));
     }
 
-    // ---------- 提取并复制当前登录 token ----------
+    // ---------- 导出 token（迁移/备份） ----------
 
-    private void confirmExtractToken() {
-        UiStyle.showConfirmDialog(this, "提取登录 token",
+    private void confirmExportToken() {
+        UiStyle.showConfirmDialog(this, "导出 token（迁移/备份）",
                 "将读取当前游戏里登录的那个账号的 token，并复制为「号ID----token」。\n\n"
-                        + "token 等同登录凭据，可粘贴到另一台设备的号库导入框迁移账号。请勿分享给他人。",
-                "复制", UiStyle.BRAND, this::doExtractToken);
+                        + "本机日常登录不用它：扫码登录、设置 token、保存当前登录现场已覆盖日常路径；"
+                        + "这里用于换设备导入、备份，或排查 token 是否有效。\n\n"
+                        + "读取前会先关闭游戏。token 等同登录凭据，请勿分享给他人。",
+                "复制", UiStyle.BRAND, this::doExportToken);
     }
 
-    private void doExtractToken() {
+    private void doExportToken() {
         ProgressDialog pd = new ProgressDialog(this);
         pd.setMessage("正在读取当前登录…（会先关闭游戏）");
         pd.setCancelable(false);
@@ -1668,7 +1673,7 @@ public class EntryDetailActivity extends Activity {
             @Override protected void onPostExecute(Object result) {
                 pd.dismiss();
                 if (result instanceof Throwable) {
-                    toast("提取失败：" + ((Throwable) result).getMessage());
+                    toast("导出失败：" + ((Throwable) result).getMessage());
                     return;
                 }
                 VaultEngine.SessionToken st = (VaultEngine.SessionToken) result;
@@ -1685,11 +1690,11 @@ public class EntryDetailActivity extends Activity {
                 if (acc.fpid != null && acc.fpid.equals(st.fpid)) {
                     store.setToken(acc.id, st.fpid, st.token);
                     refreshInfo();
-                    toast("已提取并复制：号ID " + st.fpid + "（已更新本入口 token）");
+                    toast("已导出并复制：号ID " + st.fpid + "（已更新本入口 token）");
                 } else if (acc.fpid == null || acc.fpid.isEmpty()) {
                     store.setToken(acc.id, st.fpid, st.token);
                     refreshInfo();
-                    toast("已提取并复制：号ID " + st.fpid + "（已绑定本入口）");
+                    toast("已导出并复制：号ID " + st.fpid + "（已绑定本入口）");
                 } else {
                     toast("已复制 token。注意：当前登录的是 " + st.fpid
                             + "，与本入口(号ID " + acc.fpid + ")不同，未覆盖入口");
