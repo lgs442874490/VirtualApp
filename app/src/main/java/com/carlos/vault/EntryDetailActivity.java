@@ -293,6 +293,8 @@ public class EntryDetailActivity extends Activity {
         loginCard.addView(sectionTitle("登录数据"));
         loginCard.addView(actionRow(UiStyle.Icon.SEARCH, "微信扫码登录",
                 "手机微信扫码 → 自动回填号 ID + token（无需容器登录）", this::openWechatQrLogin));
+        loginCard.addView(actionRow(UiStyle.Icon.SEARCH, "抖音扫码登录",
+                "手机抖音扫码 → 自动回填号 ID + token（无需容器登录）", this::openDouyinQrLogin));
         loginCard.addView(actionRow(UiStyle.Icon.USER, "设置 token",
                 "粘贴：号 ID----token", this::showTokenDialog));
         loginCard.addView(actionRow(UiStyle.Icon.CLOUD, "从服务器恢复登录",
@@ -1547,6 +1549,18 @@ public class EntryDetailActivity extends Activity {
             startActivity(it);
         } catch (Throwable t) {
             toast("打开扫码登录失败：" + t.getMessage());
+        }
+    }
+
+    /** 打开抖音扫码登录，并把扫码结果回填到本入口（fpid/token）。 */
+    private void openDouyinQrLogin() {
+        try {
+            android.content.Intent it = new android.content.Intent(
+                    this, com.carlos.vault.douyin.DouyinQrLoginActivity.class);
+            it.putExtra(com.carlos.vault.douyin.DouyinQrLoginActivity.EXTRA_ENTRY_ID, acc.id);
+            startActivity(it);
+        } catch (Throwable t) {
+            toast("打开抖音扫码登录失败：" + t.getMessage());
         }
     }
 

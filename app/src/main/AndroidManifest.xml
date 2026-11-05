@@ -186,6 +186,11 @@
             android:name="com.carlos.vault.wechat.WechatQrLoginActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
+        <!-- 抖音扫码登录（2026-11-05 新增）：抖音扫码 → 小游戏授权码 → fpid+token 直接入号库 -->
+        <activity
+            android:name="com.carlos.vault.douyin.DouyinQrLoginActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
         <!-- 战争通知设置：监视名单/企微机器人/短信/最近事件（2026-10-22） -->
         <activity
             android:name="com.carlos.vault.NotifySettingsActivity"
