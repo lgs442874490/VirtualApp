@@ -1,9 +1,13 @@
 package com.carlos.vault.license;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.TreeSet;
 
 /**
  * 本地授权票据。
@@ -14,6 +18,11 @@ import java.util.TreeMap;
  * 完整性：{@link #signableFields()} 的规范化 JSON 经 HMAC-SHA256 得到签名，
  * 落盘时同时保存 ticket_json 与 ticket_sig。任何字段被手工篡改（例如把
  * lastVerifiedAt 改大以延长离线宽限）都会导致签名不符 → TAMPERED。
+ *
+ * <p><b>角色与功能矩阵（2026-11-06）</b>：服务端 activate/verify 新增下发
+ * {@code role}（1/2/3/4，4=GM）与 {@code features}（当前角色可见功能 key 列表）。
+ * 两者用于覆盖 App 的硬编码 {@code FeatureGate} 默认矩阵；离线时沿用票据缓存。
+ * 签名兼容策略：旧票据无 role/features 字段时规范化串**逐字节不变**（见 signableFields）。
  */
 public class LicenseTicket {
 
@@ -30,6 +39,18 @@ public class LicenseTicket {
      * 避免存量用户降权；HMAC 兼容策略见 {@link #signableFields()}。
      */
     public int tier = LicenseConfig.TIER_DEFAULT;
+    /**
+     * 角色档位（2026-11-06）：1/2/3/4（4=GM）。缺省 3，兼容旧票据/旧服务端。
+     * GM 的 tier 仍为 3（旧 App 按高级会员处理），role=4 只给支持矩阵的新 App。
+     */
+    public int role = LicenseConfig.TIER_DEFAULT;
+    /**
+     * 服务端是否已下发功能矩阵（区分"字段缺失 → 回退硬编码"与"空数组 → 明确无功能"）。
+     * 旧票据为 false；新票据首次 verify/activate 后为 true。
+     */
+    public boolean featuresPresent = false;
+    /** 当前角色可见功能 key（服务端权威；离线时使用该缓存）。 */
+    public List<String> features = new ArrayList<>();
     /** 首激活时间（服务端权威，epoch ms）。 */
     public long activatedAt = 0L;
     /** 到期时间；permanent 为 0。 */
@@ -57,19 +78,34 @@ public class LicenseTicket {
         return code == null || code.isEmpty() || ticketId == null || ticketId.isEmpty();
     }
 
+    /** 排序、去重、去空后的功能 key（签名与下发消费都以该顺序为准）。 */
+    public List<String> normalizedFeatures() {
+        TreeSet<String> set = new TreeSet<>();
+        if (features != null) {
+            for (String k : features) {
+                if (k != null && !k.isEmpty()) set.add(k);
+            }
+        }
+        return new ArrayList<>(set);
+    }
+
+    /** 功能 key 的稳定串（逗号连接；key 只含小写字母/下划线，不含逗号）。 */
+    private String featuresSignatureValue() {
+        return String.join(",", normalizedFeatures());
+    }
+
     /**
      * 参与签名的字段集合。刻意排除 {@link #sig} 自身。
      * 返回 TreeMap 以保证键有序，配合 {@link LicenseCrypto#writeCanonical} 得到稳定串。
      *
-     * <p><b>tier 与旧票据 HMAC 兼容（批次7）</b>：只有当 {@code tier != TIER_DEFAULT(3)} 时才把
-     * {@code tier} 放进签名串。原因：
+     * <p><b>tier/role/features 与旧票据 HMAC 兼容（2026-11-06）</b>：
      * <ul>
-     *   <li>旧票据（2026-10 批次7 之前签发）没有 tier 字段、签名串里也没有 tier —— 旧票据
-     *       反序列化后 tier 默认为 3，规范化串与旧版逐字节一致，**旧签名继续通过、不失效**；
-     *   <li>新票据里 tier=3（高级会员，默认档）同样走旧串，签名口径稳定；
-     *   <li>tier=1/2（真实降档）才纳入签名，任何把 1/2 改成 3 的手工篡改都会改变签名串 →
-     *       校验失败 → TAMPERED；反过来把默认 3 改成 1/2 同样 TAMPERED。
-     *       把任意票据“改成 3”在签名上等价于缺省（已是最高档），不产生权限提升。
+     *   <li>旧票据（无 tier/role/features 字段）反序列化后 tier=3、role=3、featuresPresent=false，
+     *       规范化串与旧版**逐字节一致**，旧签名继续通过、不失效；</li>
+     *   <li>tier/role 仅在非默认值 3 时参与签名（与既有 tier 策略一致）；</li>
+     *   <li>features 仅在 featuresPresent=true 时参与（空数组也会以 {@code "features":""} 入串，
+     *       因此"删掉 features 字段并伪造 featuresPresent=false"会改变签名 → TAMPERED）；</li>
+     *   <li>GM 的 role=4 入串；把 3 改成 4 会改变签名 → TAMPERED。</li>
      * </ul>
      */
     public Map<String, Object> signableFields() {
@@ -86,6 +122,14 @@ public class LicenseTicket {
         // 仅非默认档参与签名：保证旧票据（无 tier）签名串字节不变（详见方法注释）。
         if (LicenseConfig.normalizeTier(tier) != LicenseConfig.TIER_DEFAULT) {
             m.put("tier", LicenseConfig.normalizeTier(tier));
+        }
+        // 角色仅非默认（3）时参与签名：GM=4/T1=1/T2=2 入串；默认档保持旧串。
+        if (LicenseConfig.normalizeRole(role) != LicenseConfig.TIER_DEFAULT) {
+            m.put("role", LicenseConfig.normalizeRole(role));
+        }
+        // 功能矩阵仅在服务端下发过时参与签名（空数组也入串，见方法注释）。
+        if (featuresPresent) {
+            m.put("features", featuresSignatureValue());
         }
         m.put("type", type == null ? "" : type);
         return m;
@@ -104,6 +148,11 @@ public class LicenseTicket {
             o.put("ticketId", ticketId == null ? "" : ticketId);
             o.put("type", type == null ? "" : type);
             o.put("tier", LicenseConfig.normalizeTier(tier));
+            o.put("role", LicenseConfig.normalizeRole(role));
+            o.put("featuresPresent", featuresPresent);
+            JSONArray arr = new JSONArray();
+            for (String k : normalizedFeatures()) arr.put(k);
+            o.put("features", arr);
             o.put("activatedAt", activatedAt);
             o.put("expireAt", expireAt);
             o.put("serverStatus", serverStatus == null ? "" : serverStatus);
@@ -118,7 +167,7 @@ public class LicenseTicket {
         }
     }
 
-    /** 从落盘 JSON 反序列化；解析失败返回 null。缺 tier 的旧票据按 {@link LicenseConfig#TIER_DEFAULT}=3。 */
+    /** 从落盘 JSON 反序列化；解析失败返回 null。缺 tier/role 的旧票据按默认 3。 */
     public static LicenseTicket fromJson(String json) {
         if (json == null || json.trim().isEmpty()) return null;
         try {
@@ -129,6 +178,17 @@ public class LicenseTicket {
             t.type = o.optString("type", LicenseConfig.TYPE_MONTH);
             // 旧票据无 tier 字段 → optInt 取默认 3（存量用户保持高级会员，不降权）
             t.tier = LicenseConfig.normalizeTier(o.optInt("tier", LicenseConfig.TIER_DEFAULT));
+            t.role = LicenseConfig.normalizeRole(o.optInt("role", LicenseConfig.TIER_DEFAULT));
+            t.features = new ArrayList<>();
+            JSONArray arr = o.optJSONArray("features");
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    String k = arr.optString(i, "");
+                    if (!k.isEmpty()) t.features.add(k);
+                }
+            }
+            // 兼容：缺 featuresPresent 但存在 features 字段时视为已下发。
+            t.featuresPresent = o.optBoolean("featuresPresent", arr != null);
             t.activatedAt = o.optLong("activatedAt", 0L);
             t.expireAt = o.optLong("expireAt", 0L);
             t.serverStatus = o.optString("serverStatus", LicenseConfig.STATUS_ACTIVE);
@@ -150,6 +210,9 @@ public class LicenseTicket {
         t.ticketId = ticketId;
         t.type = type;
         t.tier = tier;
+        t.role = role;
+        t.featuresPresent = featuresPresent;
+        t.features = new ArrayList<>(features == null ? new ArrayList<>() : features);
         t.activatedAt = activatedAt;
         t.expireAt = expireAt;
         t.serverStatus = serverStatus;
@@ -165,7 +228,7 @@ public class LicenseTicket {
      * 用服务端响应 data 中的 ticket 对象填充本票据。
      * 只覆盖服务端权威字段，本地字段（lastVerifiedAt/clockOffsetMs/deviceHash/salt）由调用方另行设置。
      *
-     * <p>tier：服务端下发才覆盖（旧版服务端无该字段时保持原值，旧票据默认 3）。
+     * <p>tier/role/features：服务端下发才覆盖（旧版服务端无对应字段时保持原值）。
      */
     public void applyServerTicket(JSONObject ticket) {
         if (ticket == null) return;
@@ -175,14 +238,40 @@ public class LicenseTicket {
         if (ticket.has("tier")) {
             tier = LicenseConfig.normalizeTier(ticket.optInt("tier", LicenseConfig.TIER_DEFAULT));
         }
+        applyServerRoleFeatures(ticket);
         activatedAt = ticket.optLong("activatedAt", activatedAt);
         expireAt = ticket.optLong("expireAt", expireAt);
         serverStatus = ticket.optString("serverStatus", serverStatus);
     }
 
+    /**
+     * 解析服务端下发的 role/features（activate 的 ticket 对象与 verify 的 data 共用）。
+     * 字段缺失时保持原值，避免旧服务端把已有矩阵清空。
+     */
+    public void applyServerRoleFeatures(JSONObject o) {
+        if (o == null) return;
+        if (o.has("role")) {
+            role = LicenseConfig.normalizeRole(o.optInt("role", LicenseConfig.TIER_DEFAULT));
+        }
+        if (o.has("features")) {
+            JSONArray arr = o.optJSONArray("features");
+            List<String> list = new ArrayList<>();
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    String k = arr.optString(i, "");
+                    if (!k.isEmpty()) list.add(k);
+                }
+            }
+            features = list;
+            featuresPresent = true;
+        }
+    }
+
     @Override
     public String toString() {
-        return "LicenseTicket{type=" + type + ", tier=" + tier + ", expireAt=" + expireAt
-                + ", serverStatus=" + serverStatus + ", lastVerifiedAt=" + lastVerifiedAt + "}";
+        return "LicenseTicket{type=" + type + ", tier=" + tier + ", role=" + role
+                + ", features=" + (featuresPresent ? normalizedFeatures().size() : -1)
+                + ", expireAt=" + expireAt + ", serverStatus=" + serverStatus
+                + ", lastVerifiedAt=" + lastVerifiedAt + "}";
     }
 }

@@ -237,7 +237,9 @@ public class FeatureGateTest {
         assertEquals(FeatureGate.TIER_BASIC, FeatureGate.sanitizeTier(1));
         assertEquals(FeatureGate.TIER_MEMBER, FeatureGate.sanitizeTier(2));
         assertEquals(FeatureGate.TIER_PREMIUM, FeatureGate.sanitizeTier(3));
-        assertEquals("超界按最高档封顶", FeatureGate.TIER_PREMIUM, FeatureGate.sanitizeTier(99));
+        // 2026-11-06：新增 GM 档位（4），sanitize 封顶改为 4。
+        assertEquals("GM 档保留", FeatureGate.TIER_GM, FeatureGate.sanitizeTier(4));
+        assertEquals("超界按最高档封顶", FeatureGate.TIER_GM, FeatureGate.sanitizeTier(99));
     }
 
     // ================= 等级门槛/文案 =================

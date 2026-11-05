@@ -164,6 +164,20 @@ const (
 	RebindMaxDefault = 0
 	// MsPerDay 一天的毫秒数
 	MsPerDay = 24 * 60 * 60 * 1000
+
+	// RoleGM GM 逻辑档位（2026-11-06 管理后台）。角色有效值 1/2/3/4。
+	// tier 仍是 1/2/3；GM 由 license_code.is_gm 标记，role 在下发时计算为 4。
+	RoleGM = 4
+)
+
+// 管理后台操作审计动作（2026-11-06）
+const (
+	AdminActionLogin       = "login"
+	AdminActionGenerate    = "generate"
+	AdminActionRevoke      = "revoke"
+	AdminActionRestore     = "restore"
+	AdminActionMatrixSave  = "matrix_save"
+	AdminActionMatrixReset = "matrix_reset"
 )
 
 // ---------------------------------------------------------------------------
@@ -177,6 +191,7 @@ type LicenseCode struct {
 	CodeHash     string
 	Type         string
 	Tier         int64 // 授权等级 1/2/3（批次7；存量码迁移后默认 3）
+	IsGM         bool  // GM 标记（2026-11-06）：逻辑第 4 档
 	DurationDays int64
 	Status       string
 	Remark       string
@@ -269,13 +284,15 @@ type Envelope struct {
 
 // Ticket activate 成功后下发的票据
 type Ticket struct {
-	TicketID     string `json:"ticketId"`
-	Code         string `json:"code"`
-	Type         string `json:"type"`
-	Tier         int    `json:"tier"` // 授权等级 1/2/3（批次7；缺省/旧服务端按 3 兼容）
-	ActivatedAt  int64  `json:"activatedAt"`
-	ExpireAt     int64  `json:"expireAt"`
-	ServerStatus string `json:"serverStatus"`
+	TicketID     string   `json:"ticketId"`
+	Code         string   `json:"code"`
+	Type         string   `json:"type"`
+	Tier         int      `json:"tier"` // 授权等级 1/2/3（批次7；缺省/旧服务端按 3 兼容）
+	Role         int      `json:"role"` // 角色档位 1/2/3/4（4=GM，2026-11-06）
+	Features     []string `json:"features"` // 当前角色可见的功能 key（已按字典序排序）
+	ActivatedAt  int64    `json:"activatedAt"`
+	ExpireAt     int64    `json:"expireAt"`
+	ServerStatus string   `json:"serverStatus"`
 }
 
 // HelloData activate phase=hello 响应
@@ -290,12 +307,14 @@ type HelloData struct {
 // status 为封闭四值集合 {active,expired,revoked,device_mismatch}；
 // 未激活分支（code=1007）不返回 status，故此处带 omitempty（零值即省略）。
 type VerifyData struct {
-	Status        string `json:"status,omitempty"`
-	Type          string `json:"type"`
-	Tier          int    `json:"tier"` // 授权等级 1/2/3（批次7；客户端按此刷新本地票据）
-	ExpireAt      int64  `json:"expireAt"`
-	RemainSeconds int64  `json:"remainSeconds"`
-	DeviceLabel   string `json:"deviceLabel"`
+	Status        string   `json:"status,omitempty"`
+	Type          string   `json:"type"`
+	Tier          int      `json:"tier"` // 授权等级 1/2/3（批次7；客户端按此刷新本地票据）
+	Role          int      `json:"role"` // 角色档位 1/2/3/4（4=GM，2026-11-06）
+	Features      []string `json:"features"` // 当前角色可见的功能 key（已按字典序排序）
+	ExpireAt      int64    `json:"expireAt"`
+	RemainSeconds int64    `json:"remainSeconds"`
+	DeviceLabel   string   `json:"deviceLabel"`
 }
 
 // RebindData rebind 响应（字段名 code_expr 按设计文档 §5.4 照抄）

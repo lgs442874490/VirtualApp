@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"text/tabwriter"
 	"time"
 )
@@ -80,7 +81,7 @@ func cmdIssue(args []string) error {
 	fs := flag.NewFlagSet("issue", flag.ExitOnError)
 	registerDBFlag(fs, cfg)
 	typ := fs.String("type", "month", "码类型：month | permanent")
-	tierFlag := fs.String("tier", "3", "码等级：1=普通 2=会员 3=高级会员（默认 3；存量兼容）")
+	tierFlag := fs.String("tier", "3", "码等级：1=普通 2=会员 3=高级会员 gm=GM（默认 3；存量兼容）")
 	count := fs.Int("count", 1, "生成数量")
 	remark := fs.String("remark", "", "备注（运营用）")
 	out := fs.String("out", "", "可选：导出 CSV 文件路径")
@@ -90,9 +91,15 @@ func cmdIssue(args []string) error {
 	if *typ != TypeMonth && *typ != TypePermanent {
 		return fmt.Errorf("--type 只能是 month 或 permanent，收到 %q", *typ)
 	}
-	tier, err := parseTier(*tierFlag)
-	if err != nil {
-		return err
+	tierStr := strings.ToLower(strings.TrimSpace(*tierFlag))
+	isGM := tierStr == "gm"
+	tier := TierDefault
+	if !isGM {
+		var err error
+		tier, err = parseTier(tierStr)
+		if err != nil {
+			return err
+		}
 	}
 	if *count <= 0 {
 		return fmt.Errorf("--count 必须为正整数")
@@ -117,13 +124,17 @@ func cmdIssue(args []string) error {
 		if err != nil {
 			return err
 		}
-		if _, err := insertCodeWithTier(db, code, *typ, tier, durationDays, *remark, createdBy, now); err != nil {
+		if _, err := insertCodeWithRole(db, code, *typ, tier, isGM, durationDays, *remark, createdBy, now); err != nil {
 			return fmt.Errorf("写入兑换码失败: %w", err)
 		}
 		codes = append(codes, code)
 	}
 
-	fmt.Printf("已生成 %d 个兑换码（type=%s, tier=%d %s）：\n", len(codes), *typ, tier, tierName(tier))
+	roleText := tierName(tier)
+	if isGM {
+		roleText = "GM"
+	}
+	fmt.Printf("已生成 %d 个兑换码（type=%s, tier=%d %s）：\n", len(codes), *typ, tier, roleText)
 	for _, c := range codes {
 		fmt.Println("  " + c)
 	}

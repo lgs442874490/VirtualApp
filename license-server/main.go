@@ -43,14 +43,20 @@ func usage() {
   LICENSE_DB            SQLite 数据库路径（默认 ./license.db）
   LICENSE_SECRET        请求签名密钥（serve 必填）
   LICENSE_ADMIN_TOKEN   管理令牌（rebind 鉴权）
+  LICENSE_ADMIN_PASSWORD 管理后台口令（≥16 字符；未设置则 /admin 返回 503）
   LICENSE_ADDR          监听地址（默认 127.0.0.1:8787）
-  LICENSE_REBIND_MAX    换绑次数上限，0=不限（默认 1，每码限 1 次）
+  LICENSE_REBIND_MAX    换绑次数上限，0=禁止（默认），>0=限 N 次，-1=不限
   LICENSE_NONCE_TTL     nonce 存活秒数（默认 900）
+
+管理后台（2026-11-06）:
+  serve 启动后访问 /admin（单管理员口令登录）：兑换码批量生成/筛选/启停/使用记录/
+  功能权限矩阵（T1/T2/T3/GM）/功能目录/操作审计。接口见 /admin/api/*。
 
 授权等级（tier，批次7）:
   1 = 普通（只有分身）
   2 = 会员（日常脚本）
   3 = 高级会员（高阶功能）—— 存量码/未指定等级一律按 3（兼容旧用户）
+  gm = GM 码（逻辑第 4 档，is_gm 标记；全部已实现功能开放，受有效期约束）
 
 示例:
   license-cli initdb
@@ -107,6 +113,7 @@ func cmdServe(args []string) error {
 	registerDBFlag(fs, cfg)
 	fs.StringVar(&cfg.Secret, "secret", cfg.Secret, "请求签名密钥（env LICENSE_SECRET）")
 	fs.StringVar(&cfg.AdminToken, "admin-token", cfg.AdminToken, "管理令牌（env LICENSE_ADMIN_TOKEN）")
+	fs.StringVar(&cfg.AdminPassword, "admin-password", cfg.AdminPassword, "管理后台口令（env LICENSE_ADMIN_PASSWORD；≥16 字符，未设置则 /admin 503）")
 	fs.StringVar(&cfg.Addr, "addr", cfg.Addr, "监听地址（env LICENSE_ADDR，默认 127.0.0.1:8787）")
 	fs.Int64Var(&cfg.RebindMax, "rebind-max", cfg.RebindMax, "换绑次数上限，默认 1，0=不限（env LICENSE_REBIND_MAX）")
 	fs.Int64Var(&cfg.NonceTTLMs, "nonce-ttl-ms", cfg.NonceTTLMs, "nonce 存活毫秒数（env LICENSE_NONCE_TTL 为秒）")
@@ -124,6 +131,11 @@ func cmdServe(args []string) error {
 	}
 	if cfg.AdminToken == "" {
 		logWarn("LICENSE_ADMIN_TOKEN 未设置：/v1/rebind 与 CLI rebind 将无法通过鉴权")
+	}
+	if cfg.AdminPassword == "" {
+		logWarn("LICENSE_ADMIN_PASSWORD 未设置：管理后台 /admin 将返回 503（授权接口不受影响）")
+	} else if len(cfg.AdminPassword) < 16 {
+		logWarn("LICENSE_ADMIN_PASSWORD 长度较短（%d），建议 ≥16 个字符", len(cfg.AdminPassword))
 	}
 	if cfg.NonceTTLMs <= SignWindowMs {
 		logWarn("NonceTTL(%dms) 不大于签名窗口(%dms)，建议调大以避免签名窗口内的 nonce 被提前清理", cfg.NonceTTLMs, SignWindowMs)

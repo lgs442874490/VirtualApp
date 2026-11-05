@@ -6,32 +6,31 @@ import com.carlos.BuildConfig;
 import com.carlos.vault.license.LicenseConfig;
 import com.carlos.vault.license.LicenseManager;
 
+import java.util.List;
+
 /**
- * 功能分级门控 —— 全 App 唯一事实源（批次7，2026-10-23）。
+ * 功能分级门控 —— 全 App 唯一事实源（批次7，2026-10-23；2026-11-06 接入服务端矩阵）。
  *
  * <p>背景（用户要求）：
  * <ul>
  *   <li><b>没有对应权限的功能不要显示</b>：兑换码三级 ——
- *       T1 普通（只有分身）/ T2 会员（日常脚本）/ T3 高级会员（高阶功能）；</li>
- *   <li><b>没开发/没立项的功能不要放出去</b>：未实现功能一律隐藏，即使 T3 也不显示。</li>
+ *       T1 普通（只有分身）/ T2 会员（日常脚本）/ T3 高级会员（高阶功能）/ GM（全部已实现）；</li>
+ *   <li><b>没开发/没立项的功能不要放出去</b>：未实现功能一律隐藏，即使 GM 也不显示。</li>
  * </ul>
  *
- * <p>约定：
- * <ul>
- *   <li>UI 层（HomeActivity/ToolBoxActivity 等）<b>只允许</b>通过本类判断功能可见性，
- *       不允许在界面代码里硬编码等级/权限判断（避免两处漂移）。</li>
- *   <li>授权可用性（是否已激活/到期/被吊销）仍由既有 {@link LicenseManager#localUsable()}
- *       与 {@code LicenseManager.gateForLaunch(ctx)} 负责；本类只回答“该等级能不能看该功能”。</li>
- *   <li>存量旧票据无 tier 字段 → {@link LicenseManager#tier()} 已按 {@code TIER_PREMIUM}(3) 兼容，
- *       不降权老用户；无票据/空票据 → T1（最小权限 fail-safe）。</li>
- *   <li>未开发功能的判定依据：{@code design/全流程行为与分级门控-20261023.md}（批次7 审计）
- *       与代码证据（有无真实实现/协议/入口）；新功能立项完成后把该条
- *       {@code implemented} 改为 {@code true} 即自动出现在对应等级用户界面。</li>
- * </ul>
+ * <p>判定优先级（2026-11-06）：
+ * <ol>
+ *   <li>{@code implemented=false} → 恒隐藏（任何角色）；</li>
+ *   <li>{@code debugOnly=true} 且非 debug 包 → 恒隐藏；</li>
+ *   <li>服务端已下发功能矩阵（{@link LicenseManager#featuresPresent()}）→ <b>按矩阵 key 命中</b>；</li>
+ *   <li>未下发矩阵（旧服务端/旧票据）→ 回退 {@code minTier} 比较（与历史行为一致）。</li>
+ * </ol>
  *
- * <p>本类为纯 Java 判定（差分位：{@link #visible(Feature, int, boolean)} 可在 JVM 单测直跑，
- * 不依赖 Android 运行时）。Android 相关方法（{@link #currentTier(Context)} /
- * {@link #isDebugBuild(Context)}）只做“读数”，不参与矩阵判定。
+ * <p>约定：UI 层只允许通过本类判断功能可见性；授权可用性（是否已激活/到期/被吊销）
+ * 仍由既有 {@link LicenseManager#localUsable()} 与 {@code gateForLaunch} 负责。
+ *
+ * <p>本类为纯 Java 判定（{@link #visible(Feature, int, boolean, List, boolean)} 可在 JVM 单测直跑，
+ * 不依赖 Android 运行时）。Android 相关方法只做“读数”。
  */
 public final class FeatureGate {
 
@@ -43,6 +42,8 @@ public final class FeatureGate {
     public static final int TIER_MEMBER = LicenseConfig.TIER_MEMBER;
     /** T3 高级会员：高阶功能（守护盟友/敌情监控/工具箱等）。 */
     public static final int TIER_PREMIUM = LicenseConfig.TIER_PREMIUM;
+    /** GM：全部"已实现且非调试包"功能（2026-11-06 管理后台）。 */
+    public static final int TIER_GM = LicenseConfig.TIER_GM;
 
     private FeatureGate() {
     }
@@ -52,9 +53,9 @@ public final class FeatureGate {
      *
      * <p>规则：
      * <ul>
-     *   <li>{@code implemented=false}：未开发/未立项 → 任何等级都隐藏（含 T3）；</li>
+     *   <li>{@code implemented=false}：未开发/未立项 → 任何等级都隐藏（含 GM）；</li>
      *   <li>{@code debugOnly=true}：调试/实测项 → 仅 debug 包可见，正式包隐藏；</li>
-     *   <li>其余按 {@code minTier} 与当前票据等级比较，不足不显示。</li>
+     *   <li>其余按服务端矩阵（未下发时按 {@code minTier}）判定。</li>
      * </ul>
      */
     public enum Feature {
@@ -128,7 +129,7 @@ public final class FeatureGate {
 
         /** 稳定 key（日志/状态/document 用，不随中文名变化）。 */
         public final String key;
-        /** 最低可见等级（T1/T2/T3）。 */
+        /** 最低可见等级（T1/T2/T3；未下发矩阵时的回退依据）。 */
         public final int minTier;
         /** 是否已有真实实现（false = 未开发/未立项，任何等级都隐藏）。 */
         public final boolean implemented;
@@ -149,21 +150,56 @@ public final class FeatureGate {
     // ================= 矩阵判定（UI 唯一入口） =================
 
     /**
-     * 该功能在当前票据等级/构建类型下是否应显示。
+     * 该功能在当前角色/功能矩阵/构建类型下是否应显示（Android 入口）。
      *
-     * <p>Android 便捷入口：内部读 {@link LicenseManager#tier()}（本地票据权威等级）与
-     * debug 标记；授权可用性由既有门禁负责（未激活时主界面本身走激活页）。
+     * <p>矩阵来源：{@link LicenseManager#features()}（服务端 verify/activate 下发并落盘）。
+     * 未下发（旧服务端/旧票据）时回退硬编码 minTier。
      */
     public static boolean visible(Context ctx, Feature feature) {
-        return visible(feature, currentTier(ctx), isDebugBuild(ctx));
+        if (ctx == null) return false;
+        try {
+            LicenseManager lm = LicenseManager.get(ctx);
+            if (lm == null) return false;
+            lm.ensureLoaded();
+            return visible(feature, currentTier(ctx), lm.featuresPresent(),
+                    lm.features(), isDebugBuild(ctx));
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
-    /** 纯函数：是否可见（JVM 单测直跑）。 */
-    public static boolean visible(Feature feature, int tier, boolean debugBuild) {
+    /**
+     * 纯函数：是否可见（JVM 单测直跑）。
+     *
+     * @param role            当前角色 1/2/3/4（GM）；0=无授权
+     * @param featuresPresent 服务端是否已下发矩阵
+     * @param features        矩阵 key（featuresPresent=true 时生效；空列表=明确无功能）
+     * @param debugBuild      是否调试包
+     */
+    public static boolean visible(Feature feature, int role, boolean featuresPresent,
+                                  List<String> features, boolean debugBuild) {
         if (feature == null) return false;                  // 未知功能：安全隐藏
-        if (!feature.implemented) return false;             // 未开发/未立项：即使 T3 也隐藏
+        if (!feature.implemented) return false;             // 未开发/未立项：即使 GM 也隐藏
         if (feature.debugOnly && !debugBuild) return false; // 调试实测项：仅调试包
-        return sanitizeTier(tier) >= requiredTier(feature);// 无对应权限不显示
+        if (featuresPresent) {
+            // 服务端矩阵为准（大小写/顺序无关；未知 key 忽略）。
+            if (features == null) return false;
+            for (String k : features) {
+                if (feature.key.equals(k)) return true;
+            }
+            return false;
+        }
+        return sanitizeTier(role) >= requiredTier(feature); // 回退：无矩阵时按等级
+    }
+
+    /**
+     * 纯函数：回退判定（无服务端矩阵时使用；保留给单测与旧调用方）。
+     *
+     * @deprecated 优先使用 {@link #visible(Feature, int, boolean, List, boolean)}（含服务端矩阵）。
+     */
+    @Deprecated
+    public static boolean visible(Feature feature, int tier, boolean debugBuild) {
+        return visible(feature, tier, false, null, debugBuild);
     }
 
     /** 该功能所需最低等级；null/未知按 T1 处理（由 visible() 兜底隐藏）。 */
@@ -191,16 +227,16 @@ public final class FeatureGate {
         return feature == null ? "未知功能" : feature.label;
     }
 
-    /** 等级归一化（UI 用：0=无权限，1/2/3 封顶；**不**把 0 提升为 3，与票据解析区分）。 */
+    /** 等级归一化（UI 用：0=无权限，1/2/3/4(GM) 封顶；**不**把 0 提升为 3，与票据解析区分）。 */
     public static int sanitizeTier(int raw) {
         if (raw <= TIER_NONE) return TIER_NONE;
-        if (raw >= TIER_PREMIUM) return TIER_PREMIUM;
+        if (raw >= TIER_GM) return TIER_GM;
         return raw;
     }
 
-    /** 等级中文名（直接复用 LicenseConfig，避免两处文案漂移）。 */
-    public static String tierName(int tier) {
-        return LicenseConfig.tierName(tier);
+    /** 角色中文名（含 GM；直接复用 LicenseConfig，避免两处文案漂移）。 */
+    public static String tierName(int role) {
+        return LicenseConfig.roleName(role);
     }
 
     // ================= 日常功能（FnRegistry）门控 =================
@@ -210,9 +246,9 @@ public final class FeatureGate {
      *
      * <p>需要映射的三类：
      * <ul>
-     *   <li>高阶功能：guardian（T3，且当前“建设中”→矩阵 implemented=false 隐藏）；</li>
+     *   <li>高阶功能：guardian（T3）；</li>
      *   <li>UI 有行但服务端无对应任务：war（隐藏）；</li>
-     *   <li>产品未确认/仅部分：backpack（隐藏）、behemoth（保留可关，文案待改）。</li>
+     *   <li>产品未确认/仅部分：backpack（隐藏）、behemoth（保留可关）。</li>
      * </ul>
      * 其余日常模块均 T2（页面级由 TAB 门控），这里返回 null 表示“不额外过滤”。
      */
@@ -232,21 +268,22 @@ public final class FeatureGate {
         }
     }
 
-    /** 日常功能是否应出现在列表（无映射=受 T2 页面级门控，恒可见）。 */
+    /** 日常功能是否应出现在列表（纯函数，无矩阵；保留给单测）。 */
     public static boolean dailyFnVisible(String fnId, int tier, boolean debugBuild) {
         Feature f = dailyFnFeature(fnId);
-        return f == null || visible(f, tier, debugBuild);
+        return f == null || visible(f, tier, false, null, debugBuild);
     }
 
-    /** 日常功能是否应出现在列表（Android 便捷入口）。 */
+    /** 日常功能是否应出现在列表（Android 入口，走服务端矩阵）。 */
     public static boolean dailyFnVisible(Context ctx, String fnId) {
-        return dailyFnVisible(fnId, currentTier(ctx), isDebugBuild(ctx));
+        Feature f = dailyFnFeature(fnId);
+        return f == null || visible(ctx, f);
     }
 
     // ================= 环境读取（Android，仅读数不参与矩阵判定） =================
 
     /**
-     * 当前等级：本地票据 tier（服务端权威，激活/联网校验时落盘）。
+     * 当前角色：本地票据 role（服务端权威，激活/联网校验时落盘；1/2/3/4，4=GM）。
      *
      * <p>fail-safe：无 Context/LicenseManager、授权不可用（未激活/到期/被吊销）或判定异常
      * 一律返回 {@link #TIER_NONE}（不越权放行）；存量旧票据由 LicenseManager 默认 T3 兼容。
@@ -258,7 +295,7 @@ public final class FeatureGate {
             if (lm == null) return TIER_NONE;
             lm.ensureLoaded();
             if (!lm.localUsable()) return TIER_NONE;
-            return sanitizeTier(LicenseConfig.normalizeTier(lm.tier()));
+            return sanitizeTier(LicenseConfig.normalizeRole(lm.role()));
         } catch (Throwable t) {
             return TIER_NONE;
         }
@@ -288,16 +325,28 @@ public final class FeatureGate {
     }
 
     /**
-     * 工具箱当前等级/构建下的可用工具数（release 下 T3 敌情监控 + 真机监控；debug 包额外协议监听）。
-     * 用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
+     * 工具箱当前角色/构建/矩阵下的可用工具数（release 下 T3 敌情监控 + 真机监控 + 观察点 + 真机抓包；
+     * debug 包额外协议监听）。用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
      */
+    public static int visibleToolCount(Context ctx) {
+        int n = 0;
+        if (visible(ctx, Feature.ENEMY_WATCH)) n++;
+        if (visible(ctx, Feature.DEV_MONITOR)) n++;
+        if (visible(ctx, Feature.WATCHPOINT)) n++;
+        if (visible(ctx, Feature.PROTO_CAPTURE)) n++;
+        if (visible(ctx, Feature.PROTOCOL_LOGGER)) n++;
+        return n;
+    }
+
+    /** 纯函数版本（无矩阵；保留给单测）。 */
+    @Deprecated
     public static int visibleToolCount(int tier, boolean debugBuild) {
         int n = 0;
-        if (visible(Feature.ENEMY_WATCH, tier, debugBuild)) n++;
-        if (visible(Feature.DEV_MONITOR, tier, debugBuild)) n++;
-        if (visible(Feature.WATCHPOINT, tier, debugBuild)) n++;
-        if (visible(Feature.PROTO_CAPTURE, tier, debugBuild)) n++;
-        if (visible(Feature.PROTOCOL_LOGGER, tier, debugBuild)) n++;
+        if (visible(Feature.ENEMY_WATCH, tier, false, null, debugBuild)) n++;
+        if (visible(Feature.DEV_MONITOR, tier, false, null, debugBuild)) n++;
+        if (visible(Feature.WATCHPOINT, tier, false, null, debugBuild)) n++;
+        if (visible(Feature.PROTO_CAPTURE, tier, false, null, debugBuild)) n++;
+        if (visible(Feature.PROTOCOL_LOGGER, tier, false, null, debugBuild)) n++;
         return n;
     }
 }

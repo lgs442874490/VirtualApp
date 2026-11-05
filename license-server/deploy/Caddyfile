@@ -57,3 +57,5 @@ cs.888syd.xyz {
 #    若 BASE_URL 误带 /v1，实际会请求到 /v1/v1/activate 而 404。
 # 3. 证书签发前提：80/443 对公网放通且由本机 Caddy 独占；域名不得套 CDN 代理。
 # 4. /healthz 会对公网暴露（仅返回进程存活状态，无敏感信息）；/v1/rebind 需 adminToken。
+# 5. 管理后台（2026-11-06）：/admin 由同一 upstream 提供，无需新增路由；口令由
+#    systemd EnvironmentFile 的 LICENSE_ADMIN_PASSWORD 提供（未设置时 /admin 返回 503）。

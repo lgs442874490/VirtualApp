@@ -30,6 +30,9 @@ type Server struct {
 
 	mu         sync.Mutex
 	challenges map[string]challenge
+
+	// admin 管理后台会话/失败锁定运行态（2026-11-06）。
+	admin *adminState
 }
 
 // NewServer 构造 Server。
@@ -39,6 +42,7 @@ func NewServer(db *sql.DB, cfg *Config) *Server {
 		cfg:        cfg,
 		nonceTTL:   cfg.NonceTTLMs,
 		challenges: make(map[string]challenge),
+		admin:      newAdminState(),
 	}
 }
 
@@ -49,6 +53,8 @@ func (s *Server) Mux() *http.ServeMux {
 	mux.HandleFunc("POST /v1/verify", s.handleVerify)
 	mux.HandleFunc("POST /v1/rebind", s.handleRebind)
 	mux.HandleFunc("GET /healthz", s.handleHealth)
+	// 管理后台（2026-11-06）：/admin 页面 + /admin/api/*；未配置口令时后台 503。
+	s.registerAdminRoutes(mux)
 	return mux
 }
 
@@ -301,7 +307,7 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request, body []byte)
 		// 同机重复绑定：幂等成功，沿用本次读到的码数据出票
 	}
 
-	// 组装票据
+	// 组装票据（2026-11-06：新增 role/features，旧客户端忽略未知字段）。
 	activatedAt := int64(0)
 	if c.ActivatedAt.Valid {
 		activatedAt = c.ActivatedAt.Int64
@@ -310,11 +316,20 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request, body []byte)
 	if c.ExpireAt.Valid {
 		ticketExpireAt = c.ExpireAt.Int64
 	}
+	role := roleOfCode(c)
+	features, ferr := featuresForRole(s.db, role)
+	if ferr != nil {
+		s.logAction(ActionActivate, codeIDPtr(c.ID), req.DeviceHash, CodeServerError)
+		s.writeErr(w, CodeServerError)
+		return
+	}
 	ticket := Ticket{
 		TicketID:     ticketIDFor(c.ID, req.DeviceHash),
 		Code:         c.Code,
 		Type:         c.Type,
 		Tier:         codeTier(c),
+		Role:         role,
+		Features:     features,
 		ActivatedAt:  activatedAt,
 		ExpireAt:     ticketExpireAt,
 		ServerStatus: c.Status,
@@ -430,10 +445,21 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 	insertLog(s.db, codeIDPtr(c.ID), req.DeviceHash, ActionVerify, resCode, clientIP(r), r.UserAgent(), now)
 	s.logAction(ActionVerify, codeIDPtr(c.ID), req.DeviceHash, resCode)
+
+	// 2026-11-06：随 verify 下发 role/features，App 用于刷新本地权限矩阵。
+	// 未激活（1007）分支也返回该码的 role/features，与既有 tier 口径一致；App 不会据此放行。
+	role := roleOfCode(c)
+	features, ferr := featuresForRole(s.db, role)
+	if ferr != nil {
+		s.writeErr(w, CodeServerError)
+		return
+	}
 	s.writeEnvelope(w, resCode, codeMessage(resCode), VerifyData{
 		Status:        status,
 		Type:          c.Type,
 		Tier:          codeTier(c), // 批次7：客户端按此刷新本地票据等级（1/2/3）
+		Role:          role,        // 2026-11-06：1/2/3/4（4=GM）
+		Features:      features,    // 2026-11-06：当前角色可见功能 key（字典序）
 		ExpireAt:      expireAt,
 		RemainSeconds: remainSeconds,
 		DeviceLabel:   label,
