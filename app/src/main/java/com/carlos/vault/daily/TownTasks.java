@@ -870,12 +870,17 @@ final class TownTasks {
                         break;
                     }
                     int code = ExecUtil.codeOf(r);
-                    if (code == 11784 || code == 11801) {
-                        continue;
+                    if (code == 11784) {
+                        // 藏宝点已有宠物：放弃该点，换下一个藏宝点（不是换宠物）。
+                        break;
+                    }
+                    if (code == 11801) {
+                        continue;   // 该宠物已在此点：换下一只
                     }
                     if (code == 11783 || code == 11785 || code == 11782) {
-                        // 对齐网页版 DailyPetAdventureService:421-436：宠物忙/活力不足/未解锁 → 换下一只，
-                        // 不整轮停（旧实现一只报错就 break，任务永远派不满）。
+                        // 对齐网页版 DailyPetAdventureService:421-436：宠物忙/活力不足/未解锁 →
+                        // 本轮不再试这只（it.remove()，防同一批失败宠物在每个闲置点重复重试）。
+                        it.remove();
                         continue;
                     }
                     failCode = code;
@@ -1351,6 +1356,9 @@ final class TownTasks {
 
     // ---------- 竞技场：挑战弱敌 + 每日奖励 ----------
 
+    /** 每日免费刷新对手上限（1:1 网页版 DailyArenaConfig.freeOpponentRefreshLimit 默认 5）。 */
+    private static final long ARENA_FREE_REFRESH_LIMIT = 5L;
+
     static DailyResult arena(WjdrEngine engine) {
         ExecUtil.Multi m = new ExecUtil.Multi();
         try {
@@ -1417,8 +1425,10 @@ final class TownTasks {
                     if (oid <= 0 || fought.contains(oid)) continue;
                     long pw = powerOf(o);
                     Object typeObj = o.get("type");
-                    boolean robot = typeObj instanceof Number
-                            ? ((Number) typeObj).longValue() == 1L
+                    // spb 解出的 type 可能是字符串（同协议的 daily_reward 就是 "true"），
+                    // 必须用 longOf 兼容数字/字符串；字段缺失才回退旧启发式（fid/战力）。
+                    boolean robot = typeObj != null
+                            ? ExecUtil.longOf(typeObj) == 1L
                             : (pw == 0 || ExecUtil.longOf(o.get("fid")) == 0);
                     // 弱于我才打（机器人豁免）；战力未知按可打处理
                     if (!robot && myPower > 0 && pw >= myPower) continue;
@@ -1437,11 +1447,18 @@ final class TownTasks {
                         if (code == 2901) { m.skip("挑战次数已用完"); break; }
                         if (code == 2903) { ExecUtil.sleep(1000); fights--; continue; }  // 太频繁，等一下重试
                         if (code == 2904 || code == 2920 || code == 2921) {
-                            // 网页版 DailyArenaService.refreshUnavailable：对手失效 → 主动刷新对手
-                            //（免费次数优先；无免费次数时服务端直接拒绝，不会静默花钻）。
-                            GameMessage rf = engine.request("req_arena_refresh_opponent", null);
-                            m.skip(ExecUtil.ok(rf) ? "对手已过期，已刷新"
-                                    : "对手已过期，刷新失败(码" + ExecUtil.codeOf(rf) + ")");
+                            // 网页版 refreshUnavailable：免费刷新次数未用完（默认 5 次）才刷新；
+                            // 用完不花钻（allowDiamondOpponentRefresh 默认 false），等下一轮重拉对手。
+                            long refreshUsed = numIn(base, "refresh_opponent_times");
+                            if (refreshUsed < ARENA_FREE_REFRESH_LIMIT) {
+                                GameMessage rf = engine.request("req_arena_refresh_opponent", null);
+                                m.skip(ExecUtil.ok(rf)
+                                        ? "对手已失效，免费刷新(" + (refreshUsed + 1) + "/"
+                                        + ARENA_FREE_REFRESH_LIMIT + ")"
+                                        : "对手已失效，免费刷新失败(码" + ExecUtil.codeOf(rf) + ")");
+                            } else {
+                                m.skip("对手已失效，免费刷新次数已用完，下轮重新拉取");
+                            }
                             break;
                         }
                         fought.add(oid);   // 其余错误码（含 2914 结果未知）本轮不再碰这个对手

@@ -2780,7 +2780,7 @@ public class HomeActivity extends AccountVaultActivity {
                     int idx = w;
                     if (canScript) {
                         if (idx == 0) { runRole(a, r.serverid, r.uid); return; }
-                        if (idx == 1) { openFnDetail(a, "daily_mission", r.serverid); return; }
+                        if (idx == 1) { openFnDetail(a, "daily_mission", r.serverid, r.uid); return; }
                         idx -= 2;
                     }
                     switch (idx) {
@@ -5788,8 +5788,13 @@ public class HomeActivity extends AccountVaultActivity {
                         ? currentRoleSid() : activeSid(a)));
     }
 
-    /** 指定角色的功能详情页（角色级入口）。 */
+    /** 指定角色的功能详情页（角色级入口；未带 uid 的旧入口）。 */
     private void openFnDetail(AccountStore.Account a, String fnId, long sid) {
+        openFnDetail(a, fnId, sid, 0L);
+    }
+
+    /** 指定角色的功能详情页（角色级入口；uid 透传，同服双角色按目标角色读每日任务进度）。 */
+    private void openFnDetail(AccountStore.Account a, String fnId, long sid, long roleUid) {
         // 批次7：日常配置入口二次校验（T2 页面级 + 单功能矩阵；防旧入口/深链旁路）
         if (!gate(FeatureGate.Feature.DAILY_CONFIG)) {
             toast(FeatureGate.reasonText(FeatureGate.Feature.DAILY_CONFIG));
@@ -5809,6 +5814,9 @@ public class HomeActivity extends AccountVaultActivity {
         i.putExtra(com.carlos.vault.daily.FunctionActivity.EXTRA_ACCOUNT_ID, a.id);
         i.putExtra(com.carlos.vault.daily.FunctionActivity.EXTRA_FN_ID, fnId);
         i.putExtra(com.carlos.vault.daily.FunctionActivity.EXTRA_SERVERID, sid);
+        if (roleUid > 0L) {
+            i.putExtra(com.carlos.vault.daily.FunctionActivity.EXTRA_ROLE_UID, roleUid);
+        }
         startActivity(i);
     }
 

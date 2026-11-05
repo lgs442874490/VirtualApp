@@ -53,8 +53,11 @@ public final class QuestStore {
     public static State load(Context ctx, String fpid, long serverid, long uid) {
         android.content.SharedPreferences sp = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         State s = read(sp, suffix(fpid, serverid, uid));
-        // 迁移回退：uid 已知但三段键无任何数据 → 读旧两段键（下一次 save 后即用三段键）。
-        if (uid > 0L && s.ts == 0L && s.integral < 0 && s.progress.isEmpty() && s.claimed.isEmpty()) {
+        // 迁移回退（仅兼容旧数据）：uid 已知但三段键无任何数据、且该 (fpid,sid) 只登记 1 个角色时，
+        // 才读旧两段键。同服多角色（隆科多/小鹿矿工5号）下旧两段键可能属于兄弟角色，
+        // 回退会串号 → 此时宁可显示“尚未同步”，也不拿别人的数据。
+        if (uid > 0L && s.ts == 0L && s.integral < 0 && s.progress.isEmpty() && s.claimed.isEmpty()
+                && hasSingleRoleForSid(ctx, fpid, serverid)) {
             State legacy = read(sp, suffix(fpid, serverid, 0L));
             if (legacy.ts > 0L || legacy.integral >= 0 || !legacy.progress.isEmpty()
                     || !legacy.claimed.isEmpty()) {
@@ -62,6 +65,19 @@ public final class QuestStore {
             }
         }
         return s;
+    }
+
+    /** 该账号该区服是否只登记 1 个角色（无法确认按“非单角色”处理，避免迁移回退串号）。 */
+    private static boolean hasSingleRoleForSid(Context ctx, String fpid, long serverid) {
+        try {
+            int n = 0;
+            for (RoleStore.Role r : RoleStore.roles(ctx, fpid)) {
+                if (r != null && r.serverid == serverid) n++;
+            }
+            return n == 1;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static State read(android.content.SharedPreferences sp, String suffix) {
