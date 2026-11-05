@@ -459,8 +459,15 @@ public final class ServerFieldTasks {
         }
     }
 
+    /**
+     * 采集续派唤醒键：Phase 2 按角色 {@code srv:cad:<fpid>:<sid>:<uid>:gather}；
+     * roleUid&lt;=0 时由 {@link StateKeys#cadence} 自动退化为旧键 {@code srv:cad:<fpid>:<sid>:gather}。
+     *
+     * <p>2026-11-05 修复：旧实现恒写不带 uid 的旧键，Phase 2 非 active 角色（如同服第二角色）
+     * 的 15s 节奏读角色键、读不到续派唤醒 → 采集只能等整轮，日志里长期「本轮未派出采集队」。
+     */
     static String gatherWakeKey(TaskContext tc) {
-        return "srv:cad:" + tc.fpid + ":" + tc.sid + ":gather";
+        return StateKeys.cadence(new RoleKey(tc.fpid, tc.sid, tc.roleUid), "gather");
     }
 
     /** 采集任何出口（派出/跳过/异常）都先写续派唤醒，再出结果。 */
@@ -1087,17 +1094,28 @@ public final class ServerFieldTasks {
         maintainHeavyLifting(tc, cfg, lib);
 
         // B2-T4 暂停协调（1:1 网页版 DailyGatherService.pauseBeforeDispatch:694-712）：
-        // 情报待办优先 / 巨熊活动窗口时让位，避免抢队列。
-        // 2026-10-25 P0 修复：仅当 intel 任务对本角色确实启用时才让位——intel 目录默认关闭，
-        // 若只开采集而未开情报，情报待办永远不会被处理，采集会被永久让位（生产实证 58/58 全跳过、
-        // 全天 0 队派出）。intel 未启用 → 待办事件不参与优先级判定。
+        // 巨熊活动窗口时让位（避免抢队列）。
+        // 2026-11-05 用户规则（隆科多生产日志实证）：情报只需要 1 队空闲行军队列——采集在
+        // 情报可派时保留 1 队空闲给情报、其余队列照常采集；不再「情报有待办 → 采集整轮 0 队」。
+        // 只有「扣除情报预留后无队列可派」才暂停；情报清完/体力不足/去重窗内会自动释放预留。
         final boolean intelEnabled = tc.taskEnabled("intel");
-        String pauseReason = gatherPauseReason(lib, System.currentTimeMillis() / 1000L, tc, intelEnabled);
+        long nowSec = System.currentTimeMillis() / 1000L;
+        String pauseReason = gatherPauseReason(lib, nowSec);   // 仅巨熊窗口（情报不再全停）
         if (pauseReason != null) {
             m.skip(pauseReason);
             tc.saveModText("gather", "send", pauseReason);
             return;
         }
+        int intelDispatchable = 0;
+        if (intelEnabled) {
+            try {
+                intelDispatchable = intelGatherPriorityCount(lib.intel(), lib.stamina(), nowSec, tc);
+            } catch (Throwable ignored) {
+            }
+        }
+        int intelReserve = intelReserveSlots(intelDispatchable, queue.idle,
+                intelQueueSlots(intelQueueCount(tc.params("intel")), queue.capacity),
+                countNormalIntelMarches(queue.marches));
 
         int maxLevel = gatherMaxResourceLevel(lib.clock());
         QueueMapping mapping = reconcileMapping(
@@ -1135,12 +1153,20 @@ public final class ServerFieldTasks {
             }
         }
         int slots = Math.max(0, slotCount(cfg, queue.idle, unbound, queue.capacity,
-                queue.limitReached, guardReserve) - allianceMineReserved);
+                queue.limitReached, guardReserve) - allianceMineReserved - intelReserve);
         if (queue.limitReached || slots <= 0) {
-            String text = "采集队列已满(capacity=" + queue.capacity + " occupied=" + queue.occupied
-                    + " idle=" + queue.idle + " unbound=" + unbound
-                    + (guardReserve > 0 ? " reserve=" + guardReserve : "") + ")"
-                    + (guardReserve > 0 ? "（为守护预留 " + guardReserve + " 队）" : "");
+            String text;
+            if (intelReserve > 0) {
+                // 情报待办时保留 1 队空闲给情报；扣掉后无队列可派才暂停（不再整轮让位）。
+                text = "情报待办 " + intelDispatchable + " 条，已为情报保留 " + intelReserve
+                        + " 队空闲队列；剩余可派队列不足(idle=" + queue.idle
+                        + " unbound=" + unbound + ")，采集本轮暂停";
+            } else {
+                text = "采集队列已满(capacity=" + queue.capacity + " occupied=" + queue.occupied
+                        + " idle=" + queue.idle + " unbound=" + unbound
+                        + (guardReserve > 0 ? " reserve=" + guardReserve : "") + ")"
+                        + (guardReserve > 0 ? "（为守护预留 " + guardReserve + " 队）" : "");
+            }
             m.skip(text);
             tc.saveModText("gather", "send", text);
             writeQueueMapping(tc, mapping);
@@ -1270,9 +1296,12 @@ public final class ServerFieldTasks {
         if (sent > 0) {
             m.claimed("派出采集×" + sent);
         } else {
-            m.skip("本轮未派出采集队");
+            m.skip(intelReserve > 0
+                    ? "本轮未派出采集队（为情报保留 " + intelReserve + " 队）"
+                    : "本轮未派出采集队");
         }
         if (guardReserve > 0) statuses.add("为守护预留 " + guardReserve + " 队");
+        if (intelReserve > 0) statuses.add("为情报保留 " + intelReserve + " 队空闲队列");
         String text = statuses.isEmpty() ? "无可派采集队列" : String.join("；", statuses);
         tc.saveModText("gather", "send", text);
     }
@@ -1326,6 +1355,10 @@ public final class ServerFieldTasks {
             soldiers.put("lancer", Math.max(0L, q.lancer));
             soldiers.put("marksman", Math.max(0L, q.marksman));
             f.put("soldiers", soldiers);
+            // 2026-11-05（用户口径：采集必须采得出去）：角色编队英雄不在城/被占用（HERO_AWAY）
+            // 时回退自动编队，而不是整队跳过。此前默认 SKIP 会让铁矿等队列长期派不出去
+            // （生产实测：编队 #9100000006..09 HERO_AWAY → 采集铁进度恒 0）。
+            f.put("formation_fallback", FormationResolver.FALLBACK_AUTO);
             return f;
         }
         f.put("formation_mode", GatherConfigV2.MODE_AUTOMATIC);
@@ -1411,11 +1444,23 @@ public final class ServerFieldTasks {
         if (plan == null || plan.levels.isEmpty() || plan.resId <= 0) {
             return new SearchOutcome(GATHER_SEARCH_EMPTY, 0, null);
         }
+        SearchOutcome so = searchLevels(engine, plan, plan.fullResourceOnly);
+        // 2026-11-05：只采满矿模式全等级 2872「无矿」时回落非满矿再搜一轮。
+        // 否则铁矿 L5 这类队列在"只采满矿"下唯一轮到即无矿，每日任务 1320130/131 恒 0 进度。
+        if (!so.found() && plan.fullResourceOnly && so.empty()) {
+            SearchOutcome relaxed = searchLevels(engine, plan, false);
+            if (relaxed.found()) return relaxed;
+        }
+        return so;
+    }
+
+    /** 单队列按等级递减搜索（fullOnly 指定是否只搜满矿）。 */
+    private static SearchOutcome searchLevels(WjdrEngine engine, QueuePlan plan, boolean fullOnly) {
         int searches = Math.min(plan.levels.size(), GATHER_MAX_SEARCHES_PER_QUEUE);
         SearchOutcome last = new SearchOutcome(GATHER_SEARCH_EMPTY, plan.topLevel(), null);
         for (int i = 0; i < searches; i++) {
             int level = plan.levels.get(i).intValue();
-            SearchOutcome so = searchGatherResource(engine, plan.resId, level, plan.fullResourceOnly);
+            SearchOutcome so = searchGatherResource(engine, plan.resId, level, fullOnly);
             if (so.found()) return so;
             last = so;
             // 2872=该级无矿；code=0 但无坐标=协议异常，均按“继续降级”处理；其它 code 记录并跳过该队列。
@@ -1945,39 +1990,12 @@ public final class ServerFieldTasks {
         return GATHER_DEFAULT_MAX_RESOURCE_LEVEL;
     }
 
-    /** 采集暂停原因（资产库事实）：巨熊活动窗口 / 情报待办优先；null=可派。 */
+    /** 采集暂停原因（资产库事实）：巨熊活动窗口；null=可派。情报待办不再整体让位（2026-11-05）。 */
     static String gatherPauseReason(CoreAssetLibrary lib, long nowSec) {
-        return gatherPauseReason(lib, nowSec, null);
-    }
-
-    /** 同 {@link #gatherPauseReason(CoreAssetLibrary, long)}；tc 非空时排除“去重窗内不可派”的情报事件。 */
-    static String gatherPauseReason(CoreAssetLibrary lib, long nowSec, TaskContext tc) {
-        return gatherPauseReason(lib, nowSec, tc, true);
-    }
-
-    /**
-     * 同 {@link #gatherPauseReason(CoreAssetLibrary, long, TaskContext)}，但显式指定 intel 任务是否启用。
-     *
-     * <p>2026-10-25 P0：intel 未启用时其待办事件永远无人处理，不能作为采集让位依据；
-     * 巨熊活动窗口仍按资产库事实让位（与 intel 开关无关）。
-     *
-     * @param intelEnabled 本角色 intel 任务是否启用；false → 情报待办不计入优先级
-     */
-    static String gatherPauseReason(CoreAssetLibrary lib, long nowSec, TaskContext tc,
-                                    boolean intelEnabled) {
         if (lib == null || !lib.ready()) return null;
         AssetSnapshot.Bear bear = lib.bear();
-        long reserve = bear == null ? 0L : bear.reserveTime;
-        long start = bear == null ? 0L : bear.massStartTime;
-        long end = bear == null ? 0L : bear.massEndTime;
-        int intel = 0;
-        if (intelEnabled) {
-            try {
-                intel = intelGatherPriorityCount(lib.intel(), lib.stamina(), nowSec, tc);
-            } catch (Throwable ignored) {
-            }
-        }
-        return gatherPauseReason(reserve, start, end, intel, nowSec);
+        if (bear == null) return null;
+        return gatherPauseReason(bear.reserveTime, bear.massStartTime, bear.massEndTime, nowSec);
     }
 
     /**
@@ -2015,9 +2033,8 @@ public final class ServerFieldTasks {
         return st >= costSum ? count : 0;
     }
 
-    /** 纯函数：巨熊窗口 [reserve-600, reserve+1800] / [mass_start-600, mass_end]；情报可派优先。 */
-    static String gatherPauseReason(long bearReserve, long bearMassStart, long bearMassEnd,
-                                    int intelDispatchableCount, long nowSec) {
+    /** 纯函数：巨熊窗口 [reserve-600, reserve+1800] / [mass_start-600, mass_end]；null=可派。 */
+    static String gatherPauseReason(long bearReserve, long bearMassStart, long bearMassEnd, long nowSec) {
         if (bearReserve > 0L && nowSec >= bearReserve - 600L && nowSec < bearReserve + 1800L) {
             return "巨熊活动窗口，采集让位";
         }
@@ -2026,8 +2043,39 @@ public final class ServerFieldTasks {
             long finish = bearMassEnd > 0L ? bearMassEnd : bearMassStart + 1800L;
             if (nowSec >= begin && nowSec < finish) return "巨熊活动窗口，采集让位";
         }
-        if (intelDispatchableCount > 0) return "情报待办优先，采集让位";
         return null;
+    }
+
+    /**
+     * 用户规则（2026-11-05，隆科多生产日志实证）：情报待办时采集需要保留的空闲队列数。
+     *
+     * <p>用户口径：情报只需要 1 队空闲行军队列；用户启用 6 队采集时，情报刷新后保留 1 队
+     * 给情报，其余 5 队照常采集；情报事件清完（{@code intelDispatchableCount==0}）、体力不足、
+     * 去重窗内或已在途（type=302）后预留自动释放。情报只剩 ≤30 分钟仍派不出去时，由情报侧
+     * {@link #tryPreemptGatherForIntel} 召回 1 队采集腾位（不全部召回）。
+     *
+     * @param intelDispatchableCount 可派情报事件数（见 {@link #intelGatherPriorityCount}）
+     * @param worldIdle              当前普通队列空闲数
+     * @param allowedSlots           情报普通队列上限（见 {@link #intelQueueSlots}，默认 1）
+     * @param activeNormalIntel      已在途普通情报行军数（type=302 狩猎类）
+     * @return 需要为情报保留的空闲队列数（0..min(6, 剩余情报槽位, worldIdle)）
+     */
+    static int intelReserveSlots(int intelDispatchableCount, int worldIdle, int allowedSlots,
+                                 int activeNormalIntel) {
+        if (intelDispatchableCount <= 0 || worldIdle <= 0) return 0;
+        int need = Math.max(0, allowedSlots - Math.max(0, activeNormalIntel));
+        need = Math.min(need, GatherConfigV2.QUEUE_COUNT);
+        return Math.min(need, worldIdle);
+    }
+
+    /** 在途普通情报行军数（type=302 狩猎类；与 {@link #intelQueueSnapshot} 同口径）。 */
+    static int countNormalIntelMarches(List<AssetSnapshot.QueueMarch> marches) {
+        int n = 0;
+        if (marches == null) return 0;
+        for (AssetSnapshot.QueueMarch m : marches) {
+            if (m != null && m.type == 302L) n++;
+        }
+        return n;
     }
 
     /** 巨熊活动窗口暂停（狩猎/巨兽用）：lib 未就绪或无窗口 → null。 */
@@ -2035,7 +2083,7 @@ public final class ServerFieldTasks {
         if (lib == null || !lib.ready()) return null;
         AssetSnapshot.Bear bear = lib.bear();
         if (bear == null) return null;
-        return gatherPauseReason(bear.reserveTime, bear.massStartTime, bear.massEndTime, 0, nowSec);
+        return gatherPauseReason(bear.reserveTime, bear.massStartTime, bear.massEndTime, nowSec);
     }
 
     /** 特殊队列条数（仅展示；不参与普通队列空闲计算）。 */

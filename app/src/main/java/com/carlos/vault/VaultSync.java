@@ -538,6 +538,23 @@ public final class VaultSync {
      * log:*（去掉前缀）与 st:* → daily_logs（运行日志/当日状态机，与 LogStore 同键型）；
      * 其余（todo:/res:/rallies:/questprog:/mod:/summary:/act:/boxes:/questts:）→ daily_state。
      */
+    /**
+     * 服务端下发的每日任务族键仍是「active 角色的旧两段键」{@code <family>:<fpid>:<sid>}；
+     * 本地 {@link com.carlos.vault.daily.QuestStore} 已按角色 uid 隔离（{@code <family>:<fpid>:<sid>:<uid>}）。
+     * 这里对恰好两段角色键补当前角色 uid，其余形状原样返回（已带 uid / 非角色键不受影响）。
+     */
+    private static String questKeyWithRole(Context app, String key) {
+        try {
+            String[] p = key.split(":");
+            if (p.length != 3) return key;
+            long uid = com.carlos.vault.daily.RoleStore.currentRoleUid(app, p[1]);
+            if (uid <= 0L) return key;
+            return key + ":" + uid;
+        } catch (Throwable t) {
+            return key;
+        }
+    }
+
     private static void writeDailyState(Context app, JSONObject states) {
         try {
             android.content.SharedPreferences ds =
@@ -557,10 +574,13 @@ public final class VaultSync {
                     edDl.putInt(k, (int) states.optLong(k, 0));
                     dlDirty = true;
                 } else if (k.startsWith("act:") || k.startsWith("boxes:")) {
-                    edDs.putInt(k, states.optInt(k));
+                    edDs.putInt(questKeyWithRole(app, k), states.optInt(k));
                     dsDirty = true;
                 } else if (k.startsWith("questts:")) {
-                    edDs.putLong(k, states.optLong(k));
+                    edDs.putLong(questKeyWithRole(app, k), states.optLong(k));
+                    dsDirty = true;
+                } else if (k.startsWith("questprog:") || k.startsWith("questdone:")) {
+                    edDs.putString(questKeyWithRole(app, k), states.optString(k, ""));
                     dsDirty = true;
                 } else {
                     edDs.putString(k, states.optString(k, ""));

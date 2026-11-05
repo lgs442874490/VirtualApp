@@ -175,7 +175,7 @@ public final class FnDetail {
                 new Sub("sweep", "速刷关数", "已通关卡用快速战斗逐关推进；新关卡需手动战斗解锁一次", true,
                         new String[][]{{"5", "最多5关"}, {"10", "最多10关"}, {"20", "最多20关"}, {"50", "最多50关"}}));
         fn("intel",
-                new Sub("events", "处理情报", "待办情报事件自动出征/快速战并领奖（优先于采集队列）", true, null));
+                new Sub("events", "处理情报", "待办情报事件自动出征/快速战并领奖（只占 1 队空闲队列，其余队列照常采集）", true, null));
         fn("behemoth",
                 new Sub("auto_join", "原生自动上车", "开启游戏自带的自动加入集结（巨兽/死神/巨熊）", true, null));
         fn("bear",

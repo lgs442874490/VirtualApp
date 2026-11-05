@@ -73,8 +73,12 @@ public final class ServerHelpResponder {
     /** 无联盟/不可用（16873）退避：低频探测即可。 */
     static final long HELP_NO_ALLIANCE_BLOCK_MILLIS = 300_000L;
     static final long POLL_INTERVAL_MILLIS = 30_000L;
-    /** 两次 req_alliance_help_all 的最小间隔：推送洪峰下（抓包可见 ~1s/条）防止请求风暴。 */
-    static final long SEND_MIN_INTERVAL_MILLIS = 5_000L;
+    /**
+     * 两次 req_alliance_help_all 的最小间隔：推送洪峰下（抓包可见 ~1s/条）防止请求风暴。
+     * 2026-11-05 调整 5s→500ms（用户口径：要像网页版一样"秒赞"）：网页版通知到达即 claim、无节流；
+     * 500ms 已能防住同一批 update 洪峰，又不会把 1s tick 内的求助让给盟友抢。
+     */
+    static final long SEND_MIN_INTERVAL_MILLIS = 500L;
 
     /**
      * req_alliance_help_all 响应码 1536：服务端当前没有可响应的互助请求（瞬时；网页版 NO_AVAILABLE_HELP_CODE）。
@@ -479,6 +483,7 @@ public final class ServerHelpResponder {
             if (r.availableFor(ownUid, nowSec)) available.add(r);
         }
         if (available.isEmpty()) {
+            // 与网页版 helpIfAvailable 同口径：本地没有可帮请求时不发空请求（不发无意义协议/1536 风暴）。
             saveState(false, 0, "推送", "当前没有盟友需要互助");
             return;
         }

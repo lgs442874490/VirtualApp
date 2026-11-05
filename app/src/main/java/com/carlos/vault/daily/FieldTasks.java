@@ -50,7 +50,7 @@ final class FieldTasks {
             org.json.JSONObject p = FnParams.params(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "gather");
             int minLevel = Math.max(1, Math.min(6, p.optInt("min_level", 5)));
-            int maxQueues = Math.max(1, Math.min(5, p.optInt("max_queues", 3)));
+            int maxQueues = Math.max(1, Math.min(6, p.optInt("max_queues", 3)));
             java.util.List<Integer> resList = new java.util.ArrayList<>();
             // 与服务器侧（ServerFieldTasks.gather）同源修复：UI 写的是 resources_named；
             // 采集 res_id 直接是 102肉/103木/104煤/105铁，旧实现再减 101 → 搜索恒 2872（采集从未派出）。
@@ -97,8 +97,19 @@ final class FieldTasks {
             boolean fullOnly = "full".equals(FnParams.strategy(engine.appContext(),
                     engine.lastFpid(), engine.lastServerId(), "gather", "send", "any"));
             int slots = Math.max(0, capacity - active);
+            // 用户规则（2026-11-05，与服务端 gather 同源）：情报待办时采集保留 1 队空闲给情报，
+            // 其余队列照常采集；情报清完/体力不足/去重窗内后预留自动释放。
+            int intelReserve = 0;
+            if (intelPendingNormalCount(engine) > 0) {
+                int intelNeed = Math.max(0,
+                        intelNormalSlots(engine) - intelActiveNormalMarches(engine));
+                intelReserve = Math.min(intelNeed, slots);
+            }
+            slots = Math.max(0, slots - intelReserve);
             if (slots == 0) {
-                m.skip("采集队列已满(" + active + "/" + capacity + ")");
+                m.skip(intelReserve > 0
+                        ? "采集队列已满(" + active + "/" + capacity + ")，为情报保留 " + intelReserve + " 队"
+                        : "采集队列已满(" + active + "/" + capacity + ")");
             } else {
                 int sent = 0;
                 for (int res : resList) {
@@ -446,6 +457,10 @@ final class FieldTasks {
                 m.skip("暂无情报事件");
             } else {
                 int handled = 0;
+                // 2026-11-05 与服务端 I2 门控同源：普通队列最多 1 队（情报配置 queue_count，默认 1），
+                // 营救(301)/英雄之旅(3) 不占普通队列；10 分钟去重窗防同一事件重复派队/重复开战。
+                int remaining = Math.max(0,
+                        intelNormalSlots(engine) - intelActiveNormalMarches(engine));
                 for (Map<String, Object> e : events.values()) {
                     long id = ExecUtil.longOf(e.get("id"));
                     if (id <= 0) continue;
@@ -458,6 +473,7 @@ final class FieldTasks {
                         continue;
                     }
                     if (status != 1) continue;
+                    if (intelDispatchBlocked(engine, id)) continue;   // 10 分钟去重窗
                     if (type == 3) {
                         // 英雄之旅（PVE）：start_battle → 结算 → end_battle
                         List<Long> heroes = TownTasks.squadHeroes(engine);
@@ -470,8 +486,13 @@ final class FieldTasks {
                             GameMessage en = engine.request("req_intelligence_end_battle",
                                     ExecUtil.args("id", id));
                             if (ExecUtil.ok(en)) handled++;
+                            markIntelDispatched(engine, id);   // 已开战：入窗防重复开战
+                        } else if (ExecUtil.codeOf(st) != 51) {   // 体力不足不入窗（恢复后可重试）
+                            markIntelDispatched(engine, id);
                         }
                     } else if (intelIsWorldMarch(type)) {
+                        boolean consumesNormal = type != 2;   // 301 营救不占普通队列
+                        if (consumesNormal && remaining <= 0) continue;
                         long marchType = type == 2 ? 301L : 302L;
                         Map<String, Object> formation = ExecUtil.formation(engine, 1);
                         GameMessage march = engine.request("req_world_march", ExecUtil.args(
@@ -479,7 +500,13 @@ final class FieldTasks {
                                 "endpoint", ExecUtil.point(ExecUtil.longOf(e.get("x")), ExecUtil.longOf(e.get("y"))),
                                 "formation", formation,
                                 "extra", ExecUtil.args("event_id", id)));
-                        if (ExecUtil.marchId(march) > 0) handled++;
+                        if (ExecUtil.marchId(march) > 0) {
+                            handled++;
+                            markIntelDispatched(engine, id);
+                            if (consumesNormal) remaining = Math.max(0, remaining - 1);
+                        } else if (ExecUtil.codeOf(march) != 51) {   // 体力不足不入窗（恢复后可重试）
+                            markIntelDispatched(engine, id);
+                        }
                     }
                 }
                 if (handled > 0) m.claimed("处理情报×" + handled);
@@ -544,6 +571,92 @@ final class FieldTasks {
 
     static boolean intelIsWorldMarch(int type) {
         return type == 1 || type == 2 || type == 11 || type == 100;
+    }
+
+    // ---------- 情报普通队列门控 / 去重窗（1:1 服务端 I2 门控） ----------
+
+    /** 情报派队去重窗：与服务端 INTEL_DISPATCH_DEDUPE_MILLIS 同口径（10 分钟）。 */
+    private static final long INTEL_DISPATCH_DEDUPE_MILLIS = 10L * 60L * 1000L;
+    private static final String INTEL_DEDUPE_PREF = "daily_intel_dedupe";
+
+    /** 情报普通队列上限 = min(配置 queue_count，行军队列容量)；默认 1（只有狩猎类占普通队列）。 */
+    static int intelNormalSlots(WjdrEngine engine) {
+        try {
+            org.json.JSONObject p = FnParams.params(engine.appContext(),
+                    engine.lastFpid(), engine.lastServerId(), "intel");
+            int cfg = p.optInt("queue_count", 0);
+            if (cfg <= 0) cfg = p.optInt("queueCount", 0);
+            if (cfg <= 0) cfg = p.optInt("max_queues", 0);
+            if (cfg <= 0) cfg = 1;
+            int cap = marchCapacity(engine);
+            return Math.max(0, Math.min(Math.min(6, cfg), cap > 0 ? cap : 3));
+        } catch (Throwable t) {
+            return 1;
+        }
+    }
+
+    /** 在途普通情报行军数（type=302 狩猎类，占普通行军队列；301 营救不占）。 */
+    static int intelActiveNormalMarches(WjdrEngine engine) {
+        try {
+            return countMarches(engine, 302);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /** 可派普通情报事件数（status=1、未过期、占普通队列的狩猎类 1/11/100）。 */
+    static int intelPendingNormalCount(WjdrEngine engine) {
+        try {
+            Map<Long, Map<String, Object>> events = new java.util.LinkedHashMap<>();
+            mergeIntelEvents(engine, "notify_intelligence_info", events);
+            mergeIntelEvents(engine, "notify_intelligence_events", events);
+            long nowSec = System.currentTimeMillis() / 1000L;
+            int n = 0;
+            for (Map<String, Object> e : events.values()) {
+                if (e == null) continue;
+                long status = e.containsKey("status") ? ExecUtil.longOf(e.get("status")) : 1L;
+                if (status != 1L) continue;
+                long expire = ExecUtil.longOf(e.get("expire_ts"));
+                if (expire > 0L && expire <= nowSec) continue;
+                int type = intelEventType(intelEventConfigId(e));
+                if (type == 1 || type == 11 || type == 100) n++;
+            }
+            return n;
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /** 同一事件 10 分钟内已派过 → 本轮不再重复派队/重复开战。 */
+    private static boolean intelDispatchBlocked(WjdrEngine engine, long eventId) {
+        try {
+            android.content.Context ctx = engine.appContext();
+            android.content.SharedPreferences sp = ctx
+                    .getSharedPreferences(INTEL_DEDUPE_PREF, android.content.Context.MODE_PRIVATE);
+            long last = sp.getLong("e" + eventId, 0L);
+            return last > 0L && System.currentTimeMillis() - last < INTEL_DISPATCH_DEDUPE_MILLIS;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 记录派队/开战时刻，并顺手清理过期条目（防 SharedPreferences 无限增长）。 */
+    private static void markIntelDispatched(WjdrEngine engine, long eventId) {
+        try {
+            android.content.Context ctx = engine.appContext();
+            android.content.SharedPreferences sp = ctx
+                    .getSharedPreferences(INTEL_DEDUPE_PREF, android.content.Context.MODE_PRIVATE);
+            long now = System.currentTimeMillis();
+            android.content.SharedPreferences.Editor ed = sp.edit();
+            for (Map.Entry<String, ?> en : sp.getAll().entrySet()) {
+                Object v = en.getValue();
+                long ts = v instanceof Long ? (Long) v : 0L;
+                if (ts <= 0L || now - ts > INTEL_DISPATCH_DEDUPE_MILLIS) ed.remove(en.getKey());
+            }
+            ed.putLong("e" + eventId, now);
+            ed.apply();
+        } catch (Throwable ignored) {
+        }
     }
 
     private static Map<String, Object> notifyContentOf(WjdrEngine engine, String proto) {
