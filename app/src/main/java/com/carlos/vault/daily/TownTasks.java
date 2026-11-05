@@ -873,12 +873,18 @@ final class TownTasks {
                     if (code == 11784 || code == 11801) {
                         continue;
                     }
+                    if (code == 11783 || code == 11785 || code == 11782) {
+                        // 对齐网页版 DailyPetAdventureService:421-436：宠物忙/活力不足/未解锁 → 换下一只，
+                        // 不整轮停（旧实现一只报错就 break，任务永远派不满）。
+                        continue;
+                    }
                     failCode = code;
                     break outer;
                 }
             }
         }
-        int used = usedBefore + sent;
+        // “今日寻宝 N 次”只展示服务器快照，不再叠加本轮 sent（旧 used=usedBefore+sent 会出现 4+3=7 的假数）。
+        int used = usedBefore;
         StringBuilder sub = new StringBuilder();
         if (claimed > 0) sub.append("领奖×").append(claimed);
         if (sent > 0) {
@@ -890,8 +896,12 @@ final class TownTasks {
         if (PetSupport.dailyHintExhausted(used)) sub.append("，基础次数已用完");
         sub.append("）");
         if (failCode != 0) {
-            sub.append("；派遣码").append(failCode);
-            if (failCode == 51) sub.append("（体力不足）");
+            if (failCode == 11789) {
+                sub.append("；今日派遣次数已达上限");   // 网页版 PET_DAILY_LIMIT_CODE，正常收工
+            } else {
+                sub.append("；派遣码").append(failCode);
+                if (failCode == 51) sub.append("（体力不足）");
+            }
         }
         String text = sub.toString();
         if (claimed > 0) m.claimed("寻宝领奖×" + claimed);
@@ -1399,11 +1409,17 @@ final class TownTasks {
                 list.sort((x, y) -> Long.compare(powerOf(x), powerOf(y)));
                 for (Map<String, Object> o : list) {
                     if (fights >= maxFights || heroes.isEmpty()) break;
-                    long oid = ExecUtil.longOf(o.get("uid"));
-                    if (oid <= 0) oid = ExecUtil.longOf(o.get("id"));
+                    // 1:1 网页版 DailyArenaStateOpponent.from：opponentId = raw.id（对手记录 id，
+                    // uid 只是玩家标识）；robot = raw.type == 1（type=0 是真人，旧实现按 fid/战力猜
+                    // 会把真人误发成机器人 → 服务端恒回 2904 对手失效）。
+                    long oid = ExecUtil.longOf(o.get("id"));
+                    if (oid <= 0) oid = ExecUtil.longOf(o.get("uid"));
                     if (oid <= 0 || fought.contains(oid)) continue;
                     long pw = powerOf(o);
-                    boolean robot = pw == 0 || ExecUtil.longOf(o.get("fid")) == 0;
+                    Object typeObj = o.get("type");
+                    boolean robot = typeObj instanceof Number
+                            ? ((Number) typeObj).longValue() == 1L
+                            : (pw == 0 || ExecUtil.longOf(o.get("fid")) == 0);
                     // 弱于我才打（机器人豁免）；战力未知按可打处理
                     if (!robot && myPower > 0 && pw >= myPower) continue;
                     List<Object> heroArray = new ArrayList<>(heroes);
@@ -1420,7 +1436,14 @@ final class TownTasks {
                         int code = ExecUtil.codeOf(f);
                         if (code == 2901) { m.skip("挑战次数已用完"); break; }
                         if (code == 2903) { ExecUtil.sleep(1000); fights--; continue; }  // 太频繁，等一下重试
-                        if (code == 2904 || code == 2920 || code == 2921) { m.skip("对手已过期，下轮刷新"); break; }
+                        if (code == 2904 || code == 2920 || code == 2921) {
+                            // 网页版 DailyArenaService.refreshUnavailable：对手失效 → 主动刷新对手
+                            //（免费次数优先；无免费次数时服务端直接拒绝，不会静默花钻）。
+                            GameMessage rf = engine.request("req_arena_refresh_opponent", null);
+                            m.skip(ExecUtil.ok(rf) ? "对手已过期，已刷新"
+                                    : "对手已过期，刷新失败(码" + ExecUtil.codeOf(rf) + ")");
+                            break;
+                        }
                         fought.add(oid);   // 其余错误码（含 2914 结果未知）本轮不再碰这个对手
                         m.skip("对手码" + code);
                     }

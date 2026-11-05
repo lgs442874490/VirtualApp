@@ -1473,10 +1473,11 @@ public class HomeActivity extends AccountVaultActivity {
                 case "run": run++; break;
             }
         }
-        // 环=当前账号游戏每日任务实时进度（同步即有，无需执行日常）
+        // 环=当前账号游戏每日任务实时进度（同步即有，无需执行日常）；按当前角色 uid 隔离读取。
         int qTotal = 0, qDone = 0;
         com.carlos.vault.daily.QuestStore.State qs = sel == null ? null
-                : com.carlos.vault.daily.QuestStore.load(this, sel.fpid, currentRoleSid());
+                : com.carlos.vault.daily.QuestStore.load(this, sel.fpid, currentRoleSid(),
+                currentRoleUid());
         if (qs != null) {
             for (com.carlos.vault.daily.QuestCatalog.Group g : com.carlos.vault.daily.QuestCatalog.all()) {
                 qTotal++;

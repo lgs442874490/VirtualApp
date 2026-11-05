@@ -1033,13 +1033,21 @@ public final class ServerTownTasks {
                         // 藏宝点已有宠物 / 该宠物已在此点：换下一只/下一个点。
                         continue;
                     }
+                    if (code == 11783 || code == 11785 || code == 11782) {
+                        // 2026-11-05 对齐网页版 DailyPetAdventureService:421-436：
+                        // 11783=宠物忙 / 11785=活力不足 / 11782=宠物未解锁 → 换下一只宠物继续，
+                        // 不能整轮 break（旧实现一只报错就停，永远卡在同一只宠物上、任务派不满）。
+                        continue;
+                    }
                     failCode = code;
                     break outer;
                 }
             }
         }
 
-        int used = usedBefore + sent;
+        // 2026-11-05 修复“今日寻宝 N 次”双计：旧实现 used=usedBefore+sent，服务器快照 4 时派 3 只
+        // 会显示 7 次（与任务进度 3/4 矛盾）。服务器值只做展示，本轮派出数单独写在“派遣×N”。
+        int used = usedBefore;
         StringBuilder sub = new StringBuilder();
         if (claimed > 0) sub.append("领奖×").append(claimed);
         if (sent > 0) {
@@ -1051,8 +1059,13 @@ public final class ServerTownTasks {
         if (PetSupport.dailyHintExhausted(used)) sub.append("，基础次数已用完");
         sub.append("）");
         if (failCode != 0) {
-            sub.append("；派遣码").append(failCode);
-            if (failCode == 51) sub.append("（体力不足）");
+            if (failCode == 11789) {
+                // 网页版 PET_DAILY_LIMIT_CODE：今日派遣次数已达上限（正常收工，不是失败）。
+                sub.append("；今日派遣次数已达上限");
+            } else {
+                sub.append("；派遣码").append(failCode);
+                if (failCode == 51) sub.append("（体力不足）");
+            }
         }
         String text = sub.toString();
         tc.saveModText("pet", "adventure", text);
@@ -1545,6 +1558,7 @@ public final class ServerTownTasks {
             day.save(tc);
 
             // 1. 挑战：结算窗内不新开挑战（网页版 23:10 后只做领奖，DailyArenaService.java:390-400）
+            int sentBefore = day.fightsSent;
             if (!onFight) {
                 m.skip("子开关「自动挑战」已关闭");
                 m.subSkip("fight", "子开关已关闭");
@@ -1589,7 +1603,10 @@ public final class ServerTownTasks {
                     : "待结算窗(23:10-24:00) · 已完成"
                     + (completedForText >= 0 ? completedForText : day.fightsSent) + "/5");
             // 批次 B：还有剩余场次且可推进 → 保持 ACTIVE（其它任务让位，直到打完/结算窗/TTL）
-            if (arenaGateAllowed && arenaGateRemaining(day, onFight, inWindow) > 0L) {
+            // 2026-11-05 修复：本轮「一场都没发出去」（对手失效/刷新失败/无英雄）时不得继续保持独占窗，
+            // 否则竞技场打不了却把本角色其它任务连续挡 30 分钟（生产 arena_exclusive 25264 次/日的主因）。
+            if (arenaGateAllowed && arenaGateRemaining(day, onFight, inWindow) > 0L
+                    && day.fightsSent > sentBefore) {
                 ArenaGate.enterActive(arenaRole, now);
             } else {
                 ArenaGate.release(arenaRole);
@@ -1608,97 +1625,123 @@ public final class ServerTownTasks {
     /** 挑战阶段（日场次上限内）：对手按战力升序；胜负读 report.win，不再用 Exec.ok 当胜场。 */
     private static void arenaFight(TaskContext tc, Exec.Multi m, ArenaDay day, int budget, long now)
             throws Exception {
-        GameMessage opp = tc.engine.request("req_arena_get_opponent", null);
-        if (!Exec.ok(opp)) {
-            // 2026-10-28 修复"竞技场从来没执行过"的服务端静默：旧文案一律"未解锁"，
-            // 分不清"次数用完/对手失效/请求过频"，用户侧看起来就是没跑。按码给可读原因。
-            int opCode = Exec.codeOf(opp);
-            if (opCode == 2901 || opCode == 2902) day.exhausted = true;   // 服务端判次数用完 → 独占窗释放
-            String why = arenaOpponentSkipNote(opCode);
-            m.skip(why);
-            m.subSkip("fight", why);
-            return;
-        }
-        List<Map<String, Object>> list = new ArrayList<>();
-        for (String k : new String[]{"opponents", "data", "list"}) {
-            list = Exec.mapsOf(opp.getContent().get(k));
-            if (!list.isEmpty()) break;
-        }
-        if (list.isEmpty()) {
-            m.skip("无对手数据");
-            m.subSkip("fight", "无对手数据");
-            return;
-        }
-        list.sort((a, b) -> Long.compare(powerOf(a), powerOf(b)));
-        List<Long> heroes = squadHeroes(tc.engine);
-        // 缺英雄推送/布阵数据时旧代码会直接跳过循环、产出空 Multi（SKIPPED 无文案）=
-        // 用户看到"从来没执行过"。显式判定并写可读 SKIP。
-        if (!arenaHasFightableHeroes(heroes)) {
-            m.skip("无出征英雄数据，未发起挑战");
-            m.subSkip("fight", "无英雄编队数据");
-            return;
-        }
-        int fights = 0, wins = 0, losses = 0, unknownWins = 0;
-        StringBuilder failCodes = new StringBuilder();
-        for (Map<String, Object> o : list) {
-            if (fights >= budget
-                    || day.fightsSent >= arenaDailyFightCap(day.boughtTimes)) break;
-            long oid = Exec.longOf(o.get("uid"));
-            if (oid <= 0) oid = Exec.longOf(o.get("id"));
-            if (oid <= 0) continue;
-            List<Object> heroArray = new ArrayList<>(heroes);
-            GameMessage f = tc.engine.request("req_arena_fight", Exec.args(
-                    "opponent_type", Exec.longOf(o.get("type")) == 0 ? 1 : Exec.longOf(o.get("type")),
-                    "opponent_id", oid,
-                    "hero_array", heroArray,
-                    "version", 26042101L));
-            day.fightsSent++;   // 封顶按“已发出场次”计：即使失败也不会 30s 节奏无限重发
-            int code = Exec.codeOf(f);
-            if (Exec.ok(f)) {
-                fights++;
-                day.mergeBase(arenaBaseOf(f.getContent()), now);
-                int win = arenaWinOf(f.getContent());
-                if (win > 0) wins++;
-                else if (win == 0) losses++;
-                else unknownWins++;
-            } else if (code == 2901 || code == 2902) {
-                // 挑战次数已用完/不可购买：本轮到此为止，等次日（本轮不做买次数）
-                day.exhausted = true;
-                day.mergeBase(arenaBaseOf(f.getContent()), now);
-                m.skip("挑战次数已用完(码" + code + ")");
-                break;
-            } else if (code == 2903) {
-                // 太频繁：不计入当日场次，退避到下一轮 30s 节奏
-                day.fightsSent = Math.max(0, day.fightsSent - 1);
-                m.skip("挑战过于频繁(2903)，待下一轮");
-                break;
-            } else if (code == 2904 || code == 2920 || code == 2921) {
-                // 对手过期/不可用：不计场次，下一轮重新拉对手（网页版视为需刷新）
-                day.fightsSent = Math.max(0, day.fightsSent - 1);
-                m.skip("对手已失效(码" + code + ")·下一轮刷新");
-                break;
-            } else {
-                day.mergeBase(arenaBaseOf(f.getContent()), now);
-                if (failCodes.length() < 40) failCodes.append(code).append(' ');
+        // 1:1 网页版（DailyArenaService.fight/ensureOpponents/refreshUnavailable）：
+        // ① 对手失效（2904/2920/2921）→ 主动 req_arena_refresh_opponent 后重取一次对手，而不是直接放弃；
+        // ② opponent_type 只按 type==1 判机器人（type=0 是真人；旧实现把 type=0 发成 1，服务端恒回 2904）；
+        // ③ opponent_id 用对手记录 id（网页版 raw.id）；uid 是玩家标识，不能当对手记录 id。
+        boolean refreshed = false;
+        for (int pass = 0; pass < 2; pass++) {
+            GameMessage opp = tc.engine.request("req_arena_get_opponent", null);
+            if (!Exec.ok(opp)) {
+                // 2026-10-28 修复"竞技场从来没执行过"的服务端静默：旧文案一律"未解锁"，
+                // 分不清"次数用完/对手失效/请求过频"，用户侧看起来就是没跑。按码给可读原因。
+                int opCode = Exec.codeOf(opp);
+                if (opCode == 2901 || opCode == 2902) day.exhausted = true;   // 服务端判次数用完 → 独占窗释放
+                String why = arenaOpponentSkipNote(opCode);
+                m.skip(why);
+                m.subSkip("fight", why);
+                return;
             }
-            Exec.sleep(800);
-        }
-        day.wins += wins;
-        day.losses += losses;
-        day.unknownResult += unknownWins;
-        if (fights > 0) {
-            m.claimed("挑战" + fights + "场胜" + wins
-                    + (losses > 0 ? "负" + losses : "")
-                    + (unknownWins > 0 ? "结果未知" + unknownWins : "")
-                    + " · 今日" + day.fightsSent + "/5");
-            m.subOk("fight", "挑战" + fights + "胜" + wins);
-        } else if (failCodes.length() > 0) {
-            m.skip("挑战失败码" + failCodes.toString().trim());
-            m.subSkip("fight", "失败码" + failCodes.toString().trim());
-        } else {
+            List<Map<String, Object>> list = new ArrayList<>();
+            for (String k : new String[]{"opponents", "data", "list"}) {
+                list = Exec.mapsOf(opp.getContent().get(k));
+                if (!list.isEmpty()) break;
+            }
+            if (list.isEmpty()) {
+                m.skip("无对手数据");
+                m.subSkip("fight", "无对手数据");
+                return;
+            }
+            list.sort((a, b) -> Long.compare(powerOf(a), powerOf(b)));
+            List<Long> heroes = squadHeroes(tc.engine);
+            // 缺英雄推送/布阵数据时旧代码会直接跳过循环、产出空 Multi（SKIPPED 无文案）=
+            // 用户看到"从来没执行过"。显式判定并写可读 SKIP。
+            if (!arenaHasFightableHeroes(heroes)) {
+                m.skip("无出征英雄数据，未发起挑战");
+                m.subSkip("fight", "无英雄编队数据");
+                return;
+            }
+            int fights = 0, wins = 0, losses = 0, unknownWins = 0;
+            StringBuilder failCodes = new StringBuilder();
+            boolean stale = false;
+            for (Map<String, Object> o : list) {
+                if (fights >= budget
+                        || day.fightsSent >= arenaDailyFightCap(day.boughtTimes)) break;
+                long oid = Exec.longOf(o.get("id"));
+                if (oid <= 0) oid = Exec.longOf(o.get("uid"));
+                if (oid <= 0) continue;
+                long otype = Exec.longOf(o.get("type")) == 1L ? 1L : 0L;
+                List<Object> heroArray = new ArrayList<>(heroes);
+                GameMessage f = tc.engine.request("req_arena_fight", Exec.args(
+                        "opponent_type", otype,
+                        "opponent_id", oid,
+                        "hero_array", heroArray,
+                        "version", 26042101L));
+                day.fightsSent++;   // 封顶按“已发出场次”计：即使失败也不会 30s 节奏无限重发
+                int code = Exec.codeOf(f);
+                if (Exec.ok(f)) {
+                    fights++;
+                    day.mergeBase(arenaBaseOf(f.getContent()), now);
+                    int win = arenaWinOf(f.getContent());
+                    if (win > 0) wins++;
+                    else if (win == 0) losses++;
+                    else unknownWins++;
+                } else if (code == 2901 || code == 2902) {
+                    // 挑战次数已用完/不可购买：本轮到此为止，等次日（本轮不做买次数）
+                    day.exhausted = true;
+                    day.mergeBase(arenaBaseOf(f.getContent()), now);
+                    m.skip("挑战次数已用完(码" + code + ")");
+                    break;
+                } else if (code == 2903) {
+                    // 太频繁：不计入当日场次，退避到下一轮 30s 节奏
+                    day.fightsSent = Math.max(0, day.fightsSent - 1);
+                    m.skip("挑战过于频繁(2903)，待下一轮");
+                    break;
+                } else if (code == 2904 || code == 2920 || code == 2921) {
+                    // 对手过期/不可用：不计场次，主动刷新对手后重取一次（网页版 refreshUnavailable 同款）
+                    day.fightsSent = Math.max(0, day.fightsSent - 1);
+                    stale = true;
+                    m.skip("对手已失效(码" + code + ")·刷新后重试");
+                    break;
+                } else {
+                    day.mergeBase(arenaBaseOf(f.getContent()), now);
+                    if (failCodes.length() < 40) failCodes.append(code).append(' ');
+                }
+                Exec.sleep(800);
+            }
+            day.wins += wins;
+            day.losses += losses;
+            day.unknownResult += unknownWins;
+            if (fights > 0) {
+                m.claimed("挑战" + fights + "场胜" + wins
+                        + (losses > 0 ? "负" + losses : "")
+                        + (unknownWins > 0 ? "结果未知" + unknownWins : "")
+                        + " · 今日" + day.fightsSent + "/5");
+                m.subOk("fight", "挑战" + fights + "胜" + wins);
+                return;
+            }
+            if (failCodes.length() > 0) {
+                m.skip("挑战失败码" + failCodes.toString().trim());
+                m.subSkip("fight", "失败码" + failCodes.toString().trim());
+                return;
+            }
+            if (stale && !refreshed) {
+                // 网页版 DailyArenaService.refreshUnavailable：免费刷新次数未用完先免费刷新；
+                // 无免费次数时服务端会直接拒绝（不静默花钻石），失败即结束本轮。
+                GameMessage rf = tc.engine.request("req_arena_refresh_opponent", null);
+                if (Exec.ok(rf)) {
+                    refreshed = true;
+                    m.subSkip("fight", "对手已刷新，重取列表");
+                    continue;
+                }
+                m.skip("对手已失效且刷新失败(码" + Exec.codeOf(rf) + ")");
+                m.subSkip("fight", "刷新失败");
+                return;
+            }
             // 兜底：不产出空 Multi（空聚合 = SKIPPED 无文案，等价"从来没执行过"）。
             m.skip("本轮未发起挑战（对手/次数不可用）");
             m.subSkip("fight", "本轮未挑战");
+            return;
         }
     }
 

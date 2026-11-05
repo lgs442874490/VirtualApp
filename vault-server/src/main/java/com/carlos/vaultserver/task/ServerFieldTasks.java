@@ -460,6 +460,11 @@ public final class ServerFieldTasks {
     }
 
     static String gatherWakeKey(TaskContext tc) {
+        // 2026-11-05：按角色 uid 隔离（srv:cad:<fpid>:<sid>:<uid>:gather），
+        // 同账号同服双角色的采集续派唤醒不再互相覆盖（旧键只到 sid）。
+        if (tc.roleUid > 0L) {
+            return "srv:cad:" + tc.fpid + ":" + tc.sid + ":" + tc.roleUid + ":gather";
+        }
         return "srv:cad:" + tc.fpid + ":" + tc.sid + ":gather";
     }
 
@@ -925,6 +930,13 @@ public final class ServerFieldTasks {
     static final long GATHER_V2_FROSTFIRE_BACKOFF_MILLIS = 60_000L;
     /** 2878 本地“队列满”短标记（资产库无 mark API 时的本地兜底；成功派队即清除）。 */
     static final long GATHER_V2_LIMIT_BACKOFF_MILLIS = 30_000L;
+    /**
+     * 采集连续让位上限（2026-11-05，用户口径：采集不能被情报待办永久饿死）：
+     * 情报待办优先持续超过该时长后强制放行 1 队采集，随后让位计时复位。
+     */
+    static final long GATHER_YIELD_MAX_MILLIS = 30L * 60L * 1000L;
+    /** 采集让位起始时刻状态键前缀（srv:gather:yield:<fpid>:<sid>:<uid>，值=毫秒或 0=未让位）。 */
+    static final String GATHER_YIELD_KEY_PREFIX = "srv:gather:yield:";
     /** 资产库 READY 等待上限（超时按 SKIP 处理，不阻塞任务线程超过该值）。 */
     static final long GATHER_ASSET_READY_TIMEOUT_MILLIS = 15_000L;
     /** 王国可采资源等级未知时的保守上限（未满 701 天 = 8 级，1:1 GatherConfigV2.maxLevelForKingdomDay）。 */
@@ -1093,10 +1105,34 @@ public final class ServerFieldTasks {
         // 全天 0 队派出）。intel 未启用 → 待办事件不参与优先级判定。
         final boolean intelEnabled = tc.taskEnabled("intel");
         String pauseReason = gatherPauseReason(lib, System.currentTimeMillis() / 1000L, tc, intelEnabled);
+        boolean forceOneQueue = false;
+        String yieldKey = GATHER_YIELD_KEY_PREFIX + tc.fpid + ":" + tc.sid + ":" + tc.roleUid;
         if (pauseReason != null) {
-            m.skip(pauseReason);
-            tc.saveModText("gather", "send", pauseReason);
-            return;
+            // 2026-11-05（用户口径：采集不能被情报待办永久饿死）：记录连续让位起点，
+            // 超过 GATHER_YIELD_MAX_MILLIS 后强制放行 1 队，避免"可派情报事件一直存在 → 采集全天 0 队"
+            // （生产 11-05 实测连续让位 43.8/94.4 分钟两段，铁队整日没机会派出）。
+            long nowMs = System.currentTimeMillis();
+            long sinceMs = 0L;
+            try {
+                sinceMs = Exec.longOf(tc.store.getString(yieldKey));
+            } catch (Throwable ignored) {
+            }
+            if (sinceMs <= 0L) {
+                tc.store.putString(yieldKey, String.valueOf(nowMs));
+                sinceMs = nowMs;
+            }
+            long heldMs = nowMs - sinceMs;
+            if (heldMs < GATHER_YIELD_MAX_MILLIS) {
+                m.skip(pauseReason);
+                tc.saveModText("gather", "send", pauseReason
+                        + "（已连续让位 " + Math.max(0L, heldMs / 60_000L) + " 分钟）");
+                return;
+            }
+            forceOneQueue = true;
+            m.skip(pauseReason + "（已连续让位 " + (heldMs / 60_000L) + " 分钟，强制放行 1 队）");
+        } else {
+            // 未让位：复位让位计时，下一段让位重新计时。
+            tc.store.putString(yieldKey, "0");
         }
 
         int maxLevel = gatherMaxResourceLevel(lib.clock());
@@ -1136,6 +1172,8 @@ public final class ServerFieldTasks {
         }
         int slots = Math.max(0, slotCount(cfg, queue.idle, unbound, queue.capacity,
                 queue.limitReached, guardReserve) - allianceMineReserved);
+        // 连续让位超限强制放行时只派 1 队（把队列让回给情报，但保证采集不归零）。
+        if (forceOneQueue) slots = Math.min(slots, 1);
         if (queue.limitReached || slots <= 0) {
             String text = "采集队列已满(capacity=" + queue.capacity + " occupied=" + queue.occupied
                     + " idle=" + queue.idle + " unbound=" + unbound
@@ -1326,6 +1364,10 @@ public final class ServerFieldTasks {
             soldiers.put("lancer", Math.max(0L, q.lancer));
             soldiers.put("marksman", Math.max(0L, q.marksman));
             f.put("soldiers", soldiers);
+            // 2026-11-05（用户口径：采集必须采得出去）：角色编队英雄不在城/被占用（HERO_AWAY）
+            // 时回退自动编队，而不是整队跳过。此前默认 SKIP 会让铁矿等队列长期派不出去
+            // （生产实测：编队 #9100000006..09 HERO_AWAY → 采集铁进度恒 0）。
+            f.put("formation_fallback", FormationResolver.FALLBACK_AUTO);
             return f;
         }
         f.put("formation_mode", GatherConfigV2.MODE_AUTOMATIC);
@@ -1411,11 +1453,23 @@ public final class ServerFieldTasks {
         if (plan == null || plan.levels.isEmpty() || plan.resId <= 0) {
             return new SearchOutcome(GATHER_SEARCH_EMPTY, 0, null);
         }
+        SearchOutcome so = searchLevels(engine, plan, plan.fullResourceOnly);
+        // 2026-11-05：只采满矿模式全等级 2872「无矿」时回落非满矿再搜一轮。
+        // 否则铁矿 L5 这类队列在"只采满矿"下唯一轮到即无矿，每日任务 1320130/131 恒 0 进度。
+        if (!so.found() && plan.fullResourceOnly && so.empty()) {
+            SearchOutcome relaxed = searchLevels(engine, plan, false);
+            if (relaxed.found()) return relaxed;
+        }
+        return so;
+    }
+
+    /** 单队列按等级递减搜索（fullOnly 指定是否只搜满矿）。 */
+    private static SearchOutcome searchLevels(WjdrEngine engine, QueuePlan plan, boolean fullOnly) {
         int searches = Math.min(plan.levels.size(), GATHER_MAX_SEARCHES_PER_QUEUE);
         SearchOutcome last = new SearchOutcome(GATHER_SEARCH_EMPTY, plan.topLevel(), null);
         for (int i = 0; i < searches; i++) {
             int level = plan.levels.get(i).intValue();
-            SearchOutcome so = searchGatherResource(engine, plan.resId, level, plan.fullResourceOnly);
+            SearchOutcome so = searchGatherResource(engine, plan.resId, level, fullOnly);
             if (so.found()) return so;
             last = so;
             // 2872=该级无矿；code=0 但无坐标=协议异常，均按“继续降级”处理；其它 code 记录并跳过该队列。

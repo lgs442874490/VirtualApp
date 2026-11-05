@@ -424,7 +424,8 @@ public class GatherQueuePlanTest {
         ServerFieldTasks.SearchOutcome out = ServerFieldTasks.searchQueueResource(engine, plan);
         assertFalse(out.found());
         assertTrue("全等级无矿 = 2872（正常业务状态）", out.empty());
-        assertEquals(2, engine.requested.size());
+        // fullOnly=true 全等级无矿 → 回落非满矿再搜一轮（2026-11-05，铁矿 L5 等队列不再整轮跳过）。
+        assertEquals(4, engine.requested.size());
     }
 
     // ==================== 6. 王国等级上限 / 续派唤醒 ====================

@@ -470,7 +470,10 @@ public class ServerHelpResponderTest {
         assertNull(state.getString(legacyKey()));
     }
 
-    /** 两次发送最小间隔 5s：推送洪峰下不得每条推送打一次协议。 */
+    /**
+     * 两次发送最小间隔 500ms（2026-11-05「秒赞」调整，原 5s）：推送洪峰下不风暴，
+     * 但 1s tick 内新的可帮请求不再被白白拖后。
+     */
     @Test
     public void sendMinInterval_preventsRequestBurst() {
         TestEngine engine = new TestEngine();
@@ -485,10 +488,10 @@ public class ServerHelpResponderTest {
 
         engine.push("notify_alliance_help_update",
                 updatePush(1L, List.of(helpReq(3003L, 60001L, 222L, 0L, 51L))));
-        responder.tick(engine, BASE_NOW + 1_000L);
-        assertEquals("5s 内不重复发送", 1, engine.requested.size());
+        responder.tick(engine, BASE_NOW + 300L);
+        assertEquals("500ms 内不重复发送", 1, engine.requested.size());
 
-        responder.tick(engine, BASE_NOW + 6_000L);
+        responder.tick(engine, BASE_NOW + 900L);
         assertEquals("越过最小间隔后继续发送", 2, engine.requested.size());
     }
 

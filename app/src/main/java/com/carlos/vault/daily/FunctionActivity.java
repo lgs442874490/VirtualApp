@@ -597,7 +597,9 @@ public class FunctionActivity extends Activity {
         questBox.removeAllViews();
         if (boxRow != null) boxRow.removeAllViews();
         long sid = serverid;
-        QuestStore.State st = QuestStore.load(this, account.fpid, sid);
+        // 同账号同服多角色按 uid 隔离读取（R2 Phase2 口径），避免隆科多/小鹿矿工5 这类同服双角色互相串号。
+        QuestStore.State st = QuestStore.load(this, account.fpid, sid,
+                RoleStore.currentRoleUid(this, account.fpid));
         if (boxRow != null) {
             if (st.integral < 0) {
                 actTitle.setText("活跃度：尚未同步（打开今日页自动同步，或执行一次）");

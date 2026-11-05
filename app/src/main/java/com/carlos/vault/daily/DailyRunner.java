@@ -529,7 +529,8 @@ public class DailyRunner {
             st.integral = (int) integral;
             st.boxes = boxes;
             st.ts = System.currentTimeMillis();
-            QuestStore.save(context, fpid, sid, st);
+            // 同账号同服多角色按 uid 隔离存储（R2 Phase2 口径）：采集来自当前会话引擎，uid 即该角色。
+            QuestStore.save(context, fpid, sid, engine.lastUid(), st);
             if (sum != null) {
                 sum.activeness = (int) integral;
                 sum.boxesReached = boxes;
