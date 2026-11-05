@@ -1058,6 +1058,13 @@ public final class WatchPointEngine {
         long sess = asLong(content.get("session"), -1L);
         Ctx ctx = sess > 0 ? ctxBySession.get((int) sess) : null;
         if (ctx == null) {
+            // 2026-11-06：联盟建筑增量推送（add/del/update，session<=0 的主动推送）——
+            // 建旗子/拆旗子/总部建成/易主的直接事件源；此前被当「未匹配回包」丢弃（生产 11-06 日志
+            // 单日 add 213 / del 218 / update 306 条全部丢失）。
+            if (sess <= 0L && isBuildingPush(proto)) {
+                onMapObjPush(proto, content);
+                return;
+            }
             // 2026-11-01 诊断：跨区探测无回包时，确认回包是否「session 不同/缺失」。
             if (("notify_world_mapobjs".equals(proto) || proto.startsWith("notify_world_mapobj"))
                     && System.currentTimeMillis() - unmatchedLogAt > 30_000L) {
@@ -1149,14 +1156,90 @@ public final class WatchPointEngine {
 
     /** 联盟建筑（总部/旗子/王城）→ 坐标缓存，用于「建设 vs 破坏」按目标归属判定。 */
     private void parseAllianceBuilding(Map<?, ?> item) {
-        Map<?, ?> point = asMap(item.get("point"));
-        int x = (int) asLong(point.get("x"), 0L);
-        int y = (int) asLong(point.get("y"), 0L);
-        if (x <= 0 || y <= 0) return;
-        String kind = null;
+        int[] pt = pointOf(item);
+        if (pt == null) return;
+        Building b = buildingOf(item);
+        if (b == null) return;
+        buildingByPoint.put(pt[0] + "," + pt[1], b);
+        if (buildingByPoint.size() > 20000) {
+            // 简单防膨胀：扫描会周期性重建，这里只做上限保护
+            buildingByPoint.clear();
+        }
+    }
+
+    // ------------------------------------------------------------------ 建筑变化推送（2026-11-06）
+
+    /** 联盟建筑增量推送：add/del/update（session<=0 主动推送）。 */
+    private static boolean isBuildingPush(String proto) {
+        return "notify_world_mapobj_add".equals(proto)
+                || "notify_world_mapobj_del".equals(proto)
+                || "notify_world_mapobj_update".equals(proto);
+    }
+
+    /**
+     * 处理建筑增量推送：add=新建、del=拆除、update=归属/类型变化。
+     *
+     * <p>只处理坐标落在监视目标矩形（±27 格）或保护矩形内的事件，其余（全服推送）直接丢弃，
+     * 避免刷屏与缓存膨胀。
+     */
+    private void onMapObjPush(String proto, Map<String, Object> content) {
+        if ("notify_world_mapobj_del".equals(proto)) {
+            int[] pt = pointOf(content);
+            if (pt == null || !inWatchArea(pt[0], pt[1])) return;
+            Building old = buildingByPoint.remove(pt[0] + "," + pt[1]);
+            if (old == null) return;   // 非联盟建筑或从未缓存，不告警
+            onBuildingEvent(pt[0], pt[1], old, "拆除");
+            return;
+        }
+        Map<?, ?> item = asMap(content.get("obj"));
+        if (item.isEmpty()) item = asMap(content.get("change"));
+        if (item.isEmpty()) return;
+        Building nb = buildingOf(item);
+        if (nb == null) return;
+        int[] pt = pointOf(item);
+        if (pt == null) pt = pointOf(content);
+        if (pt == null || !inWatchArea(pt[0], pt[1])) return;
+        Building old = buildingByPoint.get(pt[0] + "," + pt[1]);
+        if ("notify_world_mapobj_add".equals(proto)) {
+            buildingByPoint.put(pt[0] + "," + pt[1], nb);
+            onBuildingEvent(pt[0], pt[1], nb, "新建");
+        } else if (old == null) {
+            buildingByPoint.put(pt[0] + "," + pt[1], nb);
+            onBuildingEvent(pt[0], pt[1], nb, "新建");
+        } else if (old.aid != nb.aid || !old.kind.equals(nb.kind)) {
+            buildingByPoint.put(pt[0] + "," + pt[1], nb);
+            onBuildingEvent(pt[0], pt[1], nb, "易主");
+        }
+    }
+
+    /** 建筑变化告警（区域过滤 + 15 分钟去重由 {@link #alert} 承担）。 */
+    private void onBuildingEvent(int x, int y, Building b, String action) {
+        if (!inWatchArea(x, y)) return;
+        String label = b.aid > 0L ? store.aidLabels.get(b.aid) : null;
+        if (label == null || label.isEmpty()) label = b.aid > 0L ? allianceNames.get(b.aid) : null;
+        alert("bld:" + action + ":" + x + "," + y + ":" + b.aid,
+                buildingAlertText(action, b.kind, label, x, y, nowText()));
+    }
+
+    /** 坐标是否落在监视目标矩形（与扫描同源 {@link #rectAround}）或保护矩形内。 */
+    boolean inWatchArea(int x, int y) {
+        for (WatchPointStore.Target t : store.monitorTargets) {
+            if (rectAround(t.x, t.y, TILE / 2).contains(x, y)) return true;
+        }
+        for (WatchPointStore.Rect r : store.protectRects) {
+            if (r.contains(x, y)) return true;
+        }
+        return false;
+    }
+
+    /** 从世界地图对象解析联盟建筑（总部/旗子/王城）；非联盟建筑返回 null。 */
+    static Building buildingOf(Map<?, ?> item) {
+        if (item == null) return null;
         Map<?, ?> o = asMap(item.get("map_alliance_hall"));
-        if (!o.isEmpty()) kind = "总部";
-        if (kind == null) {
+        String kind = null;
+        if (!o.isEmpty()) {
+            kind = "总部";
+        } else {
             o = asMap(item.get("map_alliance_flag"));
             if (!o.isEmpty()) kind = "旗子";
         }
@@ -1164,13 +1247,35 @@ public final class WatchPointEngine {
             o = asMap(item.get("map_capital"));
             if (!o.isEmpty()) kind = "王城";
         }
-        if (kind == null) return;
-        long aid = asLong(o.get("aid"), 0L);
-        buildingByPoint.put(x + "," + y, new Building(kind, aid));
-        if (buildingByPoint.size() > 20000) {
-            // 简单防膨胀：扫描会周期性重建，这里只做上限保护
-            buildingByPoint.clear();
+        if (kind == null) return null;
+        return new Building(kind, asLong(o.get("aid"), 0L));
+    }
+
+    /** 解析对象坐标（point）；缺失/非法返回 null。 */
+    private static int[] pointOf(Map<?, ?> item) {
+        if (item == null) return null;
+        Map<?, ?> point = asMap(item.get("point"));
+        int x = (int) asLong(point.get("x"), 0L);
+        int y = (int) asLong(point.get("y"), 0L);
+        return (x <= 0 || y <= 0) ? null : new int[]{x, y};
+    }
+
+    /** 建筑变化文案（2026-11-06）：📍 建筑·新建/拆除/易主。 */
+    static String buildingAlertText(String action, String kind, String allianceLabel,
+                                    int x, int y, String nowTime) {
+        StringBuilder sb = new StringBuilder("📍 建筑·").append(action).append('\n');
+        sb.append("类型：").append(kind).append('\n');
+        if (allianceLabel != null && !allianceLabel.isEmpty()) {
+            sb.append("联盟：").append(allianceLabel).append('\n');
         }
+        sb.append("坐标：(").append(x).append(',').append(y).append(")\n");
+        sb.append("时间：").append(nowTime);
+        return sb.toString();
+    }
+
+    /** 单测：坐标缓存查询（不依赖 SHARED 安装）。 */
+    Building buildingAtForTest(int x, int y) {
+        return buildingByPoint.get(x + "," + y);
     }
 
     /** 写入采集点缓存（空矿点会被后续「无人采集」覆盖掉）。 */
