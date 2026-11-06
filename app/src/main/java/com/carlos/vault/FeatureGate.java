@@ -366,7 +366,26 @@ public final class FeatureGate {
         if (visible(ctx, Feature.WATCHPOINT)) n++;
         if (visible(ctx, Feature.PROTO_CAPTURE)) n++;
         if (visible(ctx, Feature.PROTOCOL_LOGGER)) n++;
+        // 2026-11-07 审查 P1-1：生产走本 Context 版，此前只有 deprecated 纯函数版计入移民，
+        // 导致「工具箱可用工具数」与实际渲染不一致（移民卡在、计数却不算它）。
+        if (visible(ctx, Feature.IMMIGRATION)) n++;
         return n;
+    }
+
+    /**
+     * 工具箱是否至少有一个可用工具（2026-11-07 审查 P1-2）。
+     *
+     * <p>ToolBoxActivity.onCreate 的「防旁路」判断必须与本页实际渲染的工具集**同源**，
+     * 否则会出现「渲染了卡片但被防旁路挡下」或「放行了却渲染空壳」。
+     * 抽成一个方法后，onCreate 与 {@link #visibleToolCount(Context)} 共用同一份清单。
+     */
+    public static boolean anyToolVisible(Context ctx) {
+        return visible(ctx, Feature.ENEMY_WATCH)
+                || visible(ctx, Feature.DEV_MONITOR)
+                || visible(ctx, Feature.WATCHPOINT)
+                || visible(ctx, Feature.PROTO_CAPTURE)
+                || visible(ctx, Feature.PROTOCOL_LOGGER)
+                || visible(ctx, Feature.IMMIGRATION);
     }
 
     /** 纯函数版本（无矩阵；保留给单测）。 */

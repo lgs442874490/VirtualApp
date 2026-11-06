@@ -65,9 +65,7 @@ public class ToolBoxActivity extends Activity {
         super.onCreate(savedInstanceState);
         // 批次7 防旁路：本页只有 T3（敌情监控/真机监控）与调试工具；无任何可用工具时（含直接 Intent
         // 启动绕过 Home 入口门控）直接返回，不放空壳页也不泄露功能清单。
-        if (!FeatureGate.visible(this, FeatureGate.Feature.ENEMY_WATCH)
-                && !FeatureGate.visible(this, FeatureGate.Feature.DEV_MONITOR)
-                && !FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER)) {
+        if (!FeatureGate.anyToolVisible(this)) {
             toast(FeatureGate.reasonText(FeatureGate.Feature.TOOLBOX));
             finish();
             return;

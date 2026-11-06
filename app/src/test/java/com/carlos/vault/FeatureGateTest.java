@@ -163,6 +163,36 @@ public class FeatureGateTest {
     }
 
     @Test
+    public void anyToolVisible_matchesVisibleToolCount_contract() {
+        // 2026-11-07 审查 P2-1：ToolBox 防旁路（anyToolVisible）与计数（visibleToolCount）
+        // 必须同源；这里锁纯函数口径下的等价性（Context 版共用同一份清单）。
+        for (int tier = 0; tier <= 3; tier++) {
+            for (boolean debug : new boolean[]{false, true}) {
+                boolean any = FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.PROTO_CAPTURE, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.IMMIGRATION, tier, debug);
+                boolean hasCount = FeatureGate.visibleToolCount(tier, debug) > 0;
+                assertEquals("tier=" + tier + " debug=" + debug + " 防旁路与计数必须一致",
+                        any, hasCount);
+            }
+        }
+    }
+
+    @Test
+    public void immigration_isImplementedTier3() {
+        // 移民 2026-11-07 已实现：T3 可见、非调试专属
+        assertTrue(FeatureGate.Feature.IMMIGRATION.implemented);
+        assertFalse(FeatureGate.Feature.IMMIGRATION.debugOnly);
+        assertEquals(3, FeatureGate.Feature.IMMIGRATION.minTier);
+        assertEquals("immigration", FeatureGate.Feature.IMMIGRATION.key);
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.IMMIGRATION, 3, false));
+        assertFalse(FeatureGate.visible(FeatureGate.Feature.IMMIGRATION, 2, false));
+    }
+
+    @Test
     public void visibleToolCount_emptyGroupWhenNoPermission() {
         // ToolBox「无任何可见工具时整组不渲染」的判据
         assertEquals("release 无 T3 权限 → 0 个工具（整组不渲染）",

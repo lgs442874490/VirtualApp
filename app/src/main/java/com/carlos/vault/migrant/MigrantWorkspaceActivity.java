@@ -164,6 +164,15 @@ public class MigrantWorkspaceActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        // 2026-11-07 审查 P2-3：本页经 exported=false 注册，外部深链面小，但仍按先例
+        //（FormationManagerActivity.launch）加自身门控——防调试器/同包 Intent 绕过 Home 入口。
+        if (!com.carlos.vault.FeatureGate.visible(this,
+                com.carlos.vault.FeatureGate.Feature.IMMIGRATION)) {
+            UiStyle.toast(this, com.carlos.vault.FeatureGate.reasonText(
+                    com.carlos.vault.FeatureGate.Feature.IMMIGRATION));
+            finish();
+            return;
+        }
         try {
             getWindow().setStatusBarColor(UiStyle.BG_V2);
             getWindow().getDecorView().setSystemUiVisibility(

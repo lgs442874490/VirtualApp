@@ -80,15 +80,15 @@ func TestDefaultMatrixCounts(t *testing.T) {
 		}
 		return n
 	}
-	// T1=5；T2=T1+9+巨兽=15；T3=已实现全集=21。
+	// T1=5；T2=T1+9+巨兽+编队管理=16；T3=已实现全集=23（2026-11-07 起含移民/编队管理）。
 	if got := count(1); got != 5 {
 		t.Fatalf("T1 默认应为 5 项，实际 %d", got)
 	}
-	if got := count(2); got != 15 {
-		t.Fatalf("T2 默认应为 15 项，实际 %d", got)
+	if got := count(2); got != 16 {
+		t.Fatalf("T2 默认应为 16 项，实际 %d", got)
 	}
-	if got := count(3); got != 21 {
-		t.Fatalf("T3 默认应为 21 项，实际 %d", got)
+	if got := count(3); got != 23 {
+		t.Fatalf("T3 默认应为 23 项，实际 %d", got)
 	}
 }
 
@@ -105,8 +105,8 @@ func TestFeaturesForRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(gm) != 21 {
-		t.Fatalf("GM 应为 21 项已实现功能，实际 %d: %v", len(gm), gm)
+	if len(gm) != 23 {
+		t.Fatalf("GM 应为 23 项已实现功能，实际 %d: %v", len(gm), gm)
 	}
 	for _, k := range gm {
 		if k == "move_city" || k == "ranking" || k == "protocol_logger" || k == "protocol_probe" {

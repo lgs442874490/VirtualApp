@@ -111,9 +111,14 @@ var featureSeed = []FeatureCatalogItem{
 	{"match3", "三消", 3, false, false, 32},
 	{"troop_rush", "爆兵", 3, false, false, 33},
 	{"pet_reset", "宠物洗练", 3, false, false, 34},
-	{"immigration", "移民抢位", 3, false, false, 35},
+	// 2026-11-07：移民已按立项实现（vault-server/migrant + App migrant 工作区），
+	// 目录必须置 implemented=true，否则 saveMatrix 拒绝勾选、featuresForRole 的
+	// `fc.implemented = 1` 过滤也不会下发 → T3 用户永远看不到入口。
+	{"immigration", "移民", 3, true, false, 35},
 	{"recon_report", "侦察战报", 3, false, false, 36},
-	{"formation_manage", "编队管理", 3, false, false, 37},
+	// 2026-11-07：App 侧编队管理已 T2 实现在线（决策6），目录此前仍为 3/false，
+	// 会导致矩阵模式下 T2/T3 都拿不到 formation_manage（编队管理入口消失）。
+	{"formation_manage", "编队管理", 2, true, false, 37},
 
 	// ===== 调试/实测项（仅调试包，矩阵不控制） =====
 	{"protocol_logger", "协议监听", 1, true, true, 38},
@@ -145,15 +150,13 @@ func seedFeatureCatalog(db *sql.DB) error {
 	return tx.Commit()
 }
 
-// ensureRoleFeatureSeed 仅当 role_feature 为空时写入默认矩阵（不覆盖管理员配置）。
+// ensureRoleFeatureSeed 写入默认矩阵：空表全量写默认；非空表只补「缺失的 (role,key) 行」。
+//
+// 2026-11-07 变更：旧实现「表非空即完全跳过」会让新增功能 key 永远没有矩阵行 →
+// featuresForRole 的 JOIN 查不到 → 新功能（如 immigration/formation_manage）即使目录已置
+// implemented 也不会下发。改为 INSERT OR IGNORE：缺失行按 defaultVisible 补齐，
+// 运营已保存的配置**绝不覆盖**（幂等，每次启动安全）。
 func ensureRoleFeatureSeed(db *sql.DB) error {
-	var n int64
-	if err := db.QueryRow(`SELECT COUNT(*) FROM role_feature`).Scan(&n); err != nil {
-		return err
-	}
-	if n > 0 {
-		return nil
-	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
@@ -165,7 +168,7 @@ func ensureRoleFeatureSeed(db *sql.DB) error {
 			if defaultVisible(role, it) {
 				v = 1
 			}
-			if _, err := tx.Exec(`INSERT OR REPLACE INTO role_feature (role, feature_key, visible)
+			if _, err := tx.Exec(`INSERT OR IGNORE INTO role_feature (role, feature_key, visible)
 				VALUES (?, ?, ?)`, role, it.Key, v); err != nil {
 				return err
 			}
@@ -497,4 +500,55 @@ func marshalJSON(v interface{}) string {
 		return "{}"
 	}
 	return string(b)
+}
+
+// matrixSchemaVersion 矩阵一次性迁移版本（SQLite PRAGMA user_version）。
+const matrixSchemaVersion = 1
+
+// migrateMatrixNewlyImplemented 一次性修正「由未实现转为已实现」的功能矩阵行。
+//
+// 背景（2026-11-07）：角色矩阵种子只在空表时写入；旧库中 immigration / formation_manage
+// 的 role_feature 行是「未实现恒 0」的占位值，**不是运营决策**。目录 implemented 改为 1 后
+// featuresForRole 的 `fc.implemented = 1` 过滤虽放开，但这些行仍为 0 → 依旧不下发，
+// 表现为「后台标已实现、管理员也能勾，但 App 拿不到 key」。
+//
+// 用 SQLite user_version 做一次性迁移（幂等）：跑过一次后，运营可以自由开关，
+// 重启不再覆盖（避免把运营配置冲掉）。
+func migrateMatrixNewlyImplemented(db *sql.DB) error {
+	var v int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
+		return err
+	}
+	if v >= matrixSchemaVersion {
+		return nil
+	}
+	// 2026-11-07 由「未实现」转为「已实现」的 key（后续再有类似变更，追加到此表并升版本号）。
+	targets := map[string]bool{"immigration": true, "formation_manage": true}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, it := range featureSeed {
+		if !targets[it.Key] {
+			continue
+		}
+		for _, role := range []int{1, 2, 3} {
+			vv := 0
+			if defaultVisible(role, it) {
+				vv = 1
+			}
+			if _, err := tx.Exec(`UPDATE role_feature SET visible = ? WHERE role = ? AND feature_key = ?`,
+				vv, role, it.Key); err != nil {
+				return err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {
+		return err
+	}
+	return nil
 }
