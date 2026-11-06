@@ -193,17 +193,32 @@ def main():
                       all(str(x.get('fpid', args.fpid)) == args.fpid for x in accts), '')
 
         if args.role:
+            # 该角色在 accounts 里的真实在线态（决定 overview 的期望，2026-11-07 修正：
+            # 生产角色通常在线，原脚本硬断言 online=false 会误报）
+            role_online = None
+            if isinstance(accts, list):
+                for x in accts:
+                    if str(x.get('accountRoleId')) == str(args.role):
+                        role_online = x.get('online')
+                        break
             r = post(args.url, secret, {'action': 'overview', 'fpid': args.fpid,
                                         'sid': '0', 'uid': '0',
                                         'account_role_id': int(args.role)})
             d = r.get('data') or {}
-            rep.check('overview 离线返回 code=0（非报错）', r.get('code') == 0,
+            rep.check('overview 返回 code=0（非报错）', r.get('code') == 0,
                       'code=%s %s' % (r.get('code'), r.get('message')))
-            rep.check('overview 离线显式 online=false（契约裁决）',
-                      d.get('online') is False,
-                      'data.online=%r' % (d.get('online'),))
-            rep.check('overview 离线带可读原因', bool(d.get('message')),
-                      str(d.get('message', ''))[:40])
+            if role_online is True:
+                rep.check('overview 在线时显式 online=true',
+                          d.get('online') is True, 'data.online=%r' % (d.get('online'),))
+                rep.check('overview 在线含结构字段（kingdoms/state_complete/server_now）',
+                          any(k in d for k in ('kingdoms', 'state_complete', 'server_now_millis')),
+                          '键=%s' % sorted(d.keys())[:8])
+            else:
+                rep.check('overview 离线显式 online=false（契约裁决）',
+                          d.get('online') is False,
+                          'data.online=%r（accounts.online=%r）' % (d.get('online'), role_online))
+                rep.check('overview 离线带可读原因', bool(d.get('message')),
+                          str(d.get('message', ''))[:40])
 
             # 越权：用另一个 fpid 访问该角色必须 1004（角色归属校验 P0-1 语义）
             r2 = post(args.url, secret, {'action': 'overview', 'fpid': '__other__',
