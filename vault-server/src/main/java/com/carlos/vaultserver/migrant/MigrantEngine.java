@@ -2020,6 +2020,16 @@ public final class MigrantEngine {
         final RoleKey role = roleOf(job);
         if (keeper == null || !keeper.roleOnline(role)) {
             endRunning(job.jobId);
+            // 2026-11-07 修复（端到端验证发现）：离线时只 tryLogin 而不推进轮次，会让
+            // nextReverifyAtMillis 长期停留在过去 → 调度器每秒重投 → 反复拉起登录
+            // （token 失效时刷屏），且永远排不到 +10min 第二轮、任务永久滞留 UNKNOWN。
+            // 正确语义：本次复核无法执行也算「本轮无结论」，照常推进（两轮后停止自动复核）。
+            synchronized (job) {
+                advanceReverify(job);
+                job.touch();
+            }
+            jobs.markDirty();
+            jobs.flushIfDirty();
             tryLogin(job);
             return false;
         }
