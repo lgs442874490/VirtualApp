@@ -1011,13 +1011,13 @@ public final class ServerShieldResponder {
         boolean immediate = "immediate".equals(gatherMode(tc));
         if (immediate || E <= 0L || E <= nowSec) {
             return triggerGatherWatch(engine, tc, w, e,
-                    "采集点极限场景：敌方#"+e.marchId+" 已落地/立即模式", nowSec, nowMs);
+                    "采集点遭袭：敌方#"+e.marchId+" 已落地/立即模式", nowSec, nowMs);
         }
         long n = gatherEtaSec(tc);
         long at = E - n;
         if (at <= nowSec) {
             return triggerGatherWatch(engine, tc, w, e,
-                    "采集点极限场景：敌方#"+e.marchId+" 到达前"+n+"秒", nowSec, nowMs);
+                    "采集点遭袭：敌方#"+e.marchId+" 到达前"+n+"秒", nowSec, nowMs);
         }
         if (w.scheduledAtSec != at || w.scheduledEnemyId != e.marchId) {
             w.scheduledAtSec = at;

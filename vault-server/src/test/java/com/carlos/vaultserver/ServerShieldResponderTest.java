@@ -699,7 +699,10 @@ public class ServerShieldResponderTest {
 
     @Test
     public void gatherAttack_notifiesAndRecallsOwnGatheringMarch_whenEnabled() {
-        account(true, "{\"sub\":{\"gather_attack\":true,\"gather_recall\":true}}");
+        // 2026-11-06 决策：采集召回统一走 gatherWatchTick（gather_mode 缺省 before_arrival），
+        // "收到即撤矿"只保留给显式 immediate 模式；本用例锁死 immediate 路径仍能撤矿。
+        account(true, "{\"sub\":{\"gather_attack\":true,\"gather_recall\":true},"
+                + "\"strategy\":{\"gather_mode\":\"immediate\"}}");
         TestEngine e = new TestEngine();
         e.responses.put("req_world_march_off_work", msg(0));
         ServerShieldResponder r = responder();
