@@ -323,6 +323,13 @@ public final class FormationResolver {
         // 预设编队（PRESET_* / id 9100000001..19）：按当前英雄目录实时重算英雄（必须在 usable 前）
         FormationSpec spec = PresetLiveResolver.refresh(stored, engine);
         boolean presetRatioMode = PresetLiveResolver.isPercentagePreset(spec);
+        // 2026-11-07：显式 allocation_mode=PERCENTAGE 的编队（App「按比例保存」）一律按
+        // 「实时出征容量 × 比例」分配，忽略库内预算 soldiers/total；不再用 406 缩放兜底。
+        // 注意：未写 allocation_mode 的旧编队仍保留 total/ratio 旧语义（兼容）。
+        String explicitMode = spec.allocationMode == null ? ""
+                : spec.allocationMode.trim().toUpperCase(java.util.Locale.ROOT);
+        boolean capacityRatioMode = presetRatioMode
+                || FormationSpec.MODE_PERCENTAGE.equals(explicitMode);
         if (!spec.usable()) {
             failures.add("编队 #" + formationId + " 没有英雄或 id 非法");
             return null;
@@ -366,7 +373,7 @@ public final class FormationResolver {
         // ⑤ 兵量：显式兵量/比例 → fitFormation（超容量同比缩放、超库存缩放，不再 SKIP）
         List<String> notes = new ArrayList<>();
         // PERCENTAGE 预设：忽略库内预算兵量与队列 total，强制「预设比例 × 实时容量」
-        long[] override = presetRatioMode ? null : soldiersOf(p);
+        long[] override = capacityRatioMode ? null : soldiersOf(p);
         long[] merged = new long[]{
                 Math.max(0L, spec.infantry),
                 Math.max(0L, spec.lancer),
@@ -385,7 +392,7 @@ public final class FormationResolver {
         long bp = percentageBasisPoints(engine);
         long[] soldiers;
         String sourceNote;
-        if (!presetRatioMode && (overrideAny || spec.hasExplicitSoldiers())) {
+        if (!capacityRatioMode && (overrideAny || spec.hasExplicitSoldiers())) {
             // MANUAL：configuredTotal → expandedFixedTarget（容量扩张）→ 最大余数按兵量权重重分配
             long configuredTotal = merged[0] + merged[1] + merged[2];
             long target = configuredTotal;
@@ -408,10 +415,10 @@ public final class FormationResolver {
             soldiers = allocateLargestRemainders(target, merged);
             sourceNote = overrideAny ? "功能级 soldiers 覆盖" : "编队库兵量";
         } else {
-            long total = presetRatioMode ? 0L : totalOf(p);
-            if (!presetRatioMode && total <= 0L) total = spec.total;
-            boolean ratioInformed = presetRatioMode || hasExplicitRatio(p) || spec.ratioExplicit;
-            long[] weights = presetRatioMode
+            long total = capacityRatioMode ? 0L : totalOf(p);
+            if (!capacityRatioMode && total <= 0L) total = spec.total;
+            boolean ratioInformed = capacityRatioMode || hasExplicitRatio(p) || spec.ratioExplicit;
+            long[] weights = capacityRatioMode
                     ? ratioArray(spec.ratio, DEFAULT_RATIO)
                     : ratioArray(ratioOf(p, spec.ratio), DEFAULT_RATIO);
             if (total > 0L) {
@@ -451,14 +458,17 @@ public final class FormationResolver {
                 return null;
             }
         }
-        // ⑥ 406 自适应：按 75/50/25% 缩放（成功出征后 markSuccess 复位）
-        int scalePct = HeroAvailability.soldierScalePercent(engine);
-        if (scalePct < 100) {
-            long total = soldiers[0] + soldiers[1] + soldiers[2];
-            if (total > 0L) {
-                long scaled = Math.max(1L, applyPercent(total, scalePct));
-                soldiers = allocateLargestRemainders(scaled, soldiers);
-                notes.add("406 缩放至" + scalePct + "%");
+        // ⑥ 406 自适应：仅非「按比例」编队保留（按比例编队以容量×比例为唯一口径，
+        // 用户 2026-11-07 口径：不再向下缩放）；按比例被 406 拒绝时由调用方做一次 60s 重试。
+        if (!capacityRatioMode) {
+            int scalePct = HeroAvailability.soldierScalePercent(engine);
+            if (scalePct < 100) {
+                long total = soldiers[0] + soldiers[1] + soldiers[2];
+                if (total > 0L) {
+                    long scaled = Math.max(1L, applyPercent(total, scalePct));
+                    soldiers = allocateLargestRemainders(scaled, soldiers);
+                    notes.add("406 缩放至" + scalePct + "%");
+                }
             }
         }
         // ⑦ 库存缩放（逐兵种夹到可用库存；不再 SKIP 空转）

@@ -6,6 +6,8 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
+import com.carlos.vault.wjdr.WjdrEngine;
+
 import org.json.JSONObject;
 import org.junit.Test;
 
@@ -675,5 +677,81 @@ public class ServerBearTasksTest {
         c.memberMax = 4L;
         c.memberCount = 1L;
         return c;
+    }
+
+    // ==================== 2026-11-07：角色键隔离 / 宠物技能集合 ====================
+
+    @Test
+    public void roleScopedSuffix_isolatesUid() {
+        assertEquals("48460403:888:35371154", ServerBearTasks.roleScopedSuffix(
+                "48460403", 888L, 35_371_154L));
+        assertEquals("48460403:888", ServerBearTasks.roleScopedSuffix("48460403", 888L, 0L));
+    }
+
+    @Test
+    public void bearPetSkillIds_excludesRazorbeak() {
+        long[] ids = ServerBearTasks.bearPetSkillIds();
+        assertEquals("10 个战斗技能排除 550051 后剩 9 个", 9, ids.length);
+        for (long id : ids) {
+            assertTrue("不得包含 550051（锋锐铁喙）", id != 550051L);
+        }
+        assertTrue("应包含 550111（猛虎出山）", contains(ids, 550111L));
+    }
+
+    private static boolean contains(long[] ids, long want) {
+        for (long id : ids) {
+            if (id == want) return true;
+        }
+        return false;
+    }
+
+    // ==================== 2026-11-07：T-5 触发 / 召回目标解析 ====================
+
+    @Test
+    public void prepGateDue_onlyWithinFiveMinutesOncePerWindow() {
+        long start = 1_793_970_000L;
+        assertFalse("距开赛 301s 不触发", ServerBearTasks.prepGateDue(start, start - 301L, 0L));
+        assertTrue("距开赛 300s 触发", ServerBearTasks.prepGateDue(start, start - 300L, 0L));
+        assertTrue("开赛后（ACTIVE）未执行则补做", ServerBearTasks.prepGateDue(start, start + 5L, 0L));
+        assertFalse("同场已执行不重复", ServerBearTasks.prepGateDue(start, start - 100L, start));
+    }
+
+    @Test
+    public void ownMarchTargets_skipsBearAndJoinRallies() {
+        Map<String, Object> m1 = new LinkedHashMap<>();
+        m1.put("id", 1L);
+        m1.put("type", 4L);
+        m1.put("state", 3L);
+        Map<String, Object> m2 = new LinkedHashMap<>();
+        m2.put("id", 2L);
+        m2.put("type", 99L);
+        m2.put("state", 2L);
+        Map<String, Object> m3 = new LinkedHashMap<>();
+        m3.put("id", 3L);
+        m3.put("type", 411L);
+        m3.put("state", 2L);
+        Map<String, Object> m4 = new LinkedHashMap<>();
+        m4.put("id", 4L);
+        m4.put("type", 2L);
+        m4.put("state", 2L);
+        Map<String, Object> m5 = new LinkedHashMap<>();
+        m5.put("id", 5L);
+        m5.put("type", 999L);
+        m5.put("state", 2L);
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("marches", Arrays.asList(m1, m2, m3, m4, m5));
+
+        WjdrEngine engine = new WjdrEngine(null) {
+            @Override
+            public Map<String, Object> notifyContent(String proto) {
+                return "notify_player_march_add".equals(proto) ? content : null;
+            }
+        };
+        List<long[]> out = ServerBearTasks.ownMarchTargets(engine);
+        assertEquals("只保留采集/进攻行军（排除 99/411/未知类型）", 2, out.size());
+        assertEquals(1L, out.get(0)[0]);
+        assertEquals(3L, out.get(0)[1]);
+        assertEquals(4L, out.get(1)[0]);
+        assertEquals(2L, out.get(1)[1]);
     }
 }

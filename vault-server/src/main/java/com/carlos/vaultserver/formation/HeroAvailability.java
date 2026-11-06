@@ -23,7 +23,8 @@ import java.util.WeakHashMap;
  * 由 {@link FormationResolver#autoProfessionHeroes} 消费；成功出征后 {@link #markSuccess} 复位。
  *
  * <p><b>406 自适应</b>：{@code noteSoldierLimitRejected} 把兵力缩放 100%→75%→50%→25%；
- * AUTO/ROLE 解析都会按 {@link #soldierScalePercent} 缩放后下发；成功出征后 {@link #markSuccess} 复位。
+ * AUTO 与非「按比例」ROLE 编队按 {@link #soldierScalePercent} 缩放后下发；按比例编队
+ * 以「实时容量×比例」为准不缩放（2026-11-07）；成功出征后 {@link #markSuccess} 复位。
  *
  * <p>线程安全：WeakHashMap + 同步块（会话销毁后引擎可回收；与 FormationCatalog 缓存同策略）。
  */

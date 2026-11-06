@@ -88,6 +88,8 @@ public final class ModularRoundRunner {
         String yieldNote = com.carlos.vaultserver.ServerWarState.roundYieldNote(fpid, sid, roleUid,
                 fnOnly);
         boolean wartimeYield = yieldNote != null;
+        // 2026-11-07：巨熊窗口（开赛前 5 分钟至本场结束）只暂停队列类任务，其余照常
+        boolean bearYield = BearGate.active(role);
 
         List<ModuleResult> results = new ArrayList<>();
         if (wartimeYield) {
@@ -108,6 +110,32 @@ public final class ModularRoundRunner {
                         } else {
                             r.add(a.id, new TaskOutcome(a.id, a.name,
                                     TaskOutcome.Category.SKIPPED, yieldNote));
+                        }
+                    }
+                    if (!r.entries.isEmpty()) results.add(r);
+                }
+            }
+        } else if (bearYield) {
+            if (fnOnly != null && !fnOnly.isEmpty()) {
+                if (BearGate.blocks(role, fnOnly)) {
+                    ModuleResult r = new ModuleResult("bear");
+                    r.add(fnOnly, new TaskOutcome(fnOnly, fnOnly,
+                            TaskOutcome.Category.SKIPPED, "巨熊窗口让位（队列类任务暂停）"));
+                    results.add(r);
+                } else {
+                    results.add(reg.runAction(fnOnly, ctx, config));
+                }
+            } else {
+                for (AutomationModule m : reg.ordered()) {
+                    ModuleConfig mc = config.module(m.id());
+                    ModuleResult r = new ModuleResult(m.id());
+                    for (ActionDefinition a : m.actions()) {
+                        if (!mc.actionEnabled(a.id, a.defaultEnabled)) continue;
+                        if (BearGate.blocks(role, a.id)) {
+                            r.add(a.id, new TaskOutcome(a.id, a.name,
+                                    TaskOutcome.Category.SKIPPED, "巨熊窗口让位（队列类任务暂停）"));
+                        } else {
+                            results.add(reg.runAction(a.id, ctx, config));
                         }
                     }
                     if (!r.entries.isEmpty()) results.add(r);

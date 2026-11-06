@@ -1,6 +1,7 @@
 package com.carlos.vaultserver.task;
 
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.pet.PetSkillCatalog;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.Beijing;
 import com.carlos.vaultserver.FileLog;
@@ -123,6 +124,17 @@ public final class ServerBearTasks {
     static final int CODE_HERO_NOT_IN_CITY = 301;
     /** 巨熊 301 降级重试最大轮数（网页版语义：拉黑 301 英雄后换其余英雄组合，最多 2 轮）。 */
     static final int MAX_BEAR_301_ROUNDS = 2;
+    /** 开赛前召回/暂停队列的提前量（秒）：用户 2026-11-07 口径 = 5 分钟。 */
+    static final long PREP_RECALL_SECONDS = 300L;
+    /** 编队士兵数超限（406）：取消兵量自适应后仍保留一次 60s 延时重试。 */
+    static final int CODE_SOLDIER_LIMIT = 406;
+    /** 打熊自动开启宠物战斗技能时排除：550051 泰坦巨鸟·锋锐铁喙（用户 2026-11-07 指定）。 */
+    static final long BEAR_PET_SKILL_EXCLUDE = 550051L;
+    /** 关闭原生自动上车：只关巨兽/死神（1/4），保留巨熊自己（3）。 */
+    static final List<Long> BEAR_CLOSE_AUTOJOIN_IDS = java.util.Arrays.asList(1L, 4L);
+    /** 开赛前可召回的本角色行军类型（侦查/进攻/狩猎/采集/驻防/集结类/巨兽/矿/情报；排除 99/411）。 */
+    static final Set<Long> MARCH_RECALL_TYPES = Set.of(
+            1L, 2L, 3L, 4L, 5L, 11L, 102L, 110L, 302L);
     /** 降级重试时自动编队取用的英雄数（巨熊集结一队 3 英雄）。 */
     static final int BEAR_DOWNGRADE_HERO_COUNT = 3;
     /** 状态键前缀（幂等/缓存）。 */
@@ -223,6 +235,7 @@ public final class ServerBearTasks {
 
             boolean launchedForWindowNow = false;
             if (window.phase == Window.ENDED) {
+                BearGate.release(roleKeyOf(tc));
                 m.skip("本场巨熊已结束" + syncNote);
                 launchText = "本场已结束";
             } else if (window.phase == Window.WAITING) {
@@ -235,6 +248,9 @@ public final class ServerBearTasks {
                 launchText = null;      // preheat 已写更细的 mod.bear.launch
             } else {
                 // ---------- 3) ACTIVE：发车 + 上车 + 对账 ----------
+                // 2026-11-07：窗口内保持让位门（准备窗错过/进程重启时兜底）；若 T-5 未执行，
+                // 本轮补做召回/关闭自动上车/宠物技能（runPrepGate 幂等，已执行只刷新门）。
+                runPrepGate(tc, m, cfg, state, nowSec, window);
                 boolean launchedNow = launchRally(tc, m, cfg, state, nowSec, window);
                 Window refreshed = windowOf(nowSec(tc), state.reserve, state.start, cfg);
                 joinRallies(tc, m, cfg, state, nowSec(tc), refreshed);
@@ -765,6 +781,170 @@ public final class ServerBearTasks {
         if (cfg.prepareRecallEnabled) {
             int recalled = recallOrdinaryMarches(tc);
             if (recalled > 0) m.claimed("准备窗清场：撤回普通行军×" + recalled);
+        }
+        // 2026-11-07：开赛前 5 分钟召回全部队伍 + 暂停队列任务（每场一次）
+        runPrepGate(tc, m, cfg, state, nowSec, window);
+    }
+
+    /**
+     * 开赛前 5 分钟动作（2026-11-07，每场一次）：
+     * 1) 召回本角色全部在途/驻扎行军；2) 关闭巨兽/死神原生自动上车；3) 开启巨熊窗口让位门；
+     * 4) 若开启 {@code pet_skills}，自动使用全部战斗型宠物技能（排除 550051）。
+     */
+    private static void runPrepGate(TaskContext tc, Exec.Multi m, BearConfig cfg, BearState state,
+                                    long nowSec, Window window) {
+        if (!prepGateDue(window.startSec, nowSec, state.prepGateWindowStart)) {
+            if (window.startSec - nowSec <= PREP_RECALL_SECONDS) {
+                BearGate.enter(roleKeyOf(tc), window.endSec * 1000L);
+            }
+            return;
+        }
+        BearGate.enter(roleKeyOf(tc), window.endSec * 1000L);
+        state.prepGateWindowStart = window.startSec;
+        int recalled = cfg.prepRecall ? recallAllMarches(tc) : 0;
+        boolean autoJoinClosed = closeBehemothAutoJoin(tc);
+        ensurePetSkills(tc, cfg, state, m, window);
+        saveState(tc, state);
+        String text = "巨熊准备（T-5）：召回行军×" + recalled
+                + (autoJoinClosed ? " · 已暂停巨兽/死神自动上车" : "")
+                + " · 队列任务让位至本场结束";
+        FileLog.info("巨熊准备窗清场 fpid={} sid={} {}", tc.fpid, String.valueOf(tc.sid), text);
+        m.claimed(text);
+    }
+
+    /** 纯函数：是否到达 T-5 且本场尚未执行（便于 JVM 单测）。 */
+    static boolean prepGateDue(long startSec, long nowSec, long doneWindowStart) {
+        return startSec - nowSec <= PREP_RECALL_SECONDS && doneWindowStart != startSec;
+    }
+
+    /** 召回本角色全部在途/驻扎行军（state=2→recall；其余→off_work；排除 99/411）。 */
+    static int recallAllMarches(TaskContext tc) {
+        List<long[]> targets = ownMarchTargets(tc.engine);
+        int done = 0;
+        for (long[] t : targets) {
+            long id = t[0];
+            long stateVal = t[1];
+            String proto = stateVal == 2L ? "req_world_march_recall" : "req_world_march_off_work";
+            try {
+                GameMessage rsp = tc.engine.request(proto, Exec.args("id", id));
+                if (Exec.ok(rsp)) done++;
+            } catch (Exception e) {
+                FileLog.warn("巨熊准备窗召回失败 fpid={} marchId={} proto={}：{}", tc.fpid,
+                        String.valueOf(id), proto, ServerTasks.brief(String.valueOf(e.getMessage())));
+            }
+        }
+        return done;
+    }
+
+    /** 从推送快照解析本角色行军 [id,state,type]（只读，不额外发查询）。 */
+    static List<long[]> ownMarchTargets(WjdrEngine engine) {
+        List<long[]> out = new ArrayList<>();
+        if (engine == null) return out;
+        for (String proto : new String[]{"notify_world_player_init", "notify_player_march_add"}) {
+            try {
+                collectOwnMarchTargets(engine.notifyContent(proto), out, 0);
+            } catch (Throwable ignored) {
+            }
+        }
+        return out;
+    }
+
+    private static void collectOwnMarchTargets(Object node, List<long[]> out, int depth) {
+        if (node == null || depth > 4 || out.size() >= 16) return;
+        if (node instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) node;
+            long id = Exec.longOf(map.get("id"));
+            long type = Exec.longOf(map.get("type"));
+            if (id > 0 && MARCH_RECALL_TYPES.contains(Long.valueOf(type))) {
+                boolean seen = false;
+                for (long[] e : out) {
+                    if (e[0] == id) {
+                        seen = true;
+                        break;
+                    }
+                }
+                if (!seen) out.add(new long[]{id, Exec.longOf(map.get("state")), type});
+                return;
+            }
+            for (Object value : map.values()) collectOwnMarchTargets(value, out, depth + 1);
+        } else if (node instanceof List) {
+            for (Object value : (List<?>) node) collectOwnMarchTargets(value, out, depth + 1);
+        }
+    }
+
+    /** 关闭巨兽/死神原生自动上车（按 behemoth.auto_join_ids，排除巨熊自己 3）；失败仅日志不阻塞。 */
+    private static boolean closeBehemothAutoJoin(TaskContext tc) {
+        try {
+            List<Long> ids = new ArrayList<>();
+            try {
+                String raw = tc.params("behemoth").optString("auto_join_ids", "1,4,3");
+                for (String part : raw.split(",")) {
+                    try {
+                        long id = Long.parseLong(part.trim());
+                        if (id > 0 && id != 3L && !ids.contains(id)) ids.add(id);
+                    } catch (NumberFormatException ignored) {
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+            if (ids.isEmpty()) ids.addAll(BEAR_CLOSE_AUTOJOIN_IDS);
+            GameMessage rsp = tc.engine.request("req_alliance_activity_auto_join_close",
+                    Exec.args("auto_mass_id_list", ids));
+            return Exec.ok(rsp);
+        } catch (Throwable t) {
+            FileLog.warn("巨熊准备窗关闭自动上车失败 fpid={}：{}", tc.fpid,
+                    ServerTasks.brief(String.valueOf(t.getMessage())));
+            return false;
+        }
+    }
+
+    /** 本场开启宠物战斗技能（pet_skills=true；排除 550051；同场只做一次）。 */
+    private static void ensurePetSkills(TaskContext tc, BearConfig cfg, BearState state,
+                                        Exec.Multi m, Window window) {
+        if (!cfg.petSkillsEnabled || state.petSkillsWindowStart == window.startSec) return;
+        state.petSkillsWindowStart = window.startSec;
+        long[] ids = bearPetSkillIds();
+        int ok = 0;
+        int skipped = 0;
+        int failed = 0;
+        for (long id : ids) {
+            int code = usePetSkill(tc, id);
+            if (code == 0) ok++;
+            else if (code == 11536 || code == 11537 || code == 11539 || code == 11542) skipped++;
+            else failed++;
+        }
+        String text = "宠物战斗技能：已开启 " + ok + "/" + ids.length
+                + (skipped > 0 ? "，跳过 " + skipped : "")
+                + (failed > 0 ? "，失败 " + failed : "");
+        FileLog.info("巨熊宠物技能 fpid={} sid={} {}", tc.fpid, String.valueOf(tc.sid), text);
+        try {
+            tc.saveModText(TASK_ID, "pet_skills", text);
+        } catch (Throwable ignored) {
+        }
+        if (m != null) m.claimed(text);
+    }
+
+    /** 打熊自动开启的技能集合：战斗类全部，排除 550051（锋锐铁喙）。 */
+    static long[] bearPetSkillIds() {
+        long[] all = PetSkillCatalog.combatIds();
+        List<Long> out = new ArrayList<>();
+        for (long id : all) {
+            if (id != BEAR_PET_SKILL_EXCLUDE) out.add(id);
+        }
+        long[] ids = new long[out.size()];
+        for (int i = 0; i < ids.length; i++) ids[i] = out.get(i);
+        return ids;
+    }
+
+    /** 单技能请求（失败返回码；异常 -1）。 */
+    static int usePetSkill(TaskContext tc, long skillId) {
+        try {
+            List<Object> one = new ArrayList<>();
+            one.add(skillId);
+            GameMessage r = tc.engine.request("req_pet_use_skill", Exec.args("skill_id_lst", one));
+            return r == null ? -1 : Exec.codeOf(r);
+        } catch (Throwable t) {
+            return -1;
         }
     }
 
@@ -1852,7 +2032,8 @@ public final class ServerBearTasks {
                     + "(" + prepareSeconds(usedIndex) + "s) 降为 " + next + "(" + prepareSeconds(next) + "s) 立即重试");
         }
         if (code == CODE_LAUNCH_RETRY_401 || code == CODE_WORLD_MARCH_LIMIT
-                || code == CODE_HERO_OCCUPIED || code == CODE_FORMATION_LIMIT) {
+                || code == CODE_HERO_OCCUPIED || code == CODE_FORMATION_LIMIT
+                || code == CODE_SOLDIER_LIMIT) {
             // 2026-11-06：403/415 也纳入「60s 延时重试 1 次」。下一轮会重新选取编队
             // （配合 Exec.formation 的 3 英雄夹取），避免像生产 11-02/11-04 那样一次被拒即封板。
             if (state != null && state.delayRetries >= MAX_DELAY_RETRIES) {
@@ -2380,6 +2561,8 @@ public final class ServerBearTasks {
                 return "英雄被占用/安全拒绝（码403）";
             case CODE_FORMATION_LIMIT:
                 return "编队人数/配置超限（码415）";
+            case CODE_SOLDIER_LIMIT:
+                return "编队士兵数超限（码406）";
             case CODE_ALREADY_JOINED:
                 return "已加入目标集结或通知滞后（码2844）";
             case CODE_WORLD_MARCH_LIMIT:
@@ -2405,6 +2588,10 @@ public final class ServerBearTasks {
         final boolean launchEnabled;
         final boolean joinEnabled;
         final boolean prepareRecallEnabled;
+        /** 2026-11-07：开赛前 5 分钟是否召回全部队伍并暂停队列任务（默认开）。 */
+        final boolean prepRecall;
+        /** 2026-11-07：打熊是否自动开启全部战斗型宠物技能（排除 550051；默认关）。 */
+        final boolean petSkillsEnabled;
         /** 未读取到预约时是否允许按配置周窗口发起（默认 false：未预约→SKIP，不臆造场次）。 */
         final boolean launchWithoutReserve;
         final int joinCount;
@@ -2426,12 +2613,15 @@ public final class ServerBearTasks {
         List<JoinFormationConfig> joinFormations = Collections.emptyList();
 
         BearConfig(boolean launchEnabled, boolean joinEnabled, boolean prepareRecallEnabled,
+                   boolean prepRecall, boolean petSkillsEnabled,
                    boolean launchWithoutReserve, int joinCount, int prepareTimeIndex,
                    int windowWeekday, int windowStartMinute, int windowDurationMinutes,
                    List<Long> heroIds, int squadIndex) {
             this.launchEnabled = launchEnabled;
             this.joinEnabled = joinEnabled;
             this.prepareRecallEnabled = prepareRecallEnabled;
+            this.prepRecall = prepRecall;
+            this.petSkillsEnabled = petSkillsEnabled;
             this.launchWithoutReserve = launchWithoutReserve;
             this.joinCount = Math.max(1, Math.min(MAX_JOIN_COUNT, joinCount));
             this.prepareTimeIndex = clampPrepareIndex(prepareTimeIndex);
@@ -2453,8 +2643,9 @@ public final class ServerBearTasks {
         }
 
         static BearConfig defaults() {
-            return new BearConfig(true, true, false, false, 1, DEFAULT_PREPARE_TIME_INDEX,
-                    5, 21 * 60, ACTIVITY_MINUTES, Collections.emptyList(), 1);
+            return new BearConfig(true, true, false, true, false, false, 1,
+                    DEFAULT_PREPARE_TIME_INDEX, 5, 21 * 60, ACTIVITY_MINUTES,
+                    Collections.emptyList(), 1);
         }
 
         /** 参数解析：launch_enabled/join_enabled/prepare_recall/join_count/prepare_time_index/
@@ -2483,6 +2674,8 @@ public final class ServerBearTasks {
                     optBool(p, "launch_enabled", true),
                     optBool(p, "join_enabled", true),
                     optBool(p, "prepare_recall", false),
+                    optBool(p, "prep_recall", true),
+                    optBool(p, "pet_skills", false),
                     optBool(p, "launch_without_reserve", false),
                     joinCount,
                     p.optInt("prepare_time_index", DEFAULT_PREPARE_TIME_INDEX),
@@ -2612,6 +2805,10 @@ public final class ServerBearTasks {
         /** 批次11：上车槽跳过 FileLog 节流（同场次同槽只记一次；mod 每轮仍写）。 */
         long joinSkipWindowStart;
         String joinSkipSlots = "";
+        /** 2026-11-07：本场已执行「开赛前 5 分钟召回/暂停」的场次起点（0=未执行）。 */
+        long prepGateWindowStart;
+        /** 2026-11-07：本场已开启宠物战斗技能的场次起点（0=未开启）。 */
+        long petSkillsWindowStart;
 
         void mergeTimes(TrapTimes times) {
             if (times == null) return;
@@ -2639,16 +2836,31 @@ public final class ServerBearTasks {
         }
     }
 
+    /** 角色状态后缀：uid>0 时按角色隔离（2026-11-07 修复同服多角色互相封板/共用上车台账）。 */
+    static String roleScopedSuffix(TaskContext tc) {
+        return roleScopedSuffix(tc.fpid, tc.sid, tc.roleUid);
+    }
+
+    /** 纯函数版角色后缀（便于 JVM 单测）。 */
+    static String roleScopedSuffix(String fpid, long sid, long uid) {
+        return (fpid == null ? "" : fpid) + ":" + sid + (uid > 0L ? ":" + uid : "");
+    }
+
     static String launchedKeyOf(TaskContext tc) {
-        return KEY_PREFIX + tc.fpid + ":" + tc.sid + ":launched";
+        return KEY_PREFIX + roleScopedSuffix(tc) + ":launched";
     }
 
     static String joinsKeyOf(TaskContext tc) {
-        return KEY_PREFIX + tc.fpid + ":" + tc.sid + ":joins";
+        return KEY_PREFIX + roleScopedSuffix(tc) + ":joins";
     }
 
     static String stateKeyOf(TaskContext tc) {
-        return KEY_PREFIX + tc.fpid + ":" + tc.sid + ":state";
+        return KEY_PREFIX + roleScopedSuffix(tc) + ":state";
+    }
+
+    /** 当前角色键（窗口让位门/日志用）。 */
+    static RoleKey roleKeyOf(TaskContext tc) {
+        return new RoleKey(tc.fpid, tc.sid, tc.roleUid);
     }
 
     static String stateJson(BearState state) {
@@ -2674,6 +2886,8 @@ public final class ServerBearTasks {
             o.put("launchPrepareIndexUsed", state.launchPrepareIndexUsed);
             o.put("preheatRefreshAt", state.preheatRefreshAt);
             o.put("joinSkipWindowStart", state.joinSkipWindowStart);
+            o.put("prepGateWindowStart", state.prepGateWindowStart);
+            o.put("petSkillsWindowStart", state.petSkillsWindowStart);
             if (state.joinSkipSlots != null && !state.joinSkipSlots.isEmpty()) {
                 o.put("joinSkipSlots", state.joinSkipSlots);
             }
@@ -2709,6 +2923,8 @@ public final class ServerBearTasks {
             state.launchPrepareIndexUsed = o.optInt("launchPrepareIndexUsed", 0);
             state.preheatRefreshAt = o.optLong("preheatRefreshAt", 0);
             state.joinSkipWindowStart = o.optLong("joinSkipWindowStart", 0);
+            state.prepGateWindowStart = o.optLong("prepGateWindowStart", 0);
+            state.petSkillsWindowStart = o.optLong("petSkillsWindowStart", 0);
             state.joinSkipSlots = o.optString("joinSkipSlots", "");
             state.lastLaunchText = o.optString("lastLaunchText", "");
         } catch (Throwable ignored) {
