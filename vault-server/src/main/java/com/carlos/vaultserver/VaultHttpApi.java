@@ -59,6 +59,11 @@ public final class VaultHttpApi {
     private final com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore;
     private final ApiSign.NonceCache nonceCache = new ApiSign.NonceCache();
     private HttpServer server;
+    /**
+     * 移民模块（藏宝阁-自由移民，2026-11-06）：可 null（旧构造/单测），此时端点返回 3002。
+     * 用 attach 注入而不加构造重载，避免既有构造器继续膨胀。
+     */
+    private volatile com.carlos.vaultserver.migrant.MigrantApi migrant;
 
     public VaultHttpApi(VaultConfig config, VaultStore store, SessionControl keeper, StateStore stateStore) {
         this(config, store, keeper, stateStore, null);
@@ -107,6 +112,9 @@ public final class VaultHttpApi {
         server.createContext("/v1/vault/state", ex -> guard(ex, "POST", "vaultState", this::handleState));
         server.createContext("/v1/vault/policy", ex -> guard(ex, "POST", "vaultPolicy", this::handlePolicy));
         server.createContext("/v1/vault/automation", ex -> guard(ex, "POST", "vaultAutomation", this::handleAutomation));
+        // 移民（藏宝阁-自由移民，2026-11-06）：单端点 + action 分发（同 role-action 惯例）。
+        // 网页版是 /api/migrant/* 14 个 REST 端点，本项目统一走 ApiSign 信封。
+        server.createContext("/v1/vault/migrant", ex -> guard(ex, "POST", "vaultMigrant", this::handleMigrant));
         // 账号池控制面（M1 2026-10-21，契约 §3）：列表/角色动作/账号批量/全局批量
         server.createContext("/v1/vault/accounts", ex -> guard(ex, "POST", "vaultAccounts", this::handleAccounts));
         server.createContext("/v1/vault/role-action", ex -> guard(ex, "POST", "vaultRoleAction", this::handleRoleAction));
@@ -140,6 +148,13 @@ public final class VaultHttpApi {
     /** 测试用：实际监听地址（端口 0 时取分配结果）。 */
     com.sun.net.httpserver.HttpServer server() {
         return server;
+    }
+
+    /**
+     * 注入移民模块（Main 用）。测试旧构造不注入 → /v1/vault/migrant 返回 3002。
+     */
+    public void attachMigrant(com.carlos.vaultserver.migrant.MigrantApi api) {
+        this.migrant = api;
     }
 
     // ---------- 处理器骨架 ----------
@@ -194,6 +209,21 @@ public final class VaultHttpApi {
     }
 
     // ---------- 业务端点 ----------
+
+    /**
+     * 移民端点（14 个 action 由 {@link com.carlos.vaultserver.migrant.MigrantApi#handle} 分发）。
+     * 未注入（旧构造/单测）返回 3002，语义同 watch/watchpoint 的降级约定。
+     */
+    private JSONObject handleMigrant(Map<String, Object> fields) throws Exception {
+        com.carlos.vaultserver.migrant.MigrantApi api = this.migrant;
+        if (api == null) throw new BizError(3002, "移民模块未启用");
+        try {
+            return api.handle(fields);
+        } catch (com.carlos.vaultserver.migrant.MigrantApi.BizError e) {
+            // 模块内业务错误 → 统一信封（HTTP 200 + code），与 1004/3002 等同构
+            throw new BizError(e.code, e.getMessage());
+        }
+    }
 
     private JSONObject handleSync(Map<String, Object> fields) throws Exception {
         String accountsJson = str(fields, "accountsJson");

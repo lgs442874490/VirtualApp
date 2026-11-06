@@ -77,8 +77,22 @@ public final class Main {
         cadence.start();
 
         // 批次 B：观察点配置端点（get/set/enable）——写 data/watchpoint.json，引擎按 mtime 5s 热载
+        // 移民（藏宝阁-自由移民，2026-11-06）：任务持久化 + 角色级执行引擎 + 1s 调度。
+        // 到点抢位在角色会话线程内跑；serverClock 复用 WjdrEngine.serverClock()（既有实现，勿重写）。
+        com.carlos.vaultserver.migrant.MigrantJobStore migrantJobs =
+                new com.carlos.vaultserver.migrant.MigrantJobStore(config.dataDir);
+        migrantJobs.load();
+        com.carlos.vaultserver.migrant.MigrantEngine migrantEngine =
+                new com.carlos.vaultserver.migrant.MigrantEngine(keeper, store, migrantJobs, stateStore);
+        com.carlos.vaultserver.migrant.MigrantScheduler migrantScheduler =
+                new com.carlos.vaultserver.migrant.MigrantScheduler(keeper, store, migrantJobs, migrantEngine);
+        migrantScheduler.start();
+        FileLog.info("移民模块：已启动（任务 {} 个）", String.valueOf(migrantJobs.count()));
+
         VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war,
                 watchPointStore);
+        api.attachMigrant(new com.carlos.vaultserver.migrant.MigrantApi(
+                keeper, store, stateStore, migrantJobs, migrantEngine));
         api.start();
 
         // 每日自动化日报（批次5）：北京时间定点（默认 09:00，VAULT_DIGEST_TIME=HH:mm 覆盖）汇总近 24h
@@ -110,6 +124,9 @@ public final class Main {
             digest.stop();
             api.stop();
             cadence.stop();
+            // 移民：先停调度（不再发起新动作），再落盘任务，避免关停时丢 attempts
+            migrantScheduler.stop();
+            migrantJobs.flush();
             scheduler.stop();
             keeper.shutdownAll();
             stateStore.flush();

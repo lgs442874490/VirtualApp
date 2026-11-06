@@ -94,6 +94,10 @@ public final class FeatureGate {
         // 2026-11-01 真机验证通过（分裂路由 43/101 网段，不影响游戏联网）→ release 放开；
         // 入口默认关闭，页面内有“抓包期间游戏可能短暂重连”的提示。
         PROTO_CAPTURE("proto_capture", TIER_PREMIUM, true, false, "真机抓包"),
+        // 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：服务端 vault-server/migrant 包
+        // （14 个 action + 准备窗口 + 50ms 抢位 + 重登对账）+ App migrant 工作区。
+        // 危险动作（真实退盟/召回道具 800 钻/真实迁移）在页面内均有二次确认；活动窗口由游戏决定。
+        IMMIGRATION("immigration", TIER_PREMIUM, true, false, "移民"),
 
         // ===== T3 高级会员：尚未实现（即使 T3 也隐藏，立项完成后再打开） =====
         MOVE_CITY("move_city", TIER_PREMIUM, false, false, "迁城"),
@@ -118,7 +122,6 @@ public final class FeatureGate {
         MATCH3("match3", TIER_PREMIUM, false, false, "三消"),
         TROOP_RUSH("troop_rush", TIER_PREMIUM, false, false, "爆兵"),
         PET_RESET("pet_reset", TIER_PREMIUM, false, false, "宠物洗练"),
-        IMMIGRATION("immigration", TIER_PREMIUM, false, false, "移民抢位"),
         RECON_REPORT("recon_report", TIER_PREMIUM, false, false, "侦察战报"),
         FORMATION_MANAGE("formation_manage", TIER_PREMIUM, false, false, "编队管理"),
 
@@ -298,6 +301,7 @@ public final class FeatureGate {
         if (visible(Feature.WATCHPOINT, tier, debugBuild)) n++;
         if (visible(Feature.PROTO_CAPTURE, tier, debugBuild)) n++;
         if (visible(Feature.PROTOCOL_LOGGER, tier, debugBuild)) n++;
+        if (visible(Feature.IMMIGRATION, tier, debugBuild)) n++;   // 2026-11-06 移民（藏宝阁-自由移民）
         return n;
     }
 }

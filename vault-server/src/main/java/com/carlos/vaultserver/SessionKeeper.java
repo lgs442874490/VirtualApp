@@ -2436,6 +2436,121 @@ public final class SessionKeeper implements SessionControl,
         return true;
     }
 
+    // ---------- 独立模块角色级执行面（移民 2026-11-06） ----------
+
+    /**
+     * 角色级任务投递：在**该角色会话**的单线程 exec 上执行（与整轮任务串行，不交叉）。
+     *
+     * <p>移民（藏宝阁-自由移民）等独立模块用：准备窗口上号动作、毫秒级抢位提交都必须在角色
+     * 会话线程内跑，避免与日常整轮抢引擎的请求锁/连接状态。会话不存在、不期望在线、
+     * 暂停态一律返回 false（调用方据此标记任务异常，**不做跨角色 fallback**，防止派错角色）。
+     *
+     * @param role 目标角色（{@code uid<=0} 退回账号 active 语义，仅兼容旧调用）
+     * @param tag  日志标签（如 {@code migrant.prepare} / {@code migrant.fire}）
+     * @param job  任务体；抛异常只记日志，不向外冒
+     * @return 是否已投递
+     */
+    public boolean submitRoleJob(RoleKey role, String tag, Runnable job) {
+        return submitRoleJob(role, tag, job, null);
+    }
+
+    /**
+     * 角色级任务投递（带跳过回调）。
+     *
+     * <p><b>为什么要 onSkip</b>：投递后、任务体执行前会话可能掉线/进入恢复态，
+     * 此时任务体不会跑（整轮/移民的 {@code finally} 也不会跑）。若调用方在任务体内做
+     * 「占位标记」（如移民的 running 集合），必须收到这个回调去清理，否则该任务永久卡死。
+     * 2026-11-06 代码审查 P1-1。
+     *
+     * @param onSkip 任务体未执行时回调（可为 null）；在**会话线程**上调用
+     */
+    public boolean submitRoleJob(RoleKey role, String tag, Runnable job, Runnable onSkip) {
+        if (role == null || !role.valid() || job == null) return false;
+        // 严格寻址：uid>0 只接受精确角色会话，绝不回退到同账号其它角色（否则会在错误角色上
+        // 发真实协议——移民 test-early 会造成不可逆的错人迁移，审查 P0-1）
+        LiveSession ls = findRoleSessionStrict(role);
+        if (ls == null || !ls.wantOnline) return false;
+        if (!VaultStore.RUN_RUNNING.equals(ls.runState)) return false;   // 暂停：不执行
+        final RoleKey target = role;
+        final String label = tag == null ? "roleJob" : tag;
+        ls.exec.execute(() -> {
+            ls.inFlight.incrementAndGet();
+            try {
+                if (!WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+                    FileLog.warn("角色任务跳过 role={} tag={}（会话不在线）", target.key(), label);
+                    if (onSkip != null) {
+                        try {
+                            onSkip.run();
+                        } catch (Throwable t2) {
+                            FileLog.warn("角色任务跳过回调异常 role={} tag={}：{}",
+                                    target.key(), label, String.valueOf(t2));
+                        }
+                    }
+                    return;
+                }
+                job.run();
+            } catch (Throwable t) {
+                FileLog.warn("角色任务异常 role={} tag={}：{}", target.key(), label, String.valueOf(t));
+            } finally {
+                ls.inFlight.decrementAndGet();
+            }
+        });
+        return true;
+    }
+
+    /**
+     * 取角色在线引擎（离线/未绑定返回 null）。**只应在 {@link #submitRoleJob} 的任务体内使用**，
+     * 其它线程直接拿引擎发请求会绕过会话串行约束。
+     */
+    public WjdrEngine roleEngine(RoleKey role) {
+        if (role == null) return null;
+        LiveSession ls = findRoleSessionStrict(role);
+        return ls == null ? null : ls.engine;
+    }
+
+    /** 角色是否在线（期望在线 + 会话处于 ONLINE）。 */
+    public boolean roleOnline(RoleKey role) {
+        if (role == null) return false;
+        LiveSession ls = findRoleSessionStrict(role);
+        return ls != null && ls.wantOnline && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState());
+    }
+
+    /** 角色会话是否正在执行任务（移民调度可据此避让，避免与整轮抢并发）。 */
+    public boolean roleBusy(RoleKey role) {
+        if (role == null) return false;
+        LiveSession ls = findRoleSessionStrict(role);
+        return ls != null && ls.inFlight.get() > 0;
+    }
+
+    /** 该账号当前已知角色键列表（含离线；供移民账号列表/批量创建解析 sid/uid）。 */
+    public java.util.List<RoleKey> knownRolesOf(String fpid) {
+        java.util.List<RoleKey> out = new java.util.ArrayList<>();
+        for (LiveSession ls : sessions.values()) {
+            if (!ls.fpid.equals(fpid)) continue;
+            long sid = ls.resolveSid();
+            if (sid <= 0L) continue;
+            out.add(new RoleKey(fpid, sid, ls.roleUid));
+        }
+        return out;
+    }
+
+    /**
+     * 角色会话**严格**寻址（2026-11-06 审查 P0-1）：{@code uid>0} 只做精确键查找，
+     * miss 直接返回 null——**绝不回退到同账号兄弟角色**。
+     *
+     * <p>为什么必须严格：回退会让「角色 B 未建会话、角色 A 在线」时把 B 的协议动作
+     * 投到 A 的引擎上，迁移类不可逆操作会作用在错误角色（真实事故级）。
+     * {@link #findRoleSession} 的旧回退语义保留给整轮调度路径，不改动既有行为。
+     */
+    private LiveSession findRoleSessionStrict(RoleKey role) {
+        if (role == null) return null;
+        if (role.uid > 0L) {
+            return sessions.get(sessionKey(role.fpid, String.valueOf(role.sid),
+                    String.valueOf(role.uid)));
+        }
+        return sessionForAccount(role.fpid);
+    }
+
     /** 按角色键找会话（fpid|sid|uid）；uid<=0 退回旧 active 语义。 */
     private LiveSession findRoleSession(RoleKey role) {
         if (role == null) return null;

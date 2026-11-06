@@ -1348,6 +1348,32 @@ public final class VaultSync {
         return f;
     }
 
+    // ---------- 通用签名通道（跨模块复用，2026-11-06 移民接入） ----------
+
+    /**
+     * 通用签名 POST：与 {@link #roleAction} 走**同一条**签名/信封通道。
+     *
+     * <p>存在的意义：签名密钥（{@code SECRET_OBF}/XOR key）、规范化格式、非 JSON 响应文案
+     * 全在本类唯一一份。若让业务模块（如 migrant）自行复制，密钥轮换时会静默失效且难排查，
+     * 属安全敏感的重复实现。
+     *
+     * <p>调用方：用 {@link #signedCommonFields(Context)} 取公共字段 → 补自己的业务字段 →
+     * 调用本方法。回调在 OkHttp 工作线程。
+     */
+    public static void postSigned(Context ctx, String path, String op,
+                                  Map<String, Object> fields, String threadName, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        final Map<String, Object> f = fields == null
+                ? new TreeMap<String, Object>() : fields;
+        new Thread(() -> post(app, path, op, f, done),
+                threadName == null ? "vault-signed" : threadName).start();
+    }
+
+    /** 通用签名 POST 的公共字段（pkg/appVersion，与全部既有端点同口径）。 */
+    public static Map<String, Object> signedCommonFields(Context ctx) {
+        return commonFields(ctx.getApplicationContext());
+    }
+
     // ---------- HTTP（签名 + 信封） ----------
 
     public interface Callback {

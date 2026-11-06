@@ -108,6 +108,7 @@
 | F4 | “清理缓存（占位）”移除/实现 | §4 #15 | ✅ | master `清理缓存` 字符串已无（grep 0） | - | 保持 |
 | F5 | 未开发/未立项功能（16 项）仍隐藏：排行榜/进攻撞矿/起号/活动榜单/迁城/三消/爆兵/宠物洗练/巨兽批量/坐标查询/侦察战报/移民抢位/充值记录/背包自动开箱/战争状态任务行/编队管理独立 gate | §4 全表 | ❌ 功能未开发（门控已正确隐藏） | `FeatureGate.java:96-117`（implemented=false）；`ToolBoxActivity` 仅保留已实现项 | 按立项 | 逐个立项开发后再置 implemented=true |
 | F6 | `FeatureGate.FORMATION_MANAGE=false` 陈旧枚举（编队管理 v4.2.11 起已实现） | §4 #14 | 🟡 | 功能可用：入口经 `FormationPicker.java:542/554`、`FormationEntryCard.java:96/115` → `FormationManagerActivity.launch/launchNew`（未经该 gate，用户可见不受影响）；`FeatureGate.java:117` 仅剩自身引用 | P2 | 置 true 或删除该枚举，避免后续误引用；注释同步更新 |
+| F8 | **移民已实现（2026-11-06 更新）**：F5 清单中的「移民抢位」已于分支 `add/migrant-1to1-20261106-2058` 完成 1:1 复刻并放开 | §4 #12 | ✅ 已实现 | `FeatureGate.IMMIGRATION` implemented=true（T3 + 服务器模式）；服务端 `vaultserver/migrant`（14 action）、App `migrant` 工作区 + 3 弹窗；单测 56+963 全绿 | - | 真机按 `qa/验收用例-移民功能-20261106.md` 验收 |
 | F7 | `BEHEMOTH_AUTOJOIN` 文案/状态陈旧（注释“每日发起未做”，实际服务端已实现） | §4 #20 | 🟡 | 服务端 `ServerTasks.behemoth` 已含每日发起/体力/上车（`:4144+`）；FeatureGate 注释仍写“仅原生自动上车” | P2 | 更新文案与 FeatureGate label；确认 launch_enabled 是否对用户开放（默认 false） |
 
 ## G. 热更新自托管（来源：`design/热更新自托管与参数选项化-20261025.md`）

@@ -161,6 +161,12 @@
             android:name="com.carlos.vault.protocapture.ProtoCaptureActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
+        <!-- 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：工具箱「移民」进入；
+             服务端 14 action + 开放前 15 分钟自动准备 + 50ms 抢位 + 重登对账。 -->
+        <activity
+            android:name="com.carlos.vault.migrant.MigrantWorkspaceActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
         <!-- 调试包专用：adb 启停/导出/打开抓包页（release 内 BuildConfig.DEBUG=false no-op） -->
         <receiver
             android:name="com.carlos.vault.protocapture.ProtoCaptureDebugReceiver"

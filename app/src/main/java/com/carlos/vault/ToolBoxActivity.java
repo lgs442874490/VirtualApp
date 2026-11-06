@@ -98,6 +98,8 @@ public class ToolBoxActivity extends Activity {
         final boolean canWatchpoint = FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, tier, debugBuild);   // T3 高阶
         final boolean canCapture = FeatureGate.visible(FeatureGate.Feature.PROTO_CAPTURE, tier, debugBuild)
                 && android.os.Build.VERSION.SDK_INT >= 21;   // 真机抓包：T3 + API21+
+        final boolean canMigrant = FeatureGate.visible(FeatureGate.Feature.IMMIGRATION, tier, debugBuild)   // T3 高阶
+                && com.carlos.vault.VaultSync.isServerMode(this);   // 移民是服务端任务型模块，需服务器模式
         final boolean canProto = FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, tier, debugBuild); // 仅调试包
         final int toolCount = FeatureGate.visibleToolCount(tier, debugBuild);
         if (toolCount > 0) {
@@ -120,6 +122,30 @@ public class ToolBoxActivity extends Activity {
                 attachToggle(protoCard, protoSw[0]);
                 refreshProtoCard(protoCard, protoSw[0]);
                 box.addView(protoCard);
+            }
+            // 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：服务端 14 action + 准备窗口
+            // （开放前 15 分钟上号/退盟/召回）+ 50ms 抢位 + 重登对账；页面内危险动作均二次确认。
+            if (canMigrant) {
+                LinearLayout migrantCard = toolCard(UiStyle.Icon.COMPASS, "移民",
+                        "自由移民 · 资格预检、边界任务与毫秒级抢位", UiStyle.BRAND_50);
+                migrantCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
+                        UiStyle.INK3, 18));
+                migrantCard.setOnClickListener(v -> {
+                    // 身份口径与资产中心一致：前台 home:current_role（fpid:sid[:uid]）。
+                    // 解析失败时交回 Activity 自身回退（MigrantWorkspaceActivity 内部同源兜底）。
+                    String raw = getSharedPreferences("home", MODE_PRIVATE)
+                            .getString("current_role", "");
+                    com.carlos.vault.daily.CurrentRoleKey.Parts p =
+                            com.carlos.vault.daily.CurrentRoleKey.parse(raw);
+                    if (p != null) {
+                        com.carlos.vault.migrant.MigrantWorkspaceActivity.launch(
+                                this, p.fpid, p.sid, p.uid);
+                    } else {
+                        startActivity(new Intent(this,
+                                com.carlos.vault.migrant.MigrantWorkspaceActivity.class));
+                    }
+                });
+                box.addView(migrantCard);
             }
             // 观察点（批次 B 2026-10-30）：App 内可视化编辑服务器 data/watchpoint.json（get/set/enable）。
             if (canWatchpoint) {
