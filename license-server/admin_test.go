@@ -80,15 +80,15 @@ func TestDefaultMatrixCounts(t *testing.T) {
 		}
 		return n
 	}
-	// T1=5；T2=T1+9+巨兽+编队管理=16；T3=已实现全集=23（2026-11-07 起含移民/编队管理）。
+	// T1=5；T2=T1+9+巨兽+编队管理=16；T3=已实现全集=24（含移民/编队管理/迁城）。
 	if got := count(1); got != 5 {
 		t.Fatalf("T1 默认应为 5 项，实际 %d", got)
 	}
 	if got := count(2); got != 16 {
 		t.Fatalf("T2 默认应为 16 项，实际 %d", got)
 	}
-	if got := count(3); got != 23 {
-		t.Fatalf("T3 默认应为 23 项，实际 %d", got)
+	if got := count(3); got != 24 {
+		t.Fatalf("T3 默认应为 24 项（含迁城），实际 %d", got)
 	}
 }
 
@@ -105,11 +105,11 @@ func TestFeaturesForRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(gm) != 23 {
-		t.Fatalf("GM 应为 23 项已实现功能，实际 %d: %v", len(gm), gm)
+	if len(gm) != 24 {
+		t.Fatalf("GM 应为 24 项已实现功能（含迁城），实际 %d: %v", len(gm), gm)
 	}
 	for _, k := range gm {
-		if k == "move_city" || k == "ranking" || k == "protocol_logger" || k == "protocol_probe" {
+		if k == "ranking" || k == "protocol_logger" || k == "protocol_probe" {
 			t.Fatalf("GM 不应包含未实现/调试项: %s", k)
 		}
 	}
@@ -117,7 +117,7 @@ func TestFeaturesForRole(t *testing.T) {
 
 func TestSaveMatrixValidation(t *testing.T) {
 	srv, _ := newTestServerWith(t, testAdminPassword)
-	// 构造完整矩阵，然后把某个未实现项打开 → 拒绝。
+	// 构造完整矩阵，然后把某个未实现项（ranking）打开 → 拒绝。
 	rows := make([]MatrixCell, 0, len(featureSeed)*3)
 	for _, it := range featureSeed {
 		for _, role := range []int{1, 2, 3} {
@@ -126,7 +126,7 @@ func TestSaveMatrixValidation(t *testing.T) {
 	}
 	bad := append([]MatrixCell{}, rows...)
 	for i := range bad {
-		if bad[i].Key == "move_city" && bad[i].Role == 3 {
+		if bad[i].Key == "ranking" && bad[i].Role == 3 {
 			bad[i].Visible = true
 		}
 	}
@@ -466,7 +466,8 @@ func TestActivateVerifyRoleFeatures(t *testing.T) {
 	if gt["role"].(float64) != 4 || gt["tier"].(float64) != 3 {
 		t.Fatalf("GM 应 role=4/tier=3，实际 %v/%v", gt["role"], gt["tier"])
 	}
-	if !containsStr(gt["features"], "enemy_watch") || containsStr(gt["features"], "move_city") {
+	// 迁城 2026-11-06 已实现（implemented=true）→ GM 全集中应包含 move_city
+	if !containsStr(gt["features"], "enemy_watch") || !containsStr(gt["features"], "move_city") {
 		t.Fatalf("GM features 不符: %v", gt["features"])
 	}
 }

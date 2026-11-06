@@ -55,6 +55,9 @@ public final class VaultHttpApi {
     private final com.carlos.vaultserver.task.RoundScheduler roundScheduler;
     /** 战争通知中枢（可 null：测试旧构造；watch/events 端点返回 3002）。 */
     private final WarNotify war;
+
+    /** 迁城 1:1 复刻（2026-11-06）：引擎可为 null（单测旧构造兼容 → movecity 端点返回 3002）。 */
+    private final com.carlos.vaultserver.movecity.MoveCityEngine moveCity;
     /** 观察点配置仓（批次 B 2026-10-30；可 null：测试旧构造/watchpoint 端点返回 3002）。 */
     private final com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore;
     private final ApiSign.NonceCache nonceCache = new ApiSign.NonceCache();
@@ -86,6 +89,14 @@ public final class VaultHttpApi {
                         StateStore stateStore, com.carlos.vaultserver.task.RoundScheduler roundScheduler,
                         WarNotify war,
                         com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore) {
+        this(config, store, keeper, stateStore, roundScheduler, war, watchPointStore, null);
+    }
+
+    public VaultHttpApi(VaultConfig config, VaultStore store, SessionControl keeper,
+                        StateStore stateStore, com.carlos.vaultserver.task.RoundScheduler roundScheduler,
+                        WarNotify war,
+                        com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore,
+                        com.carlos.vaultserver.movecity.MoveCityEngine moveCity) {
         this.config = config;
         this.store = store;
         this.keeper = keeper;
@@ -93,6 +104,7 @@ public final class VaultHttpApi {
         this.roundScheduler = roundScheduler;
         this.war = war;
         this.watchPointStore = watchPointStore;
+        this.moveCity = moveCity;
     }
 
     public void start() throws IOException {
@@ -128,6 +140,10 @@ public final class VaultHttpApi {
                 ex -> guard(ex, "POST", "vaultWatchpoint", this::handleWatchpoint));
         // 真机监控（2026-10-25）：后台任务级协议监控事件游标拉取 + 用户打点；默认 off（VAULT_MONITOR=on 才开）
         server.createContext("/v1/vault/monitor", ex -> guard(ex, "POST", "vaultMonitor", this::handleMonitor));
+        // 迁城 1:1 复刻（2026-11-06）：protocols/execute/schedule/jobs/job/cancel/remove-account
+        // （action 分发，语义对齐原版 /api/movecity/move-city/* REST 面）
+        server.createContext("/v1/vault/movecity",
+                ex -> guard(ex, "POST", "vaultMovecity", this::handleMovecity));
         // 热更新自托管（2026-10-25）：App 默认更新源，无签名；详见 HotConfigRoutes
         server.createContext("/v1/vault/hotconfig",
                 ex -> HotConfigRoutes.serveHotConfig(ex, config.dataDir));
@@ -318,7 +334,16 @@ public final class VaultHttpApi {
             data.put("message", "服务端已有 " + currentAccounts + " 个账号，空列表同步被拒绝（防误清空）");
             return data;
         }
+        // 迁城 1:1 复刻（2026-11-06）：全量同步中消失的账号联动取消未开始的定时迁城任务
+        // （原版 removeParentAccount 语义；防已删账号的任务到点白跑/报错）。
+        java.util.Set<String> before = new java.util.HashSet<>();
+        for (VaultStore.Account a : store.snapshot()) before.add(a.fpid);
         int n = store.replaceAll(incoming);
+        if (moveCity != null) {
+            for (String fpid : before) {
+                if (store.find(fpid) == null) moveCity.removeAccountEverywhere(fpid);
+            }
+        }
         keeper.reconcile();
         FileLog.info("身份库同步：{} 条（keep={}）", String.valueOf(n),
                 String.valueOf(incoming.stream().filter(a -> a.keep).count()));
@@ -1477,6 +1502,18 @@ public final class VaultHttpApi {
      */
     private JSONObject handleMonitor(Map<String, Object> fields) {
         return com.carlos.vaultserver.monitor.MonitorApi.handle(fields);
+    }
+
+    /** 迁城 1:1 复刻（2026-11-06）：action 分发委托 {@code MoveCityApi}；业务校验错 → 3002。 */
+    private JSONObject handleMovecity(Map<String, Object> fields) {
+        if (moveCity == null) {
+            throw new BizError(3002, "服务端未启用迁城功能");
+        }
+        try {
+            return com.carlos.vaultserver.movecity.MoveCityApi.handle(moveCity, fields);
+        } catch (IllegalArgumentException e) {
+            throw new BizError(3002, e.getMessage());
+        }
     }
 
     private String sessionStateOf(String fpid) {

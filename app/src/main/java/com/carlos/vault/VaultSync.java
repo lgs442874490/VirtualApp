@@ -68,6 +68,8 @@ public final class VaultSync {
     private static final String PATH_WATCHPOINT = "/v1/vault/watchpoint";
     private static final String PATH_EVENTS = "/v1/vault/events";
     private static final String PATH_MONITOR = "/v1/vault/monitor";
+    /** 迁城（2026-11-06 网页版 1:1 复刻）：服务端 movecity 引擎统一动作端点。 */
+    private static final String PATH_MOVECITY = "/v1/vault/movecity";
     private static final String OP_SYNC = "vaultSync";
     private static final String OP_TOKEN = "vaultToken";
     /** 恢复读通道 OP：与写通道 vaultToken 分开，服务端按 op 绑定验签，互不串用。 */
@@ -85,6 +87,7 @@ public final class VaultSync {
     private static final String OP_WATCHPOINT = "vaultWatchpoint";
     private static final String OP_EVENTS = "vaultEvents";
     private static final String OP_MONITOR = "vaultMonitor";
+    private static final String OP_MOVECITY = "vaultMovecity";
 
     /**
      * 本地回调码（非服务端业务码）：{@code /v1/vault/token/get} 回 code=0 但 data 缺非空
@@ -1209,6 +1212,107 @@ public final class VaultSync {
     /** 服务端是否没有池接口（生产 v4.1.4 降级：UI 直接 legacy 渲染，不显示失败横幅）。 */
     public static boolean isPoolUnsupported(Context ctx) {
         return AccountPoolCache.isUnsupported(ctx);
+    }
+
+    // ---------- 迁城（2026-11-06 网页版 1:1 复刻：POST /v1/vault/movecity，op=vaultMovecity） ----------
+
+    /**
+     * 迁城统一动作通道。请求字段扁平（action/protocol/accountsJson/executeAt/advanceMillis/
+     * autoLogin/jobId/fpid），账号列表以 JSON 数组字符串 {@code accountsJson} 携带
+     * （与 syncFields/watchpointSet 同款「签名层只出现扁平标量」约定）。
+     *
+     * <p>服务端旧版本无此端点时：业务码 3002「服务端未启用迁城功能」或 HTTP 404 非 JSON
+     * → {@code code=-1} 且 message 含 "HTTP 404"，页面据此显示「服务端未升级」提示条。
+     * 未开服务器模式回调 {@code code=-1,message=server_mode_off}（与 watch/monitor 同口径）。
+     * 回调在 OkHttp 线程。
+     */
+    private static void movecityPost(Context ctx, Map<String, Object> fields, Callback done,
+                                     String threadName) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app)) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        new Thread(() -> post(app, PATH_MOVECITY, OP_MOVECITY, fields, done), threadName).start();
+    }
+
+    private static Map<String, Object> movecityFields(String action) {
+        Map<String, Object> f = new TreeMap<>();
+        f.put("action", action);
+        return f;
+    }
+
+    /**
+     * 迁城协议表（action=protocols）：12 种迁城协议（label/proto/needs_point/needs_kid/
+     * required_item_id/item_shortage_code）。页面有同表硬编码兜底，本请求用于对齐服务端目录。
+     * 回调在 OkHttp 线程。
+     */
+    public static void movecityProtocols(Context ctx, Callback done) {
+        movecityPost(ctx, movecityFields("protocols"), done, "vault-movecity-protocols");
+    }
+
+    /**
+     * 立即迁城（action=execute，多账号批量）：每账号各带目标坐标，服务端并发执行后
+     * 异步聚合结果（客户端随后用 jobs/job 查询）。回调在 OkHttp 线程。
+     *
+     * @param protocol  协议 proto 名（如 req_world_move_city）
+     * @param accounts  账号数组 [{fpid,name,x,y,kid,selected}]
+     * @param autoLogin 账号离线时是否执行前自动上线（默认路径 false）
+     */
+    public static void movecityExecute(Context ctx, String protocol, JSONArray accounts,
+                                       boolean autoLogin, Callback done) {
+        Map<String, Object> f = movecityFields("execute");
+        f.put("protocol", protocol == null ? "" : protocol);
+        f.put("accountsJson", accounts == null ? "[]" : accounts.toString());
+        f.put("count", accounts == null ? 0 : accounts.length());
+        f.put("autoLogin", autoLogin);
+        movecityPost(ctx, f, done, "vault-movecity-execute");
+    }
+
+    /**
+     * 创建定时迁城（action=schedule，单账号）：executeAt 为北京时间
+     * {@code yyyy-MM-dd HH:mm:ss}；advanceMillis 提前释放量 0-100ms（服务端 clamp）。
+     * 回调在 OkHttp 线程。
+     */
+    public static void movecitySchedule(Context ctx, String protocol, JSONArray accounts,
+                                        String executeAt, int advanceMillis, boolean autoLogin,
+                                        Callback done) {
+        Map<String, Object> f = movecityFields("schedule");
+        f.put("protocol", protocol == null ? "" : protocol);
+        f.put("accountsJson", accounts == null ? "[]" : accounts.toString());
+        f.put("count", accounts == null ? 0 : accounts.length());
+        f.put("executeAt", executeAt == null ? "" : executeAt);
+        f.put("advanceMillis", Math.max(0, Math.min(100, advanceMillis)));
+        f.put("autoLogin", autoLogin);
+        movecityPost(ctx, f, done, "vault-movecity-schedule");
+    }
+
+    /** 任务列表（action=jobs）：{scheduled:[job], finished:[job]}。回调在 OkHttp 线程。 */
+    public static void movecityJobs(Context ctx, Callback done) {
+        movecityPost(ctx, movecityFields("jobs"), done, "vault-movecity-jobs");
+    }
+
+    /** 任务详情（action=job）：含逐次 attempt_details。回调在 OkHttp 线程。 */
+    public static void movecityJob(Context ctx, String jobId, Callback done) {
+        Map<String, Object> f = movecityFields("job");
+        f.put("jobId", jobId == null ? "" : jobId);
+        movecityPost(ctx, f, done, "vault-movecity-job");
+    }
+
+    /** 取消未开始的定时任务（action=cancel）。回调在 OkHttp 线程。 */
+    public static void movecityCancel(Context ctx, String jobId, Callback done) {
+        Map<String, Object> f = movecityFields("cancel");
+        f.put("jobId", jobId == null ? "" : jobId);
+        movecityPost(ctx, f, done, "vault-movecity-cancel");
+    }
+
+    /** 从定时任务移除账号（action=remove-account）。回调在 OkHttp 线程。 */
+    public static void movecityRemoveAccount(Context ctx, String jobId, String fpid,
+                                             Callback done) {
+        Map<String, Object> f = movecityFields("remove-account");
+        f.put("jobId", jobId == null ? "" : jobId);
+        f.put("fpid", fpid == null ? "" : fpid);
+        movecityPost(ctx, f, done, "vault-movecity-remove-account");
     }
 
     // ---------- 状态缓存（UI 读） ----------

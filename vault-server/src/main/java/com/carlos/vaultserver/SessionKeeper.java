@@ -315,6 +315,12 @@ public final class SessionKeeper implements SessionControl,
         volatile int forceLoginAttempts;
         /** 强制回连预算耗尽日志节流（5 分钟一条，防 tick 刷屏）。 */
         volatile long forceBudgetLogAt;
+        /**
+         * 迁城优先窗截止时刻（epoch ms；0=无窗口）。窗口内该账号的整轮任务提交让位
+         * （迁城 1:1 复刻 2026-11-06：原版 {@code enterMoveCityExclusiveWindow} 独占窗的
+         * 等价物——准备~释放瞬间不被其他任务插队抢 {@code requestLock}）。到期自动失效。
+         */
+        volatile long moveCityHoldUntil;
         final WjdrEngine engine;
         final ScheduledExecutorService exec;
         /** 互助自动响应（登录成功后按真实 sid 惰性挂载）。 */
@@ -2400,6 +2406,12 @@ public final class SessionKeeper implements SessionControl,
                     FileLog.warn("整轮跳过 role={}（会话不在线）", target.key());
                     return;
                 }
+                // 迁城优先窗（1:1 复刻 2026-11-06）：窗口内整轮让位（原版迁城独占窗等价物）。
+                if (System.currentTimeMillis() < ls.moveCityHoldUntil) {
+                    FileLog.info("整轮让位迁城窗口 role={}（holdUntil={}）",
+                            target.key(), String.valueOf(ls.moveCityHoldUntil));
+                    return;
+                }
                 VaultStore.Account acc = store.find(role.fpid);
                 if (acc == null) return;
                 long sid = ls.resolveSid();
@@ -2652,6 +2664,65 @@ public final class SessionKeeper implements SessionControl,
     public boolean sessionOnline(String fpid) {
         LiveSession ls = sessionForAccount(fpid);
         return ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState());
+    }
+
+    // ==================== 迁城 1:1 复刻（2026-11-06）：会话传输原语 ====================
+    // MoveCityTransport 的生产实现（movecity/KeeperTransport）。语义映射：
+    //   原版 onlineSession(roleId)            → sessionOnline(fpid)（active 会话优先）
+    //   原版 requestFast(proto, payload, 6s)  → engine.request（requestLock 天然串行）
+    //   原版 loginAutomaticallyForFrozenIdentity → ensureSession（按需建会话并登录）
+    //   原版 enterMoveCityExclusiveWindow     → holdForMoveCity + submitRound 让位窗
+
+    /** 迁城传输：账号会话是否在线（与 {@link #sessionOnline(String)} 同源）。 */
+    public boolean moveCityOnline(String fpid) {
+        return sessionOnline(fpid);
+    }
+
+    /** 迁城传输：经该账号会话发协议请求（6s 级超时；不在线抛 IllegalStateException）。 */
+    public com.carlos.vault.wjdr.protocol.GameMessage moveCityRequest(
+            String fpid, String proto, java.util.Map<String, Object> args, int timeoutSec)
+            throws Exception {
+        LiveSession ls = sessionForAccount(fpid);
+        if (ls == null || !WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+            throw new IllegalStateException("账号未在线: " + fpid);
+        }
+        return ls.engine.request(proto, args, timeoutSec);
+    }
+
+    /** 迁城传输：服务器毫秒时钟（已校准 GameServerClock；未校准回退本机钟）。 */
+    public long moveCityNowMs(String fpid) {
+        LiveSession ls = sessionForAccount(fpid);
+        if (ls != null && ls.engine.serverClock() != null && ls.engine.serverClock().locked()) {
+            return ls.engine.serverClock().nowServerMs();
+        }
+        return System.currentTimeMillis();
+    }
+
+    /** 迁城传输：设置迁城优先窗（窗口内整轮任务让位；只延长不缩短）。 */
+    public void holdForMoveCity(String fpid, long untilMs) {
+        LiveSession ls = sessionForAccount(fpid);
+        if (ls == null) return;
+        if (untilMs > ls.moveCityHoldUntil) {
+            ls.moveCityHoldUntil = untilMs;
+        }
+    }
+
+    /** 迁城传输：立即结束迁城优先窗（执行完成后恢复整轮任务）。 */
+    public void clearMoveCityHold(String fpid) {
+        LiveSession ls = sessionForAccount(fpid);
+        if (ls != null) ls.moveCityHoldUntil = 0L;
+    }
+
+    /** 迁城传输：当前会话角色标识 {@code "sid:uid"}（无会话/未登录返回空串）。 */
+    public String moveCityRoleOf(String fpid) {
+        LiveSession ls = sessionForAccount(fpid);
+        if (ls == null || ls.roleUid <= 0L) return "";
+        return ls.resolveSid() + ":" + ls.roleUid;
+    }
+
+    /** 迁城传输：账号是否仍在号库（账号删除联动取消定时任务用）。 */
+    public boolean vaultAccountExists(String fpid) {
+        return store.find(fpid) != null;
     }
 
     /**

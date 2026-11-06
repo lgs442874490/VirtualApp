@@ -76,6 +76,22 @@ public final class Main {
                 new com.carlos.vaultserver.task.TaskCadenceScheduler(store, stateStore, keeper);
         cadence.start();
 
+        // 迁城 1:1 复刻（2026-11-06）：12 协议 + 立即/定时迁城 + 任务管理；
+        // 行为基准 wjdr-review 网页版 MoveCityService（常量/时间线/状态机/文案逐项对齐）。
+        // 回滚：VAULT_MOVECITY=off（默认 on；off 时不注册引擎，movecity 端点返回 3002）。
+        final com.carlos.vaultserver.movecity.MoveCityEngine moveCity;
+        if (!"off".equalsIgnoreCase(System.getenv("VAULT_MOVECITY"))) {
+            com.carlos.vaultserver.movecity.MoveCityStore moveCityStore =
+                    new com.carlos.vaultserver.movecity.MoveCityStore(config.dataDir);
+            moveCity = new com.carlos.vaultserver.movecity.MoveCityEngine(
+                    new com.carlos.vaultserver.movecity.KeeperTransport(keeper), moveCityStore);
+            moveCity.restore(moveCityStore.loadJobs());
+            FileLog.info("迁城引擎已启用（恢复任务见 data/movecity_jobs.json）");
+        } else {
+            moveCity = null;
+            FileLog.info("迁城引擎已禁用（VAULT_MOVECITY=off）");
+        }
+
         // 批次 B：观察点配置端点（get/set/enable）——写 data/watchpoint.json，引擎按 mtime 5s 热载
         // 移民（藏宝阁-自由移民，2026-11-06）：任务持久化 + 角色级执行引擎 + 1s 调度。
         // 到点抢位在角色会话线程内跑；serverClock 复用 WjdrEngine.serverClock()（既有实现，勿重写）。
@@ -90,7 +106,8 @@ public final class Main {
         FileLog.info("移民模块：已启动（任务 {} 个）", String.valueOf(migrantJobs.count()));
 
         VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war,
-                watchPointStore);
+                watchPointStore, moveCity);
+        // 移民（migrant）与本模块共用同一 HTTP 面：迁城走构造注入，移民走挂载（两者互不影响）。
         api.attachMigrant(new com.carlos.vaultserver.migrant.MigrantApi(
                 keeper, store, stateStore, migrantJobs, migrantEngine));
         api.start();
@@ -128,6 +145,7 @@ public final class Main {
             migrantScheduler.stop();
             migrantJobs.flush();
             scheduler.stop();
+            if (moveCity != null) moveCity.shutdown();
             keeper.shutdownAll();
             stateStore.flush();
             com.carlos.vaultserver.monitor.MonitorStore.shutdown();

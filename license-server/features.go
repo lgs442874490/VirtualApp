@@ -92,8 +92,12 @@ var featureSeed = []FeatureCatalogItem{
 	{"watchpoint", "观察点", 3, true, false, 19},
 	{"proto_capture", "真机抓包", 3, true, false, 20},
 
+	// ===== T3 高级会员：高阶已实现 =====
+	// 迁城（2026-11-06 网页版 1:1 复刻）：服务端 movecity 引擎 + App 迁城页已上线 → implemented=true
+	// （矩阵下发按 implemented=1 过滤，置 false 会让 T3/GM 都看不到入口）。
+	{"move_city", "迁城", 3, true, false, 21},
+
 	// ===== T3 高级会员：尚未实现（即使 GM 也隐藏） =====
-	{"move_city", "迁城", 3, false, false, 21},
 	{"coord_query", "坐标查询", 3, false, false, 22},
 	{"recharge_record", "充值记录", 3, false, false, 23},
 	{"behemoth_batch", "巨兽批量", 3, false, false, 24},
@@ -503,7 +507,9 @@ func marshalJSON(v interface{}) string {
 }
 
 // matrixSchemaVersion 矩阵一次性迁移版本（SQLite PRAGMA user_version）。
-const matrixSchemaVersion = 1
+// v1：immigration / formation_manage（2026-11-07 移民上线）
+// v2：move_city（2026-11-07 迁城 1:1 复刻上线）
+const matrixSchemaVersion = 2
 
 // migrateMatrixNewlyImplemented 一次性修正「由未实现转为已实现」的功能矩阵行。
 //
@@ -514,6 +520,9 @@ const matrixSchemaVersion = 1
 //
 // 用 SQLite user_version 做一次性迁移（幂等）：跑过一次后，运营可以自由开关，
 // 重启不再覆盖（避免把运营配置冲掉）。
+//
+// 分阶段执行：每个阶段只处理该阶段新增的 key，**不重放历史阶段**——否则已上线过 v1 的
+// 生产库再跑一次会把运营在后台手工关掉的 immigration/formation_manage 重新打开。
 func migrateMatrixNewlyImplemented(db *sql.DB) error {
 	var v int
 	if err := db.QueryRow(`PRAGMA user_version`).Scan(&v); err != nil {
@@ -522,32 +531,42 @@ func migrateMatrixNewlyImplemented(db *sql.DB) error {
 	if v >= matrixSchemaVersion {
 		return nil
 	}
-	// 2026-11-07 由「未实现」转为「已实现」的 key（后续再有类似变更，追加到此表并升版本号）。
-	targets := map[string]bool{"immigration": true, "formation_manage": true}
+	stages := []struct {
+		version int
+		targets map[string]bool
+	}{
+		{1, map[string]bool{"immigration": true, "formation_manage": true}},
+		{2, map[string]bool{"move_city": true}},
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
-	for _, it := range featureSeed {
-		if !targets[it.Key] {
+	for _, st := range stages {
+		if v >= st.version {
 			continue
 		}
-		for _, role := range []int{1, 2, 3} {
-			vv := 0
-			if defaultVisible(role, it) {
-				vv = 1
+		for _, it := range featureSeed {
+			if !st.targets[it.Key] {
+				continue
 			}
-			if _, err := tx.Exec(`UPDATE role_feature SET visible = ? WHERE role = ? AND feature_key = ?`,
-				vv, role, it.Key); err != nil {
-				return err
+			for _, role := range []int{1, 2, 3} {
+				vv := 0
+				if defaultVisible(role, it) {
+					vv = 1
+				}
+				if _, err := tx.Exec(`UPDATE role_feature SET visible = ? WHERE role = ? AND feature_key = ?`,
+					vv, role, it.Key); err != nil {
+					return err
+				}
 			}
 		}
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {
+	if _, err := db.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, matrixSchemaVersion)); err != nil {
 		return err
 	}
 	return nil
