@@ -385,4 +385,29 @@ public final class ExecUtil {
             return ok > 0 ? DailyResult.Category.CLAIMED : DailyResult.Category.SKIPPED;
         }
     }
+
+    /**
+     * 通用 Java 容器 → org.json 转换（Map/List/Number/其它）。
+     * 2026-11-06 从 DailyRunner 迁移（协议日志与状态落盘共用）。
+     */
+    static Object toJavaJson(Object v) {
+        if (v instanceof Map) {
+            org.json.JSONObject o = new org.json.JSONObject();
+            for (Object e : ((Map) v).entrySet()) {
+                Map.Entry en = (Map.Entry) e;
+                try {
+                    o.put(String.valueOf(en.getKey()), toJavaJson(en.getValue()));
+                } catch (Throwable ignored) {
+                }
+            }
+            return o;
+        }
+        if (v instanceof List) {
+            org.json.JSONArray a = new org.json.JSONArray();
+            for (Object x : (List) v) a.put(toJavaJson(x));
+            return a;
+        }
+        if (v instanceof Number) return ((Number) v).longValue();
+        return v == null ? org.json.JSONObject.NULL : String.valueOf(v);
+    }
 }

@@ -7,7 +7,7 @@ import org.json.JSONObject;
  *
  * <p>存储契约（App 与服务器共用，键名/格式不可改）：{@code params["hunt"]} 内
  * {@code level_min}（默认 4）/ {@code level_max}（默认 6）/ {@code max_times}（默认 5）。
- * {@link FieldTasks#hunt} 与服务器狩猎引擎按同一语义夹取：
+ * 服务器狩猎引擎按同一语义夹取（客户端本地执行器已删除）：
  * {@code level_min ∈ [1,10]}、{@code level_max = max(level_min, clamp(level_max,1,10))}、
  * {@code max_times ∈ [1,20]}。本类保持与执行侧完全一致，避免"界面显示 Lv8-6、
  * 实际只打 Lv8"这类显示/执行不一致。

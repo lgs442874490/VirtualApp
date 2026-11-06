@@ -313,45 +313,4 @@ public final class HotConfig {
         return version;
     }
 
-    // ---------- 声明式领取执行 ----------
-
-    /**
-     * 在会话上执行全部声明式领取任务（runTasks 收尾调用；逐条隔离，单条失败不影响后续）。
-     */
-    public static void runClaims(WjdrEngine engine, DailyRunner.ProgressListener listener) {
-        JSONArray claims = claims();
-        for (int i = 0; i < claims.length(); i++) {
-            JSONObject c = claims.optJSONObject(i);
-            if (c == null) continue;
-            String id = c.optString("id", "hot" + i);
-            String name = c.optString("name", id);
-            String proto = c.optString("proto", "");
-            if (proto.isEmpty()) continue;
-            try {
-                engine.collectNotifies(1200);
-                Map<String, Object> args = new java.util.LinkedHashMap<>();
-                JSONObject jsonArgs = c.optJSONObject("args");
-                if (jsonArgs != null) {
-                    java.util.Iterator<String> it = jsonArgs.keys();
-                    while (it.hasNext()) {
-                        String k = it.next();
-                        args.put(k, jsonArgs.opt(k));
-                    }
-                }
-                GameMessage rsp = engine.request(proto, args);
-                int code = rsp == null || rsp.getContent() == null
-                        ? -1 : (int) ExecUtil.longOf(rsp.getContent().get("code"));
-                boolean ok = rsp != null && code == 0;
-                DailyResult r = new DailyResult("hot:" + id, name,
-                        ok ? DailyResult.Category.CLAIMED : DailyResult.Category.SKIPPED,
-                        ok ? "已执行" : "码" + code);
-                if (listener != null) listener.onTaskDone(r);
-            } catch (Throwable t) {
-                DailyResult r = new DailyResult("hot:" + id, name,
-                        DailyResult.Category.ERROR,
-                        t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
-                if (listener != null) listener.onTaskDone(r);
-            }
-        }
-    }
 }

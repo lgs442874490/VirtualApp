@@ -20,7 +20,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.carlos.vault.daily.DailyResult;
-import com.carlos.vault.daily.DailyRunner;
 import com.carlos.vault.daily.DailySchedulerService;
 import com.carlos.vault.daily.FnRegistry;
 import com.carlos.vault.daily.LogStore;
@@ -792,6 +791,8 @@ public class HomeActivity extends AccountVaultActivity {
             final String act = qActs[qi];
             // 批次7：工具箱含 T3 高阶（敌情监控）与调试工具 → 无权限/无可用工具时不渲染
             if ("tools".equals(act) && !gate(FeatureGate.Feature.TOOLBOX)) continue;
+            // 2026-11-06 决策6：编队管理属日常脚本（T2）→ 与工具箱同款入口门控（防越权渲染）
+            if ("formation".equals(act) && !gate(FeatureGate.Feature.FORMATION_MANAGE)) continue;
             LinearLayout cell = UiStyle.outlineCard(this);
             cell.setOrientation(LinearLayout.VERTICAL);
             cell.setGravity(Gravity.CENTER);
@@ -1708,32 +1709,15 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 打开页面自动后台同步账号（只收数据不跑任务），同一账号5分钟内不重复。silent=不在Hero显示提示。 */
     private void autoSyncAccount(AccountStore.Account sel, boolean silent) {
-        // 服务器模式：数据采集在服务器侧完成，拉回传状态+采集数据并回写本地
-        // （放在 syncing/防抖之前——本地 syncOnly 卡住不影响服务器数据刷新）
-        if (sel != null && VaultSync.isServerMode(this)) {
-            VaultSync.fetchState(this);
-            return;
-        }
-        if (sel == null || sel.token == null || sel.token.isEmpty() || syncing) return;
+        // 2026-11-06 决策5：本地执行链已删除——本地 fresh 登录同步（syncOnly）不再存在，
+        // 统一拉服务器回传状态+采集数据并回写本地。
+        // 保留原 5 分钟防抖（否则每次页面刷新/切号都会打 /v1/vault/state）。
+        if (sel == null) return;
         long now = System.currentTimeMillis();
         String key = "last_sync:" + sel.fpid;
-        if (now - getSharedPreferences("home", MODE_PRIVATE).getLong(key, 0) < 5 * 60 * 1000L)
-            return;
-        syncing = true;
-        if (!silent) heroSub.setText("正在同步 " + sel.label + " 最新状态…");
-        final AccountStore.Account acc = sel;
-        new Thread(() -> {
-            String err = DailyRunner.syncOnly(this, acc.fpid, acc.token, currentRoleSid());
-            runOnUiThread(() -> {
-                syncing = false;
-                getSharedPreferences("home", MODE_PRIVATE).edit()
-                        .putLong(key, now).apply();
-                if (err != null && !silent) {
-                    heroSub.setText(err.startsWith("游戏在线") ? err : "同步失败：" + err);
-                }
-                refreshAllPages();
-            });
-        }, "vault-sync").start();
+        if (now - getSharedPreferences("home", MODE_PRIVATE).getLong(key, 0) < 5 * 60 * 1000L) return;
+        getSharedPreferences("home", MODE_PRIVATE).edit().putLong(key, now).apply();
+        VaultSync.fetchState(this);
     }
 
     /** 代办事项：巨熊行动预约（首行）+ 仓库补给 + 游戏活动日历全量清单。 */
@@ -1854,11 +1838,11 @@ public class HomeActivity extends AccountVaultActivity {
             long sts = o.optLong("ts", 0);
             java.text.SimpleDateFormat dayFmt = new java.text.SimpleDateFormat("yyyy-MM-dd",
                     java.util.Locale.CHINA);
-            boolean reservedToday = idx >= 1 && idx <= com.carlos.vault.daily.DailyRunner.FROSTFIRE_SLOTS.length
+            boolean reservedToday = idx >= 1 && idx <= com.carlos.vault.daily.DailyConst.FROSTFIRE_SLOTS.length
                     && sts > 0 && dayFmt.format(new java.util.Date(sts * 1000))
                             .equals(dayFmt.format(new java.util.Date()));
             if (reservedToday) {
-                String slot = com.carlos.vault.daily.DailyRunner.FROSTFIRE_SLOTS[(int) idx - 1];
+                String slot = com.carlos.vault.daily.DailyConst.FROSTFIRE_SLOTS[(int) idx - 1];
                 String[] hm2 = slot.split(":");
                 java.util.Calendar slotStart = java.util.Calendar.getInstance();
                 slotStart.set(java.util.Calendar.HOUR_OF_DAY, Integer.parseInt(hm2[0]));
@@ -6008,84 +5992,8 @@ public class HomeActivity extends AccountVaultActivity {
             toast("没有可跑的账号（需有效令牌）");
             return;
         }
-        // 统一自动化：批量“跑日常”只提交服务器，不再本地执行。
-        if (VaultSync.isServerMode(this)) {
-            runListServer(ws);
-            return;
-        }
-        RUN.running = true;
-        RUN.done = 0;
-        RUN.total = ws.size();
-        RUN.current = "";
-        synchronized (RUN.logs) {
-            RUN.logs.clear();
-        }
-        RUN.log("→ 开始执行工作区 " + ws.size() + " 个号");
-        runStartedAt = System.currentTimeMillis();   // 执行页「已运行时长」计时（仅展示）
-        runEndedAt = 0;
-        showRunPanel(ws);
-        DailyRunner.SOURCE = "手动";
-        new Thread(() -> {
-            for (AccountStore.Account a : ws) {
-                if (!RUN.running) break;
-                RUN.current = a.label;
-                RUN.log("→ " + a.label + " 开始");
-                long sid = activeSid(a);
-                // 同服多角色：带上激活角色 uid，本地跑日常钉扎到具体角色（不落同服另一个）
-                long uid = RoleStore.activeRoleUid(HomeActivity.this, a.fpid);
-                try {
-                    final com.carlos.vault.daily.LogStore ls = new com.carlos.vault.daily.LogStore(HomeActivity.this);
-                    DailyRunner.Summary s2 = DailyRunner.run(HomeActivity.this, a.fpid, a.token,
-                            sid, uid, null, new DailyRunner.ProgressListener() {
-                                @Override
-                                public void onTaskStart(String name) {
-                                    RUN.log("▸ " + a.label + " · " + name);
-                                }
-
-                                @Override
-                                public void onTaskDone(DailyResult r) {
-                                    try {
-                                        boolean ok = r.category == DailyResult.Category.CLAIMED
-                                                || r.category == DailyResult.Category.SKIPPED;
-                                        ls.append(a.fpid, sid, r.taskId, ok, r.toString(), "");
-                                        ls.setStatus(a.fpid, sid, r.taskId,
-                                                r.category == DailyResult.Category.CLAIMED
-                                                        ? com.carlos.vault.daily.LogStore.ST_DONE
-                                                        : r.category == DailyResult.Category.SKIPPED
-                                                        ? com.carlos.vault.daily.LogStore.ST_SKIPPED
-                                                        : com.carlos.vault.daily.LogStore.ST_FAILED);
-                                        ls.applySubResults(a.fpid, sid, r.taskId, r.subResults);
-                                    } catch (Throwable ignored) {
-                                    }
-                                }
-
-                                @Override
-                                public void onFinish(DailyRunner.Summary s3) {
-                                }
-                            });
-                    String brief = s2.toText().replace('\n', ' ');
-                    RUN.log((s2.loginError != null ? "✗" : "✓") + " " + a.label + " · "
-                            + brief.substring(0, Math.min(90, brief.length())));
-                } catch (Throwable t) {
-                    RUN.log("✗ " + a.label + " · " + t.getClass().getSimpleName());
-                }
-                RUN.done++;
-                try {
-                    long nowMs = System.currentTimeMillis();
-                    getSharedPreferences("daily_sched", MODE_PRIVATE).edit()
-                            .putLong("last:" + a.fpid, nowMs)
-                            .putLong("lastr:" + a.fpid + ":" + sid, nowMs).apply();
-                } catch (Throwable ignored) {
-                }
-            }
-            runEndedAt = System.currentTimeMillis();
-            RUN.running = false;
-            RUN.log("→ 全部完成 " + RUN.done + "/" + RUN.total);
-            runOnUiThread(() -> {
-                toast("日常已完成 · " + RUN.done + "/" + RUN.total + " 个号");
-                refreshAllPages();
-            });
-        }, "run-all").start();
+        // 2026-11-06 决策5：本地批量执行链已删除，统一提交服务器执行。
+        runListServer(ws);
     }
 
     /**

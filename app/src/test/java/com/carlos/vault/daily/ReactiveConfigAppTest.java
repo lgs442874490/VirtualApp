@@ -8,6 +8,7 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /**
@@ -41,16 +42,11 @@ public class ReactiveConfigAppTest {
         assertNotNull("强制上线子项缺失", force);
         assertFalse("强制上线默认关（会顶掉其他设备）", force.defOn);
 
-        FnDetail.Sub troops = subOf("battle_shield", "troops_min");
-        assertNotNull("兵力下限策略缺失", troops);
-        assertNotNull(troops.strategies);
-        assertTrue("兵力下限必须有 0=不限 档", hasValue(troops, "0"));
-
-        FnDetail.Sub eta = subOf("battle_shield", "eta_sec");
-        assertNotNull("卡秒 ETA 策略缺失", eta);
-        assertNotNull(eta.strategies);
-        assertTrue("ETA 必须有 0=收到即开 档", hasValue(eta, "0"));
-        assertTrue("ETA 必须有 30 秒档", hasValue(eta, "30"));
+        // 2026-11-06 决策：服务端只读新键（shield_mode/shield_eta_sec/shield_troops_min，
+        // 设置入口在「战斗护盾 · 配置」卡），旧键 Sub（troops_min/eta_sec）已删——
+        // 这里锁死旧键 Sub 不再回流（防止 UI 提供服务端不认的设置项）。
+        assertNull("旧键 Sub troops_min 不应存在", subOf("battle_shield", "troops_min"));
+        assertNull("旧键 Sub eta_sec 不应存在", subOf("battle_shield", "eta_sec"));
     }
 
     @Test
@@ -62,13 +58,6 @@ public class ReactiveConfigAppTest {
         FnDetail.Sub recall = subOf("battle_shield", "gather_recall");
         assertNotNull("采集点遭袭自动撤矿子项缺失", recall);
         assertFalse("自动撤矿默认关（避免未经确认的撤矿副作用）", recall.defOn);
-    }
-
-    private static boolean hasValue(FnDetail.Sub sub, String value) {
-        for (String[] s : sub.strategies) {
-            if (s.length > 0 && value.equals(s[0])) return true;
-        }
-        return false;
     }
 
     @Test

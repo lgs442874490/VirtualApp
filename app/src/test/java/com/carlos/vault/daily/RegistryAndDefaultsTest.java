@@ -61,7 +61,7 @@ public class RegistryAndDefaultsTest {
         for (DailyTasks.TaskDef d : defs) {
             assertTrue("TaskDef id 必须在 FnRegistry 中: " + d.id, fnIds.contains(d.id));
             defIds.add(d.id);
-            assertNotNull("执行器必须挂接: " + d.id, d.executor);
+            // 2026-11-06 决策5：本地执行器已删除，TaskDef 仅作为任务目录（id/名称/默认开关）
         }
         assertEquals("两侧集合全等", fnIds, defIds);
     }
@@ -105,6 +105,9 @@ public class RegistryAndDefaultsTest {
         expectedOff.add("alliance_showdown");
         expectedOff.add("alliance_shop");
         expectedOff.add("guardian");
+        // 2026-11-06 决策2：backpack 被 FeatureGate 隐藏（产品未确认）→ 默认关，
+        // 保证「UI 不可见的功能不默认执行」（上传侧另有 filterHiddenDailyFns 兜底）。
+        expectedOff.add("backpack");
 
         Set<String> actualOff = new HashSet<>();
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
@@ -149,7 +152,7 @@ public class RegistryAndDefaultsTest {
     @Test
     public void boxThresholds_matchOriginalActivityTiers() {
         // 原版活跃度宝箱档位：40/80/120/160/215/270/325
-        int[] ts = DailyRunner.BOX_THRESHOLDS;
+        int[] ts = DailyConst.BOX_THRESHOLDS;
         assertEquals(7, ts.length);
         assertEquals(40, ts[0]);
         assertEquals(80, ts[1]);

@@ -1277,6 +1277,9 @@ public final class VaultSync {
                     Map<String, Boolean> cfg = cfgStore.effectiveRoleConfig(
                             a.fpid, r.serverid, r.uid,
                             com.carlos.vault.daily.DailyTasks.all());
+                    // 2026-11-06 决策2：被功能门控隐藏的日常项强制置 false 再上传
+                    //（隐藏=不执行；backpack 曾因此「UI 不可见却在服务端每日开箱」）。
+                    cfg = com.carlos.vault.FeatureGate.filterHiddenDailyFns(ctx, cfg);
                     // 角色行 JSON 由纯函数组装（M2b 新增 name/level/power/enabled 账号池
                     // 元数据；旧服务器忽略未知字段，前向兼容；旧字段键序/格式不变）
                     JSONObject ro = new JSONObject(roleFields(r, rid, cfg));

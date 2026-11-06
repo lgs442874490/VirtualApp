@@ -286,7 +286,7 @@ public final class FnParams {
             JSONObject o = modState(ctx, fpid, sid, fnId);
             o.put(subId, text);
             o.put(subId + "_ts", System.currentTimeMillis());
-            o.put(subId + "_trg", DailyRunner.SOURCE);
+            o.put(subId + "_trg", LogStore.SOURCE);
             saveModState(ctx, fpid, sid, fnId, o);
         } catch (Exception ignored) {
         }

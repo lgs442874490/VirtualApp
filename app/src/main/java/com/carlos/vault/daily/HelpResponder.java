@@ -225,7 +225,7 @@ final class HelpResponder {
         }
     }
 
-    // ---------------- 取值辅助（与 DailyRunner 同风格：形状防御式） ----------------
+    // ---------------- 取值辅助（形状防御式） ----------------
 
     private static long num(Object o) {
         return o instanceof Number ? ((Number) o).longValue() : 0L;
