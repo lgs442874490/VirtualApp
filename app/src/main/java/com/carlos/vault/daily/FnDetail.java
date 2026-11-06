@@ -7,7 +7,7 @@ import java.util.Map;
 
 /**
  * 功能子项目录（对照网页版配置页）：每个功能展开后的子开关/说明/策略选项/状态展示键。
- * 状态行文案由 DailyRunner 各采集方法写入 daily_state 的 "mod:fpid:sid:fnId" JSON（子id→文案）。
+ * 状态行文案由服务端任务写入 daily_state 的 "mod:fpid:sid:fnId" JSON（子id→文案）。
  */
 public final class FnDetail {
 
@@ -187,16 +187,12 @@ public final class FnDetail {
                 new Sub("free", "每日免费护盾", "每日8小时免费护盾（被袭击时生效）", true, null),
                 new Sub("reactive", "反应式开盾", "收到战争/侦查通知时立即登录开盾（需通知使用权）", true, null),
                 new Sub("force_online", "风险时强制上线", "被顶号/暂停/掉线时，遇自身被攻击风险允许抢登回连后开盾（默认关；会顶掉其他设备）", false, null),
-                new Sub("troops_min", "来袭兵力下限", "敌方行军兵力低于该值不开盾（0=不限；兵力未知按保护优先仍开）", true,
-                        new String[][]{{"0", "不限（默认）"}, {"10000", "1万"}, {"50000", "5万"},
-                                {"100000", "10万"}, {"500000", "50万"}}),
-                new Sub("eta_sec", "卡秒开盾（剩余秒）", "敌方行军到达剩余≤N秒才开盾（0=收到风险立即开）", true,
-                        new String[][]{{"0", "收到即开（默认）"}, {"30", "30秒"}, {"60", "60秒"},
-                                {"120", "120秒"}, {"300", "5分钟"}}),
+                // 2026-11-06 决策：删旧键 Sub（troops_min/eta_sec）——服务端只读新键
+                // shield_mode/shield_eta_sec/shield_troops_min（设置入口在「战斗护盾 · 配置」卡）。
                 new Sub("gather_attack", "采集点遭袭提醒",
                         "采集点被敌方行军攻击时提醒（写入本功能状态/日志；与主城被攻击同一推送通道）", true, null),
                 new Sub("gather_recall", "采集点遭袭自动撤矿",
-                        "识别到采集点遭袭时，对在采队伍发 req_world_march_off_work 撤回（默认关；同队伍 10 分钟冷却）", false, null));
+                        "监控在采队伍，敌方临近或已落地时自动召回/撤矿（按配置卡的召回模式与提前量执行；默认关）", false, null));
 
         // ===== 联盟 =====
         // 2026-11-04：守护盟友不再使用旧版执行参数（watch/intercept/hold_garrison_min/

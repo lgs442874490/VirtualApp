@@ -88,4 +88,12 @@ public class FormationStoreBearPresetTest {
         assertEquals(PresetFormations.bearTemplateJoinId(6),
                 joins.optJSONObject(5).optLong("formation_id"));
     }
+
+    @Test
+    public void bearPetSkillsParams_writesSwitch() throws Exception {
+        JSONObject p = new JSONObject();
+        assertTrue(FormationStore.bearPetSkillsParams(p, true).optBoolean("pet_skills"));
+        assertFalse(FormationStore.bearPetSkillsParams(p, false).optBoolean("pet_skills"));
+        assertFalse("缺省关闭", new JSONObject().optBoolean("pet_skills", false));
+    }
 }

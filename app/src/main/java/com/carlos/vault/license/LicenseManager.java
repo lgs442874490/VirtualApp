@@ -259,6 +259,57 @@ public class LicenseManager {
         return tier() >= LicenseConfig.normalizeTier(requiredTier);
     }
 
+    // ---------- 角色与功能矩阵（2026-11-06 管理后台） ----------
+
+    /**
+     * 当前角色档位：1=T1 / 2=T2 / 3=T3 / 4=GM（服务端权威）。
+     *
+     * <p>兼容：旧票据无 role → 默认 3；无票据/空票据 → T1（fail-safe）。
+     * 只读内存，可在 UI 线程调用。
+     */
+    public int role() {
+        ensureLoaded();
+        LicenseTicket t;
+        synchronized (lock) {
+            t = ticket;
+        }
+        if (t == null || t.isEmpty()) {
+            return LicenseConfig.TIER_BASIC;
+        }
+        return LicenseConfig.normalizeRole(t.role);
+    }
+
+    /**
+     * 服务端是否已下发功能矩阵。
+     *
+     * <p>{@code false} = 字段缺失（旧服务端/旧票据）→ 调用方回退 FeatureGate 硬编码默认；
+     * {@code true} = 以 {@link #features()} 为权威（空列表表示"明确无功能"）。
+     */
+    public boolean featuresPresent() {
+        ensureLoaded();
+        synchronized (lock) {
+            return ticket != null && !ticket.isEmpty() && ticket.featuresPresent;
+        }
+    }
+
+    /**
+     * 当前角色可见功能 key（已排序）；未下发矩阵时返回 {@code null}（区别于空列表）。
+     * 只读内存，可在 UI 线程调用。
+     */
+    public java.util.List<String> features() {
+        ensureLoaded();
+        synchronized (lock) {
+            if (ticket == null || ticket.isEmpty() || !ticket.featuresPresent) {
+                return null;
+            }
+            // 说明（2026-11-06 代码审查）：服务端 featuresForRole 已按 key 字典序下发，
+            // 且 visible() 只做按 key 命中、不依赖顺序；这里返回只读视图，避免 UI 热路径
+            // （FeatureGate.visible 在列表渲染中高频调用）反复排序/复制。
+            // 需要规范化排序串时请用 LicenseTicket.normalizedFeatures()（签名场景）。
+            return java.util.Collections.unmodifiableList(ticket.features);
+        }
+    }
+
     // ---------- 硬闸门（被 VaultEngine.launchGame 调用） ----------
 
     /**
@@ -520,7 +571,8 @@ public class LicenseManager {
             // 批次7：verify 响应新增 tier（1/2/3）。旧服务端无该字段 → 不改本地等级（旧票据默认 3）。
             boolean tierPresent = data.has("tier");
             int tier = data.optInt("tier", LicenseConfig.TIER_DEFAULT);
-            LicenseState s = applyVerifySuccess(status, type, expireAt, r.serverTime, tier, tierPresent);
+            // 2026-11-06：role/features 与 tier 同一口径——服务端下发才覆盖，缺失保持原值。
+            LicenseState s = applyVerifySuccess(status, type, expireAt, r.serverTime, tier, tierPresent, data);
             callback(cb, s, s.usable() ? "校验成功" : reasonFor(s));
             return;
         }
@@ -539,7 +591,7 @@ public class LicenseManager {
      * 生效、落盘即丢，重启后「意外复活」。现由 {@link #computeState()} 按 D4 优先级映射。
      */
     private LicenseState applyVerifySuccess(String status, String type, long expireAt, long serverTime,
-                                            int tier, boolean tierPresent) {
+                                            int tier, boolean tierPresent, JSONObject data) {
         synchronized (lock) {
             if (ticket == null) return LicenseState.UNACTIVATED;
             if (type != null && !type.isEmpty()) {
@@ -549,6 +601,8 @@ public class LicenseManager {
             if (tierPresent) {
                 ticket.tier = LicenseConfig.normalizeTier(tier);
             }
+            // 2026-11-06：role/features 下发才覆盖（缺失保持旧值，避免旧服务端清空矩阵）。
+            ticket.applyServerRoleFeatures(data);
             if (!LicenseConfig.TYPE_PERMANENT.equals(ticket.type)) {
                 ticket.expireAt = expireAt;
             }

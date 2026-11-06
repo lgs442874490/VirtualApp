@@ -10,7 +10,6 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.carlos.vault.daily.DailyRunner;
 import com.carlos.vault.daily.HotConfig;
 import com.carlos.vault.daily.RoleDisplay;
 import com.carlos.vault.daily.RoleIdentity;
@@ -200,7 +199,7 @@ public final class RoleManagerSheet {
                 try {
                     List<WjdrEngine.RoleInfo> roles0 = null;
                     // 优先借常驻会话（免登录不顶号）；无会话且容器游戏没挂本账号时才临时登录
-                    RoleSessionKeeper.LiveSession live = DailyRunner.liveOf(act, a.fpid, 0);
+                    RoleSessionKeeper.LiveSession live = RoleSessionKeeper.liveOf(act, a.fpid, 0);
                     if (live != null) {
                         roles0 = live.engine.discoverRoles();
                     } else {

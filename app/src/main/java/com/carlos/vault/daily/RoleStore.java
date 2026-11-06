@@ -327,7 +327,7 @@ public class RoleStore {
             java.util.Map<String, Object> base = engine.notifyData("notify_base_info");
             if (base == null || base.isEmpty()) {
                 try {
-                    DailyRunner.debugLog(ctx, "syncRoleMeta: 无 base_info fpid=" + fpid
+                    LogStore.debugLog(ctx, "syncRoleMeta: 无 base_info fpid=" + fpid
                             + " protos=" + (engine.notifyProtos().length() > 200
                             ? engine.notifyProtos().substring(0, 200) : engine.notifyProtos()));
                 } catch (Throwable ignored) {
@@ -338,7 +338,7 @@ public class RoleStore {
             long uid = num(base.get("uid"));
             if (kid <= 0 || uid <= 0) {
                 try {
-                    DailyRunner.debugLog(ctx, "syncRoleMeta: kid/uid 无效 fpid=" + fpid
+                    LogStore.debugLog(ctx, "syncRoleMeta: kid/uid 无效 fpid=" + fpid
                             + " kid=" + kid + " uid=" + uid);
                 } catch (Throwable ignored) {
                 }
@@ -362,13 +362,13 @@ public class RoleStore {
             }
             registerRole(ctx, fpid, kid, uid, name, lv, power, alliance, allianceAbbr);
             try {
-                DailyRunner.debugLog(ctx, "syncRoleMeta: ok fpid=" + fpid + " kid=" + kid
+                LogStore.debugLog(ctx, "syncRoleMeta: ok fpid=" + fpid + " kid=" + kid
                         + " uid=" + uid + " name=" + name + " lv=" + lv + " power=" + power);
             } catch (Throwable ignored) {
             }
         } catch (Throwable t) {
             try {
-                DailyRunner.debugLog(ctx, "syncRoleMeta: 异常 " + t);
+                LogStore.debugLog(ctx, "syncRoleMeta: 异常 " + t);
             } catch (Throwable ignored) {
             }
         }

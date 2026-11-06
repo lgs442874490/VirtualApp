@@ -86,16 +86,13 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-        <activity
-            android:name="com.carlos.splash.splashActivity"
-            android:exported="true"
-            android:theme="@style/AppTheme">
-        </activity>
+        <!-- 旧启动页 splashActivity 已删除（2026-11-06 决策4）：无调用方的残留导出入口；
+             隐私协议/权限引导由新入口承接（vault.HomeActivity → OnboardingActivity）。 -->
         <activity
             android:name="com.carlos.vault.AccountVaultActivity"
             android:exported="true"
             android:theme="@style/AppTheme">
-            
+
         </activity>
         <!-- 批次7（task-25）：新用户初始化引导页（①兑换码 ②克隆/初始化 ③添加分身账户 ④打开游戏分身
              ⑤打开自动化（T2+））。仅 App 内部跳转（首启/☰ 功能菜单），不导出。 -->
@@ -221,39 +218,13 @@
             android:foregroundServiceType="dataSync" />
 
 
+        <!-- 兼容壳（2026-11-06 决策4）：仅为引擎 AAR BackHomeActivity 的
+             Class.forName("com.carlos.home.HomeActivity")「返回号库主页」反射保留目标；
+             被拉起即转跳 vault.HomeActivity。旧 VA 主页/克隆列表/Xposed 管理已整体删除。 -->
         <activity
             android:name="com.carlos.home.HomeActivity"
+            android:exported="false"
             android:theme="@style/UITheme" />
-
-        <activity
-            android:name="com.carlos.home.ListAppActivity"
-            android:theme="@style/UITheme" />
-
-
-        <activity
-            android:name="com.carlos.home.PermissionRequestActivity"
-            android:launchMode="singleInstance"
-            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
-        <activity
-            android:name="com.carlos.home.AppSettingActivity"
-            android:theme="@style/UITheme.HasActionBar" />
-
-        <activity android:name="com.carlos.home.XposedManager.XposedManagerActivity"
-            android:label="Xposed Manager"
-            android:theme="@style/UITheme" />
-        <!-- va的x进程处理 -->
-        <receiver
-            android:name="com.carlos.PackageReceiver"
-            android:exported="true"
-            android:enabled="false">
-            <intent-filter>
-                <action android:name="android.intent.action.PACKAGE_ADDED" />
-                <action android:name="android.intent.action.PACKAGE_REPLACED" />
-                <action android:name="android.intent.action.PACKAGE_REMOVED" />
-
-                <data android:scheme="package" />
-            </intent-filter>
-        </receiver>
 
         <provider
             android:name="androidx.core.content.FileProvider"

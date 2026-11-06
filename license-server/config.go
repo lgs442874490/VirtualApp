@@ -14,6 +14,8 @@ type Config struct {
 	Secret string
 	// AdminToken 管理令牌（env LICENSE_ADMIN_TOKEN，rebind 时校验）
 	AdminToken string
+	// AdminPassword 管理后台口令（env LICENSE_ADMIN_PASSWORD；未设置时 /admin 返回 503）
+	AdminPassword string
 	// Addr HTTP 监听地址（env LICENSE_ADDR，默认 127.0.0.1:8787）
 	Addr string
 	// RebindMax 换绑次数上限（env LICENSE_REBIND_MAX，默认 0 = 禁止换绑；
@@ -44,12 +46,13 @@ func envInt64(key string, def int64) int64 {
 // defaultConfig 基于环境变量构造默认配置。
 func defaultConfig() *Config {
 	return &Config{
-		DBPath:     envOr("LICENSE_DB", "./license.db"),
-		Secret:     os.Getenv("LICENSE_SECRET"),
-		AdminToken: os.Getenv("LICENSE_ADMIN_TOKEN"),
-		Addr:       envOr("LICENSE_ADDR", "127.0.0.1:8787"),
-		RebindMax:  envInt64("LICENSE_REBIND_MAX", RebindMaxDefault),
-		NonceTTLMs: envInt64("LICENSE_NONCE_TTL", NonceTTLDefaultSec) * 1000,
+		DBPath:        envOr("LICENSE_DB", "./license.db"),
+		Secret:        os.Getenv("LICENSE_SECRET"),
+		AdminToken:    os.Getenv("LICENSE_ADMIN_TOKEN"),
+		AdminPassword: os.Getenv("LICENSE_ADMIN_PASSWORD"),
+		Addr:          envOr("LICENSE_ADDR", "127.0.0.1:8787"),
+		RebindMax:     envInt64("LICENSE_REBIND_MAX", RebindMaxDefault),
+		NonceTTLMs:    envInt64("LICENSE_NONCE_TTL", NonceTTLDefaultSec) * 1000,
 	}
 }
 

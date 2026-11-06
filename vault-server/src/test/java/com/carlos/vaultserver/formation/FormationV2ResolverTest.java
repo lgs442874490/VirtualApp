@@ -453,6 +453,7 @@ public class FormationV2ResolverTest {
 
     @Test
     public void role_406Scale_appliedToSoldiers() {
+        // 非「按比例」编队保留 406 自适应（2026-11-07 仅按比例编队取消缩放）
         presetNoLevelAll();
         HeroAvailability.noteSoldierLimitRejected(engine);   // 75%
         FormationLibrary lib = libOne(1, "406队", "[" + H_SHIELD + "]",
@@ -463,6 +464,42 @@ public class FormationV2ResolverTest {
         assertEquals("406 后按 75% 缩放：round_half_up(1000*75/100)=750",
                 750L, ro.formation.infantry);
         assertTrue("原因含 406：" + ro.reason, ro.reason.contains("406"));
+    }
+
+    @Test
+    public void role_percentageNo406Scaling() {
+        // 2026-11-07：按比例编队以「容量×比例」为准，不因 406 向下缩放
+        presetLevel1();   // capacity 965
+        HeroAvailability.noteSoldierLimitRejected(engine);   // 旧逻辑会缩到 75%
+        FormationLibrary lib = FormationLibrary.parse("{\"formations\":[{\"id\":1,"
+                + "\"name\":\"比例队\",\"hero_ids\":[" + H_SHIELD + "],"
+                + "\"allocation_mode\":\"PERCENTAGE\","
+                + "\"ratio\":{\"infantry\":50,\"lancer\":20,\"marksman\":30}}]}");
+        FormationResolver.ResolveOutcome ro = resolveRole(lib,
+                params("formation_mode", "ROLE", "formation_id", "1"));
+        assertTrue(ro.reason, ro.ready());
+        assertEquals(483L, ro.formation.infantry);
+        assertEquals(193L, ro.formation.lancer);
+        assertEquals(289L, ro.formation.marksman);
+        assertFalse("按比例编队不应出现 406 缩放：" + ro.reason, ro.reason.contains("406 缩放"));
+    }
+
+    @Test
+    public void role_percentageWithStoredSoldiers_usesCapacity() {
+        // 2026-11-07：任意 allocation_mode=PERCENTAGE 的编队都按容量×比例，忽略库内 soldiers
+        presetLevel1();   // capacity 965
+        FormationLibrary lib = FormationLibrary.parse("{\"formations\":[{\"id\":1,"
+                + "\"name\":\"比例队\",\"hero_ids\":[" + H_SHIELD + "],"
+                + "\"allocation_mode\":\"PERCENTAGE\","
+                + "\"ratio\":{\"infantry\":50,\"lancer\":20,\"marksman\":30},"
+                + "\"soldiers\":{\"infantry\":999999,\"lancer\":0,\"marksman\":0}}]}");
+        FormationResolver.ResolveOutcome ro = resolveRole(lib,
+                params("formation_mode", "ROLE", "formation_id", "1"));
+        assertTrue(ro.reason, ro.ready());
+        assertEquals(483L, ro.formation.infantry);
+        assertEquals(193L, ro.formation.lancer);
+        assertEquals(289L, ro.formation.marksman);
+        assertEquals(965L, ro.formation.totalSoldiers());
     }
 
     // ==================================================================

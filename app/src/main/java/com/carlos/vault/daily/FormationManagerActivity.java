@@ -117,6 +117,13 @@ public class FormationManagerActivity extends Activity {
     /** 打开编队管理页。 */
     public static void launch(Activity from, String fpid, long sid, String uid, String focusFnId) {
         if (from == null) return;
+        // 2026-11-06 决策6：统一入口门控（T2 日常脚本；防外部 Intent/深链越权直达）。
+        if (!com.carlos.vault.FeatureGate.visible(from,
+                com.carlos.vault.FeatureGate.Feature.FORMATION_MANAGE)) {
+            UiStyle.toast(from, com.carlos.vault.FeatureGate.reasonText(
+                    com.carlos.vault.FeatureGate.Feature.FORMATION_MANAGE));
+            return;
+        }
         try {
             Intent i = new Intent(from, FormationManagerActivity.class);
             i.putExtra(EXTRA_FPID, fpid == null ? "" : fpid);

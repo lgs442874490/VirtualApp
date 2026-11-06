@@ -88,20 +88,22 @@ public class ToolBoxActivity extends Activity {
                 this, "工具箱", null, this::finish, 24);
         LinearLayout box = page.body;
 
-        // ===== 批次7 功能门控（单一事实源 FeatureGate，2026-10-23） =====
+        // ===== 批次7 功能门控（单一事实源 FeatureGate，2026-10-23；2026-11-06 接服务端矩阵） =====
         // 原则：① 无权限功能不显示；② 未开发/未立项功能一律隐藏（历史“规划中 · 14”整段下架，
         // 三消/爆兵/宠物洗练/移民抢位/侦察战报/迁城/坐标查询/充值记录/巨兽批量等均无实现）；
         // ③ 工具箱内调试/实测项仅调试包可见。
-        final boolean debugBuild = FeatureGate.isDebugBuild(this);
-        final int tier = FeatureGate.currentTier(this);
-        final boolean canMonitor = FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, tier, debugBuild);    // T3 高阶（正式包可见）
-        final boolean canWatchpoint = FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, tier, debugBuild);   // T3 高阶
-        final boolean canCapture = FeatureGate.visible(FeatureGate.Feature.PROTO_CAPTURE, tier, debugBuild)
+        // 注意：统一走 FeatureGate.visible(this, feature)（服务端矩阵优先），不要再传 tier 纯函数。
+        final boolean canMonitor = FeatureGate.visible(this, FeatureGate.Feature.DEV_MONITOR);    // T3 高阶（正式包可见）
+        final boolean canWatchpoint = FeatureGate.visible(this, FeatureGate.Feature.WATCHPOINT);   // T3 高阶
+        final boolean canCapture = FeatureGate.visible(this, FeatureGate.Feature.PROTO_CAPTURE)
                 && android.os.Build.VERSION.SDK_INT >= 21;   // 真机抓包：T3 + API21+
-        final boolean canMigrant = FeatureGate.visible(FeatureGate.Feature.IMMIGRATION, tier, debugBuild)   // T3 高阶
-                && com.carlos.vault.VaultSync.isServerMode(this);   // 移民是服务端任务型模块，需服务器模式
-        final boolean canProto = FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, tier, debugBuild); // 仅调试包
-        final int toolCount = FeatureGate.visibleToolCount(tier, debugBuild);
+        // 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：服务端 14 action + 准备窗口
+        // （开放前 15 分钟上号/退盟/召回）+ 50ms 抢位 + 重登对账；危险动作均二次确认。
+        // 服务端任务型模块 → 追加服务器模式前置。
+        final boolean canMigrant = FeatureGate.visible(this, FeatureGate.Feature.IMMIGRATION)
+                && com.carlos.vault.VaultSync.isServerMode(this);
+        final boolean canProto = FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER); // 仅调试包
+        final int toolCount = FeatureGate.visibleToolCount(this);
         if (toolCount > 0) {
             box.addView(sectionRow("可用工具 · " + toolCount, "诊断与监控"));
             // 协议监听（调试包专属：正式包不渲染）
@@ -184,7 +186,7 @@ public class ToolBoxActivity extends Activity {
         }
 
         // 开发调试（P1 协议探针）保留为隐藏入口：长按「开放策略」卡片进入；仅调试包渲染。
-        if (debugBuild) {
+        if (FeatureGate.isDebugBuild(this)) {
             LinearLayout note = new LinearLayout(this);
             note.setOrientation(LinearLayout.HORIZONTAL);
             note.setGravity(Gravity.CENTER_VERTICAL);

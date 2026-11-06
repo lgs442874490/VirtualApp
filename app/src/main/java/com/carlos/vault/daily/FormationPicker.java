@@ -172,6 +172,31 @@ public final class FormationPicker {
             card.addView(apply, applyLp);
             card.addView(UiStyle.dropdownRow(act, "巨熊编队模板",
                     "我的编队 · 巨熊 ›", () -> openManager(act, fpid, sid, uid, "bear")));
+
+            // 2026-11-07：打熊自动开启全部战斗型宠物技能（排除 550051 锋锐铁喙）
+            final boolean petOn = FormationStore.bearPetSkills(act, fpid, sid, fnId);
+            LinearLayout petRow = new LinearLayout(act);
+            petRow.setOrientation(LinearLayout.HORIZONTAL);
+            petRow.setGravity(Gravity.CENTER_VERTICAL);
+            petRow.setPadding(0, dp(act, 8), 0, 0);
+            LinearLayout petCol = new LinearLayout(act);
+            petCol.setOrientation(LinearLayout.VERTICAL);
+            petCol.addView(text(act, "打熊使用宠物战斗技能", 12.5f, UiStyle.INK, true));
+            TextView petHint = text(act,
+                    "开启后自动使用全部战斗技能（排除 550051「锋锐铁喙」）", 10.5f,
+                    UiStyle.INK2, false);
+            petHint.setPadding(0, dp(act, 2), 0, 0);
+            petCol.addView(petHint);
+            petRow.addView(petCol, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            petRow.addView(new UiStyle.Switch(act, petOn, () -> {
+                boolean next = !FormationStore.bearPetSkills(act, fpid, sid, fnId);
+                FormationStore.saveBearPetSkills(act, fpid, sid, fnId, next);
+                sync(act);
+                refresh.run();
+                if (onChanged != null) onChanged.onChanged();
+            }));
+            card.addView(petRow);
         }
 
         // 上车队数（按用户自己的出征队列数：1-6；同时是服务器 queue_count）
