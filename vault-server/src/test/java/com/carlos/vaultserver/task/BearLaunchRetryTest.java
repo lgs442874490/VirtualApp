@@ -142,6 +142,16 @@ public class BearLaunchRetryTest {
     }
 
     @Test
+    public void retry406_scheduled60sLater() {
+        // 2026-11-07：取消 406 兵量自适应后，406 也纳入 60s 延时重试一次
+        ServerBearTasks.LaunchRetry retry = ServerBearTasks.launchRetryDecision(
+                406, T_MID, activeWindow(), defaults(), freshState());
+        assertTrue("406 应重试", retry.retry);
+        assertFalse("406 走延时重试", retry.immediate);
+        assertEquals(T_MID + ServerBearTasks.LAUNCH_RETRY_DELAY_SEC, retry.retryAtSec);
+    }
+
+    @Test
     public void retry415_scheduled60sLater() {
         // 2026-11-06 生产排查：415（编队人数/配置超限）曾直接封板；改为 60s 后重试 1 次
         ServerBearTasks.LaunchRetry retry = ServerBearTasks.launchRetryDecision(

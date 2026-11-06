@@ -68,11 +68,16 @@ public final class RoundRunner {
                     def.id) : null;
             // 批次 B：竞技场独占窗（按角色）——非白名单任务整轮也不抢
             boolean arenaBlocked = on && ArenaGate.blocks(role, def.id);
+            // 2026-11-07：巨熊窗口（开赛前 5 分钟至本场结束）——只暂停队列类任务
+            boolean bearBlocked = on && BearGate.blocks(role, def.id);
             if (!on) {
                 r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED, "配置未启用");
             } else if (arenaBlocked) {
                 r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED,
                         "竞技场独占中，本任务让位");
+            } else if (bearBlocked) {
+                r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED,
+                        "巨熊窗口让位（队列类任务暂停）");
             } else if (warNote != null) {
                 r = new TaskOutcome(def.id, def.name, TaskOutcome.Category.SKIPPED, warNote);
             } else {

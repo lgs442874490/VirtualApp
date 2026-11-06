@@ -1372,6 +1372,39 @@ public final class FormationStore {
         }
     }
 
+    // ==================== 巨熊宠物战斗技能开关（2026-11-07） ====================
+
+    /** 打熊是否自动开启宠物战斗技能（bear params {@code pet_skills}；默认关）。 */
+    public static boolean bearPetSkills(Context ctx, String fpid, long sid, String fnId) {
+        try {
+            return FnParams.params(ctx, fpid, sid, normalizeFnId(fnId))
+                    .optBoolean("pet_skills", false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 写打熊宠物技能开关（随 bear params 同步服务器）。 */
+    public static void saveBearPetSkills(Context ctx, String fpid, long sid, String fnId, boolean on) {
+        try {
+            String id = normalizeFnId(fnId);
+            JSONObject p = FnParams.params(ctx, fpid, sid, id);
+            bearPetSkillsParams(p, on);
+            FnParams.saveParams(ctx, fpid, sid, id, p);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 纯函数：写入 {@code pet_skills}（便于 JVM 单测）。 */
+    public static JSONObject bearPetSkillsParams(JSONObject params, boolean on) {
+        JSONObject p = params == null ? new JSONObject() : params;
+        try {
+            p.put("pet_skills", on);
+        } catch (Throwable ignored) {
+        }
+        return p;
+    }
+
     // ==================== 游戏编队副本 / 一键编队（契约外补充 API） ====================
 
     /**
