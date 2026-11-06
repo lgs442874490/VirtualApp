@@ -75,6 +75,17 @@ func initSchema(db *sql.DB) error {
 	if err := ensureColumn(db, "license_code", "tier", "tier INTEGER NOT NULL DEFAULT 3"); err != nil {
 		return fmt.Errorf("迁移 license_code.tier 失败: %w", err)
 	}
+	// GM 标记（2026-11-06）：旧库补 license_code.is_gm（存量码默认 0 = 非 GM）。
+	if err := ensureColumn(db, "license_code", "is_gm", "is_gm INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return fmt.Errorf("迁移 license_code.is_gm 失败: %w", err)
+	}
+	// 功能目录与默认矩阵（2026-11-06）：目录每次启动 upsert；矩阵仅在空表时写默认，不覆盖运营配置。
+	if err := seedFeatureCatalog(db); err != nil {
+		return fmt.Errorf("初始化功能目录失败: %w", err)
+	}
+	if err := ensureRoleFeatureSeed(db); err != nil {
+		return fmt.Errorf("初始化默认权限矩阵失败: %w", err)
+	}
 	return nil
 }
 
@@ -124,13 +135,14 @@ func firstLine(s string) string {
 // license_code 相关查询
 // ---------------------------------------------------------------------------
 
-const codeColumns = `id, code, code_hash, type, tier, duration_days, status, remark, created_at,
+const codeColumns = `id, code, code_hash, type, tier, is_gm, duration_days, status, remark, created_at,
 	activated_at, expire_at, revoked_at, revoke_reason, created_by`
 
 // scanCode 从一行扫描出 LicenseCode。
 func scanCode(sc interface{ Scan(...interface{}) error }) (*LicenseCode, error) {
 	var c LicenseCode
-	err := sc.Scan(&c.ID, &c.Code, &c.CodeHash, &c.Type, &c.Tier, &c.DurationDays, &c.Status, &c.Remark,
+	var isGM int
+	err := sc.Scan(&c.ID, &c.Code, &c.CodeHash, &c.Type, &c.Tier, &isGM, &c.DurationDays, &c.Status, &c.Remark,
 		&c.CreatedAt, &c.ActivatedAt, &c.ExpireAt, &c.RevokedAt, &c.RevokeReason, &c.CreatedBy)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
@@ -138,6 +150,7 @@ func scanCode(sc interface{ Scan(...interface{}) error }) (*LicenseCode, error) 
 	if err != nil {
 		return nil, err
 	}
+	c.IsGM = isGM != 0
 	return &c, nil
 }
 
@@ -163,10 +176,21 @@ func insertCode(db *sql.DB, code, typ string, durationDays int64, remark, create
 // tier 非法（0/负/超界）由 DB CHECK 拒绝——CLI 层已用 parseTier 校验并给出可读错误。
 func insertCodeWithTier(db *sql.DB, code, typ string, tier int, durationDays int64,
 	remark, createdBy string, now int64) (int64, error) {
+	return insertCodeWithRole(db, code, typ, tier, false, durationDays, remark, createdBy, now)
+}
+
+// insertCodeWithRole 插入一条指定等级与 GM 标记的新兑换码，返回自增主键。
+// isGM=true 时逻辑档位为第 4 档（GM），但 tier 仍写 1/2/3（GM 码默认 tier=3，兼容旧 App）。
+func insertCodeWithRole(db *sql.DB, code, typ string, tier int, isGM bool, durationDays int64,
+	remark, createdBy string, now int64) (int64, error) {
+	gm := 0
+	if isGM {
+		gm = 1
+	}
 	res, err := db.Exec(`INSERT INTO license_code
-		(code, code_hash, type, tier, duration_days, status, remark, created_at, created_by)
-		VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-		code, codeHash(code), typ, normalizeTier(tier), durationDays, remark, now, createdBy)
+		(code, code_hash, type, tier, is_gm, duration_days, status, remark, created_at, created_by)
+		VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+		code, codeHash(code), typ, normalizeTier(tier), gm, durationDays, remark, now, createdBy)
 	if err != nil {
 		return 0, err
 	}
@@ -190,6 +214,15 @@ func revokeCodeByID(db *sql.DB, codeID int64, reason string, now int64) error {
 	_, err := db.Exec(`UPDATE license_code
 		SET status = 'revoked', revoked_at = ?, revoke_reason = ?
 		WHERE id = ? AND status <> 'revoked'`, now, reason, codeID)
+	return err
+}
+
+// restoreCodeByID 重新启用被停用的码（可逆）：恢复 active、清空停用时间与原因。
+// 保留原绑定与原到期时间（不重算），符合需求 REQ-CODE-21。
+func restoreCodeByID(db *sql.DB, codeID int64) error {
+	_, err := db.Exec(`UPDATE license_code
+		SET status = 'active', revoked_at = NULL, revoke_reason = NULL
+		WHERE id = ? AND status = 'revoked'`, codeID)
 	return err
 }
 
@@ -362,6 +395,10 @@ func countRebinds(db *sql.DB, codeID int64) (int64, error) {
 
 // insertLog 写入一条审计流水（resultCode=0 表示成功）。
 func insertLog(db *sql.DB, codeID *int64, deviceHash, action string, resultCode int, ip, ua string, now int64) {
+	// 写入即截断（2026-11-06 代码审查）：避免超长 UA/IP 导致 verify_log 膨胀；
+	// 展示层另有 200 字截断（admin_db.listLogs）。
+	ip = truncateText(ip, 64)
+	ua = truncateText(ua, 200)
 	_, err := db.Exec(`INSERT INTO verify_log
 		(code_id, device_hash, action, result_code, ip, ua, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,

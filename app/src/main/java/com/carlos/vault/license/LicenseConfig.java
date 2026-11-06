@@ -162,6 +162,12 @@ public final class LicenseConfig {
     public static final int TIER_PREMIUM = 3;
     /** 默认等级 = 高级会员（存量兼容：旧码/旧票据/缺字段一律按此）。 */
     public static final int TIER_DEFAULT = TIER_PREMIUM;
+    /**
+     * GM 逻辑档位（2026-11-06 管理后台）：服务端 license_code.is_gm 标记，
+     * 下发时 {@code role=4}；{@code tier} 仍为 1/2/3（GM 码默认 3，兼容旧 App）。
+     * 权限范围 = 全部"已实现且非调试包"的功能（未实现功能仍隐藏）。
+     */
+    public static final int TIER_GM = 4;
 
     /**
      * 归一化 tier：任意 int → 1/2/3 合法集合。
@@ -171,6 +177,14 @@ public final class LicenseConfig {
         return (tier >= TIER_BASIC && tier <= TIER_PREMIUM) ? tier : TIER_DEFAULT;
     }
 
+    /**
+     * 归一化角色档位：任意 int → 1/2/3/4 合法集合（4=GM）。
+     * 非法值按 {@link #TIER_DEFAULT}=3（兼容旧票据/旧服务端缺省）。
+     */
+    public static int normalizeRole(int role) {
+        return (role >= TIER_BASIC && role <= TIER_GM) ? role : TIER_DEFAULT;
+    }
+
     /** 等级展示名（UI/日志用；未知值按高级会员兼容）。 */
     public static String tierName(int tier) {
         switch (normalizeTier(tier)) {
@@ -178,6 +192,20 @@ public final class LicenseConfig {
                 return "普通";
             case TIER_MEMBER:
                 return "会员";
+            default:
+                return "高级会员";
+        }
+    }
+
+    /** 角色展示名（含 GM；未知值按高级会员兼容）。 */
+    public static String roleName(int role) {
+        switch (normalizeRole(role)) {
+            case TIER_BASIC:
+                return "普通";
+            case TIER_MEMBER:
+                return "会员";
+            case TIER_GM:
+                return "GM";
             default:
                 return "高级会员";
         }
