@@ -49,11 +49,15 @@ const (
 	adminCodeNoPassword = 5003
 )
 
-// adminFail 登录失败计数。
+// adminFail 登录失败计数（带时间衰减：窗口外的历史失败不再累计，S8）。
 type adminFail struct {
-	count int
-	until int64
+	count    int
+	until    int64
+	lastFail int64
 }
+
+// adminFailWindowMs 失败计数衰减窗口：距上次失败超过该窗口则重新计数。
+const adminFailWindowMs = 10 * 60 * 1000
 
 // adminState 管理后台运行态（挂在 Server 上，便于测试隔离）。
 type adminState struct {
@@ -197,13 +201,12 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 		s.writeAdminJSON(w, http.StatusUnauthorized, 401, "未登录或会话已过期", nil)
 		return false
 	}
+	// 写操作来源校验（S5 温和版）：优先 Origin，缺失时回退 Referer；
+	// 两者都缺（如 curl/运维脚本）放行——会话 cookie 仍必须有效，SameSite=Strict 已挡跨站。
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		if origin := r.Header.Get("Origin"); origin != "" {
-			u, err := url.Parse(origin)
-			if err != nil || !strings.EqualFold(u.Host, r.Host) {
-				s.writeAdminJSON(w, http.StatusForbidden, adminCodeForbidden, "来源校验失败", nil)
-				return false
-			}
+		if !s.sameOriginRequest(r) {
+			s.writeAdminJSON(w, http.StatusForbidden, adminCodeForbidden, "来源校验失败", nil)
+			return false
 		}
 	}
 	return true
@@ -211,6 +214,20 @@ func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
 
 // adminClientIP 取客户端 IP（与授权接口一致）。
 func adminClientIP(r *http.Request) string { return clientIP(r) }
+
+// sameOriginRequest 判断写请求来源是否与本站同源（Origin 优先，Referer 回退）。
+// 两个头都缺失时返回 true（放行无浏览器上下文的运维调用）。
+func (s *Server) sameOriginRequest(r *http.Request) bool {
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		return err == nil && strings.EqualFold(u.Host, r.Host)
+	}
+	if ref := r.Header.Get("Referer"); ref != "" {
+		u, err := url.Parse(ref)
+		return err == nil && strings.EqualFold(u.Host, r.Host)
+	}
+	return true
+}
 
 // ---------------------------------------------------------------------------
 // 登录 / 登出 / 会话信息
@@ -229,6 +246,11 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	st.mu.Lock()
 	if f, ok := st.fails[ip]; ok {
 		v = f
+		// 时间衰减：距上次失败超过窗口 → 重新计数（避免历史失败累积误锁）。
+		if v.lastFail > 0 && nowMs()-v.lastFail > adminFailWindowMs {
+			v.count = 0
+			v.until = 0
+		}
 	}
 	now := nowMs()
 	if v.until > now {
@@ -250,12 +272,24 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 	if !constantTimeEqual(req.Password, s.cfg.AdminPassword) {
 		st.mu.Lock()
 		v.count++
+		v.lastFail = now
 		if v.count >= adminMaxFails {
 			v.count = 0
 			v.until = now + adminLockMs
 		}
 		st.fails[ip] = v
+		// 顺手清理过期/陈旧失败项，防 map 无界增长。
+		if len(st.fails) > 1024 {
+			for k, f := range st.fails {
+				if f.until > 0 && f.until <= now {
+					delete(st.fails, k)
+				}
+			}
+		}
 		st.mu.Unlock()
+		// 失败登录也写审计（S8）：安全事件可追溯；不记口令内容。
+		_ = insertAdminAudit(s.db, "admin", AdminActionLogin, "", "",
+			marshalJSON(map[string]interface{}{"ok": false}), ip)
 		s.writeAdminJSON(w, http.StatusUnauthorized, 401, "口令错误", nil)
 		return
 	}
@@ -268,12 +302,18 @@ func (s *Server) handleAdminLogin(w http.ResponseWriter, r *http.Request) {
 		s.writeAdminJSON(w, http.StatusInternalServerError, adminCodeServer, "会话创建失败", nil)
 		return
 	}
-	insertAdminAudit(s.db, "admin", AdminActionLogin, "", "", "", ip)
+	_ = insertAdminAudit(s.db, "admin", AdminActionLogin, "", "",
+		marshalJSON(map[string]interface{}{"ok": true}), ip)
 	s.writeAdminOK(w, map[string]interface{}{"ok": true})
 }
 
-// handleAdminLogout 注销当前会话。
+// handleAdminLogout 注销当前会话（幂等；未配置口令时同样 503，与后台整体口径一致）。
 func (s *Server) handleAdminLogout(w http.ResponseWriter, r *http.Request) {
+	if !s.adminConfigured() {
+		s.writeAdminJSON(w, http.StatusServiceUnavailable, adminCodeNoPassword,
+			"未配置管理员口令（LICENSE_ADMIN_PASSWORD）", nil)
+		return
+	}
 	if sid, ok := s.currentSession(r); ok {
 		s.admin.mu.Lock()
 		delete(s.admin.sessions, sid)
@@ -440,13 +480,16 @@ func (s *Server) generateCodes(count int, typ string, tier int, isGM bool, remar
 			return nil, fmt.Errorf("生成唯一兑换码失败（重试 5 次）: %v", lastErr)
 		}
 	}
+	// 审计与生成同事务（S6）：审计失败则整批回滚，杜绝"码已发、审计缺失"。
+	if err := insertAdminAuditTx(tx, actor, AdminActionGenerate, "license_code", "",
+		marshalJSON(map[string]interface{}{
+			"count": count, "type": typ, "tier": tier, "isGm": isGM, "remark": remark, "ids": ids,
+		}), ip); err != nil {
+		return nil, fmt.Errorf("写入审计失败，本批未生成: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-	insertAdminAudit(s.db, actor, AdminActionGenerate, "license_code", "",
-		marshalJSON(map[string]interface{}{
-			"count": count, "type": typ, "tier": tier, "isGm": isGM, "remark": remark, "ids": ids,
-		}), ip)
 	return items, nil
 }
 
@@ -550,8 +593,10 @@ func (s *Server) doRevoke(id int64, reason, actor, ip string) error {
 	if err := revokeCodeByID(s.db, id, reason, nowMs()); err != nil {
 		return err
 	}
-	insertAdminAudit(s.db, actor, AdminActionRevoke, "license_code", strconvI64(id),
-		marshalJSON(map[string]interface{}{"reason": reason}), ip)
+	if err := insertAdminAudit(s.db, actor, AdminActionRevoke, "license_code", strconvI64(id),
+		marshalJSON(map[string]interface{}{"reason": reason}), ip); err != nil {
+		return errAdminAuditFailed
+	}
 	return nil
 }
 
@@ -577,15 +622,18 @@ func (s *Server) doRestore(id int64, actor, ip string) error {
 	if err := restoreCodeByID(s.db, id); err != nil {
 		return err
 	}
-	insertAdminAudit(s.db, actor, AdminActionRestore, "license_code", strconvI64(id), "", ip)
+	if err := insertAdminAudit(s.db, actor, AdminActionRestore, "license_code", strconvI64(id), "", ip); err != nil {
+		return errAdminAuditFailed
+	}
 	return nil
 }
 
 // 管理端内部错误哨兵。
 var (
-	errAdminNotFound  = fmt.Errorf("not found")
-	errAdminExpired   = fmt.Errorf("expired")
-	errAdminExhausted = fmt.Errorf("exhausted")
+	errAdminNotFound    = fmt.Errorf("not found")
+	errAdminExpired     = fmt.Errorf("expired")
+	errAdminExhausted   = fmt.Errorf("exhausted")
+	errAdminAuditFailed = fmt.Errorf("audit failed")
 )
 
 // handleAdminRevoke 停用。
@@ -637,6 +685,8 @@ func (s *Server) handleAdminRestore(w http.ResponseWriter, r *http.Request) {
 			s.writeAdminErr(w, adminCodeConflict, "已过期码不可启用")
 		case errAdminExhausted:
 			s.writeAdminErr(w, adminCodeConflict, "历史已用尽码不可启用")
+		case errAdminAuditFailed:
+			s.writeAdminErr(w, adminCodeServer, "已启用，但审计写入失败：请刷新核对审计记录")
 		default:
 			s.writeAdminErr(w, adminCodeServer, "启用失败")
 		}
@@ -703,6 +753,13 @@ func parseIDPath(w http.ResponseWriter, r *http.Request) (int64, bool) {
 	return id, true
 }
 
+// codeExists 判断兑换码是否存在（404 语义用）。
+func (s *Server) codeExists(id int64) bool {
+	var one int
+	err := s.db.QueryRow(`SELECT 1 FROM license_code WHERE id = ? LIMIT 1`, id).Scan(&one)
+	return err == nil
+}
+
 // parseLogFilter 解析使用记录筛选。
 func parseLogFilter(r *http.Request, codeID int64) LogFilter {
 	q := r.URL.Query()
@@ -727,6 +784,10 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 	id, ok := parseIDPath(w, r)
 	if !ok {
 		s.writeAdminErr(w, adminCodeBadRequest, "非法兑换码 ID")
+		return
+	}
+	if !s.codeExists(id) {
+		s.writeAdminErr(w, adminCodeNotFound, "兑换码不存在")
 		return
 	}
 	f := parseLogFilter(r, id)
@@ -799,6 +860,10 @@ func (s *Server) handleAdminLogsExport(w http.ResponseWriter, r *http.Request) {
 		s.writeAdminErr(w, adminCodeBadRequest, "非法兑换码 ID")
 		return
 	}
+	if !s.codeExists(id) {
+		s.writeAdminErr(w, adminCodeNotFound, "兑换码不存在")
+		return
+	}
 	f := parseLogFilter(r, id)
 	f.Page, f.Size = 1, 500
 	all := make([]LogItem, 0, 500)
@@ -832,13 +897,26 @@ func (s *Server) handleAdminLogsExport(w http.ResponseWriter, r *http.Request) {
 	writeCSV(w, fmt.Sprintf("code-%d-logs-%s.csv", id, time.Now().Format("20060102")), rows)
 }
 
-// writeCSV 输出 UTF-8 BOM CSV。
+// csvSafeCell CSV 公式注入防护（S7）：以 = + - @ 开头的单元格前置单引号，Excel 按文本处理。
+func csvSafeCell(v string) string {
+	if len(v) > 0 && (v[0] == '=' || v[0] == '+' || v[0] == '-' || v[0] == '@') {
+		return "'" + v
+	}
+	return v
+}
+
+// writeCSV 输出 UTF-8 BOM CSV（单元格做公式注入防护）。
 func writeCSV(w http.ResponseWriter, filename string, rows [][]string) {
 	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
 	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("\xEF\xBB\xBF"))
+	for i := range rows {
+		for j := range rows[i] {
+			rows[i][j] = csvSafeCell(rows[i][j])
+		}
+	}
 	wr := csv.NewWriter(w)
 	_ = wr.WriteAll(rows)
 }
@@ -883,13 +961,12 @@ func (s *Server) handleAdminMatrixSave(w http.ResponseWriter, r *http.Request) {
 		s.writeAdminErr(w, adminCodeBadRequest, "请求格式错误")
 		return
 	}
-	diffs, err := saveMatrix(s.db, req.Rows)
+	// 审计与保存同事务（S6）；失败返回 4001 且矩阵未变更。
+	diffs, err := saveMatrixAudited(s.db, req.Rows, "admin", adminClientIP(r))
 	if err != nil {
 		s.writeAdminErr(w, adminCodeBadRequest, err.Error())
 		return
 	}
-	insertAdminAudit(s.db, "admin", AdminActionMatrixSave, "role_feature", "",
-		marshalJSON(map[string]interface{}{"changes": diffs}), adminClientIP(r))
 	s.writeAdminOK(w, map[string]interface{}{"ok": true, "changes": len(diffs)})
 }
 
@@ -898,13 +975,11 @@ func (s *Server) handleAdminMatrixReset(w http.ResponseWriter, r *http.Request) 
 	if !s.requireAdmin(w, r) {
 		return
 	}
-	diffs, err := resetMatrix(s.db)
+	diffs, err := resetMatrixAudited(s.db, "admin", adminClientIP(r))
 	if err != nil {
-		s.writeAdminErr(w, adminCodeServer, "恢复默认矩阵失败")
+		s.writeAdminErr(w, adminCodeServer, "恢复默认矩阵失败："+err.Error())
 		return
 	}
-	insertAdminAudit(s.db, "admin", AdminActionMatrixReset, "role_feature", "",
-		marshalJSON(map[string]interface{}{"changes": diffs}), adminClientIP(r))
 	s.writeAdminOK(w, map[string]interface{}{"ok": true, "changes": len(diffs)})
 }
 

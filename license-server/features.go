@@ -20,6 +20,14 @@ import (
 // 只读、不落 role_feature，避免与 license_code.is_gm 双写不一致）。
 // ---------------------------------------------------------------------------
 
+// dbQuerier 兼容 *sql.DB 与 *sql.Tx 的最小查询接口。
+// 背景：openDB 收敛为单连接（MaxOpenConns=1），事务独占连接期间再用 db 池查询
+// 会自我阻塞（2026-11-06 实测死锁）；事务内必须改用 tx 查询。
+type dbQuerier interface {
+	Query(query string, args ...interface{}) (*sql.Rows, error)
+	QueryRow(query string, args ...interface{}) *sql.Row
+}
+
 // FeatureCatalogItem 功能目录一行（与 App FeatureGate 对齐）。
 type FeatureCatalogItem struct {
 	Key         string `json:"key"`
@@ -198,7 +206,7 @@ func roleOfCode(c *LicenseCode) int {
 
 // featuresForRole 计算某角色可见的功能 key（按字典序）。
 // GM：已实现且非调试的全集；T1/T2/T3：查 role_feature 并过滤未实现/调试项。
-func featuresForRole(db *sql.DB, role int) ([]string, error) {
+func featuresForRole(db dbQuerier, role int) ([]string, error) {
 	keys := make([]string, 0, len(featureSeed))
 	if role == RoleGM {
 		for _, it := range featureSeed {
@@ -232,7 +240,7 @@ func featuresForRole(db *sql.DB, role int) ([]string, error) {
 }
 
 // loadCatalog 读取功能目录（按 sort 排序）。
-func loadCatalog(db *sql.DB) ([]FeatureCatalogItem, error) {
+func loadCatalog(db dbQuerier) ([]FeatureCatalogItem, error) {
 	rows, err := db.Query(`SELECT key, label, default_tier, implemented, debug_only, sort
 		FROM feature_catalog ORDER BY sort, key`)
 	if err != nil {
@@ -258,7 +266,7 @@ func loadCatalog(db *sql.DB) ([]FeatureCatalogItem, error) {
 }
 
 // loadMatrix 读取 T1/T2/T3 三列矩阵（key → role → visible）。
-func loadMatrix(db *sql.DB) (map[int]map[string]bool, error) {
+func loadMatrix(db dbQuerier) (map[int]map[string]bool, error) {
 	m := map[int]map[string]bool{1: {}, 2: {}, 3: {}}
 	rows, err := db.Query(`SELECT role, feature_key, visible FROM role_feature`)
 	if err != nil {
@@ -282,7 +290,7 @@ func loadMatrix(db *sql.DB) (map[int]map[string]bool, error) {
 }
 
 // buildFeatureRows 组合目录与矩阵为后台矩阵视图（GM 恒为已实现全集、只读）。
-func buildFeatureRows(db *sql.DB) ([]FeatureRow, error) {
+func buildFeatureRows(db dbQuerier) ([]FeatureRow, error) {
 	catalog, err := loadCatalog(db)
 	if err != nil {
 		return nil, err
@@ -325,6 +333,11 @@ type matrixDiff struct {
 //   - 未实现/仅调试项不允许 visible=true；
 //   - 每个目录 key 的 1/2/3 三格都必须出现（防前端漏提交导致静默关闭）。
 func saveMatrix(db *sql.DB, cells []MatrixCell) ([]matrixDiff, error) {
+	return saveMatrixAudited(db, cells, "admin", "")
+}
+
+// saveMatrixAudited 保存矩阵并把审计写进同一事务（操作成功必有审计）。
+func saveMatrixAudited(db *sql.DB, cells []MatrixCell, actor, ip string) ([]matrixDiff, error) {
 	catalog, err := loadCatalog(db)
 	if err != nil {
 		return nil, err
@@ -361,15 +374,17 @@ func saveMatrix(db *sql.DB, cells []MatrixCell) ([]matrixDiff, error) {
 		}
 	}
 
-	oldM, err := loadMatrix(db)
-	if err != nil {
-		return nil, err
-	}
 	tx, err := db.Begin()
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	// diff 必须在写入前计算（tx 此刻读到的是旧矩阵）；
+	// 且必须用 tx 查询（单连接池：事务内再用 db 会死锁）。
+	diffs, err := matrixDiffOf(tx, cells)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := tx.Exec(`DELETE FROM role_feature`); err != nil {
 		return nil, err
 	}
@@ -379,10 +394,27 @@ func saveMatrix(db *sql.DB, cells []MatrixCell) ([]matrixDiff, error) {
 			return nil, err
 		}
 	}
+	// 审计与矩阵同事务（2026-11-06 审查 S6）：审计失败则整体回滚。
+	if err := insertAdminAuditTx(tx, actor, AdminActionMatrixSave, "role_feature", "",
+		marshalJSON(map[string]interface{}{"changes": diffs}), ip); err != nil {
+		return nil, fmt.Errorf("写入审计失败，矩阵未保存: %w", err)
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
+	return diffs, nil
+}
 
+// matrixDiffOf 计算全量提交相对当前库的 diff（saveMatrixAudited 事务内用）。
+func matrixDiffOf(q dbQuerier, cells []MatrixCell) ([]matrixDiff, error) {
+	catalog, err := loadCatalog(q)
+	if err != nil {
+		return nil, err
+	}
+	oldM, err := loadMatrix(q)
+	if err != nil {
+		return nil, err
+	}
 	newM := map[int]map[string]bool{1: {}, 2: {}, 3: {}}
 	for _, c := range cells {
 		newM[c.Role][c.Key] = c.Visible
@@ -402,6 +434,11 @@ func saveMatrix(db *sql.DB, cells []MatrixCell) ([]matrixDiff, error) {
 
 // resetMatrix 恢复默认矩阵（按 featureSeed 规则），返回变更 diff。
 func resetMatrix(db *sql.DB) ([]matrixDiff, error) {
+	return resetMatrixAudited(db, "admin", "")
+}
+
+// resetMatrixAudited 恢复默认矩阵并把审计写进同一事务。
+func resetMatrixAudited(db *sql.DB, actor, ip string) ([]matrixDiff, error) {
 	oldM, err := loadMatrix(db)
 	if err != nil {
 		return nil, err
@@ -426,9 +463,6 @@ func resetMatrix(db *sql.DB) ([]matrixDiff, error) {
 			}
 		}
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
 	diffs := make([]matrixDiff, 0)
 	for role := 1; role <= 3; role++ {
 		for _, it := range featureSeed {
@@ -437,6 +471,13 @@ func resetMatrix(db *sql.DB) ([]matrixDiff, error) {
 				diffs = append(diffs, matrixDiff{Key: it.Key, Role: role, Before: oldM[role][it.Key], After: after})
 			}
 		}
+	}
+	if err := insertAdminAuditTx(tx, actor, AdminActionMatrixReset, "role_feature", "",
+		marshalJSON(map[string]interface{}{"changes": diffs}), ip); err != nil {
+		return nil, fmt.Errorf("写入审计失败，矩阵未重置: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
 	}
 	return diffs, nil
 }

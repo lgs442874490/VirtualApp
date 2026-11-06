@@ -701,3 +701,43 @@ func TestKeywordRuneTruncation(t *testing.T) {
 		t.Fatalf("中文关键词查询不应报错: %v", err)
 	}
 }
+
+// TestAuditAndPagingHardening 审计原子化/分页收敛/404 语义回归（2026-11-06 建议项补齐）。
+func TestAuditAndPagingHardening(t *testing.T) {
+	srv, ts := newTestServerWith(t, testAdminPassword)
+	cookie := loginCookie(t, ts)
+
+	// 1) 矩阵保存后审计一定存在（同事务写入）。
+	rows := make([]MatrixCell, 0, len(featureSeed)*3)
+	for _, it := range featureSeed {
+		for _, role := range []int{1, 2, 3} {
+			rows = append(rows, MatrixCell{Key: it.Key, Role: role, Visible: defaultVisible(role, it)})
+		}
+	}
+	if _, err := saveMatrixAudited(srv.db, rows, "admin", "1.2.3.4"); err != nil {
+		t.Fatalf("saveMatrixAudited: %v", err)
+	}
+	var n int
+	if err := srv.db.QueryRow(`SELECT COUNT(*) FROM admin_audit WHERE action = ?`,
+		AdminActionMatrixSave).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n < 1 {
+		t.Fatal("矩阵保存的审计必须落库（同事务）")
+	}
+
+	// 2) 分页收敛：size=500 → 20（需求 20/50/100）；page 超上限收敛。
+	_, size := normalizePage(1, 500)
+	if size != 20 {
+		t.Fatalf("size=500 应收敛为 20，实际 %d", size)
+	}
+	if p, _ := normalizePage(9_999_999, 20); p != maxPageSize {
+		t.Fatalf("page 超上限应收敛为 %d，实际 %d", maxPageSize, p)
+	}
+
+	// 3) 不存在 id 的使用记录 → 404 语义（信封 code 4002）。
+	_, got := doJSON(t, "GET", ts.URL+"/admin/api/codes/99999999/logs", "", cookie)
+	if got["code"].(float64) != float64(adminCodeNotFound) {
+		t.Fatalf("不存在码的记录应 4002，实际 %v", got["code"])
+	}
+}

@@ -469,8 +469,8 @@ func overviewStats(db *sql.DB) (*Overview, error) {
 	return o, nil
 }
 
-// insertAdminAudit 写一条管理操作审计（失败只告警，不阻断主流程）。
-func insertAdminAudit(db *sql.DB, actor, action, targetType, targetID, detail, ip string) {
+// insertAdminAudit 写一条管理操作审计，返回错误（由调用方决定是否阻断）。
+func insertAdminAudit(db *sql.DB, actor, action, targetType, targetID, detail, ip string) error {
 	_, err := db.Exec(`INSERT INTO admin_audit
 		(created_at, actor, action, target_type, target_id, detail, ip)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,
@@ -478,6 +478,19 @@ func insertAdminAudit(db *sql.DB, actor, action, targetType, targetID, detail, i
 	if err != nil {
 		logWarn("写入 admin_audit 失败: %v", err)
 	}
+	return err
+}
+
+// insertAdminAuditTx 在事务内写审计：与业务写同生共死，保证"操作成功必有审计"。
+func insertAdminAuditTx(tx *sql.Tx, actor, action, targetType, targetID, detail, ip string) error {
+	_, err := tx.Exec(`INSERT INTO admin_audit
+		(created_at, actor, action, target_type, target_id, detail, ip)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		nowMs(), actor, action, targetType, targetID, detail, ip)
+	if err != nil {
+		logWarn("写入 admin_audit(事务内) 失败: %v", err)
+	}
+	return err
 }
 
 // listAudit 审计分页（时间倒序）。
@@ -505,18 +518,25 @@ func listAudit(db *sql.DB, page, size int) ([]AdminAuditItem, int64, error) {
 	return items, total, rows.Err()
 }
 
-// normalizePage 分页参数收敛：page>=1；size 20/50/100，默认 20；上限 500。
+// normalizePage 分页参数收敛：page>=1 且 ≤ 上限（防 OFFSET 溢出）；size 20/50/100（需求 §4.3/§4.6）。
 func normalizePage(page, size int) (int, int) {
 	if page < 1 {
 		page = 1
 	}
+	// 2026-11-06 审查：收敛到 20/50/100，去掉 500；导出走独立分页不受影响。
 	switch size {
-	case 20, 50, 100, 500:
+	case 20, 50, 100:
 	default:
 		size = 20
 	}
+	if page > maxPageSize {
+		page = maxPageSize
+	}
 	return page, size
 }
+
+// maxPageSize 页码上限：100 万页 × 100 条 = 1 亿，远超数据量且 (page-1)*size 不会溢出 int64。
+const maxPageSize = 1_000_000
 
 // nullInt64OrZero 取 NullInt64 的值（无效返回 0）。
 func nullInt64OrZero(v sql.NullInt64) int64 {

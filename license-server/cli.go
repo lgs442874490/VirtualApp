@@ -140,7 +140,7 @@ func cmdIssue(args []string) error {
 	}
 
 	if *out != "" {
-		if err := writeCodesCSV(*out, codes, *typ, tier, durationDays, *remark, now); err != nil {
+		if err := writeCodesCSV(*out, codes, *typ, tier, isGM, durationDays, *remark, now); err != nil {
 			return err
 		}
 		fmt.Printf("已导出 CSV -> %s\n", *out)
@@ -167,7 +167,7 @@ func genUniqueCode(db *sql.DB) (string, error) {
 }
 
 // writeCodesCSV 将本批码导出为 CSV（含 tier 列：1/2/3）。
-func writeCodesCSV(path string, codes []string, typ string, tier int, durationDays int64,
+func writeCodesCSV(path string, codes []string, typ string, tier int, isGM bool, durationDays int64,
 	remark string, createdAt int64) error {
 	f, err := os.Create(path)
 	if err != nil {
@@ -176,13 +176,20 @@ func writeCodesCSV(path string, codes []string, typ string, tier int, durationDa
 	defer f.Close()
 	wr := csv.NewWriter(f)
 	defer wr.Flush()
-	if err := wr.Write([]string{"code", "type", "tier", "tierName", "durationDays", "remark", "createdAt"}); err != nil {
+	// role 列：GM 码写 gm，其余写 tier 数值（2026-11-06 审查 S13）。
+	roleVal := strconvI64(int64(tier))
+	roleName := tierName(tier)
+	if isGM {
+		roleVal = "gm"
+		roleName = "GM"
+	}
+	if err := wr.Write([]string{"code", "type", "tier", "role", "roleName", "durationDays", "remark", "createdAt"}); err != nil {
 		return err
 	}
 	createdStr := fmtTimeLocal(createdAt)
 	tierStr := strconvI64(int64(tier))
 	for _, c := range codes {
-		if err := wr.Write([]string{c, typ, tierStr, tierName(tier),
+		if err := wr.Write([]string{c, typ, tierStr, roleVal, roleName,
 			strconvI64(durationDays), remark, createdStr}); err != nil {
 			return err
 		}
@@ -253,7 +260,7 @@ func cmdList(args []string) error {
 	}
 	defer db.Close()
 
-	query := `SELECT c.code, c.type, c.tier, c.status, c.created_at, c.activated_at, c.expire_at,
+	query := `SELECT c.code, c.type, c.tier, c.is_gm, c.status, c.created_at, c.activated_at, c.expire_at,
 		COALESCE(b.device_label, ''), b.bound_at
 		FROM license_code c
 		LEFT JOIN device_binding b ON b.code_id = c.id AND b.status = 'active'`
@@ -279,11 +286,12 @@ func cmdList(args []string) error {
 		var (
 			code, typ, st, label  string
 			tier                  int
+			isGM                  int
 			createdAt             int64
 			activatedAt, expireAt sql.NullInt64
 			boundAt               sql.NullInt64
 		)
-		if err := rows.Scan(&code, &typ, &tier, &st, &createdAt, &activatedAt, &expireAt, &label, &boundAt); err != nil {
+		if err := rows.Scan(&code, &typ, &tier, &isGM, &st, &createdAt, &activatedAt, &expireAt, &label, &boundAt); err != nil {
 			return fmt.Errorf("扫描行失败: %w", err)
 		}
 		activatedStr := "-"
@@ -306,8 +314,12 @@ func cmdList(args []string) error {
 		if label == "" {
 			label = "-"
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s(%d)\t%s\t%s\t%s\t%s\t%s\n",
-			code, typ, tierName(tier), tier, st, label, activatedStr, expireStr, remainStr)
+		roleText := tierName(tier)
+		if isGM != 0 {
+			roleText = "GM"
+		}
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			code, typ, roleText, st, label, activatedStr, expireStr, remainStr)
 		total++
 	}
 	if err := rows.Err(); err != nil {
