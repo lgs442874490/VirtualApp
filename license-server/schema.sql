@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS used_nonce (
 );
 CREATE INDEX IF NOT EXISTS idx_nonce_time ON used_nonce(used_at);
 
--- 功能目录（2026-11-06 管理后台）：以 App FeatureGate 的 38 个 key 为唯一事实源。
+-- 功能目录（2026-11-06 管理后台）：以 App FeatureGate 的 39 个 key 为唯一事实源。
 -- 服务端启动时按内置 seed upsert；管理后台只读展示，矩阵勾选以此为行集合。
 CREATE TABLE IF NOT EXISTS feature_catalog (
     key          TEXT PRIMARY KEY,              -- 稳定 key（FeatureGate.Feature.key）

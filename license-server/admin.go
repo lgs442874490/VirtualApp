@@ -2,16 +2,20 @@ package main
 
 import (
 	"crypto/rand"
+	"database/sql"
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // ---------------------------------------------------------------------------
@@ -91,9 +95,13 @@ func (s *Server) registerAdminRoutes(mux *http.ServeMux) {
 // 会话与鉴权
 // ---------------------------------------------------------------------------
 
-// adminConfigured 是否已配置口令（未配置时后台整体 503）。
+// adminMinPasswordLen 管理后台口令最小长度（需求 REQ-ADMIN-02）。
+const adminMinPasswordLen = 16
+
+// adminConfigured 是否已配置**合规**口令；未配置或长度不足时后台整体 503
+// （授权接口 /v1/* 不受影响，避免短口令导致整个服务不可用）。
 func (s *Server) adminConfigured() bool {
-	return s.cfg != nil && s.cfg.AdminPassword != ""
+	return s.cfg != nil && utf8.RuneCountInString(s.cfg.AdminPassword) >= adminMinPasswordLen
 }
 
 // writeAdminJSON 输出管理 API 信封（HTTP 指定状态码）。
@@ -306,26 +314,35 @@ func (s *Server) handleAdminOverview(w http.ResponseWriter, r *http.Request) {
 // 兑换码：列表 / 生成 / 详情 / 启停 / 批量 / 记录 / 导出
 // ---------------------------------------------------------------------------
 
+// totalPages 计算总页数（total=0 时返回 0）。
+func totalPages(total int64, size int) int {
+	if size <= 0 {
+		return 0
+	}
+	return int((total + int64(size) - 1) / int64(size))
+}
+
 // parseCodeFilter 从 query 解析列表筛选（page/size/sort 也在此收敛）。
 func parseCodeFilter(r *http.Request) CodeFilter {
 	q := r.URL.Query()
 	page, _ := strconv.Atoi(q.Get("page"))
 	size, _ := strconv.Atoi(q.Get("size"))
 	f := CodeFilter{
-		Status:  strings.TrimSpace(q.Get("status")),
-		Usage:   strings.TrimSpace(q.Get("usage")),
-		Tier:    strings.TrimSpace(q.Get("tier")),
-		Type:    strings.TrimSpace(q.Get("type")),
-		Keyword: strings.TrimSpace(q.Get("q")),
-		From:    parseEpochQuery(q.Get("from")),
-		To:      parseEpochQuery(q.Get("to")),
-		Page:    page,
-		Size:    size,
-		Sort:    strings.TrimSpace(q.Get("sort")),
+		Status:     strings.TrimSpace(q.Get("status")),
+		Usage:      strings.TrimSpace(q.Get("usage")),
+		Tier:       strings.TrimSpace(q.Get("tier")),
+		Type:       strings.TrimSpace(q.Get("type")),
+		Keyword:    strings.TrimSpace(q.Get("q")),
+		From:       parseEpochQuery(q.Get("from")),
+		To:         parseEpochQuery(q.Get("to")),
+		ExpireFrom: parseEpochQuery(q.Get("expireFrom")),
+		ExpireTo:   parseEpochQuery(q.Get("expireTo")),
+		Page:       page,
+		Size:       size,
+		Sort:       strings.TrimSpace(q.Get("sort")),
 	}
-	if len(f.Keyword) > 64 {
-		f.Keyword = f.Keyword[:64]
-	}
+	f.Tier = strings.ToLower(f.Tier) // 兼容 GM/1/2/3 大小写
+	f.Keyword = truncateText(f.Keyword, 64)
 	return f
 }
 
@@ -343,34 +360,16 @@ func (s *Server) handleAdminCodes(w http.ResponseWriter, r *http.Request) {
 	page, size := normalizePage(f.Page, f.Size)
 	s.writeAdminOK(w, map[string]interface{}{
 		"items": items, "total": total, "page": page, "size": size,
+		"totalPages": totalPages(total, size),
 	})
 }
 
 // generateCodes 批量生成（事务内写入；任一条失败整批回滚）。
 //
-// 说明：唯一性检查在事务外做（单连接池下事务持连接，事务内再查会自我阻塞）；
-// 插入阶段若仍碰撞（概率极低）则整批回滚并报错，与需求 REQ-CODE-03 一致。
+// 唯一性（2026-11-06 审查修订，REQ-CODE-03）：在事务内逐条生成并检查/写入；
+// 若 INSERT 命中 UNIQUE 冲突（极端碰撞），重新生成该条并最多重试 5 次；
+// 5 次仍失败则整批回滚。事务内查询与写入共用同一连接（*sql.Tx），不会自我阻塞。
 func (s *Server) generateCodes(count int, typ string, tier int, isGM bool, remark, actor, ip string) ([]CodeListItem, error) {
-	codes := make([]string, 0, count)
-	seen := map[string]struct{}{}
-	for i := 0; i < count; i++ {
-		code, err := genUniqueCode(s.db)
-		if err != nil {
-			return nil, err
-		}
-		for {
-			if _, dup := seen[code]; !dup {
-				break
-			}
-			code, err = genUniqueCode(s.db)
-			if err != nil {
-				return nil, err
-			}
-		}
-		seen[code] = struct{}{}
-		codes = append(codes, code)
-	}
-
 	durationDays := int64(0)
 	if typ == TypeMonth {
 		durationDays = MonthDurationDays
@@ -381,39 +380,65 @@ func (s *Server) generateCodes(count int, typ string, tier int, isGM bool, remar
 		return nil, err
 	}
 	defer tx.Rollback()
+
 	items := make([]CodeListItem, 0, count)
 	ids := make([]int64, 0, count)
-	for _, code := range codes {
-		gm := 0
-		if isGM {
-			gm = 1
+	gm := 0
+	if isGM {
+		gm = 1
+	}
+	for i := 0; i < count; i++ {
+		inserted := false
+		var lastErr error
+		for attempt := 0; attempt < 5; attempt++ {
+			code, gerr := genCode()
+			if gerr != nil {
+				return nil, gerr
+			}
+			var exists int
+			qerr := tx.QueryRow(`SELECT 1 FROM license_code WHERE code = ? LIMIT 1`, code).Scan(&exists)
+			if qerr == nil {
+				continue // 已存在：重试
+			}
+			if !errors.Is(qerr, sql.ErrNoRows) {
+				return nil, qerr
+			}
+			res, ierr := tx.Exec(`INSERT INTO license_code
+				(code, code_hash, type, tier, is_gm, duration_days, status, remark, created_at, created_by)
+				VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
+				code, codeHash(code), typ, normalizeTier(tier), gm, durationDays, remark, now, actor)
+			if ierr != nil {
+				lastErr = ierr
+				if strings.Contains(ierr.Error(), "UNIQUE constraint failed") {
+					continue // 并发/竞态碰撞：重试该条
+				}
+				return nil, fmt.Errorf("写入兑换码失败: %w", ierr)
+			}
+			id, ierr := res.LastInsertId()
+			if ierr != nil {
+				return nil, ierr
+			}
+			ids = append(ids, id)
+			items = append(items, CodeListItem{
+				ID:         id,
+				Code:       code,
+				Type:       typ,
+				Tier:       int64(normalizeTier(tier)),
+				Role:       roleOfGenerated(tier, isGM),
+				IsGM:       isGM,
+				Status:     StatusActive,
+				Usage:      "unused",
+				RemainDays: -2,
+				Remark:     remark,
+				CreatedAt:  now,
+				CreatedBy:  actor,
+			})
+			inserted = true
+			break
 		}
-		res, err := tx.Exec(`INSERT INTO license_code
-			(code, code_hash, type, tier, is_gm, duration_days, status, remark, created_at, created_by)
-			VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, ?)`,
-			code, codeHash(code), typ, normalizeTier(tier), gm, durationDays, remark, now, actor)
-		if err != nil {
-			return nil, fmt.Errorf("写入兑换码失败: %w", err)
+		if !inserted {
+			return nil, fmt.Errorf("生成唯一兑换码失败（重试 5 次）: %v", lastErr)
 		}
-		id, err := res.LastInsertId()
-		if err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-		items = append(items, CodeListItem{
-			ID:         id,
-			Code:       code,
-			Type:       typ,
-			Tier:       int64(normalizeTier(tier)),
-			Role:       roleOfGenerated(tier, isGM),
-			IsGM:       isGM,
-			Status:     StatusActive,
-			Usage:      "unused",
-			RemainDays: -2,
-			Remark:     remark,
-			CreatedAt:  now,
-			CreatedBy:  actor,
-		})
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err
@@ -539,6 +564,9 @@ func (s *Server) doRestore(id int64, actor, ip string) error {
 	if c == nil {
 		return errAdminNotFound
 	}
+	if c.Status == StatusExhausted {
+		return errAdminExhausted
+	}
 	if c.Status != StatusRevoked {
 		return nil // 幂等
 	}
@@ -555,8 +583,9 @@ func (s *Server) doRestore(id int64, actor, ip string) error {
 
 // 管理端内部错误哨兵。
 var (
-	errAdminNotFound = fmt.Errorf("not found")
-	errAdminExpired  = fmt.Errorf("expired")
+	errAdminNotFound  = fmt.Errorf("not found")
+	errAdminExpired   = fmt.Errorf("expired")
+	errAdminExhausted = fmt.Errorf("exhausted")
 )
 
 // handleAdminRevoke 停用。
@@ -573,7 +602,10 @@ func (s *Server) handleAdminRevoke(w http.ResponseWriter, r *http.Request) {
 		Reason string `json:"reason"`
 	}
 	if r.Body != nil {
-		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req)
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64*1024)).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			s.writeAdminErr(w, adminCodeBadRequest, "请求格式错误")
+			return
+		}
 	}
 	if err := s.doRevoke(id, req.Reason, "admin", adminClientIP(r)); err != nil {
 		switch err {
@@ -603,6 +635,8 @@ func (s *Server) handleAdminRestore(w http.ResponseWriter, r *http.Request) {
 			s.writeAdminErr(w, adminCodeNotFound, "兑换码不存在")
 		case errAdminExpired:
 			s.writeAdminErr(w, adminCodeConflict, "已过期码不可启用")
+		case errAdminExhausted:
+			s.writeAdminErr(w, adminCodeConflict, "历史已用尽码不可启用")
 		default:
 			s.writeAdminErr(w, adminCodeServer, "启用失败")
 		}
@@ -648,6 +682,8 @@ func (s *Server) handleAdminBatch(w http.ResponseWriter, r *http.Request) {
 				msg = "兑换码不存在"
 			} else if err == errAdminExpired {
 				msg = "已过期码不可启用"
+			} else if err == errAdminExhausted {
+				msg = "历史已用尽码不可启用"
 			}
 			failed = append(failed, map[string]interface{}{"id": id, "message": msg})
 			continue
@@ -702,6 +738,7 @@ func (s *Server) handleAdminLogs(w http.ResponseWriter, r *http.Request) {
 	page, size := normalizePage(f.Page, f.Size)
 	s.writeAdminOK(w, map[string]interface{}{
 		"items": items, "total": total, "page": page, "size": size,
+		"totalPages": totalPages(total, size),
 	})
 }
 
@@ -713,12 +750,14 @@ func (s *Server) handleAdminCodesExport(w http.ResponseWriter, r *http.Request) 
 	f := parseCodeFilter(r)
 	f.Page, f.Size = 1, 500
 	all := make([]CodeListItem, 0, 500)
+	var total int64
 	for len(all) < adminExportMax {
-		items, total, err := listCodes(s.db, f)
+		items, t, err := listCodes(s.db, f)
 		if err != nil {
 			s.writeAdminErr(w, adminCodeServer, "导出查询失败")
 			return
 		}
+		total = t
 		all = append(all, items...)
 		if int64(len(all)) >= total || len(items) == 0 {
 			break
@@ -727,6 +766,11 @@ func (s *Server) handleAdminCodesExport(w http.ResponseWriter, r *http.Request) 
 	}
 	if len(all) > adminExportMax {
 		all = all[:adminExportMax]
+	}
+	if int64(len(all)) < total {
+		// 2026-11-06 审查：超过上限时显式告知（前端读该头提示缩小范围）。
+		w.Header().Set("X-Export-Truncated", "true")
+		w.Header().Set("X-Export-Total", strconvI64(total))
 	}
 	writeCSV(w, "codes-"+time.Now().Format("20060102")+".csv", codeCSVRows(all))
 }
@@ -758,12 +802,14 @@ func (s *Server) handleAdminLogsExport(w http.ResponseWriter, r *http.Request) {
 	f := parseLogFilter(r, id)
 	f.Page, f.Size = 1, 500
 	all := make([]LogItem, 0, 500)
+	var total int64
 	for len(all) < adminExportMax {
-		items, total, err := listLogs(s.db, f)
+		items, t, err := listLogs(s.db, f)
 		if err != nil {
 			s.writeAdminErr(w, adminCodeServer, "导出查询失败")
 			return
 		}
+		total = t
 		all = append(all, items...)
 		if int64(len(all)) >= total || len(items) == 0 {
 			break
@@ -772,6 +818,10 @@ func (s *Server) handleAdminLogsExport(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(all) > adminExportMax {
 		all = all[:adminExportMax]
+	}
+	if int64(len(all)) < total {
+		w.Header().Set("X-Export-Truncated", "true")
+		w.Header().Set("X-Export-Total", strconvI64(total))
 	}
 	rows := [][]string{{"createdAt", "action", "resultCode", "resultText", "deviceLabel",
 		"deviceHash", "ip", "ua"}}
@@ -878,5 +928,6 @@ func (s *Server) handleAdminAudit(w http.ResponseWriter, r *http.Request) {
 	page, size = normalizePage(page, size)
 	s.writeAdminOK(w, map[string]interface{}{
 		"items": items, "total": total, "page": page, "size": size,
+		"totalPages": totalPages(total, size),
 	})
 }

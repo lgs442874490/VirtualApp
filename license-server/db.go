@@ -395,6 +395,10 @@ func countRebinds(db *sql.DB, codeID int64) (int64, error) {
 
 // insertLog 写入一条审计流水（resultCode=0 表示成功）。
 func insertLog(db *sql.DB, codeID *int64, deviceHash, action string, resultCode int, ip, ua string, now int64) {
+	// 写入即截断（2026-11-06 代码审查）：避免超长 UA/IP 导致 verify_log 膨胀；
+	// 展示层另有 200 字截断（admin_db.listLogs）。
+	ip = truncateText(ip, 64)
+	ua = truncateText(ua, 200)
 	_, err := db.Exec(`INSERT INTO verify_log
 		(code_id, device_hash, action, result_code, ip, ua, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?)`,

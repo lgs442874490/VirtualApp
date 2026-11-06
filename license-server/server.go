@@ -123,6 +123,13 @@ func (s *Server) logAction(action string, codeID *int64, deviceHash string, resu
 	log.Printf("[action=%s] code_id=%s device_hash=%s result_code=%d", action, cid, truncHash(deviceHash), resultCode)
 }
 
+// logActivateFailure 记录一次失败的激活：进程日志 + verify_log 流水。
+// 需求 §4.6 要求使用记录全量；原实现只有成功 activate 落库。codeID 可为 nil。
+func (s *Server) logActivateFailure(r *http.Request, codeID *int64, deviceHash string, code int) {
+	s.logAction(ActionActivate, codeID, deviceHash, code)
+	insertLog(s.db, codeID, deviceHash, ActionActivate, code, clientIP(r), r.UserAgent(), nowMs())
+}
+
 // truncHash 截断哈希用于日志展示。
 func truncHash(h string) string {
 	if len(h) > 8 {
@@ -224,17 +231,20 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request, body []byte)
 		return
 	}
 	if req.DeviceHash == "" {
+		s.logActivateFailure(r, nil, "", CodeBadRequest)
 		s.writeErr(w, CodeBadRequest, "deviceHash 缺失")
 		return
 	}
 
 	// 校验握手：challengeId 必须存在且未过期，且客户端回传的 salt 与下发一致。
 	if req.ChallengeID == "" {
+		s.logActivateFailure(r, nil, req.DeviceHash, CodeChallengeInvalid)
 		s.writeErr(w, CodeChallengeInvalid)
 		return
 	}
 	ch, ok := s.lookupChallenge(req.ChallengeID)
 	if !ok || (req.Salt != "" && req.Salt != ch.salt) {
+		s.logActivateFailure(r, nil, req.DeviceHash, CodeChallengeInvalid)
 		s.writeErr(w, CodeChallengeInvalid)
 		return
 	}
@@ -242,23 +252,23 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request, body []byte)
 	// 归一化并校验码格式
 	codeStr := canonicalCode(req.Code)
 	if !validateCode(codeStr) {
-		s.logAction(ActionActivate, nil, req.DeviceHash, CodeFormatInvalid)
+		s.logActivateFailure(r, nil, req.DeviceHash, CodeFormatInvalid)
 		s.writeErr(w, CodeFormatInvalid)
 		return
 	}
 	c, err := getCodeByCode(s.db, codeStr)
 	if err != nil {
-		s.logAction(ActionActivate, nil, req.DeviceHash, CodeServerError)
+		s.logActivateFailure(r, nil, req.DeviceHash, CodeServerError)
 		s.writeErr(w, CodeServerError)
 		return
 	}
 	if c == nil {
-		s.logAction(ActionActivate, nil, req.DeviceHash, CodeNotFound)
+		s.logActivateFailure(r, nil, req.DeviceHash, CodeNotFound)
 		s.writeErr(w, CodeNotFound)
 		return
 	}
 	if c.Status == StatusRevoked {
-		s.logAction(ActionActivate, codeIDPtr(c.ID), req.DeviceHash, CodeRevoked)
+		s.logActivateFailure(r, codeIDPtr(c.ID), req.DeviceHash, CodeRevoked)
 		s.writeErr(w, CodeRevoked)
 		return
 	}
@@ -268,7 +278,7 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request, body []byte)
 	// 已激活过的码：显式拒绝"已过期"，与 verify 路径口径一致（避免过期码激活时
 	// 走幂等分支返回一张过期票、错误提示不准确）。
 	if c.ActivatedAt.Valid && c.ExpireAt.Valid && c.ExpireAt.Int64 <= now {
-		s.logAction(ActionActivate, codeIDPtr(c.ID), req.DeviceHash, CodeExpired)
+		s.logActivateFailure(r, codeIDPtr(c.ID), req.DeviceHash, CodeExpired)
 		s.writeErr(w, CodeExpired)
 		return
 	}
@@ -286,20 +296,20 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request, body []byte)
 	}
 	state, err := bindDeviceAtomic(s.db, c.ID, req.DeviceHash, req.DeviceLabel, now, expireAt, expireValid)
 	if err != nil {
-		s.logAction(ActionActivate, codeIDPtr(c.ID), req.DeviceHash, CodeServerError)
+		s.logActivateFailure(r, codeIDPtr(c.ID), req.DeviceHash, CodeServerError)
 		s.writeErr(w, CodeServerError)
 		return
 	}
 	switch state {
 	case bindOther:
-		s.logAction(ActionActivate, codeIDPtr(c.ID), req.DeviceHash, CodeAlreadyBound)
+		s.logActivateFailure(r, codeIDPtr(c.ID), req.DeviceHash, CodeAlreadyBound)
 		s.writeErr(w, CodeAlreadyBound)
 		return
 	case bindFirst:
 		// 首次绑定完成，重读以拿到权威 activated_at / expire_at
 		c, err = getCodeByID(s.db, c.ID)
 		if err != nil || c == nil {
-			s.logAction(ActionActivate, codeIDPtr(c.ID), req.DeviceHash, CodeServerError)
+			s.logActivateFailure(r, codeIDPtr(c.ID), req.DeviceHash, CodeServerError)
 			s.writeErr(w, CodeServerError)
 			return
 		}
@@ -319,7 +329,7 @@ func (s *Server) handleBind(w http.ResponseWriter, r *http.Request, body []byte)
 	role := roleOfCode(c)
 	features, ferr := featuresForRole(s.db, role)
 	if ferr != nil {
-		s.logAction(ActionActivate, codeIDPtr(c.ID), req.DeviceHash, CodeServerError)
+		s.logActivateFailure(r, codeIDPtr(c.ID), req.DeviceHash, CodeServerError)
 		s.writeErr(w, CodeServerError)
 		return
 	}
@@ -365,6 +375,7 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.DeviceHash == "" {
+		s.logActivateFailure(r, nil, "", CodeBadRequest)
 		s.writeErr(w, CodeBadRequest, "deviceHash 缺失")
 		return
 	}
@@ -443,8 +454,22 @@ func (s *Server) handleVerify(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	insertLog(s.db, codeIDPtr(c.ID), req.DeviceHash, ActionVerify, resCode, clientIP(r), r.UserAgent(), now)
-	s.logAction(ActionVerify, codeIDPtr(c.ID), req.DeviceHash, resCode)
+	// 日志结果码（2026-11-06 代码审查）：verify 的 API 响应按冻结契约返回 code=0 +
+	// data.status；但 verify_log 的 result_code 需要能区分成功/失败，否则后台“失败筛选”
+	// 与使用记录会把 revoked/expired/device_mismatch 显示成成功。
+	logCode := resCode
+	if logCode == CodeOK {
+		switch status {
+		case VerifyStatusRevoked:
+			logCode = CodeRevoked
+		case VerifyStatusExpired:
+			logCode = CodeExpired
+		case VerifyStatusDeviceMismatch:
+			logCode = CodeDeviceMismatch
+		}
+	}
+	insertLog(s.db, codeIDPtr(c.ID), req.DeviceHash, ActionVerify, logCode, clientIP(r), r.UserAgent(), now)
+	s.logAction(ActionVerify, codeIDPtr(c.ID), req.DeviceHash, logCode)
 
 	// 2026-11-06：随 verify 下发 role/features，App 用于刷新本地权限矩阵。
 	// 未激活（1007）分支也返回该码的 role/features，与既有 tier 口径一致；App 不会据此放行。

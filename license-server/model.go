@@ -287,8 +287,8 @@ type Ticket struct {
 	TicketID     string   `json:"ticketId"`
 	Code         string   `json:"code"`
 	Type         string   `json:"type"`
-	Tier         int      `json:"tier"` // 授权等级 1/2/3（批次7；缺省/旧服务端按 3 兼容）
-	Role         int      `json:"role"` // 角色档位 1/2/3/4（4=GM，2026-11-06）
+	Tier         int      `json:"tier"`     // 授权等级 1/2/3（批次7；缺省/旧服务端按 3 兼容）
+	Role         int      `json:"role"`     // 角色档位 1/2/3/4（4=GM，2026-11-06）
 	Features     []string `json:"features"` // 当前角色可见的功能 key（已按字典序排序）
 	ActivatedAt  int64    `json:"activatedAt"`
 	ExpireAt     int64    `json:"expireAt"`
@@ -309,8 +309,8 @@ type HelloData struct {
 type VerifyData struct {
 	Status        string   `json:"status,omitempty"`
 	Type          string   `json:"type"`
-	Tier          int      `json:"tier"` // 授权等级 1/2/3（批次7；客户端按此刷新本地票据）
-	Role          int      `json:"role"` // 角色档位 1/2/3/4（4=GM，2026-11-06）
+	Tier          int      `json:"tier"`     // 授权等级 1/2/3（批次7；客户端按此刷新本地票据）
+	Role          int      `json:"role"`     // 角色档位 1/2/3/4（4=GM，2026-11-06）
 	Features      []string `json:"features"` // 当前角色可见的功能 key（已按字典序排序）
 	ExpireAt      int64    `json:"expireAt"`
 	RemainSeconds int64    `json:"remainSeconds"`

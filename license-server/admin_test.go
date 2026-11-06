@@ -18,7 +18,7 @@ import (
 
 const testAdminPassword = "test-admin-password-2026"
 
-func newTestServer(t *testing.T, withPassword bool) (*Server, *httptest.Server) {
+func newTestServerWith(t *testing.T, password string) (*Server, *httptest.Server) {
 	t.Helper()
 	dbPath := filepath.Join(t.TempDir(), "license-test.db")
 	db, err := openDB(dbPath)
@@ -33,9 +33,7 @@ func newTestServer(t *testing.T, withPassword bool) (*Server, *httptest.Server) 
 		Addr:       "127.0.0.1:0",
 		NonceTTLMs: NonceTTLDefaultSec * 1000,
 	}
-	if withPassword {
-		cfg.AdminPassword = testAdminPassword
-	}
+	cfg.AdminPassword = password
 	srv := NewServer(db, cfg)
 	ts := httptest.NewServer(srv.Mux())
 	t.Cleanup(ts.Close)
@@ -68,7 +66,7 @@ func TestFeatureSeedMatchesApp(t *testing.T) {
 }
 
 func TestDefaultMatrixCounts(t *testing.T) {
-	srv, _ := newTestServer(t, true)
+	srv, _ := newTestServerWith(t, testAdminPassword)
 	m, err := loadMatrix(srv.db)
 	if err != nil {
 		t.Fatalf("loadMatrix: %v", err)
@@ -95,7 +93,7 @@ func TestDefaultMatrixCounts(t *testing.T) {
 }
 
 func TestFeaturesForRole(t *testing.T) {
-	srv, _ := newTestServer(t, true)
+	srv, _ := newTestServerWith(t, testAdminPassword)
 	t1, err := featuresForRole(srv.db, 1)
 	if err != nil {
 		t.Fatal(err)
@@ -118,7 +116,7 @@ func TestFeaturesForRole(t *testing.T) {
 }
 
 func TestSaveMatrixValidation(t *testing.T) {
-	srv, _ := newTestServer(t, true)
+	srv, _ := newTestServerWith(t, testAdminPassword)
 	// 构造完整矩阵，然后把某个未实现项打开 → 拒绝。
 	rows := make([]MatrixCell, 0, len(featureSeed)*3)
 	for _, it := range featureSeed {
@@ -147,7 +145,7 @@ func TestSaveMatrixValidation(t *testing.T) {
 }
 
 func TestSaveAndResetMatrix(t *testing.T) {
-	srv, _ := newTestServer(t, true)
+	srv, _ := newTestServerWith(t, testAdminPassword)
 	rows := make([]MatrixCell, 0, len(featureSeed)*3)
 	for _, it := range featureSeed {
 		for _, role := range []int{1, 2, 3} {
@@ -232,7 +230,7 @@ func loginCookie(t *testing.T, ts *httptest.Server) string {
 }
 
 func TestAdminUnconfigured(t *testing.T) {
-	_, ts := newTestServer(t, false)
+	_, ts := newTestServerWith(t, "")
 	resp, _ := doJSON(t, "GET", ts.URL+"/admin/api/me", "", "")
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("未配置口令应 503，实际 %d", resp.StatusCode)
@@ -243,8 +241,17 @@ func TestAdminUnconfigured(t *testing.T) {
 	}
 }
 
+func TestAdminShortPasswordReturns503(t *testing.T) {
+	// 需求 REQ-ADMIN-02：口令 ≥16；不足时后台 503（授权接口不受影响）。
+	_, ts := newTestServerWith(t, "short-pass")
+	resp, _ := doJSON(t, "GET", ts.URL+"/admin/api/me", "", "")
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("短口令应 503，实际 %d", resp.StatusCode)
+	}
+}
+
 func TestAdminLoginLockout(t *testing.T) {
-	_, ts := newTestServer(t, true)
+	_, ts := newTestServerWith(t, testAdminPassword)
 	for i := 0; i < adminMaxFails; i++ {
 		resp, _ := doJSON(t, "POST", ts.URL+"/admin/api/login", `{"password":"wrong"}`, "")
 		if resp.StatusCode != http.StatusUnauthorized {
@@ -258,7 +265,7 @@ func TestAdminLoginLockout(t *testing.T) {
 }
 
 func TestAdminGenerateListRevokeRestore(t *testing.T) {
-	_, ts := newTestServer(t, true)
+	_, ts := newTestServerWith(t, testAdminPassword)
 	cookie := loginCookie(t, ts)
 
 	resp, gen := doJSON(t, "POST", ts.URL+"/admin/api/codes/generate",
@@ -313,7 +320,7 @@ func TestAdminGenerateListRevokeRestore(t *testing.T) {
 }
 
 func TestAdminMatrixHTTP(t *testing.T) {
-	_, ts := newTestServer(t, true)
+	_, ts := newTestServerWith(t, testAdminPassword)
 	cookie := loginCookie(t, ts)
 
 	_, got := doJSON(t, "GET", ts.URL+"/admin/api/matrix", "", cookie)
@@ -395,7 +402,7 @@ func (c *signedClient) post(op, path string, body map[string]interface{}) map[st
 }
 
 func TestActivateVerifyRoleFeatures(t *testing.T) {
-	srv, ts := newTestServer(t, true)
+	srv, ts := newTestServerWith(t, testAdminPassword)
 	// 直接插一条 T2 月码与一条 GM 永久码（避免走管理 API 的 HTTP 依赖）。
 	t2Code := mustInsertCode(t, srv, 2, false, TypeMonth)
 	gmCode := mustInsertCode(t, srv, 3, true, TypePermanent)
@@ -495,15 +502,16 @@ func containsStr(v interface{}, want string) bool {
 
 // TestListLogsAndAudit 使用记录/审计的查询与筛选。
 func TestListLogsAndAudit(t *testing.T) {
-	srv, _ := newTestServer(t, true)
+	srv, _ := newTestServerWith(t, testAdminPassword)
 	code := mustInsertCode(t, srv, 2, false, TypeMonth)
 	c, err := getCodeByCode(srv.db, code)
 	if err != nil || c == nil {
 		t.Fatalf("查码失败: %v", err)
 	}
 	now := nowMs()
-	insertLog(srv.db, codeIDPtr(c.ID), "dev-a", ActionActivate, CodeOK, "1.2.3.4", "ua", now-3000)
-	insertLog(srv.db, codeIDPtr(c.ID), "dev-a", ActionVerify, CodeOK, "1.2.3.4", "ua", now-2000)
+	longUA := strings.Repeat("x", 300)
+	insertLog(srv.db, codeIDPtr(c.ID), "dev-a", ActionActivate, CodeOK, "1.2.3.4", longUA, now-3000)
+	insertLog(srv.db, codeIDPtr(c.ID), "dev-a", ActionVerify, CodeOK, "1.2.3.4", longUA, now-2000)
 	insertLog(srv.db, codeIDPtr(c.ID), "dev-a", ActionVerify, CodeExpired, "1.2.3.4", "ua", now-1000)
 
 	items, total, err := listLogs(srv.db, LogFilter{CodeID: c.ID, Page: 1, Size: 20})
@@ -515,6 +523,10 @@ func TestListLogsAndAudit(t *testing.T) {
 	}
 	if items[0].ResultCode != CodeExpired || items[0].ResultText == "" {
 		t.Fatalf("应按时间倒序且带结果文案: %+v", items[0])
+	}
+	// 需求 §4.6：UA 截断 200 字。
+	if n := len([]rune(items[1].UA)); n != 200 {
+		t.Fatalf("UA 应截断为 200 字，实际 %d", n)
 	}
 
 	// 按动作筛选。
@@ -536,5 +548,156 @@ func TestListLogsAndAudit(t *testing.T) {
 	}
 	if atotal < 1 || len(audits) < 1 || audits[0].Action != AdminActionMatrixSave {
 		t.Fatalf("审计查询不符: total=%d items=%+v", atotal, audits)
+	}
+}
+
+// activateCode 用签名客户端完成 hello+bind，返回 ticketId。
+func activateCode(t *testing.T, cli *signedClient, code string) string {
+	t.Helper()
+	hello := cli.post("activate", "/v1/activate", map[string]interface{}{
+		"phase": "hello", "pkg": "com.carlos.multiapp", "appVersion": "4.2.58", "appVersionCode": 23600,
+	})
+	if hello["code"].(float64) != 0 {
+		t.Fatalf("hello 失败: %v", hello)
+	}
+	h := hello["data"].(map[string]interface{})
+	bind := cli.post("activate", "/v1/activate", map[string]interface{}{
+		"phase": "bind", "code": code, "deviceHash": strings.Repeat("a", 64),
+		"deviceLabel": "unit", "salt": h["salt"].(string), "challengeId": h["challengeId"].(string),
+		"pkg": "com.carlos.multiapp", "appVersion": "4.2.58", "appVersionCode": 23600,
+	})
+	if bind["code"].(float64) != 0 {
+		t.Fatalf("bind 失败: %v", bind)
+	}
+	return bind["data"].(map[string]interface{})["ticket"].(map[string]interface{})["ticketId"].(string)
+}
+
+// TestVerifyLogBusinessStatus 验证 verify 的业务失败（吊销/到期/换机）落库为非 0 结果码，
+// 且 API 响应仍按冻结契约返回 code=0（2026-11-06 审查 B1）。
+func TestVerifyLogBusinessStatus(t *testing.T) {
+	srv, ts := newTestServerWith(t, testAdminPassword)
+	code := mustInsertCode(t, srv, 2, false, TypeMonth)
+	c, err := getCodeByCode(srv.db, code)
+	if err != nil || c == nil {
+		t.Fatalf("查码失败: %v", err)
+	}
+	cli := &signedClient{t: t, base: ts.URL, secret: srv.cfg.Secret}
+	ticketID := activateCode(t, cli, code)
+
+	verify := func() map[string]interface{} {
+		return cli.post("verify", "/v1/verify", map[string]interface{}{
+			"code": code, "ticketId": ticketID, "deviceHash": strings.Repeat("a", 64),
+			"pkg": "com.carlos.multiapp", "appVersion": "4.2.58",
+		})
+	}
+	lastLogCode := func() int {
+		var rc int
+		if err := srv.db.QueryRow(`SELECT result_code FROM verify_log
+			WHERE code_id = ? AND action = ? ORDER BY id DESC LIMIT 1`, c.ID, ActionVerify).Scan(&rc); err != nil {
+			t.Fatalf("查 verify_log 失败: %v", err)
+		}
+		return rc
+	}
+
+	if v := verify(); v["code"].(float64) != 0 {
+		t.Fatalf("active verify 应 code=0: %v", v)
+	}
+	if rc := lastLogCode(); rc != CodeOK {
+		t.Fatalf("active verify 日志应为 0，实际 %d", rc)
+	}
+
+	// 停用后 verify：API 仍 code=0 + status=revoked；日志应为 1004。
+	if err := revokeCodeByID(srv.db, c.ID, "review-test", nowMs()); err != nil {
+		t.Fatal(err)
+	}
+	v := verify()
+	if v["code"].(float64) != 0 {
+		t.Fatalf("revoked verify 按冻结契约应 code=0: %v", v)
+	}
+	data := v["data"].(map[string]interface{})
+	if data["status"] != VerifyStatusRevoked {
+		t.Fatalf("revoked verify status 应为 revoked: %v", data["status"])
+	}
+	if rc := lastLogCode(); rc != CodeRevoked {
+		t.Fatalf("revoked verify 日志应为 %d，实际 %d", CodeRevoked, rc)
+	}
+}
+
+// TestFailedActivateWritesLog 失败激活也要落 verify_log（REQ-CODE-40 全量）。
+func TestFailedActivateWritesLog(t *testing.T) {
+	srv, ts := newTestServerWith(t, testAdminPassword)
+	cli := &signedClient{t: t, base: ts.URL, secret: srv.cfg.Secret}
+	badCode, err := genCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hello := cli.post("activate", "/v1/activate", map[string]interface{}{
+		"phase": "hello", "pkg": "com.carlos.multiapp", "appVersion": "4.2.58", "appVersionCode": 23600,
+	})
+	h := hello["data"].(map[string]interface{})
+	bind := cli.post("activate", "/v1/activate", map[string]interface{}{
+		"phase": "bind", "code": badCode, "deviceHash": strings.Repeat("b", 64),
+		"deviceLabel": "unit", "salt": h["salt"].(string), "challengeId": h["challengeId"].(string),
+		"pkg": "com.carlos.multiapp", "appVersion": "4.2.58", "appVersionCode": 23600,
+	})
+	if bind["code"].(float64) != CodeNotFound {
+		t.Fatalf("不存在的码应 1001: %v", bind)
+	}
+	var n int
+	if err := srv.db.QueryRow(`SELECT COUNT(*) FROM verify_log
+		WHERE action = ? AND result_code = ?`, ActionActivate, CodeNotFound).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n < 1 {
+		t.Fatal("失败激活应写入 verify_log")
+	}
+}
+
+// TestExpireRangeAndVerifyCount 到期时间筛选 + 累计 verify 次数按 verify_log 统计。
+func TestExpireRangeAndVerifyCount(t *testing.T) {
+	srv, _ := newTestServerWith(t, testAdminPassword)
+	code := mustInsertCode(t, srv, 2, false, TypeMonth)
+	c, err := getCodeByCode(srv.db, code)
+	if err != nil || c == nil {
+		t.Fatal(err)
+	}
+	past := nowMs() - MsPerDay
+	if _, err := srv.db.Exec(`UPDATE license_code SET activated_at = ?, expire_at = ? WHERE id = ?`,
+		past-MsPerDay, past, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	items, total, err := listCodes(srv.db, CodeFilter{ExpireTo: nowMs(), Page: 1, Size: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 1 || len(items) != 1 {
+		t.Fatalf("到期止筛选应命中 1 条，实际 total=%d len=%d", total, len(items))
+	}
+	items, total, err = listCodes(srv.db, CodeFilter{ExpireFrom: nowMs() + MsPerDay, Page: 1, Size: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 0 || len(items) != 0 {
+		t.Fatalf("到期起筛选不应命中，实际 total=%d", total)
+	}
+
+	// verifyCount 按 verify_log 全量（含失败），不再只统计绑定 verify_count。
+	insertLog(srv.db, codeIDPtr(c.ID), "dev", ActionVerify, CodeOK, "1.1.1.1", "ua", nowMs()-2000)
+	insertLog(srv.db, codeIDPtr(c.ID), "dev", ActionVerify, CodeExpired, "1.1.1.1", "ua", nowMs()-1000)
+	_, _, vc, err := getCodeDetail(srv.db, c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if vc != 2 {
+		t.Fatalf("累计 verify 次数应为 2，实际 %d", vc)
+	}
+}
+
+// TestKeywordRuneTruncation 中文关键词按字符截断，不因字节截断产生乱码/panic。
+func TestKeywordRuneTruncation(t *testing.T) {
+	srv, _ := newTestServerWith(t, testAdminPassword)
+	_, _, err := listCodes(srv.db, CodeFilter{Keyword: strings.Repeat("中", 100), Page: 1, Size: 20})
+	if err != nil {
+		t.Fatalf("中文关键词查询不应报错: %v", err)
 	}
 }

@@ -20,7 +20,7 @@
     active: '已激活',
     expired: '已过期',
     revoked: '已停用',
-    exhausted: '已用尽'
+    exhausted: '已用尽（历史）'
   };
 
   var USAGE_BADGE = {
@@ -64,7 +64,7 @@
     authenticated: false,
     navSeq: 0,
     codes: {
-      filters: { status: '', usage: '', tier: '', type: '', q: '', from: '', to: '' },
+      filters: { status: '', usage: '', tier: '', type: '', q: '', from: '', to: '', expireFrom: '', expireTo: '' },
       sort: 'created_desc',
       page: 1,
       size: 20,
@@ -230,15 +230,26 @@
 
   function dateRangeQuery(filters) {
     var query = {};
-    if (filters.from) {
-      var from = new Date(filters.from + 'T00:00:00');
-      if (!isNaN(from.getTime())) query.from = from.getTime();
+    function add(fromKey, toKey, fromParam, toParam) {
+      if (filters[fromKey]) {
+        var from = new Date(filters[fromKey] + 'T00:00:00');
+        if (!isNaN(from.getTime())) query[fromParam] = from.getTime();
+      }
+      if (filters[toKey]) {
+        var to = new Date(filters[toKey] + 'T23:59:59.999');
+        if (!isNaN(to.getTime())) query[toParam] = to.getTime();
+      }
     }
-    if (filters.to) {
-      var to = new Date(filters.to + 'T23:59:59.999');
-      if (!isNaN(to.getTime())) query.to = to.getTime();
-    }
+    add('from', 'to', 'from', 'to');
+    add('expireFrom', 'expireTo', 'expireFrom', 'expireTo');
     return query;
+  }
+
+  function codeStatusText(status) {
+    if (status === 'active') return '生效中';
+    if (status === 'revoked') return '已停用';
+    if (status === 'exhausted') return '已用尽（历史）';
+    return status || '—';
   }
 
   function usageBadge(usage) {
@@ -521,6 +532,8 @@
 
   function csvCell(value) {
     var text = value === null || value === undefined ? '' : String(value);
+    // CSV 公式注入防护（2026-11-06 审查）：危险前缀加单引号，Excel 按文本处理。
+    if (/^[=+\-@]/.test(text)) text = "'" + text;
     if (/[",\r\n]/.test(text)) {
       return '"' + text.replace(/"/g, '""') + '"';
     }
@@ -560,9 +573,15 @@
         }
         throw new ApiError(message, response.status);
       }
+      var truncated = response.headers.get('X-Export-Truncated') === 'true';
+      var exportTotal = response.headers.get('X-Export-Total') || '';
       var blob = await response.blob();
       triggerDownload(blob, filename);
-      toast('导出已开始', 'success');
+      if (truncated) {
+        toast('导出已截断：上限 10000 条' + (exportTotal ? '，共 ' + exportTotal + ' 条' : '') + '，请缩小筛选范围', 'warn', 6000);
+      } else {
+        toast('导出已开始', 'success');
+      }
     } catch (error) {
       toast(error && error.message ? error.message : '导出失败', 'error');
     }
@@ -1148,6 +1167,14 @@
             <input id="f-to" class="input" type="date">
           </label>
           <label class="field field--inline">
+            <span>到期起</span>
+            <input id="f-expire-from" class="input" type="date">
+          </label>
+          <label class="field field--inline">
+            <span>到期止</span>
+            <input id="f-expire-to" class="input" type="date">
+          </label>
+          <label class="field field--inline">
             <span>排序</span>
             <select id="f-sort" class="select">
               <option value="created_desc">创建时间倒序</option>
@@ -1189,7 +1216,7 @@
       void loadCodes(state.navSeq).catch(handleLoadError);
     });
     $('#filter-reset').addEventListener('click', function () {
-      state.codes.filters = { status: '', usage: '', tier: '', type: '', q: '', from: '', to: '' };
+      state.codes.filters = { status: '', usage: '', tier: '', type: '', q: '', from: '', to: '', expireFrom: '', expireTo: '' };
       state.codes.sort = 'created_desc';
       state.codes.page = 1;
       state.codes.size = 20;
@@ -1235,6 +1262,8 @@
     $('#f-q').value = filters.q || '';
     $('#f-from').value = filters.from || '';
     $('#f-to').value = filters.to || '';
+    $('#f-expire-from').value = filters.expireFrom || '';
+    $('#f-expire-to').value = filters.expireTo || '';
     $('#f-sort').value = state.codes.sort;
   }
 
@@ -1246,7 +1275,9 @@
       type: $('#f-type').value,
       q: $('#f-q').value.trim(),
       from: $('#f-from').value,
-      to: $('#f-to').value
+      to: $('#f-to').value,
+      expireFrom: $('#f-expire-from').value,
+      expireTo: $('#f-expire-to').value
     };
   }
 
@@ -1280,8 +1311,9 @@
       size: current.size
     };
     var range = dateRangeQuery(current.filters);
-    if (range.from) query.from = range.from;
-    if (range.to) query.to = range.to;
+    Object.keys(range).forEach(function (key) {
+      query[key] = range[key];
+    });
 
     var data = await api('/admin/api/codes', { query: query });
     if (seq !== state.navSeq) return;
@@ -1340,7 +1372,7 @@
       updateBatchBar();
     });
     headRow.appendChild(el('th', { className: 'cell-check' }, selectAll));
-    ['兑换码', '类型', '等级', '使用状态', '绑定设备', '激活时间', '到期时间 / 剩余', '备注', '操作'].forEach(function (title) {
+    ['兑换码', '类型', '等级', '状态', '使用状态', '绑定设备', '激活时间', '到期时间 / 剩余', '创建时间', '备注', '操作'].forEach(function (title) {
       headRow.appendChild(el('th', { text: title }));
     });
     thead.appendChild(headRow);
@@ -1369,6 +1401,7 @@
         className: 'tag' + (tierText(item) === 'GM' ? ' tag--gm' : ''),
         text: tierText(item)
       })));
+      row.appendChild(el('td', { text: codeStatusText(item.status) }));
       row.appendChild(el('td', null, usageBadge(item.usage)));
       row.appendChild(el('td', {
         className: 'cell-device',
@@ -1377,6 +1410,7 @@
       }));
       row.appendChild(el('td', { className: 'nowrap', text: fmtTime(item.activatedAt) }));
       row.appendChild(el('td', { className: 'nowrap' }, buildExpireCell(item)));
+      row.appendChild(el('td', { className: 'nowrap', text: fmtTime(item.createdAt) }));
       row.appendChild(el('td', {
         className: 'cell-remark',
         text: item.remark || '—',
@@ -1520,7 +1554,7 @@
     codes.forEach(function (item) {
       list.appendChild(el('div', { className: 'code-row' }, [
         el('span', { className: 'code-text mono', text: item.code || '—' }),
-        el('span', { className: 'muted small', text: typeText(item.type) + ' · ' + tierText(item) })
+        el('span', { className: 'muted small', text: typeText(item.type) + ' · ' + tierText(item) + (item.remark ? ' · ' + item.remark : '') + ' · ' + fmtTime(item.createdAt) })
       ]));
     });
 
@@ -1643,8 +1677,11 @@
       var failed = (data && data.failed) || [];
       var successCount = (data && Number(data.ok)) || 0;
       if (failed.length) {
-        var reason = failed[0] && failed[0].message ? failed[0].message : '未知原因';
-        toast(label + '完成：成功 ' + successCount + ' 条，失败 ' + failed.length + ' 条（' + reason + '）', 'warn', 6000);
+        var details = failed.slice(0, 5).map(function (f) {
+          return (f.id !== undefined && f.id !== null ? '#' + f.id + ' ' : '') + (f.message || '未知原因');
+        }).join('；');
+        var more = failed.length > 5 ? ' 等 ' + failed.length + ' 条' : '';
+        toast(label + '完成：成功 ' + successCount + ' 条，失败 ' + failed.length + ' 条（' + details + more + '）', 'warn', 8000);
       } else {
         toast(label + '成功：' + successCount + ' 条', 'success');
       }
@@ -2010,6 +2047,7 @@
       <div class="card-foot">
         <p class="muted small">未实现 / 仅调试包的功能不可勾选；保存后服务端立即生效，App 下次启动或校验时应用。</p>
         <p class="muted small">勾选数按全部功能统计，不受上方过滤影响。</p>
+        <p class="muted small">未建 key 的 UI 元素跟随所属页面，不受本矩阵控制。</p>
       </div>
     </section>
   `;
@@ -2033,6 +2071,7 @@
         label: row.label,
         implemented: !!row.implemented,
         debugOnly: !!row.debugOnly,
+        defaultTier: row.defaultTier || 0,
         t1: !!row.t1,
         t2: !!row.t2,
         t3: !!row.t3,
@@ -2065,6 +2104,7 @@
     var thead = el('thead');
     var headRow = el('tr');
     headRow.appendChild(el('th', { text: '功能' }));
+    headRow.appendChild(el('th', { text: '默认等级' }));
     headRow.appendChild(el('th', { text: '实现状态' }));
     ['T1', 'T2', 'T3', 'GM'].forEach(function (title) {
       headRow.appendChild(el('th', { className: 'cell-check', text: title }));
@@ -2080,6 +2120,8 @@
         el('div', { className: 'mono small', text: row.key }),
         el('div', { className: 'muted small', text: row.label || '—' })
       ]));
+
+      tr.appendChild(el('td', { className: 'nowrap', text: row.defaultTier ? 'T' + row.defaultTier : '—' }));
 
       var statusTag;
       if (!row.implemented) {
@@ -2113,7 +2155,9 @@
     });
 
     if (role === 4) {
-      checkbox.checked = true;
+      // 2026-11-06 审查修复：GM 恒为“已实现且非调试包”全集，必须用服务端 gm 字段，
+      // 不能对未实现/仅调试行也打勾。
+      checkbox.checked = !!row.gm;
       checkbox.disabled = true;
       return el('td', { className: 'cell-check' }, checkbox);
     }
@@ -2208,6 +2252,7 @@
         label: row.label,
         implemented: !!row.implemented,
         debugOnly: !!row.debugOnly,
+        defaultTier: row.defaultTier || 0,
         t1: !!row.t1,
         t2: !!row.t2,
         t3: !!row.t3,

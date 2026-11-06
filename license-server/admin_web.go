@@ -56,6 +56,12 @@ func (s *Server) handleAdminWeb(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", adminContentType(rel))
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
+	// 安全头（2026-11-06 代码审查）：后台页面限同源资源、禁被嵌套，降低 XSS/点击劫持面。
+	w.Header().Set("Content-Security-Policy",
+		"default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "+
+			"img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'")
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(data)
 }

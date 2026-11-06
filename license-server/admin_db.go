@@ -2,7 +2,7 @@ package main
 
 import (
 	"database/sql"
-	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -15,16 +15,18 @@ import (
 
 // CodeFilter 兑换码列表筛选参数。
 type CodeFilter struct {
-	Status  string // active | revoked | 空=全部
-	Usage   string // unused | active | expired | revoked | exhausted | 空=全部
-	Tier    string // "1" | "2" | "3" | "gm" | 空=全部
-	Type    string // month | permanent | 空=全部
-	Keyword string // code / remark / device_label
-	From    int64  // 创建时间起（epoch ms，0=不限）
-	To      int64  // 创建时间止（epoch ms，0=不限）
-	Page    int
-	Size    int
-	Sort    string // created_desc | expire_asc
+	Status     string // active | revoked | 空=全部
+	Usage      string // unused | active | expired | revoked | exhausted | 空=全部
+	Tier       string // "1" | "2" | "3" | "gm" | 空=全部
+	Type       string // month | permanent | 空=全部
+	Keyword    string // code / remark / device_label
+	From       int64  // 创建时间起（epoch ms，0=不限）
+	To         int64  // 创建时间止（epoch ms，0=不限）
+	ExpireFrom int64  // 到期时间起（epoch ms，0=不限；仅对有 expire_at 的码生效）
+	ExpireTo   int64  // 到期时间止（epoch ms，0=不限）
+	Page       int
+	Size       int
+	Sort       string // created_desc | expire_asc
 }
 
 // CodeListItem 兑换码列表/详情的基本信息。
@@ -142,6 +144,15 @@ func buildCodeWhere(f CodeFilter) (string, []interface{}) {
 	if f.To > 0 {
 		conds = append(conds, "c.created_at <= ?")
 		args = append(args, f.To)
+	}
+	// 到期时间范围（需求 REQ-CODE-11，2026-11-06 审查补）。
+	if f.ExpireFrom > 0 {
+		conds = append(conds, "c.expire_at IS NOT NULL AND c.expire_at >= ?")
+		args = append(args, f.ExpireFrom)
+	}
+	if f.ExpireTo > 0 {
+		conds = append(conds, "c.expire_at IS NOT NULL AND c.expire_at <= ?")
+		args = append(args, f.ExpireTo)
 	}
 	if len(conds) == 0 {
 		return "", nil
@@ -287,11 +298,12 @@ func getCodeDetail(db *sql.DB, id int64) (*CodeListItem, []DeviceBinding, int64,
 		return nil, nil, 0, err
 	}
 
+	// 累计 verify 次数（2026-11-06 审查）：按 verify_log 全量统计，避免只汇总
+	// 最近 20 条绑定、且只含成功 verify 的口径偏差。
 	var verifyCount int64
-	if len(bindings) > 0 {
-		for _, b := range bindings {
-			verifyCount += b.VerifyCount
-		}
+	if err := db.QueryRow(`SELECT COUNT(*) FROM verify_log
+		WHERE code_id = ? AND action = ?`, id, ActionVerify).Scan(&verifyCount); err != nil {
+		return nil, nil, 0, err
 	}
 	if len(bindings) > 0 && bindings[0].DeviceLabel != "" {
 		it.BoundDevice = bindings[0].DeviceLabel
@@ -359,6 +371,8 @@ func listLogs(db *sql.DB, f LogFilter) ([]LogItem, int64, error) {
 			return nil, 0, err
 		}
 		it.ResultText = codeMessage(it.ResultCode)
+		// 需求 §4.6：UA 截断 200 字，避免超长 UA 撑爆列表/导出。
+		it.UA = truncateText(it.UA, 200)
 		items = append(items, it)
 	}
 	return items, total, rows.Err()
@@ -422,6 +436,10 @@ func overviewStats(db *sql.DB) (*Overview, error) {
 		}
 		o.ByTier[k] = n
 	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
 	rows.Close()
 
 	rows, err = db.Query(`SELECT type, COUNT(*) FROM license_code GROUP BY type`)
@@ -436,6 +454,10 @@ func overviewStats(db *sql.DB) (*Overview, error) {
 			return nil, err
 		}
 		o.ByType[k] = n
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
 	}
 	rows.Close()
 
@@ -509,9 +531,21 @@ func parseEpochQuery(s string) int64 {
 	if s == "" {
 		return 0
 	}
-	var v int64
-	if _, err := fmt.Sscanf(s, "%d", &v); err != nil || v < 0 {
+	v, err := strconv.ParseInt(strings.TrimSpace(s), 10, 64)
+	if err != nil || v < 0 {
 		return 0
 	}
 	return v
+}
+
+// truncateText 按 rune 截断字符串（避免截断多字节字符），max<=0 不截断。
+func truncateText(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max])
 }

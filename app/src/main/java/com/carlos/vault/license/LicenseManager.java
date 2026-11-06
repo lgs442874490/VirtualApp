@@ -302,7 +302,11 @@ public class LicenseManager {
             if (ticket == null || ticket.isEmpty() || !ticket.featuresPresent) {
                 return null;
             }
-            return ticket.normalizedFeatures();
+            // 说明（2026-11-06 代码审查）：服务端 featuresForRole 已按 key 字典序下发，
+            // 且 visible() 只做按 key 命中、不依赖顺序；这里返回只读视图，避免 UI 热路径
+            // （FeatureGate.visible 在列表渲染中高频调用）反复排序/复制。
+            // 需要规范化排序串时请用 LicenseTicket.normalizedFeatures()（签名场景）。
+            return java.util.Collections.unmodifiableList(ticket.features);
         }
     }
 

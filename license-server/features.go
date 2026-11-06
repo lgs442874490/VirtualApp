@@ -10,7 +10,7 @@ import (
 // ---------------------------------------------------------------------------
 // 功能目录与角色权限矩阵（2026-11-06 管理后台）
 //
-// 唯一事实源：App 侧 FeatureGate.Feature 的 38 个 key。服务端只做"目录 + 矩阵"
+// 唯一事实源：App 侧 FeatureGate.Feature 的 39 个 key。服务端只做"目录 + 矩阵"
 // 的存储与下发，不重复实现 App 的判定逻辑：
 //   - implemented=false（未开发/未立项）：任何角色都不可见（GM 也不行）；
 //   - debugOnly=true（仅调试包）：release 包恒隐藏，矩阵不控制；
@@ -55,7 +55,7 @@ type MatrixUpdateReq struct {
 	Rows []MatrixCell `json:"rows"`
 }
 
-// featureSeed 38 项目录（顺序 = App FeatureGate 枚举顺序）。
+// featureSeed 39 项目录（顺序 = App FeatureGate 枚举顺序）。
 // key / 中文名 / 默认等级 / 已实现 / 仅调试包。
 var featureSeed = []FeatureCatalogItem{
 	// ===== T1 普通：分身 / 账号 / 启动 / 基础设置 =====

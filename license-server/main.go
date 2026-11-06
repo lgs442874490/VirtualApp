@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"syscall"
 	"time"
+	"unicode/utf8"
 )
 
 // logWarn 统一的告警日志前缀（普通日志直接用标准库 log）。
@@ -115,7 +116,7 @@ func cmdServe(args []string) error {
 	fs.StringVar(&cfg.AdminToken, "admin-token", cfg.AdminToken, "管理令牌（env LICENSE_ADMIN_TOKEN）")
 	fs.StringVar(&cfg.AdminPassword, "admin-password", cfg.AdminPassword, "管理后台口令（env LICENSE_ADMIN_PASSWORD；≥16 字符，未设置则 /admin 503）")
 	fs.StringVar(&cfg.Addr, "addr", cfg.Addr, "监听地址（env LICENSE_ADDR，默认 127.0.0.1:8787）")
-	fs.Int64Var(&cfg.RebindMax, "rebind-max", cfg.RebindMax, "换绑次数上限，默认 1，0=不限（env LICENSE_REBIND_MAX）")
+	fs.Int64Var(&cfg.RebindMax, "rebind-max", cfg.RebindMax, "换绑次数上限：默认 0=禁止，>0=限 N 次，-1=不限（env LICENSE_REBIND_MAX）")
 	fs.Int64Var(&cfg.NonceTTLMs, "nonce-ttl-ms", cfg.NonceTTLMs, "nonce 存活毫秒数（env LICENSE_NONCE_TTL 为秒）")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -134,8 +135,9 @@ func cmdServe(args []string) error {
 	}
 	if cfg.AdminPassword == "" {
 		logWarn("LICENSE_ADMIN_PASSWORD 未设置：管理后台 /admin 将返回 503（授权接口不受影响）")
-	} else if len(cfg.AdminPassword) < 16 {
-		logWarn("LICENSE_ADMIN_PASSWORD 长度较短（%d），建议 ≥16 个字符", len(cfg.AdminPassword))
+	} else if utf8.RuneCountInString(cfg.AdminPassword) < adminMinPasswordLen {
+		logWarn("LICENSE_ADMIN_PASSWORD 长度不足 %d（当前 %d 字符）：管理后台 /admin 将返回 503（授权接口不受影响）",
+			adminMinPasswordLen, utf8.RuneCountInString(cfg.AdminPassword))
 	}
 	if cfg.NonceTTLMs <= SignWindowMs {
 		logWarn("NonceTTL(%dms) 不大于签名窗口(%dms)，建议调大以避免签名窗口内的 nonce 被提前清理", cfg.NonceTTLMs, SignWindowMs)
