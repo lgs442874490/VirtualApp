@@ -15,6 +15,25 @@ import java.util.List;
  */
 public class LogStore {
 
+    /**
+     * 当前操作触发来源（手动/定时/通知/热更），写入日志 trigger 与 modState 的 {@code _trg}。
+     * 2026-11-06 从 DailyRunner 迁移（本地执行链删除后，日志层仍需来源标记）。
+     */
+    public static volatile String SOURCE = "手动";
+
+    /** 调试日志（一次性排障用）：写 externalFilesDir/daily_log.txt，失败静默。 */
+    public static void debugLog(Context ctx, String msg) {
+        if (ctx == null) return;
+        try {
+            java.io.File dir = ctx.getExternalFilesDir(null);
+            if (dir == null) return;
+            java.io.FileWriter w = new java.io.FileWriter(new java.io.File(dir, "daily_log.txt"), true);
+            w.write(System.currentTimeMillis() + " [dbg] " + msg + "\n");
+            w.close();
+        } catch (Throwable ignored) {
+        }
+    }
+
     public static class Entry {
         public long ts;
         public boolean ok;
@@ -58,9 +77,9 @@ public class LogStore {
         }
     }
 
-    /** 追加一条日志（保留最近50条）。子项级等无扩展信息场景用；触发来源取当前 DailyRunner.SOURCE。 */
+    /** 追加一条日志（保留最近50条）。子项级等无扩展信息场景用；触发来源取当前 SOURCE。 */
     public void append(String fpid, long serverid, String fnId, boolean ok, String reason, String detail) {
-        append(fpid, serverid, fnId, ok, reason, detail, DailyRunner.SOURCE, 0, "", 0);
+        append(fpid, serverid, fnId, ok, reason, detail, SOURCE, 0, "", 0);
     }
 
     private void writeEntries(String fpid, long serverid, String fnId, List<Entry> list) {

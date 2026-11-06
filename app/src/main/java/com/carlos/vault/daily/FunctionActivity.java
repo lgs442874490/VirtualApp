@@ -186,56 +186,8 @@ public class FunctionActivity extends Activity {
     }
 
     /** 打开页面时的状态刷新节流（同功能 60 秒内不重复拉）。 */
-    private static final java.util.Map<String, Long> LAST_FN_REFRESH = new java.util.concurrent.ConcurrentHashMap<>();
 
-    private void refreshOnOpen(final LinearLayout subCard) {
-        try {
-            // 服务器模式：本地无常驻会话（执行与采集都在 vault-server），状态新鲜度由
-            // onCreate 的 fetchState 重渲染负责，不走本地引擎刷新也不提示"会话不在线"
-            if (com.carlos.vault.VaultSync.isServerMode(this)) return;
-            final String fpid = account.fpid;
-            final long sid = serverid;
-            String key = fpid + ":" + sid + ":" + fn.id;
-            long now = System.currentTimeMillis();
-            Long last = LAST_FN_REFRESH.get(key);
-            if (last != null && now - last < 60_000L) return;
-            LAST_FN_REFRESH.put(key, now);
-            new Thread(() -> {
-                RoleSessionKeeper.LiveSession live = DailyRunner.liveOf(
-                        FunctionActivity.this, fpid, sid);
-                if (live == null) {
-                    // 无常驻会话（未开启/被顶号暂停/重连中/需重导token）：保持现有快照并提示
-                    runOnUiThread(() -> {
-                        try {
-                            if (isFinishing() || subCard == null) return;
-                            TextView tip = new TextView(FunctionActivity.this);
-                            tip.setText("⏳ 常驻会话不在线，显示上次快照（开启 24h 常驻在线后自动实时刷新）");
-                            tip.setTextSize(10.5f);
-                            tip.setTextColor(UiStyle.WARN_INK);
-                            tip.setPadding(dp(4), dp(6), dp(4), dp(2));
-                            subCard.addView(tip, 0);
-                        } catch (Throwable ignored) {
-                        }
-                    });
-                    return;
-                }
-                boolean ok = DailyRunner.refreshFnState(
-                        FunctionActivity.this, live.engine, fpid, sid, fn.id);
-                if (!ok) return;
-                runOnUiThread(() -> {
-                    try {
-                        if (isFinishing() || subCard == null) return;
-                        subCard.removeAllViews();
-                        subCard.addView(SubCardUi.build(FunctionActivity.this, fpid, sid, fn.id));
-                    } catch (Throwable ignored) {
-                    }
-                });
-            }, "fn-refresh").start();
-        } catch (Throwable ignored) {
-        }
-    }
-
-    private View buildUi() {
+private View buildUi() {
         LinearLayout root = UiComponents.pageRoot(this);
         root.addView(UiComponents.topBar(this, "功能详情", null, this::finish));
 
@@ -552,7 +504,6 @@ public class FunctionActivity extends Activity {
             scrollBox.addView(subCard);
             // 打开页面即刷新：借常驻会话收取该功能最新状态（只读，不执行任务动作），
             // 完成后原位重建子项卡（旧快照常停留在上次成功执行的时刻）。
-            refreshOnOpen(subCard);
         }
 
         // 军医所专属设置卡（2026-10-28 bug3）：每批治疗数量（heal_count）+ 治疗后联盟求助
@@ -623,7 +574,7 @@ public class FunctionActivity extends Activity {
                         "MM-dd HH:mm", java.util.Locale.CHINA).format(new java.util.Date(st.ts)));
                 actSub.setText(sub.toString());
             }
-            for (int t : DailyRunner.BOX_THRESHOLDS) {
+            for (int t : DailyConst.BOX_THRESHOLDS) {
                 TextView chip = new TextView(this);
                 chip.setText(String.valueOf(t));
                 chip.setTextSize(10);
@@ -714,7 +665,8 @@ public class FunctionActivity extends Activity {
 
             UiStyle.press(card);
             card.setOnClickListener(v -> {
-                if (fClaim != null) claimQuestManually(fClaim);
+                // 2026-11-06 决策5：本地按 questId 领取已删除；统一提交服务器执行该功能
+                if (fClaim != null) runOne();
                 else if (!fAllDone) toast("先完成对应玩法（或点上方「立即执行」自动领）");
             });
 
@@ -777,7 +729,7 @@ public class FunctionActivity extends Activity {
     }
 
     private static int nextThreshold(int act) {
-        for (int t : DailyRunner.BOX_THRESHOLDS) {
+        for (int t : DailyConst.BOX_THRESHOLDS) {
             if (act < t) return t;
         }
         return 325;
@@ -1227,31 +1179,7 @@ public class FunctionActivity extends Activity {
         extraBox.addView(card);
     }
 
-    private void claimQuestManually(final QuestCatalog.Tier tier) {
-        ProgressDialog pd = new ProgressDialog(this);
-        pd.setMessage("领取任务奖励…");
-        pd.setCancelable(false);
-        pd.show();
-        final AccountStore.Account acc = account;
-        final long sid = serverid;
-        new AsyncTask<Void, Void, DailyResult>() {
-            @Override
-            protected DailyResult doInBackground(Void... p) {
-                return DailyRunner.claimQuest(FunctionActivity.this, acc.fpid,
-                        acc.token, sid, tier.questId);
-            }
-
-            @Override
-            protected void onPostExecute(DailyResult r) {
-                try { pd.dismiss(); } catch (Throwable ignored) { }
-                refreshQuestSection();
-                refreshRecords();
-                toast(r.symbol() + " " + r.message);
-            }
-        }.execute();
-    }
-
-    /** 刷新领取内容 + 运行记录两区。 */
+/** 刷新领取内容 + 运行记录两区。 */
     private void refreshRecords() {
         java.text.SimpleDateFormat f1 = new java.text.SimpleDateFormat("MM-dd HH:mm",
                 java.util.Locale.CHINA);
@@ -1292,61 +1220,23 @@ public class FunctionActivity extends Activity {
     }
 
     private void runOne() {
-        // 服务器模式：执行提交给 vault-server（本地不 fresh 登录，防互踢）；结果经 fetchState 回写后在记录区查看
-        if (com.carlos.vault.VaultSync.isServerMode(this) && account != null
-                && account.fpid != null && !account.fpid.isEmpty()) {
-            com.carlos.vault.VaultSync.triggerAutomation(this, account.fpid, fn.id,
-                    (code, message, data) -> runOnUiThread(() ->
-                            toast(code == 0 && data != null && data.optBoolean("accepted", false)
-                                    ? "已提交服务器执行「" + fn.name + "」\n稍后重进本页查看结果"
-                                    : "服务器未受理：" + message)));
-            // 已回传的状态先渲染一次（本轮结果要等服务器跑完，重进页面再取）
-            com.carlos.vault.VaultSync.fetchState(this, (code, message, data) ->
-                    runOnUiThread(() -> {
-                        try {
-                            if (isFinishing() || code != 0) return;
-                            setContentView(buildUi());
-                        } catch (Throwable ignored) {
-                        }
-                    }));
-            return;
-        }
-        DailyRunner.SOURCE = "手动";   // 与 HomeActivity 一键跑全部同款：本次执行产生的日志/状态行都标"手动"
-        ProgressDialog pd = new ProgressDialog(this);
-        pd.setMessage("执行「" + fn.name + "」…");
-        pd.setCancelable(false);
-        pd.show();
-        final AccountStore.Account acc = account;
-        final long sid = serverid;
-        new AsyncTask<Void, Void, DailyResult>() {
-            @Override
-            protected DailyResult doInBackground(Void... p) {
-                return DailyRunner.runSingle(FunctionActivity.this, acc.fpid, acc.token, sid, fn.id);
-            }
-
-            @Override
-            protected void onPostExecute(DailyResult r) {
-                try { pd.dismiss(); } catch (Throwable ignored) { }
-                logStore.append(acc.fpid, sid, fn.id,
-                        r.category == DailyResult.Category.CLAIMED, r.toString(),
-                        r.rewards == null ? "" : r.rewards,
-                        "手动", r.durationMs, r.category.name(), r.attempt);
-                logStore.setStatus(acc.fpid, sid, fn.id,
-                        r.category == DailyResult.Category.CLAIMED ? LogStore.ST_DONE
-                                : r.category == DailyResult.Category.SKIPPED
-                                ? LogStore.ST_SKIPPED : LogStore.ST_FAILED);
-                logStore.applySubResults(acc.fpid, sid, fn.id, r.subResults);
-                refreshRecords();
-                refreshQuestSection();
-                refreshLoginGift();
-                if (extraBox != null) rebuildExtra();
-                new AlertDialog.Builder(FunctionActivity.this)
-                        .setTitle(r.taskName)
-                        .setMessage(r.symbol() + " " + r.message)
-                        .setPositiveButton("知道了", null)
-                        .show();
-            }
-        }.execute();
+        // 2026-11-06 决策5：本地自动化执行链已删除，统一提交 vault-server 执行
+        //（本地 fresh 登录会与服务器常驻会话互踢）。
+        if (account == null || account.fpid == null || account.fpid.isEmpty()) return;
+        com.carlos.vault.VaultSync.triggerAutomation(this, account.fpid, fn.id,
+                (code, message, data) -> runOnUiThread(() ->
+                        toast(code == 0 && data != null && data.optBoolean("accepted", false)
+                                ? "已提交服务器执行「" + fn.name + "」\n稍后重进本页查看结果"
+                                : "服务器未受理：" + message)));
+        // 已回传的状态先渲染一次（本轮结果要等服务器跑完，重进页面再取）
+        com.carlos.vault.VaultSync.fetchState(this, (code, message, data) ->
+                runOnUiThread(() -> {
+                    try {
+                        if (isFinishing() || code != 0) return;
+                        setContentView(buildUi());
+                    } catch (Throwable ignored) {
+                    }
+                }));
     }
 
     /**
@@ -1772,15 +1662,12 @@ public class FunctionActivity extends Activity {
         final boolean gatherAnti = FnParams.subOn(this, fpid, sid, F, "gather_anti_harass", false);
         final String gatherTroops = FnParams.strategy(this, fpid, sid, F, "gather_troops_min", troopsDef);
         final boolean reactive = FnParams.subOn(this, fpid, sid, F, "reactive", true);
-        // 旧配置兼容：eta_sec=0 表示立即开盾；>0 表示抵达前 N 秒。
-        final String legacyEta = FnParams.strategy(this, fpid, sid, F, "eta_sec", "");
-        final boolean legacyImmediate = !legacyEta.isEmpty() && "0".equals(legacyEta.trim());
+        // 2026-11-06 决策：只认新键（shield_mode/shield_eta_sec），不再读旧 eta_sec 兜底；
+        // 服务端口径一致（ServerShieldResponder 同日改造）。
         final String shieldMode = FnParams.strategy(this, fpid, sid, F, "shield_mode",
-                legacyImmediate ? FnParams.BS_MODE_IMMEDIATE : FnParams.BS_MODE_BEFORE_ARRIVAL);
-        final String shieldEtaDefault = legacyEta.isEmpty() || legacyImmediate
-                ? FnParams.BS_DEFAULT_ETA_SEC : legacyEta;
+                FnParams.BS_MODE_BEFORE_ARRIVAL);
         final String shieldEta = FnParams.strategy(this, fpid, sid, F, "shield_eta_sec",
-                shieldEtaDefault);
+                FnParams.BS_DEFAULT_ETA_SEC);
         final boolean shieldAnti = FnParams.subOn(this, fpid, sid, F, "shield_anti_harass", false);
         final String shieldTroops = FnParams.strategy(this, fpid, sid, F, "shield_troops_min", troopsDef);
         final boolean buyDiamond = FnParams.subOn(this, fpid, sid, F, "shield_buy_diamond", false);

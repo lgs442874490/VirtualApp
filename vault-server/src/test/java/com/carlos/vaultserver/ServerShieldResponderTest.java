@@ -111,10 +111,10 @@ public class ServerShieldResponderTest {
         a.token = "tk";
         a.auto = auto;
         a.activeSid = String.valueOf(SID);
-        // 2026-11-05：新默认是 before_arrival 2 秒；旧用例语义是“收到即开”，
-        // 用显式旧键 eta_sec=0 保留原行为；新默认另立用例覆盖。
+        // 2026-11-06 决策：服务端只读新键（旧 eta_sec/troops_min 不再兼容）。
+        // 旧用例语义是“收到即开”，用显式 shield_mode=immediate 表达；新默认另立用例覆盖。
         if (battleShieldParams == null) {
-            battleShieldParams = "{\"strategy\":{\"eta_sec\":\"0\"}}";
+            battleShieldParams = "{\"strategy\":{\"shield_mode\":\"immediate\"}}";
         }
         a.roleParams.put(String.valueOf(SID),
                 new LinkedHashMap<>(Map.of("battle_shield", battleShieldParams)));
@@ -488,7 +488,7 @@ public class ServerShieldResponderTest {
 
     @Test
     public void troopsBelowMin_skipped() {
-        account(true, "{\"strategy\":{\"troops_min\":\"100000\"}}");
+        account(true, "{\"strategy\":{\"shield_troops_min\":\"100000\"}}");
         TestEngine e = new TestEngine();
         presetCityItem(e, 42L);
         e.responses.put("req_city_item_free_use", msg(0));
@@ -505,7 +505,7 @@ public class ServerShieldResponderTest {
 
     @Test
     public void troopsUnknown_withMin_triggersProtectionFirst() {
-        account(true, "{\"strategy\":{\"troops_min\":\"100000\"}}");
+        account(true, "{\"strategy\":{\"shield_troops_min\":\"100000\"}}");
         TestEngine e = new TestEngine();
         presetCityItem(e, 42L);
         e.responses.put("req_city_item_free_use", msg(0));
@@ -546,7 +546,7 @@ public class ServerShieldResponderTest {
 
     @Test
     public void etaNotDue_keptPending_thenOpensAtDue() {
-        account(true, "{\"strategy\":{\"eta_sec\":\"60\"}}");
+        account(true, "{\"strategy\":{\"shield_eta_sec\":\"60\"}}");
         TestEngine e = new TestEngine();
         presetCityItem(e, 42L);
         e.responses.put("req_city_item_free_use", msg(0));
@@ -576,13 +576,13 @@ public class ServerShieldResponderTest {
 
     @Test
     public void etaZero_opensImmediately_evenWithFutureEndtime() {
-        account(true, "{\"strategy\":{\"eta_sec\":\"0\"}}");
+        account(true, "{\"strategy\":{\"shield_mode\":\"immediate\"}}");
         TestEngine e = new TestEngine();
         presetCityItem(e, 42L);
         e.responses.put("req_city_item_free_use", msg(0));
         ServerShieldResponder r = responder();
 
-        // eta_sec=0 保持旧行为：即使推送带很远的 endtime 也收到即开
+        // shield_mode=immediate：即使推送带很远的 endtime 也收到即开
         long endSec = System.currentTimeMillis() / 1000L + 300L;
         r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), endSec), OWN_UID);
         assertTrue(r.tick(e));
@@ -631,7 +631,7 @@ public class ServerShieldResponderTest {
         assertFalse(r5.forceOnlineWanted());
 
         // 卡秒挂起中（尚未到达）→ 仍算新鲜 → true
-        account(true, "{\"sub\":{\"force_online\":true},\"strategy\":{\"eta_sec\":\"60\"}}");
+        account(true, "{\"sub\":{\"force_online\":true},\"strategy\":{\"shield_eta_sec\":\"60\"}}");
         ServerShieldResponder r6 = responder();
         long nowSec = System.currentTimeMillis() / 1000L;
         r6.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), nowSec + 300L), OWN_UID);
@@ -699,7 +699,10 @@ public class ServerShieldResponderTest {
 
     @Test
     public void gatherAttack_notifiesAndRecallsOwnGatheringMarch_whenEnabled() {
-        account(true, "{\"sub\":{\"gather_attack\":true,\"gather_recall\":true}}");
+        // 2026-11-06 决策：采集召回统一走 gatherWatchTick（gather_mode 缺省 before_arrival），
+        // "收到即撤矿"只保留给显式 immediate 模式；本用例锁死 immediate 路径仍能撤矿。
+        account(true, "{\"sub\":{\"gather_attack\":true,\"gather_recall\":true},"
+                + "\"strategy\":{\"gather_mode\":\"immediate\"}}");
         TestEngine e = new TestEngine();
         e.responses.put("req_world_march_off_work", msg(0));
         ServerShieldResponder r = responder();
@@ -916,7 +919,7 @@ public class ServerShieldResponderTest {
     @Test
     public void shieldBackpack_usedBeforeDiamond() {
         account(true, "{\"sub\":{\"reactive\":true},"
-                + "\"strategy\":{\"eta_sec\":\"0\"}}");
+                + "\"strategy\":{\"shield_mode\":\"immediate\"}}");
         TestEngine e = new TestEngine();
         Map<String, Object> bp = new LinkedHashMap<>();
         bp.put("data", List.of(new LinkedHashMap<>(Map.of("id", 302301L, "count", 1L))));
@@ -935,7 +938,7 @@ public class ServerShieldResponderTest {
     @Test
     public void shieldDiamondBuy_buys2hThenUses() {
         account(true, "{\"sub\":{\"reactive\":true,\"shield_buy_diamond\":true},"
-                + "\"strategy\":{\"eta_sec\":\"0\"}}");
+                + "\"strategy\":{\"shield_mode\":\"immediate\"}}");
         TestEngine e = new TestEngine();
         Map<String, Object> bp = new LinkedHashMap<>();
         bp.put("data", List.of());
@@ -966,6 +969,39 @@ public class ServerShieldResponderTest {
 
         assertEquals(List.of("req_city_item_free_use"), e.requested);
         assertTrue(new JSONObject(modText()).getString("reactive").contains("被进攻"));
+    }
+
+    // ================= 2026-11-06 决策：护盾只读新键（旧 eta_sec/troops_min 不再兼容） =================
+
+    @Test
+    public void legacyKeys_ignored_shieldReadsNewKeysOnly() throws Exception {
+        // 只写旧键（eta_sec/troops_min）的存量配置：一律按新键缺省值处理——
+        // shield_mode 缺省 before_arrival、shield_eta_sec 缺省 2、shield_troops_min 缺省 0。
+        TestEngine e = new TestEngine();
+        Map<String, JSONObject> params = new HashMap<>();
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"eta_sec\":\"0\",\"troops_min\":\"100000\"}}"));
+        TaskContext tc = new TaskContext(e, "111", SID, state, params, "测试");
+        ServerShieldResponder r = responder();
+
+        assertEquals("before_arrival", r.shieldMode(tc));   // 旧 eta_sec=0 不再映射 immediate
+        assertEquals(2L, r.shieldEtaSec(tc));               // 旧 eta_sec 值被忽略 → 默认 2
+        assertEquals(0L, r.shieldTroopsMin(tc));            // 旧 troops_min 被忽略 → 默认 0（不限）
+    }
+
+    @Test
+    public void newKeys_takeEffect_inShieldConfig() throws Exception {
+        TestEngine e = new TestEngine();
+        Map<String, JSONObject> params = new HashMap<>();
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_mode\":\"immediate\",\"shield_eta_sec\":\"60\","
+                        + "\"shield_troops_min\":\"5000\"}}"));
+        TaskContext tc = new TaskContext(e, "111", SID, state, params, "测试");
+        ServerShieldResponder r = responder();
+
+        assertEquals("immediate", r.shieldMode(tc));
+        assertEquals(60L, r.shieldEtaSec(tc));
+        assertEquals(5000L, r.shieldTroopsMin(tc));
     }
 
     private static Map<String, Object> marchOf(long id, long type, long targetUid) {

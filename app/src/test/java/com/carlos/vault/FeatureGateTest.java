@@ -3,6 +3,7 @@ package com.carlos.vault;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -120,8 +121,6 @@ public class FeatureGateTest {
     public void debugOnlyFeatures_visibleInDebugBuildOnly() {
         assertFalse("正式包不渲染协议监听",
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, RELEASE));
-        assertFalse("正式包不渲染协议探针",
-                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_PROBE, 3, RELEASE));
         assertTrue("调试包 T3 可见协议监听",
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, DEBUG));
         assertTrue("调试包 T1 也可用（调试工具不受业务等级限制）",
@@ -150,8 +149,6 @@ public class FeatureGateTest {
         boolean debug = FeatureGate.isDebugBuildType("release");
         assertFalse("release(T3) 不显示协议监听",
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
-        assertFalse("release(T3) 不显示协议探针",
-                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_PROBE, 3, debug));
         assertEquals("release(T3) 工具箱=敌情监控+真机监控+观察点+真机抓包", 4, FeatureGate.visibleToolCount(3, debug));
     }
 
@@ -159,7 +156,6 @@ public class FeatureGateTest {
     public void debugBuild_showsDebugTools() {
         boolean debug = FeatureGate.isDebugBuildType("debug");
         assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
-        assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_PROBE, 3, debug));
         assertEquals("debug(T3) 工具数=敌情监控+真机监控+观察点+真机抓包+协议监听", 5,
                 FeatureGate.visibleToolCount(3, debug));
         assertEquals("debug(T1) 仅协议监听（敌情监控需 T3）", 1, FeatureGate.visibleToolCount(1, debug));
@@ -297,12 +293,65 @@ public class FeatureGateTest {
     }
 
     @Test
+    public void filterHiddenDailyFns_hiddenTasksForcedFalseOnUpload() {
+        // 2026-11-06 决策2：上传服务器的角色配置中，被门控隐藏的日常项强制 false
+        //（backpack 曾因此「UI 不可见却在服务端每日开箱」）。
+        java.util.Map<String, Boolean> cfg = new java.util.LinkedHashMap<>();
+        cfg.put("backpack", true);      // 隐藏（BACKPACK_ITEMS.implemented=false）
+        cfg.put("war", true);           // 隐藏（WAR_STATE.implemented=false）
+        cfg.put("guardian", true);      // T3 功能：T1/T2 上传 false，T3 保留
+        cfg.put("gather", true);        // 无映射：不受影响
+        cfg.put("mail", true);          // 无映射：不受影响
+
+        java.util.Map<String, Boolean> out = FeatureGate.filterHiddenDailyFns(cfg, 2, RELEASE);
+        assertEquals("隐藏项强制 false", Boolean.FALSE, out.get("backpack"));
+        assertEquals("隐藏项强制 false", Boolean.FALSE, out.get("war"));
+        assertEquals("T2 无 T3 权限，guardian 上传 false", Boolean.FALSE, out.get("guardian"));
+        assertEquals(Boolean.TRUE, out.get("gather"));
+        assertEquals(Boolean.TRUE, out.get("mail"));
+        // 入参不被修改（纯函数）
+        assertEquals("入参不可变", Boolean.TRUE, cfg.get("backpack"));
+
+        // T3：guardian 可见保留 true；backpack/war 仍隐藏强制 false
+        java.util.Map<String, Boolean> out3 = FeatureGate.filterHiddenDailyFns(cfg, 3, RELEASE);
+        assertEquals(Boolean.TRUE, out3.get("guardian"));
+        assertEquals(Boolean.FALSE, out3.get("backpack"));
+        assertEquals(Boolean.FALSE, out3.get("war"));
+    }
+
+    @Test
+    public void filterHiddenDailyFns_nullAndFalseSafe() {
+        assertNull(FeatureGate.filterHiddenDailyFns(null, 3, RELEASE));
+        // 已是 false 的隐藏项保持 false；无映射项的 false 也不变
+        java.util.Map<String, Boolean> cfg = new java.util.LinkedHashMap<>();
+        cfg.put("backpack", false);
+        cfg.put("gather", false);
+        java.util.Map<String, Boolean> out = FeatureGate.filterHiddenDailyFns(cfg, 2, RELEASE);
+        assertEquals(Boolean.FALSE, out.get("backpack"));
+        assertEquals(Boolean.FALSE, out.get("gather"));
+    }
+
+    @Test
     public void dailyFnBehemoth_keptVisibleForT2() {
         // 巨兽狩猎：仅“原生自动上车”但服务端会执行该任务，UI 保留可关（文案待改，见交付说明）
         assertEquals(FeatureGate.Feature.BEHEMOTH_AUTOJOIN, FeatureGate.dailyFnFeature("behemoth"));
         assertFalse(FeatureGate.dailyFnVisible("behemoth", 1, RELEASE));
         assertTrue(FeatureGate.dailyFnVisible("behemoth", 2, RELEASE));
         assertTrue(FeatureGate.dailyFnVisible("behemoth", 3, RELEASE));
+    }
+
+    @Test
+    public void formationManage_tier2Visible_entryGated() {
+        // 2026-11-06 决策6：编队管理已实现（FormationManagerActivity + launch/launchNew 全入口），
+        // 属日常脚本能力 → T2 起可见；T1 隐藏。入口渲染与 launch() 防深链统一走本矩阵项。
+        assertTrue("编队管理属 T2", FeatureGate.visible(
+                FeatureGate.Feature.FORMATION_MANAGE, 2, RELEASE));
+        assertFalse("T1 不可见", FeatureGate.visible(
+                FeatureGate.Feature.FORMATION_MANAGE, 1, RELEASE));
+        assertTrue("T3 亦可", FeatureGate.visible(
+                FeatureGate.Feature.FORMATION_MANAGE, 3, RELEASE));
+        assertEquals("formation_manage", FeatureGate.Feature.FORMATION_MANAGE.key);
+        assertEquals("编队管理", FeatureGate.Feature.FORMATION_MANAGE.label);
     }
 
     @Test

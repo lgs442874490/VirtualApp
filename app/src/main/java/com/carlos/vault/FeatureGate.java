@@ -111,21 +111,18 @@ public final class FeatureGate {
         // 但文案需改为“仅原生自动上车”（FnRegistry 文案修改不在本任务写作用域，已在交付说明列出）
         BEHEMOTH_AUTOJOIN("behemoth_autojoin", TIER_MEMBER, true, false, "巨兽狩猎（仅原生自动上车）"),
 
-        // ===== 未开发/未立项（历史“规划中”网格全部下架，等立项后逐个打开） =====
-        RANKING("ranking", TIER_PREMIUM, false, false, "排行榜"),
-        RALLY_ATTACK("rally_attack", TIER_PREMIUM, false, false, "进攻/撞矿"),
-        ACCOUNT_FARM("account_farm", TIER_PREMIUM, false, false, "起号"),
-        ACTIVITY_RANK("activity_rank", TIER_PREMIUM, false, false, "活动榜单"),
-        MATCH3("match3", TIER_PREMIUM, false, false, "三消"),
-        TROOP_RUSH("troop_rush", TIER_PREMIUM, false, false, "爆兵"),
-        PET_RESET("pet_reset", TIER_PREMIUM, false, false, "宠物洗练"),
-        IMMIGRATION("immigration", TIER_PREMIUM, false, false, "移民抢位"),
-        RECON_REPORT("recon_report", TIER_PREMIUM, false, false, "侦察战报"),
-        FORMATION_MANAGE("formation_manage", TIER_PREMIUM, false, false, "编队管理"),
+        // 编队管理（2026-11-06 决策6）：FormationManagerActivity 已实现并多入口上线
+        //（今日页快捷卡/功能页编队卡/采集设置页），属日常脚本能力 → T2；入口统一走
+        // FeatureGate.visible(FORMATION_MANAGE) 防深链越权。
+        FORMATION_MANAGE("formation_manage", TIER_MEMBER, true, false, "编队管理"),
 
         // ===== 调试/实测项（仅调试包可见，正式包一律不渲染） =====
-        PROTOCOL_LOGGER("protocol_logger", TIER_BASIC, true, true, "协议监听"),
-        PROTOCOL_PROBE("protocol_probe", TIER_BASIC, true, true, "协议探针");
+        PROTOCOL_LOGGER("protocol_logger", TIER_BASIC, true, true, "协议监听");
+
+        // 2026-11-06 决策6：删除零引用死枚举（RANKING/RALLY_ATTACK/ACCOUNT_FARM/ACTIVITY_RANK/
+        // MATCH3/TROOP_RUSH/PET_RESET/IMMIGRATION/RECON_REPORT 及 PROTOCOL_PROBE）——
+        // 历史规划中功能的占位登记，生产代码零引用；PROTOCOL_PROBE 实际由 debugBuild 分支控制。
+        // 立项后按需重新登记，不要凭空恢复。
 
         /** 稳定 key（日志/状态/document 用，不随中文名变化）。 */
         public final String key;
@@ -278,6 +275,34 @@ public final class FeatureGate {
     public static boolean dailyFnVisible(Context ctx, String fnId) {
         Feature f = dailyFnFeature(fnId);
         return f == null || visible(ctx, f);
+    }
+
+    /**
+     * 上传给服务器的角色任务配置过滤（2026-11-06 决策：隐藏 = 不执行）。
+     *
+     * <p>背景：backpack 曾被门控隐藏（{@code BACKPACK_ITEMS.implemented=false}），但
+     * {@code DailyTasks} 默认启用、{@code DailyConfigStore.fillMissing} 补齐 true 后整包上传，
+     * 服务端按 true 每日执行——用户不可见、不可关的功能在跑。本方法在上传前把所有
+     * {@link #dailyFnVisible} 判不可见的日常项强制置 false，保证「UI 隐藏的任务绝不在服务器执行」。
+     *
+     * <p>纯函数（JVM 单测直跑）：返回新 map，不修改入参；入参 null 安全返回 null。
+     */
+    public static java.util.Map<String, Boolean> filterHiddenDailyFns(
+            java.util.Map<String, Boolean> config, int tier, boolean debugBuild) {
+        if (config == null) return null;
+        java.util.Map<String, Boolean> out = new java.util.LinkedHashMap<>(config);
+        for (java.util.Map.Entry<String, Boolean> e : out.entrySet()) {
+            if (Boolean.TRUE.equals(e.getValue()) && !dailyFnVisible(e.getKey(), tier, debugBuild)) {
+                e.setValue(false);
+            }
+        }
+        return out;
+    }
+
+    /** 上传过滤（Android 便捷入口，读当前票据等级）。 */
+    public static java.util.Map<String, Boolean> filterHiddenDailyFns(
+            Context ctx, java.util.Map<String, Boolean> config) {
+        return filterHiddenDailyFns(config, currentTier(ctx), isDebugBuild(ctx));
     }
 
     // ================= 环境读取（Android，仅读数不参与矩阵判定） =================

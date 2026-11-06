@@ -125,7 +125,7 @@ public final class ProtoLogger {
             }
             String json;
             try {
-                Object j = DailyRunner.toJavaJson(content);
+                Object j = ExecUtil.toJavaJson(content);
                 json = j == null ? "" : j.toString();
             } catch (Throwable t) {
                 json = String.valueOf(content);

@@ -43,19 +43,22 @@ import java.util.function.Supplier;
  *   <li>门控（2026-10-24 扩展）：总开关 battle_shield.enabled（缺省 true，关=定时免费盾与反应式都停）
  *     + 账号自动化开启（auto/keep 统一开关）+ 子开关 battle_shield.reactive != false（默认 true，
  *     App FnDetail 同款语义）；</li>
- *   <li>触发策略（strategy 子项，可独立配置）：
+ *   <li>触发策略（strategy 子项，可独立配置；2026-11-06 决策：只读新键，旧键
+ *     eta_sec/troops_min 不再兼容）：
  *     <ul>
- *       <li>troops_min：来袭兵力下限（march.squad_list.soldier 求和，与 WarNotify.troopsOf 同口径）；
- *         已知且低于阈值→跳过留痕；兵力未知→按保护优先照常触发并留痕；</li>
- *       <li>eta_sec：卡秒——&gt;0 时记录敌方到达服务器秒（endtime），剩余 &gt; N 秒则挂起等待
- *         （保持 pending，不用 10 分钟 EVENT_TTL 判死）；剩余 ≤ N 秒才开盾；0 保持"收到即开"旧行为；</li>
+ *       <li>shield_troops_min：来袭兵力下限（march.squad_list.soldier 求和，与 WarNotify.troopsOf 同口径）；
+ *         已知且低于阈值→跳过留痕；兵力未知→按保护优先照常触发并留痕；仅在防骚扰
+ *         shield_anti_harass 开启时生效；</li>
+ *       <li>shield_eta_sec：卡秒——&gt;0 时记录敌方到达服务器秒（endtime），剩余 &gt; N 秒则挂起等待
+ *         （保持 pending，不用 10 分钟 EVENT_TTL 判死）；剩余 ≤ N 秒才开盾；</li>
+ *       <li>shield_mode：immediate=收到即开 / before_arrival=抵达前 N 秒（缺省）；</li>
  *     </ul></li>
  *   <li>force_online：{@link #forceOnlineWanted()} 供 SessionKeeper 在非 online 分支查询——
  *     存在新鲜风险（未过期/未到达）且总开关+reactive+force_online 均开时返回 true，由会话管理器
  *     强制回连；本类只回答"要不要回连"，不自己登录；</li>
  *   <li>幂等：开盾成功（8 小时护盾）后 8 小时内不重复开；其余结果（今日已用/协议异常/错误码）
- *     5 分钟冷却，防推送风暴；eta_sec=0 时事件超过 10 分钟才被处理则丢弃——human_first 让位/掉线期
- *     积压的事件自然过期，回连后不为旧攻击补盾（eta_sec&gt;0 的挂起风险不受此限）；</li>
+ *     5 分钟冷却，防推送风暴；shield_mode=immediate 时事件超过 10 分钟才被处理则丢弃——human_first 让位/掉线期
+ *     积压的事件自然过期，回连后不为旧攻击补盾（before_arrival 的挂起风险不受此限）；</li>
  *   <li>让位保护：tick 只在会话 online 时执行（LiveSession 亦只在 online 分支调用），人玩期间
  *     服务器不发任何请求，不互踢；</li>
  *   <li>留痕：FileLog + mod:&lt;fpid&gt;:&lt;sid&gt;:&lt;uid&gt;:battle_shield（Phase 2B 按角色；
@@ -79,8 +82,6 @@ public final class ServerShieldResponder {
     /** 目标采集行军类型：4=个人采集；110=联盟矿采集（仅识别，不自动撤联盟矿）。 */
     private static final long MARCH_GATHER = 4L;
     private static final long MARCH_ALLIANCE_GATHER = 110L;
-    /** 单条采集行军撤矿的最小重试间隔（同 marchId）。 */
-    static final long GATHER_RECALL_COOLDOWN_MILLIS = 10 * 60_000L;
 
     /** 采集极限场景：召回失败重试间隔 / 最大尝试次数 / watch 空闲回收。 */
     static final long GATHER_WATCH_RETRY_MS = 60_000L;
@@ -122,7 +123,7 @@ public final class ServerShieldResponder {
     static final long SHIELD_ACTIVE_MILLIS = 8 * 3600_000L;
     /** 非成功结果的重试冷却：防推送风暴把协议打爆。 */
     static final long RETRY_COOLDOWN_MILLIS = 5 * 60_000L;
-    /** 事件保鲜期：推送到达超过该时长才处理则丢弃（仅 eta_sec=0 的旧行为路径）。 */
+    /** 事件保鲜期：推送到达超过该时长才处理则丢弃（仅 shield_mode=immediate 路径）。 */
     static final long EVENT_TTL_MILLIS = 10 * 60_000L;
     /** 事件保鲜期（秒，卡秒路径判断"威胁早已到达"用）。 */
     static final long EVENT_TTL_SEC = EVENT_TTL_MILLIS / 1000L;
@@ -608,7 +609,8 @@ public final class ServerShieldResponder {
     }
 
     /**
-     * 会话线程 tick 驱动：先处理采集点遭袭（提醒/可选撤矿），再处理开盾风险。
+     * 会话线程 tick 驱动：先处理采集点遭袭提醒（撤矿统一由 gatherWatchTick 执行），
+     * 再处理开盾风险。
      * 返回 true 表示本轮有动作（发请求/跳过留痕），false=无动作/挂起/冷却/陈旧。
      */
     boolean tick(WjdrEngine engine) {
@@ -706,7 +708,8 @@ public final class ServerShieldResponder {
             clearRisk(r);
             return false;
         }
-        // 防骚扰：新配置看 shield_anti_harass；旧配置（无该键）保留 troops_min 原行为。
+        // 防骚扰：shield_anti_harass 显式关闭时不设阈值；缺省（未写该键）视为开启，
+        // 阈值只读新键 shield_troops_min（2026-11-06 决策：不再读旧 troops_min）。
         boolean antiHarass = tc.subOn("battle_shield", "shield_anti_harass", false)
                 || !tc.hasSub("battle_shield", "shield_anti_harass");
         long troopsMin = antiHarass ? shieldTroopsMin(tc) : 0L;
@@ -933,8 +936,8 @@ public final class ServerShieldResponder {
         if (tc == null || engine == null) return false;
         if (!tc.subOn("battle_shield", "enabled", true)) return false;
         if (!tc.subOn("battle_shield", "gather_recall", false)) return false;
-        // 未写新键的旧配置继续走 handleGather 的“收到即撤矿”，避免两套逻辑互相覆盖。
-        if (!tc.hasStrategy("battle_shield", "gather_mode")) return false;
+        // 2026-11-06 决策：不再以"未写 gather_mode"区分新旧路径，统一按新配置
+        //（gather_mode 缺省 before_arrival、gather_eta_sec 缺省 2 秒）监控召回。
         long nowSec = serverNowSec(engine);
         syncGatherWatches(engine, nowSec, nowMs);
         boolean acted = false;
@@ -1008,13 +1011,13 @@ public final class ServerShieldResponder {
         boolean immediate = "immediate".equals(gatherMode(tc));
         if (immediate || E <= 0L || E <= nowSec) {
             return triggerGatherWatch(engine, tc, w, e,
-                    "采集点极限场景：敌方#"+e.marchId+" 已落地/立即模式", nowSec, nowMs);
+                    "采集点遭袭：敌方#"+e.marchId+" 已落地/立即模式", nowSec, nowMs);
         }
         long n = gatherEtaSec(tc);
         long at = E - n;
         if (at <= nowSec) {
             return triggerGatherWatch(engine, tc, w, e,
-                    "采集点极限场景：敌方#"+e.marchId+" 到达前"+n+"秒", nowSec, nowMs);
+                    "采集点遭袭：敌方#"+e.marchId+" 到达前"+n+"秒", nowSec, nowMs);
         }
         if (w.scheduledAtSec != at || w.scheduledEnemyId != e.marchId) {
             w.scheduledAtSec = at;
@@ -1185,44 +1188,9 @@ public final class ServerShieldResponder {
             text.append(" · 在采队伍");
             for (GatherMarch m : g.ownMarches) text.append(" #").append(m.marchId);
         }
-        // 新配置（gather_mode）交给 gatherWatchTick 统一处理；旧配置保留原“收到即撤矿”行为。
-        boolean recall = tc.subOn("battle_shield", "gather_recall", false)
-                && !tc.hasStrategy("battle_shield", "gather_mode");
-        String result = "";
-        if (recall && !g.ownMarches.isEmpty()) {
-            List<String> done = new ArrayList<>();
-            for (GatherMarch m : g.ownMarches) {
-                Long last = gatherRecalledAt.get(m.marchId);
-                if (last != null && now - last < GATHER_RECALL_COOLDOWN_MILLIS) {
-                    done.add("#" + m.marchId + "（冷却中）");
-                    continue;
-                }
-                gatherRecalledAt.put(m.marchId, now);
-                try {
-                    Map<String, Object> args = new LinkedHashMap<>();
-                    args.put("id", m.marchId);
-                    com.carlos.vault.wjdr.protocol.GameMessage rsp =
-                            engine.request("req_world_march_off_work", args);
-                    int code = Exec.codeOf(rsp);
-                    if (code == 0) {
-                        done.add("#" + m.marchId + " 已撤");
-                        FileLog.info("采集点遭袭撤矿成功 fpid={} marchId={}", fpid, String.valueOf(m.marchId));
-                    } else {
-                        done.add("#" + m.marchId + " 失败code=" + code);
-                        FileLog.warn("采集点遭袭撤矿失败 fpid={} marchId={} code={}",
-                                fpid, String.valueOf(m.marchId), String.valueOf(code));
-                    }
-                } catch (Throwable t) {
-                    done.add("#" + m.marchId + " 异常");
-                    FileLog.warn("采集点遭袭撤矿异常 fpid={} marchId={}：{}",
-                            fpid, String.valueOf(m.marchId), String.valueOf(t));
-                }
-            }
-            if (!done.isEmpty()) result = " · 自动撤矿 " + String.join("、", done);
-        } else if (recall) {
-            result = " · 自动撤矿已开但未定位队伍";
-        }
-        String line = text + result;
+        // 2026-11-06 决策：采集召回统一走 gatherWatchTick（gather_mode 缺省 before_arrival，
+        // 提前量 gather_eta_sec 默认 2 秒）；不再保留"未写新键时收到即撤矿"的旧路径。
+        String line = text.toString();
         saveStateText(tc, "gather", line);
         FileLog.info("采集点遭袭 fpid={}：{}", fpid, line);
         return true;
@@ -1365,29 +1333,25 @@ public final class ServerShieldResponder {
         return nowMs.getAsLong() / 1000L;
     }
 
-    /** 开盾模式：新键 shield_mode 优先；旧 eta_sec=0 兼容为 immediate；缺省 before_arrival。 */
+    /** 开盾模式：只读新键 shield_mode；缺省/非法 before_arrival（2026-11-06 决策：不再读旧 eta_sec）。 */
     String shieldMode(TaskContext tc) {
         String v = tc.strategy("battle_shield", "shield_mode", "");
         if ("immediate".equals(v) || "before_arrival".equals(v)) return v;
-        String legacy = tc.strategy("battle_shield", "eta_sec", null);
-        if (legacy != null && numOf(legacy) <= 0L) return "immediate";
         return "before_arrival";
     }
 
-    /** 开盾提前量：shield_eta_sec 优先，旧 eta_sec 兼容；默认/非法/小于 2 → 2。 */
+    /** 开盾提前量：只读新键 shield_eta_sec；默认/非法/小于 2 → 2（2026-11-06 决策：不再读旧 eta_sec）。 */
     long shieldEtaSec(TaskContext tc) {
         String v = tc.strategy("battle_shield", "shield_eta_sec", "");
         if (!v.isEmpty()) return parseEta(v, "shield_eta_sec");
-        String legacy = tc.strategy("battle_shield", "eta_sec", "");
-        if (!legacy.isEmpty()) return parseEta(legacy, "eta_sec");
         return 2L;
     }
 
-    /** 开盾兵力阈值：shield_troops_min 优先，旧 troops_min 兼容；默认 0。 */
+    /** 开盾兵力阈值：只读新键 shield_troops_min；默认 0（2026-11-06 决策：不再读旧 troops_min）。 */
     long shieldTroopsMin(TaskContext tc) {
         String v = tc.strategy("battle_shield", "shield_troops_min", "");
         if (!v.isEmpty()) return parseThreshold(v, "shield_troops_min");
-        return parseThreshold(tc.strategy("battle_shield", "troops_min", "0"), "troops_min");
+        return 0L;
     }
 
     /** 秒数校验：空/非数字/负数/&lt;2 → 2；&gt;600 → 600；并告警。 */
@@ -1430,21 +1394,7 @@ public final class ServerShieldResponder {
         }
     }
 
-    /** strategy 数值（如 "60000"/"60000.0"）→ long；无法解析 → 0（=不限/不卡秒）。 */
-    private static long numOf(String s) {
-        if (s == null) return 0L;
-        String t = s.trim();
-        if (t.isEmpty()) return 0L;
-        int dot = t.indexOf('.');
-        if (dot > 0) t = t.substring(0, dot);
-        try {
-            return Long.parseLong(t);
-        } catch (Exception e) {
-            return 0L;
-        }
-    }
-
-    /** 写 battle_shield 的 reactive 子项（App FnDetail/今日页同键展示）。 */
+/** 写 battle_shield 的 reactive 子项（App FnDetail/今日页同键展示）。 */
     private void saveState(TaskContext tc, String text) {
         saveStateText(tc, "reactive", text);
     }

@@ -73,7 +73,6 @@ public final class RoleSessionKeeper {
         volatile long lastHelpScanAt;
         volatile int helpNumToday;
         volatile long dayGlory;
-        volatile long lastMarchPollAt;   // 行军类轮询兜底节流（PushWakeDriver.MARCH_POLL_MILLIS）
 
         // ---- 推送唤醒状态（PushWakeDriver；每会话一次） ----
         final java.util.concurrent.atomic.AtomicBoolean wakeAttached = new AtomicBoolean();
@@ -196,10 +195,7 @@ public final class RoleSessionKeeper {
                             ls.lastHelpScanAt = now;
                             HelpResponder.poll(ctx, ls);
                         }
-                        if (now - ls.lastMarchPollAt >= PushWakeDriver.MARCH_POLL_MILLIS) {
-                            ls.lastMarchPollAt = now;
-                            PushWakeDriver.pollMarch(ctx, ls);
-                        }
+                        // 2026-11-06 决策5：PushWakeDriver（本地推送唤醒）已删除，行军轮询兜底随之下线。
                     } else if (WjdrEngine.STATE_RECOVERING.equals(st)) {
                         if (multi) {
                             // 多角色账号：单独重连会踢掉兄弟会话，标记整号重赛
@@ -289,7 +285,6 @@ public final class RoleSessionKeeper {
                 } catch (Throwable ignored) {
                 }
                 HelpResponder.attach(ctx, fls);
-                PushWakeDriver.attach(ctx, fls);
                 ProtoLogger.attach(ctx, fls);
                 EnemyWatch.attach(ctx, fls);
                 com.carlos.vault.daily.guardian.GuardianEngine.init(ctx);
@@ -322,6 +317,25 @@ public final class RoleSessionKeeper {
             }
         }
         return null;
+    }
+
+    /**
+     * 角色级会话查询（2026-11-06 从 DailyRunner.liveOf 迁移）：
+     * sid<=0 时按 activeRole 取在线会话，否则回落到本账号任一在线会话；sid>0 精确取。
+     * 异常/无会话返回 null。
+     */
+    public static LiveSession liveOf(android.content.Context ctx, String fpid, long sid) {
+        try {
+            RoleSessionKeeper keeper = RoleSessionKeeper.get(ctx);
+            if (sid <= 0) {
+                long active = RoleStore.activeRole(ctx, fpid);
+                LiveSession ls = active > 0 ? keeper.borrowOnline(fpid, active) : null;
+                return ls != null ? ls : keeper.borrowAnyOnline(fpid);
+            }
+            return keeper.borrowOnline(fpid, sid);
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 动作线程（登录/重连/互助等阻塞操作统一串行，防扫描线程被卡）。 */
@@ -511,8 +525,7 @@ public final class RoleSessionKeeper {
                     } catch (Throwable ignored) {
                     }
                     HelpResponder.attach(ctx, fls);
-                    PushWakeDriver.attach(ctx, fls);
-                    ProtoLogger.attach(ctx, fls);
+                        ProtoLogger.attach(ctx, fls);
                     EnemyWatch.attach(ctx, fls);
                     com.carlos.vault.daily.guardian.GuardianEngine.init(ctx);
                     com.carlos.vault.daily.guardian.GuardianEngine.attach(ctx, fls);
