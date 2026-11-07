@@ -251,11 +251,11 @@ public class ServerShieldResponderTest {
         assertTrue(mod.getString("reactive").contains("被进攻"));
         assertTrue(mod.getString("reactive").contains("8小时免费护盾已开启"));
         assertEquals("反应式", mod.getString("reactive_trg"));
-        // 开盾成功 → 8 小时幂等窗
+        // 开盾成功 → 仅 60s 防风暴冷却；幂等由盾账本 shieldActive 判定（不再用 8h 窗）
         long cool = r.nextAttemptAt.get();
         long t0 = System.currentTimeMillis();
-        assertTrue(cool >= t0 + ServerShieldResponder.SHIELD_ACTIVE_MILLIS - 2000);
-        assertTrue(cool <= t0 + ServerShieldResponder.SHIELD_ACTIVE_MILLIS + 2000);
+        assertTrue(cool >= t0 + ServerShieldResponder.OPEN_SUCCESS_COOLDOWN_MILLIS - 2000);
+        assertTrue(cool <= t0 + ServerShieldResponder.OPEN_SUCCESS_COOLDOWN_MILLIS + 2000);
     }
 
     @Test
@@ -1137,6 +1137,77 @@ public class ServerShieldResponderTest {
         assertEquals("immediate", r.shieldMode(tc));
         assertEquals(60L, r.shieldEtaSec(tc));
         assertEquals(5000L, r.shieldTroopsMin(tc));
+    }
+
+    // ================= 2026-11-07：免费盾假成功 / 幂等窗对齐 / 失败保留风险 =================
+
+    @Test
+    public void freeShieldMissingCode_notClaimed_retryCooldown() {
+        // 响应缺 code 无法确认开盾：不得判 CLAIMED（否则假写 8h 盾账本 + 8h 幂等窗）。
+        account(true, "{\"sub\":{\"reactive\":true},"
+                + "\"strategy\":{\"shield_mode\":\"immediate\"}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        GameMessage noCode = new GameMessage();
+        noCode.setContent(new LinkedHashMap<>());
+        e.responses.put("req_city_item_free_use", noCode);
+        ServerShieldResponder r = responder();
+
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+
+        JSONObject mod = new JSONObject(modText());
+        assertFalse("缺 code 不能写已开盾",
+                mod.getString("reactive").contains("8小时免费护盾已开启"));
+        assertTrue("应保留未开盾/重试语义", mod.getString("reactive").contains("未开盾"));
+        long t0 = System.currentTimeMillis();
+        assertTrue("缺 code 应按失败冷却而非 8h 幂等窗",
+                r.nextAttemptAt.get() <= t0 + ServerShieldResponder.RETRY_COOLDOWN_MILLIS + 2000);
+    }
+
+    @Test
+    public void shieldExpired_opensAgain() {
+        // 盾到期/被撤销后：幂等由账本判定，不能被历史 8h nextAttemptAt 长期挡住。
+        account(true, null);   // immediate
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_700_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertEquals(1, e.requested.size());
+
+        // 9 小时后盾已过期；新攻击应再次开盾
+        nowMs.addAndGet(9 * 3600_000L);
+        sec.addAndGet(9 * 3600L);
+        r.onPush(alliancePush(13081L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertEquals("盾过期后应允许再次开盾", 2, e.requested.size());
+    }
+
+    @Test
+    public void noAvailableShield_keepsRisk_retriesAfterCooldown() {
+        // 免费盾不可用 + 无背包 + 钻石关：风险不能被一次失败消费，5 分钟后应重试。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(51));   // 今日已用
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_700_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertEquals(1, e.requested.size());
+
+        // 5 分钟后（无新推送）：风险仍保留 → 自动重试
+        nowMs.addAndGet(ServerShieldResponder.RETRY_COOLDOWN_MILLIS);
+        sec.addAndGet(ServerShieldResponder.RETRY_COOLDOWN_MILLIS / 1000L);
+        assertTrue(r.tick(e));
+        assertEquals("失败后 5 分钟应重试", 2, e.requested.size());
     }
 
     private static Map<String, Object> marchOf(long id, long type, long targetUid) {

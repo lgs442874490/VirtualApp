@@ -12,6 +12,7 @@ import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -147,6 +148,42 @@ public final class EnemyWatch {
 
     // ------------------------------------------------------------------ 推送解析
 
+    /**
+     * 观察哨 add/up 的行军条目（entry：含 march/power 的包裹层或裸 march），兼容四种实证形状：
+     * {@code marches:{槽位:{march:{...}}}}、{@code marches:[...]}、轮询 {@code marchs:[...]}、
+     * 单数 {@code {"march":{...},"power":115}}（design/守护盟友-协议实证-20261015.md §2.2）。
+     * 包可见供单测直接驱动（不依赖 Context/SharedPreferences）。
+     */
+    static List<Map<?, ?>> situationEntries(Map<?, ?> content) {
+        List<Map<?, ?>> out = new ArrayList<>();
+        if (content == null) return out;
+        Object marches = content.get("marches");
+        if (marches instanceof Map) {
+            for (Object v : ((Map<?, ?>) marches).values()) {
+                if (v instanceof Map) out.add((Map<?, ?>) v);
+            }
+        } else if (marches instanceof List) {
+            for (Object v : (List<?>) marches) {
+                if (v instanceof Map) out.add((Map<?, ?>) v);
+            }
+        }
+        Object marchs = content.get("marchs");
+        if (marchs instanceof List) {
+            for (Object v : (List<?>) marchs) {
+                if (v instanceof Map) out.add((Map<?, ?>) v);
+            }
+        }
+        Object single = content.get("march");
+        if (single instanceof Map) {
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("march", single);
+            Object power = content.get("power");
+            if (power != null) entry.put("power", power);
+            out.add(entry);
+        }
+        return out;
+    }
+
     private static void handle(Context ctx, long kid, String proto, Map<?, ?> content) {
         if (!EnemyWatchStore.enabled(ctx)) return;
         Map<Long, Map<Long, String>> byKid = EnemyWatchStore.byKid(ctx);
@@ -157,28 +194,11 @@ public final class EnemyWatch {
         switch (proto) {
             case "notify_world_situation_info_add":
             case "notify_world_situation_info_up": {
-                Object marches = content.get("marches");
-                if (marches instanceof Map) {
-                    for (Object v : ((Map<?, ?>) marches).values()) {
-                        if (!(v instanceof Map)) continue;
-                        Map<?, ?> entry = (Map<?, ?>) v;
-                        Object m = entry.get("march");
-                        if (m instanceof Map) {
-                            handleMarch(ctx, kid, list, asMap(m), asLong(entry.get("power")));
-                        }
-                    }
-                } else if (marches instanceof List) {
-                    // 兜底形状：列表直挂 march 对象
-                    for (Object v : (List<?>) marches) {
-                        if (v instanceof Map) handleMarch(ctx, kid, list, asMap(v), asLong(((Map<?, ?>) v).get("power")));
-                    }
-                }
-                // 轮询响应（req_world_march_detail_4_player_situation → detail.marchs）复用同一处理器
-                Object marchs = content.get("marchs");
-                if (marchs instanceof List) {
-                    for (Object v : (List<?>) marchs) {
-                        if (v instanceof Map) handleMarch(ctx, kid, list, asMap(v), asLong(((Map<?, ?>) v).get("power")));
-                    }
+                // 观察哨推送形状：marches 槽位 / 列表直挂 / 轮询 marchs / 单数 march（实证 §2.2）。
+                for (Map<?, ?> entry : situationEntries(content)) {
+                    Object m = entry.get("march");
+                    Map<?, ?> march = m instanceof Map ? (Map<?, ?>) m : entry;
+                    handleMarch(ctx, kid, list, asMap(march), asLong(entry.get("power")));
                 }
                 break;
             }

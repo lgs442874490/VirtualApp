@@ -4092,8 +4092,14 @@ public final class ServerTasks {
                 return new TaskOutcome("battle_shield", "战斗护盾", TaskOutcome.Category.DEGRADED,
                         "响应异常（协议可能变更）");
             }
-            Object code = rsp.getContent().get("code");
-            if (code != null && toInt(code) != 0) {
+            Object code = rsp.getContent() == null ? null : rsp.getContent().get("code");
+            if (code == null) {
+                // 缺 code 无法确认开盾成功：不能判 CLAIMED（否则会写入 8h 盾账本/幂等窗，
+                // 实际无盾且 8 小时内不再尝试）。归 DEGRADED 让上层继续走背包/钻石/重试。
+                return new TaskOutcome("battle_shield", "战斗护盾", TaskOutcome.Category.DEGRADED,
+                        "响应缺少 code，无法确认免费护盾是否开启");
+            }
+            if (toInt(code) != 0) {
                 int c = toInt(code);
                 if (c == 51 || c == 6151 || c == 6158 || c == 7501 || c == 4303) {
                     return new TaskOutcome("battle_shield", "战斗护盾", TaskOutcome.Category.SKIPPED,

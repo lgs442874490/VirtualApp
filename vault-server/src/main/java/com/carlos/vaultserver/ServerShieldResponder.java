@@ -132,8 +132,10 @@ public final class ServerShieldResponder {
             "notify_city_item_init",
             "notify_city_item_update");
 
-    /** 开盾成功后的幂等窗：8 小时免费护盾时长内不重复开。 */
+    /** 免费护盾时长（8h；账本/显示用；幂等统一由 shieldActive 判定）。 */
     static final long SHIELD_ACTIVE_MILLIS = 8 * 3600_000L;
+    /** 开盾成功后的防风暴冷却（幂等由盾账本判定，不再用 8h 窗挡住已撤销的盾）。 */
+    static final long OPEN_SUCCESS_COOLDOWN_MILLIS = 60_000L;
     /** 非成功结果的重试冷却：防推送风暴把协议打爆。 */
     static final long RETRY_COOLDOWN_MILLIS = 5 * 60_000L;
     /** 事件保鲜期：推送到达超过该时长才处理则丢弃（仅 shield_mode=immediate 路径）。 */
@@ -850,25 +852,43 @@ public final class ServerShieldResponder {
                 return true;
             }
         }
-        if (now < nextAttemptAt.get()) {   // 幂等（8h 护盾窗）/防风暴冷却（5min）
+        // 幂等以盾账本为准：盾仍生效 → 不重复开（推送风暴不产生请求）；
+        // 盾到期/被手动撤销后，不应再被历史 8h 幂等窗长期挡住。
+        if (!shieldLedgerReady) initLedgerFromEngine(engine);
+        if (shieldActive(engine)) {
+            clearRisk(r);
+            return false;
+        }
+        if (now < nextAttemptAt.get()) {   // 失败/防风暴冷却（5min）
             clearRisk(r);
             return false;
         }
         if (!busy.compareAndSet(false, true)) return false;
+        boolean opened;
         try {
-            openShield(tc, now);
+            opened = openShield(tc, now);
         } finally {
             busy.set(false);
         }
-        clearRisk(r);
+        if (opened) {
+            clearRisk(r);
+        } else {
+            // 失败/无可用盾：保留风险，5 分钟后（etaCheckAtMs 到点）继续重试，
+            // 避免一次失败就把风险消费掉、攻击到达时彻底无盾。
+            synchronized (riskLock) {
+                etaCheckAtMs = now + RETRY_COOLDOWN_MILLIS;
+            }
+        }
         return true;
     }
 
     /**
      * 真正下发开盾请求：已有护盾 → 免费盾 → 背包盾 → 钻石购盾（默认关）。
      * 顺序遵循需求：免费优先、其次背包、最后才花钻石。
+     *
+     * @return true=已有盾/本次已开盾（风险已被覆盖）；false=未开盾（保留风险待重试）
      */
-    private void openShield(TaskContext tc, long now) {
+    private boolean openShield(TaskContext tc, long now) {
         if (!shieldLedgerReady) initLedgerFromEngine(tc.engine);
         long nowSec = serverNowSec(tc.engine);
         String prefix = ("WAR".equals(lastEventKind) ? "被进攻" : "被侦查");
@@ -878,7 +898,7 @@ public final class ServerShieldResponder {
             saveState(tc, prefix + " → 已有护盾生效中（剩余" + Math.max(0L, shieldActiveEnd - nowSec)
                     + "秒），不重复开");
             writeShieldLedgerState(tc, true);
-            return;
+            return true;
         }
         // 1) 免费盾（每日免费 8h；不可用则继续）
         TaskOutcome free;
@@ -890,12 +910,12 @@ public final class ServerShieldResponder {
         if (free.category == TaskOutcome.Category.CLAIMED) {
             shieldActiveItem = SHIELD_ITEM_8H;
             shieldActiveEnd = nowSec + 8 * 3600L;
-            nextAttemptAt.set(now + 8 * 3600_000L);
+            nextAttemptAt.set(now + OPEN_SUCCESS_COOLDOWN_MILLIS);
             saveState(tc, prefix + " → " + free.message);
             writeShieldLedgerState(tc, true);
             FileLog.info("反应式开盾 fpid={} 事件={} 结果=CLAIMED(免费)：{}",
                     fpid, lastEventKind, free.message);
-            return;
+            return true;
         }
         // 2) 背包盾（2h → 8h → 12h，优先最短可用，避免浪费长盾）
         long item = 0L;
@@ -909,12 +929,12 @@ public final class ServerShieldResponder {
                 shieldBackpack.put(item, Math.max(0L, shieldCount(item) - 1L));
                 shieldActiveItem = item;
                 shieldActiveEnd = nowSec + hours * 3600L;
-                nextAttemptAt.set(now + hours * 3600_000L);
+                nextAttemptAt.set(now + OPEN_SUCCESS_COOLDOWN_MILLIS);
                 saveState(tc, prefix + " → 已使用背包 " + shieldName(item) + "（code=0）");
                 writeShieldLedgerState(tc, true);
                 FileLog.info("反应式开盾 fpid={} 事件={} 来源=背包 item={} code=0",
                         fpid, lastEventKind, String.valueOf(item));
-                return;
+                return true;
             }
             FileLog.warn("反应式开盾 fpid={} 背包盾 item={} 使用失败 code={}",
                     fpid, String.valueOf(item), String.valueOf(code));
@@ -926,28 +946,29 @@ public final class ServerShieldResponder {
             if (code == 0) {
                 shieldActiveItem = SHIELD_ITEM_2H;
                 shieldActiveEnd = nowSec + 2 * 3600L;
-                nextAttemptAt.set(now + 2 * 3600_000L);
+                nextAttemptAt.set(now + OPEN_SUCCESS_COOLDOWN_MILLIS);
                 saveState(tc, prefix + " → 背包无盾，已用 " + DIAMOND_SHIELD_PRICE
                         + " 钻石购买并开启 2 小时护盾（code=0）");
                 writeShieldLedgerState(tc, true);
                 FileLog.info("反应式开盾 fpid={} 事件={} 来源=钻石 item={} price={} code=0",
                         fpid, lastEventKind, String.valueOf(SHIELD_ITEM_2H),
                         String.valueOf(DIAMOND_SHIELD_PRICE));
-                return;
+                return true;
             }
             saveState(tc, prefix + " → 背包无盾，钻石购盾失败 code=" + code
-                    + "（不再重试，5 分钟后可再试）");
+                    + "（5 分钟后重试）");
             nextAttemptAt.set(now + RETRY_COOLDOWN_MILLIS);
             FileLog.warn("反应式开盾 fpid={} 钻石购盾失败 code={}", fpid, String.valueOf(code));
             writeShieldLedgerState(tc, true);
-            return;
+            return false;
         }
-        // 4) 无可用护盾（保留免费盾失败原因，App 状态可读）
+        // 4) 无可用护盾（保留免费盾失败原因，App 状态可读；风险保留 5 分钟后重试）
         nextAttemptAt.set(now + RETRY_COOLDOWN_MILLIS);
         saveState(tc, prefix + " → 免费盾不可用（" + free.message + "）、背包无盾，"
-                + "且钻石购盾关闭；未开盾");
+                + "且钻石购盾关闭；未开盾（5 分钟后重试）");
         writeShieldLedgerState(tc, true);
         FileLog.info("反应式开盾 fpid={} 事件={} 无可用护盾", fpid, lastEventKind);
+        return false;
     }
 
     /** 使用背包护盾道具（req_use_item{id,count:1,extra:{}}）；返回业务码。 */

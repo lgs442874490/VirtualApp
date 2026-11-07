@@ -910,25 +910,16 @@ public final class SessionKeeper implements SessionControl,
                     // off（默认）保持现网“只 active 角色执行、兄弟角色占位在线 + 联盟互助/捐献”行为。
                     boolean active = isActiveRoleWriter();
                     boolean perRole = com.carlos.vaultserver.task.RoundScheduler.perRoleEnabled();
+                    long uidForRole = roleUid > 0L ? roleUid : wantUid;
+                    // R2 Phase 2B：开盾按角色独立（每个角色自己城市受攻击各自开盾；键带 uid，
+                    // 主控镜像 App 旧键）。2026-11-07：所有在线角色都挂盾——perRole=off 时兄弟角色
+                    // 也要能开盾；各会话独立，请求走各自会话，不互踢。
+                    ensureShieldTick(engine, uidForRole);
                     if (!perRole && !active) {
                         ServerHelpResponder siblingHelp = help;
                         if (siblingHelp != null) siblingHelp.tick(engine);
                         roleScopedDonateTick(engine);
                         break;
-                    }
-                    long uidForRole = roleUid > 0L ? roleUid : wantUid;
-                    // R2 Phase 2B：开盾按角色独立（每个角色自己城市受攻击各自开盾；键带 uid，
-                    // 主控镜像 App 旧键）；perRole=off 时仍只主控角色，保持现网行为。
-                    if (perRole || active) {
-                        // 开盾惰性挂载（按真实 sid + 角色 uid；主控角色双写 App 旧键）
-                        if (shield == null) {
-                            shield = new ServerShieldResponder(fpid, resolveSid(), uidForRole,
-                                    stateStore, store, this::isActiveRoleWriter);
-                            shield.attach(engine);
-                        }
-                        // 反应式开盾优先于采集/互助：攻击行军按分钟计，开盾早一秒是一秒
-                        ServerShieldResponder s = shield;
-                        if (s != null) s.tick(engine);
                     }
                     // 战争态（WARTIME 让位）：用户口径（2026-10-29）——**只有开启守护盟友且实盘
                     // （enabled && !dry_run，需要用行军队列去驻防盟友）的账号才触发**，且只在守护宿主
@@ -1032,6 +1023,25 @@ public final class SessionKeeper implements SessionControl,
                 help.attach(engine);
             } catch (Throwable t) {
                 FileLog.warn("互助响应器挂载失败 {}：{}", key, String.valueOf(t));
+            }
+        }
+
+        /**
+         * 开盾响应器惰性挂载 + 单拍（2026-11-07：所有在线角色都执行，不再只限 active）：
+         * 状态键按 roleUid 隔离，{@code activeSupplier} 控制是否镜像 App 旧键；
+         * 各会话独立发请求，不互踢。异常吞掉只记日志，绝不影响会话心跳/重连。
+         */
+        private void ensureShieldTick(WjdrEngine engine, long uidForRole) {
+            try {
+                if (shield == null) {
+                    shield = new ServerShieldResponder(fpid, resolveSid(), uidForRole,
+                            stateStore, store, this::isActiveRoleWriter);
+                    shield.attach(engine);
+                }
+                ServerShieldResponder s = shield;
+                if (s != null) s.tick(engine);
+            } catch (Throwable t) {
+                FileLog.warn("开盾响应器单拍异常 {}：{}", key, String.valueOf(t));
             }
         }
 
