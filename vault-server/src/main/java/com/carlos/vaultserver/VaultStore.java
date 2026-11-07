@@ -1238,14 +1238,25 @@ public final class VaultStore {
 
     /** 服务器登录后固化指纹：角色级（sid 非空）或账号级兜底。 */
     public void learnIdentity(String fpid, String sid, String identityJson) {
+        learnIdentity(fpid, sid, null, identityJson);
+    }
+
+    /**
+     * 服务器登录后固化指纹（角色级，2026-11-08 对齐原版 ConfigJsonLoader.scopeFingerprintToRole）：
+     * 键优先 {@code sid:uid}——同账号同服多角色各自一台独立"设备"，登录后固化，后续
+     * 全量 sync（旧 App 只带 sid 键）不会冲掉；uid 缺省退回旧 {@code sid} 键（单角色/旧数据
+     * 零迁移）。已有固定设备不覆盖（与旧行为一致）。
+     */
+    public void learnIdentity(String fpid, String sid, String uid, String identityJson) {
         if (identityJson == null || identityJson.isEmpty()) return;
         synchronized (lock) {
             for (Account a : accounts) {
                 if (!a.fpid.equals(fpid)) continue;
                 if (sid != null && !sid.isEmpty()) {
-                    String prev = a.roleIdentity.get(sid);
+                    String key = (uid == null || uid.isEmpty()) ? sid : roleKey(sid, uid);
+                    String prev = a.roleIdentity.get(key);
                     if (prev != null && !prev.isEmpty()) return; // 已有固定设备，不覆盖
-                    a.roleIdentity.put(sid, identityJson);
+                    a.roleIdentity.put(key, identityJson);
                 } else if (a.identity == null || a.identity.isEmpty()) {
                     a.identity = identityJson;
                 } else {

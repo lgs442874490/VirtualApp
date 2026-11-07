@@ -1372,7 +1372,12 @@ public final class VaultSync {
                 JSONArray roles = new JSONArray();
                 for (RoleStore.Role r : RoleStore.roles(ctx, a.fpid)) {
                     if (r.serverid <= 0) continue;
-                    String rid = store.getRoleSettings(a.fpid, r.serverid);
+                    // 角色级指纹（2026-11-08）：优先 sid:uid 键（同服多角色各自一台设备），
+                    // 旧数据回落 sid 键；服务端按 sid:uid 学习/派生，避免同设备互踢。
+                    String rid = store.getRoleSettings(a.fpid, r.serverid, r.uid);
+                    if (rid == null || rid.isEmpty()) {
+                        rid = store.getRoleSettings(a.fpid, r.serverid);
+                    }
                     // 任务开关（服务器按角色执行整轮的依据）
                     // 有效配置（2026-10-28 功能型 bug A/B）：稀疏/旧 map 必须用全部任务默认值
                     // 补齐后再整包上传，否则服务端读不到 barracks/intel/arena 等键会判「配置未启用」，

@@ -909,7 +909,9 @@ public final class SessionKeeper implements SessionControl,
                     // R2 Phase 2（2026-10-29）：VAULT_PER_ROLE=on 时所有在线角色各自跑整轮/节奏/采集；
                     // off（默认）保持现网“只 active 角色执行、兄弟角色占位在线 + 联盟互助/捐献”行为。
                     boolean active = isActiveRoleWriter();
-                    boolean perRole = com.carlos.vaultserver.task.RoundScheduler.perRoleEnabled();
+                    // 与账号级 ensureSession 同一判断源（VaultStore.perRoleMode 带测试注入；
+                    // 两处都读 VAULT_PER_ROLE，未来加 allowlist 灰度时只改这一处）。
+                    boolean perRole = VaultStore.perRoleMode();
                     long uidForRole = roleUid > 0L ? roleUid : wantUid;
                     // R2 Phase 2B：开盾按角色独立（每个角色自己城市受攻击各自开盾；键带 uid，
                     // 主控镜像 App 旧键）。2026-11-07：所有在线角色都挂盾——perRole=off 时兄弟角色
@@ -1392,7 +1394,10 @@ public final class SessionKeeper implements SessionControl,
             try {
                 engine.setProxy(resolveProxy(acc));
                 engine.initialize();
-                String seed = identitySeed(acc, sid);
+                // 角色级身份（2026-11-08）：同账号同服多角色各用一台独立"设备"，避免共享
+                // 指纹被服务器判为同设备/同账号重复登录而互踢（对齐原版 roleId scoping）。
+                String wantUidText = wantUid > 0 ? String.valueOf(wantUid) : uidArg;
+                String seed = identitySeed(acc, sid, wantUidText);
                 if (seed != null && !seed.isEmpty()) engine.applyIdentity(seed);
                 WjdrEngine.LoginResult r = loginBoundRole(acc);
                 FileLog.info("登录成功 {} 角色={}", key,
@@ -1412,7 +1417,15 @@ public final class SessionKeeper implements SessionControl,
                 }
                 verifyIdentity(r.uid);
                 String learned = engine.identityJson();
-                if (!learned.isEmpty()) store.learnIdentity(fpid, sid, learned);
+                if (!learned.isEmpty()) {
+                    // 按实际落地角色固化（sid:uid 键）：该角色此后固定复用同一台"设备"
+                    String learnedSid = (sid == null || sid.isEmpty())
+                            ? (r.serverId > 0 ? String.valueOf(r.serverId) : "")
+                            : sid;
+                    long learnedUid = r.uid > 0 ? r.uid : wantUid;
+                    store.learnIdentity(fpid, learnedSid,
+                            learnedUid > 0 ? String.valueOf(learnedUid) : null, learned);
+                }
                 // 互助/开盾惰性挂载 + 排首次采集：只在会话成为 state 写入方后驱动（tick）
                 if (sid == null || sid.isEmpty()) {
                     if (r.serverId > 0) sid = String.valueOf(r.serverId);
@@ -2318,9 +2331,18 @@ public final class SessionKeeper implements SessionControl,
             // uid 明确的账号把期望态一并落库（active 角色在线），角色模型与会话保持一致
             boolean uidBound = acc.activeSid != null && !acc.activeSid.isEmpty()
                     && parseUid(acc.activeUid) > 0;
+            // 与 RoundScheduler.perRoleEnabled 同源（VaultStore.perRoleMode 带测试注入，语义一致）。
+            boolean perRole = VaultStore.perRoleMode();
             String key;
             if (uidBound) {
-                store.applyRoleLoginExclusive(fpid, acc.activeSid, acc.activeUid);
+                // 2026-11-08：perRole=on（现网）时账号级登录也必须保留兄弟角色的期望态——
+                // 旧实现只给「会话列表收敛」加了 perRole 保护，落库的 applyRoleLoginExclusive
+                // 仍把兄弟 desiredOnline 清空，下一拍 reconcile 照样停兄弟（11-01 修复漏的一半）。
+                if (perRole) {
+                    store.applyRoleLogin(fpid, acc.activeSid, acc.activeUid);
+                } else {
+                    store.applyRoleLoginExclusive(fpid, acc.activeSid, acc.activeUid);
+                }
                 key = sessionKey(fpid, acc.activeSid, acc.activeUid);
                 // 会话级收敛：停掉该 fpid 其它键的会话（旧 active 槽/兄弟角色），
                 // 保证账号级登录后单会话（与 sync 切角色收敛规则一致）。
@@ -2328,7 +2350,7 @@ public final class SessionKeeper implements SessionControl,
                 // 生产实证：App 重新登录/账号级 login 会把另外 3 个已 desired 的角色停掉
                 // （19:09 UTC 停 882/531/152/88280792），与“5 角色一起跑”的用户口径冲突。
                 List<LiveSession> others = new ArrayList<>();
-                if (!com.carlos.vaultserver.task.RoundScheduler.perRoleEnabled()) {
+                if (!perRole) {
                     for (LiveSession ls : sessions.values()) {
                         if (ls.fpid.equals(fpid) && !ls.key.equals(key)) others.add(ls);
                     }
@@ -2859,16 +2881,61 @@ public final class SessionKeeper implements SessionControl,
         sessions.clear();
     }
 
-    /** 指纹种子：指定角色（可空）的指纹优先，缺则账号级（对齐 App 端 roleIdentitySeed 语义）。 */
-    private String identitySeed(VaultStore.Account a, String roleSid) {
-        if (roleSid != null) {
-            String role = a.roleIdentity.get(roleSid);
-            if (role != null && !role.isEmpty()) return role;
-        } else if (a.activeSid != null) {
-            String role = a.roleIdentity.get(a.activeSid);
-            if (role != null && !role.isEmpty()) return role;
+    /**
+     * 指纹种子：角色级（sid:uid）优先，缺则账号级（对齐 App 端 roleIdentitySeed 语义）。
+     *
+     * <p>2026-11-08 对齐原版 {@code ConfigJsonLoader.scopeFingerprintToRole}：<b>同账号同服
+     * 多角色必须各自一台独立设备</b>——共享指纹时服务器按「同设备/同账号重复登录」踢掉兄弟
+     * 会话（网页版实测：同账号同服 531/532 可同时在线；78 次单角色上线仅 2 次兄弟被顶）。
+     * 规则：
+     * <ol>
+     *   <li>{@code roleIdentity[sid:uid]} 已固化 → 直接复用（登录成功写回，永不变）；</li>
+     *   <li>该 sid 只有这一个角色 → 沿用旧 {@code sid} 键（单角色/旧数据零迁移、不换脸）；</li>
+     *   <li>同 sid 多角色 → 以旧 {@code sid} 键（缺则账号级 identity）为基线，按
+     *       {@code fpid|sid|uid} 稳定派生 device_id/distinct_id（每角色一台设备）。</li>
+     * </ol>
+     * 基线为空时返回空串，由引擎随机生成并在登录后按 sid:uid 固化。
+     */
+    private String identitySeed(VaultStore.Account a, String roleSid, String roleUid) {
+        if (a == null) return "";
+        String sid = (roleSid != null && !roleSid.isEmpty()) ? roleSid
+                : (a.activeSid == null ? "" : a.activeSid);
+        String uid = roleUid == null ? "" : roleUid.trim();
+        if (!sid.isEmpty() && !uid.isEmpty()) {
+            String exact = a.roleIdentity.get(VaultStore.roleKey(sid, uid));
+            if (exact != null && !exact.isEmpty()) return exact;
         }
-        return a.identity;
+        String base = sid.isEmpty() ? null : a.roleIdentity.get(sid);
+        if (base == null || base.isEmpty()) base = a.identity;
+        if (base == null || base.isEmpty()) return "";
+        // 单角色 / 旧数据：沿用原指纹（零迁移，不换脸）
+        if (sid.isEmpty() || uid.isEmpty() || !sidHasMultipleRoles(a, sid)) return base;
+        // 同服多角色：每角色稳定派生独立设备
+        // 与 App 端共用同一份派生实现（com.carlos.vault.wjdr.RoleFingerprint），
+        // 避免两端规则漂移：同一角色在本地/服务器模式必须是同一台"设备"。
+        return com.carlos.vault.wjdr.RoleFingerprint.scoped(base, a.fpid, sid, uid);
+    }
+
+    /** 该 sid 在账号下是否有多个角色（roles / roleIdentity 的 sid:uid 键 / active 指针三源取并集）。 */
+    private static boolean sidHasMultipleRoles(VaultStore.Account a, String sid) {
+        java.util.Set<String> uids = new java.util.HashSet<>();
+        String prefix = sid + ":";
+        for (String k : a.roles.keySet()) {
+            if (k.startsWith(prefix)) {
+                String u = k.substring(prefix.length());
+                if (!u.isEmpty()) uids.add(u);
+            }
+        }
+        for (String k : a.roleIdentity.keySet()) {
+            if (k.startsWith(prefix)) {
+                String u = k.substring(prefix.length());
+                if (!u.isEmpty()) uids.add(u);
+            }
+        }
+        if (sid.equals(a.activeSid) && a.activeUid != null && !a.activeUid.isEmpty()) {
+            uids.add(a.activeUid);
+        }
+        return uids.size() > 1;
     }
 
     /** 出口代理：单账号覆盖 &gt; 全局配置；都没有 = 直连。 */
