@@ -1210,6 +1210,69 @@ public class ServerShieldResponderTest {
         assertEquals("失败后 5 分钟应重试", 2, e.requested.size());
     }
 
+    // ================= 2026-11-08：钻石购盾日预算用户可配（默认 1200 钻） =================
+
+    @Test
+    public void diamondBudget_defaultIs1200AndAllowsThreeBuys() {
+        TestEngine e = new TestEngine();
+        TaskContext tc = new TaskContext(e, "111", SID, state, new HashMap<>(), "测试");
+        ServerShieldResponder r = responder();
+        long sec = 1_700_000_000L;
+
+        assertEquals(1200L, r.diamondBudget(tc));
+        assertTrue(r.allowDiamondBuy(tc, sec));
+        r.recordDiamondBuy(sec);
+        r.recordDiamondBuy(sec);
+        assertTrue("默认预算 1200 钻可买 3 个（还剩 1 个）", r.allowDiamondBuy(tc, sec));
+        r.recordDiamondBuy(sec);
+        assertFalse("3 个后预算用尽", r.allowDiamondBuy(tc, sec));
+    }
+
+    @Test
+    public void diamondBudget_custom800_allowsTwoBuys() {
+        TestEngine e = new TestEngine();
+        Map<String, JSONObject> params = new HashMap<>();
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"800\"}}"));
+        TaskContext tc = new TaskContext(e, "111", SID, state, params, "测试");
+        ServerShieldResponder r = responder();
+        long sec = 1_700_000_000L;
+
+        assertEquals(800L, r.diamondBudget(tc));
+        r.recordDiamondBuy(sec);
+        assertTrue(r.allowDiamondBuy(tc, sec));
+        r.recordDiamondBuy(sec);
+        assertFalse("800 钻只够 2 个", r.allowDiamondBuy(tc, sec));
+    }
+
+    @Test
+    public void diamondBudget_zeroDisablesAndInvalidFallsBack() {
+        TestEngine e = new TestEngine();
+        Map<String, JSONObject> params = new HashMap<>();
+        ServerShieldResponder r = responder();
+
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"0\"}}"));
+        TaskContext zero = new TaskContext(e, "111", SID, state, params, "测试");
+        assertEquals(0L, r.diamondBudget(zero));
+        assertFalse("预算 0 = 不购买", r.allowDiamondBuy(zero, 1_700_000_000L));
+
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"abc\"}}"));
+        TaskContext bad = new TaskContext(e, "111", SID, state, params, "测试");
+        assertEquals("非法值回退 1200", 1200L, r.diamondBudget(bad));
+
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"-5\"}}"));
+        TaskContext negative = new TaskContext(e, "111", SID, state, params, "测试");
+        assertEquals("负数回退 1200", 1200L, r.diamondBudget(negative));
+
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"150000\"}}"));
+        TaskContext over = new TaskContext(e, "111", SID, state, params, "测试");
+        assertEquals("超上限夹到 100000", 100000L, r.diamondBudget(over));
+    }
+
     private static Map<String, Object> marchOf(long id, long type, long targetUid) {
         Map<String, Object> atk = new LinkedHashMap<>();
         atk.put("targetid", targetUid);

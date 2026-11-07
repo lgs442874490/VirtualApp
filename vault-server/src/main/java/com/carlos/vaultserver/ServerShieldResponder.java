@@ -104,8 +104,12 @@ public final class ServerShieldResponder {
     static final long SHIELD_ITEM_12H = 302305L;
     /** 2 小时护盾实测价格（钻石；以实际扣钻推送为准）。 */
     static final long DIAMOND_SHIELD_PRICE = 400L;
-    /** 钻石购盾日预算（默认 3 个/日）。 */
-    static final int DIAMOND_BUY_DAILY_MAX = 3;
+    /** 钻石购盾每日预算默认值（钻；≈3 个 × 400；0=不购买，用户可在 App 输入）。 */
+    static final long DIAMOND_BUDGET_DEFAULT = 1200L;
+    /** 每日钻石预算上限（钻；防误配成极大值）。 */
+    static final long DIAMOND_BUDGET_MAX = 100_000L;
+    /** 每日购买个数硬上限（防预算误配；实际由预算约束）。 */
+    static final int DIAMOND_BUY_DAILY_MAX = 10;
     /** 护盾账本状态回写节流。 */
     static final long SHIELD_LEDGER_WRITE_MS = 5_000L;
 
@@ -939,7 +943,7 @@ public final class ServerShieldResponder {
             FileLog.warn("反应式开盾 fpid={} 背包盾 item={} 使用失败 code={}",
                     fpid, String.valueOf(item), String.valueOf(code));
         }
-        // 3) 钻石购盾（默认关；日预算/单次 1 个）
+        // 3) 钻石购盾（默认关；用户可在 App 开关 + 配置每日钻石预算）
         boolean buyDiamond = tc.subOn("battle_shield", "shield_buy_diamond", false);
         if (buyDiamond) {
             int code = buyAndUseShield(tc, nowSec);
@@ -955,10 +959,12 @@ public final class ServerShieldResponder {
                         String.valueOf(DIAMOND_SHIELD_PRICE));
                 return true;
             }
-            saveState(tc, prefix + " → 背包无盾，钻石购盾失败 code=" + code
-                    + "（5 分钟后重试）");
+            String reason = code == -2
+                    ? "今日钻石预算已用尽或不足 1 个（预算" + diamondBudget(tc) + "钻）"
+                    : "钻石购盾失败 code=" + code;
+            saveState(tc, prefix + " → 背包无盾，" + reason + "（5 分钟后重试）");
             nextAttemptAt.set(now + RETRY_COOLDOWN_MILLIS);
-            FileLog.warn("反应式开盾 fpid={} 钻石购盾失败 code={}", fpid, String.valueOf(code));
+            FileLog.warn("反应式开盾 fpid={} 钻石购盾未成：{}", fpid, reason);
             writeShieldLedgerState(tc, true);
             return false;
         }
@@ -989,8 +995,10 @@ public final class ServerShieldResponder {
 
     /** 钻石购盾：先买 2 小时盾入背包，再显式使用；返回最终业务码。 */
     int buyAndUseShield(TaskContext tc, long nowSec) {
-        if (!allowDiamondBuy(nowSec)) {
-            FileLog.warn("钻石购盾跳过 fpid={}：今日已达上限 {}", fpid, String.valueOf(DIAMOND_BUY_DAILY_MAX));
+        if (!allowDiamondBuy(tc, nowSec)) {
+            FileLog.warn("钻石购盾跳过 fpid={}：预算/次数已达上限（预算{}钻，已购{}个/日，个数上限{}）",
+                    fpid, String.valueOf(diamondBudget(tc)), String.valueOf(diamondBuysToday),
+                    String.valueOf(DIAMOND_BUY_DAILY_MAX));
             return -2;
         }
         int buyCode;
@@ -1016,13 +1024,42 @@ public final class ServerShieldResponder {
         return useCode;
     }
 
-    boolean allowDiamondBuy(long nowSec) {
+    /**
+     * 今日是否还允许购买：预算余额够 1 个（按 {@link #DIAMOND_SHIELD_PRICE} 估算）且未超日个数硬上限。
+     * 预算 0=不购买；非法配置回退默认 1200 钻（见 {@link #diamondBudget(TaskContext)}）。
+     */
+    boolean allowDiamondBuy(TaskContext tc, long nowSec) {
         String day = dayKey(nowSec);
         if (!day.equals(diamondBuyDay)) {
             diamondBuyDay = day;
             diamondBuysToday = loadDiamondBuys(day);
         }
-        return diamondBuysToday < DIAMOND_BUY_DAILY_MAX;
+        long budget = diamondBudget(tc);
+        if (budget <= 0L) return false;
+        long spent = (long) diamondBuysToday * DIAMOND_SHIELD_PRICE;
+        return diamondBuysToday < DIAMOND_BUY_DAILY_MAX
+                && spent + DIAMOND_SHIELD_PRICE <= budget;
+    }
+
+    /** 每日钻石预算（钻）：用户配置；缺省/非法回退 1200；负数回退默认；上限 100000；0=不购买。 */
+    long diamondBudget(TaskContext tc) {
+        if (tc == null) return DIAMOND_BUDGET_DEFAULT;
+        String raw = tc.strategy("battle_shield", "shield_diamond_budget", "");
+        if (raw == null || raw.trim().isEmpty()) return DIAMOND_BUDGET_DEFAULT;
+        long v;
+        try {
+            v = Long.parseLong(raw.trim());
+        } catch (Exception e) {
+            FileLog.warn("battle_shield.shield_diamond_budget 非数字，回退 {}：{}",
+                    String.valueOf(DIAMOND_BUDGET_DEFAULT), raw);
+            return DIAMOND_BUDGET_DEFAULT;
+        }
+        if (v < 0L) {
+            FileLog.warn("battle_shield.shield_diamond_budget 为负数，回退 {}：{}",
+                    String.valueOf(DIAMOND_BUDGET_DEFAULT), raw);
+            return DIAMOND_BUDGET_DEFAULT;
+        }
+        return Math.min(v, DIAMOND_BUDGET_MAX);
     }
 
     void recordDiamondBuy(long nowSec) {

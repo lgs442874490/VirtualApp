@@ -417,7 +417,7 @@ public final class FnParams {
     //   sub:      gather_recall / gather_anti_harass / reactive / shield_anti_harass /
     //             shield_buy_diamond（另有兼容旧键 enabled/free/gather_attack/force_online）
     //   strategy: gather_mode / gather_eta_sec / gather_troops_min
-    //             shield_mode / shield_eta_sec / shield_troops_min
+    //             shield_mode / shield_eta_sec / shield_troops_min / shield_diamond_budget
     // 服务端会按同一份键读取并二次校验；App 侧只做保存前校验，非法值绝不落盘。
 
     /** 战斗护盾功能 id（与服务端 ServerShieldResponder / ServerTasks 一致）。 */
@@ -436,6 +436,10 @@ public final class FnParams {
     public static final long BS_ETA_SEC_MAX = 600L;
     /** 兵力阈值上限。 */
     public static final long BS_TROOPS_MIN_MAX = 10_000_000L;
+    /** 钻石购盾每日预算默认值（钻；≈3 个 × 400；0=不购买）。 */
+    public static final String BS_DIAMOND_BUDGET_DEFAULT = "1200";
+    /** 钻石购盾每日预算上限（钻；防误配成极大值）。 */
+    public static final long BS_DIAMOND_BUDGET_MAX = 100_000L;
 
     /**
      * 自动召回/自动开盾的抵达前秒数校验（纯函数，便于单测）。
@@ -475,6 +479,25 @@ public final class FnParams {
         }
         if (n < 0L) return lab + "不能为负数";
         if (n > BS_TROOPS_MIN_MAX) return lab + "过大";
+        return null;
+    }
+
+    /**
+     * 钻石购盾每日预算校验（纯函数，2026-11-08）：空/非数字/负数拒绝；0=不购买；上限 100000 钻。
+     *
+     * @return null=合法；否则中文错误文案
+     */
+    public static String validateDiamondBudget(String raw) {
+        String v = raw == null ? "" : raw.trim();
+        if (v.isEmpty()) return "请输入每日钻石预算（0=不购买）";
+        long n;
+        try {
+            n = Long.parseLong(v);
+        } catch (Throwable t) {
+            return "钻石预算必须是数字";
+        }
+        if (n < 0L) return "钻石预算不能为负数";
+        if (n > BS_DIAMOND_BUDGET_MAX) return "钻石预算不能超过 100000 钻";
         return null;
     }
 
