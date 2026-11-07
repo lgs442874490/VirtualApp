@@ -124,4 +124,41 @@ public class FeatureGateMatrixTest {
         // guardian 映射到 Feature.GUARDIAN：未实现→恒隐藏（当前矩阵 implemented=true，见下一条）。
         assertFalse(FeatureGate.dailyFnVisible("war", FeatureGate.TIER_GM, RELEASE));
     }
+
+    // ================= ACCOUNT_FARM（M5 起号，2026-11-07 立项恢复） =================
+
+    @Test
+    public void accountFarm_implementedAndVisibleForPremium() {
+        // M5 转正：implemented=true，未下发矩阵时回退 minTier=T3。
+        assertTrue(FeatureGate.Feature.ACCOUNT_FARM.implemented);
+        assertEquals(FeatureGate.TIER_PREMIUM, FeatureGate.Feature.ACCOUNT_FARM.minTier);
+        assertFalse("非调试项：正式包同样可见", FeatureGate.Feature.ACCOUNT_FARM.debugOnly);
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.ACCOUNT_FARM,
+                FeatureGate.TIER_PREMIUM, false, null, RELEASE));
+        assertTrue("矩阵命中 key 放行（低等级也可）",
+                FeatureGate.visible(FeatureGate.Feature.ACCOUNT_FARM,
+                        FeatureGate.TIER_BASIC, true,
+                        java.util.Collections.singletonList(FeatureGate.Feature.ACCOUNT_FARM.key),
+                        RELEASE));
+        assertEquals("起号", FeatureGate.Feature.ACCOUNT_FARM.label);
+    }
+
+    @Test
+    public void accountFarm_hiddenWithoutPermission() {
+        assertFalse("T2 及以下（无矩阵回退）不可见",
+                FeatureGate.visible(FeatureGate.Feature.ACCOUNT_FARM,
+                        FeatureGate.TIER_MEMBER, false, null, RELEASE));
+        assertFalse("矩阵未列出时不可见",
+                FeatureGate.visible(FeatureGate.Feature.ACCOUNT_FARM,
+                        FeatureGate.TIER_GM, true,
+                        java.util.Collections.singletonList("enemy_watch"), RELEASE));
+    }
+
+    @Test
+    public void accountFarm_countsIntoVisibleToolCount() {
+        // 起号卡计入工具箱计数：T3（无矩阵回退）至少 5（起号+敌情监控+真机监控+观察点+真机抓包）。
+        assertTrue(FeatureGate.visibleToolCount(FeatureGate.TIER_PREMIUM, RELEASE) >= 5);
+        assertTrue("T2（无矩阵）不含起号：起号 T3 起",
+                FeatureGate.visibleToolCount(FeatureGate.TIER_MEMBER, RELEASE) == 0);
+    }
 }

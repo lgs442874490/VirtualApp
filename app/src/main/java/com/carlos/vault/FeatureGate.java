@@ -95,6 +95,10 @@ public final class FeatureGate {
         // 2026-11-01 真机验证通过（分裂路由 43/101 网段，不影响游戏联网）→ release 放开；
         // 入口默认关闭，页面内有“抓包期间游戏可能短暂重连”的提示。
         PROTO_CAPTURE("proto_capture", TIER_PREMIUM, true, false, "真机抓包"),
+        // 起号（M5，2026-11-07 立项恢复）：BootstrapActivity 注册/起号/批次三区 + 账号回流。
+        // 2026-11-06 决策6 曾作为零引用死枚举删除；现服务端 registration/bootstrap API
+        // 已上线（M3/M4b），App 端 UI 落地 → implemented=true 转正，从工具箱入口卡进入。
+        ACCOUNT_FARM("account_farm", TIER_PREMIUM, true, false, "起号"),
 
         // ===== T3 高级会员：尚未实现（即使 T3 也隐藏，立项完成后再打开） =====
         MOVE_CITY("move_city", TIER_PREMIUM, false, false, "迁城"),
@@ -119,10 +123,11 @@ public final class FeatureGate {
         // ===== 调试/实测项（仅调试包可见，正式包一律不渲染） =====
         PROTOCOL_LOGGER("protocol_logger", TIER_BASIC, true, true, "协议监听");
 
-        // 2026-11-06 决策6：删除零引用死枚举（RANKING/RALLY_ATTACK/ACCOUNT_FARM/ACTIVITY_RANK/
+        // 2026-11-06 决策6：删除零引用死枚举（RANKING/RALLY_ATTACK/ACTIVITY_RANK/
         // MATCH3/TROOP_RUSH/PET_RESET/IMMIGRATION/RECON_REPORT 及 PROTOCOL_PROBE）——
         // 历史规划中功能的占位登记，生产代码零引用；PROTOCOL_PROBE 实际由 debugBuild 分支控制。
-        // 立项后按需重新登记，不要凭空恢复。
+        // 其中 ACCOUNT_FARM 已于 2026-11-07 随 M5 起号立项恢复（见上方枚举），其余仍按需
+        // 重新登记，不要凭空恢复。
 
         /** 稳定 key（日志/状态/document 用，不随中文名变化）。 */
         public final String key;
@@ -350,11 +355,12 @@ public final class FeatureGate {
     }
 
     /**
-     * 工具箱当前角色/构建/矩阵下的可用工具数（release 下 T3 敌情监控 + 真机监控 + 观察点 + 真机抓包；
-     * debug 包额外协议监听）。用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
+     * 工具箱当前角色/构建/矩阵下的可用工具数（release 下 T3 起号 + 敌情监控 + 真机监控 +
+     * 观察点 + 真机抓包；debug 包额外协议监听）。用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
      */
     public static int visibleToolCount(Context ctx) {
         int n = 0;
+        if (visible(ctx, Feature.ACCOUNT_FARM)) n++;
         if (visible(ctx, Feature.ENEMY_WATCH)) n++;
         if (visible(ctx, Feature.DEV_MONITOR)) n++;
         if (visible(ctx, Feature.WATCHPOINT)) n++;
@@ -367,6 +373,7 @@ public final class FeatureGate {
     @Deprecated
     public static int visibleToolCount(int tier, boolean debugBuild) {
         int n = 0;
+        if (visible(Feature.ACCOUNT_FARM, tier, false, null, debugBuild)) n++;
         if (visible(Feature.ENEMY_WATCH, tier, false, null, debugBuild)) n++;
         if (visible(Feature.DEV_MONITOR, tier, false, null, debugBuild)) n++;
         if (visible(Feature.WATCHPOINT, tier, false, null, debugBuild)) n++;

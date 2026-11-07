@@ -149,14 +149,15 @@ public class FeatureGateTest {
         boolean debug = FeatureGate.isDebugBuildType("release");
         assertFalse("release(T3) 不显示协议监听",
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
-        assertEquals("release(T3) 工具箱=敌情监控+真机监控+观察点+真机抓包", 4, FeatureGate.visibleToolCount(3, debug));
+        // M5（2026-11-07）：起号卡计入工具箱（起号+敌情监控+真机监控+观察点+真机抓包）
+        assertEquals("release(T3) 工具箱=起号+敌情监控+真机监控+观察点+真机抓包", 5, FeatureGate.visibleToolCount(3, debug));
     }
 
     @Test
     public void debugBuild_showsDebugTools() {
         boolean debug = FeatureGate.isDebugBuildType("debug");
         assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
-        assertEquals("debug(T3) 工具数=敌情监控+真机监控+观察点+真机抓包+协议监听", 5,
+        assertEquals("debug(T3) 工具数=起号+敌情监控+真机监控+观察点+真机抓包+协议监听", 6,
                 FeatureGate.visibleToolCount(3, debug));
         assertEquals("debug(T1) 仅协议监听（敌情监控需 T3）", 1, FeatureGate.visibleToolCount(1, debug));
     }
@@ -187,9 +188,9 @@ public class FeatureGateTest {
 
     @Test
     public void visibleToolCount_includesDevMonitorForT3() {
-        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 release 有 4 个工具；debug 额外协议监听=5
-        assertEquals(4, FeatureGate.visibleToolCount(3, false));
-        assertEquals(5, FeatureGate.visibleToolCount(3, true));
+        // ToolBox 卡片与 onCreate 防旁路判断同步：M5 起号计入后 T3 release 5 个工具；debug 额外协议监听=6
+        assertEquals(5, FeatureGate.visibleToolCount(3, false));
+        assertEquals(6, FeatureGate.visibleToolCount(3, true));
         assertEquals("T2 仍无任何可用工具", 0, FeatureGate.visibleToolCount(2, false));
     }
 

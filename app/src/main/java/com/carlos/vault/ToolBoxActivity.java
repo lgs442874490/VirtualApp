@@ -63,9 +63,10 @@ public class ToolBoxActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // 批次7 防旁路：本页只有 T3（敌情监控/真机监控）与调试工具；无任何可用工具时（含直接 Intent
-        // 启动绕过 Home 入口门控）直接返回，不放空壳页也不泄露功能清单。
-        if (!FeatureGate.visible(this, FeatureGate.Feature.ENEMY_WATCH)
+        // 批次7 防旁路：本页只有 T3（起号/敌情监控/真机监控/观察点/真机抓包）与调试工具；
+        // 无任何可用工具时（含直接 Intent 启动绕过 Home 入口门控）直接返回，不放空壳页也不泄露功能清单。
+        if (!FeatureGate.visible(this, FeatureGate.Feature.ACCOUNT_FARM)
+                && !FeatureGate.visible(this, FeatureGate.Feature.ENEMY_WATCH)
                 && !FeatureGate.visible(this, FeatureGate.Feature.DEV_MONITOR)
                 && !FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER)) {
             toast(FeatureGate.reasonText(FeatureGate.Feature.TOOLBOX));
@@ -93,6 +94,7 @@ public class ToolBoxActivity extends Activity {
         // 三消/爆兵/宠物洗练/移民抢位/侦察战报/迁城/坐标查询/充值记录/巨兽批量等均无实现）；
         // ③ 工具箱内调试/实测项仅调试包可见。
         // 注意：统一走 FeatureGate.visible(this, feature)（服务端矩阵优先），不要再传 tier 纯函数。
+        final boolean canFarm = FeatureGate.visible(this, FeatureGate.Feature.ACCOUNT_FARM);     // T3 起号（M5）
         final boolean canMonitor = FeatureGate.visible(this, FeatureGate.Feature.DEV_MONITOR);    // T3 高阶（正式包可见）
         final boolean canWatchpoint = FeatureGate.visible(this, FeatureGate.Feature.WATCHPOINT);   // T3 高阶
         final boolean canCapture = FeatureGate.visible(this, FeatureGate.Feature.PROTO_CAPTURE)
@@ -101,6 +103,16 @@ public class ToolBoxActivity extends Activity {
         final int toolCount = FeatureGate.visibleToolCount(this);
         if (toolCount > 0) {
             box.addView(sectionRow("可用工具 · " + toolCount, "诊断与监控"));
+            // 起号（M5，2026-11-07）：BootstrapActivity 注册接码/批量起号/账号回流三区页。
+            if (canFarm) {
+                LinearLayout farmCard = toolCard(UiStyle.Icon.USERS, "起号",
+                        "注册接码 · 批量起号 · 账号回流", UiStyle.BRAND_50);
+                farmCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
+                        UiStyle.INK3, 18));
+                farmCard.setOnClickListener(v -> startActivity(
+                        new Intent(this, com.carlos.vault.bootstrap.BootstrapActivity.class)));
+                box.addView(farmCard);
+            }
             // 协议监听（调试包专属：正式包不渲染）
             if (canProto) {
                 LinearLayout protoCard = toolCard(UiStyle.Icon.TARGET, "协议监听",
