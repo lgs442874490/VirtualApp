@@ -70,11 +70,14 @@ public final class ServerShieldResponder {
 
     // ---------------- 协议常量（实证口径，勿凭猜测改） ----------------
 
-    /** 行军类型：1=侦查 2=进攻 100=集结进攻（5=驻防/增援不触发护盾）。 */
+    /** 行军类型：1=侦查 2=进攻 10/12/99/100/102=集结类（5=驻防/增援不触发护盾）。 */
     private static final long MARCH_RECON = 1L;
     private static final long MARCH_WAR = 2L;
-    /** 集结进攻（飞艇/集结）同样攻玩家城：按 WAR 触发护盾（对齐网页版 RALLY_CITY_ATTACK）。 */
+    /** 集结进攻发起（100）与集结主体（102）：均按 WAR 触发护盾（对齐网页版 RALLY_CITY_ATTACK
+     *  与 ServerGuardianEngine.DEFAULT_ATTACK_TYPES={2,100,102}；实证 A-1：99=随从、102=主体）。 */
     private static final long MARCH_RALLY = 100L;
+    private static final long MARCH_RALLY_MAIN = 102L;
+
     /** 目标类型：1=玩家城（打野/情报类 target_type 非 1，不触发）。 */
     private static final long TARGET_CITY = 1L;
     /** 目标类型：2=地图资源点（采集点遭袭识别用，对齐网页版 targetsOwnResource）。 */
@@ -82,6 +85,11 @@ public final class ServerShieldResponder {
     /** 目标采集行军类型：4=个人采集；110=联盟矿采集（仅识别，不自动撤联盟矿）。 */
     private static final long MARCH_GATHER = 4L;
     private static final long MARCH_ALLIANCE_GATHER = 110L;
+
+    /** 是否集结类行军（100=发起集结 / 102=集结主体）；99 随从与集结同 ETA，不单独触发。 */
+    static boolean isRallyType(long type) {
+        return type == MARCH_RALLY || type == MARCH_RALLY_MAIN;
+    }
 
     /** 采集极限场景：召回失败重试间隔 / 最大尝试次数 / watch 空闲回收。 */
     static final long GATHER_WATCH_RETRY_MS = 60_000L;
@@ -101,8 +109,13 @@ public final class ServerShieldResponder {
     /** 护盾账本状态回写节流。 */
     static final long SHIELD_LEDGER_WRITE_MS = 5_000L;
 
-    /** WAR/RECON 行军推送源（含 del，用于敌方行军撤回/消失）。 */
+    /**
+     * WAR/RECON 行军推送源（含 del，用于敌方行军撤回/消失）。
+     * <p>{@code notify_world_situation_info}（无后缀）是登录/重连后的全量快照：不监听它，
+     * 断线恢复后已在途的进攻将无法被识别，只能等下一次 add/up（可能没有）——表现为开盾过晚。
+     */
     static final Set<String> SITUATION_PROTOS = Set.of(
+            "notify_world_situation_info",
             "notify_world_situation_info_add",
             "notify_world_situation_info_up",
             "notify_world_situation_info_del",
@@ -276,6 +289,12 @@ public final class ServerShieldResponder {
     private final Map<Long, Long> gatherRecalledAt = new ConcurrentHashMap<>();
     /** 敌方同点行军缓存：marchId → 最近状态（推送线程写，tick 线程读）。 */
     private final Map<Long, EnemyMarch> enemyMarches = new ConcurrentHashMap<>();
+    /**
+     * 观察哨槽位 id → marchId（包可见：单测断言 del 清理）。
+     * <p>{@code notify_world_situation_info_del {"id_arr":[9.0]}} 携带的是 player_situation 槽位，
+     * 不是 marchId；没有这张映射就无法按 del 清理 {@link #enemyMarches}，敌方撤回后采集召回会误判。
+     */
+    final Map<Long, Long> situationSlotMarch = new ConcurrentHashMap<>();
     /** 我方采集 watch：marchId → 状态机（tick 线程独占写）。 */
     private final Map<Long, GatherWatch> gatherWatches = new ConcurrentHashMap<>();
     /** 背包护盾账本：itemId → count（init + update 增量）。 */
@@ -377,12 +396,23 @@ public final class ServerShieldResponder {
 
     /** 推送入口（带引擎：采集行军来源需要读核心资产库；engine 可 null=测试无资产库）。 */
     void onPush(Map<String, Object> content, long ownUid, WjdrEngine engine) {
+        recordSituationSlots(content);
         trackEnemyMarches(content, ownUid);
         Risk r = riskOf(content, ownUid);
         if (r != null) {
             synchronized (riskLock) {
-                risk = r;
-                lastEventKind = r.kind;
+                // 合并而非覆盖：后到的推送（可能是更晚的波次/另一支部队）不得推迟
+                // 已记录的更早到达时间，否则第一波到达时无盾（"被打了才开盾"）。
+                Risk base = risk;
+                // 旧风险已到达超过保鲜期：不再参与合并，否则会把过期 endtime 带进新风险
+                // 并在下一拍被 decide 当作陈旧事件整体丢弃（连新推送一起吞掉）。
+                if (base != null && base.endtimeSec > 0L
+                        && base.endtimeSec < serverNowSec(engine) - EVENT_TTL_SEC) {
+                    base = null;
+                }
+                Risk merged = mergeRisk(base, r);
+                risk = merged;
+                lastEventKind = merged.kind;
                 lastEventAt = nowMs.getAsLong();
                 etaCheckAtMs = 0;
                 dirty.set(true);
@@ -395,12 +425,104 @@ public final class ServerShieldResponder {
         }
     }
 
-    /** 敌方 situation_del：按 marchId 移除缓存。 */
+    /**
+     * 合并新旧风险：WAR 优先；endtime 取更早的非 0 值（0=未知不参与比较）；
+     * 兵力任一未知（-1）则整体未知，否则求和。
+     */
+    private static Risk mergeRisk(Risk old, Risk fresh) {
+        if (old == null) return fresh;
+        if (fresh == null) return old;
+        String kind = ("WAR".equals(old.kind) || "WAR".equals(fresh.kind)) ? "WAR" : "RECON";
+        long end;
+        if (old.endtimeSec <= 0L) end = fresh.endtimeSec;
+        else if (fresh.endtimeSec <= 0L) end = old.endtimeSec;
+        else end = Math.min(old.endtimeSec, fresh.endtimeSec);
+        long troops;
+        if (old.troops < 0L || fresh.troops < 0L) troops = -1L;
+        else troops = old.troops + fresh.troops;
+        return new Risk(kind, end, troops);
+    }
+
+    /**
+     * 记录观察哨槽位 → marchId：
+     * ① {@code {"marches":{"9.0":{"march":{"id":...}}}}}（add/up）；
+     * ② {@code {"situation_info":{...}}}（登录全量快照；Map 键或元素 id 是槽位）。
+     * 仅用于 {@code notify_world_situation_info_del.id_arr} 按槽位清理敌方行军缓存。
+     */
+    private void recordSituationSlots(Map<String, Object> content) {
+        if (content == null) return;
+        recordSlots(content.get("marches"), true);
+        recordSlots(content.get("situation_info"), false);
+    }
+
+    private void recordSlots(Object raw, boolean keyIsSlot) {
+        if (raw instanceof Map) {
+            for (Map.Entry<?, ?> e : ((Map<?, ?>) raw).entrySet()) {
+                Map<String, Object> entry = Exec.mapOf(e.getValue());
+                long slot = keyIsSlot ? slotIdOf(e.getKey())
+                        : (entry == null ? 0L : Exec.longOf(entry.get("id")));
+                putSlotMarch(slot, entry);
+            }
+        } else if (raw instanceof List) {
+            for (Object v : (List<?>) raw) {
+                Map<String, Object> entry = Exec.mapOf(v);
+                putSlotMarch(entry == null ? 0L : Exec.longOf(entry.get("id")), entry);
+            }
+        }
+    }
+
+    private void putSlotMarch(long slot, Map<String, Object> entry) {
+        if (slot <= 0L || entry == null) return;
+        Map<String, Object> march = Exec.mapOf(entry.get("march"));
+        long id = march == null ? Exec.longOf(entry.get("id")) : Exec.longOf(march.get("id"));
+        if (id > 0L) situationSlotMarch.put(slot, id);
+    }
+
+    /** 槽位 id 宽容解析：数字/数字字符串/"9.0" 这类 double 字符串（Exec.longOf 不认 9.0）。 */
+    static long slotIdOf(Object v) {
+        if (v == null) return 0L;
+        if (v instanceof Number) return ((Number) v).longValue();
+        String s = String.valueOf(v).trim();
+        if (s.isEmpty()) return 0L;
+        try {
+            return Long.parseLong(s);
+        } catch (Exception ignored) {
+        }
+        try {
+            return (long) Double.parseDouble(s);
+        } catch (Exception ignored) {
+            return 0L;
+        }
+    }
+
+    /**
+     * 敌方 situation_del：兼容三种实证形状——
+     * ① {@code to_marchs/marchs:[{id,...}]}（联盟态势）；
+     * ② 顶层 {@code {"id":11261}}（alliance_situation_del，设计契约）；
+     * ③ {@code {"id_arr":[9.0]}}（info_del，槽位 id，经 {@link #situationSlotMarch} 换 marchId）。
+     */
     void onSituationDel(Map<String, Object> content) {
+        if (content == null) return;
         for (Map<String, Object> m : marchesOf(content)) {
             long id = Exec.longOf(m.get("id"));
             if (id > 0) enemyMarches.remove(id);
         }
+        long directId = Exec.longOf(content.get("id"));
+        if (directId > 0L) enemyMarches.remove(directId);
+        Object idArr = content.get("id_arr");
+        if (idArr instanceof List) {
+            for (Object o : (List<?>) idArr) {
+                long slot = slotIdOf(o);
+                if (slot <= 0L) continue;
+                Long mid = situationSlotMarch.remove(slot);
+                if (mid != null && mid > 0L) enemyMarches.remove(mid);
+            }
+        }
+    }
+
+    /** 单测：当前跟踪的敌方行军数（验证 del 各形状清理）。 */
+    int trackedEnemyMarchCount() {
+        return enemyMarches.size();
     }
 
     /** 把 situation 推送中的敌方同点行军写入缓存（供采集极限场景判定）。 */
@@ -441,6 +563,9 @@ public final class ServerShieldResponder {
         }
         long ttl = Math.max(120_000L, EVENT_TTL_MILLIS);
         enemyMarches.entrySet().removeIf(en -> now - en.getValue().lastSeenMs > ttl);
+        // 槽位映射不随 enemyMarches 同步删除：行军可能因缺 owner/类型被 track 过滤而未入缓存，
+        // 但 del 仍需按槽位精确清理；槽位数有限，仅用上限防异常 payload 无限增长。
+        if (situationSlotMarch.size() > 512) situationSlotMarch.clear();
     }
 
     /** 敌方行军终点坐标（endpoint 优先，退化 target.map_resource）。 */
@@ -1496,13 +1621,13 @@ public final class ServerShieldResponder {
         long endSec = 0, troops = 0;
         for (Map<String, Object> m : marchesOf(content)) {
             long type = Exec.longOf(m.get("type"));
-            // 1=侦查、2=进攻、100=集结进攻（网页版 RALLY_CITY_ATTACK 同按护盾处理）
-            if (type != MARCH_RECON && type != MARCH_WAR && type != MARCH_RALLY) continue;
+            // 1=侦查、2=进攻、100/102=集结进攻（网页版 RALLY_CITY_ATTACK 同按护盾处理）
+            if (type != MARCH_RECON && type != MARCH_WAR && !isRallyType(type)) continue;
             Object targetType = m.get("target_type");
             if (targetType != null && Exec.longOf(targetType) != TARGET_CITY) continue;
             if (targetUidOf(m) != ownUid) continue;
             hit = true;
-            if (type == MARCH_WAR || type == MARCH_RALLY) war = true;
+            if (type == MARCH_WAR || isRallyType(type)) war = true;
             else recon = true;
             long e = Exec.longOf(m.get("endtime"));
             if (e > 0 && (endSec == 0 || e < endSec)) endSec = e;
@@ -1577,19 +1702,42 @@ public final class ServerShieldResponder {
     private static void collectMarches(Map<String, Object> c, List<Map<String, Object>> out) {
         Object marches = c.get("marches");
         if (marches instanceof Map) {
-            for (Object v : ((Map<?, ?>) marches).values()) {
-                Map<String, Object> e = Exec.mapOf(v);
-                if (e == null) continue;
-                Map<String, Object> m = Exec.mapOf(e.get("march"));
-                out.add(m != null ? m : e);
-            }
+            for (Object v : ((Map<?, ?>) marches).values()) addMarchEntry(v, out);
         } else if (marches instanceof List) {
-            out.addAll(Exec.mapsOf(marches));
+            for (Object v : (List<?>) marches) addMarchEntry(v, out);
         }
         for (String key : new String[]{"to_marchs", "marchs"}) {
             Object arr = c.get(key);
-            if (arr instanceof List) out.addAll(Exec.mapsOf(arr));
+            if (arr instanceof List) {
+                for (Object v : (List<?>) arr) addMarchEntry(v, out);
+            }
         }
+        // 单数形状 {"march":{...}}（实证 2026-10-15 §2.2 敌进攻发射帧；与 WarNotify 同口径）。
+        addMarchEntry(c.get("march"), out);
+        // 登录/重连全量快照 notify_world_situation_info：situation_info（Map 键=槽位 或 List）。
+        Object info = c.get("situation_info");
+        if (info instanceof Map) {
+            for (Object v : ((Map<?, ?>) info).values()) addMarchEntry(v, out);
+        } else if (info instanceof List) {
+            for (Object v : (List<?>) info) addMarchEntry(v, out);
+        }
+    }
+
+    /** 加入一条行军（兼容 {march:{...}} 包裹），按 id 去重；无 id 的保留（riskOf 仍可能命中）。 */
+    private static void addMarchEntry(Object raw, List<Map<String, Object>> out) {
+        Map<String, Object> e = Exec.mapOf(raw);
+        if (e == null) return;
+        Map<String, Object> wrapped = Exec.mapOf(e.get("march"));
+        Map<String, Object> march = wrapped != null ? wrapped : e;
+        long id = Exec.longOf(march.get("id"));
+        if (id <= 0L) {
+            out.add(march);
+            return;
+        }
+        for (Map<String, Object> exist : out) {
+            if (Exec.longOf(exist.get("id")) == id) return;
+        }
+        out.add(march);
     }
 
     /** 守方 uid：atk_city.targetid 优先，退化 target.map_city.uid；取不到返回 0（不触发）。

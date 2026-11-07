@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 
 /**
  * 反应式开盾（P1-2）单测：WAR/RECON 推送 → 门控 → 幂等 → 让位保护 → 状态留痕。
@@ -49,9 +50,20 @@ public class ServerShieldResponderTest {
         long uid = OWN_UID;
         final List<String> requested = new ArrayList<>();
         final List<Map<String, Object>> argLog = new ArrayList<>();
+        final List<BiConsumer<String, Map<String, Object>>> hooks = new ArrayList<>();
 
         TestEngine() {
             super(null);
+        }
+
+        @Override
+        public void addMessageHook(BiConsumer<String, Map<String, Object>> hook) {
+            if (hook != null) hooks.add(hook);
+        }
+
+        /** 模拟引擎收到推送：驱动 attach 注册的全部钩子（验证 SITUATION_PROTOS 分发）。 */
+        void push(String proto, Map<String, Object> content) {
+            for (BiConsumer<String, Map<String, Object>> h : hooks) h.accept(proto, content);
         }
 
         @Override
@@ -969,6 +981,129 @@ public class ServerShieldResponderTest {
 
         assertEquals(List.of("req_city_item_free_use"), e.requested);
         assertTrue(new JSONObject(modText()).getString("reactive").contains("被进攻"));
+    }
+
+    // ================= 2026-11-07：预警推送形状/多波合并/集结主体/全量快照/del 形状 =================
+
+    @Test
+    public void singleMarchShape_triggersShield() {
+        // 实证 2026-10-15 §2.2：敌进攻发射帧是 {"march":{...}} 单数形状（此前被解析器丢弃）。
+        account(true, null);   // 默认 immediate
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("march", marchOf(13080L, 2, OWN_UID));
+        r.onPush(content, OWN_UID);
+
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+        assertEquals("WAR", r.lastEventKind);
+    }
+
+    @Test
+    public void multiWave_keepsEarliestEta() {
+        // 多波进攻：后到的更晚波次不得推迟已记录的更早卡秒点，否则第一波到达时无盾。
+        account(true, "{\"sub\":{\"reactive\":true}}");   // before_arrival 默认 2 秒
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+        long earliestCheck = r.etaCheckAtMs;
+        assertTrue("首波应挂起到到达前 2 秒", earliestCheck > 0L);
+
+        // 第二波更晚（+600s）：不得把卡秒点推迟到第二波
+        r.onPush(withEndtime(alliancePush(13081L, 2, OWN_UID, 1), sec.get() + 600L), OWN_UID);
+        assertFalse(r.tick(e));
+        assertEquals("多波风险应保留最早到达时间", earliestCheck, r.etaCheckAtMs);
+        assertTrue(e.requested.isEmpty());
+
+        // 到第一波到达前 1 秒：开盾（而不是等第二波）
+        nowMs.addAndGet(299_000L);
+        sec.addAndGet(299L);
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+    }
+
+    @Test
+    public void rallyMainType102_triggersShield() {
+        // 实证 A-1：102=集结主体（此前只认 100，集结主体打城不开盾）。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+
+        r.onPush(alliancePush(15002L, 102, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+        assertEquals("WAR", r.lastEventKind);
+    }
+
+    @Test
+    public void fullSnapshotProto_triggersShield() {
+        // 登录/重连全量快照 notify_world_situation_info（此前不在白名单，在途进攻丢失）。
+        // 真实形状是 situation_info（见 AssetParsers.worldSituation），不是 marches。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+        r.attach(e);
+
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("id", 9L);
+        entry.put("march", marchOf(13080L, 2, OWN_UID));
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("situation_info", Map.of("9.0", entry));
+        e.push("notify_world_situation_info", snapshot);
+
+        assertEquals("全量快照槽位应记录映射",
+                Long.valueOf(13080L), r.situationSlotMarch.get(9L));
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+    }
+
+    @Test
+    public void situationDel_idArr_clearsSlotMapping() {
+        // 观察哨 del 用 {"id_arr":[9.0]}（槽位 id）表达；应按槽位映射清掉敌方行军缓存。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        ServerShieldResponder r = responder();
+        r.attach(e);
+
+        e.push("notify_world_situation_info_add", worldPush(13080L, 2));
+        assertEquals("槽位 9.0 应映射到 marchId 13080",
+                Long.valueOf(13080L), r.situationSlotMarch.get(9L));
+
+        Map<String, Object> del = new LinkedHashMap<>();
+        del.put("id_arr", List.of("9.0"));
+        e.push("notify_world_situation_info_del", del);
+        assertFalse("del 后槽位映射应清理", r.situationSlotMarch.containsKey(9L));
+    }
+
+    @Test
+    public void situationDel_topLevelId_removesTrackedMarch() {
+        // 设计契约：alliance_situation_del 形如 {"id":11261}（无 marches 包裹）。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        ServerShieldResponder r = responder();
+        r.attach(e);
+
+        e.push("notify_world_alliance_situation_add", alliancePush(11261L, 2, OWN_UID, 1));
+        assertEquals(1, r.trackedEnemyMarchCount());
+
+        Map<String, Object> del = new LinkedHashMap<>();
+        del.put("id", 11261L);
+        e.push("notify_world_alliance_situation_del", del);
+        assertEquals(0, r.trackedEnemyMarchCount());
     }
 
     // ================= 2026-11-06 决策：护盾只读新键（旧 eta_sec/troops_min 不再兼容） =================
