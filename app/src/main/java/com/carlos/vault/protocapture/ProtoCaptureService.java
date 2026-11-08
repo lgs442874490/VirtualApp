@@ -7,6 +7,9 @@ import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.VpnService;
 import android.os.Build;
 import android.os.ParcelFileDescriptor;
@@ -15,6 +18,7 @@ import com.carlos.vault.wjdr.protocol.GameMessage;
 
 import org.uproxy.tun2socks.Tun2SocksJni;
 
+import java.io.File;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetAddress;
@@ -39,11 +43,15 @@ public class ProtoCaptureService extends VpnService {
     /** 游戏协议端口（登录/主城/世界）；其余 TCP 仍转发但不解码记录。 */
     private static final Set<Integer> GAME_PORTS = new HashSet<>(Arrays.asList(
             30101, 30102, 30103, 30104, 30105));
-    private static final String[] GAME_PACKAGES = {"com.gof.china", "com.gof.global"};
 
     private static volatile boolean running;
     private static volatile int socksPort;
     private static volatile String targetPackage = "";
+    /** 并发 SOCKS 连接上限：防止回环/异常客户端把线程与内存打爆（真机 OOM 崩溃）。 */
+    private final java.util.concurrent.atomic.AtomicInteger activeConns =
+            new java.util.concurrent.atomic.AtomicInteger();
+    /** 启停互斥：避免 start/stop 并发导致 libtun2socks 重复释放 abort（2026-11-08 真机崩溃）。 */
+    private static final Object START_STOP_LOCK = new Object();
 
     private volatile boolean stopping;
     private ParcelFileDescriptor tun;
@@ -83,71 +91,79 @@ public class ProtoCaptureService extends VpnService {
     }
 
     private void startCapture(String target) {
-        if (running) return;
-        stopping = false;
-        try {
-            startForegroundNotice();
-            targetPackage = resolveTarget(target);
-            server = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
-            socksPort = server.getLocalPort();
-            serverThread = new Thread(this::acceptLoop, "proto-capture-socks");
-            serverThread.setDaemon(true);
-            serverThread.start();
+        synchronized (START_STOP_LOCK) {
+            if (running) return;
+            stopping = false;
+            try {
+                startForegroundNotice();
+                // 实时落盘：抓包进程崩溃（真机 libtun2socks OOM/SIGABRT）时内存记录会丢，
+                // 文件里保留崩溃前已抓到的协议，便于事后分析。
+                ProtoCaptureLog.setLiveFile(new File(getFilesDir(), "proto-capture-live.txt"));
+                targetPackage = resolveTarget(target);
+                server = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"));
+                socksPort = server.getLocalPort();
+                serverThread = new Thread(this::acceptLoop, "proto-capture-socks");
+                serverThread.setDaemon(true);
+                serverThread.start();
 
-            Builder b = new Builder();
-            b.setSession("号库真机抓包");
-            b.setMtu(1500);
-            b.addAddress("10.0.0.1", 24);
-            // 分裂模式（rabbit 默认）：只把游戏服务器所在网段导入 VPN；DNS/其它流量走真实网络，
-            // 避免游戏检测到全局 VPN 而报“无法使用网络”。
-            b.addRoute("43.0.0.0", 8);
-            b.addRoute("101.0.0.0", 8);
-            if (!targetPackage.isEmpty()) {
-                try {
-                    b.addAllowedApplication(targetPackage);
-                } catch (Throwable t) {
-                    // 目标包未安装/受限：退化为抓全量（排除自己，避免回环）
+                Builder b = new Builder();
+                b.setSession("号库真机抓包");
+                b.setMtu(1500);
+                b.addAddress("10.0.0.1", 24);
+                // 分裂模式（rabbit 默认）：只把游戏服务器所在网段导入 VPN；DNS/其它流量走真实网络，
+                // 避免游戏检测到全局 VPN 而报“无法使用网络”。
+                b.addRoute("43.0.0.0", 8);
+                b.addRoute("101.0.0.0", 8);
+                if (!targetPackage.isEmpty()) {
                     try {
-                        b.addDisallowedApplication(getPackageName());
-                    } catch (Throwable ignored) {
+                        b.addAllowedApplication(targetPackage);
+                    } catch (Throwable t) {
+                        // 目标包未安装/受限：退化为全部应用（不排除自身，见下）
                     }
                 }
-            } else {
-                try {
-                    b.addDisallowedApplication(getPackageName());
-                } catch (Throwable ignored) {
+                // 目标为空=全部应用：不能 addDisallowedApplication(自身)。
+                // 容器内游戏（com.gof.china）与号库宿主同 UID，排除号库会把游戏流量一起漏掉。
+                tun = b.establish();
+                if (tun == null) {
+                    stopCapture();
+                    return;
                 }
-            }
-            tun = b.establish();
-            if (tun == null) {
+                final int fd = tun.getFd();
+                final int port = socksPort;
+                running = true;
+                nativeThread = new Thread(() -> {
+                    try {
+                        Tun2SocksJni.runTun2Socks(fd, 1500, "10.0.0.1", "255.255.255.0",
+                                null, "127.0.0.1:" + port, null, null, 0, 0);
+                    } catch (Throwable ignored) {
+                    } finally {
+                        if (!stopping) stopCapture();
+                    }
+                }, "proto-capture-tun2socks");
+                nativeThread.setDaemon(true);
+                nativeThread.start();
+            } catch (Throwable t) {
                 stopCapture();
-                return;
             }
-            final int fd = tun.getFd();
-            final int port = socksPort;
-            running = true;
-            nativeThread = new Thread(() -> {
-                try {
-                    Tun2SocksJni.runTun2Socks(fd, 1500, "10.0.0.1", "255.255.255.0",
-                            null, "127.0.0.1:" + port, null, null, 0, 0);
-                } catch (Throwable ignored) {
-                } finally {
-                    if (!stopping) stopCapture();
-                }
-            }, "proto-capture-tun2socks");
-            nativeThread.setDaemon(true);
-            nativeThread.start();
-        } catch (Throwable t) {
-            stopCapture();
         }
     }
 
+    /**
+     * 实际抓取目标：容器内游戏包 UID == 号库自身 UID 时改抓宿主包名（VPN 按 UID 覆盖容器游戏）。
+     * 空值=全部应用；优先检测已安装的游戏包（容器内同样返回宿主包名）。
+     */
     private String resolveTarget(String requested) {
-        if (requested != null && !requested.trim().isEmpty()) return requested.trim();
+        String t = requested != null ? requested.trim() : "";
+        if (!t.isEmpty()) {
+            long uid = packageUid(t);
+            return ProtoCaptureTargets.resolve(t, android.os.Process.myUid(), uid, getPackageName());
+        }
         PackageManager pm = getPackageManager();
-        for (String p : GAME_PACKAGES) {
+        for (String p : ProtoCaptureTargets.GAME_PACKAGES) {
             try {
                 pm.getPackageInfo(p, 0);
+                long uid = packageUid(p);
+                if (uid > 0L && uid == android.os.Process.myUid()) return getPackageName();
                 return p;
             } catch (Throwable ignored) {
             }
@@ -155,11 +171,34 @@ public class ProtoCaptureService extends VpnService {
         return "";
     }
 
+    /** 包名对应 UID；查不到返回 0（不改写目标）。 */
+    private long packageUid(String pkg) {
+        try {
+            return getPackageManager().getApplicationInfo(pkg, 0).uid;
+        } catch (Throwable t) {
+            return 0L;
+        }
+    }
+
     private void acceptLoop() {
         while (!stopping && server != null && !server.isClosed()) {
             try {
                 final Socket client = server.accept();
-                Thread t = new Thread(() -> handle(client), "proto-capture-conn");
+                if (activeConns.get() >= 8) {
+                    try {
+                        client.close();
+                    } catch (Throwable ignored) {
+                    }
+                    continue;
+                }
+                activeConns.incrementAndGet();
+                Thread t = new Thread(() -> {
+                    try {
+                        handle(client);
+                    } finally {
+                        activeConns.decrementAndGet();
+                    }
+                }, "proto-capture-conn");
                 t.setDaemon(true);
                 t.start();
             } catch (Throwable t) {
@@ -168,6 +207,29 @@ public class ProtoCaptureService extends VpnService {
                 }
             }
         }
+    }
+
+    /** 把 socket 绑到物理网络（非 VPN），用于 protect 失败时绕过 VPN 防回环。 */
+    private boolean bindToPhysicalNetwork(Socket s) {
+        try {
+            ConnectivityManager cm = (ConnectivityManager) getSystemService(CONNECTIVITY_SERVICE);
+            if (cm == null) return false;
+            for (Network n : cm.getAllNetworks()) {
+                NetworkCapabilities c = cm.getNetworkCapabilities(n);
+                if (c == null) continue;
+                boolean physical = c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+                        || c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+                        || c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET);
+                if (!physical || c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue;
+                try {
+                    n.bindSocket(s);
+                    return true;
+                } catch (Throwable ignored) {
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
     }
 
     private void handle(Socket client) {
@@ -228,10 +290,29 @@ public class ProtoCaptureService extends VpnService {
             }
             if (r == null) return;
             upstream = new Socket();
-            // 若抓的是宿主/多开器自身（VA 容器同 UID），上游 socket 必须 protect 绕过 VPN，防回环
+            // 上游 socket 必须 protect 绕过 VPN：否则 43/101 网段的上游连接会被自己的 VPN
+            // 再次捕获 → SOCKS 回环（真机表现：loginauth 每 5ms 重发、S2C=0、进程 OOM 崩溃）。
+            // protect 失败时直接拒绝该连接，绝不能继续 connect，否则回环风暴。
+            boolean protectedOk;
             try {
-                protect(upstream);
-            } catch (Throwable ignored) {
+                protectedOk = protect(upstream);
+            } catch (Throwable t) {
+                protectedOk = false;
+            }
+            // 部分 ROM（vivo 等）上 VpnService.protect(Socket) 会返回 false；退回用
+            // ConnectivityManager 把 socket 绑到物理网络（WiFi/蜂窝），同样绕过 VPN。
+            if (!protectedOk) {
+                protectedOk = bindToPhysicalNetwork(upstream);
+            }
+            if (!protectedOk) {
+                try {
+                    upstream.close();
+                } catch (Throwable ignored) {
+                }
+                co.write(Socks5Protocol.failReply(Socks5Protocol.REP_FAIL));
+                co.flush();
+                android.util.Log.w("ProtoCapture", "protect/bind failed, reject to avoid SOCKS loop");
+                return;
             }
             upstream.connect(new InetSocketAddress(r.host, r.port), 10_000);
             upstream.setSoTimeout(0);
@@ -241,7 +322,7 @@ public class ProtoCaptureService extends VpnService {
             final boolean capture = GAME_PORTS.contains(r.port);
             final CaptureCodec codec;
             try {
-                codec = capture ? new CaptureCodec(this) : null;
+                codec = capture ? CaptureCodec.get(this) : null;
             } catch (Throwable t) {
                 // schema 加载失败：仍转发，只记录原始 hex
                 startPump(ci, upstream.getOutputStream(), true, r.port, null);
@@ -288,6 +369,13 @@ public class ProtoCaptureService extends VpnService {
 
     private void record(boolean c2s, CaptureCodec codec, byte[] frame) {
         try {
+            if (frame.length > 512 * 1024) {
+                // 超大帧（联盟成员列表等）不深解码，避免递归/大数组把堆压爆；保留原始头。
+                ProtoCaptureLog.add(new ProtoCaptureRecord(System.currentTimeMillis(),
+                        c2s ? "C2S" : "S2C", "large_frame", "大帧(>" + (512 * 1024) + "B，未解码)",
+                        "", frame.length, ProtoCaptureLog.hex(frame, 64)));
+                return;
+            }
             GameMessage m = codec.decode(c2s, frame);
             String proto = m == null ? "" : m.getProto();
             Object content = m == null ? null : m.getContent();
@@ -342,28 +430,30 @@ public class ProtoCaptureService extends VpnService {
     }
 
     private void stopCapture() {
-        if (stopping) return;
-        stopping = true;
-        running = false;
-        try {
-            Tun2SocksJni.terminateTun2Socks();
-        } catch (Throwable ignored) {
+        synchronized (START_STOP_LOCK) {
+            if (stopping) return;
+            stopping = true;
+            running = false;
+            try {
+                Tun2SocksJni.terminateTun2Socks();
+            } catch (Throwable ignored) {
+            }
+            try {
+                if (server != null) server.close();
+            } catch (Throwable ignored) {
+            }
+            try {
+                if (tun != null) tun.close();
+            } catch (Throwable ignored) {
+            }
+            server = null;
+            tun = null;
+            try {
+                stopForeground(true);
+            } catch (Throwable ignored) {
+            }
+            stopSelf();
         }
-        try {
-            if (server != null) server.close();
-        } catch (Throwable ignored) {
-        }
-        try {
-            if (tun != null) tun.close();
-        } catch (Throwable ignored) {
-        }
-        server = null;
-        tun = null;
-        try {
-            stopForeground(true);
-        } catch (Throwable ignored) {
-        }
-        stopSelf();
     }
 
     @Override

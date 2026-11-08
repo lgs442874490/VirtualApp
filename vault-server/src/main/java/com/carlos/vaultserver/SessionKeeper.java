@@ -166,6 +166,8 @@ public final class SessionKeeper implements SessionControl,
         this.war = war;
         // 引擎静态读策略 → 账号库当前值（policy API 可在线改）
         WjdrEngine.setTakeoverPolicySource(store::policy);
+        // P2-7 补：注册默认会话控制面（RoundRunner/ModularRoundRunner 正常调度路径也能拿到，离线强制上线生效）
+        TaskContext.setDefaultSessionControl(this);
     }
 
     // ---------- 登录目标角色绑定（静态：引擎/状态存储经参数注入，JVM 单测可替身直跑） ----------
@@ -1054,7 +1056,7 @@ public final class SessionKeeper implements SessionControl,
             if (SessionKeeper.this.wartimeYield(fpid)) return;   // P7 战时让位
             try {
                 TaskContext tc = new TaskContext(engine, fpid, sidNow, stateStore,
-                        java.util.Collections.emptyMap(), "角色", null, roleUid);
+                        java.util.Collections.emptyMap(), "角色", null, roleUid).withSessionControl(SessionKeeper.this);
                 ServerTasks.runAllianceDonate(tc);
             } catch (Throwable t) {
                 FileLog.warn("兄弟角色科技捐献异常 {}：{}", key, String.valueOf(t));
@@ -1578,6 +1580,23 @@ public final class SessionKeeper implements SessionControl,
     @Override
     public RoleOpResult roleAction(String fpid, String sid, String uid, String action) {
         return roleAction(fpid, sid, uid, action, null);
+    }
+
+    /** 按角色 uid 在账号库中定位账号并执行登录（离线顶号上线用）。 */
+    @Override
+    public RoleOpResult roleActionByUid(String uid, String action) {
+        long targetUid = parseUid(uid);
+        if (targetUid <= 0L) return null;
+        for (VaultStore.Account acc : store.snapshot()) {
+            long sid = parseUid(acc.activeSid);
+            if (sid <= 0L) continue;
+            try {
+                RoleOpResult r = roleAction(acc.fpid, String.valueOf(sid), uid, action);
+                if (r != null && r.accepted) return r;
+            } catch (Throwable ignored) {
+            }
+        }
+        return null;
     }
 
     /** 角色动作分发（P1 2026-10-21 带参）：pause(升级)/rename/remove/enabled。 */

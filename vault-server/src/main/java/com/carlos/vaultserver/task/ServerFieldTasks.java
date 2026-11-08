@@ -3394,19 +3394,62 @@ public final class ServerFieldTasks {
                 return Exec.result(m, "adventure_sweep", "探险速刷");
             }
             int swept = 0;
+            // 2026-11-08：碾压模式（不传 is_fast，服务器按战力差返回 is_fast=true+clear_reward → 免战斗通关）
+            boolean crush = tc.subOn("adventure_sweep", "crush", true);
+            JSONObject sstrategy = sp.optJSONObject("strategy");
+            int failMax = Math.max(1, sstrategy != null && sstrategy.has("crush")
+                    ? sstrategy.optInt("crush", 5) : sp.optInt("fail_max", 5));
+            int fails = 0;
             for (int i = 0; i < maxSweep; i++) {
                 long next = passed + 1;
                 // 协议：fight_heros_data 是对象 {source, fight_heros[]}，直接传数组会报
                 // “Struct field expects Map”。
                 Map<String, Object> fightData = Exec.args(
                         "source", 1L, "fight_heros", heroes);
-                GameMessage begin = tc.engine.request("req_begin_adventure_pve", Exec.args(
-                        "checkpoint", next, "fight_heros_data", fightData, "is_fast", true));
+                GameMessage begin = crush
+                        ? tc.engine.request("req_begin_adventure_pve", Exec.args(
+                                "checkpoint", next, "fight_heros_data", fightData))
+                        : tc.engine.request("req_begin_adventure_pve", Exec.args(
+                                "checkpoint", next, "fight_heros_data", fightData, "is_fast", true));
                 if (!Exec.ok(begin)) {
                     int code = Exec.codeOf(begin);
+                    if (crush) {
+                        fails++;
+                        m.skip("第" + next + "关无法碾压(码" + code + ") " + fails + "/" + failMax);
+                        if (fails >= failMax) {
+                            m.skip("连续 " + failMax + " 关无法碾压，结束今天");
+                            break;
+                        }
+                        continue;
+                    }
                     m.skip("第" + next + "关无法速刷(码" + code + ")"
                             + (code != 0 ? "" : ""));
                     break;
+                }
+                if (crush) {
+                    Object fast = begin.getContent() == null ? null : begin.getContent().get("is_fast");
+                    boolean crushed = Boolean.TRUE.equals(fast) || Exec.longOf(fast) == 1L;
+                    if (crushed) {
+                        swept++;
+                        passed = next;
+                        fails = 0;
+                        m.claimed("碾压第" + next + "关");
+                        continue;
+                    }
+                    fails++;
+                    // P1-3：begin 已成功（普通战斗），补发 end 清理战斗态，避免残留阻塞后续 begin/玩家手动打
+                    try {
+                        tc.engine.request("req_end_adventure_pve", Exec.args(
+                                "checkpoint", next, "operatedata", new LinkedHashMap<String, Object>(),
+                                "enddata", new ArrayList<>()));
+                    } catch (Exception ignored) {
+                    }
+                    m.skip("第" + next + "关需手动战斗（无法碾压 " + fails + "/" + failMax + "）");
+                    if (fails >= failMax) {
+                        m.skip("连续 " + failMax + " 关无法碾压，结束今天");
+                        break;
+                    }
+                    continue;
                 }
                 GameMessage end = tc.engine.request("req_end_adventure_pve", Exec.args(
                         "checkpoint", next, "operatedata", new LinkedHashMap<String, Object>(),

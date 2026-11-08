@@ -3,6 +3,9 @@ package com.carlos.vaultserver.task;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -602,7 +605,7 @@ public final class ServerActivityTasks {
         return Exec.result(m, "act_mercenary", "佣兵荣耀");
     }
 
-    // ---------- 运宝车队 ----------
+    // ---------- 雪原商路（运宝车队玩法） ----------
 
     public static TaskOutcome truckEscort(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
@@ -630,6 +633,32 @@ public final class ServerActivityTasks {
                 }
                 if (taken > 0) m.claimed("货车奖励×" + taken);
                 else m.skip("暂无送达货车");
+                // 2026-11-08：刷新未达标的货车（品质 < target_quality；免费优先，钻石刷新受预算）
+                if (tc.subOn("act_truck", "refresh", false)) {
+                    int targetQuality = Math.max(1, tc.params("act_truck").optInt("target_quality", 5));
+                    int maxDiamond = Math.max(0, tc.params("act_truck").optInt("diamond_refresh_max", 0));
+                    int refreshed = 0;
+                    for (Map<String, Object> t : Exec.mapsOf(ni.get("truck_infos"))) {
+                        long tid = Exec.longOf(t.get("truck_id"));
+                        if (tid <= 0) tid = Exec.longOf(t.get("slot_id"));
+                        if (tid <= 0) continue;
+                        boolean finish = Exec.longOf(t.get("is_finish")) == 1
+                                || Exec.longOf(t.get("status")) == 2;
+                        if (finish) continue;
+                        if (Exec.longOf(t.get("quality")) >= targetQuality) continue;
+                        boolean useDiamond = maxDiamond > 0;
+                        GameMessage rr = tc.engine.request("req_truck_escort_refresh_truck_reward",
+                                Exec.args("id", id, "truck_id", tid, "use_diamond", useDiamond));
+                        if (Exec.ok(rr)) {
+                            refreshed++;
+                            m.rewards("刷新货车", rr);
+                        } else if (useDiamond && (Exec.codeOf(rr) == 51 || Exec.codeOf(rr) == 2)) {
+                            m.skip("钻石刷新未通过(码" + Exec.codeOf(rr) + ")");
+                            break;
+                        }
+                    }
+                    if (refreshed > 0) m.claimed("刷新货车×" + refreshed);
+                }
                 Map<String, Object> send = Exec.mapOf(ni.get("send_truck_info"));
                 long stage = send == null ? 0 : Exec.longOf(send.get("stage_index"));
                 if (send != null && stage >= 0) {
@@ -648,10 +677,348 @@ public final class ServerActivityTasks {
                 }
             }
         } catch (Exception e) {
-            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "运宝车队");
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "雪原商路");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
-        return Exec.result(m, "act_truck", "运宝车队");
+        return Exec.result(m, "act_truck", "雪原商路");
+    }
+
+    // ---------- 雪域兵器联赛 / 冰火战歌 ----------
+
+    /** 雪域兵器联赛：领联盟周常登录奖励（竞猜默认不自动下注）。 */
+    public static TaskOutcome arsenalLeague(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            GameMessage login = tc.engine.request("req_alliance_arsenal_league_login_weekly", null);
+            if (Exec.ok(login)) {
+                m.claimed("雪域兵器联赛登录奖励");
+                m.rewards("登录奖励", login);
+            } else {
+                m.skip("登录奖励未领(码" + Exec.codeOf(login) + ")");
+            }
+            // P2-4：雪域兵器联赛竞猜下注（默认关；App 子项 bet 或 auto_bet=true 才执行）
+            JSONObject p = tc.params("act_arsenal_league");
+            JSONObject strategy = p.optJSONObject("strategy");
+            boolean autoBet = tc.subOn("act_arsenal_league", "bet", false)
+                    || p.optBoolean("auto_bet", false);
+            if (autoBet) {
+                Map<String, Object> gi = tc.engine.notifyData("notify_arsenal_league_guess_info");
+                long guessId = gi == null ? 0L : Exec.longOf(gi.get("id"));
+                long groupId = gi == null ? 0L : Exec.longOf(gi.get("group_id"));
+                if (guessId > 0L && groupId > 0L) {
+                    long num = Math.max(1L, strategy != null && strategy.has("bet")
+                            ? strategy.optLong("bet", 100L) : p.optLong("bet_amount", 100L));
+                    int fixedSide = p.optInt("bet_side", 0);
+                    if (fixedSide != 1 && fixedSide != 2) fixedSide = 0;   // P2-3：非法值按自动选强侧
+                    GameMessage bi = tc.engine.request("req_arsenal_league_guess_get_winner_bet_info",
+                            Exec.args("id", guessId, "group_id", groupId, "matches", List.of(1L)));
+                    if (Exec.ok(bi)) {
+                        Map<String, Object> infos = Exec.mapOf(bi.getContent().get("infos"));
+                        if (infos != null && !infos.isEmpty()) {
+                            // P2-2：按 match_id 升序取第一场（不依赖 Map 顺序）
+                            String firstKey = null;
+                            Map<String, Object> inf = null;
+                            for (Map.Entry<String, Object> ie : infos.entrySet()) {
+                                long mid = Exec.longOf(ie.getKey());
+                                if (firstKey == null || mid < Exec.longOf(firstKey)) {
+                                    firstKey = ie.getKey();
+                                    inf = Exec.mapOf(ie.getValue());
+                                }
+                            }
+                            long matchId = inf == null ? Exec.longOf(firstKey)
+                                    : Exec.longOf(inf.get("match_id"));
+                            if (matchId <= 0L) matchId = Exec.longOf(firstKey);
+                            int side = fixedSide;
+                            if (side <= 0) {
+                                Map<String, Object> match = inf == null ? null : Exec.mapOf(inf.get("match"));
+                                Map<String, Object> sides = match == null ? null
+                                        : Exec.mapOf(match.get("sides"));
+                                long p1 = 0L;
+                                long p2 = 0L;
+                                if (sides != null) {
+                                    Map<String, Object> s1 = Exec.mapOf(sides.get("1"));
+                                    Map<String, Object> s2 = Exec.mapOf(sides.get("2"));
+                                    p1 = s1 == null ? 0L : Exec.longOf(s1.get("power"));
+                                    p2 = s2 == null ? 0L : Exec.longOf(s2.get("power"));
+                                }
+                                side = p1 >= p2 ? 1 : 2;
+                            }
+                            // P1-2：已下注幂等（同一 guessId+matchId 不重复下注）
+                            String betKey = "bet_" + guessId + "_" + matchId;
+                            JSONObject betState = tc.modState("act_arsenal_league");
+                            if (betState.optLong(betKey, 0L) > 0L) {
+                                m.skip("竞猜已下注（match " + matchId + "），跳过");
+                            } else {
+                                GameMessage bet = tc.engine.request("req_arsenal_league_guess_bet_winner",
+                                        Exec.args("id", guessId, "group_id", groupId,
+                                                "match_id", matchId, "side", side, "num", num));
+                                if (Exec.ok(bet)) {
+                                    tc.saveModText("act_arsenal_league", betKey,
+                                            String.valueOf(System.currentTimeMillis()));
+                                    m.claimed("竞猜下注 " + num + "（match " + matchId + " side " + side + "）");
+                                } else {
+                                    m.skip("竞猜下注失败(码" + Exec.codeOf(bet) + ")");
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "雪域兵器联赛");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_arsenal_league", "雪域兵器联赛");
+    }
+
+    /** 冰火战歌：领取所有已完成任务奖励 + 点赞（幂等）。 */
+    public static TaskOutcome slgLeague(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            Map<String, Object> init = tc.engine.notifyData("notify_slg_3_league_info_init");
+            // P2-5：已领任务缓存，避免每轮对同一批任务重复请求
+            JSONObject st = tc.modState("act_slg_league");
+            JSONObject claimedIds = new JSONObject();
+            try {
+                String raw = st.optString("claimed_ids", "");
+                if (!raw.isEmpty()) claimedIds = new JSONObject(raw);
+            } catch (Throwable ignored) {
+            }
+            int claimed = 0;
+            if (init != null) {
+                Map<String, Object> task = Exec.mapOf(init.get("task"));
+                Map<String, Object> data = task == null ? null : Exec.mapOf(task.get("data"));
+                Map<String, Object> quests = data == null ? null : Exec.mapOf(data.get("quests"));
+                if (quests != null) {
+                    for (Map.Entry<String, Object> e : quests.entrySet()) {
+                        Map<String, Object> q = Exec.mapOf(e.getValue());
+                        long taskId = q == null ? 0L : Exec.longOf(q.get("id"));
+                        if (taskId <= 0L) taskId = Exec.longOf(e.getKey());
+                        if (taskId <= 0L) continue;
+                        if (claimedIds.has(String.valueOf(taskId))) continue;
+                        GameMessage r = tc.engine.request("req_slg_3_league_get_task_reward",
+                                Exec.args("task_id", taskId));
+                        if (Exec.ok(r)) {
+                            claimed++;
+                            claimedIds.put(String.valueOf(taskId), 1);
+                            m.rewards("联赛任务", r);
+                        }
+                    }
+                }
+            }
+            // P2-5：修剪缓存，避免长期累积（保留最近 60 条）
+            if (claimedIds.length() > 60) {
+                java.util.List<String> keys = new ArrayList<>();
+                java.util.Iterator<String> it = claimedIds.keys();
+                while (it.hasNext()) keys.add(it.next());
+                JSONObject trimmed = new JSONObject();
+                for (int i = Math.max(0, keys.size() - 60); i < keys.size(); i++) {
+                    trimmed.put(keys.get(i), 1);
+                }
+                claimedIds = trimmed;
+            }
+            if (claimed > 0) tc.saveModText("act_slg_league", "claimed_ids", claimedIds.toString());
+            if (claimed > 0) m.claimed("冰火战歌任务×" + claimed);
+            else m.skip("无未领任务奖励");
+            if (tc.subOn("act_slg_league", "like", true)) {
+                GameMessage like = tc.engine.request("req_slg_3_league_like", Exec.args("rank", 1L));
+                if (Exec.ok(like)) m.claimed("点赞");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "冰火战歌");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_slg_league", "冰火战歌");
+    }
+
+    // ---------- 最强王国（部队复活） ----------
+
+    /** 最强王国：活动期检测到阵亡部队时 req_cross_capital_war_revive {} 全复活 + 请求联盟帮助。 */
+    public static TaskOutcome crossCapitalRevive(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            if (!tc.subOn("act_cross_capital_revive", "revive", true)) {
+                m.skip("子项「自动复活」已关闭");
+                return Exec.result(m, "act_cross_capital_revive", "最强王国复活");
+            }
+            tc.engine.collectNotifies(1500);
+            Map<String, Object> init = tc.engine.notifyData("notify_cross_capital_war_init");
+            boolean inActivity = false;
+            boolean hasDead = false;
+            if (init != null) {
+                Map<String, Object> activity = Exec.mapOf(init.get("activity"));
+                long stage = activity == null ? 0L : Exec.longOf(activity.get("stage"));
+                // P2-6：stage_ts 最后阶段 + 1 天缓冲，避免活动结束后仍反复尝试复活
+                long lastStageTs = 0L;
+                java.util.List<Object> stageTs = activity == null ? null : Exec.listOf(activity.get("stage_ts"));
+                if (stageTs != null) {
+                    for (Object o : stageTs) {
+                        long ts = Exec.longOf(o);
+                        if (ts > lastStageTs) lastStageTs = ts;
+                    }
+                }
+                long nowSec = System.currentTimeMillis() / 1000L;
+                inActivity = stage > 0L && (lastStageTs <= 0L || nowSec <= lastStageTs + 86400L);
+                Map<String, Object> player = Exec.mapOf(init.get("player"));
+                Map<String, Object> revive = player == null ? null : Exec.mapOf(player.get("revive_data"));
+                Map<String, Object> dead = revive == null ? null : Exec.mapOf(revive.get("dead_map"));
+                hasDead = dead != null && !dead.isEmpty();
+            }
+            if (!inActivity) {
+                m.skip("最强王国未开启");
+            } else if (!hasDead) {
+                m.skip("无阵亡部队");
+            } else {
+                GameMessage r = tc.engine.request("req_cross_capital_war_revive", null);
+                if (Exec.ok(r)) {
+                    m.claimed("部队复活");
+                    m.rewards("复活", r);
+                } else {
+                    m.skip("复活未成功(码" + Exec.codeOf(r) + ")");
+                }
+                GameMessage help = tc.engine.request(
+                        "req_cross_capital_war_revive_call_alliance_help", null);
+                if (Exec.ok(help)) m.claimed("已请求联盟帮助");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "最强王国复活");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_cross_capital_revive", "最强王国复活");
+    }
+
+    // ---------- 联盟/同账号离线联动 ----------
+
+    /** 离线联动（2026-11-08）：从战争/态势通知自动发现被攻击盟友 → 查在线 → 离线顶号开盾。 */
+    public static TaskOutcome allyOfflineGuard(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            boolean watch = tc.subOn("ally_offline_guard", "watch", true);
+            boolean force = tc.subOn("ally_offline_guard", "force", false);
+            if (!watch && !force) {
+                m.skip("离线联动子项已关闭");
+                return Exec.result(m, "ally_offline_guard", "离线联动");
+            }
+            tc.engine.collectNotifies(1500);
+            // 1) 从战争/态势通知自动发现被攻击盟友（无需用户输入 uid）
+            List<Long> uids = situationTargetUids(tc);
+            if (uids.isEmpty()) {
+                m.skip("最近无盟友被攻击的战争/态势通知");
+                return Exec.result(m, "ally_offline_guard", "离线联动");
+            }
+            if (uids.size() > 20) uids = new ArrayList<>(uids.subList(0, 20));
+            GameMessage r = tc.engine.request("req_players_base_info_with_permission",
+                    Exec.args("uids", new ArrayList<>(uids), "permission", 1L));
+            if (!Exec.ok(r)) {
+                m.skip("查询失败(码" + Exec.codeOf(r) + ")");
+                return Exec.result(m, "ally_offline_guard", "离线联动");
+            }
+            Map<String, Object> result = r.getContent() == null ? null
+                    : Exec.mapOf(r.getContent().get("result"));
+            int online = 0;
+            int offline = 0;
+            List<Long> offlineUids = new ArrayList<>();
+            if (result != null) {
+                for (Map.Entry<String, Object> e : result.entrySet()) {
+                    Map<String, Object> info = Exec.mapOf(e.getValue());
+                    if (info == null || !info.containsKey("offline_time")) continue;
+                    long offlineTime = Exec.longOf(info.get("offline_time"));
+                    if (offlineTime == 0L) {
+                        online++;
+                    } else {
+                        offline++;
+                        long uid = Exec.longOf(info.get("uid"));
+                        if (uid > 0L) offlineUids.add(uid);
+                    }
+                }
+            }
+            m.subOk("watch", "被攻击盟友 " + uids.size() + " · 在线 " + online + " / 离线 " + offline);
+            m.claimed("离线联动：在线 " + online + " / 离线 " + offline);
+            tc.saveModText("ally_offline_guard", "watch",
+                    "被攻击盟友 " + uids.size() + " · 在线 " + online + " / 离线 " + offline
+                            + (offlineUids.isEmpty() ? "" : " · 离线uid " + offlineUids));
+            // 2) 顶号开盾（force 子项开 + 会话控制面可用）
+            if (force && !offlineUids.isEmpty()) {
+                if (tc.sessionControl() == null) {
+                    m.skip("会话控制面未注入，无法顶号");
+                } else {
+                    JSONObject fstrategy = tc.params("ally_offline_guard").optJSONObject("strategy");
+                    int forceLimit = Math.max(1, Math.min(10, fstrategy != null && fstrategy.has("force")
+                            ? fstrategy.optInt("force", 3) : 3));
+                    int forced = 0;
+                    for (long uid : offlineUids) {
+                        if (forced >= forceLimit) break;
+                        try {
+                            com.carlos.vaultserver.SessionControl.RoleOpResult res =
+                                    tc.sessionControl().roleActionByUid(String.valueOf(uid), "login");
+                            if (res != null && res.accepted) {
+                                forced++;
+                                m.claimed("顶号上线 " + uid);
+                            } else if (res != null) {
+                                m.skip("顶号被拒 " + uid + "(码" + res.code + ")");
+                            } else {
+                                m.skip("号库中无该角色 " + uid);
+                            }
+                        } catch (Exception e) {
+                            m.skip("顶号异常 " + uid);
+                        }
+                    }
+                    if (forced > 0) m.subOk("force", "顶号上线 " + forced + " 个");
+                }
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "离线联动");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "ally_offline_guard", "离线联动");
+    }
+
+    /** 从战争/态势通知提取被攻击目标 uid（atk_city.targetid 优先，退化 target.map_city.uid）。 */
+    static List<Long> situationTargetUids(TaskContext tc) {
+        java.util.LinkedHashSet<Long> out = new java.util.LinkedHashSet<>();
+        for (String proto : new String[]{"notify_world_alliance_situation_init",
+                "notify_world_alliance_situation_add", "notify_world_alliance_situation_update",
+                "notify_world_situation_info", "notify_world_situation_info_add",
+                "notify_world_situation_info_up"}) {
+            Map<String, Object> c = tc.engine.notifyData(proto);
+            if (c == null) continue;
+            Object info = c.get("situation_info");
+            List<Map<String, Object>> items = new ArrayList<>();
+            if (info instanceof Map) {
+                for (Object v : ((Map<?, ?>) info).values()) {
+                    Map<String, Object> one = Exec.mapOf(v);
+                    if (one != null) items.add(one);
+                }
+            } else if (info instanceof List) {
+                items.addAll(Exec.mapsOf(info));
+            }
+            if (items.isEmpty()) {
+                long uid = targetUidOf(c);
+                if (uid > 0L) out.add(uid);
+            } else {
+                for (Map<String, Object> one : items) {
+                    long uid = targetUidOf(one);
+                    if (uid > 0L) out.add(uid);
+                }
+            }
+        }
+        return new ArrayList<>(out);
+    }
+
+    static long targetUidOf(Map<String, Object> m) {
+        Map<String, Object> atk = Exec.mapOf(m.get("atk_city"));
+        if (atk != null) {
+            long t = Exec.longOf(atk.get("targetid"));
+            if (t > 0L) return t;
+        }
+        Map<String, Object> target = Exec.mapOf(m.get("target"));
+        if (target != null) {
+            Map<String, Object> city = Exec.mapOf(target.get("map_city"));
+            if (city != null) return Exec.longOf(city.get("uid"));
+        }
+        return 0L;
     }
 
     // ---------- 冰原猎人 ----------

@@ -76,7 +76,11 @@ public final class DailyTasks {
         list.add(new TaskDef("act_joy", "怪攻守城", false));
         list.add(new TaskDef("act_feast", "至尊盛宴", false));
         list.add(new TaskDef("act_mercenary", "佣兵荣耀", false));
-        list.add(new TaskDef("act_truck", "运宝车队", false));
+        list.add(new TaskDef("act_truck", "雪原商路", false));
+        list.add(new TaskDef("act_arsenal_league", "雪域兵器联赛", false));
+        list.add(new TaskDef("act_slg_league", "冰火战歌", false));
+        list.add(new TaskDef("act_cross_capital_revive", "最强王国复活", false));
+        list.add(new TaskDef("ally_offline_guard", "离线联动", false));
         list.add(new TaskDef("act_icehunter", "冰原猎人", false));
         list.add(new TaskDef("red_packet", "游戏红包", true));
         list.add(new TaskDef("bank", "钻石银行", false));

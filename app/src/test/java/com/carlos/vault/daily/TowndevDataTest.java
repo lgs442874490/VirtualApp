@@ -112,10 +112,10 @@ public class TowndevDataTest {
     public void shops_catalogShape() {
         // 12 家店 942 商品；ShopTasks 引用的店 id 全部收录
         Set<String> expectedShopIds = new HashSet<>();
-        for (int id : new int[]{401, 501, 801, 701, 1001, 901, 1201, 301, 2001, 601, 1101, 2401}) {
+        for (int id : new int[]{401, 501, 801, 701, 1001, 901, 1201, 301, 2001, 601, 1101, 2401, 1701}) {
             expectedShopIds.add(String.valueOf(id));
         }
-        assertEquals(12, shops.entrySet().size());
+        assertEquals(13, shops.entrySet().size());
         assertEquals(expectedShopIds, shops.keySet());
 
         int goods = 0;
@@ -129,7 +129,7 @@ public class TowndevDataTest {
                 goods++;
             }
         }
-        assertEquals(942, goods);
+        assertEquals(958, goods);
 
         // 联盟币商品限购样例（401 店存在 limit=5 的商品）
         boolean hasLimit5 = false;

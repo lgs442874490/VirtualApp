@@ -10,8 +10,9 @@ import com.carlos.vault.wjdr.protocol.GameMessage;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 
-/** 每个连接一个抓包解码器（schema 进程级缓存；解码加锁防两方向并发）。 */
+/** 抓包解码器（schema 进程级单例；解码加锁防两方向并发）。 */
 final class CaptureCodec {
+    private static volatile CaptureCodec shared;
     private final PortableSprotoCodec codec;
     private final Object lock = new Object();
 
@@ -21,6 +22,22 @@ final class CaptureCodec {
         byte[] s2c = readAll(am.open("wjdr/game_proto_s2c.spb"));
         codec = new PortableSprotoCodec(new SprotoSchemaParser());
         codec.loadSchemas(c2s, s2c);
+    }
+
+    /**
+     * 进程级共享实例：schema 只加载一次。旧实现每个游戏连接 new 一个（几 MB schema ×
+     * 多连接），在长连接+多队并发的真机上容易把地址空间压爆（真机日志：
+     * {@code mprotect failed on atexit array: Out of memory} → SIGABRT）。
+     */
+    static CaptureCodec get(Context ctx) throws Exception {
+        CaptureCodec c = shared;
+        if (c == null) {
+            synchronized (CaptureCodec.class) {
+                if (shared == null) shared = new CaptureCodec(ctx);
+                c = shared;
+            }
+        }
+        return c;
     }
 
     GameMessage decode(boolean c2s, byte[] payload) {

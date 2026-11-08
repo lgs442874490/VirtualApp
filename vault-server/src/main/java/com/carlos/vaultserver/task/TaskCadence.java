@@ -80,6 +80,10 @@ public final class TaskCadence {
         m.put("act_mercenary", 15L);       // mercenary
         m.put("act_truck", 30L);           // truck-escort
         m.put("act_icehunter", 15L);       // icefield-hunter
+        m.put("act_arsenal_league", 1800L); // 雪域兵器联赛（周常/竞猜）
+        m.put("act_slg_league", 1800L);     // 冰火战歌（任务奖励/点赞）
+        m.put("act_cross_capital_revive", 600L); // 最强王国（部队复活，活动期频繁检查）
+        m.put("ally_offline_guard", 300L);       // 联盟/同账号离线联动（观察者查询）
         // ===== 野外（网页版 WORLD_MARCH 组）=====
         m.put("gather", 15L);              // gather（网页 10s → 下限 15s）
         m.put("intel", 15L);               // intelligence

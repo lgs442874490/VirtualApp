@@ -1,6 +1,7 @@
 package com.carlos.vault.protocapture;
 
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.AlertDialog;
 import android.content.Context;
 import android.content.Intent;
@@ -15,9 +16,10 @@ import android.os.Looper;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.EditText;
+import android.widget.ArrayAdapter;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.Spinner;
 import android.widget.TextView;
 
 import androidx.core.content.FileProvider;
@@ -42,7 +44,7 @@ public class ProtoCaptureActivity extends Activity {
     private TextView targetText;
     private TextView countText;
     private LinearLayout listBox;
-    private EditText targetEt;
+    private Spinner targetSpinner;
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final Runnable refresh = new Runnable() {
         @Override
@@ -153,19 +155,21 @@ public class ProtoCaptureActivity extends Activity {
         targetText.setTextColor(UiStyle.INK2);
         card.addView(targetText);
 
-        targetEt = new EditText(this);
-        targetEt.setHint("目标包名（留空=自动检测 com.gof.china/global）");
-        targetEt.setTextSize(12);
-        targetEt.setSingleLine(true);
-        String savedTarget = prefs().getString(KEY_TARGET, "");
-        if (savedTarget == null || savedTarget.isEmpty() || savedTarget.equals(getPackageName())) {
-            savedTarget = defaultTargetPackage();   // 旧版本误存本 App 包名 → 改为默认游戏包
-        }
-        targetEt.setText(savedTarget);
+        targetSpinner = new Spinner(this);
+        ArrayAdapter<String> targetAdapter = new ArrayAdapter<>(this,
+                android.R.layout.simple_spinner_item, ProtoCaptureTargets.labels());
+        targetAdapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item);
+        targetSpinner.setAdapter(targetAdapter);
+        boolean nativeGame = nativeGameInstalled();
+        // 原生没装 → 默认按容器内游戏抓（号库的主要用途）；原生装了 → 按运行进程判断
+        int fallback = ProtoCaptureTargets.defaultIndex(containerGameRunning() || !nativeGame, nativeGame);
+        int savedIndex = ProtoCaptureTargets.indexOfValue(
+                prefs().getString(KEY_TARGET, ""), getPackageName(), fallback);
+        targetSpinner.setSelection(savedIndex);
         LinearLayout.LayoutParams etlp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
         etlp.topMargin = dp(8);
-        card.addView(targetEt, etlp);
+        card.addView(targetSpinner, etlp);
 
         LinearLayout btnRow = new LinearLayout(this);
         btnRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -211,16 +215,42 @@ public class ProtoCaptureActivity extends Activity {
         return root;
     }
 
-    /** 默认目标包：优先游戏（无尽冬日国服/国际服），未安装则留空=全部应用。 */
-    private String defaultTargetPackage() {
-        for (String pkg : new String[]{"com.gof.china", "com.gof.global"}) {
+    /** 当前下拉选中的实际 target 包名（空串=全部应用）。 */
+    private String selectedTarget() {
+        if (targetSpinner == null) return "";
+        int pos = targetSpinner.getSelectedItemPosition();
+        String[] values = ProtoCaptureTargets.values(getPackageName());
+        if (pos < 0 || pos >= values.length) return "";
+        return values[pos];
+    }
+
+    /** 容器内是否正在跑无尽冬日（进程 UID 与号库自身相同）。 */
+    private boolean containerGameRunning() {
+        try {
+            ActivityManager am = (ActivityManager) getSystemService(ACTIVITY_SERVICE);
+            if (am == null) return false;
+            for (ActivityManager.RunningAppProcessInfo p : am.getRunningAppProcesses()) {
+                if (p == null || p.processName == null) continue;
+                if (ProtoCaptureTargets.isGamePackage(p.processName)
+                        || p.processName.startsWith("com.gof.")) {
+                    if (p.uid == android.os.Process.myUid()) return true;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /** 是否原生安装了无尽冬日（非容器场景）。 */
+    private boolean nativeGameInstalled() {
+        for (String pkg : ProtoCaptureTargets.GAME_PACKAGES) {
             try {
                 getPackageManager().getPackageInfo(pkg, 0);
-                return pkg;
+                return true;
             } catch (Throwable ignored) {
             }
         }
-        return "";
+        return false;
     }
 
     private SharedPreferences prefs() {
@@ -232,7 +262,7 @@ public class ProtoCaptureActivity extends Activity {
             toast("抓包已在运行");
             return;
         }
-        String target = targetEt.getText().toString().trim();
+        String target = selectedTarget();
         prefs().edit().putString(KEY_TARGET, target).apply();
         Intent prep = VpnService.prepare(this);
         if (prep != null) {
@@ -247,7 +277,7 @@ public class ProtoCaptureActivity extends Activity {
         super.onActivityResult(requestCode, resultCode, data);
         if (requestCode == REQ_VPN) {
             if (resultCode == RESULT_OK) {
-                launchService(targetEt.getText().toString().trim());
+                launchService(selectedTarget());
             } else {
                 toast("未授权 VPN，无法抓包");
             }
