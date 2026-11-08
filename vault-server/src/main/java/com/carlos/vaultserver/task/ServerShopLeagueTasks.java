@@ -535,6 +535,23 @@ public final class ServerShopLeagueTasks {
                 }
             }
             Map<Long, Long> balances = currencyBalances(tc);
+            // P1-5：一次拉货架，购买后本地更新 buy_count（避免每件商品都请求货架）
+            List<Object> arr = new ArrayList<>();
+            for (long sid : shopIds) arr.add(sid);
+            GameMessage info = tc.engine.request("req_shop_info_array", Exec.args("arr_id", arr));
+            if (!Exec.ok(info)) {
+                m.skip("货架拉取失败(码" + Exec.codeOf(info) + ")");
+                return;
+            }
+            Map<String, Object> mapInfo = Exec.mapOf(info.getContent().get("map_info"));
+            if (mapInfo == null) {
+                m.skip("货架响应缺商品表");
+                return;
+            }
+            Map<String, ShopShelfItem> shelf = new HashMap<>();
+            for (ShopShelfItem s : flattenShelf(mapInfo, byConfigId)) {
+                shelf.put(s.shopId() + ":" + s.configId(), s);
+            }
             int bought = 0;
             for (int i = 0; i < buyList.length(); i++) {
                 JSONObject it = buyList.optJSONObject(i);
@@ -548,26 +565,8 @@ public final class ServerShopLeagueTasks {
                     m.skip("商品配置缺失 conf=" + configId);
                     continue;
                 }
-                List<Object> arr = new ArrayList<>();
-                for (long sid : shopIds) arr.add(sid);
-                GameMessage info = tc.engine.request("req_shop_info_array", Exec.args("arr_id", arr));
-                if (!Exec.ok(info)) {
-                    m.skip("货架拉取失败(码" + Exec.codeOf(info) + ")");
-                    break;
-                }
-                Map<String, Object> mapInfo = Exec.mapOf(info.getContent().get("map_info"));
-                if (mapInfo == null) {
-                    m.skip("货架响应缺商品表");
-                    break;
-                }
-                List<ShopShelfItem> shelf = flattenShelf(mapInfo, byConfigId);
-                ShopShelfItem target = null;
-                for (ShopShelfItem s : shelf) {
-                    if (s.shopId() == shopId && s.configId() == configId) {
-                        target = s;
-                        break;
-                    }
-                }
+                String key = shopId + ":" + configId;
+                ShopShelfItem target = shelf.get(key);
                 if (target == null) {
                     m.skip(meta.name + " 当前货架无此商品");
                     continue;
@@ -578,15 +577,21 @@ public final class ServerShopLeagueTasks {
                     continue;
                 }
                 long price = meta.price;
-                long bal = balances.getOrDefault(meta.currencyId, 0L);
-                long canBuy = price <= 0L ? remaining : Math.min(remaining, Math.max(0L, bal / price));
-                if (canBuy <= 0L) {
-                    // 用户口径：按勾选顺序购买，直到没有货币
-                    m.skip(meta.name + " 余额不足，停止购买");
-                    break;
-                }
                 long want = Math.max(0L, it.optLong("count", 0L));
-                long count = want > 0L ? Math.min(want, canBuy) : canBuy;
+                long count = want > 0L ? Math.min(want, remaining) : remaining;
+                if (price > 0L) {
+                    Long bal = balances.get(meta.currencyId);
+                    if (bal == null) {
+                        // 余额未知（推送未到）≠ 没有货币：跳过该商品，继续后续
+                        m.skip(meta.name + " 余额未知，跳过");
+                        continue;
+                    }
+                    count = Math.min(count, Math.max(0L, bal / price));
+                    if (count <= 0L) {
+                        m.skip(meta.name + " 余额不足，停止购买");
+                        break;
+                    }
+                }
                 if (count <= 0L) continue;
                 GameMessage buy = tc.engine.request("req_shop_buy", Exec.args(
                         "shop_id", shopId, "goods_id", target.goodsId(), "count", count));
@@ -594,9 +599,14 @@ public final class ServerShopLeagueTasks {
                 if (Exec.ok(buy)) {
                     bought++;
                     m.claimed(meta.name + "×" + count);
-                    if (meta.currencyId > 0L && price > 0L) {
-                        balances.put(meta.currencyId, Math.max(0L, bal - price * count));
+                    if (price > 0L) {
+                        Long bal = balances.get(meta.currencyId);
+                        if (bal != null) balances.put(meta.currencyId, Math.max(0L, bal - price * count));
                     }
+                    long newBuyCount = target.buyCount() + count;
+                    shelf.put(key, new ShopShelfItem(target.shopId(), target.goodsId(),
+                            target.configId(), target.currencyId(), target.price(),
+                            newBuyCount, target.limit()));
                 } else if (isPurchaseConditionBlocked(code)) {
                     m.skip(meta.name + " 条件不满足");
                 } else {

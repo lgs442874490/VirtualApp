@@ -756,7 +756,17 @@ public final class ServerActivityTasks {
             if (init != null) {
                 Map<String, Object> activity = Exec.mapOf(init.get("activity"));
                 long stage = activity == null ? 0L : Exec.longOf(activity.get("stage"));
-                inActivity = stage > 0L;
+                // P2-6：stage_ts 最后阶段 + 1 天缓冲，避免活动结束后仍反复尝试复活
+                long lastStageTs = 0L;
+                java.util.List<Object> stageTs = activity == null ? null : Exec.listOf(activity.get("stage_ts"));
+                if (stageTs != null) {
+                    for (Object o : stageTs) {
+                        long ts = Exec.longOf(o);
+                        if (ts > lastStageTs) lastStageTs = ts;
+                    }
+                }
+                long nowSec = System.currentTimeMillis() / 1000L;
+                inActivity = stage > 0L && (lastStageTs <= 0L || nowSec <= lastStageTs + 86400L);
                 Map<String, Object> player = Exec.mapOf(init.get("player"));
                 Map<String, Object> revive = player == null ? null : Exec.mapOf(player.get("revive_data"));
                 Map<String, Object> dead = revive == null ? null : Exec.mapOf(revive.get("dead_map"));
