@@ -131,4 +131,58 @@ public class AllyOfflineGuardTest {
                 e.calls.stream().noneMatch("req_players_base_info_with_permission"::equals));
         assertFalse(e.calls.contains("req_players_base_info_with_permission"));
     }
+
+    private static final class FakeControl implements com.carlos.vaultserver.SessionControl {
+        final List<String> calls = new ArrayList<>();
+
+        @Override
+        public void reconcile() {
+        }
+
+        @Override
+        public boolean ensureSession(String fpid) {
+            return true;
+        }
+
+        @Override
+        public List<com.carlos.vaultserver.SessionControl.SessionStatus> status() {
+            return new ArrayList<>();
+        }
+
+        @Override
+        public boolean yield(String fpid, long probeMillis) {
+            return true;
+        }
+
+        @Override
+        public com.carlos.vaultserver.SessionControl.RoleOpResult roleAction(
+                String fpid, String sid, String uid, String action) {
+            calls.add(fpid + ":" + sid + ":" + uid + ":" + action);
+            com.carlos.vaultserver.SessionControl.RoleOpResult r =
+                    new com.carlos.vaultserver.SessionControl.RoleOpResult();
+            r.accepted = true;
+            r.code = 0;
+            return r;
+        }
+    }
+
+    @Test
+    public void forceOnlineWhenTargetOffline() {
+        TestEngine e = new TestEngine();
+        JSONObject p = new JSONObject();
+        JSONArray targets = new JSONArray();
+        targets.put(new JSONObject().put("fpid", "f1").put("sid", "888").put("uid", 222L));
+        p.put("watch_targets", targets);
+        p.put("force_online", true);
+        Map<String, JSONObject> params = new HashMap<>();
+        params.put("ally_offline_guard", p);
+        FakeControl control = new FakeControl();
+        TaskContext ctx = new TaskContext(e, "111", SID, state, params, "测试")
+                .withSessionControl(control);
+
+        ServerActivityTasks.allyOfflineGuard(ctx);
+
+        assertEquals("离线目标应触发 roleAction login", 1, control.calls.size());
+        assertEquals("f1:888:222:login", control.calls.get(0));
+    }
 }

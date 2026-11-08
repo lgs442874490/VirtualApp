@@ -1072,7 +1072,7 @@ public final class SessionKeeper implements SessionControl,
             if (SessionKeeper.this.wartimeYield(fpid)) return;   // P7 战时让位
             try {
                 TaskContext tc = new TaskContext(engine, fpid, sidNow, stateStore,
-                        java.util.Collections.emptyMap(), "角色", null, roleUid);
+                        java.util.Collections.emptyMap(), "角色", null, roleUid).withSessionControl(SessionKeeper.this);
                 ServerTasks.runAllianceDonate(tc);
             } catch (Throwable t) {
                 FileLog.warn("兄弟角色科技捐献异常 {}：{}", key, String.valueOf(t));

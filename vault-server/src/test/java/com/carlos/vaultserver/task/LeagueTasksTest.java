@@ -44,6 +44,8 @@ public class LeagueTasksTest {
         final List<String> calls = new ArrayList<>();
         final List<Map<String, Object>> argsList = new ArrayList<>();
         Map<String, Object> initData;
+        Map<String, Object> guessInfo;
+        Map<String, Object> betInfo;
 
         TestEngine() {
             super(null);
@@ -56,6 +58,7 @@ public class LeagueTasksTest {
         @Override
         public Map<String, Object> notifyData(String proto) {
             if ("notify_slg_3_league_info_init".equals(proto)) return initData;
+            if ("notify_arsenal_league_guess_info".equals(proto)) return guessInfo;
             return null;
         }
 
@@ -70,6 +73,9 @@ public class LeagueTasksTest {
             argsList.add(args == null ? Map.of() : new LinkedHashMap<>(args));
             Map<String, Object> c = new LinkedHashMap<>();
             c.put("code", 0);
+            if ("req_arsenal_league_guess_get_winner_bet_info".equals(proto)) {
+                c.put("infos", betInfo);
+            }
             GameMessage m = new GameMessage();
             m.setContent(c);
             return m;
@@ -117,6 +123,38 @@ public class LeagueTasksTest {
         TestEngine e = new TestEngine();
         ServerActivityTasks.arsenalLeague(tc(e, new JSONObject()));
         assertEquals(1, count(e.calls, "req_alliance_arsenal_league_login_weekly"));
+    }
+
+    @Test
+    public void arsenalBetWhenEnabled() {
+        TestEngine e = new TestEngine();
+        Map<String, Object> gi = new LinkedHashMap<>();
+        gi.put("id", 2963001L);
+        gi.put("group_id", 17L);
+        e.guessInfo = gi;
+        Map<String, Object> sides = new LinkedHashMap<>();
+        sides.put("1", Map.of("power", 100L));
+        sides.put("2", Map.of("power", 200L));
+        Map<String, Object> match = new LinkedHashMap<>();
+        match.put("sides", sides);
+        Map<String, Object> inf = new LinkedHashMap<>();
+        inf.put("match_id", 1L);
+        inf.put("match", match);
+        Map<String, Object> infos = new LinkedHashMap<>();
+        infos.put("1", inf);
+        e.betInfo = infos;
+
+        JSONObject p = new JSONObject();
+        p.put("auto_bet", true);
+        p.put("bet_amount", 4500L);
+        p.put("bet_side", 0);
+        ServerActivityTasks.arsenalLeague(tc(e, p));
+
+        int idx = e.calls.indexOf("req_arsenal_league_guess_bet_winner");
+        assertTrue("应发竞猜下注", idx >= 0);
+        Map<String, Object> args = e.argsList.get(idx);
+        assertEquals("按战力选强侧 2", 2, ((Number) args.get("side")).intValue());
+        assertEquals(4500L, ((Number) args.get("num")).longValue());
     }
 
     @Test
