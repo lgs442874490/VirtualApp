@@ -891,48 +891,26 @@ public final class ServerActivityTasks {
 
     // ---------- 联盟/同账号离线联动 ----------
 
-    /** 离线联动（2026-11-08）：观察者查询关注角色 offline_time（0=在线，>0=最后离线时间）。 */
+    /** 离线联动（2026-11-08）：从战争/态势通知自动发现被攻击盟友 → 查在线 → 离线顶号开盾。 */
     public static TaskOutcome allyOfflineGuard(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
-            // watch=统计查询；force=强制上线；两者都关则跳过
-            if (!tc.subOn("ally_offline_guard", "watch", true)
-                    && !tc.subOn("ally_offline_guard", "force", false)
-                    && !tc.params("ally_offline_guard").optBoolean("force_online", false)) {
+            boolean watch = tc.subOn("ally_offline_guard", "watch", true);
+            boolean force = tc.subOn("ally_offline_guard", "force", false);
+            if (!watch && !force) {
                 m.skip("离线联动子项已关闭");
                 return Exec.result(m, "ally_offline_guard", "离线联动");
             }
             tc.engine.collectNotifies(1500);
-            JSONObject p = tc.params("ally_offline_guard");
-            List<Object> uids = new ArrayList<>();
-            JSONArray arr = p.optJSONArray("watch_uids");
-            if (arr != null) {
-                for (int i = 0; i < arr.length(); i++) {
-                    long uid = arr.optLong(i);
-                    if (uid > 0L) uids.add(uid);
-                }
-            }
-            // P2-7：force_online 目标（含 fpid/sid/uid；会话控制面注入后可强制上线）
-            List<Object[]> targets = new ArrayList<>();
-            JSONArray targetArr = p.optJSONArray("watch_targets");
-            if (targetArr != null) {
-                for (int i = 0; i < targetArr.length(); i++) {
-                    JSONObject t = targetArr.optJSONObject(i);
-                    if (t == null) continue;
-                    String fpid = t.optString("fpid", "");
-                    String sid = t.optString("sid", "");
-                    long uid = t.optLong("uid", 0L);
-                    if (fpid.isEmpty() || sid.isEmpty() || uid <= 0L) continue;
-                    targets.add(new Object[]{fpid, sid, uid});
-                    if (!uids.contains(uid)) uids.add(uid);
-                }
-            }
+            // 1) 从战争/态势通知自动发现被攻击盟友（无需用户输入 uid）
+            List<Long> uids = situationTargetUids(tc);
             if (uids.isEmpty()) {
-                m.skip("未配置关注角色（watch_uids/watch_targets）");
+                m.skip("最近无盟友被攻击的战争/态势通知");
                 return Exec.result(m, "ally_offline_guard", "离线联动");
             }
+            if (uids.size() > 20) uids = new ArrayList<>(uids.subList(0, 20));
             GameMessage r = tc.engine.request("req_players_base_info_with_permission",
-                    Exec.args("uids", uids, "permission", 1L));
+                    Exec.args("uids", new ArrayList<>(uids), "permission", 1L));
             if (!Exec.ok(r)) {
                 m.skip("查询失败(码" + Exec.codeOf(r) + ")");
                 return Exec.result(m, "ally_offline_guard", "离线联动");
@@ -956,53 +934,91 @@ public final class ServerActivityTasks {
                     }
                 }
             }
-            m.subOk("watch", "在线 " + online + " / 离线 " + offline);
-            m.claimed("离线查询：在线 " + online + " / 离线 " + offline);
+            m.subOk("watch", "被攻击盟友 " + uids.size() + " · 在线 " + online + " / 离线 " + offline);
+            m.claimed("离线联动：在线 " + online + " / 离线 " + offline);
             tc.saveModText("ally_offline_guard", "watch",
-                    "在线 " + online + " / 离线 " + offline
+                    "被攻击盟友 " + uids.size() + " · 在线 " + online + " / 离线 " + offline
                             + (offlineUids.isEmpty() ? "" : " · 离线uid " + offlineUids));
-            // P2-7：离线目标强制上线（force_online=true 且 SessionControl 已注入）
-            JSONObject fstrategy = p.optJSONObject("strategy");
-            boolean forceOnline = tc.subOn("ally_offline_guard", "force", false)
-                    || p.optBoolean("force_online", false);
-            if (forceOnline && tc.sessionControl() != null
-                    && !offlineUids.isEmpty()) {
-                int forceLimit = Math.max(1, Math.min(10, fstrategy != null && fstrategy.has("force")
-                        ? fstrategy.optInt("force", 3) : p.optInt("force_limit", 3)));
-                boolean allowCross = p.optBoolean("allow_cross_account", false);
-                java.util.Set<Long> forcedUids = new java.util.HashSet<>();
-                int forced = 0;
-                for (Object[] t : targets) {
-                    if (forced >= forceLimit) break;
-                    long uid = (Long) t[2];
-                    if (!offlineUids.contains(uid)) continue;
-                    if (!forcedUids.add(uid)) continue;
-                    // P2-4：默认只强制同账号（跨账号需显式 allow_cross_account=true）
-                    if (!allowCross && !tc.fpid.equals(t[0])) {
-                        m.skip("跨账号目标 " + uid + " 未启用 allow_cross_account");
-                        continue;
-                    }
-                    try {
-                        com.carlos.vaultserver.SessionControl.RoleOpResult res =
-                                tc.sessionControl().roleAction((String) t[0], (String) t[1],
-                                        String.valueOf(uid), "login");
-                        if (res != null && res.accepted) {
-                            forced++;
-                            m.claimed("强制上线 " + uid);
-                        } else if (res != null) {
-                            m.skip("上线被拒 " + uid + "(码" + res.code + ")");
+            // 2) 顶号开盾（force 子项开 + 会话控制面可用）
+            if (force && !offlineUids.isEmpty()) {
+                if (tc.sessionControl() == null) {
+                    m.skip("会话控制面未注入，无法顶号");
+                } else {
+                    JSONObject fstrategy = tc.params("ally_offline_guard").optJSONObject("strategy");
+                    int forceLimit = Math.max(1, Math.min(10, fstrategy != null && fstrategy.has("force")
+                            ? fstrategy.optInt("force", 3) : 3));
+                    int forced = 0;
+                    for (long uid : offlineUids) {
+                        if (forced >= forceLimit) break;
+                        try {
+                            com.carlos.vaultserver.SessionControl.RoleOpResult res =
+                                    tc.sessionControl().roleActionByUid(String.valueOf(uid), "login");
+                            if (res != null && res.accepted) {
+                                forced++;
+                                m.claimed("顶号上线 " + uid);
+                            } else if (res != null) {
+                                m.skip("顶号被拒 " + uid + "(码" + res.code + ")");
+                            } else {
+                                m.skip("号库中无该角色 " + uid);
+                            }
+                        } catch (Exception e) {
+                            m.skip("顶号异常 " + uid);
                         }
-                    } catch (Exception e) {
-                        m.skip("上线异常 " + uid);
                     }
+                    if (forced > 0) m.subOk("force", "顶号上线 " + forced + " 个");
                 }
-                if (forced > 0) m.subOk("force", "强制上线 " + forced + " 个");
             }
         } catch (Exception e) {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "离线联动");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "ally_offline_guard", "离线联动");
+    }
+
+    /** 从战争/态势通知提取被攻击目标 uid（atk_city.targetid 优先，退化 target.map_city.uid）。 */
+    static List<Long> situationTargetUids(TaskContext tc) {
+        java.util.LinkedHashSet<Long> out = new java.util.LinkedHashSet<>();
+        for (String proto : new String[]{"notify_world_alliance_situation_init",
+                "notify_world_alliance_situation_add", "notify_world_alliance_situation_update",
+                "notify_world_situation_info", "notify_world_situation_info_add",
+                "notify_world_situation_info_up"}) {
+            Map<String, Object> c = tc.engine.notifyData(proto);
+            if (c == null) continue;
+            Object info = c.get("situation_info");
+            List<Map<String, Object>> items = new ArrayList<>();
+            if (info instanceof Map) {
+                for (Object v : ((Map<?, ?>) info).values()) {
+                    Map<String, Object> one = Exec.mapOf(v);
+                    if (one != null) items.add(one);
+                }
+            } else if (info instanceof List) {
+                items.addAll(Exec.mapsOf(info));
+            }
+            if (items.isEmpty()) {
+                long uid = targetUidOf(c);
+                if (uid > 0L) out.add(uid);
+            } else {
+                for (Map<String, Object> one : items) {
+                    long uid = targetUidOf(one);
+                    if (uid > 0L) out.add(uid);
+                }
+            }
+        }
+        return new ArrayList<>(out);
+    }
+
+    static long targetUidOf(Map<String, Object> m) {
+        Map<String, Object> atk = Exec.mapOf(m.get("atk_city"));
+        if (atk != null) {
+            long t = Exec.longOf(atk.get("targetid"));
+            if (t > 0L) return t;
+        }
+        Map<String, Object> target = Exec.mapOf(m.get("target"));
+        if (target != null) {
+            Map<String, Object> city = Exec.mapOf(target.get("map_city"));
+            if (city != null) return Exec.longOf(city.get("uid"));
+        }
+        return 0L;
     }
 
     // ---------- 冰原猎人 ----------

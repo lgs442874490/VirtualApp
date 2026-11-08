@@ -171,8 +171,8 @@ public final class FnDetail {
         fn("act_cross_capital_revive",
                 new Sub("revive", "自动复活", "活动期检测到阵亡 → 全复活 + 联盟求助", true, null));
         fn("ally_offline_guard",
-                new Sub("watch", "查询离线", "观察者查询关注角色在线/离线", true, null),
-                new Sub("force", "强制上线", "离线目标强制上线开盾（需配置关注角色）", false,
+                new Sub("watch", "查询离线", "从战争/态势通知自动发现被攻击盟友并查询在线状态（无需输入 uid）", true, null),
+                new Sub("force", "强制上线", "离线盟友自动顶号上线开盾（按账号库定位角色）", false,
                         new String[][]{{"1", "最多1个"}, {"3", "最多3个"}, {"5", "最多5个"}}));
         fn("act_icehunter",
                 new Sub("reward", "进度奖励", "冰原猎人档位奖励一键领取", true, null),

@@ -6,10 +6,10 @@ import static org.junit.Assert.assertTrue;
 
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
+import com.carlos.vaultserver.SessionControl;
 import com.carlos.vaultserver.StateStore;
 import com.carlos.vaultserver.VaultStore;
 
-import org.json.JSONArray;
 import org.json.JSONObject;
 import org.junit.Before;
 import org.junit.Rule;
@@ -23,7 +23,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * 离线联动（2026-11-08）：req_players_base_info_with_permission + offline_time（0=在线）。
+ * 离线联动（2026-11-08 v2）：从战争/态势通知自动发现被攻击盟友 → 查 online →
+ * force 开时按 uid 顶号上线。不再依赖 watch_uids 用户输入。
  */
 public class AllyOfflineGuardTest {
 
@@ -43,6 +44,7 @@ public class AllyOfflineGuardTest {
     private static final class TestEngine extends WjdrEngine {
         final List<String> calls = new ArrayList<>();
         final List<Map<String, Object>> argsList = new ArrayList<>();
+        Map<String, Object> situationInit;
 
         TestEngine() {
             super(null);
@@ -54,6 +56,7 @@ public class AllyOfflineGuardTest {
 
         @Override
         public Map<String, Object> notifyData(String proto) {
+            if ("notify_world_alliance_situation_init".equals(proto)) return situationInit;
             return null;
         }
 
@@ -101,38 +104,7 @@ public class AllyOfflineGuardTest {
         }
     }
 
-    private TaskContext tc(TestEngine e, JSONObject p) {
-        Map<String, JSONObject> params = new HashMap<>();
-        params.put("ally_offline_guard", p);
-        return new TaskContext(e, "111", SID, state, params, "测试");
-    }
-
-    @Test
-    public void queriesWatchUidsAndCountsOnline() {
-        TestEngine e = new TestEngine();
-        JSONObject p = new JSONObject();
-        JSONArray uids = new JSONArray();
-        uids.put(111L);
-        uids.put(222L);
-        p.put("watch_uids", uids);
-
-        ServerActivityTasks.allyOfflineGuard(tc(e, p));
-
-        assertEquals(1, e.calls.stream().filter("req_players_base_info_with_permission"::equals).count());
-        Map<String, Object> args = e.argsList.get(0);
-        assertEquals(2, ((List<?>) args.get("uids")).size());
-    }
-
-    @Test
-    public void skipsWithoutWatchUids() {
-        TestEngine e = new TestEngine();
-        ServerActivityTasks.allyOfflineGuard(tc(e, new JSONObject()));
-        assertTrue("未配置关注角色不应发请求",
-                e.calls.stream().noneMatch("req_players_base_info_with_permission"::equals));
-        assertFalse(e.calls.contains("req_players_base_info_with_permission"));
-    }
-
-    private static final class FakeControl implements com.carlos.vaultserver.SessionControl {
+    private static final class FakeControl implements SessionControl {
         final List<String> calls = new ArrayList<>();
 
         @Override
@@ -145,7 +117,7 @@ public class AllyOfflineGuardTest {
         }
 
         @Override
-        public List<com.carlos.vaultserver.SessionControl.SessionStatus> status() {
+        public List<SessionControl.SessionStatus> status() {
             return new ArrayList<>();
         }
 
@@ -155,34 +127,71 @@ public class AllyOfflineGuardTest {
         }
 
         @Override
-        public com.carlos.vaultserver.SessionControl.RoleOpResult roleAction(
-                String fpid, String sid, String uid, String action) {
-            calls.add(fpid + ":" + sid + ":" + uid + ":" + action);
-            com.carlos.vaultserver.SessionControl.RoleOpResult r =
-                    new com.carlos.vaultserver.SessionControl.RoleOpResult();
+        public RoleOpResult roleActionByUid(String uid, String action) {
+            calls.add(uid + ":" + action);
+            RoleOpResult r = new RoleOpResult();
             r.accepted = true;
             r.code = 0;
             return r;
         }
     }
 
-    @Test
-    public void forceOnlineWhenTargetOffline() {
-        TestEngine e = new TestEngine();
-        JSONObject p = new JSONObject();
-        JSONArray targets = new JSONArray();
-        targets.put(new JSONObject().put("fpid", "111").put("sid", "888").put("uid", 222L));
-        p.put("watch_targets", targets);
-        p.put("force_online", true);
+    private TaskContext tc(TestEngine e, JSONObject p) {
         Map<String, JSONObject> params = new HashMap<>();
         params.put("ally_offline_guard", p);
+        return new TaskContext(e, "111", SID, state, params, "测试");
+    }
+
+    private static Map<String, Object> situation(long targetUid) {
+        Map<String, Object> atk = new LinkedHashMap<>();
+        atk.put("targetid", targetUid);
+        Map<String, Object> one = new LinkedHashMap<>();
+        one.put("atk_city", atk);
+        Map<String, Object> info = new LinkedHashMap<>();
+        info.put("1", one);
+        Map<String, Object> c = new LinkedHashMap<>();
+        c.put("situation_info", info);
+        return c;
+    }
+
+    @Test
+    public void autoDiscoversTargetFromSituation() {
+        TestEngine e = new TestEngine();
+        e.situationInit = situation(222L);
+        JSONObject p = new JSONObject();
+        p.put("sub", new JSONObject().put("watch", true).put("force", false));
+
+        ServerActivityTasks.allyOfflineGuard(tc(e, p));
+
+        int idx = e.calls.indexOf("req_players_base_info_with_permission");
+        assertTrue("应从态势通知发现目标并查询", idx >= 0);
+        assertTrue(((List<?>) e.argsList.get(idx).get("uids")).contains(222L));
+    }
+
+    @Test
+    public void forceOnlineByUidWhenOffline() {
+        TestEngine e = new TestEngine();
+        e.situationInit = situation(222L);
+        JSONObject p = new JSONObject();
+        JSONObject sub = new JSONObject().put("watch", true).put("force", true);
+        p.put("sub", sub);
+        p.put("strategy", new JSONObject().put("force", "1"));
         FakeControl control = new FakeControl();
-        TaskContext ctx = new TaskContext(e, "111", SID, state, params, "测试")
-                .withSessionControl(control);
+        TaskContext ctx = new TaskContext(e, "111", SID, state,
+                Map.of("ally_offline_guard", p), "测试").withSessionControl(control);
 
         ServerActivityTasks.allyOfflineGuard(ctx);
 
-        assertEquals("离线目标应触发 roleAction login", 1, control.calls.size());
-        assertEquals("111:888:222:login", control.calls.get(0));
+        assertEquals("离线盟友应顶号上线", 1, control.calls.size());
+        assertEquals("222:login", control.calls.get(0));
+    }
+
+    @Test
+    public void skipsWithoutSituation() {
+        TestEngine e = new TestEngine();
+        JSONObject p = new JSONObject();
+        p.put("sub", new JSONObject().put("watch", true).put("force", false));
+        ServerActivityTasks.allyOfflineGuard(tc(e, p));
+        assertFalse(e.calls.contains("req_players_base_info_with_permission"));
     }
 }

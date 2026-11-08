@@ -183,6 +183,11 @@ public interface SessionControl {
         return RoleOpResult.fail(3002, "角色动作未启用");
     }
 
+    /** 按角色 uid 在账号库中定位并执行动作（离线顶号上线用）；默认不支持返回 null。 */
+    default RoleOpResult roleActionByUid(String uid, String action) {
+        return null;
+    }
+
     /**
      * 角色显式动作（P1 2026-10-21 带参重载）：在 M1 五动作之上新增
      * pause（升级为按恢复策略自动恢复）/ rename（payload.name）/
