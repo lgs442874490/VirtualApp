@@ -20,18 +20,49 @@ public final class ProtoCaptureLog {
     public static final int MAX = 500;
     private static final ArrayDeque<ProtoCaptureRecord> BUFFER = new ArrayDeque<>();
     private static final SimpleDateFormat TS = new SimpleDateFormat("yyyyMMdd-HHmmss", Locale.CHINA);
+    /** 实时落盘文件：抓包进程崩溃时内存记录会丢，文件保留已抓内容。 */
+    private static volatile File liveFile;
 
     private ProtoCaptureLog() {
+    }
+
+    /** 服务启动时指定实时落盘文件（每次开始抓包清空）。 */
+    public static synchronized void setLiveFile(File f) {
+        liveFile = f;
+        if (f != null) {
+            try (FileWriter w = new FileWriter(f, false)) {
+                w.write("");
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     public static synchronized void add(ProtoCaptureRecord r) {
         if (r == null) return;
         BUFFER.addFirst(r);
         while (BUFFER.size() > MAX) BUFFER.removeLast();
+        appendLive(r);
+    }
+
+    private static void appendLive(ProtoCaptureRecord r) {
+        File f = liveFile;
+        if (f == null || r == null) return;
+        try (FileWriter w = new FileWriter(f, true)) {
+            w.write(r.exportText());
+            w.write('\n');
+        } catch (Throwable ignored) {
+        }
     }
 
     public static synchronized void clear() {
         BUFFER.clear();
+        File f = liveFile;
+        if (f != null) {
+            try (FileWriter w = new FileWriter(f, false)) {
+                w.write("");
+            } catch (Throwable ignored) {
+            }
+        }
     }
 
     public static synchronized List<ProtoCaptureRecord> snapshot() {
