@@ -3,6 +3,9 @@ package com.carlos.vaultserver.task;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -602,7 +605,7 @@ public final class ServerActivityTasks {
         return Exec.result(m, "act_mercenary", "佣兵荣耀");
     }
 
-    // ---------- 运宝车队 ----------
+    // ---------- 雪原商路（运宝车队玩法） ----------
 
     public static TaskOutcome truckEscort(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
@@ -630,6 +633,32 @@ public final class ServerActivityTasks {
                 }
                 if (taken > 0) m.claimed("货车奖励×" + taken);
                 else m.skip("暂无送达货车");
+                // 2026-11-08：刷新未达标的货车（品质 < target_quality；免费优先，钻石刷新受预算）
+                if (tc.subOn("act_truck", "refresh", false)) {
+                    int targetQuality = Math.max(1, tc.params("act_truck").optInt("target_quality", 5));
+                    int maxDiamond = Math.max(0, tc.params("act_truck").optInt("diamond_refresh_max", 0));
+                    int refreshed = 0;
+                    for (Map<String, Object> t : Exec.mapsOf(ni.get("truck_infos"))) {
+                        long tid = Exec.longOf(t.get("truck_id"));
+                        if (tid <= 0) tid = Exec.longOf(t.get("slot_id"));
+                        if (tid <= 0) continue;
+                        boolean finish = Exec.longOf(t.get("is_finish")) == 1
+                                || Exec.longOf(t.get("status")) == 2;
+                        if (finish) continue;
+                        if (Exec.longOf(t.get("quality")) >= targetQuality) continue;
+                        boolean useDiamond = maxDiamond > 0;
+                        GameMessage rr = tc.engine.request("req_truck_escort_refresh_truck_reward",
+                                Exec.args("id", id, "truck_id", tid, "use_diamond", useDiamond));
+                        if (Exec.ok(rr)) {
+                            refreshed++;
+                            m.rewards("刷新货车", rr);
+                        } else if (useDiamond && (Exec.codeOf(rr) == 51 || Exec.codeOf(rr) == 2)) {
+                            m.skip("钻石刷新未通过(码" + Exec.codeOf(rr) + ")");
+                            break;
+                        }
+                    }
+                    if (refreshed > 0) m.claimed("刷新货车×" + refreshed);
+                }
                 Map<String, Object> send = Exec.mapOf(ni.get("send_truck_info"));
                 long stage = send == null ? 0 : Exec.longOf(send.get("stage_index"));
                 if (send != null && stage >= 0) {
@@ -648,10 +677,169 @@ public final class ServerActivityTasks {
                 }
             }
         } catch (Exception e) {
-            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "运宝车队");
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "雪原商路");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
-        return Exec.result(m, "act_truck", "运宝车队");
+        return Exec.result(m, "act_truck", "雪原商路");
+    }
+
+    // ---------- 雪域兵器联赛 / 冰火战歌 ----------
+
+    /** 雪域兵器联赛：领联盟周常登录奖励（竞猜默认不自动下注）。 */
+    public static TaskOutcome arsenalLeague(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            GameMessage login = tc.engine.request("req_alliance_arsenal_league_login_weekly", null);
+            if (Exec.ok(login)) {
+                m.claimed("雪域兵器联赛登录奖励");
+                m.rewards("登录奖励", login);
+            } else {
+                m.skip("登录奖励未领(码" + Exec.codeOf(login) + ")");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "雪域兵器联赛");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_arsenal_league", "雪域兵器联赛");
+    }
+
+    /** 冰火战歌：领取所有已完成任务奖励 + 点赞（幂等）。 */
+    public static TaskOutcome slgLeague(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            Map<String, Object> init = tc.engine.notifyData("notify_slg_3_league_info_init");
+            int claimed = 0;
+            if (init != null) {
+                Map<String, Object> task = Exec.mapOf(init.get("task"));
+                Map<String, Object> data = task == null ? null : Exec.mapOf(task.get("data"));
+                Map<String, Object> quests = data == null ? null : Exec.mapOf(data.get("quests"));
+                if (quests != null) {
+                    for (Map.Entry<String, Object> e : quests.entrySet()) {
+                        Map<String, Object> q = Exec.mapOf(e.getValue());
+                        long taskId = q == null ? 0L : Exec.longOf(q.get("id"));
+                        if (taskId <= 0L) taskId = Exec.longOf(e.getKey());
+                        if (taskId <= 0L) continue;
+                        GameMessage r = tc.engine.request("req_slg_3_league_get_task_reward",
+                                Exec.args("task_id", taskId));
+                        if (Exec.ok(r)) {
+                            claimed++;
+                            m.rewards("联赛任务", r);
+                        }
+                    }
+                }
+            }
+            if (claimed > 0) m.claimed("冰火战歌任务×" + claimed);
+            else m.skip("无未领任务奖励");
+            if (tc.subOn("act_slg_league", "like", true)) {
+                GameMessage like = tc.engine.request("req_slg_3_league_like", Exec.args("rank", 1L));
+                if (Exec.ok(like)) m.claimed("点赞");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "冰火战歌");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_slg_league", "冰火战歌");
+    }
+
+    // ---------- 最强王国（部队复活） ----------
+
+    /** 最强王国：活动期检测到阵亡部队时 req_cross_capital_war_revive {} 全复活 + 请求联盟帮助。 */
+    public static TaskOutcome crossCapitalRevive(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            Map<String, Object> init = tc.engine.notifyData("notify_cross_capital_war_init");
+            boolean inActivity = false;
+            boolean hasDead = false;
+            if (init != null) {
+                Map<String, Object> activity = Exec.mapOf(init.get("activity"));
+                long stage = activity == null ? 0L : Exec.longOf(activity.get("stage"));
+                inActivity = stage > 0L;
+                Map<String, Object> player = Exec.mapOf(init.get("player"));
+                Map<String, Object> revive = player == null ? null : Exec.mapOf(player.get("revive_data"));
+                Map<String, Object> dead = revive == null ? null : Exec.mapOf(revive.get("dead_map"));
+                hasDead = dead != null && !dead.isEmpty();
+            }
+            if (!inActivity) {
+                m.skip("最强王国未开启");
+            } else if (!hasDead) {
+                m.skip("无阵亡部队");
+            } else {
+                GameMessage r = tc.engine.request("req_cross_capital_war_revive", null);
+                if (Exec.ok(r)) {
+                    m.claimed("部队复活");
+                    m.rewards("复活", r);
+                } else {
+                    m.skip("复活未成功(码" + Exec.codeOf(r) + ")");
+                }
+                GameMessage help = tc.engine.request(
+                        "req_cross_capital_war_revive_call_alliance_help", null);
+                if (Exec.ok(help)) m.claimed("已请求联盟帮助");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "最强王国复活");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_cross_capital_revive", "最强王国复活");
+    }
+
+    // ---------- 联盟/同账号离线联动 ----------
+
+    /** 离线联动（2026-11-08）：观察者查询关注角色 offline_time（0=在线，>0=最后离线时间）。 */
+    public static TaskOutcome allyOfflineGuard(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            JSONObject p = tc.params("ally_offline_guard");
+            List<Object> uids = new ArrayList<>();
+            JSONArray arr = p.optJSONArray("watch_uids");
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    long uid = arr.optLong(i);
+                    if (uid > 0L) uids.add(uid);
+                }
+            }
+            if (uids.isEmpty()) {
+                m.skip("未配置关注角色（watch_uids）");
+                return Exec.result(m, "ally_offline_guard", "离线联动");
+            }
+            GameMessage r = tc.engine.request("req_players_base_info_with_permission",
+                    Exec.args("uids", uids, "permission", 1L));
+            if (!Exec.ok(r)) {
+                m.skip("查询失败(码" + Exec.codeOf(r) + ")");
+                return Exec.result(m, "ally_offline_guard", "离线联动");
+            }
+            Map<String, Object> result = r.getContent() == null ? null
+                    : Exec.mapOf(r.getContent().get("result"));
+            int online = 0;
+            int offline = 0;
+            List<Long> offlineUids = new ArrayList<>();
+            if (result != null) {
+                for (Map.Entry<String, Object> e : result.entrySet()) {
+                    Map<String, Object> info = Exec.mapOf(e.getValue());
+                    if (info == null || !info.containsKey("offline_time")) continue;
+                    long offlineTime = Exec.longOf(info.get("offline_time"));
+                    if (offlineTime == 0L) {
+                        online++;
+                    } else {
+                        offline++;
+                        long uid = Exec.longOf(info.get("uid"));
+                        if (uid > 0L) offlineUids.add(uid);
+                    }
+                }
+            }
+            m.subOk("watch", "在线 " + online + " / 离线 " + offline);
+            m.claimed("离线查询：在线 " + online + " / 离线 " + offline);
+            tc.saveModText("ally_offline_guard", "watch",
+                    "在线 " + online + " / 离线 " + offline
+                            + (offlineUids.isEmpty() ? "" : " · 离线uid " + offlineUids));
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "离线联动");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "ally_offline_guard", "离线联动");
     }
 
     // ---------- 冰原猎人 ----------
