@@ -680,6 +680,66 @@ public final class ServerActivityTasks {
         return Exec.result(m, "act_truck", "雪原商路");
     }
 
+    // ---------- 雪域兵器联赛 / 冰火战歌 ----------
+
+    /** 雪域兵器联赛：领联盟周常登录奖励（竞猜默认不自动下注）。 */
+    public static TaskOutcome arsenalLeague(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            GameMessage login = tc.engine.request("req_alliance_arsenal_league_login_weekly", null);
+            if (Exec.ok(login)) {
+                m.claimed("雪域兵器联赛登录奖励");
+                m.rewards("登录奖励", login);
+            } else {
+                m.skip("登录奖励未领(码" + Exec.codeOf(login) + ")");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "雪域兵器联赛");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_arsenal_league", "雪域兵器联赛");
+    }
+
+    /** 冰火战歌：领取所有已完成任务奖励 + 点赞（幂等）。 */
+    public static TaskOutcome slgLeague(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            Map<String, Object> init = tc.engine.notifyData("notify_slg_3_league_info_init");
+            int claimed = 0;
+            if (init != null) {
+                Map<String, Object> task = Exec.mapOf(init.get("task"));
+                Map<String, Object> data = task == null ? null : Exec.mapOf(task.get("data"));
+                Map<String, Object> quests = data == null ? null : Exec.mapOf(data.get("quests"));
+                if (quests != null) {
+                    for (Map.Entry<String, Object> e : quests.entrySet()) {
+                        Map<String, Object> q = Exec.mapOf(e.getValue());
+                        long taskId = q == null ? 0L : Exec.longOf(q.get("id"));
+                        if (taskId <= 0L) taskId = Exec.longOf(e.getKey());
+                        if (taskId <= 0L) continue;
+                        GameMessage r = tc.engine.request("req_slg_3_league_get_task_reward",
+                                Exec.args("task_id", taskId));
+                        if (Exec.ok(r)) {
+                            claimed++;
+                            m.rewards("联赛任务", r);
+                        }
+                    }
+                }
+            }
+            if (claimed > 0) m.claimed("冰火战歌任务×" + claimed);
+            else m.skip("无未领任务奖励");
+            if (tc.subOn("act_slg_league", "like", true)) {
+                GameMessage like = tc.engine.request("req_slg_3_league_like", Exec.args("rank", 1L));
+                if (Exec.ok(like)) m.claimed("点赞");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "冰火战歌");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_slg_league", "冰火战歌");
+    }
+
     // ---------- 冰原猎人 ----------
 
     public static TaskOutcome icefieldHunter(TaskContext tc) {

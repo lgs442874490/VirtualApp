@@ -116,6 +116,9 @@ public final class ServerTasks {
         l.add(new TaskDef("act_mercenary", "佣兵荣耀", false, ServerActivityTasks::mercenary));
         l.add(new TaskDef("act_truck", "雪原商路", false, ServerActivityTasks::truckEscort));
         l.add(new TaskDef("act_icehunter", "冰原猎人", false, ServerActivityTasks::icefieldHunter));
+        // ===== 联赛 =====
+        l.add(new TaskDef("act_arsenal_league", "雪域兵器联赛", false, ServerActivityTasks::arsenalLeague));
+        l.add(new TaskDef("act_slg_league", "冰火战歌", false, ServerActivityTasks::slgLeague));
         // ===== 野外 =====
         l.add(new TaskDef("gather", "野外采集", false, ServerFieldTasks::gather));
         l.add(new TaskDef("intel", "情报任务", false, ServerFieldTasks::intel));
