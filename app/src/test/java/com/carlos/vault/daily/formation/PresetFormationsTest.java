@@ -252,17 +252,17 @@ public class PresetFormationsTest {
     }
 
     @Test
-    public void bearTeam_bowUsesPowerIncludingGear_notGeneration() {
-        // 用户口径（2026-11-08）：不按代选人——游戏 power 已含装备/星级/专武综合加成，
-        // 高代弓通常战力最高，自然当选；这里验证排序依据是 power，不是 generation。
+    public void bearTeam_bowPrefersNewestGenerationOverHighPowerOld() {
+        // 2026-11-09 定论：游戏英雄目录 power 恒为 0（实测 40 个英雄全部 0），
+        // 网页版同样按代际表选人；故"最强"= 代际 → 星级 → 专武 → 等级综合强度。
         FormationCatalogStore cat = catalog(30000L,
                 hero(50004L, "盾A", 1, 5000),
                 hero(50016L, "米娅", 2, 100),
-                heroGen(50006L, "巴希提", 3, 9000, 5, 5, 10, 0),   // 战力（含装备）最高
-                heroGen(50022L, "琳恩", 3, 3000, 2, 1, 0, 4));      // 高代但战力低
+                heroGen(50006L, "巴希提", 3, 9000, 5, 5, 10, 0),   // 老代满星满专武
+                heroGen(50022L, "琳恩", 3, 3000, 2, 1, 0, 4));      // 新代（当前最强弓）
         FormationModel bear = PresetFormations.all(cat).get(2);
-        assertEquals("打熊队弓按战力（含装备）选最强，不按代际",
-                Long.valueOf(50006L), bear.heroIds.get(2));
+        assertEquals("打熊队弓必须选最高代（50022 gen4），而不是老代 50006",
+                Long.valueOf(50022L), bear.heroIds.get(2));
     }
 
     @Test
@@ -468,8 +468,9 @@ public class PresetFormationsTest {
         for (FormationModel f : lib) {
             if (f.id >= 9100000010L && f.id <= 9100000019L) ride.add(f);
         }
-        assertEquals("只创建已拥有队长的 2 队", 2, ride.size());
-        assertNotNull(find(lib, 9100000011L));   // 格温（5 级优先）
+        // 2026-11-09：打熊队优先占用最强弓（格温 star4）→ 格温队让位，只剩亨德里克 1 队
+        assertEquals("打熊队占用格温后，仅剩亨德里克 1 队", 1, ride.size());
+        assertNull("格温被发车队占用 → 熊上车2 跳过", find(lib, 9100000011L));
         assertNotNull(find(lib, 9100000010L));   // 亨德里克
         assertNull(find(lib, 9100000012L));      // 书允未拥有
         // all() 仍返回 19 条骨架

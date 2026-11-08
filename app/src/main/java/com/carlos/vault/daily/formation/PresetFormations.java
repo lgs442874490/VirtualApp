@@ -146,6 +146,29 @@ public final class PresetFormations {
                 }
             };
 
+    /**
+     * 英雄强度（2026-11-09 定论）：<b>代际优先</b>——游戏英雄目录没有可用战力字段
+     * （生产实测 {@code srv:formation:catalog} 里 40 个英雄的 {@code power} 全为 0，
+     * 网页版同样拿不到，故其模板按 {@code GENERATION_PLANS} 按代选人）。
+     * 排序：代际降序 → 星级 → 专武 → 等级 → 战力（有则用）→ id。
+     */
+    private static final Comparator<FormationStore.Hero> GENERATION_DESC =
+            new Comparator<FormationStore.Hero>() {
+                @Override
+                public int compare(FormationStore.Hero a, FormationStore.Hero b) {
+                    int c = Integer.compare(b.generation, a.generation);
+                    if (c != 0) return c;
+                    c = Integer.compare(b.starDisplay, a.starDisplay);
+                    if (c != 0) return c;
+                    c = Integer.compare(b.weaponLevel, a.weaponLevel);
+                    if (c != 0) return c;
+                    c = Long.compare(b.level, a.level);
+                    if (c != 0) return c;
+                    c = Long.compare(b.power, a.power);
+                    return c != 0 ? c : Long.compare(a.id, b.id);
+                }
+            };
+
 
     private PresetFormations() {
     }
@@ -673,6 +696,7 @@ public final class PresetFormations {
         final FormationCatalogStore cat;
         final List<FormationStore.Hero> heroes;
         final List<FormationStore.Hero> byPower;
+        final List<FormationStore.Hero> byGeneration;
         final Map<Long, FormationStore.Hero> index;
 
         View(FormationCatalogStore cat) {
@@ -684,6 +708,8 @@ public final class PresetFormations {
             for (FormationStore.Hero h : list) index.put(Long.valueOf(h.id), h);
             this.byPower = new ArrayList<FormationStore.Hero>(list);
             Collections.sort(byPower, POWER_DESC);
+            this.byGeneration = new ArrayList<FormationStore.Hero>(list);
+            Collections.sort(byGeneration, GENERATION_DESC);
         }
 
         FormationStore.Hero hero(long id) {
@@ -712,8 +738,8 @@ public final class PresetFormations {
         }
 
         long strongest(int profession, Set<Long> exclude) {
-            // 最强 = 战力（游戏 power 已含装备/星级/专武/等级的综合加成）。
-            for (FormationStore.Hero h : byPower) {
+            // 最强 = 综合强度（代际 → 星级 → 专武 → 等级 → 战力）：游戏目录 power 恒 0，按战力排序无效。
+            for (FormationStore.Hero h : byGeneration) {
                 if (exclude != null && exclude.contains(Long.valueOf(h.id))) continue;
                 if (FormationRules.professionOf(h) == profession) return h.id;
             }
