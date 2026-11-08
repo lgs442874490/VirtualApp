@@ -285,7 +285,8 @@ public final class FormationPicker {
         String launchValue = FormationStore.MODE_ROLE.equals(fnMode) && fnIdValue > 0
                 ? nameOf(act, fpid, sid, fnIdValue) : "自动";
         card.addView(UiStyle.dropdownRow(act, launchLabel, launchValue,
-                () -> pickFormationFor(act, fpid, sid, uid, null,
+                () -> pickFormationFor(act, fpid, sid, uid, null, fnMode,
+                        new long[]{fnIdValue},
                         (mode, ids, inf, lanc, mark, ratios) -> {
                             if (FormationStore.MODE_ROLE.equals(mode) && ids.length > 0) {
                                 FormationStore.saveFnMode(act, fpid, sid, fnId, FormationStore.MODE_ROLE);
@@ -320,7 +321,8 @@ public final class FormationPicker {
             row.setGravity(Gravity.CENTER_VERTICAL);
             TextView dd = UiStyle.dropdownRow(act, "上车队 " + joinId,
                     value + (enabled ? "" : "（已停用）"),
-                    () -> pickFormationFor(act, fpid, sid, uid, null,
+                    () -> pickFormationFor(act, fpid, sid, uid, null, mode,
+                            new long[]{fid},
                             (mode2, ids, inf, lanc, mark, ratios) -> {
                                 boolean cur = FormationStore.joinEnabled(
                                         FormationStore.joinFormation(act, fpid, sid, fnId, joinId));
@@ -375,6 +377,17 @@ public final class FormationPicker {
     public static void pickFormationFor(final Activity act, final String fpid, final long sid,
                                         final String uid, final List<Long> disabledIds,
                                         final OnFormationPickedDetail cb) {
+        pickFormationFor(act, fpid, sid, uid, disabledIds, null, null, cb);
+    }
+
+    /**
+     * 2026-11-09（用户反馈）：打开选择器时按「当前绑定」初始定位——
+     * 已选打熊队/熊上车N 时直接落在「巨熊编队」来源并选中该队，而不是默认「自动 5/2/3 盾矛弓」。
+     */
+    public static void pickFormationFor(final Activity act, final String fpid, final long sid,
+                                        final String uid, final List<Long> disabledIds,
+                                        final String initialMode, final long[] initialIds,
+                                        final OnFormationPickedDetail cb) {
         if (act == null) return;
         if (fpid == null || fpid.trim().isEmpty() || sid <= 0) {
             UiStyle.toast(act, "等待角色同步，请先选择角色");
@@ -396,8 +409,12 @@ public final class FormationPicker {
         final List<Long> disabled = disabledIds == null
                 ? new ArrayList<Long>() : disabledIds;
 
-        final String[] source = {SRC_AUTO};
-        final long[] selectedId = {0L};
+        long initialId = initialIds == null || initialIds.length == 0 ? 0L : initialIds[0];
+        String initialSource = FormationStore.MODE_ROLE.equals(
+                FormationStore.normalizeMode(initialMode)) && initialId != 0L
+                ? sourceOfId(initialId, lib, games) : SRC_AUTO;
+        final String[] source = {initialSource};
+        final long[] selectedId = {initialId};
         final LinearLayout body = new LinearLayout(act);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(act, 16), dp(act, 8), dp(act, 16), dp(act, 8));
@@ -503,8 +520,32 @@ public final class FormationPicker {
             return;
         }
         List<FormationModel> list = host.listOf(source[0]);
-        host.tabKey = list.isEmpty() ? "" : host.keyOf(list.get(0));
-        selectedId[0] = list.isEmpty() ? 0L : list.get(0).id;
+        FormationModel want = null;
+        for (FormationModel f : list) {
+            if (f != null && f.id == selectedId[0]) {
+                want = f;
+                break;
+            }
+        }
+        if (want == null && !list.isEmpty()) want = list.get(0);
+        host.tabKey = want == null ? "" : host.keyOf(want);
+        selectedId[0] = want == null ? 0L : want.id;
+    }
+
+    /** 编队 id 归属的来源 tab（游戏/巨熊/预设）。 */
+    private static String sourceOfId(long id, List<FormationModel> lib, List<FormationModel> games) {
+        if (id < 0) return SRC_GAME;
+        if (lib != null) {
+            for (FormationModel f : lib) {
+                if (f == null || f.id != id) continue;
+                if (isBear(f)) return SRC_BEAR;
+                return SRC_PRESET;
+            }
+        }
+        if (games != null) {
+            for (FormationModel f : games) if (f != null && f.id == id) return SRC_GAME;
+        }
+        return SRC_PRESET;
     }
 
     /** 只读 Board 不可用时的降级列表（保证选择器永远可操作）。 */

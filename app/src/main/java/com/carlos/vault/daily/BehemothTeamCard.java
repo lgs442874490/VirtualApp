@@ -76,7 +76,8 @@ public final class BehemothTeamCard {
             value = "自动（最强盾 / 波根 / 吉娜）";
         }
         card.addView(UiStyle.dropdownRow(act, "巨兽队", value,
-                () -> FormationPicker.pickFormationFor(act, fpid, sid, uid, null,
+                () -> FormationPicker.pickFormationFor(act, fpid, sid, uid, null, mode,
+                        new long[]{formationId},
                         (pickedMode, ids, inf, lancer, marksman, ratios) -> {
                             if (FormationStore.MODE_ROLE.equals(pickedMode) && ids.length > 0) {
                                 FormationStore.saveFnMode(act, fpid, sid, fnId, FormationStore.MODE_ROLE);

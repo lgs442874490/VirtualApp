@@ -142,8 +142,10 @@ public final class FormationEntryCard {
             UiStyle.press(bindRow);
             bindRow.setOnClickListener(v -> {
                 try {
+                    String curMode = FormationStore.fnMode(act, fpid, sid, fnId);
+                    long[] curIds = FormationStore.fnFormationIds(act, fpid, sid, fnId);
                     com.carlos.vault.daily.FormationPicker.pickFormationFor(act, fpid, sid, uid,
-                            null,
+                            null, curMode, curIds,
                             (mode, ids, inf, lanc, mark, ratios) -> {
                                 if (FormationStore.MODE_ROLE.equals(mode)) {
                                     FormationStore.saveFnMode(act, fpid, sid, fnId, mode);
