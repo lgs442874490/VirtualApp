@@ -385,21 +385,23 @@ public final class PresetFormations {
 
         // 10..19 熊上车：技能排序 → 前 6 队写入库；其余仅备选
         List<BearRidePick> picks = bearRidePicks(v, bearTeamHeroes);
-        Map<Integer, List<Long>> teamsByOrder = new LinkedHashMap<Integer, List<Long>>();
+        // 2026-11-09（用户口径）：上车队按「出征队列顺延」连续编号 1..6，技能排序只决定
+        // 队长分配顺序；旧实现按原始候选序号写库，会写成 熊上车2/3/5/7/8/10（UI 缺号）。
+        Map<Integer, List<Long>> teamsBySeq = new LinkedHashMap<Integer, List<Long>>();
         Set<Long> bearRideUsed = new LinkedHashSet<Long>(bearTeamHeroes);
         // 先预留全部候选队长：禁止高优先级队的补位抢走后续队队长（跨队英雄不得重复）
         for (BearRidePick pick : picks) bearRideUsed.add(Long.valueOf(pick.captainId));
+        int seq = 0;
         for (BearRidePick pick : picks) {
             List<Long> heroes = new ArrayList<Long>();
             heroes.add(pick.captainId);
             fillUp(v, heroes, bearRideUsed, FormationModel.HERO_MAX - heroes.size());
-            teamsByOrder.put(pick.order, heroes);
-        }
-        for (int i = 0; i < picks.size() && i < BEAR_RIDE_MAX_TEAMS; i++) {
-            r.keptBearRideIds.add(bearRideIndexToId(picks.get(i).order));
+            teamsBySeq.put(seq, heroes);
+            if (seq < BEAR_RIDE_MAX_TEAMS) r.keptBearRideIds.add(bearRideIndexToId(seq));
+            seq++;
         }
         for (int order = 0; order < BEAR_RIDE_NAMES.length; order++) {
-            List<Long> heroes = teamsByOrder.get(order);
+            List<Long> heroes = teamsBySeq.get(order);
             r.models.add(build(10 + order, BEAR_RIDE_NAMES[order],
                     BEAR_RIDE_TPL[order], 10, 20, 70,
                     heroes == null ? new ArrayList<Long>() : heroes, cat));

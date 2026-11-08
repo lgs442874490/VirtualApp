@@ -388,20 +388,21 @@ public class PresetFormationsTest {
         List<Long> keptIds = new ArrayList<Long>();
         for (FormationModel f : kept) keptIds.add(Long.valueOf(f.id));
         Collections.sort(keptIds);
-        // 5 级：熊上车2/4/8 按表顺序 → 4 级：熊上车3/9 → 3 级：熊上车5
-        assertEquals(Arrays.asList(9100000011L, 9100000012L, 9100000013L,
-                9100000014L, 9100000017L, 9100000018L), keptIds);
+        // 2026-11-09：顺延连续编号 熊上车1..6；技能排序决定队长顺序：
+        // 5 级 格温/布拉德利/杰塞尔 → 4 级 书允/索尼娅 → 3 级 马格努斯
+        assertEquals(Arrays.asList(9100000010L, 9100000011L, 9100000012L,
+                9100000013L, 9100000014L, 9100000015L), keptIds);
         // 未入选的 4 队不写入库
-        for (long id : new long[]{9100000010L, 9100000015L, 9100000016L, 9100000019L}) {
+        for (long id : new long[]{9100000016L, 9100000017L, 9100000018L, 9100000019L}) {
             assertNull("备选队不写入库: " + id, find(lib, id));
         }
-        // 队长=首位
-        assertEquals(50026L, find(lib, 9100000011L).heroIds.get(0).longValue());
-        assertEquals(50027L, find(lib, 9100000012L).heroIds.get(0).longValue());
-        assertEquals(50033L, find(lib, 9100000013L).heroIds.get(0).longValue());
-        assertEquals(50038L, find(lib, 9100000014L).heroIds.get(0).longValue());
-        assertEquals(50028L, find(lib, 9100000017L).heroIds.get(0).longValue());
-        assertEquals(50011L, find(lib, 9100000018L).heroIds.get(0).longValue());
+        // 队长=首位（技能 5 级 → 4 级 → 3 级，同技能按表顺序，顺延编号）
+        assertEquals(50026L, find(lib, 9100000010L).heroIds.get(0).longValue());  // 格温 5
+        assertEquals(50033L, find(lib, 9100000011L).heroIds.get(0).longValue());  // 布拉德利 5
+        assertEquals(50028L, find(lib, 9100000012L).heroIds.get(0).longValue());  // 杰塞尔 4
+        assertEquals(50027L, find(lib, 9100000013L).heroIds.get(0).longValue());  // 书允 4
+        assertEquals(50011L, find(lib, 9100000014L).heroIds.get(0).longValue());  // 赫罗尼莫 4
+        assertEquals(50038L, find(lib, 9100000015L).heroIds.get(0).longValue());  // 马格努斯 3
     }
 
     @Test
@@ -466,11 +467,11 @@ public class PresetFormationsTest {
         for (FormationModel f : lib) {
             if (f.id >= 9100000010L && f.id <= 9100000019L) ride.add(f);
         }
-        // 2026-11-09：实力按 power（50006 弓A power4000 最强 → 打熊队占用 50006），
-        // 格温/亨德里克都是上车队长且未被发车队占用 → 2 队都在。
+        // 2026-11-09：上车队顺延连续编号 —— 技能最高的格温=熊上车1(9100000010)，
+        // 亨德里克=熊上车2(9100000011)；书允未拥有不创建。
         assertEquals("已拥有的 2 个上车队都会创建", 2, ride.size());
-        assertNotNull(find(lib, 9100000011L));   // 格温
-        assertNotNull(find(lib, 9100000010L));   // 亨德里克
+        assertEquals(50026L, find(lib, 9100000010L).heroIds.get(0).longValue());  // 格温（技能5）
+        assertEquals(50036L, find(lib, 9100000011L).heroIds.get(0).longValue());  // 亨德里克
         assertNull(find(lib, 9100000012L));      // 书允未拥有
         // all() 仍返回 19 条骨架
         assertEquals(19, PresetFormations.all(cat).size());
