@@ -1371,6 +1371,15 @@ public final class ServerTownTasks {
             if (hi != null) {
                 collectPoints(hi, pts, 0);
             }
+            // 2026-11-08：主动进岛拉权威状态（不依赖被动推送），并从响应补充伐木点
+            try {
+                GameMessage enter = tc.engine.request("req_homeland_enter_homeland", null);
+                if (Exec.ok(enter)) {
+                    Map<String, Object> hi2 = Exec.mapOf(enter.getContent().get("homeland_info"));
+                    if (hi2 != null) collectPoints(hi2, pts, 0);
+                }
+            } catch (Exception ignored) {
+            }
             if (pts.isEmpty()) {
                 m.skip("伐木点未同步");
             } else {
@@ -1380,6 +1389,14 @@ public final class ServerTownTasks {
                     tryStep(tc, m, "木材加工厂", null, "req_homeland_take_logging_site_coin",
                             Exec.args("point", pts.get(1)));
                 }
+            }
+            // 2026-11-08：海岛免费商品 8002（每日 1 次，无资源扣减）+ 每周免费钻石（101×200）
+            if (tc.subOn("homeland", "free_store", true)) {
+                tryStep(tc, m, "免费商店", "free_store", "req_homeland_buy_store_item",
+                        Exec.args("item", Exec.args("id", 8002L, "count", 1L)));
+            }
+            if (tc.subOn("homeland", "weekly_diamond", true)) {
+                tryStep(tc, m, "每周钻石", "weekly_diamond", "req_homeland_token_shop_weekly_recv", null);
             }
         } catch (Exception e) {
             if (sessionLost(e)) return ServerTasks.classifyException(e, "晨曦岛");

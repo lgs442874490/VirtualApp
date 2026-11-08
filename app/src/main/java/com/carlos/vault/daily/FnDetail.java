@@ -111,7 +111,9 @@ public final class FnDetail {
         fn("homeland",
                 new Sub("free", "晨曦回礼", "家园免费产量领取", true, null),
                 new Sub("tree", "生命之树", "生命之树金币收取", true, null),
-                new Sub("logging", "伐木小屋/加工厂", "按家园通知坐标收取木材产物", true, null));
+                new Sub("logging", "伐木小屋/加工厂", "按家园通知坐标收取木材产物", true, null),
+                new Sub("free_store", "免费商店购买", "每日购买海岛免费商品 8002（无资源扣减）", true, null),
+                new Sub("weekly_diamond", "每周免费钻石", "领取海岛代币商店每周奖励（钻石+200）", true, null));
         fn("fire_crystal",
                 new Sub("purify", "普通提炼", "普通火晶提炼至每日上限", true, null),
                 new Sub("super", "超级提炼", "开关打开后每轮超炼1次（可在参数 super_times 配次数，消耗火晶）", false, null),
