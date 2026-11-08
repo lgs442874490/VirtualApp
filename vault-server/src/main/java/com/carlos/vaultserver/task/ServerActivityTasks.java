@@ -740,6 +740,48 @@ public final class ServerActivityTasks {
         return Exec.result(m, "act_slg_league", "冰火战歌");
     }
 
+    // ---------- 最强王国（部队复活） ----------
+
+    /** 最强王国：活动期检测到阵亡部队时 req_cross_capital_war_revive {} 全复活 + 请求联盟帮助。 */
+    public static TaskOutcome crossCapitalRevive(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            Map<String, Object> init = tc.engine.notifyData("notify_cross_capital_war_init");
+            boolean inActivity = false;
+            boolean hasDead = false;
+            if (init != null) {
+                Map<String, Object> activity = Exec.mapOf(init.get("activity"));
+                long stage = activity == null ? 0L : Exec.longOf(activity.get("stage"));
+                inActivity = stage > 0L;
+                Map<String, Object> player = Exec.mapOf(init.get("player"));
+                Map<String, Object> revive = player == null ? null : Exec.mapOf(player.get("revive_data"));
+                Map<String, Object> dead = revive == null ? null : Exec.mapOf(revive.get("dead_map"));
+                hasDead = dead != null && !dead.isEmpty();
+            }
+            if (!inActivity) {
+                m.skip("最强王国未开启");
+            } else if (!hasDead) {
+                m.skip("无阵亡部队");
+            } else {
+                GameMessage r = tc.engine.request("req_cross_capital_war_revive", null);
+                if (Exec.ok(r)) {
+                    m.claimed("部队复活");
+                    m.rewards("复活", r);
+                } else {
+                    m.skip("复活未成功(码" + Exec.codeOf(r) + ")");
+                }
+                GameMessage help = tc.engine.request(
+                        "req_cross_capital_war_revive_call_alliance_help", null);
+                if (Exec.ok(help)) m.claimed("已请求联盟帮助");
+            }
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "最强王国复活");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "act_cross_capital_revive", "最强王国复活");
+    }
+
     // ---------- 冰原猎人 ----------
 
     public static TaskOutcome icefieldHunter(TaskContext tc) {
