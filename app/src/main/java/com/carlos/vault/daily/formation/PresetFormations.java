@@ -738,8 +738,10 @@ public final class PresetFormations {
         }
 
         long strongest(int profession, Set<Long> exclude) {
-            // 最强 = 综合强度（代际 → 星级 → 专武 → 等级 → 战力）：游戏目录 power 恒 0，按战力排序无效。
-            for (FormationStore.Hero h : byGeneration) {
+            // 最强 = 游戏实力（网页版同口径）：服务端 HeroPowerCatalog 已按
+            // 等级×levelPowerRatio + 星级×starPowerRatio + 技能 + 装备(强化/天赋/突破) + 专武
+            // 算出 power（2026-11-09），故优先按 power；缺失时退化到 level/star/id。
+            for (FormationStore.Hero h : byPower) {
                 if (exclude != null && exclude.contains(Long.valueOf(h.id))) continue;
                 if (FormationRules.professionOf(h) == profession) return h.id;
             }

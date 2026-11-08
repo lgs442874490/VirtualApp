@@ -252,17 +252,15 @@ public class PresetFormationsTest {
     }
 
     @Test
-    public void bearTeam_bowPrefersNewestGenerationOverHighPowerOld() {
-        // 2026-11-09 定论：游戏英雄目录 power 恒为 0（实测 40 个英雄全部 0），
-        // 网页版同样按代际表选人；故"最强"= 代际 → 星级 → 专武 → 等级综合强度。
+    public void bearTeam_bowUsesHeroPower() {
+        // 2026-11-09：实力按服务端 HeroPowerCatalog 计算的 power（含等级/星级/技能/装备/专武）。
         FormationCatalogStore cat = catalog(30000L,
                 hero(50004L, "盾A", 1, 5000),
                 hero(50016L, "米娅", 2, 100),
-                heroGen(50006L, "巴希提", 3, 9000, 5, 5, 10, 0),   // 老代满星满专武
-                heroGen(50022L, "琳恩", 3, 3000, 2, 1, 0, 4));      // 新代（当前最强弓）
+                heroGen(50006L, "巴希提", 3, 9000, 5, 5, 10, 0),   // power 9000（装备后实力最高）
+                heroGen(50022L, "琳恩", 3, 3000, 2, 1, 0, 4));      // power 3000
         FormationModel bear = PresetFormations.all(cat).get(2);
-        assertEquals("打熊队弓必须选最高代（50022 gen4），而不是老代 50006",
-                Long.valueOf(50022L), bear.heroIds.get(2));
+        assertEquals("打熊队弓按实力（power）选最强", Long.valueOf(50006L), bear.heroIds.get(2));
     }
 
     @Test
@@ -468,9 +466,10 @@ public class PresetFormationsTest {
         for (FormationModel f : lib) {
             if (f.id >= 9100000010L && f.id <= 9100000019L) ride.add(f);
         }
-        // 2026-11-09：打熊队优先占用最强弓（格温 star4）→ 格温队让位，只剩亨德里克 1 队
-        assertEquals("打熊队占用格温后，仅剩亨德里克 1 队", 1, ride.size());
-        assertNull("格温被发车队占用 → 熊上车2 跳过", find(lib, 9100000011L));
+        // 2026-11-09：实力按 power（50006 弓A power4000 最强 → 打熊队占用 50006），
+        // 格温/亨德里克都是上车队长且未被发车队占用 → 2 队都在。
+        assertEquals("已拥有的 2 个上车队都会创建", 2, ride.size());
+        assertNotNull(find(lib, 9100000011L));   // 格温
         assertNotNull(find(lib, 9100000010L));   // 亨德里克
         assertNull(find(lib, 9100000012L));      // 书允未拥有
         // all() 仍返回 19 条骨架
