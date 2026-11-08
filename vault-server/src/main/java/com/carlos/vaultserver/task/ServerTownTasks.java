@@ -1556,6 +1556,7 @@ public final class ServerTownTasks {
         ArenaDay day = null;
         try {
             tc.engine.collectNotifies(1500);
+            arenaSetFormation(tc, m);
             JSONObject ap = tc.params("arena");
             JSONObject strat = ap.optJSONObject("strategy");
             int maxFights = strat != null && strat.has("fight") ? strat.optInt("fight", 5)
@@ -2414,6 +2415,33 @@ public final class ServerTownTasks {
         if (!squads.isEmpty()) return squads.values().iterator().next();
         List<Long> all = Exec.allHeroes(engine);
         return all.subList(0, Math.min(5, all.size()));
+    }
+
+    /**
+     * 竞技场自动防守阵容（2026-11-08）：用当前编队前 5 英雄设置防守站位。
+     * req_arena_set_defence_heroes {hero_array:[5英雄]}，数组顺序=站位 1~5。
+     */
+    static void arenaSetFormation(TaskContext tc, Exec.Multi m) {
+        if (!tc.subOn("arena", "formation", true)) {
+            m.subSkip("formation", "子开关已关闭");
+            return;
+        }
+        List<Long> heroes = squadHeroes(tc.engine);
+        if (heroes == null || heroes.size() < 5) {
+            m.subSkip("formation", "英雄不足 5 个，跳过");
+            return;
+        }
+        try {
+            GameMessage rsp = tc.engine.request("req_arena_set_defence_heroes",
+                    Exec.args("hero_array", new ArrayList<>(heroes.subList(0, 5))));
+            if (Exec.ok(rsp)) {
+                m.subOk("formation", "防守阵容已更新");
+            } else {
+                m.subSkip("formation", "码" + Exec.codeOf(rsp));
+            }
+        } catch (Exception e) {
+            m.subSkip("formation", "异常");
+        }
     }
 
     // ---------- 公共 ----------

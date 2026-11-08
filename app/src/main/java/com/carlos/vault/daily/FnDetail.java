@@ -123,7 +123,8 @@ public final class FnDetail {
         fn("arena",
                 new Sub("fight", "自动挑战", "从对手列表选战力最低者挑战", true,
                         new String[][]{{"3", "挑战3场"}, {"5", "挑战5场"}, {"8", "挑战8场"}, {"10", "挑战10场"}}),
-                new Sub("daily", "每日奖励", "挑战次数达标后的每日奖励", true, null));
+                new Sub("daily", "每日奖励", "挑战次数达标后的每日奖励", true, null),
+                new Sub("formation", "自动防守站位", "用当前编队前 5 英雄设置竞技场防守阵容（阵型顺序=站位1~5）", true, null));
 
         // ===== 活动 =====
         fn("act_balloon",
