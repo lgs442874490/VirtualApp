@@ -252,30 +252,40 @@ public class PresetFormationsTest {
     }
 
     @Test
-    public void bearTeam_bowPrefersNewestGenerationOverHighPowerOld() {
-        // 生产 2026-11-08：打熊队弓选了 gen0 满星巴希提（战力最高）而不是高代弓。
-        // 修复后「最强」= 最高代（同代再比星级/专武/战力）。
+    public void bearTeam_bowUsesPowerIncludingGear_notGeneration() {
+        // 用户口径（2026-11-08）：不按代选人——游戏 power 已含装备/星级/专武综合加成，
+        // 高代弓通常战力最高，自然当选；这里验证排序依据是 power，不是 generation。
         FormationCatalogStore cat = catalog(30000L,
                 hero(50004L, "盾A", 1, 5000),
                 hero(50016L, "米娅", 2, 100),
-                heroGen(50006L, "巴希提", 3, 9000, 5, 5, 10, 0),   // 老代满星高战力
-                heroGen(50022L, "琳恩", 3, 3000, 2, 1, 0, 4));      // 新代低战力
+                heroGen(50006L, "巴希提", 3, 9000, 5, 5, 10, 0),   // 战力（含装备）最高
+                heroGen(50022L, "琳恩", 3, 3000, 2, 1, 0, 4));      // 高代但战力低
         FormationModel bear = PresetFormations.all(cat).get(2);
-        assertEquals("打熊队弓必须选最高代（50022 gen4），而不是战力最高的 gen0 50006",
-                Long.valueOf(50022L), bear.heroIds.get(2));
+        assertEquals("打熊队弓按战力（含装备）选最强，不按代际",
+                Long.valueOf(50006L), bear.heroIds.get(2));
     }
 
     @Test
-    public void bearTeam_spearAndBowAvoidBearRideCaptains() {
+    public void bearTeam_prefersStrongest_evenIfBearRideCaptain() {
+        // 用户口径（2026-11-08）：打熊队优先级高于上车队——最强矛/弓即使是熊上车队长
+        // 也必须给发车队；上车队侧再避让（bearRideUsed 含发车队英雄，不重复占用）。
         FormationCatalogStore cat = catalog(30000L,
                 hero(50004L, "盾A", 1, 5000),
-                // 最强矛/弓都是熊上车队长 → 必须避开
                 hero(50035L, "索尼娅", 2, 9999),
                 hero(50036L, "亨德里克", 3, 9999),
                 hero(50005L, "矛B", 2, 1000),
                 hero(50006L, "弓B", 3, 1000));
         FormationModel bear = PresetFormations.all(cat).get(2);
-        assertEquals(Arrays.asList(50004L, 50005L, 50006L), bear.heroIds);
+        assertEquals("打熊队应占用最强矛/弓（即使它们是熊上车队长）",
+                Arrays.asList(50004L, 50035L, 50036L), bear.heroIds);
+        // 上车队不得重复占用发车队英雄
+        List<FormationModel> all = PresetFormations.all(cat);
+        for (int i = 9; i < all.size(); i++) {
+            for (Long id : all.get(i).heroIds) {
+                assertFalse("熊上车队不得重复使用打熊队英雄 " + id,
+                        bear.heroIds.contains(id));
+            }
+        }
         // 米亚优先于最强矛
         FormationCatalogStore withMia = catalog(30000L,
                 hero(50004L, "盾A", 1, 5000),
