@@ -706,16 +706,25 @@ public final class ServerActivityTasks {
                 if (guessId > 0L && groupId > 0L) {
                     long num = Math.max(1L, p.optLong("bet_amount", 100L));
                     int fixedSide = p.optInt("bet_side", 0);
+                    if (fixedSide != 1 && fixedSide != 2) fixedSide = 0;   // P2-3：非法值按自动选强侧
                     GameMessage bi = tc.engine.request("req_arsenal_league_guess_get_winner_bet_info",
                             Exec.args("id", guessId, "group_id", groupId, "matches", List.of(1L)));
                     if (Exec.ok(bi)) {
                         Map<String, Object> infos = Exec.mapOf(bi.getContent().get("infos"));
                         if (infos != null && !infos.isEmpty()) {
-                            Map.Entry<String, Object> first = infos.entrySet().iterator().next();
-                            Map<String, Object> inf = Exec.mapOf(first.getValue());
-                            long matchId = inf == null ? Exec.longOf(first.getKey())
+                            // P2-2：按 match_id 升序取第一场（不依赖 Map 顺序）
+                            String firstKey = null;
+                            Map<String, Object> inf = null;
+                            for (Map.Entry<String, Object> ie : infos.entrySet()) {
+                                long mid = Exec.longOf(ie.getKey());
+                                if (firstKey == null || mid < Exec.longOf(firstKey)) {
+                                    firstKey = ie.getKey();
+                                    inf = Exec.mapOf(ie.getValue());
+                                }
+                            }
+                            long matchId = inf == null ? Exec.longOf(firstKey)
                                     : Exec.longOf(inf.get("match_id"));
-                            if (matchId <= 0L) matchId = Exec.longOf(first.getKey());
+                            if (matchId <= 0L) matchId = Exec.longOf(firstKey);
                             int side = fixedSide;
                             if (side <= 0) {
                                 Map<String, Object> match = inf == null ? null : Exec.mapOf(inf.get("match"));
@@ -731,13 +740,22 @@ public final class ServerActivityTasks {
                                 }
                                 side = p1 >= p2 ? 1 : 2;
                             }
-                            GameMessage bet = tc.engine.request("req_arsenal_league_guess_bet_winner",
-                                    Exec.args("id", guessId, "group_id", groupId,
-                                            "match_id", matchId, "side", side, "num", num));
-                            if (Exec.ok(bet)) {
-                                m.claimed("竞猜下注 " + num + "（match " + matchId + " side " + side + "）");
+                            // P1-2：已下注幂等（同一 guessId+matchId 不重复下注）
+                            String betKey = "bet_" + guessId + "_" + matchId;
+                            JSONObject betState = tc.modState("act_arsenal_league");
+                            if (betState.optLong(betKey, 0L) > 0L) {
+                                m.skip("竞猜已下注（match " + matchId + "），跳过");
                             } else {
-                                m.skip("竞猜下注失败(码" + Exec.codeOf(bet) + ")");
+                                GameMessage bet = tc.engine.request("req_arsenal_league_guess_bet_winner",
+                                        Exec.args("id", guessId, "group_id", groupId,
+                                                "match_id", matchId, "side", side, "num", num));
+                                if (Exec.ok(bet)) {
+                                    tc.saveModText("act_arsenal_league", betKey,
+                                            String.valueOf(System.currentTimeMillis()));
+                                    m.claimed("竞猜下注 " + num + "（match " + matchId + " side " + side + "）");
+                                } else {
+                                    m.skip("竞猜下注失败(码" + Exec.codeOf(bet) + ")");
+                                }
                             }
                         }
                     }
@@ -785,6 +803,17 @@ public final class ServerActivityTasks {
                         }
                     }
                 }
+            }
+            // P2-5：修剪缓存，避免长期累积（保留最近 60 条）
+            if (claimedIds.length() > 60) {
+                java.util.List<String> keys = new ArrayList<>();
+                java.util.Iterator<String> it = claimedIds.keys();
+                while (it.hasNext()) keys.add(it.next());
+                JSONObject trimmed = new JSONObject();
+                for (int i = Math.max(0, keys.size() - 60); i < keys.size(); i++) {
+                    trimmed.put(keys.get(i), 1);
+                }
+                claimedIds = trimmed;
             }
             if (claimed > 0) tc.saveModText("act_slg_league", "claimed_ids", claimedIds.toString());
             if (claimed > 0) m.claimed("冰火战歌任务×" + claimed);
@@ -920,10 +949,20 @@ public final class ServerActivityTasks {
             // P2-7：离线目标强制上线（force_online=true 且 SessionControl 已注入）
             if (p.optBoolean("force_online", false) && tc.sessionControl() != null
                     && !offlineUids.isEmpty()) {
+                int forceLimit = Math.max(1, Math.min(10, p.optInt("force_limit", 3)));
+                boolean allowCross = p.optBoolean("allow_cross_account", false);
+                java.util.Set<Long> forcedUids = new java.util.HashSet<>();
                 int forced = 0;
                 for (Object[] t : targets) {
+                    if (forced >= forceLimit) break;
                     long uid = (Long) t[2];
                     if (!offlineUids.contains(uid)) continue;
+                    if (!forcedUids.add(uid)) continue;
+                    // P2-4：默认只强制同账号（跨账号需显式 allow_cross_account=true）
+                    if (!allowCross && !tc.fpid.equals(t[0])) {
+                        m.skip("跨账号目标 " + uid + " 未启用 allow_cross_account");
+                        continue;
+                    }
                     try {
                         com.carlos.vaultserver.SessionControl.RoleOpResult res =
                                 tc.sessionControl().roleAction((String) t[0], (String) t[1],
