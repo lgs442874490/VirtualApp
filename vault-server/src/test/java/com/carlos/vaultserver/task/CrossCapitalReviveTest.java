@@ -157,6 +157,24 @@ public class CrossCapitalReviveTest {
     }
 
     @Test
+    public void buysDiamondMedkitsWhenEnabled() {
+        TestEngine e = new TestEngine();
+        e.init = init(6L, true);
+        JSONObject p = new JSONObject();
+        JSONObject sub = new JSONObject();
+        sub.put("buy_diamond", true);
+        p.put("sub", sub);
+        p.put("diamond_buys", 3);
+        Map<String, JSONObject> params = new HashMap<>();
+        params.put("act_cross_capital_revive", p);
+        TaskContext ctx = new TaskContext(e, "111", SID, state, params, "测试");
+        ServerActivityTasks.crossCapitalRevive(ctx);
+        int buys = 0;
+        for (String c : e.calls) if ("req_cross_capital_war_buy_medkit".equals(c)) buys++;
+        assertEquals("开启钻石后应买 3 次医疗包（每次 +10%，30+50+30≥90%）", 3, buys);
+    }
+
+    @Test
     public void skipsWhenActivityClosed() {
         TestEngine e = new TestEngine();
         e.init = init(0L, true);

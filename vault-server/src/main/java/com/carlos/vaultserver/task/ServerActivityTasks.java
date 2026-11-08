@@ -871,10 +871,38 @@ public final class ServerActivityTasks {
             } else {
                 GameMessage r = tc.engine.request("req_cross_capital_war_revive", null);
                 if (Exec.ok(r)) {
-                    m.claimed("部队复活");
+                    m.claimed("部队复活（免费 30%）");
                     m.rewards("复活", r);
                 } else {
                     m.skip("复活未成功(码" + Exec.codeOf(r) + ")");
+                }
+                // 2026-11-09（用户口径）：自己复活 = 免费 30% + 盟友援助 50% + 钻石购买医疗包 10%/次。
+                // 钻石消耗叠加（价格逐次递增）；开关 buy_diamond，买满 diamond_buys 次（默认 3 次 → 30+50+30≥90%）
+                // 即达到直接复活；未开启则只做免费部分（"有多少复活多少"）。
+                boolean buyDiamond = tc.subOn("act_cross_capital_revive", "buy_diamond", false);
+                int maxBuys = 3;
+                try {
+                    JSONObject cp = tc.params("act_cross_capital_revive");
+                    if (cp != null && cp.has("diamond_buys")) {
+                        maxBuys = Math.max(0, cp.optInt("diamond_buys", 3));
+                    }
+                } catch (Throwable ignored) {
+                }
+                int buys = 0;
+                while (buyDiamond && buys < maxBuys) {
+                    GameMessage mk = tc.engine.request("req_cross_capital_war_buy_medkit",
+                            Exec.args("count", 1));
+                    if (!Exec.ok(mk)) {
+                        m.skip("钻石购买医疗包失败(码" + Exec.codeOf(mk) + ")，停止购买");
+                        break;
+                    }
+                    GameMessage again = tc.engine.request("req_cross_capital_war_revive", null);
+                    if (!Exec.ok(again)) {
+                        m.skip("购买医疗包后复活失败(码" + Exec.codeOf(again) + ")");
+                        break;
+                    }
+                    buys++;
+                    m.claimed("钻石购买医疗包×" + buys + " 并复活（累计 +" + (buys * 10) + "%）");
                 }
                 GameMessage help = tc.engine.request(
                         "req_cross_capital_war_revive_call_alliance_help", null);
