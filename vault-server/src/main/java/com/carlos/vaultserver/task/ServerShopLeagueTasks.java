@@ -525,9 +525,8 @@ public final class ServerShopLeagueTasks {
      * 清单元素 {shop_id, conf_id, count}；count<=0 时按“限购剩余与余额”尽量买。
      * 售罄（buy_count>=limit）跳过；货币不足停止本轮。
      */
-    static TaskOutcome buyListMode(TaskContext tc, long[] shopIds, String fnId, String fnName,
-                                   JSONArray buyList) {
-        Exec.Multi m = new Exec.Multi();
+    static void buyListInto(TaskContext tc, Exec.Multi m, long[] shopIds,
+                            JSONArray buyList) {
         try {
             Map<Long, Good> byConfigId = new HashMap<>();
             for (List<Good> gl : shops().values()) {
@@ -606,10 +605,8 @@ public final class ServerShopLeagueTasks {
             }
             if (bought == 0 && m.sb.length() == 0) m.skip("勾选清单无可购商品");
         } catch (Exception e) {
-            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, fnName);
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
-        return Exec.result(m, fnId, fnName);
     }
 
     private static boolean containsShop(long[] ids, long id) {
@@ -624,8 +621,7 @@ public final class ServerShopLeagueTasks {
      * - auto_resource_801：游荡商人「资源货币商品（煤矿104/铁矿105/生肉102/木材103）」全买（不保留），
      *   购买后货架同格替换新商品（new_goods）→ 重新拉货架继续；无可买时免费刷新（前 3 次）。
      */
-    static TaskOutcome buySpecialMode(TaskContext tc, String fnId, String fnName, JSONObject p) {
-        Exec.Multi m = new Exec.Multi();
+    static void specialInto(TaskContext tc, Exec.Multi m, JSONObject p) {
         try {
             boolean free601 = p.optBoolean("free_601", false);
             boolean resource801 = p.optBoolean("auto_resource_801", false);
@@ -639,12 +635,14 @@ public final class ServerShopLeagueTasks {
             int bought = 0;
             if (free601) bought += buyFree601(tc, m, byConfigId);
             if (resource801) bought += buyResource801(tc, m, byConfigId, balances);
+            // 601 勾选商品（含打折档）：货架没有时刷新（免费优先→钻石累加，预算用户填）
+            if (free601) bought += buyPicked(tc, m, byConfigId, p, SHOP_ID_MYSTERIOUS);
+            // 801 勾选商品（钻石档）：按 buy_list 购买
+            if (resource801) bought += buyPicked(tc, m, byConfigId, p, SHOP_ID_VENDOR);
             if (bought == 0 && m.sb.length() == 0) m.skip("无免费/资源商品可买");
         } catch (Exception e) {
-            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, fnName);
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
-        return Exec.result(m, fnId, fnName);
     }
 
     /** 601 免费商品全买；买完/无免费商品时用掉免费刷新，循环到免费次数用完。 */
@@ -727,19 +725,84 @@ public final class ServerShopLeagueTasks {
         return currencyId >= 102L && currencyId <= 105L;
     }
 
+    /**
+     * 601/801 勾选商品购买：按 buy_list 顺序，货架出现勾选 confId 即购买；
+     * 货架没有时刷新（免费优先；免费次数用完用钻石，预算=参数 diamond_refresh_max，用户填）。
+     */
+    private static int buyPicked(TaskContext tc, Exec.Multi m, Map<Long, Good> byConfigId,
+                                 JSONObject p, long shopId) throws Exception {
+        JSONArray picks = p.optJSONArray(PARAM_BUY_LIST);
+        if (picks == null || picks.length() == 0) return 0;
+        boolean has = false;
+        for (int i = 0; i < picks.length(); i++) {
+            JSONObject it = picks.optJSONObject(i);
+            if (it != null && it.optLong("shop_id", 0L) == shopId) {
+                has = true;
+                break;
+            }
+        }
+        if (!has) return 0;
+        int maxDiamond = Math.max(0, p.optInt("diamond_refresh_max", 0));
+        long diamondSpent = 0L;
+        int bought = 0;
+        for (int round = 0; round < 40; round++) {
+            GameMessage info = tc.engine.request("req_shop_info_array",
+                    Exec.args("arr_id", List.of(shopId)));
+            if (!Exec.ok(info)) break;
+            Map<String, Object> mapInfo = Exec.mapOf(info.getContent().get("map_info"));
+            if (mapInfo == null) break;
+            List<ShopShelfItem> shelf = flattenShelf(mapInfo, byConfigId);
+            int thisRound = 0;
+            for (int i = 0; i < picks.length(); i++) {
+                JSONObject it = picks.optJSONObject(i);
+                if (it == null || it.optLong("shop_id", 0L) != shopId) continue;
+                long confId = it.optLong("conf_id", 0L);
+                if (confId <= 0L) continue;
+                Good meta = byConfigId.get(confId);
+                if (meta == null) continue;
+                for (ShopShelfItem s : shelf) {
+                    if (s.shopId() != shopId || s.configId() != confId) continue;
+                    if (s.remaining() <= 0L) break;
+                    GameMessage buy = tc.engine.request("req_shop_buy", Exec.args(
+                            "shop_id", shopId, "goods_id", s.goodsId(), "count", 1L));
+                    if (Exec.ok(buy)) {
+                        bought++;
+                        thisRound++;
+                        m.claimed(meta.name + "×1（勾选）");
+                    }
+                    break;
+                }
+            }
+            if (thisRound > 0) continue;
+            Integer times = refreshTimesFrom(mapInfo).get(shopId);
+            if (times == null) break;
+            long cost = shopRefreshCost(shopId, times);
+            if (cost < 0L) break;
+            if (cost > 0L && diamondSpent + cost > maxDiamond) break;
+            GameMessage rr = tc.engine.request("req_shop_refresh", Exec.args("shop_id", shopId));
+            if (!Exec.ok(rr)) break;
+            if (cost > 0L) diamondSpent += cost;
+        }
+        return bought;
+    }
+
     private static TaskOutcome buyFromShops(TaskContext tc, long[] shopIds,
                                             String fnId, String fnName) {
         Exec.Multi m = new Exec.Multi();
         try {
             JSONObject p = tc.params(fnId);
-            // 2026-11-08：有序勾选清单优先（按用户勾选顺序购买，直到没有货币）
+            // 2026-11-08：勾选清单按顺序购买 + 601/801 特殊全买，可同时生效
             JSONArray buyList = p.optJSONArray(PARAM_BUY_LIST);
-            if (buyList != null && buyList.length() > 0) {
-                return buyListMode(tc, shopIds, fnId, fnName, buyList);
-            }
-            // 601 免费商品全买 + 免费刷新全用；801 资源货币商品全买 + 同格新商品连续买 + 免费刷新
-            if (p.optBoolean("free_601", false) || p.optBoolean("auto_resource_801", false)) {
-                return buySpecialMode(tc, fnId, fnName, p);
+            boolean free601 = p.optBoolean("free_601", false);
+            boolean resource801 = p.optBoolean("auto_resource_801", false);
+            if ((buyList != null && buyList.length() > 0) || free601 || resource801) {
+                if (buyList != null && buyList.length() > 0) {
+                    buyListInto(tc, m, shopIds, buyList);
+                }
+                if (free601 || resource801) {
+                    specialInto(tc, m, p);
+                }
+                return Exec.result(m, fnId, fnName);
             }
             Map<String, Long> wantNames = parseBuyNames(p.opt(PARAM_BUY_NAMES));
             LinkedHashMap<Long, Long> wantConfigIds = parseLegacyBuys(p.optJSONObject("buys"));

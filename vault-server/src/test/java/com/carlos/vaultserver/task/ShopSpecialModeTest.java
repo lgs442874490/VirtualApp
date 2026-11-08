@@ -178,4 +178,23 @@ public class ShopSpecialModeTest {
         assertEquals("801 前 3 次免费刷新应全部用掉", 3, e.refreshes);
         assertTrue(out.message.contains("5分钟建造加速"));
     }
+
+    @Test
+    public void picked601_stopsDiamondRefreshWhenBudgetZero() {
+        TestEngine e = new TestEngine();
+        e.mapInfo.put("601", shop(601L, CONF_601_FREE, 1L, 0L, 0L));
+        JSONObject p = new JSONObject();
+        p.put("free_601", true);
+        p.put("diamond_refresh_max", 0);
+        org.json.JSONArray picks = new org.json.JSONArray();
+        picks.put(new JSONObject().put("shop_id", 601L).put("conf_id", 60110201L).put("count", 1));
+        p.put("buy_list", picks);
+
+        TaskOutcome out = ServerShopLeagueTasks.shopBuy(tc(e, p));
+
+        assertEquals("免费商品应买 1 件", 1, e.bought.size());
+        // buyFree601 用掉首次免费刷新（1 次）；buyPicked 想刷勾选商品时已到 100 钻，预算 0 → 停止
+        assertEquals("钻石预算 0 不应继续刷新", 1, e.refreshes);
+        assertTrue(out.message.contains("免费"));
+    }
 }
