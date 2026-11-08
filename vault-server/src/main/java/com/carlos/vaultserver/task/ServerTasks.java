@@ -121,6 +121,8 @@ public final class ServerTasks {
         l.add(new TaskDef("act_slg_league", "冰火战歌", false, ServerActivityTasks::slgLeague));
         l.add(new TaskDef("act_cross_capital_revive", "最强王国复活", false,
                 ServerActivityTasks::crossCapitalRevive));
+        l.add(new TaskDef("ally_offline_guard", "离线联动", false,
+                ServerActivityTasks::allyOfflineGuard));
         // ===== 野外 =====
         l.add(new TaskDef("gather", "野外采集", false, ServerFieldTasks::gather));
         l.add(new TaskDef("intel", "情报任务", false, ServerFieldTasks::intel));

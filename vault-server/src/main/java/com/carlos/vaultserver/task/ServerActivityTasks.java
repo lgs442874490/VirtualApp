@@ -3,6 +3,9 @@ package com.carlos.vaultserver.task;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -780,6 +783,63 @@ public final class ServerActivityTasks {
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "act_cross_capital_revive", "最强王国复活");
+    }
+
+    // ---------- 联盟/同账号离线联动 ----------
+
+    /** 离线联动（2026-11-08）：观察者查询关注角色 offline_time（0=在线，>0=最后离线时间）。 */
+    public static TaskOutcome allyOfflineGuard(TaskContext tc) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            tc.engine.collectNotifies(1500);
+            JSONObject p = tc.params("ally_offline_guard");
+            List<Object> uids = new ArrayList<>();
+            JSONArray arr = p.optJSONArray("watch_uids");
+            if (arr != null) {
+                for (int i = 0; i < arr.length(); i++) {
+                    long uid = arr.optLong(i);
+                    if (uid > 0L) uids.add(uid);
+                }
+            }
+            if (uids.isEmpty()) {
+                m.skip("未配置关注角色（watch_uids）");
+                return Exec.result(m, "ally_offline_guard", "离线联动");
+            }
+            GameMessage r = tc.engine.request("req_players_base_info_with_permission",
+                    Exec.args("uids", uids, "permission", 1L));
+            if (!Exec.ok(r)) {
+                m.skip("查询失败(码" + Exec.codeOf(r) + ")");
+                return Exec.result(m, "ally_offline_guard", "离线联动");
+            }
+            Map<String, Object> result = r.getContent() == null ? null
+                    : Exec.mapOf(r.getContent().get("result"));
+            int online = 0;
+            int offline = 0;
+            List<Long> offlineUids = new ArrayList<>();
+            if (result != null) {
+                for (Map.Entry<String, Object> e : result.entrySet()) {
+                    Map<String, Object> info = Exec.mapOf(e.getValue());
+                    if (info == null || !info.containsKey("offline_time")) continue;
+                    long offlineTime = Exec.longOf(info.get("offline_time"));
+                    if (offlineTime == 0L) {
+                        online++;
+                    } else {
+                        offline++;
+                        long uid = Exec.longOf(info.get("uid"));
+                        if (uid > 0L) offlineUids.add(uid);
+                    }
+                }
+            }
+            m.subOk("watch", "在线 " + online + " / 离线 " + offline);
+            m.claimed("离线查询：在线 " + online + " / 离线 " + offline);
+            tc.saveModText("ally_offline_guard", "watch",
+                    "在线 " + online + " / 离线 " + offline
+                            + (offlineUids.isEmpty() ? "" : " · 离线uid " + offlineUids));
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "离线联动");
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, "ally_offline_guard", "离线联动");
     }
 
     // ---------- 冰原猎人 ----------
