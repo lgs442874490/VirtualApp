@@ -51,6 +51,11 @@ public class SessionKeeperRoleIdentityTest {
         String applied = "";
         long roleUid;
         boolean online;
+        int defaultLoginCalls;
+        int loginByRoleCalls;
+        Long lastServerid;
+        /** >0 时模拟"绑定未生效"：loginByRole 返回该 uid。 */
+        long forceUid;
 
         RecordingEngine() {
             super(null);
@@ -72,17 +77,29 @@ public class SessionKeeperRoleIdentityTest {
 
         @Override
         public LoginResult login(String fpid, String sdkToken, Long serverid) {
-            return loginByRole(fpid, sdkToken, 0L, serverid);
+            // 账号默认角色登录（旧实现的首次校验路径）：单独计数，测试断言"不应发生"
+            defaultLoginCalls++;
+            this.roleUid = 0L;
+            this.lastServerid = serverid;
+            this.online = true;
+            LoginResult r = new LoginResult();
+            r.uid = 111L;
+            r.serverId = serverid == null ? 888L : serverid;
+            r.gameName = "default-role";
+            return r;
         }
 
         @Override
         public LoginResult loginByRole(String fpid, String sdkToken, long roleUid, Long serverid) {
+            loginByRoleCalls++;
             this.roleUid = roleUid;
+            this.lastServerid = serverid;
             this.online = true;
+            long actualUid = forceUid > 0 ? forceUid : roleUid;
             LoginResult r = new LoginResult();
-            r.uid = roleUid;
+            r.uid = actualUid;
             r.serverId = serverid == null ? 888L : serverid;
-            r.gameName = "role-" + roleUid;
+            r.gameName = "role-" + actualUid;
             r.level = 70;
             return r;
         }
@@ -252,6 +269,36 @@ public class SessionKeeperRoleIdentityTest {
         assertEquals("重启后 B 设备指纹稳定", deviceId(b.applied), deviceId(lastB.applied));
         assertFalse("重启后两角色仍互异",
                 deviceId(lastA.applied).equals(deviceId(lastB.applied)));
+    }
+
+    // ---------- 首次登录必须一次 uid 钉扎，不得先做默认角色登录（互顶根因） ----------
+
+    @Test
+    public void loginBoundRole_pinsUidDirectly_withoutDefaultLogin() throws Exception {
+        RecordingEngine e = new RecordingEngine();
+        WjdrEngine.LoginResult r = SessionKeeper.loginBoundRole(
+                e, FPID, "tk", 888L, UID_A, stateStore);
+        assertEquals(Long.parseLong(UID_A), r.uid);
+        assertEquals("首次登录不得先做默认角色登录（会顶掉同账号兄弟）",
+                0, e.defaultLoginCalls);
+        assertEquals("只发生一次 uid 钉扎登录", 1, e.loginByRoleCalls);
+        assertEquals("登录需带 serverid（对齐网页版载荷）", Long.valueOf(888L), e.lastServerid);
+        assertEquals("绑定成功写入诊断缓存", UID_A,
+                stateStore.getString("srv:roleuid:" + FPID + ":888:" + UID_A));
+    }
+
+    @Test
+    public void loginBoundRole_uidMismatch_doesNotRetry() throws Exception {
+        RecordingEngine e = new RecordingEngine();
+        e.forceUid = 999L;   // 模拟角色被删/uid 失效，服务器落到别的角色
+        WjdrEngine.LoginResult r = SessionKeeper.loginBoundRole(
+                e, FPID, "tk", 888L, UID_A, stateStore);
+        assertEquals(999L, r.uid);
+        assertEquals("绑定失败也不得二次登录（每次额外登录都会顶掉一个兄弟）",
+                0, e.defaultLoginCalls);
+        assertEquals(1, e.loginByRoleCalls);
+        assertEquals("绑定失败清空诊断缓存", "",
+                stateStore.getString("srv:roleuid:" + FPID + ":888:" + UID_A));
     }
 
     // ---------- 单角色：沿用旧指纹（零迁移） ----------

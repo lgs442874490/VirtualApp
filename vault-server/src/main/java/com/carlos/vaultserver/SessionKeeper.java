@@ -171,17 +171,19 @@ public final class SessionKeeper implements SessionControl,
     // ---------- 登录目标角色绑定（静态：引擎/状态存储经参数注入，JVM 单测可替身直跑） ----------
 
     /**
-     * 登录目标角色绑定（2026-10-20 同服多角色）。
+     * 登录目标角色绑定（对齐网页版 {@code AccountSession.login}：一次 loginauth 直接选中目标角色）。
      *
-     * <p>两条路径：
+     * <p><b>2026-11-08 修复（互顶根因）</b>：旧实现首次/缓存未命中时，先以"账号默认角色"
+     * 登录一次拉角色清单（{@code req_role_list}），这条默认角色会话会<b>顶掉同账号兄弟角色</b>
+     * （code=5），随后再二次登录目标角色，于是"点一个角色上线，另一个被顶"。
+     * 网页版实测：同账号同服双角色（同 device_id/token/ip 也一样）可长期并存——因为网页版
+     * loginauth 直接带 uid 选中角色，没有中间默认登录。
+     *
+     * <p>因此本方法改为：
      * <ul>
-     *   <li><b>activeUid&gt;0</b>（同服多角色，App 明确指定角色）：直接按该 uid 绑定。首次需校验
-     *       角色清单（默认角色上线 → req_role_list 确认 (kid,uid) 属于本账号），通过后写缓存
-     *       {@code srv:roleuid:<fpid>:<kid>:<uid>}（键含 uid，不与旧 sid 键串味），之后缓存命中
-     *       免校验直绑；绑定失败（落地 uid≠期望）清缓存按实际角色上线，绝不静默。校验不过
-     *       （uid 过期/角色已删）→ 回退旧发现路径，不硬绑；</li>
-     *   <li><b>activeUid 缺省</b>（0/空/非法，旧客户端/旧数据）：{@link #loginBoundRoleLegacy}
-     *       原逻辑——sid 缓存单 uid，未命中则默认角色上线 discoverRoleUid 再二次登录。</li>
+     *   <li>activeUid&gt;0：<b>直接</b> {@code loginByRole(uid, serverid)}，一次登录选中目标角色；</li>
+     *   <li>登录后校验落地 uid：不符只记录/清缓存，<b>绝不自动二次登录</b>（避免再顶一次兄弟）；</li>
+     *   <li>activeUid 缺省（旧数据/旧客户端）：走 {@link #loginBoundRoleLegacy} 发现路径。</li>
      * </ul>
      */
     static WjdrEngine.LoginResult loginBoundRole(WjdrEngine engine, String fpid, String token,
@@ -194,30 +196,19 @@ public final class SessionKeeper implements SessionControl,
         if (wantUid <= 0) {
             return loginBoundRoleLegacy(engine, fpid, token, targetKid, stateStore);
         }
+        // 单次 loginauth 直接钉扎目标角色（带 uid + serverid；对齐网页版 ConfigJsonLoader 载荷）。
+        WjdrEngine.LoginResult r = engine.loginByRole(fpid, token, wantUid, targetKid);
         String cacheKey = "srv:roleuid:" + fpid + ":" + targetKid + ":" + wantUid;
-        if (parseUid(stateStore.getString(cacheKey)) != wantUid) {
-            // 首次/缓存被清：默认角色上线拉角色清单，确认该 uid 确实落在目标区服
-            engine.login(fpid, token, null);
-            if (!roleListHas(engine, targetKid, wantUid)) {
-                FileLog.warn("目标角色 uid={} 不在 k{} 角色清单，回退发现路径 fpid={}",
-                        String.valueOf(wantUid), String.valueOf(targetKid), fpid);
-                engine.initialize();   // 旧连接已认证，回退路径的登录要走全新连接
-                return loginBoundRoleLegacy(engine, fpid, token, targetKid, stateStore);
-            }
-            stateStore.putString(cacheKey, String.valueOf(wantUid));
-            stateStore.flush();
-            FileLog.info("角色 uid 校验通过 fpid={} k{} uid={}",
-                    fpid, String.valueOf(targetKid), String.valueOf(wantUid));
-            engine.initialize();   // 二次 loginauth 必须走全新连接（旧已认证连接上再发会超时）
-        }
-        WjdrEngine.LoginResult r = engine.loginByRole(fpid, token, wantUid);
         if (r.uid != wantUid) {
-            // 绑定未生效（角色被删/清单过期）：清缓存按实际角色上线
-            FileLog.warn("角色绑定失败 fpid={} 期望uid={} 实际uid={}，清缓存",
+            // 绑定未生效（角色被删/uid 过期）：如实记录并清缓存，交给上层状态机；
+            // 绝不自动二次登录——每一次额外的默认登录都会顶掉一个兄弟角色。
+            FileLog.warn("角色绑定未生效 fpid={} 期望uid={} 实际uid={}（不自动二次登录，避免顶掉兄弟角色）",
                     fpid, String.valueOf(wantUid), String.valueOf(r.uid));
             stateStore.putString(cacheKey, "");
-            stateStore.flush();
+        } else {
+            stateStore.putString(cacheKey, String.valueOf(wantUid));
         }
+        stateStore.flush();
         return r;
     }
 
@@ -249,7 +240,7 @@ public final class SessionKeeper implements SessionControl,
             // 二次 loginauth 必须走全新连接（旧已认证连接上再发 loginauth 会超时）
             engine.initialize();
         }
-        WjdrEngine.LoginResult r = engine.loginByRole(fpid, token, roleUid);
+        WjdrEngine.LoginResult r = engine.loginByRole(fpid, token, roleUid, targetKid);
         if (r.uid != roleUid) {
             // 绑定未生效（角色被删/清单过期）：清缓存按实际角色上线
             FileLog.warn("角色绑定失败 fpid={} 期望uid={} 实际uid={}，清缓存",
@@ -258,17 +249,6 @@ public final class SessionKeeper implements SessionControl,
             stateStore.flush();
         }
         return r;
-    }
-
-    /** 角色清单里是否存在 (kid, uid) 组合（在线态调用 req_role_list）。 */
-    private static boolean roleListHas(WjdrEngine engine, long kid, long uid) {
-        try {
-            for (WjdrEngine.RoleInfo ri : engine.discoverRoles()) {
-                if (ri.serverid == kid && ri.uid == uid) return true;
-            }
-        } catch (Throwable ignored) {
-        }
-        return false;
     }
 
     /** 解析 uid 字符串；非法/空/≤0 → 0（旧行为）。 */
