@@ -2997,6 +2997,14 @@ public final class SessionKeeper implements SessionControl,
                     data.put("ok", true);
                     data.put("capturedAt",
                             com.carlos.vaultserver.formation.FormationCatalog.catalog(engine).capturedAt);
+                    // 2026-11-08（用户口径：点击即取最新状态）：直接回传完整编队目录，
+                    // App 写入本地后立即按最新英雄/容量重新生成预设，无需再拉 900KB 的 /state
+                    //（公网链路下 /state 易超时，导致"提示同步失败/英雄为空"）。
+                    try {
+                        data.put("catalog", new org.json.JSONObject(
+                                com.carlos.vaultserver.formation.FormationCatalog.snapshot(engine)).toString());
+                    } catch (Throwable ignored) {
+                    }
                     return FormationActionResult.ok(data);
                 }
                 case "formation.memory-save": {

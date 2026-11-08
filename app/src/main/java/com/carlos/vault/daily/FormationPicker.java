@@ -179,6 +179,28 @@ public final class FormationPicker {
                                         });
                                         return;
                                     }
+                                    // 服务端已直接回传最新目录：写入本地后立即应用（无需再拉大响应 /state）。
+                                    String catalog = data == null ? "" : data.optString("catalog", "");
+                                    if (!catalog.isEmpty()) {
+                                        FormationStore.writeCatalog(act, fpid, sid, uid, catalog);
+                                        act.runOnUiThread(() -> {
+                                            if (applyRef[0] != null) {
+                                                applyRef[0].setEnabled(true);
+                                                applyRef[0].setAlpha(1f);
+                                            }
+                                            String msg = FormationStore.applyBearPresetTemplate(act, fpid, sid, uid);
+                                            if (msg == null) {
+                                                UiStyle.toast(act,
+                                                        "目录已同步，但打熊队英雄仍为空：请稍后重试或检查角色在线");
+                                                return;
+                                            }
+                                            sync(act);
+                                            refresh.run();
+                                            if (onChanged != null) onChanged.onChanged();
+                                            UiStyle.toast(act, msg);
+                                        });
+                                        return;
+                                    }
                                     VaultSync.fetchState(act, (c2, m2, d2) -> act.runOnUiThread(() -> {
                                         if (applyRef[0] != null) {
                                             applyRef[0].setEnabled(true);
