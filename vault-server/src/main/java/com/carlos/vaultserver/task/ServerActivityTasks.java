@@ -697,6 +697,52 @@ public final class ServerActivityTasks {
             } else {
                 m.skip("登录奖励未领(码" + Exec.codeOf(login) + ")");
             }
+            // P2-4：雪域兵器联赛竞猜下注（默认关；auto_bet=true + bet_amount 才执行）
+            JSONObject p = tc.params("act_arsenal_league");
+            if (p.optBoolean("auto_bet", false)) {
+                Map<String, Object> gi = tc.engine.notifyData("notify_arsenal_league_guess_info");
+                long guessId = gi == null ? 0L : Exec.longOf(gi.get("id"));
+                long groupId = gi == null ? 0L : Exec.longOf(gi.get("group_id"));
+                if (guessId > 0L && groupId > 0L) {
+                    long num = Math.max(1L, p.optLong("bet_amount", 100L));
+                    int fixedSide = p.optInt("bet_side", 0);
+                    GameMessage bi = tc.engine.request("req_arsenal_league_guess_get_winner_bet_info",
+                            Exec.args("id", guessId, "group_id", groupId, "matches", List.of(1L)));
+                    if (Exec.ok(bi)) {
+                        Map<String, Object> infos = Exec.mapOf(bi.getContent().get("infos"));
+                        if (infos != null && !infos.isEmpty()) {
+                            Map.Entry<String, Object> first = infos.entrySet().iterator().next();
+                            Map<String, Object> inf = Exec.mapOf(first.getValue());
+                            long matchId = inf == null ? Exec.longOf(first.getKey())
+                                    : Exec.longOf(inf.get("match_id"));
+                            if (matchId <= 0L) matchId = Exec.longOf(first.getKey());
+                            int side = fixedSide;
+                            if (side <= 0) {
+                                Map<String, Object> match = inf == null ? null : Exec.mapOf(inf.get("match"));
+                                Map<String, Object> sides = match == null ? null
+                                        : Exec.mapOf(match.get("sides"));
+                                long p1 = 0L;
+                                long p2 = 0L;
+                                if (sides != null) {
+                                    Map<String, Object> s1 = Exec.mapOf(sides.get("1"));
+                                    Map<String, Object> s2 = Exec.mapOf(sides.get("2"));
+                                    p1 = s1 == null ? 0L : Exec.longOf(s1.get("power"));
+                                    p2 = s2 == null ? 0L : Exec.longOf(s2.get("power"));
+                                }
+                                side = p1 >= p2 ? 1 : 2;
+                            }
+                            GameMessage bet = tc.engine.request("req_arsenal_league_guess_bet_winner",
+                                    Exec.args("id", guessId, "group_id", groupId,
+                                            "match_id", matchId, "side", side, "num", num));
+                            if (Exec.ok(bet)) {
+                                m.claimed("竞猜下注 " + num + "（match " + matchId + " side " + side + "）");
+                            } else {
+                                m.skip("竞猜下注失败(码" + Exec.codeOf(bet) + ")");
+                            }
+                        }
+                    }
+                }
+            }
         } catch (Exception e) {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "雪域兵器联赛");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
@@ -710,6 +756,14 @@ public final class ServerActivityTasks {
         try {
             tc.engine.collectNotifies(1500);
             Map<String, Object> init = tc.engine.notifyData("notify_slg_3_league_info_init");
+            // P2-5：已领任务缓存，避免每轮对同一批任务重复请求
+            JSONObject st = tc.modState("act_slg_league");
+            JSONObject claimedIds = new JSONObject();
+            try {
+                String raw = st.optString("claimed_ids", "");
+                if (!raw.isEmpty()) claimedIds = new JSONObject(raw);
+            } catch (Throwable ignored) {
+            }
             int claimed = 0;
             if (init != null) {
                 Map<String, Object> task = Exec.mapOf(init.get("task"));
@@ -721,15 +775,18 @@ public final class ServerActivityTasks {
                         long taskId = q == null ? 0L : Exec.longOf(q.get("id"));
                         if (taskId <= 0L) taskId = Exec.longOf(e.getKey());
                         if (taskId <= 0L) continue;
+                        if (claimedIds.has(String.valueOf(taskId))) continue;
                         GameMessage r = tc.engine.request("req_slg_3_league_get_task_reward",
                                 Exec.args("task_id", taskId));
                         if (Exec.ok(r)) {
                             claimed++;
+                            claimedIds.put(String.valueOf(taskId), 1);
                             m.rewards("联赛任务", r);
                         }
                     }
                 }
             }
+            if (claimed > 0) tc.saveModText("act_slg_league", "claimed_ids", claimedIds.toString());
             if (claimed > 0) m.claimed("冰火战歌任务×" + claimed);
             else m.skip("无未领任务奖励");
             if (tc.subOn("act_slg_league", "like", true)) {
@@ -811,8 +868,23 @@ public final class ServerActivityTasks {
                     if (uid > 0L) uids.add(uid);
                 }
             }
+            // P2-7：force_online 目标（含 fpid/sid/uid；会话控制面注入后可强制上线）
+            List<Object[]> targets = new ArrayList<>();
+            JSONArray targetArr = p.optJSONArray("watch_targets");
+            if (targetArr != null) {
+                for (int i = 0; i < targetArr.length(); i++) {
+                    JSONObject t = targetArr.optJSONObject(i);
+                    if (t == null) continue;
+                    String fpid = t.optString("fpid", "");
+                    String sid = t.optString("sid", "");
+                    long uid = t.optLong("uid", 0L);
+                    if (fpid.isEmpty() || sid.isEmpty() || uid <= 0L) continue;
+                    targets.add(new Object[]{fpid, sid, uid});
+                    if (!uids.contains(uid)) uids.add(uid);
+                }
+            }
             if (uids.isEmpty()) {
-                m.skip("未配置关注角色（watch_uids）");
+                m.skip("未配置关注角色（watch_uids/watch_targets）");
                 return Exec.result(m, "ally_offline_guard", "离线联动");
             }
             GameMessage r = tc.engine.request("req_players_base_info_with_permission",
@@ -845,6 +917,29 @@ public final class ServerActivityTasks {
             tc.saveModText("ally_offline_guard", "watch",
                     "在线 " + online + " / 离线 " + offline
                             + (offlineUids.isEmpty() ? "" : " · 离线uid " + offlineUids));
+            // P2-7：离线目标强制上线（force_online=true 且 SessionControl 已注入）
+            if (p.optBoolean("force_online", false) && tc.sessionControl() != null
+                    && !offlineUids.isEmpty()) {
+                int forced = 0;
+                for (Object[] t : targets) {
+                    long uid = (Long) t[2];
+                    if (!offlineUids.contains(uid)) continue;
+                    try {
+                        com.carlos.vaultserver.SessionControl.RoleOpResult res =
+                                tc.sessionControl().roleAction((String) t[0], (String) t[1],
+                                        String.valueOf(uid), "login");
+                        if (res != null && res.accepted) {
+                            forced++;
+                            m.claimed("强制上线 " + uid);
+                        } else if (res != null) {
+                            m.skip("上线被拒 " + uid + "(码" + res.code + ")");
+                        }
+                    } catch (Exception e) {
+                        m.skip("上线异常 " + uid);
+                    }
+                }
+                if (forced > 0) m.subOk("force", "强制上线 " + forced + " 个");
+            }
         } catch (Exception e) {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "离线联动");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));

@@ -45,6 +45,9 @@ public final class TaskContext {
      */
     public final boolean activeWriter;
 
+    /** P2-7：会话控制面（离线联动强制上线用；未注入时为 null，功能自动降级）。 */
+    private volatile com.carlos.vaultserver.SessionControl sessionControl;
+
     public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
                        java.util.Map<String, JSONObject> params, String trigger) {
         this(engine, fpid, sid, store, params, trigger, null, 0L, true);
@@ -190,6 +193,17 @@ public final class TaskContext {
         } catch (Throwable t) {
             return new JSONObject();
         }
+    }
+
+    /** P2-7：会话控制面（可能为 null）。 */
+    public com.carlos.vaultserver.SessionControl sessionControl() {
+        return sessionControl;
+    }
+
+    /** P2-7：注入会话控制面（SessionKeeper 创建 TaskContext 时调用；链式便于单行构造）。 */
+    public TaskContext withSessionControl(com.carlos.vaultserver.SessionControl control) {
+        this.sessionControl = control;
+        return this;
     }
 
     /** 写子项状态行（App FnParams.saveModText 同款：文案 + _ts + _trg）。 */
