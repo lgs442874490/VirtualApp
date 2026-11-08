@@ -134,7 +134,7 @@ public final class BehemothTeamCard {
             if (f != null && f.name != null && !f.name.trim().isEmpty()) return f.name;
         } catch (Throwable ignored) {
         }
-        return "#" + id;
+        return "编队已删除";
     }
 
     private static void sync(Activity act) {

@@ -283,7 +283,7 @@ public final class FormationPicker {
         long fnIdValue = FormationStore.fnFormationId(act, fpid, sid, fnId);
         String launchLabel = "打熊队";
         String launchValue = FormationStore.MODE_ROLE.equals(fnMode) && fnIdValue > 0
-                ? "#" + fnIdValue + " " + nameOf(act, fpid, sid, fnIdValue) : "自动";
+                ? nameOf(act, fpid, sid, fnIdValue) : "自动";
         card.addView(UiStyle.dropdownRow(act, launchLabel, launchValue,
                 () -> pickFormationFor(act, fpid, sid, uid, null,
                         (mode, ids, inf, lanc, mark, ratios) -> {
@@ -313,7 +313,7 @@ public final class FormationPicker {
             if (!FormationStore.MODE_ROLE.equals(mode) || fid <= 0) {
                 value = "自动";
             } else {
-                value = "#" + fid + " " + nameOf(act, fpid, sid, fid);
+                value = nameOf(act, fpid, sid, fid);
             }
             LinearLayout row = new LinearLayout(act);
             row.setOrientation(LinearLayout.HORIZONTAL);
@@ -601,7 +601,7 @@ public final class FormationPicker {
         StringBuilder sb = new StringBuilder();
         for (long id : ids) {
             FormationModel f = find(lib, id);
-            String name = f == null ? ("#" + id + "（已删除）")
+            String name = f == null ? "编队已删除"
                     : (f.name == null || f.name.isEmpty() ? ("编队 " + f.id) : f.name);
             if (sb.length() > 0) sb.append('、');
             sb.append(name);
