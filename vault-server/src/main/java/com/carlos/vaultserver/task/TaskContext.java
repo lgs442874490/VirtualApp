@@ -47,6 +47,8 @@ public final class TaskContext {
 
     /** P2-7：会话控制面（离线联动强制上线用；未注入时为 null，功能自动降级）。 */
     private volatile com.carlos.vaultserver.SessionControl sessionControl;
+    /** P2-7 补：进程级默认会话控制面（SessionKeeper 构造时注册；实例未注入时回退，保证正常调度路径可用）。 */
+    private static volatile com.carlos.vaultserver.SessionControl defaultSessionControl;
 
     public TaskContext(WjdrEngine engine, String fpid, long sid, StateStore store,
                        java.util.Map<String, JSONObject> params, String trigger) {
@@ -197,7 +199,13 @@ public final class TaskContext {
 
     /** P2-7：会话控制面（可能为 null）。 */
     public com.carlos.vaultserver.SessionControl sessionControl() {
-        return sessionControl;
+        com.carlos.vaultserver.SessionControl c = sessionControl;
+        return c != null ? c : defaultSessionControl;
+    }
+
+    /** P2-7 补：注册进程级默认会话控制面（SessionKeeper 构造时调用）。 */
+    public static void setDefaultSessionControl(com.carlos.vaultserver.SessionControl control) {
+        defaultSessionControl = control;
     }
 
     /** P2-7：注入会话控制面（SessionKeeper 创建 TaskContext 时调用；链式便于单行构造）。 */

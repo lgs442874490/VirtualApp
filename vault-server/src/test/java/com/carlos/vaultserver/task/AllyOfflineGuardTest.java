@@ -171,7 +171,7 @@ public class AllyOfflineGuardTest {
         TestEngine e = new TestEngine();
         JSONObject p = new JSONObject();
         JSONArray targets = new JSONArray();
-        targets.put(new JSONObject().put("fpid", "f1").put("sid", "888").put("uid", 222L));
+        targets.put(new JSONObject().put("fpid", "111").put("sid", "888").put("uid", 222L));
         p.put("watch_targets", targets);
         p.put("force_online", true);
         Map<String, JSONObject> params = new HashMap<>();
@@ -183,6 +183,6 @@ public class AllyOfflineGuardTest {
         ServerActivityTasks.allyOfflineGuard(ctx);
 
         assertEquals("离线目标应触发 roleAction login", 1, control.calls.size());
-        assertEquals("f1:888:222:login", control.calls.get(0));
+        assertEquals("111:888:222:login", control.calls.get(0));
     }
 }

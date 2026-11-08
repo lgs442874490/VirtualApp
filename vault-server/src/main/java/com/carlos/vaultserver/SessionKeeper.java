@@ -166,6 +166,8 @@ public final class SessionKeeper implements SessionControl,
         this.war = war;
         // 引擎静态读策略 → 账号库当前值（policy API 可在线改）
         WjdrEngine.setTakeoverPolicySource(store::policy);
+        // P2-7 补：注册默认会话控制面（RoundRunner/ModularRoundRunner 正常调度路径也能拿到，离线强制上线生效）
+        TaskContext.setDefaultSessionControl(this);
     }
 
     // ---------- 登录目标角色绑定（静态：引擎/状态存储经参数注入，JVM 单测可替身直跑） ----------

@@ -158,6 +158,31 @@ public class LeagueTasksTest {
     }
 
     @Test
+    public void arsenalBetIsIdempotent() {
+        TestEngine e = new TestEngine();
+        Map<String, Object> gi = new LinkedHashMap<>();
+        gi.put("id", 2963001L);
+        gi.put("group_id", 17L);
+        e.guessInfo = gi;
+        Map<String, Object> inf = new LinkedHashMap<>();
+        inf.put("match_id", 1L);
+        inf.put("match", Map.of("sides", Map.of("1", Map.of("power", 100L),
+                "2", Map.of("power", 200L))));
+        Map<String, Object> infos = new LinkedHashMap<>();
+        infos.put("1", inf);
+        e.betInfo = infos;
+
+        JSONObject p = new JSONObject();
+        p.put("auto_bet", true);
+        p.put("bet_amount", 100L);
+        TaskContext ctx = tc(e, p);
+        ServerActivityTasks.arsenalLeague(ctx);
+        ServerActivityTasks.arsenalLeague(ctx);   // 第二轮：应跳过下注
+
+        assertEquals("两次运行只应下注一次", 1, count(e.calls, "req_arsenal_league_guess_bet_winner"));
+    }
+
+    @Test
     public void slgLeagueClaimsAllQuestsAndLikes() {
         TestEngine e = new TestEngine();
         Map<String, Object> quests = new LinkedHashMap<>();
