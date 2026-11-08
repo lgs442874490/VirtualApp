@@ -1653,9 +1653,40 @@ public final class VaultHttpApi {
     private static void writeJson(HttpExchange ex, int httpStatus, JSONObject body) throws IOException {
         byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        // 2026-11-08：公网链路带宽有限（/state 915KB 实测 24s，App 请求超时 → 账号页「状态获取失败」），
+        // 启用 gzip（JSON 压缩比约 10x）。OkHttp 默认带 Accept-Encoding: gzip 并自动解压，
+        // 旧版 APK 无需改动即可受益。
+        if (acceptsGzip(ex)) {
+            byte[] gz = gzip(bytes);
+            if (gz.length < bytes.length) {
+                ex.getResponseHeaders().set("Content-Encoding", "gzip");
+                ex.getResponseHeaders().add("Vary", "Accept-Encoding");
+                bytes = gz;
+            }
+        }
         ex.sendResponseHeaders(httpStatus, bytes.length);
         try (OutputStream out = ex.getResponseBody()) {
             out.write(bytes);
         }
+    }
+
+    /** 请求是否接受 gzip（Accept-Encoding 含 gzip）。 */
+    private static boolean acceptsGzip(HttpExchange ex) {
+        try {
+            String ae = ex.getRequestHeaders().getFirst("Accept-Encoding");
+            return ae != null && ae.toLowerCase(java.util.Locale.ROOT).contains("gzip");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** gzip 压缩（失败由调用方按未压缩返回，绝不阻断响应）。 */
+    private static byte[] gzip(byte[] data) throws IOException {
+        java.io.ByteArrayOutputStream bos =
+                new java.io.ByteArrayOutputStream(Math.max(64, data.length / 4));
+        try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bos)) {
+            gz.write(data);
+        }
+        return bos.toByteArray();
     }
 }
