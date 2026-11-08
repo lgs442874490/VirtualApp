@@ -59,6 +59,16 @@ public class PresetFormationsTest {
         return hero(id, name, profession, power, 0, 0, 0);
     }
 
+    private static String heroGen(long id, String name, int profession, long power,
+                                  int starDisplay, int skillLevel, int weaponLevel, int generation) {
+        return "{\"id\":" + id + ",\"name\":\"" + name + "\",\"professionType\":" + profession
+                + ",\"power\":" + power + ",\"starDisplay\":" + starDisplay
+                + ",\"generation\":" + generation
+                + ",\"level\":80,\"troopCapacity\":" + TROOP
+                + ",\"available\":true,\"expeditionSkillLevel\":" + skillLevel
+                + ",\"weaponLevel\":" + weaponLevel + "}";
+    }
+
     private static String hero(long id, String name, int profession, long power,
                                int starDisplay, int skillLevel, int weaponLevel) {
         return "{\"id\":" + id + ",\"name\":\"" + name + "\",\"professionType\":" + profession
@@ -239,6 +249,20 @@ public class PresetFormationsTest {
 
     private static FormationModel bearTeamShield(FormationCatalogStore cat) {
         return PresetFormations.all(cat).get(2);
+    }
+
+    @Test
+    public void bearTeam_bowPrefersNewestGenerationOverHighPowerOld() {
+        // 生产 2026-11-08：打熊队弓选了 gen0 满星巴希提（战力最高）而不是高代弓。
+        // 修复后「最强」= 最高代（同代再比星级/专武/战力）。
+        FormationCatalogStore cat = catalog(30000L,
+                hero(50004L, "盾A", 1, 5000),
+                hero(50016L, "米娅", 2, 100),
+                heroGen(50006L, "巴希提", 3, 9000, 5, 5, 10, 0),   // 老代满星高战力
+                heroGen(50022L, "琳恩", 3, 3000, 2, 1, 0, 4));      // 新代低战力
+        FormationModel bear = PresetFormations.all(cat).get(2);
+        assertEquals("打熊队弓必须选最高代（50022 gen4），而不是战力最高的 gen0 50006",
+                Long.valueOf(50022L), bear.heroIds.get(2));
     }
 
     @Test

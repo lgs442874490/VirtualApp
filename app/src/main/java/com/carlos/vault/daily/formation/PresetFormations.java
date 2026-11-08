@@ -146,6 +146,31 @@ public final class PresetFormations {
                 }
             };
 
+    /**
+     * 英雄强度（2026-11-08 修正）：<b>代际优先</b>——对齐网页版按代选人
+     * （DailyBearFormationTemplateCatalog.GENERATION_PLANS：新一代英雄基础/远征技能更强）。
+     * 同代再比星级 → 专武 → 战力 → 等级；generation=0（未知/基础）排最后。
+     *
+     * <p>旧实现按战力排序，会把「满星满专武的 gen0 巴希提」排在高代弓之前，
+     * 导致打熊队选了最弱一代的弓（生产 2026-11-08 21:30 场：打熊队弓=50006）。
+     */
+    private static final Comparator<FormationStore.Hero> GENERATION_DESC =
+            new Comparator<FormationStore.Hero>() {
+                @Override
+                public int compare(FormationStore.Hero a, FormationStore.Hero b) {
+                    int c = Integer.compare(b.generation, a.generation);
+                    if (c != 0) return c;
+                    c = Integer.compare(b.starDisplay, a.starDisplay);
+                    if (c != 0) return c;
+                    c = Integer.compare(b.weaponLevel, a.weaponLevel);
+                    if (c != 0) return c;
+                    c = Long.compare(b.power, a.power);
+                    if (c != 0) return c;
+                    c = Long.compare(b.level, a.level);
+                    return c != 0 ? c : Long.compare(a.id, b.id);
+                }
+            };
+
     private PresetFormations() {
     }
 
@@ -399,7 +424,8 @@ public final class PresetFormations {
 
     /**
      * 打熊队：盾优先级 ①满星满专武尼莫 → ②4 星以上赫克托 → ③尼莫或娜塔莉亚 → ④最强盾；
-     * 矛=米亚(缺→最强矛，避开熊上车队长)；弓=最强弓（避开熊上车队长）。
+     * 矛=米亚(缺→最强矛，避开熊上车队长)；弓=<b>最高代弓</b>（2026-11-08 修正：
+     * 按代际优先而非战力，避开熊上车队长）。
      */
     private static List<Long> heroesForBearTeam(View v) {
         List<Long> out = new ArrayList<Long>();
@@ -666,6 +692,7 @@ public final class PresetFormations {
         final FormationCatalogStore cat;
         final List<FormationStore.Hero> heroes;
         final List<FormationStore.Hero> byPower;
+        final List<FormationStore.Hero> byGeneration;
         final Map<Long, FormationStore.Hero> index;
 
         View(FormationCatalogStore cat) {
@@ -677,6 +704,8 @@ public final class PresetFormations {
             for (FormationStore.Hero h : list) index.put(Long.valueOf(h.id), h);
             this.byPower = new ArrayList<FormationStore.Hero>(list);
             Collections.sort(byPower, POWER_DESC);
+            this.byGeneration = new ArrayList<FormationStore.Hero>(list);
+            Collections.sort(byGeneration, GENERATION_DESC);
         }
 
         FormationStore.Hero hero(long id) {
@@ -705,7 +734,8 @@ public final class PresetFormations {
         }
 
         long strongest(int profession, Set<Long> exclude) {
-            for (FormationStore.Hero h : byPower) {
+            // 2026-11-08：最强 = 最高代（同代再比星级/专武/战力），不再按战力优先。
+            for (FormationStore.Hero h : byGeneration) {
                 if (exclude != null && exclude.contains(Long.valueOf(h.id))) continue;
                 if (FormationRules.professionOf(h) == profession) return h.id;
             }
