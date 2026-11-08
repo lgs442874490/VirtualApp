@@ -13,6 +13,7 @@ import com.carlos.vault.UiStyle;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
@@ -399,8 +400,9 @@ public final class SubCardUi {
             }
             perShop.put(shopId, merged);
         }
-        // 勾选状态（plainName → bool），跨分页保持；初始来自已保存的 buys
-        final java.util.HashMap<String, Boolean> sel = new java.util.HashMap<>();
+        // 勾选状态（plainName → bool），跨分页保持；初始来自已保存的 buys。
+        // 2026-11-08：改用 LinkedHashMap 保留勾选顺序，保存为 buy_list（按顺序购买）。
+        final java.util.LinkedHashMap<String, Boolean> sel = new java.util.LinkedHashMap<>();
         for (java.util.LinkedHashMap<String, java.util.List<ShopTasks.Good>> m : perShop.values()) {
             for (java.util.List<ShopTasks.Good> v : m.values()) {
                 if (curBuys != null && checkName(curBuys, v)) {
@@ -595,6 +597,16 @@ public final class SubCardUi {
         android.widget.LinearLayout wrap = new android.widget.LinearLayout(ctx);
         wrap.setOrientation(android.widget.LinearLayout.VERTICAL);
         wrap.addView(tip);
+        final android.widget.CheckBox free601 = new android.widget.CheckBox(ctx);
+        free601.setText("神秘商店：免费商品全买 + 免费刷新全用");
+        free601.setTextSize(10.5f);
+        free601.setChecked(FnParams.params(ctx, fpid, sid, fnId).optBoolean("free_601", true));
+        final android.widget.CheckBox res801 = new android.widget.CheckBox(ctx);
+        res801.setText("游荡商人：资源货币商品全买（不保留）");
+        res801.setTextSize(10.5f);
+        res801.setChecked(FnParams.params(ctx, fpid, sid, fnId).optBoolean("auto_resource_801", true));
+        wrap.addView(free601);
+        wrap.addView(res801);
         wrap.addView(root);
 
         new AlertDialog.Builder(ctx, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
@@ -603,27 +615,40 @@ public final class SubCardUi {
                 .setPositiveButton("保存", (dlg, w) -> {
                     JSONObject names = new JSONObject();
                     JSONObject next = new JSONObject();
-                    for (java.util.Map.Entry<String, Boolean> e : sel.entrySet()) {
-                        if (!Boolean.TRUE.equals(e.getValue())) continue;
-                        try {
-                            names.put(e.getKey(), 1);
-                        } catch (Exception ignored) {
+                    // 2026-11-08：有序勾选清单（按用户勾选顺序购买，直到没有货币）
+                    JSONArray buyList = new JSONArray();
+                    java.util.LinkedHashMap<String, java.util.List<ShopTasks.Good>> flat = new java.util.LinkedHashMap<>();
+                    for (java.util.LinkedHashMap<String, java.util.List<ShopTasks.Good>> m : perShop.values()) {
+                        for (java.util.Map.Entry<String, java.util.List<ShopTasks.Good>> e : m.entrySet()) {
+                            flat.putIfAbsent(e.getKey(), e.getValue());
                         }
                     }
-                    // buys 仍写入该名字全部 variant 的 confId（兼容旧读取），运行时以 buy_names 名字模式为准
-                    for (java.util.LinkedHashMap<String, java.util.List<ShopTasks.Good>> m : perShop.values()) {
-                        for (java.util.List<ShopTasks.Good> v : m.values()) {
-                            if (!Boolean.TRUE.equals(sel.get(plainNameOf(v.get(0))))) continue;
-                            for (ShopTasks.Good g : v) {
-                                try {
-                                    next.put(String.valueOf(g.configId), 1);
-                                } catch (Exception ignored) {
-                                }
+                    for (java.util.Map.Entry<String, Boolean> e : sel.entrySet()) {
+                        if (!Boolean.TRUE.equals(e.getValue())) continue;
+                        String key = e.getKey();
+                        try {
+                            names.put(key, 1);
+                        } catch (Exception ignored) {
+                        }
+                        java.util.List<ShopTasks.Good> v = flat.get(key);
+                        if (v == null) continue;
+                        for (ShopTasks.Good g : v) {
+                            try {
+                                next.put(String.valueOf(g.configId), 1);
+                                JSONObject it = new JSONObject();
+                                it.put("shop_id", shopIdOf(g, perShop));
+                                it.put("conf_id", g.configId);
+                                it.put("count", 1);
+                                buyList.put(it);
+                            } catch (Exception ignored) {
                             }
                         }
                     }
                     FnParams.putTopLevel(ctx, fpid, sid, fnId, "buys", next);
                     FnParams.putTopLevel(ctx, fpid, sid, fnId, "buy_names", names);
+                    FnParams.putTopLevel(ctx, fpid, sid, fnId, "buy_list", buyList);
+                    FnParams.putTopLevel(ctx, fpid, sid, fnId, "free_601", free601.isChecked());
+                    FnParams.putTopLevel(ctx, fpid, sid, fnId, "auto_resource_801", res801.isChecked());
                 })
                 .setNegativeButton("取消", null)
                 .show();
@@ -631,6 +656,19 @@ public final class SubCardUi {
 
     private static String plainNameOf(ShopTasks.Good g) {
         return g.name == null || g.name.isEmpty() ? String.valueOf(g.configId) : g.name;
+    }
+
+    /** 2026-11-08：按 configId 反查所属店铺（写 buy_list 用）。 */
+    private static long shopIdOf(ShopTasks.Good g,
+                                 java.util.LinkedHashMap<Long, java.util.LinkedHashMap<String, java.util.List<ShopTasks.Good>>> perShop) {
+        for (java.util.Map.Entry<Long, java.util.LinkedHashMap<String, java.util.List<ShopTasks.Good>>> e : perShop.entrySet()) {
+            for (java.util.List<ShopTasks.Good> v : e.getValue().values()) {
+                for (ShopTasks.Good x : v) {
+                    if (x.configId == g.configId) return e.getKey();
+                }
+            }
+        }
+        return 0L;
     }
 
     private static void restyleShopChips(TextView[] chips,
