@@ -159,7 +159,8 @@ public final class FnDetail {
                 new Sub("spawn", "生成佣兵", "生成个人佣兵怪并单刷出征", true, null));
         fn("act_truck",
                 new Sub("take", "领送达奖励", "已送达货车的奖励自动领取", true, null),
-                new Sub("send", "自动发车", "用一名英雄自动发出货车（劫掠他人默认关）", true, null));
+                new Sub("send", "自动发车", "用一名英雄自动发出货车（劫掠他人默认关）", true, null),
+                new Sub("refresh", "刷新货车品质", "未达标货车自动刷新（品质<target_quality；免费优先，钻石刷新受 diamond_refresh_max 预算）", false, null));
         fn("act_icehunter",
                 new Sub("reward", "进度奖励", "冰原猎人档位奖励一键领取", true, null),
                 new Sub("boss", "生成并集结BOSS", "消耗零件生成BOSS并发起集结（需25体力）", true, null));

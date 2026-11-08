@@ -76,7 +76,7 @@ public final class DailyTasks {
         list.add(new TaskDef("act_joy", "怪攻守城", false));
         list.add(new TaskDef("act_feast", "至尊盛宴", false));
         list.add(new TaskDef("act_mercenary", "佣兵荣耀", false));
-        list.add(new TaskDef("act_truck", "运宝车队", false));
+        list.add(new TaskDef("act_truck", "雪原商路", false));
         list.add(new TaskDef("act_icehunter", "冰原猎人", false));
         list.add(new TaskDef("red_packet", "游戏红包", true));
         list.add(new TaskDef("bank", "钻石银行", false));

@@ -602,7 +602,7 @@ public final class ServerActivityTasks {
         return Exec.result(m, "act_mercenary", "佣兵荣耀");
     }
 
-    // ---------- 运宝车队 ----------
+    // ---------- 雪原商路（运宝车队玩法） ----------
 
     public static TaskOutcome truckEscort(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
@@ -630,6 +630,32 @@ public final class ServerActivityTasks {
                 }
                 if (taken > 0) m.claimed("货车奖励×" + taken);
                 else m.skip("暂无送达货车");
+                // 2026-11-08：刷新未达标的货车（品质 < target_quality；免费优先，钻石刷新受预算）
+                if (tc.subOn("act_truck", "refresh", false)) {
+                    int targetQuality = Math.max(1, tc.params("act_truck").optInt("target_quality", 5));
+                    int maxDiamond = Math.max(0, tc.params("act_truck").optInt("diamond_refresh_max", 0));
+                    int refreshed = 0;
+                    for (Map<String, Object> t : Exec.mapsOf(ni.get("truck_infos"))) {
+                        long tid = Exec.longOf(t.get("truck_id"));
+                        if (tid <= 0) tid = Exec.longOf(t.get("slot_id"));
+                        if (tid <= 0) continue;
+                        boolean finish = Exec.longOf(t.get("is_finish")) == 1
+                                || Exec.longOf(t.get("status")) == 2;
+                        if (finish) continue;
+                        if (Exec.longOf(t.get("quality")) >= targetQuality) continue;
+                        boolean useDiamond = maxDiamond > 0;
+                        GameMessage rr = tc.engine.request("req_truck_escort_refresh_truck_reward",
+                                Exec.args("id", id, "truck_id", tid, "use_diamond", useDiamond));
+                        if (Exec.ok(rr)) {
+                            refreshed++;
+                            m.rewards("刷新货车", rr);
+                        } else if (useDiamond && (Exec.codeOf(rr) == 51 || Exec.codeOf(rr) == 2)) {
+                            m.skip("钻石刷新未通过(码" + Exec.codeOf(rr) + ")");
+                            break;
+                        }
+                    }
+                    if (refreshed > 0) m.claimed("刷新货车×" + refreshed);
+                }
                 Map<String, Object> send = Exec.mapOf(ni.get("send_truck_info"));
                 long stage = send == null ? 0 : Exec.longOf(send.get("stage_index"));
                 if (send != null && stage >= 0) {
@@ -648,10 +674,10 @@ public final class ServerActivityTasks {
                 }
             }
         } catch (Exception e) {
-            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "运宝车队");
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "雪原商路");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
-        return Exec.result(m, "act_truck", "运宝车队");
+        return Exec.result(m, "act_truck", "雪原商路");
     }
 
     // ---------- 冰原猎人 ----------

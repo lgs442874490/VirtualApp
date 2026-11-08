@@ -114,7 +114,7 @@ public final class ServerTasks {
         l.add(new TaskDef("act_joy", "怪攻守城", false, ServerActivityTasks::joyAction));
         l.add(new TaskDef("act_feast", "至尊盛宴", false, ServerActivityTasks::supremacyFeast));
         l.add(new TaskDef("act_mercenary", "佣兵荣耀", false, ServerActivityTasks::mercenary));
-        l.add(new TaskDef("act_truck", "运宝车队", false, ServerActivityTasks::truckEscort));
+        l.add(new TaskDef("act_truck", "雪原商路", false, ServerActivityTasks::truckEscort));
         l.add(new TaskDef("act_icehunter", "冰原猎人", false, ServerActivityTasks::icefieldHunter));
         // ===== 野外 =====
         l.add(new TaskDef("gather", "野外采集", false, ServerFieldTasks::gather));

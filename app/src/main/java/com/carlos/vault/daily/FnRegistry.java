@@ -87,7 +87,7 @@ public final class FnRegistry {
         l.add(new Fn("act_joy", "怪攻守城", CAT_ACTIVITY, true, "怪攻守城监测（自动驻防待盟友配置）"));
         l.add(new Fn("act_feast", "至尊盛宴", CAT_ACTIVITY, true, "开席自动搜桌赴宴"));
         l.add(new Fn("act_mercenary", "佣兵荣耀", CAT_ACTIVITY, true, "选难度+生成佣兵+出征"));
-        l.add(new Fn("act_truck", "运宝车队", CAT_ACTIVITY, true, "领送达奖励+自动发车"));
+        l.add(new Fn("act_truck", "雪原商路", CAT_ACTIVITY, true, "雪原商路：领送达+自动发车+刷新品质"));
         l.add(new Fn("act_icehunter", "冰原猎人", CAT_ACTIVITY, true, "进度奖励+生成BOSS+集结"));
 
         // ===== 野外 =====
