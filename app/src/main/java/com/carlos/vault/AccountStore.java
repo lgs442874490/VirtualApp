@@ -438,8 +438,57 @@ public class AccountStore {
         save(out);
         // 同时清掉该凭证的角色表/当前角色/任务开关，避免“删除后旧角色仍被当成当前角色”。
         if (removed != null) {
+            // 2026-11-08：记录本次显式删除的 fpid，随下一次全量 sync 告知服务端放行
+            //（服务端对「缺失且有 token 的账号」有骤减保护，避免其它设备整库覆盖误删）。
+            markFpidDeleted(removed.fpid);
             com.carlos.vault.daily.RoleStore.removeAccount(appCtx, removed.fpid);
         }
+    }
+
+    // ---------- 待提交的账号删除（2026-11-08，配合服务端骤减同步保护） ----------
+
+    private static final String KEY_DELETED_FPIDS = "deleted_fpids";
+
+    /** 记录一个已被本地删除、待随全量 sync 告知服务端的 fpid（去重、上限 200）。 */
+    public void markFpidDeleted(String fpid) {
+        if (fpid == null || fpid.isEmpty()) return;
+        java.util.Set<String> set = pendingDeletedFpids();
+        if (!set.add(fpid)) return;
+        sp.edit().putString(KEY_DELETED_FPIDS, joinFpids(set)).apply();
+    }
+
+    /** 待提交删除的 fpid 集合（逗号分隔存储）。 */
+    public java.util.Set<String> pendingDeletedFpids() {
+        java.util.Set<String> out = new java.util.LinkedHashSet<String>();
+        String raw = sp.getString(KEY_DELETED_FPIDS, "");
+        if (raw == null || raw.isEmpty()) return out;
+        for (String s : raw.split(",")) {
+            String v = s.trim();
+            if (!v.isEmpty() && out.size() < 200) out.add(v);
+        }
+        return out;
+    }
+
+    /** 逗号分隔串（sync 上传用）；无待删除返回空串。 */
+    public String pendingDeletedFpidsJoined() {
+        return joinFpids(pendingDeletedFpids());
+    }
+
+    /** 服务端已接受同步后清空待删除列表。 */
+    public void clearPendingDeleted() {
+        if (!pendingDeletedFpids().isEmpty()) {
+            sp.edit().remove(KEY_DELETED_FPIDS).apply();
+        }
+    }
+
+    private static String joinFpids(java.util.Set<String> set) {
+        StringBuilder sb = new StringBuilder();
+        for (String v : set) {
+            if (v == null || v.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(',');
+            sb.append(v);
+        }
+        return sb.toString();
     }
 
     public String getLastEntry() {

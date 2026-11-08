@@ -334,6 +334,40 @@ public final class VaultHttpApi {
             data.put("message", "服务端已有 " + currentAccounts + " 个账号，空列表同步被拒绝（防误清空）");
             return data;
         }
+        // 骤减保护（2026-11-08）：多设备/多 App 实例共用同一身份库时，任一设备本地账号较少
+        // （卸载重装/换机/另一实例）都会整库覆盖，把其它设备账号删掉（生产 20:02:40：
+        // 5 账号 → 1 账号，其它设备点「全部上线」报「账号不存在」）。
+        // 规则：incoming 缺失的「服务端已有且有 token」账号数达到显著比例（≥2 且超过半数）时
+        // 拒绝覆盖；App 显式删除账号时随 sync 携带 deletedFpids（或 allowShrink=true）放行。
+        // 缺失 1 个账号（如主设备对齐另一实例的单号）不拦，避免阻碍正常恢复。
+        java.util.Set<String> incomingFpids = new java.util.HashSet<>();
+        for (VaultStore.Account a : incoming) {
+            if (a != null && a.fpid != null && !a.fpid.isEmpty()) incomingFpids.add(a.fpid);
+        }
+        java.util.Set<String> deletedFpids = parseFpidSet(fields.get("deletedFpids"));
+        java.util.List<String> missingFpids = new java.util.ArrayList<>();
+        for (VaultStore.Account old : store.snapshot()) {
+            if (old == null || old.fpid == null || old.fpid.isEmpty()) continue;
+            if (incomingFpids.contains(old.fpid)) continue;
+            if (old.token == null || old.token.isEmpty()) continue;   // 无 token 的空壳允许自然收敛
+            if (deletedFpids.contains(old.fpid)) continue;            // App 显式删除
+            missingFpids.add(old.fpid);
+        }
+        boolean allowShrink = truthy(fields.get("allowShrink")) || truthy(fields.get("force"));
+        if (!allowShrink && shouldRejectShrink(currentAccounts, missingFpids.size())) {
+            FileLog.warn("身份库骤减同步已拒绝：服务端 {} 个账号，incoming={}，缺失且有 token {} 个={}"
+                            + "（防其它设备本地账号较少整库覆盖；确需删除请带 deletedFpids/allowShrink）",
+                    String.valueOf(currentAccounts), String.valueOf(incoming.size()),
+                    String.valueOf(missingFpids.size()), missingFpids.toString());
+            JSONObject data = new JSONObject();
+            data.put("accepted", 0);
+            data.put("shrinkRejected", true);
+            data.put("serverAccounts", currentAccounts);
+            data.put("missingAccounts", new org.json.JSONArray(missingFpids));
+            data.put("message", "服务器账号库有其它设备同步的账号（" + missingFpids.size()
+                    + " 个），本次同步会删除它们，已拒绝；如需删除账号请走删除流程");
+            return data;
+        }
         // 迁城 1:1 复刻（2026-11-06）：全量同步中消失的账号联动取消未开始的定时迁城任务
         // （原版 removeParentAccount 语义；防已删账号的任务到点白跑/报错）。
         java.util.Set<String> before = new java.util.HashSet<>();
@@ -350,6 +384,26 @@ public final class VaultHttpApi {
         JSONObject data = new JSONObject();
         data.put("accepted", n);
         return data;
+    }
+
+    /**
+     * 全量同步骤减判定（2026-11-08）：缺失「服务端已有且有 token」的账号数达到
+     * ≥2 且超过服务端账号数一半时拒绝（防多设备互相整库覆盖）。
+     * 缺失 1 个不拦（主设备与另一实例单号对齐/正常恢复）；显式删除走 deletedFpids/allowShrink。
+     */
+    static boolean shouldRejectShrink(int currentAccounts, int missingTokenAccounts) {
+        return missingTokenAccounts >= 2 && missingTokenAccounts * 2 > currentAccounts;
+    }
+
+    /** 解析逗号/空白分隔的 fpid 列表（App 显式删除账号时随 sync 携带）。 */
+    static java.util.Set<String> parseFpidSet(Object raw) {
+        java.util.Set<String> out = new java.util.HashSet<String>();
+        if (raw == null) return out;
+        for (String s : String.valueOf(raw).split("[,\s]+")) {
+            String v = s.trim();
+            if (!v.isEmpty()) out.add(v);
+        }
+        return out;
     }
 
     private JSONObject handleToken(Map<String, Object> fields) throws Exception {
