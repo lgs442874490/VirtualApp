@@ -154,18 +154,50 @@ public final class FormationPicker {
                     applied ? UiStyle.OK_INK : UiStyle.INK2, false);
             bearStatus.setPadding(0, 0, 0, dp(act, 6));
             card.addView(bearStatus);
+            final TextView[] applyRef = new TextView[1];
             TextView apply = UiStyle.primaryBtn(act,
                     applied ? "重新应用巨熊编队模板" : "一键应用巨熊编队模板", () -> {
-                        String msg = FormationStore.applyBearPresetTemplate(act, fpid, sid, uid);
-                        if (msg == null) {
-                            UiStyle.toast(act, "等待角色英雄数据同步完成后再应用模板");
-                            return;
+                        // 2026-11-08（用户口径）：点击即「获取最新状态重新编队」——
+                        // 先刷新服务端编队目录，再拉一次 /state 回写本地 daily_state，
+                        // 最后按最新英雄/容量重新生成预设，避免误报"等待英雄同步"。
+                        if (applyRef[0] != null) {
+                            applyRef[0].setEnabled(false);
+                            applyRef[0].setAlpha(0.6f);
                         }
-                        sync(act);
-                        refresh.run();
-                        if (onChanged != null) onChanged.onChanged();
-                        UiStyle.toast(act, msg);
+                        UiStyle.toast(act, "正在同步最新编队/英雄数据…");
+                        VaultSync.formationCatalogRefresh(act, fpid, String.valueOf(sid), uid,
+                                (code, message, data) -> {
+                                    if (code != 0) {
+                                        act.runOnUiThread(() -> {
+                                            if (applyRef[0] != null) {
+                                                applyRef[0].setEnabled(true);
+                                                applyRef[0].setAlpha(1f);
+                                            }
+                                            UiStyle.toast(act, "同步失败："
+                                                    + (message == null || message.isEmpty()
+                                                        ? "请确认角色在线后重试" : message));
+                                        });
+                                        return;
+                                    }
+                                    VaultSync.fetchState(act, (c2, m2, d2) -> act.runOnUiThread(() -> {
+                                        if (applyRef[0] != null) {
+                                            applyRef[0].setEnabled(true);
+                                            applyRef[0].setAlpha(1f);
+                                        }
+                                        String msg = FormationStore.applyBearPresetTemplate(act, fpid, sid, uid);
+                                        if (msg == null) {
+                                            UiStyle.toast(act,
+                                                    "最新数据已同步，但英雄目录仍为空：请确认角色在线/稍后重试");
+                                            return;
+                                        }
+                                        sync(act);
+                                        refresh.run();
+                                        if (onChanged != null) onChanged.onChanged();
+                                        UiStyle.toast(act, msg);
+                                    }));
+                                });
                     });
+            applyRef[0] = apply;
             LinearLayout.LayoutParams applyLp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             applyLp.bottomMargin = dp(act, 6);

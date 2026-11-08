@@ -71,7 +71,7 @@ public final class BehemothTeamCard {
         long formationId = FormationStore.fnFormationId(act, fpid, sid, fnId);
         String value;
         if (FormationStore.MODE_ROLE.equals(mode) && formationId > 0) {
-            value = nameOf(act, fpid, sid, formationId) + "（#" + formationId + "）";
+            value = nameOf(act, fpid, sid, formationId);   // 只显示编队名字（去掉 #编号）
         } else {
             value = "自动（最强盾 / 波根 / 吉娜）";
         }
