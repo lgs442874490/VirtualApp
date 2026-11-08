@@ -1529,8 +1529,19 @@ public final class ServerTownTasks {
             m.subSkip("challenge", "塔信息缺失");
             return;
         }
-        // P1-4：支持配置目标塔（tower_id），默认今日塔；时区固定北京时间，避免服务器 UTC 偏移
-        long tower = tc.params("climbtower").optLong("tower_id", 0L);
+        // P1-4：支持配置目标塔（strategy.challenge / tower_id），默认今日塔；时区固定北京时间
+        JSONObject cp = tc.params("climbtower");
+        JSONObject cstrategy = cp.optJSONObject("strategy");
+        long tower = cp.optLong("tower_id", 0L);
+        if (tower <= 0L && cstrategy != null) {
+            String ts = cstrategy.optString("challenge", "today");
+            if (!"today".equals(ts)) {
+                try {
+                    tower = Long.parseLong(ts.trim());
+                } catch (Exception ignored) {
+                }
+            }
+        }
         if (tower <= 0L) {
             int wd = Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
                     .get(Calendar.DAY_OF_WEEK);

@@ -6,6 +6,7 @@ import android.graphics.Typeface;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
@@ -182,6 +183,8 @@ public final class SubCardUi {
             card.addView(frostfireSlotsRow(ctx, fpid, sid));
         } else if (("shop".equals(fnId) || "alliance_shop".equals(fnId)) && "buy".equals(sub.id)) {
             card.addView(shopPickRow(ctx, fpid, sid, fnId));
+        } else if ("ally_offline_guard".equals(fnId) && "watch".equals(sub.id)) {
+            card.addView(watchUidsRow(ctx, fpid, sid, fnId));
         } else if ("act_flamefangs".equals(fnId) && "buy".equals(sub.id)) {
             card.addView(flamefangsPickRow(ctx, fpid, sid));
         } else if ("act_snowtrade".equals(fnId) && "buy".equals(sub.id)) {
@@ -299,6 +302,50 @@ public final class SubCardUi {
     }
 
     /** 商店/联盟商店勾选：按店铺分组浏览（在线拉实时货架：已购/折扣；缓存取币种余额），存 buys {configId:1}。 */
+    /** 离线联动：关注角色 uid 输入（逗号分隔，保存为 watch_uids JSON 数组）。 */
+    private static View watchUidsRow(final Context ctx, final String fpid, final long sid, final String fnId) {
+        final JSONArray cur = FnParams.params(ctx, fpid, sid, fnId).optJSONArray("watch_uids");
+        StringBuilder sb = new StringBuilder();
+        if (cur != null) {
+            for (int i = 0; i < cur.length(); i++) {
+                if (sb.length() > 0) sb.append(',');
+                sb.append(cur.optLong(i));
+            }
+        }
+        LinearLayout row = new LinearLayout(ctx);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setPadding(dp(ctx, 14), dp(ctx, 4), dp(ctx, 14), dp(ctx, 4));
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        TextView label = new TextView(ctx);
+        label.setText("关注角色");
+        label.setTextSize(12);
+        label.setTextColor(UiStyle.INK2);
+        row.addView(label);
+        final EditText et = UiStyle.searchInput(ctx, "uid，逗号分隔，例：111,222");
+        et.setText(sb.toString());
+        row.addView(et, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView save = new TextView(ctx);
+        save.setText("保存");
+        save.setTextSize(12);
+        save.setTextColor(0xFF2F6BFF);
+        save.setPadding(dp(ctx, 8), 0, 0, 0);
+        save.setOnClickListener(v -> {
+            JSONArray arr = new JSONArray();
+            for (String part : et.getText().toString().split("[,，\\s]+")) {
+                if (part.isEmpty()) continue;
+                try {
+                    long uid = Long.parseLong(part.trim());
+                    if (uid > 0L) arr.put(uid);
+                } catch (Exception ignored) {
+                }
+            }
+            FnParams.putTopLevel(ctx, fpid, sid, fnId, "watch_uids", arr);
+            UiStyle.toast(ctx, "已保存 " + arr.length() + " 个关注角色");
+        });
+        row.addView(save);
+        return row;
+    }
+
     private static View shopPickRow(final Context ctx, final String fpid, final long sid, final String fnId) {
         long[] shopIds = "shop".equals(fnId) ? ShopTasks.SHOP_IDS_TOWN : ShopTasks.SHOP_IDS_ALLIANCE;
         final long[] shopIdsF = shopIds;

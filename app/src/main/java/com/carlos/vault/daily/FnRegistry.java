@@ -88,6 +88,10 @@ public final class FnRegistry {
         l.add(new Fn("act_feast", "至尊盛宴", CAT_ACTIVITY, true, "开席自动搜桌赴宴"));
         l.add(new Fn("act_mercenary", "佣兵荣耀", CAT_ACTIVITY, true, "选难度+生成佣兵+出征"));
         l.add(new Fn("act_truck", "雪原商路", CAT_ACTIVITY, true, "雪原商路：领送达+自动发车+刷新品质"));
+        l.add(new Fn("act_arsenal_league", "雪域兵器联赛", CAT_ACTIVITY, true, "周常领取+可选竞猜下注"));
+        l.add(new Fn("act_slg_league", "冰火战歌", CAT_ACTIVITY, true, "任务奖励领取+点赞"));
+        l.add(new Fn("act_cross_capital_revive", "最强王国复活", CAT_ACTIVITY, true, "活动期自动复活阵亡部队+求助"));
+        l.add(new Fn("ally_offline_guard", "离线联动", CAT_ACTIVITY, true, "观察者查询离线状态/强制上线"));
         l.add(new Fn("act_icehunter", "冰原猎人", CAT_ACTIVITY, true, "进度奖励+生成BOSS+集结"));
 
         // ===== 野外 =====

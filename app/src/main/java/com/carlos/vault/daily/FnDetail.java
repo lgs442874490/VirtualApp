@@ -120,7 +120,9 @@ public final class FnDetail {
                 new Sub("quests", "悬赏任务", "火晶悬赏任务奖励批量领取（notify_firecrystal_quests）", true, null));
         fn("climbtower",
                 new Sub("sweep", "每日扫荡", "按星期自动扫荡今日开放的地心之塔", true, null),
-                new Sub("challenge", "自动闯关", "今日塔按 cur_passed_level+1 用 3 队编队挑战，连续失败达上限停止", true, null));
+                new Sub("challenge", "自动闯关", "按所选塔从 cur_passed_level+1 用 3 队编队挑战，连续失败达上限停止", true,
+                        new String[][]{{"today", "今日塔"}, {"1", "英雄之地"}, {"2", "群兽洞窟"},
+                                {"3", "宝石矿洞"}, {"4", "地下科研所"}, {"5", "装备锻炉"}, {"6", "大地之心"}}));
         fn("arena",
                 new Sub("fight", "自动挑战", "从对手列表选战力最低者挑战", true,
                         new String[][]{{"3", "挑战3场"}, {"5", "挑战5场"}, {"8", "挑战8场"}, {"10", "挑战10场"}}),
@@ -161,6 +163,17 @@ public final class FnDetail {
                 new Sub("take", "领送达奖励", "已送达货车的奖励自动领取", true, null),
                 new Sub("send", "自动发车", "用一名英雄自动发出货车（劫掠他人默认关）", true, null),
                 new Sub("refresh", "刷新货车品质", "未达标货车自动刷新（品质<target_quality；免费优先，钻石刷新受 diamond_refresh_max 预算）", false, null));
+        fn("act_arsenal_league",
+                new Sub("bet", "自动竞猜下注", "活动期自动下注（按战力选强侧；默认关）", false,
+                        new String[][]{{"100", "100币"}, {"500", "500币"}, {"1000", "1000币"}, {"4500", "4500币"}}));
+        fn("act_slg_league",
+                new Sub("like", "点赞", "给前三名点赞（幂等）", true, null));
+        fn("act_cross_capital_revive",
+                new Sub("revive", "自动复活", "活动期检测到阵亡 → 全复活 + 联盟求助", true, null));
+        fn("ally_offline_guard",
+                new Sub("watch", "查询离线", "观察者查询关注角色在线/离线", true, null),
+                new Sub("force", "强制上线", "离线目标强制上线开盾（需配置关注角色）", false,
+                        new String[][]{{"1", "最多1个"}, {"3", "最多3个"}, {"5", "最多5个"}}));
         fn("act_icehunter",
                 new Sub("reward", "进度奖励", "冰原猎人档位奖励一键领取", true, null),
                 new Sub("boss", "生成并集结BOSS", "消耗零件生成BOSS并发起集结（需25体力）", true, null));
@@ -179,7 +192,8 @@ public final class FnDetail {
         fn("adventure_sweep",
                 new Sub("sweep", "速刷关数", "已通关卡用快速战斗逐关推进；新关卡需手动战斗解锁一次", true,
                         new String[][]{{"5", "最多5关"}, {"10", "最多10关"}, {"20", "最多20关"}, {"50", "最多50关"}}),
-                new Sub("crush", "碾压闯关", "不传 is_fast，靠战力碾压自动推进新关；连续失败达上限（默认5次）结束今天", true, null));
+                new Sub("crush", "碾压闯关", "不传 is_fast，靠战力碾压自动推进新关；连续失败达上限结束今天", true,
+                        new String[][]{{"3", "连续失败3次停"}, {"5", "连续失败5次停"}, {"10", "连续失败10次停"}}));
         fn("intel",
                 new Sub("events", "处理情报", "待办情报事件自动出征/快速战并领奖（只占 1 队空闲队列，其余队列照常采集）", true, null));
         fn("behemoth",

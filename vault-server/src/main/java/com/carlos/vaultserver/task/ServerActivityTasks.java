@@ -697,14 +697,18 @@ public final class ServerActivityTasks {
             } else {
                 m.skip("登录奖励未领(码" + Exec.codeOf(login) + ")");
             }
-            // P2-4：雪域兵器联赛竞猜下注（默认关；auto_bet=true + bet_amount 才执行）
+            // P2-4：雪域兵器联赛竞猜下注（默认关；App 子项 bet 或 auto_bet=true 才执行）
             JSONObject p = tc.params("act_arsenal_league");
-            if (p.optBoolean("auto_bet", false)) {
+            JSONObject strategy = p.optJSONObject("strategy");
+            boolean autoBet = tc.subOn("act_arsenal_league", "bet", false)
+                    || p.optBoolean("auto_bet", false);
+            if (autoBet) {
                 Map<String, Object> gi = tc.engine.notifyData("notify_arsenal_league_guess_info");
                 long guessId = gi == null ? 0L : Exec.longOf(gi.get("id"));
                 long groupId = gi == null ? 0L : Exec.longOf(gi.get("group_id"));
                 if (guessId > 0L && groupId > 0L) {
-                    long num = Math.max(1L, p.optLong("bet_amount", 100L));
+                    long num = Math.max(1L, strategy != null && strategy.has("bet")
+                            ? strategy.optLong("bet", 100L) : p.optLong("bet_amount", 100L));
                     int fixedSide = p.optInt("bet_side", 0);
                     if (fixedSide != 1 && fixedSide != 2) fixedSide = 0;   // P2-3：非法值按自动选强侧
                     GameMessage bi = tc.engine.request("req_arsenal_league_guess_get_winner_bet_info",
@@ -947,9 +951,13 @@ public final class ServerActivityTasks {
                     "在线 " + online + " / 离线 " + offline
                             + (offlineUids.isEmpty() ? "" : " · 离线uid " + offlineUids));
             // P2-7：离线目标强制上线（force_online=true 且 SessionControl 已注入）
-            if (p.optBoolean("force_online", false) && tc.sessionControl() != null
+            JSONObject fstrategy = p.optJSONObject("strategy");
+            boolean forceOnline = tc.subOn("ally_offline_guard", "force", false)
+                    || p.optBoolean("force_online", false);
+            if (forceOnline && tc.sessionControl() != null
                     && !offlineUids.isEmpty()) {
-                int forceLimit = Math.max(1, Math.min(10, p.optInt("force_limit", 3)));
+                int forceLimit = Math.max(1, Math.min(10, fstrategy != null && fstrategy.has("force")
+                        ? fstrategy.optInt("force", 3) : p.optInt("force_limit", 3)));
                 boolean allowCross = p.optBoolean("allow_cross_account", false);
                 java.util.Set<Long> forcedUids = new java.util.HashSet<>();
                 int forced = 0;

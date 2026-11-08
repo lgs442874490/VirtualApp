@@ -3396,7 +3396,9 @@ public final class ServerFieldTasks {
             int swept = 0;
             // 2026-11-08：碾压模式（不传 is_fast，服务器按战力差返回 is_fast=true+clear_reward → 免战斗通关）
             boolean crush = tc.subOn("adventure_sweep", "crush", true);
-            int failMax = Math.max(1, sp.optInt("fail_max", 5));
+            JSONObject sstrategy = sp.optJSONObject("strategy");
+            int failMax = Math.max(1, sstrategy != null && sstrategy.has("crush")
+                    ? sstrategy.optInt("crush", 5) : sp.optInt("fail_max", 5));
             int fails = 0;
             for (int i = 0; i < maxSweep; i++) {
                 long next = passed + 1;
