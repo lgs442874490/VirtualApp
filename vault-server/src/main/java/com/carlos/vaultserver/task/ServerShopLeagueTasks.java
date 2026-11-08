@@ -157,7 +157,7 @@ public final class ServerShopLeagueTasks {
 
     // ================= 商店购买 =================
 
-    public static final long[] SHOP_IDS_TOWN = {801, 701, 1001, 901, 1201, 301, 2001, 601, 1101, 2401};
+    public static final long[] SHOP_IDS_TOWN = {801, 701, 1001, 901, 1201, 301, 2001, 601, 1101, 2401, 1701};
     public static final long[] SHOP_IDS_ALLIANCE = {401, 501};
 
     /** 网页版仅流动商人(801)/神秘商店(601)支持 req_shop_refresh；其余店铺为日/周重置。 */
@@ -166,6 +166,11 @@ public final class ServerShopLeagueTasks {
 
     /** App 新 UI「按名字勾选」参数键：roleParams 里存在非空对象即视为名单模式。 */
     static final String PARAM_BUY_NAMES = "buy_names";
+    /**
+     * App「有序勾选清单」参数键（2026-11-08）：JSON 数组，元素 {shop_id, conf_id, count}。
+     * 与 buy_names 的区别：保留用户勾选顺序，按顺序购买、货币不足即停止（直到没有货币）。
+     */
+    static final String PARAM_BUY_LIST = "buy_list";
 
     /**
      * 名单模式判定（S2 起正式支持 buy_names；此函数保留为解析入口与批次2单测契约）。
@@ -515,11 +520,114 @@ public final class ServerShopLeagueTasks {
         return buyFromShops(tc, SHOP_IDS_ALLIANCE, "alliance_shop", "联盟商店");
     }
 
+    /**
+     * 有序勾选清单模式（2026-11-08）：按用户勾选顺序购买，直到货币不足/全部处理完。
+     * 清单元素 {shop_id, conf_id, count}；count<=0 时按“限购剩余与余额”尽量买。
+     * 售罄（buy_count>=limit）跳过；货币不足停止本轮。
+     */
+    static TaskOutcome buyListMode(TaskContext tc, long[] shopIds, String fnId, String fnName,
+                                   JSONArray buyList) {
+        Exec.Multi m = new Exec.Multi();
+        try {
+            Map<Long, Good> byConfigId = new HashMap<>();
+            for (List<Good> gl : shops().values()) {
+                for (Good g : gl) {
+                    if (g != null && g.configId > 0L) byConfigId.put(g.configId, g);
+                }
+            }
+            Map<Long, Long> balances = currencyBalances(tc);
+            int bought = 0;
+            for (int i = 0; i < buyList.length(); i++) {
+                JSONObject it = buyList.optJSONObject(i);
+                if (it == null) continue;
+                long shopId = it.optLong("shop_id", 0L);
+                long configId = it.optLong("conf_id", 0L);
+                if (shopId <= 0L || configId <= 0L) continue;
+                if (!containsShop(shopIds, shopId)) continue;
+                Good meta = byConfigId.get(configId);
+                if (meta == null) {
+                    m.skip("商品配置缺失 conf=" + configId);
+                    continue;
+                }
+                List<Object> arr = new ArrayList<>();
+                for (long sid : shopIds) arr.add(sid);
+                GameMessage info = tc.engine.request("req_shop_info_array", Exec.args("arr_id", arr));
+                if (!Exec.ok(info)) {
+                    m.skip("货架拉取失败(码" + Exec.codeOf(info) + ")");
+                    break;
+                }
+                Map<String, Object> mapInfo = Exec.mapOf(info.getContent().get("map_info"));
+                if (mapInfo == null) {
+                    m.skip("货架响应缺商品表");
+                    break;
+                }
+                List<ShopShelfItem> shelf = flattenShelf(mapInfo, byConfigId);
+                ShopShelfItem target = null;
+                for (ShopShelfItem s : shelf) {
+                    if (s.shopId() == shopId && s.configId() == configId) {
+                        target = s;
+                        break;
+                    }
+                }
+                if (target == null) {
+                    m.skip(meta.name + " 当前货架无此商品");
+                    continue;
+                }
+                long remaining = target.remaining();
+                if (remaining <= 0L) {
+                    m.skip(meta.name + " 已售罄");
+                    continue;
+                }
+                long price = meta.price;
+                long bal = balances.getOrDefault(meta.currencyId, 0L);
+                long canBuy = price <= 0L ? remaining : Math.min(remaining, Math.max(0L, bal / price));
+                if (canBuy <= 0L) {
+                    // 用户口径：按勾选顺序购买，直到没有货币
+                    m.skip(meta.name + " 余额不足，停止购买");
+                    break;
+                }
+                long want = Math.max(0L, it.optLong("count", 0L));
+                long count = want > 0L ? Math.min(want, canBuy) : canBuy;
+                if (count <= 0L) continue;
+                GameMessage buy = tc.engine.request("req_shop_buy", Exec.args(
+                        "shop_id", shopId, "goods_id", target.goodsId(), "count", count));
+                int code = Exec.codeOf(buy);
+                if (Exec.ok(buy)) {
+                    bought++;
+                    m.claimed(meta.name + "×" + count);
+                    if (meta.currencyId > 0L && price > 0L) {
+                        balances.put(meta.currencyId, Math.max(0L, bal - price * count));
+                    }
+                } else if (isPurchaseConditionBlocked(code)) {
+                    m.skip(meta.name + " 条件不满足");
+                } else {
+                    m.skip(meta.name + " 码" + code);
+                }
+            }
+            if (bought == 0 && m.sb.length() == 0) m.skip("勾选清单无可购商品");
+        } catch (Exception e) {
+            if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, fnName);
+            m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
+        }
+        return Exec.result(m, fnId, fnName);
+    }
+
+    private static boolean containsShop(long[] ids, long id) {
+        if (ids == null) return false;
+        for (long x : ids) if (x == id) return true;
+        return false;
+    }
+
     private static TaskOutcome buyFromShops(TaskContext tc, long[] shopIds,
                                             String fnId, String fnName) {
         Exec.Multi m = new Exec.Multi();
         try {
             JSONObject p = tc.params(fnId);
+            // 2026-11-08：有序勾选清单优先（按用户勾选顺序购买，直到没有货币）
+            JSONArray buyList = p.optJSONArray(PARAM_BUY_LIST);
+            if (buyList != null && buyList.length() > 0) {
+                return buyListMode(tc, shopIds, fnId, fnName, buyList);
+            }
             Map<String, Long> wantNames = parseBuyNames(p.opt(PARAM_BUY_NAMES));
             LinkedHashMap<Long, Long> wantConfigIds = parseLegacyBuys(p.optJSONObject("buys"));
             boolean nameMode = !wantNames.isEmpty();
