@@ -51,9 +51,12 @@ public class CrossCapitalReviveTest {
         public void collectNotifies(long millis) {
         }
 
+        Map<String, Object> membersInit;
+
         @Override
         public Map<String, Object> notifyData(String proto) {
             if ("notify_cross_capital_war_init".equals(proto)) return init;
+            if ("notify_alliance_member_init".equals(proto)) return membersInit;
             return null;
         }
 
@@ -67,6 +70,17 @@ public class CrossCapitalReviveTest {
             calls.add(proto);
             Map<String, Object> c = new LinkedHashMap<>();
             c.put("code", 0);
+            if ("req_cross_capital_war_get_user_revive_data".equals(proto)) {
+                Map<String, Object> dataMap = new LinkedHashMap<>();
+                dataMap.put("6308486", Map.of("uid", 6308486L, "total_dead_soldier", 500L,
+                        "revive_coupon", 10L, "receive_help_times", 0L));
+                dataMap.put("35371154", Map.of("uid", 35371154L, "total_dead_soldier", 100L,
+                        "revive_coupon", 0L, "receive_help_times", 0L));
+                c.put("data_map", dataMap);
+            }
+            if ("req_cross_capital_war_help_revive".equals(proto)) {
+                c.put("suc_times", 5L);
+            }
             GameMessage m = new GameMessage();
             m.setContent(c);
             return m;
@@ -125,6 +139,21 @@ public class CrossCapitalReviveTest {
         e.init = init(6L, false);
         ServerActivityTasks.crossCapitalRevive(tc(e));
         assertFalse(e.calls.contains("req_cross_capital_war_revive"));
+    }
+
+    @Test
+    public void helpsAllianceMembersReviveByDeadSoldiers() {
+        TestEngine e = new TestEngine();
+        e.init = init(6L, true);
+        Map<String, Object> members = new LinkedHashMap<>();
+        members.put("6308486", Map.of("uid", 6308486L, "rank", 1L));
+        members.put("35371154", Map.of("uid", 35371154L, "rank", 3L));
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("members", members);
+        e.membersInit = root;
+        ServerActivityTasks.crossCapitalRevive(tc(e));
+        assertTrue("应查询联盟成员复活数据", e.calls.contains("req_cross_capital_war_get_user_revive_data"));
+        assertTrue("应援助盟友复活", e.calls.contains("req_cross_capital_war_help_revive"));
     }
 
     @Test

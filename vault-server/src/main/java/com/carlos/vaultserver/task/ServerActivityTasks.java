@@ -707,60 +707,58 @@ public final class ServerActivityTasks {
                 long guessId = gi == null ? 0L : Exec.longOf(gi.get("id"));
                 long groupId = gi == null ? 0L : Exec.longOf(gi.get("group_id"));
                 if (guessId > 0L && groupId > 0L) {
-                    long num = Math.max(1L, strategy != null && strategy.has("bet")
-                            ? strategy.optLong("bet", 100L) : p.optLong("bet_amount", 100L));
+                    // 2026-11-09（用户策略）：每场上限 10000 竞猜币；选「双方实力差距最大」的前 3 场拉满；
+                    // 票不够时按差距顺序依次下注，下注失败即停（不再继续后续场次）。
+                    long perBet = strategy != null && strategy.has("bet")
+                            ? strategy.optLong("bet", 10000L) : p.optLong("bet_amount", 10000L);
+                    perBet = Math.max(1L, Math.min(10000L, perBet));
                     int fixedSide = p.optInt("bet_side", 0);
-                    if (fixedSide != 1 && fixedSide != 2) fixedSide = 0;   // P2-3：非法值按自动选强侧
+                    if (fixedSide != 1 && fixedSide != 2) fixedSide = 0;   // 非法值按自动选强侧
                     GameMessage bi = tc.engine.request("req_arsenal_league_guess_get_winner_bet_info",
                             Exec.args("id", guessId, "group_id", groupId, "matches", List.of(1L)));
                     if (Exec.ok(bi)) {
                         Map<String, Object> infos = Exec.mapOf(bi.getContent().get("infos"));
-                        if (infos != null && !infos.isEmpty()) {
-                            // P2-2：按 match_id 升序取第一场（不依赖 Map 顺序）
-                            String firstKey = null;
-                            Map<String, Object> inf = null;
+                        List<long[]> cands = new ArrayList<long[]>();   // [matchId, gap, side]
+                        if (infos != null) {
                             for (Map.Entry<String, Object> ie : infos.entrySet()) {
-                                long mid = Exec.longOf(ie.getKey());
-                                if (firstKey == null || mid < Exec.longOf(firstKey)) {
-                                    firstKey = ie.getKey();
-                                    inf = Exec.mapOf(ie.getValue());
-                                }
-                            }
-                            long matchId = inf == null ? Exec.longOf(firstKey)
-                                    : Exec.longOf(inf.get("match_id"));
-                            if (matchId <= 0L) matchId = Exec.longOf(firstKey);
-                            int side = fixedSide;
-                            if (side <= 0) {
+                                Map<String, Object> inf = Exec.mapOf(ie.getValue());
+                                long mid = inf == null ? 0L : Exec.longOf(inf.get("match_id"));
+                                if (mid <= 0L) mid = Exec.longOf(ie.getKey());
                                 Map<String, Object> match = inf == null ? null : Exec.mapOf(inf.get("match"));
-                                Map<String, Object> sides = match == null ? null
-                                        : Exec.mapOf(match.get("sides"));
-                                long p1 = 0L;
-                                long p2 = 0L;
+                                Map<String, Object> sides = match == null ? null : Exec.mapOf(match.get("sides"));
+                                long p1 = 0L, p2 = 0L;
                                 if (sides != null) {
                                     Map<String, Object> s1 = Exec.mapOf(sides.get("1"));
                                     Map<String, Object> s2 = Exec.mapOf(sides.get("2"));
                                     p1 = s1 == null ? 0L : Exec.longOf(s1.get("power"));
                                     p2 = s2 == null ? 0L : Exec.longOf(s2.get("power"));
                                 }
-                                side = p1 >= p2 ? 1 : 2;
+                                if (mid <= 0L) continue;
+                                int side = fixedSide > 0 ? fixedSide : (p1 >= p2 ? 1 : 2);
+                                cands.add(new long[]{mid, Math.abs(p1 - p2), side});
                             }
-                            // P1-2：已下注幂等（同一 guessId+matchId 不重复下注）
-                            String betKey = "bet_" + guessId + "_" + matchId;
-                            JSONObject betState = tc.modState("act_arsenal_league");
-                            if (betState.optLong(betKey, 0L) > 0L) {
-                                m.skip("竞猜已下注（match " + matchId + "），跳过");
-                            } else {
-                                GameMessage bet = tc.engine.request("req_arsenal_league_guess_bet_winner",
-                                        Exec.args("id", guessId, "group_id", groupId,
-                                                "match_id", matchId, "side", side, "num", num));
-                                if (Exec.ok(bet)) {
-                                    tc.saveModText("act_arsenal_league", betKey,
-                                            String.valueOf(System.currentTimeMillis()));
-                                    m.claimed("竞猜下注 " + num + "（match " + matchId + " side " + side + "）");
-                                } else {
-                                    m.skip("竞猜下注失败(码" + Exec.codeOf(bet) + ")");
-                                }
+                        }
+                        java.util.Collections.sort(cands, new java.util.Comparator<long[]>() {
+                            @Override
+                            public int compare(long[] a, long[] b) {
+                                return Long.compare(b[1], a[1]);
                             }
+                        });
+                        JSONObject betState = tc.modState("act_arsenal_league");
+                        int placed = 0;
+                        for (long[] c : cands) {
+                            if (placed >= 3) break;   // 最多 3 场
+                            String betKey = "bet_" + guessId + "_" + c[0];
+                            if (betState.optLong(betKey, 0L) > 0L) continue;   // 幂等
+                            GameMessage bet = tc.engine.request("req_arsenal_league_guess_bet_winner",
+                                    Exec.args("id", guessId, "group_id", groupId,
+                                            "match_id", c[0], "side", c[2], "num", perBet));
+                            if (!Exec.ok(bet)) break;   // 票不足/失败：按差距顺序停止
+                            tc.saveModText("act_arsenal_league", betKey,
+                                    String.valueOf(System.currentTimeMillis()));
+                            placed++;
+                            m.claimed("竞猜下注 " + perBet + "（match " + c[0] + " side " + c[2]
+                                    + " 差距 " + c[1] + "）");
                         }
                     }
                 }
@@ -881,12 +879,106 @@ public final class ServerActivityTasks {
                 GameMessage help = tc.engine.request(
                         "req_cross_capital_war_revive_call_alliance_help", null);
                 if (Exec.ok(help)) m.claimed("已请求联盟帮助");
+                // 2026-11-09（用户要求）：自动援助盟友复活——抓包协议：
+                // req_cross_capital_war_get_user_revive_data {uids} 查复活数据 →
+                // req_cross_capital_war_help_revive {uid,times} 对阵亡最多的盟友逐个援助。
+                helpReviveAllies(tc, m, init);
             }
         } catch (Exception e) {
             if (ServerTownTasks.sessionLost(e)) return ServerTasks.classifyException(e, "最强王国复活");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "act_cross_capital_revive", "最强王国复活");
+    }
+
+    /** 最多援助的盟友数 / 每次援助次数（抓包样本 times=5）。 */
+    private static final int HELP_REVIVE_MAX_ALLIES = 10;
+    private static final int HELP_REVIVE_TIMES = 5;
+    private static final int HELP_REVIVE_BATCH = 100;
+
+    /**
+     * 援助盟友复活（2026-11-09，抓包协议）：联盟成员 → get_user_revive_data 批量查 →
+     * 按 total_dead_soldier 降序对未援助过的盟友发 help_revive {uid,times}。
+     */
+    private static void helpReviveAllies(TaskContext tc, Exec.Multi m, Map<String, Object> init) {
+        if (!tc.subOn("act_cross_capital_revive", "help_revive", true)) return;
+        try {
+            Map<String, Object> membersRoot = Exec.mapOf(tc.engine.notifyData("notify_alliance_member_init"));
+            Map<String, Object> members = membersRoot == null ? null : Exec.mapOf(membersRoot.get("members"));
+            if (members == null || members.isEmpty()) return;
+            java.util.List<Long> uids = new java.util.ArrayList<Long>();
+            for (Object o : members.values()) {
+                Map<String, Object> row = Exec.mapOf(o);
+                long uid = row == null ? 0L : Exec.longOf(row.get("uid"));
+                if (uid > 0L) uids.add(uid);
+            }
+            if (uids.isEmpty()) return;
+            // 本场活动的援助台账（stage_ts 最小值作为场次键）
+            long window = 0L;
+            Map<String, Object> activity = Exec.mapOf(init == null ? null : init.get("activity"));
+            java.util.List<Object> stageTs = activity == null ? null : Exec.listOf(activity.get("stage_ts"));
+            if (stageTs != null) {
+                for (Object o : stageTs) {
+                    long ts = Exec.longOf(o);
+                    if (ts > 0L && (window == 0L || ts < window)) window = ts;
+                }
+            }
+            String ledgerKey = "help_" + window;
+            java.util.Set<Long> helped = new java.util.LinkedHashSet<Long>();
+            try {
+                for (String part : tc.modState("act_cross_capital_revive")
+                        .optString(ledgerKey, "").split(",")) {
+                    if (!part.trim().isEmpty()) helped.add(Long.parseLong(part.trim()));
+                }
+            } catch (Throwable ignored) {
+            }
+            // 批量查复活数据 → 收集阵亡数
+            java.util.List<long[]> cands = new java.util.ArrayList<long[]>();   // [uid, dead]
+            for (int from = 0; from < uids.size(); from += HELP_REVIVE_BATCH) {
+                int to = Math.min(uids.size(), from + HELP_REVIVE_BATCH);
+                GameMessage live = tc.engine.request("req_cross_capital_war_get_user_revive_data",
+                        Exec.args("uids", new java.util.ArrayList<Long>(uids.subList(from, to))));
+                if (!Exec.ok(live)) continue;
+                Map<String, Object> dataMap = Exec.mapOf(live.getContent().get("data_map"));
+                if (dataMap == null) continue;
+                for (Map.Entry<String, Object> e : dataMap.entrySet()) {
+                    Map<String, Object> row = Exec.mapOf(e.getValue());
+                    long uid = row == null ? 0L : Exec.longOf(row.get("uid"));
+                    if (uid <= 0L) uid = Exec.longOf(e.getKey());
+                    long dead = row == null ? 0L : Exec.longOf(row.get("total_dead_soldier"));
+                    if (uid > 0L && dead > 0L && !helped.contains(uid)) {
+                        cands.add(new long[]{uid, dead});
+                    }
+                }
+            }
+            if (cands.isEmpty()) return;
+            // 阵亡最多优先
+            java.util.Collections.sort(cands, new java.util.Comparator<long[]>() {
+                @Override
+                public int compare(long[] a, long[] b) {
+                    return Long.compare(b[1], a[1]);
+                }
+            });
+            StringBuilder ledger = new StringBuilder();
+            int times = 0;
+            for (long[] c : cands) {
+                if (times >= HELP_REVIVE_MAX_ALLIES) break;
+                GameMessage rsp = tc.engine.request("req_cross_capital_war_help_revive",
+                        Exec.args("uid", c[0], "times", HELP_REVIVE_TIMES));
+                if (!Exec.ok(rsp)) continue;
+                times++;
+                if (ledger.length() > 0) ledger.append(',');
+                ledger.append(c[0]);
+                long suc = Exec.longOf(rsp.getContent().get("suc_times"));
+                m.claimed("援助盟友复活 uid=" + c[0] + " 次数=" + (suc > 0L ? suc : HELP_REVIVE_TIMES));
+            }
+            if (ledger.length() > 0) {
+                String prev = tc.modState("act_cross_capital_revive").optString(ledgerKey, "");
+                String next = prev.isEmpty() ? ledger.toString() : prev + "," + ledger;
+                tc.saveModText("act_cross_capital_revive", ledgerKey, next);
+            }
+        } catch (Throwable ignored) {
+        }
     }
 
     // ---------- 联盟/同账号离线联动 ----------
