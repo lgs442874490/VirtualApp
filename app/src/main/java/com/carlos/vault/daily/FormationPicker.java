@@ -241,7 +241,7 @@ public final class FormationPicker {
             petCol.setOrientation(LinearLayout.VERTICAL);
             petCol.addView(text(act, "打熊使用宠物战斗技能", 12.5f, UiStyle.INK, true));
             TextView petHint = text(act,
-                    "开启后自动使用全部战斗技能（排除 550051「锋锐铁喙」）", 10.5f,
+                    "开启后自动使用全部战斗技能（不包含「锋锐铁喙」）", 10.5f,
                     UiStyle.INK2, false);
             petHint.setPadding(0, dp(act, 2), 0, 0);
             petCol.addView(petHint);
