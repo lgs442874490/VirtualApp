@@ -923,6 +923,14 @@ public final class ServerActivityTasks {
                     if (ts > 0L && (window == 0L || ts < window)) window = ts;
                 }
             }
+            // 援助盟友消耗自己的「复活币」（抓包：初始 20，help_revive times=5 后 15）。
+            // 用户口径：援助盟友复活只有 20 个复活币可用——总援助次数不得超过剩余复活币。
+            long budget = 20L;
+            Map<String, Object> player = Exec.mapOf(init == null ? null : init.get("player"));
+            Map<String, Object> revive = player == null ? null : Exec.mapOf(player.get("revive_data"));
+            if (revive != null && Exec.longOf(revive.get("revive_coupon")) > 0L) {
+                budget = Exec.longOf(revive.get("revive_coupon"));
+            }
             String ledgerKey = "help_" + window;
             java.util.Set<Long> helped = new java.util.LinkedHashSet<Long>();
             try {
@@ -960,17 +968,22 @@ public final class ServerActivityTasks {
                 }
             });
             StringBuilder ledger = new StringBuilder();
-            int times = 0;
+            int assisted = 0;
+            long remaining = Math.max(0L, budget);
             for (long[] c : cands) {
-                if (times >= HELP_REVIVE_MAX_ALLIES) break;
+                if (assisted >= HELP_REVIVE_MAX_ALLIES || remaining <= 0L) break;
+                long times = Math.min(HELP_REVIVE_TIMES, remaining);
+                if (times <= 0L) break;
                 GameMessage rsp = tc.engine.request("req_cross_capital_war_help_revive",
-                        Exec.args("uid", c[0], "times", HELP_REVIVE_TIMES));
+                        Exec.args("uid", c[0], "times", times));
                 if (!Exec.ok(rsp)) continue;
-                times++;
+                remaining -= times;
+                assisted++;
                 if (ledger.length() > 0) ledger.append(',');
                 ledger.append(c[0]);
                 long suc = Exec.longOf(rsp.getContent().get("suc_times"));
-                m.claimed("援助盟友复活 uid=" + c[0] + " 次数=" + (suc > 0L ? suc : HELP_REVIVE_TIMES));
+                m.claimed("援助盟友复活 uid=" + c[0] + " 次数=" + (suc > 0L ? suc : times)
+                        + "（复活币剩余 " + remaining + "）");
             }
             if (ledger.length() > 0) {
                 String prev = tc.modState("act_cross_capital_revive").optString(ledgerKey, "");
