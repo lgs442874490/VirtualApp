@@ -822,16 +822,13 @@ public final class WarNotify {
         return type == 2L || type == 102L;
     }
 
-    /** PvE 行军（打野/巨兽等）——2026-11-04 用户口径：不推送。 */
+    /**
+     * PvE 行军（打野/巨兽等）——2026-11-04 用户口径：不推送。
+     * 2026-11-09：与观察点 A2 同口径（顶层动作键 + target 怪物子对象 + mass master_type），
+     * 避免「巨兽模板集结」在战争通知通道再被当成集结出征。
+     */
     static boolean isPveMarch(Map<String, Object> m) {
-        if (m == null) return true;
-        for (String k : new String[]{"mass_boss", "atk_monster", "mass_icefield_hunter_boss",
-                "atk_monster_auto", "transaction_slg", "collect", "collect_resource",
-                "recon_resource", "mass_alliance_trap", "atk_world_boss", "mass_world_boss",
-                "pet_catch", "truck_escort", "alliance_collect_resource", "build_trap"}) {
-            if (m.containsKey(k)) return true;
-        }
-        return false;
+        return com.carlos.vaultserver.watchpoint.WatchPointEngine.isPveMarchDeep(m);
     }
 
     /** 是否为「加入集结」帧：带 mass_slave（随从）或 type=99。 */

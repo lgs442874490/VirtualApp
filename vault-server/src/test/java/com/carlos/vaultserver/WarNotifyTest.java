@@ -485,6 +485,25 @@ public class WarNotifyTest {
     }
 
     @Test
+    public void onPush_giantMonsterTargetObjectIsSilent() {
+        long nowS = System.currentTimeMillis() / 1000L;
+        installCity(ENEMY_UID, 1001L, 1, 1);
+        installCity(9004L, 2004L, 9, 9);   // 友盟城（若伴随 PvE 特征则不应推）
+        try {
+            Map<String, Object> c = playerMarchAdd(912, ENEMY_UID, 102, nowS, nowS + 600, 9, 9);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> march = (Map<String, Object>) c.get("march");
+            Map<String, Object> target = new LinkedHashMap<>();
+            target.put("map_monster", new LinkedHashMap<String, Object>());
+            march.put("target", target);
+            war.onPush(FPID, 888L, "notify_mass_march_add", c);
+            assertEquals("target 是巨兽的 102 集结不是敌袭", 0, events.size());
+        } finally {
+            com.carlos.vaultserver.watchpoint.WatchPointEngine.install(null);
+        }
+    }
+
+    @Test
     public void onPush_wecomDispatchAndQuietHoursGate() {
         store.updateWatchConfig(true, true,
                 "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=x", 300, -1, 8);

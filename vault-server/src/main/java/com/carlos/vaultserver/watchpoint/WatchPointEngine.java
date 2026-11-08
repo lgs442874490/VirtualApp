@@ -516,8 +516,12 @@ public final class WatchPointEngine {
     private final java.util.concurrent.atomic.AtomicLong statSelfIgnored = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong statUnknownTargetIgnored = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong statRallyFollowerIgnored = new java.util.concurrent.atomic.AtomicLong();
+    /** 2026-11-09：保护矩形内 PvE 行军（巨兽/野外集结等）被 A2 敌袭静默的计数。 */
+    private final java.util.concurrent.atomic.AtomicLong statPveIgnored = new java.util.concurrent.atomic.AtomicLong();
     /** 未知目标候选 INFO 去重（同 type/owner/坐标只记一次，防日志刷屏）。 */
     private final Set<String> unknownTargetLogged = ConcurrentHashMap.newKeySet();
+    /** PvE 来袭候选静默 INFO 去重（同 type/owner/坐标只记一次）。 */
+    private final Set<String> pveIncomingLogged = ConcurrentHashMap.newKeySet();
     private long lastStatsAt;
     private volatile boolean lastTickHadEngine;
     private volatile java.util.List<String> lastEngineDescs = java.util.Collections.emptyList();
@@ -640,7 +644,7 @@ public final class WatchPointEngine {
         if (now - lastStatsAt < 60_000L) return;
         lastStatsAt = now;
         FileLog.info("[{}] 运行统计：有会话={} 会话={} 监视发送={}(回包{} 超时{}) 保护发送={}(回包{}) 告警={} 扫描={} 城缓存={}"
-                        + " 自循环忽略={} 未知目标忽略={} 随从静默={} 角色数={} 账号数={}",
+                        + " 自循环忽略={} 未知目标忽略={} 随从静默={} PvE静默={} 角色数={} 账号数={}",
                 LOG, String.valueOf(lastTickHadEngine),
                 String.join(",", lastEngineDescs),
                 String.valueOf(statSentMonitor.get()), String.valueOf(statOkMonitor.get()),
@@ -649,6 +653,7 @@ public final class WatchPointEngine {
                 scan.active ? "进行中" : "空闲", String.valueOf(cityByUid.size()),
                 String.valueOf(statSelfIgnored.get()), String.valueOf(statUnknownTargetIgnored.get()),
                 String.valueOf(statRallyFollowerIgnored.get()),
+                String.valueOf(statPveIgnored.get()),
                 String.valueOf(lastEngineDescs.size()), String.valueOf(lastAccountCount));
     }
 
@@ -1626,6 +1631,14 @@ public final class WatchPointEngine {
             }
             // A2 敌袭：只报「进攻(2)/集结出征(102)」
             if (type != 2L && type != 102L) return;
+            // 2026-11-09 误报修复（用户实测）：巨兽模板的集结出征实为 PvE 行军，不能当敌袭推送。
+            // 原来这里只判 type/友盟城/友军，缺 PvE 过滤（采集点分支有，A2 分支漏了）。
+            String pve = pveMarchReason(m);
+            if (!pve.isEmpty()) {
+                statPveIgnored.incrementAndGet();
+                logPveIncomingSkip(type, owner, ex, ey, pve);
+                return;
+            }
             // 来袭只对「已知友盟城」告警；联盟未知目标仅 INFO 记录候选，不推送。
             if (targetCity == null || targetAid <= 0L) {
                 statUnknownTargetIgnored.incrementAndGet();
@@ -1651,6 +1664,17 @@ public final class WatchPointEngine {
         FileLog.info("[{}] 来袭候选被过滤（目标城联盟未知，不推送）：type={} 攻击者=uid{} 目标=({},{})",
                 LOG, String.valueOf(type), String.valueOf(owner),
                 String.valueOf(ex), String.valueOf(ey));
+    }
+
+    /** PvE 来袭候选静默（同 type/owner/坐标只记一次；reason 便于部署后核对命中字段）。 */
+    private void logPveIncomingSkip(long type, long owner, int ex, int ey, String reason) {
+        String key = type + ":" + owner + ":" + ex + ":" + ey;
+        if (pveIncomingLogged.size() > 2000) pveIncomingLogged.clear();
+        if (!pveIncomingLogged.add(key)) return;
+        FileLog.info("[{}] 来袭候选被过滤（PvE 巨兽/野外集结，不推送）：type={} 攻击者=uid{} "
+                        + "目标=({},{}) 特征={}",
+                LOG, String.valueOf(type), String.valueOf(owner),
+                String.valueOf(ex), String.valueOf(ey), reason);
     }
 
     // ---------- 告警判定纯函数（2026-10-28 误报修复；单测见 WatchPointAlertFilterTest） ----------
@@ -2141,6 +2165,41 @@ public final class WatchPointEngine {
             if (m.containsKey(k)) return true;
         }
         return false;
+    }
+
+    /** 巨兽/世界 boss 目标子对象（target 内命中任一即 PvE；打城时 target.map_city，不会命中）。 */
+    static final String[] PVE_TARGET_KEYS = {
+            "map_monster", "map_boss", "map_world_boss", "monster", "world_boss"
+    };
+
+    /**
+     * PvE 行军判定（deep 口径，返回命中特征；空串=非 PvE）。2026-11-09 用户实测：
+     * {@code type=102} 的「巨兽模板」集结被观察点 A2 误报为「集结出征」——顶层 PvE 动作键之外，
+     * 巨兽标记还可能落在 target 子对象或 mass 的 master_type 里，故补齐三层判定。
+     *
+     * <p>只认已知 PvE 的 master_type（501 冰原猎手 / 411 巨熊 / 5004 巨兽类）；
+     * 102 不在此列（保留「集结出征」能力，避免误杀真实打城集结）。
+     */
+    public static String pveMarchReason(Map<?, ?> m) {
+        if (m == null) return "null";
+        for (String k : PVE_MARCH_KEYS) {
+            if (m.containsKey(k)) return "key:" + k;
+        }
+        Map<?, ?> target = asMap(m.get("target"));
+        for (String k : PVE_TARGET_KEYS) {
+            if (target.containsKey(k)) return "target:" + k;
+        }
+        for (String mk : new String[]{"mass_master", "mass_slave", "mass", "mass_info"}) {
+            Map<?, ?> mass = asMap(m.get(mk));
+            long mt = asLong(mass.get("master_type"), 0L);
+            if (mt == 501L || mt == 411L || mt == 5004L) return mk + ".master_type:" + mt;
+        }
+        return "";
+    }
+
+    /** 是否 PvE 行军（deep 口径；A2 两条通道共用，避免口径漂移）。 */
+    public static boolean isPveMarchDeep(Map<?, ?> m) {
+        return !pveMarchReason(m).isEmpty();
     }
 
     /** uid → 联盟 aid：优先实时城缓存，其次玩家目录；未知 0。 */
@@ -2795,6 +2854,7 @@ public final class WatchPointEngine {
         m.put("selfIgnored", statSelfIgnored.get());
         m.put("unknownTargetIgnored", statUnknownTargetIgnored.get());
         m.put("rallyFollowerIgnored", statRallyFollowerIgnored.get());
+        m.put("pveIgnored", statPveIgnored.get());
         m.put("uptimeMs", running ? System.currentTimeMillis() - startedAt : 0L);
         return m;
     }
