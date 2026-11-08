@@ -5,6 +5,8 @@ import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.SessionKeeper;
 import com.carlos.vaultserver.VaultStore;
 import com.carlos.vaultserver.WeComNotifier;
+import com.carlos.vaultserver.alert.AlertRules;
+import com.carlos.vaultserver.alert.AlertText;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -1688,8 +1690,7 @@ public final class WatchPointEngine {
      * 坐标未知（-1）时不参与起点=终点判定（避免脏数据误杀）。
      */
     static boolean isSelfMarch(int sx, int sy, int ex, int ey, long targetUid, long owner) {
-        if (sx >= 0 && sy >= 0 && sx == ex && sy == ey) return true;
-        return targetUid > 0L && targetUid == owner;
+        return AlertRules.isSelfLoop(sx, sy, ex, ey, targetUid, owner);
     }
 
     /**
@@ -1699,17 +1700,13 @@ public final class WatchPointEngine {
      */
     static boolean shouldAlertIncoming(boolean selfMarch, long ownerAid, long targetAid,
                                        Set<Long> friendAids, long type, boolean rallyFollowerAlerts) {
-        if (selfMarch) return false;
-        if (targetAid <= 0L) return false;                                     // 目标联盟未知 → 不告警
-        if (friendAids == null || !friendAids.contains(targetAid)) return false; // 非友盟城
-        if (ownerAid > 0L && friendAids.contains(ownerAid)) return false;      // 友军自己人
-        if (!rallyFollowerAlerts && (type == 99L || type == 100L)) return false; // 随从告警可关
-        return true;
+        return AlertRules.incomingAllowed(selfMarch, ownerAid, targetAid, friendAids, type,
+                rallyFollowerAlerts);
     }
 
     /** 敌情告警判定（MONITOR）：自循环已单独过滤；同联盟/自家城之间的行军不算"打谁"（原有口径）。 */
     static boolean shouldAlertMonitor(long ownerAid, long targetAid) {
-        return !(ownerAid > 0L && targetAid > 0L && ownerAid == targetAid);
+        return AlertRules.monitorAllowed(ownerAid, targetAid);
     }
 
     /** 联盟标注（纯函数）：aid&gt;0 → " [标签]"；联盟未知(aid&lt;=0) → "（联盟未知）"，不再留空白。 */
@@ -2067,8 +2064,7 @@ public final class WatchPointEngine {
 
     /** A2 敌袭行为：2 进攻 / 102 集结出征。 */
     static String a2Behavior(long type) {
-        if (type == 102L) return "集结出征";
-        return "进攻";
+        return AlertText.a2Behavior(type);
     }
 
     private void alertIncoming(long owner, City ownerCity, long marchId, long type,
@@ -2398,28 +2394,17 @@ public final class WatchPointEngine {
                                     long type, String targetNick, long targetAid,
                                     int ex, int ey, long etaSeconds, long troops, String nowTime,
                                     long feintBelow) {
-        // 2026-11-04 用户口径：🚨 敌袭·{行为}；级别/攻击者/兵力/目标/ETA/时间。
-        StringBuilder sb = new StringBuilder("🚨 敌袭·").append(a2Behavior(type)).append('\n');
-        sb.append("级别：").append(levelTag(troops, feintBelow)).append('\n');
-        sb.append("攻击者：").append(prefixed(attackerAid, aidLabels, attackerNick)).append('\n');
-        sb.append("兵力：").append(troops > 0L ? String.valueOf(troops) : "未知").append('\n');
-        sb.append("目标：");
-        if (targetNick != null && !targetNick.isEmpty()) {
-            sb.append(prefixed(targetAid, aidLabels, targetNick));
-        } else {
-            sb.append("（未知）");
-        }
-        sb.append('(').append(ex).append(',').append(ey).append(")\n");
-        sb.append("ETA：").append(hms(etaSeconds)).append('\n');
-        sb.append("时间：").append(nowTime);
-        return sb.toString();
+        // P1：A2 文案统一在 AlertText；输出与旧实现逐字一致。
+        String target = targetNick == null || targetNick.isEmpty()
+                ? "" : prefixed(targetAid, aidLabels, targetNick);
+        return AlertText.incoming(AlertText.a2Behavior(type), AlertText.level(troops, feintBelow),
+                prefixed(attackerAid, aidLabels, attackerNick), troops, target, ex, ey,
+                etaSeconds, nowTime);
     }
 
     /** 级别：⚪ 佯攻 / 🔴 威胁进攻（兵力未知=未知）。 */
     static String levelTag(long troops, long feintBelow) {
-        if (troops <= 0L) return "未知";
-        if (feintBelow <= 0L) return "🔴 威胁进攻";
-        return troops < feintBelow ? "⚪ 佯攻" : "🔴 威胁进攻";
+        return AlertText.level(troops, feintBelow);
     }
 
     /** 2026-11-02：整图扫描完成后，若玩家目录过期则后台重建（uid/fid/简称/aid 互查）。 */

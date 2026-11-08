@@ -1,6 +1,9 @@
 package com.carlos.vaultserver;
 
 import com.carlos.vault.daily.ScoutPushQuota;
+import com.carlos.vaultserver.alert.AlertRules;
+import com.carlos.vaultserver.alert.AlertText;
+import com.carlos.vaultserver.alert.AlertVerdict;
 import com.carlos.vaultserver.task.Exec;
 
 import org.json.JSONObject;
@@ -323,57 +326,11 @@ public final class WarNotify {
      * 不依赖观察点城缓存是否已扫全：缓存缺失（cityAt=null）时对应条件不拒绝，退回旧行为。
      */
     public static MarchVerdict classifyMarch(String proto, Map<String, Object> m) {
-        if (m == null) return MarchVerdict.no("no_owner", 0L, 0L, 0L, 0L);
-        long marchId = Exec.longOf(m.get("id"));
-        long owner = Exec.longOf(m.get("owner"));
-        long type = Exec.longOf(m.get("type"));
-        long state = Exec.longOf(m.get("state"));
-        if (marchId <= 0 || owner <= 0) {
-            return MarchVerdict.no("no_owner", marchId, owner, type, state);
-        }
-        int[] xy = endpointOf(m);
-        int[] sp = startPointOf(m);
-        // 2026-11-04：打野/巨兽/采集等 PvE 行军不推（资源类由观察点单独推）。
-        if (isPveMarch(m)) return MarchVerdict.no("type", marchId, owner, type, state);
-        // 2026-11-04：目标是联盟总部/旗子/王城 → 由观察点按归属推「建设/破坏」，这里不重复推。
-        if (xy != null
-                && com.carlos.vaultserver.watchpoint.WatchPointEngine.buildingAt(xy[0], xy[1]) != null) {
-            return MarchVerdict.no("type", marchId, owner, type, state);
-        }
-        // 2026-11-02 误报修复：只推敌情行军（侦查/进攻/集结）；采集/驻防/建设援助/狩猎一律不推。
-        // 典型误报：监视目标派队列去建联盟总部，返程被当成「出征」推送。
-        if (state >= 3L) return MarchVerdict.no("state", marchId, owner, type, state);
-        // 2026-11-03：侦查统一由「观察点·敌情」推送，战争警报不再重复推一次
-        if (type == 1L) return MarchVerdict.no("scout", marchId, owner, type, state);
-        // 「加入集结」不推（只提醒发起集结 / 集结出征）
-        if (isRallyFollower(m, type)) return MarchVerdict.no("follower", marchId, owner, type, state);
-        if (!isPvpMarch(type) && (proto == null || !proto.contains("mass_march"))) {
-            return MarchVerdict.no("type", marchId, owner, type, state);
-        }
-        // 回自己城（援助/建设返程、撤军）不是打谁
-        if (xy != null && sp != null && xy[0] == sp[0] && xy[1] == sp[1]) {
-            return MarchVerdict.no("loopback", marchId, owner, type, state);
-        }
-        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo tgtCity =
-                xy == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(xy[0], xy[1]);
-        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo atkCity =
-                sp == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(sp[0], sp[1]);
-        if (tgtCity != null && tgtCity.uid == owner) {
-            return MarchVerdict.no("self", marchId, owner, type, state);
-        }
-        long atkAid = atkCity == null ? 0L : atkCity.aid;
-        long tgtAid = tgtCity == null ? 0L : tgtCity.aid;
-        // 2026-11-03 误报修复：同一联盟不可能「集结/进攻自己人」——
-        // 这类帧其实是「加入集结/集结巨兽/联盟内部增援」，目标城联盟与发起人相同，直接跳过。
-        if (atkAid > 0L && tgtAid > 0L && atkAid == tgtAid) {
-            return MarchVerdict.no("same_alliance", marchId, owner, type, state);
-        }
-        // 集结类（含巨兽/野外集结）：目标是「城」才算敌情；没有目标城的集结（巨兽、资源点）不推
-        boolean rally = isRallyType(type) || (proto != null && proto.contains("mass_march"));
-        if (rally && (tgtCity == null || tgtAid <= 0L)) {
-            return MarchVerdict.no("rally_not_city", marchId, owner, type, state);
-        }
-        return MarchVerdict.ok(marchId, owner, type, state);
+        // P1：唯一口径在 AlertRules（同序等价抽取）；这里只做旧类型映射，保持旧拒绝码不变。
+        AlertVerdict v = AlertRules.classifyMarch(proto, m);
+        return v.accepted
+                ? MarchVerdict.ok(v.marchId, v.ownerUid, v.type, v.state)
+                : MarchVerdict.no(v.reject, v.marchId, v.ownerUid, v.type, v.state);
     }
 
     /** 内容里是否含命中任意账号监视名单的 owner（跨账号会话过滤用）。 */
@@ -809,7 +766,7 @@ public final class WarNotify {
 
     /** 集结相关类型：10/12 集结中、99 集结随从、100 集结、102 集结主体。 */
     static boolean isRallyType(long type) {
-        return type == 10L || type == 12L || type == 99L || type == 100L || type == 102L;
+        return AlertRules.isRallyType(type);
     }
 
     /**
@@ -818,8 +775,7 @@ public final class WarNotify {
      * 打野(302)、建设援助等一律不推。侦查(1)由观察点负责，这里也返回 false。
      */
     static boolean isPvpMarch(long type) {
-        // 2026-11-04 用户口径：A2 敌袭只报「进攻(2)/集结出征(102)」；发起集结(100)归 A1 情报。
-        return type == 2L || type == 102L;
+        return AlertRules.isPvpType(type);
     }
 
     /**
@@ -828,18 +784,12 @@ public final class WarNotify {
      * 避免「巨兽模板集结」在战争通知通道再被当成集结出征。
      */
     static boolean isPveMarch(Map<String, Object> m) {
-        return com.carlos.vaultserver.watchpoint.WatchPointEngine.isPveMarchDeep(m);
+        return AlertRules.isPveMarch(m);
     }
 
     /** 是否为「加入集结」帧：带 mass_slave（随从）或 type=99。 */
     static boolean isRallyFollower(Map<String, Object> m, long type) {
-        if (type == 99L) return true;
-        Object slave = m.get("mass_slave");
-        if (slave == null) slave = m.get("massSlave");
-        if (slave instanceof Map) return !((Map<?, ?>) slave).isEmpty();
-        if (slave instanceof List) return !((List<?>) slave).isEmpty();
-        return slave != null && !String.valueOf(slave).trim().isEmpty()
-                && !"0".equals(String.valueOf(slave).trim());
+        return AlertRules.isRallyFollower(m, type);
     }
 
     /** 行为映射（v4.1.8）：集结协议=集结城堡；type 1=侦查 2=进攻城堡 5=驻防；余=出征。 */
@@ -854,24 +804,12 @@ public final class WarNotify {
 
     /** endpoint 坐标：march.endpoint{x,y} 优先，退化 march.target{x,y}；取不到 null。 */
     static int[] endpointOf(Map<String, Object> m) {
-        for (String key : new String[]{"endpoint", "target"}) {
-            Map<String, Object> p = Exec.mapOf(m.get(key));
-            if (p == null) continue;
-            int x = (int) Exec.longOf(p.get("x"));
-            int y = (int) Exec.longOf(p.get("y"));
-            if (x != 0 || y != 0) return new int[]{x, y};
-        }
-        return null;
+        return AlertRules.endpointOf(m);
     }
 
     /** 发起人坐标：march.startpoint{x,y}；取不到 null。 */
     static int[] startPointOf(Map<String, Object> m) {
-        Map<String, Object> p = Exec.mapOf(m.get("startpoint"));
-        if (p == null) return null;
-        int x = (int) Exec.longOf(p.get("x"));
-        int y = (int) Exec.longOf(p.get("y"));
-        if (x == 0 && y == 0) return null;
-        return new int[]{x, y};
+        return AlertRules.startPointOf(m);
     }
 
     /**
@@ -990,31 +928,20 @@ public final class WarNotify {
      * 结算事件（phase=settle）以「🏁 进攻结算」行替代到达倒计时。
      */
     String wecomText(String fpid, JSONObject event) {
-        // 2026-11-04 用户口径：A2 敌袭（只推发起，不推结算）。
+        // P1：A2 文案统一在 AlertText；P1 保持旧阈值 1000，P2 起读 alert.feintTroopsBelow。
         long marchType = event.optLong("marchType", 0L);
-        String behavior = marchType == 102L ? "集结出征" : "进攻";
         long total = event.optLong("troopsTotal", 0L);
-        StringBuilder sb = new StringBuilder("🚨 敌袭·").append(behavior).append('\n');
-        sb.append("级别：").append(total <= 0L ? "未知"
-                : (total < 1000L ? "⚪ 佯攻" : "🔴 威胁进攻")).append('\n');
-        sb.append("攻击者：").append(attackerLabel(event)).append('\n');
-        sb.append("兵力：").append(total > 0L ? String.valueOf(total) : "未知").append('\n');
-        sb.append("目标：");
         Object ep = event.optJSONObject("endpoint");
-        if (ep instanceof JSONObject) {
-            int tx = ((JSONObject) ep).optInt("x");
-            int ty = ((JSONObject) ep).optInt("y");
-            String label = targetLabelAt(tx, ty);
-            sb.append(label.isEmpty() ? "（未知）" : label);
-            sb.append('(').append(tx).append(',').append(ty).append(')');
-        } else {
-            sb.append("（未知）");
-        }
+        boolean hasEp = ep instanceof JSONObject;
+        int tx = hasEp ? ((JSONObject) ep).optInt("x") : 0;
+        int ty = hasEp ? ((JSONObject) ep).optInt("y") : 0;
+        String label = hasEp ? targetLabelAt(tx, ty) : "";
         long endSec = event.optLong("endtime", 0L);
         long nowS = System.currentTimeMillis() / 1000L;
-        sb.append("\nETA：").append(hmsShort(Math.max(0L, endSec - nowS))).append('\n');
-        sb.append("时间：").append(Beijing.fmt("HH:mm:ss").format(new java.util.Date()));
-        return sb.toString();
+        return AlertText.incoming(AlertText.a2Behavior(marchType), AlertText.level(total, 1000L),
+                attackerLabel(event), total, label, tx, ty, hasEp,
+                Math.max(0L, endSec - nowS),
+                Beijing.fmt("HH:mm:ss").format(new java.util.Date()));
     }
 
     /** 攻击者显示名：联盟简称放前面（[SYD]昵称）。 */
