@@ -839,6 +839,10 @@ public final class ServerActivityTasks {
     public static TaskOutcome crossCapitalRevive(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
+            if (!tc.subOn("act_cross_capital_revive", "revive", true)) {
+                m.skip("子项「自动复活」已关闭");
+                return Exec.result(m, "act_cross_capital_revive", "最强王国复活");
+            }
             tc.engine.collectNotifies(1500);
             Map<String, Object> init = tc.engine.notifyData("notify_cross_capital_war_init");
             boolean inActivity = false;
@@ -891,6 +895,13 @@ public final class ServerActivityTasks {
     public static TaskOutcome allyOfflineGuard(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
+            // watch=统计查询；force=强制上线；两者都关则跳过
+            if (!tc.subOn("ally_offline_guard", "watch", true)
+                    && !tc.subOn("ally_offline_guard", "force", false)
+                    && !tc.params("ally_offline_guard").optBoolean("force_online", false)) {
+                m.skip("离线联动子项已关闭");
+                return Exec.result(m, "ally_offline_guard", "离线联动");
+            }
             tc.engine.collectNotifies(1500);
             JSONObject p = tc.params("ally_offline_guard");
             List<Object> uids = new ArrayList<>();
