@@ -1472,6 +1472,10 @@ public final class ServerTownTasks {
     public static TaskOutcome climbtower(TaskContext tc) {
         Exec.Multi m = new Exec.Multi();
         try {
+            // 2026-11-08：自动闯关（挑战）优先；通过后继续扫荡剩余次数
+            if (tc.subOn("climbtower", "challenge", true)) {
+                climbtowerChallenge(tc, m);
+            }
             GameMessage info = tc.engine.request("req_climbtower_info", null);
             if (!Exec.ok(info)) {
                 m.skip("地心探索未解锁(码" + Exec.codeOf(info) + ")");
@@ -1503,6 +1507,90 @@ public final class ServerTownTasks {
             case 5: return "装备锻炉";
             default: return "大地之心";
         }
+    }
+
+    /**
+     * 地心自动挑战（2026-11-08）：今日开放塔从 cur_passed_level+1 开始，
+     * 3 队编队 challenge；is_win 继续下一层，连续失败达到 fail_max（默认 3）停止。
+     */
+    static void climbtowerChallenge(TaskContext tc, Exec.Multi m) throws Exception {
+        Map<String, Object> prefab = buildTowerFormation(tc);
+        if (prefab == null) {
+            m.subSkip("challenge", "编队不足 3 队（需 notify_soldier_init 队伍数据），跳过挑战");
+            return;
+        }
+        GameMessage info = tc.engine.request("req_climbtower_info", null);
+        if (!Exec.ok(info)) {
+            m.subSkip("challenge", "地心信息失败(码" + Exec.codeOf(info) + ")");
+            return;
+        }
+        Map<String, Object> towers = Exec.mapOf(info.getContent().get("towers"));
+        if (towers == null) {
+            m.subSkip("challenge", "塔信息缺失");
+            return;
+        }
+        int wd = Calendar.getInstance().get(Calendar.DAY_OF_WEEK);
+        long tower = todayTower(wd);
+        Map<String, Object> t = Exec.mapOf(towers.get(String.valueOf(tower)));
+        if (t == null) {
+            m.subSkip("challenge", "今日塔未开放");
+            return;
+        }
+        int failMax = Math.max(1, tc.params("climbtower").optInt("fail_max", 3));
+        int maxLevels = Math.max(1, Math.min(50, tc.params("climbtower").optInt("max_levels", 5)));
+        long next = Exec.longOf(t.get("cur_passed_level")) + 1L;
+        int dailyFail = (int) Exec.longOf(t.get("daily_fail"));
+        int fails = 0;
+        int done = 0;
+        for (int i = 0; i < maxLevels; i++) {
+            if (dailyFail + fails >= failMax) break;
+            GameMessage ch = tc.engine.request("req_climbtower_challenge",
+                    Exec.args("id", next, "formation_prefab", prefab));
+            if (!Exec.ok(ch)) break;
+            Object winObj = ch.getContent() == null ? null : ch.getContent().get("is_win");
+            boolean win = Boolean.TRUE.equals(winObj) || Exec.longOf(winObj) == 1L;
+            if (win) {
+                done++;
+                next++;
+                fails = 0;
+            } else {
+                fails++;
+            }
+        }
+        if (done > 0) {
+            m.subOk("challenge", "地心挑战通过 " + done + " 层");
+            m.claimed("地心挑战×" + done);
+        } else {
+            m.subSkip("challenge", "无通过（战力不足/需手动）");
+        }
+    }
+
+    /** 从 notify_soldier_init.formation 取前 3 队，转成 formation_prefab（hero_id + soldier 数量）。 */
+    static Map<String, Object> buildTowerFormation(TaskContext tc) {
+        Map<String, Object> si = tc.engine.notifyData("notify_soldier_init");
+        if (si == null) return null;
+        Map<String, Object> formation = Exec.mapOf(si.get("formation"));
+        if (formation == null || formation.size() < 3) return null;
+        Map<String, Object> prefab = new LinkedHashMap<>();
+        int idx = 0;
+        for (Map<String, Object> f : Exec.mapsOf(formation)) {
+            if (idx >= 3) break;
+            Map<String, Object> heroId = Exec.mapOf(f.get("hero_id"));
+            Map<String, Object> soldierIn = Exec.mapOf(f.get("soldier"));
+            if (heroId == null || heroId.isEmpty() || soldierIn == null) continue;
+            Map<String, Object> soldierOut = new LinkedHashMap<>();
+            for (Map.Entry<String, Object> e : soldierIn.entrySet()) {
+                Map<String, Object> s = Exec.mapOf(e.getValue());
+                if (s == null) continue;
+                soldierOut.put(String.valueOf(Exec.longOf(s.get("id"))), Exec.longOf(s.get("count")));
+            }
+            Map<String, Object> p = new LinkedHashMap<>();
+            p.put("hero_id", heroId);
+            p.put("soldier", soldierOut);
+            prefab.put(String.valueOf(idx + 1), Exec.args("id", idx + 1, "prefab", p));
+            idx++;
+        }
+        return idx == 3 ? prefab : null;
     }
 
     private static long todayTower(int dayOfWeek) {

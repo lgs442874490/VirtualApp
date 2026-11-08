@@ -119,7 +119,8 @@ public final class FnDetail {
                 new Sub("super", "超级提炼", "开关打开后每轮超炼1次（可在参数 super_times 配次数，消耗火晶）", false, null),
                 new Sub("quests", "悬赏任务", "火晶悬赏任务奖励批量领取（notify_firecrystal_quests）", true, null));
         fn("climbtower",
-                new Sub("sweep", "每日扫荡", "按星期自动扫荡今日开放的地心之塔", true, null));
+                new Sub("sweep", "每日扫荡", "按星期自动扫荡今日开放的地心之塔", true, null),
+                new Sub("challenge", "自动闯关", "今日塔按 cur_passed_level+1 用 3 队编队挑战，连续失败达上限停止", true, null));
         fn("arena",
                 new Sub("fight", "自动挑战", "从对手列表选战力最低者挑战", true,
                         new String[][]{{"3", "挑战3场"}, {"5", "挑战5场"}, {"8", "挑战8场"}, {"10", "挑战10场"}}),
