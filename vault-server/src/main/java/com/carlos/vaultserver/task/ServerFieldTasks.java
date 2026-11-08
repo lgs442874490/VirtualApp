@@ -3435,6 +3435,13 @@ public final class ServerFieldTasks {
                         continue;
                     }
                     fails++;
+                    // P1-3：begin 已成功（普通战斗），补发 end 清理战斗态，避免残留阻塞后续 begin/玩家手动打
+                    try {
+                        tc.engine.request("req_end_adventure_pve", Exec.args(
+                                "checkpoint", next, "operatedata", new LinkedHashMap<String, Object>(),
+                                "enddata", new ArrayList<>()));
+                    } catch (Exception ignored) {
+                    }
                     m.skip("第" + next + "关需手动战斗（无法碾压 " + fails + "/" + failMax + "）");
                     if (fails >= failMax) {
                         m.skip("连续 " + failMax + " 关无法碾压，结束今天");

@@ -1529,8 +1529,13 @@ public final class ServerTownTasks {
             m.subSkip("challenge", "塔信息缺失");
             return;
         }
-        int wd = Calendar.getInstance().get(Calendar.DAY_OF_WEEK);
-        long tower = todayTower(wd);
+        // P1-4：支持配置目标塔（tower_id），默认今日塔；时区固定北京时间，避免服务器 UTC 偏移
+        long tower = tc.params("climbtower").optLong("tower_id", 0L);
+        if (tower <= 0L) {
+            int wd = Calendar.getInstance(java.util.TimeZone.getTimeZone("Asia/Shanghai"))
+                    .get(Calendar.DAY_OF_WEEK);
+            tower = todayTower(wd);
+        }
         Map<String, Object> t = Exec.mapOf(towers.get(String.valueOf(tower)));
         if (t == null) {
             m.subSkip("challenge", "今日塔未开放");
@@ -1571,9 +1576,12 @@ public final class ServerTownTasks {
         if (si == null) return null;
         Map<String, Object> formation = Exec.mapOf(si.get("formation"));
         if (formation == null || formation.size() < 3) return null;
+        // P1-1：按编队 id 升序取前 3 队（sproto Map 顺序不保证=1/2/3 队）
+        java.util.List<Map<String, Object>> teams = new ArrayList<>(Exec.mapsOf(formation));
+        teams.sort(java.util.Comparator.comparingLong(t -> Exec.longOf(t == null ? null : t.get("id"))));
         Map<String, Object> prefab = new LinkedHashMap<>();
         int idx = 0;
-        for (Map<String, Object> f : Exec.mapsOf(formation)) {
+        for (Map<String, Object> f : teams) {
             if (idx >= 3) break;
             Map<String, Object> heroId = Exec.mapOf(f.get("hero_id"));
             Map<String, Object> soldierIn = Exec.mapOf(f.get("soldier"));

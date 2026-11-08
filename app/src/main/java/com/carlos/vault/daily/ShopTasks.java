@@ -147,7 +147,7 @@ final class ShopTasks {
 
     // ================= 商店购买（参数 buys: {configId: 数量}） =================
 
-    static final long[] SHOP_IDS_TOWN = {801, 701, 1001, 901, 1201, 301, 2001, 601, 1101, 2401};
+    static final long[] SHOP_IDS_TOWN = {801, 701, 1001, 901, 1201, 301, 2001, 601, 1101, 2401, 1701};
     static final long[] SHOP_IDS_ALLIANCE = {401, 501};
 /** 实时价防御式提取（字段名未实证：price/cur_price/now_price/discount_price 之一），缺省回退目录价。 */
     private static long livePriceOf(Map<String, Object> g, long fallback) {

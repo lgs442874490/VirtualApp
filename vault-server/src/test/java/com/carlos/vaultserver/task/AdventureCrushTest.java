@@ -138,7 +138,7 @@ public class AdventureCrushTest {
         ServerFieldTasks.adventureSweep(tc(e, 1));
 
         assertEquals("碾压 1 关后无法碾压即停", 2, count(e.calls, "req_begin_adventure_pve"));
-        assertEquals("碾压模式不应发 end", 0, count(e.calls, "req_end_adventure_pve"));
+        assertEquals("无法碾压的关卡应补发 end 清理战斗态", 1, count(e.calls, "req_end_adventure_pve"));
         assertTrue("begin 请求不应传 is_fast", !e.argsList.get(0).containsKey("is_fast"));
     }
 

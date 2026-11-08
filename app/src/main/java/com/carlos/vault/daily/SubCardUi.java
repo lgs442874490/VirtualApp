@@ -590,7 +590,7 @@ public final class SubCardUi {
         render[0].run();
 
         TextView tip = new TextView(ctx);
-        tip.setText("数据：" + sessionTag + "；勾选后每次运行每样买最便宜一档×1（限购自动跳过）");
+        tip.setText("数据：" + sessionTag + "；勾选顺序=购买顺序（每样买最便宜一档×1，限购自动跳过）");
         tip.setTextSize(10.5f);
         tip.setTextColor(UiStyle.INK2);
         tip.setPadding(dp(ctx, 14), 0, dp(ctx, 14), dp(ctx, 4));
@@ -634,9 +634,11 @@ public final class SubCardUi {
                         if (v == null) continue;
                         for (ShopTasks.Good g : v) {
                             try {
+                                long targetShopId = shopIdOf(g, perShop);
+                                if (targetShopId <= 0L) continue;
                                 next.put(String.valueOf(g.configId), 1);
                                 JSONObject it = new JSONObject();
-                                it.put("shop_id", shopIdOf(g, perShop));
+                                it.put("shop_id", targetShopId);
                                 it.put("conf_id", g.configId);
                                 it.put("count", 1);
                                 buyList.put(it);
