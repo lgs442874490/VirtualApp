@@ -195,6 +195,9 @@ public final class FormationPicker {
                                                 return;
                                             }
                                             sync(act);
+                                            // 编队库（打熊队/上车队英雄）需随全量 sync 上传服务端，
+                                            // 否则服务端 formation_library 仍是被覆盖前的旧英雄。
+                                            VaultSync.syncAll(act);
                                             refresh.run();
                                             if (onChanged != null) onChanged.onChanged();
                                             UiStyle.toast(act, msg);
@@ -213,6 +216,7 @@ public final class FormationPicker {
                                             return;
                                         }
                                         sync(act);
+                                        VaultSync.syncAll(act);
                                         refresh.run();
                                         if (onChanged != null) onChanged.onChanged();
                                         UiStyle.toast(act, msg);

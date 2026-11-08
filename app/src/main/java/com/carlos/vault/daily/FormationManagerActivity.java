@@ -820,6 +820,8 @@ public class FormationManagerActivity extends Activity {
             reload();
             render();
             syncNow();
+            // 编队库（打熊队/上车队英雄）需随全量 sync 上传服务端
+            VaultSync.syncAll(this);
             UiStyle.toast(this, msg);
         }
     }
