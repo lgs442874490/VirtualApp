@@ -59,6 +59,16 @@ public class PresetFormationsTest {
         return hero(id, name, profession, power, 0, 0, 0);
     }
 
+    private static String heroGen(long id, String name, int profession, long power,
+                                  int starDisplay, int skillLevel, int weaponLevel, int generation) {
+        return "{\"id\":" + id + ",\"name\":\"" + name + "\",\"professionType\":" + profession
+                + ",\"power\":" + power + ",\"starDisplay\":" + starDisplay
+                + ",\"generation\":" + generation
+                + ",\"level\":80,\"troopCapacity\":" + TROOP
+                + ",\"available\":true,\"expeditionSkillLevel\":" + skillLevel
+                + ",\"weaponLevel\":" + weaponLevel + "}";
+    }
+
     private static String hero(long id, String name, int profession, long power,
                                int starDisplay, int skillLevel, int weaponLevel) {
         return "{\"id\":" + id + ",\"name\":\"" + name + "\",\"professionType\":" + profession
@@ -242,16 +252,38 @@ public class PresetFormationsTest {
     }
 
     @Test
-    public void bearTeam_spearAndBowAvoidBearRideCaptains() {
+    public void bearTeam_bowUsesHeroPower() {
+        // 2026-11-09：实力按服务端 HeroPowerCatalog 计算的 power（含等级/星级/技能/装备/专武）。
         FormationCatalogStore cat = catalog(30000L,
                 hero(50004L, "盾A", 1, 5000),
-                // 最强矛/弓都是熊上车队长 → 必须避开
+                hero(50016L, "米娅", 2, 100),
+                heroGen(50006L, "巴希提", 3, 9000, 5, 5, 10, 0),   // power 9000（装备后实力最高）
+                heroGen(50022L, "琳恩", 3, 3000, 2, 1, 0, 4));      // power 3000
+        FormationModel bear = PresetFormations.all(cat).get(2);
+        assertEquals("打熊队弓按实力（power）选最强", Long.valueOf(50006L), bear.heroIds.get(2));
+    }
+
+    @Test
+    public void bearTeam_prefersStrongest_evenIfBearRideCaptain() {
+        // 用户口径（2026-11-08）：打熊队优先级高于上车队——最强矛/弓即使是熊上车队长
+        // 也必须给发车队；上车队侧再避让（bearRideUsed 含发车队英雄，不重复占用）。
+        FormationCatalogStore cat = catalog(30000L,
+                hero(50004L, "盾A", 1, 5000),
                 hero(50035L, "索尼娅", 2, 9999),
                 hero(50036L, "亨德里克", 3, 9999),
                 hero(50005L, "矛B", 2, 1000),
                 hero(50006L, "弓B", 3, 1000));
         FormationModel bear = PresetFormations.all(cat).get(2);
-        assertEquals(Arrays.asList(50004L, 50005L, 50006L), bear.heroIds);
+        assertEquals("打熊队应占用最强矛/弓（即使它们是熊上车队长）",
+                Arrays.asList(50004L, 50035L, 50036L), bear.heroIds);
+        // 上车队不得重复占用发车队英雄
+        List<FormationModel> all = PresetFormations.all(cat);
+        for (int i = 9; i < all.size(); i++) {
+            for (Long id : all.get(i).heroIds) {
+                assertFalse("熊上车队不得重复使用打熊队英雄 " + id,
+                        bear.heroIds.contains(id));
+            }
+        }
         // 米亚优先于最强矛
         FormationCatalogStore withMia = catalog(30000L,
                 hero(50004L, "盾A", 1, 5000),
@@ -356,20 +388,21 @@ public class PresetFormationsTest {
         List<Long> keptIds = new ArrayList<Long>();
         for (FormationModel f : kept) keptIds.add(Long.valueOf(f.id));
         Collections.sort(keptIds);
-        // 5 级：熊上车2/4/8 按表顺序 → 4 级：熊上车3/9 → 3 级：熊上车5
-        assertEquals(Arrays.asList(9100000011L, 9100000012L, 9100000013L,
-                9100000014L, 9100000017L, 9100000018L), keptIds);
+        // 2026-11-09：顺延连续编号 熊上车1..6；技能排序决定队长顺序：
+        // 5 级 格温/布拉德利/杰塞尔 → 4 级 书允/索尼娅 → 3 级 马格努斯
+        assertEquals(Arrays.asList(9100000010L, 9100000011L, 9100000012L,
+                9100000013L, 9100000014L, 9100000015L), keptIds);
         // 未入选的 4 队不写入库
-        for (long id : new long[]{9100000010L, 9100000015L, 9100000016L, 9100000019L}) {
+        for (long id : new long[]{9100000016L, 9100000017L, 9100000018L, 9100000019L}) {
             assertNull("备选队不写入库: " + id, find(lib, id));
         }
-        // 队长=首位
-        assertEquals(50026L, find(lib, 9100000011L).heroIds.get(0).longValue());
-        assertEquals(50027L, find(lib, 9100000012L).heroIds.get(0).longValue());
-        assertEquals(50033L, find(lib, 9100000013L).heroIds.get(0).longValue());
-        assertEquals(50038L, find(lib, 9100000014L).heroIds.get(0).longValue());
-        assertEquals(50028L, find(lib, 9100000017L).heroIds.get(0).longValue());
-        assertEquals(50011L, find(lib, 9100000018L).heroIds.get(0).longValue());
+        // 队长=首位（技能 5 级 → 4 级 → 3 级，同技能按表顺序，顺延编号）
+        assertEquals(50026L, find(lib, 9100000010L).heroIds.get(0).longValue());  // 格温 5
+        assertEquals(50033L, find(lib, 9100000011L).heroIds.get(0).longValue());  // 布拉德利 5
+        assertEquals(50028L, find(lib, 9100000012L).heroIds.get(0).longValue());  // 杰塞尔 4
+        assertEquals(50027L, find(lib, 9100000013L).heroIds.get(0).longValue());  // 书允 4
+        assertEquals(50011L, find(lib, 9100000014L).heroIds.get(0).longValue());  // 赫罗尼莫 4
+        assertEquals(50038L, find(lib, 9100000015L).heroIds.get(0).longValue());  // 马格努斯 3
     }
 
     @Test
@@ -434,9 +467,11 @@ public class PresetFormationsTest {
         for (FormationModel f : lib) {
             if (f.id >= 9100000010L && f.id <= 9100000019L) ride.add(f);
         }
-        assertEquals("只创建已拥有队长的 2 队", 2, ride.size());
-        assertNotNull(find(lib, 9100000011L));   // 格温（5 级优先）
-        assertNotNull(find(lib, 9100000010L));   // 亨德里克
+        // 2026-11-09：上车队顺延连续编号 —— 技能最高的格温=熊上车1(9100000010)，
+        // 亨德里克=熊上车2(9100000011)；书允未拥有不创建。
+        assertEquals("已拥有的 2 个上车队都会创建", 2, ride.size());
+        assertEquals(50026L, find(lib, 9100000010L).heroIds.get(0).longValue());  // 格温（技能5）
+        assertEquals(50036L, find(lib, 9100000011L).heroIds.get(0).longValue());  // 亨德里克
         assertNull(find(lib, 9100000012L));      // 书允未拥有
         // all() 仍返回 19 条骨架
         assertEquals(19, PresetFormations.all(cat).size());

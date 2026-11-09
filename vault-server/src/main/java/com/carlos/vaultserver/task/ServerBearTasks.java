@@ -218,10 +218,26 @@ public final class ServerBearTasks {
 
             // ---------- 2) 窗口判定（reserve_time 权威；无预约用配置周窗口） ----------
             Window window = windowOf(nowSec, state.reserve, state.start, cfg);
+            // 2026-11-08 修复：本场发车失败后 reserve 会翻到下一场（生产实测翻到两天后），
+            // windowOf 判 WAITING → 60s 重试被 resetRetryIfNewWindow 清掉、任务被推迟到下一场，
+            // 本场永远不再尝试（21:30 场 415 后重试丢失、cad 被推到 23:31）。
+            // 本场（retryWindowStart）仍在活动期内时，强制按本场 ACTIVE 窗口继续重试。
+            boolean alreadyLaunched = launchedForWindow(tc.store.getString(launchedKeyOf(tc)),
+                    dayKey(nowSec), state.retryWindowStart);
+            if (state.nextLaunchRetryAt > 0 && state.retryWindowStart > 0
+                    && state.lastLaunchCode != CODE_TRAP_MASS_TIME_EXPIRED
+                    && !alreadyLaunched
+                    && nowSec >= state.retryWindowStart
+                    && nowSec < state.retryWindowStart + ACTIVITY_MINUTES * 60L) {
+                window = new Window(Window.ACTIVE, Window.SRC_RESERVE,
+                        state.retryWindowStart - PREP_LEAD_MINUTES * 60L,
+                        state.retryWindowStart,
+                        state.retryWindowStart + ACTIVITY_MINUTES * 60L);
+            }
             trapText = trapSummary(state, window, cfg.launchWithoutReserve);
             windowText = phaseText(window);
             // 批次5：新场次归一重试/预热台账（同场次保留预算，避免无限重试）
-            resetRetryIfNewWindow(state, window.startSec);
+            resetRetryIfNewWindow(state, window.startSec, nowSec);
             saveState(tc, state);
 
             // 未读取到预约 + 走到配置周窗口：默认 SKIP（预约是游戏端行为，没有客户端预约协议，
@@ -251,9 +267,27 @@ public final class ServerBearTasks {
                 // 2026-11-07：窗口内保持让位门（准备窗错过/进程重启时兜底）；若 T-5 未执行，
                 // 本轮补做召回/关闭自动上车/宠物技能（runPrepGate 幂等，已执行只刷新门）。
                 runPrepGate(tc, m, cfg, state, nowSec, window);
-                boolean launchedNow = launchRally(tc, m, cfg, state, nowSec, window);
+                boolean launchedNow = false;
+                // 对齐网页版 recallPending：召回部队未全部回城前不发车（否则必然 403 英雄占用）；
+                // 15s 后复查，回城后同场次立即发车。
+                java.util.List<Long> pendingRecall = pendingRecallIds(tc, state, window);
+                if (!pendingRecall.isEmpty()) {
+                    String waitText = "等待召回部队回城 " + pendingRecall.size()
+                            + " 支，回城后立即发车：" + pendingRecall;
+                    m.skip(waitText);
+                    state.lastLaunchText = waitText;
+                    writeLaunchMod(tc, state, waitText);
+                    nextWakeAt = (nowSec + 15L) * 1000L;
+                } else {
+                    state.recallMarchIds = "";   // 已全部回城/无需等待
+                    launchedNow = launchRally(tc, m, cfg, state, nowSec, window);
+                }
                 Window refreshed = windowOf(nowSec(tc), state.reserve, state.start, cfg);
-                joinRallies(tc, m, cfg, state, nowSec(tc), refreshed);
+                // 2026-11-09 审查修复：召回未回城期间整体等待（与网页版 recallPending 一致），
+                // 避免上车/发车与召回行军抢英雄。
+                if (pendingRecall.isEmpty()) {
+                    joinRallies(tc, m, cfg, state, nowSec(tc), refreshed);
+                }
                 launchedForWindowNow = launchedNow || launchedForWindow(
                         tc.store.getString(launchedKeyOf(tc)), dayKey(nowSec), window.startSec);
                 // 批次5：发车尝试/成败/重试计划由 launchRally 直接写 mod.bear.launch（含错误码原码），
@@ -264,8 +298,11 @@ public final class ServerBearTasks {
             // C3 业务态唤醒（网页版 TaskDecision.SleepUntil）：
             // 已预约→开赛前 60 秒；窗口内已发车→30 秒后做上车/对账；未预约/已结束→不覆盖节奏。
             // 落盘由 RoundRunner 在单任务模式下完成（整轮不写），并受 now..now+24h 边界约束。
-            nextWakeAt = bearWakeAtMillis(nowSec(tc) * 1000L, window,
+            long baseWake = bearWakeAtMillis(nowSec(tc) * 1000L, window,
                     isValidEpoch(state.reserve), launchedForWindowNow, state.nextLaunchRetryAt);
+            nextWakeAt = nextWakeAt > 0L
+                    ? (baseWake > 0L ? Math.min(nextWakeAt, baseWake) : nextWakeAt)
+                    : baseWake;
         } catch (Exception e) {
             try {
                 writeMod(tc, trapText, windowText, "异常：" + ServerTasks.brief(String.valueOf(e.getMessage())));
@@ -357,6 +394,8 @@ public final class ServerBearTasks {
         // 批次10：301（英雄不在城）降级重试预算 + 5204 降档预算（各自独立，总请求数受限，不重试风暴）
         int used301Rounds = 0;
         int used5204Downgrade = 0;
+        boolean formationLimitDowngraded = false;
+        boolean heroOccupiedDowngraded = false;
         java.util.Set<Long> blacklist301 = new java.util.LinkedHashSet<>();
         for (int attempt = 1; attempt <= 6; attempt++) {
             long now = nowSec(tc);
@@ -468,6 +507,50 @@ public final class ServerBearTasks {
                         String.valueOf(heroIdsOf(formation)), String.valueOf(blacklist301),
                         day + "#" + window.startSec);
                 continue;
+            }
+            // 2026-11-08 修复：415=编队人数/配置超限，60s 后用同一编队重试必然再 415。
+            // 降级为自动编队（3 英雄，同 301 降级器）立即重试一次，仍失败再走延时/封板。
+            // 2026-11-08：403=英雄已在其他编队/行军（准备窗召回后仍可能被驻防/采集队占用）：
+            // 拉黑本队英雄 → 自动编队换 3 名未占用英雄立即重试一次（与 301 降级同器）。
+            if (code == CODE_HERO_OCCUPIED && !heroOccupiedDowngraded) {
+                heroOccupiedDowngraded = true;
+                blacklist301 = blacklistHeroes(blacklist301, heroIdsOf(formation));
+                Map<String, Object> auto403 = downgrade301Formation(tc.engine, blacklist301);
+                if (formationReady(auto403)) {
+                    formation = auto403;
+                    formationSource = "403降级 自动编队 英雄=" + heroIdsOf(auto403)
+                            + "（拉黑" + blacklist301 + "）";
+                    state.launchHeroes = appendHeroIds("", heroIdsOf(formation));
+                    state.nextLaunchRetryAt = 0L;
+                    state.lastLaunchText = "403(英雄占用) → 自动编队换人立即重试";
+                    saveState(tc, state);
+                    m.skip(state.lastLaunchText);
+                    writeLaunchMod(tc, state, state.lastLaunchText);
+                    FileLog.info("巨熊403降级 fpid={} sid={} 新英雄={} 拉黑={} 场次={}", tc.fpid,
+                            String.valueOf(tc.sid), String.valueOf(heroIdsOf(formation)),
+                            String.valueOf(blacklist301), day + "#" + window.startSec);
+                    continue;
+                }
+            }
+            if (code == CODE_FORMATION_LIMIT && !formationLimitDowngraded) {
+                formationLimitDowngraded = true;
+                java.util.Set<Long> bl415 = blacklistHeroes(new java.util.LinkedHashSet<Long>(),
+                        heroIdsOf(formation));
+                Map<String, Object> auto = downgrade301Formation(tc.engine, bl415);
+                if (formationReady(auto)) {
+                    formation = auto;
+                    formationSource = "415降级 自动编队 英雄=" + heroIdsOf(auto);
+                    state.launchHeroes = appendHeroIds("", heroIdsOf(formation));
+                    state.nextLaunchRetryAt = 0L;
+                    state.lastLaunchText = "415(编队超限) → 自动编队立即重试";
+                    saveState(tc, state);
+                    m.skip(state.lastLaunchText);
+                    writeLaunchMod(tc, state, state.lastLaunchText);
+                    FileLog.info("巨熊415降级 fpid={} sid={} 新英雄={} 场次={}", tc.fpid,
+                            String.valueOf(tc.sid), String.valueOf(heroIdsOf(formation)),
+                            day + "#" + window.startSec);
+                    continue;
+                }
             }
             LaunchRetry retry = launchRetryDecision(code, now, window, cfg, state);
             if (retry.retry && retry.immediate && used5204Downgrade == 0) {
@@ -801,7 +884,12 @@ public final class ServerBearTasks {
         }
         BearGate.enter(roleKeyOf(tc), window.endSec * 1000L);
         state.prepGateWindowStart = window.startSec;
-        int recalled = cfg.prepRecall ? recallAllMarches(tc) : 0;
+        java.util.List<Long> recalledIds = cfg.prepRecall
+                ? recallAllMarches(tc) : java.util.Collections.<Long>emptyList();
+        int recalled = recalledIds.size();
+        // 记录本场召回的行军 id：全部回城前不发车（对齐网页版"等待部队返回确认"）。
+        state.recallWindowStart = window.startSec;
+        state.recallMarchIds = joinIds(recalledIds);
         boolean autoJoinClosed = closeBehemothAutoJoin(tc);
         ensurePetSkills(tc, cfg, state, m, window);
         saveState(tc, state);
@@ -818,22 +906,80 @@ public final class ServerBearTasks {
     }
 
     /** 召回本角色全部在途/驻扎行军（state=2→recall；其余→off_work；排除 99/411）。 */
-    static int recallAllMarches(TaskContext tc) {
+    static java.util.List<Long> recallAllMarches(TaskContext tc) {
         List<long[]> targets = ownMarchTargets(tc.engine);
-        int done = 0;
+        java.util.List<Long> done = new java.util.ArrayList<Long>();
         for (long[] t : targets) {
             long id = t[0];
             long stateVal = t[1];
             String proto = stateVal == 2L ? "req_world_march_recall" : "req_world_march_off_work";
+            // 2026-11-09 审查修复：召回失败/异常的行军仍在途，一并纳入等待（120s 上限兜底），
+            // 避免"召回失败的行军"不等待就发车 → 403。
+            done.add(id);
             try {
                 GameMessage rsp = tc.engine.request(proto, Exec.args("id", id));
-                if (Exec.ok(rsp)) done++;
+                if (!Exec.ok(rsp)) {
+                    FileLog.warn("巨熊准备窗召回未成功 fpid={} marchId={} 码={}", tc.fpid,
+                            String.valueOf(id), String.valueOf(Exec.codeOf(rsp)));
+                }
             } catch (Exception e) {
                 FileLog.warn("巨熊准备窗召回失败 fpid={} marchId={} proto={}：{}", tc.fpid,
                         String.valueOf(id), proto, ServerTasks.brief(String.valueOf(e.getMessage())));
             }
         }
         return done;
+    }
+
+    /** 召回等待上限（秒）：行军迟迟不回城时放弃等待，避免整场不发车。 */
+    static final long RECALL_WAIT_MAX_SECONDS = 120L;
+
+    /** 本场召回的仍"在途"行军 id（空=全部回城，可发车）。对齐网页版 recallPending。 */
+    static java.util.List<Long> pendingRecallIds(TaskContext tc, BearState state, Window window) {
+        java.util.List<Long> out = new java.util.ArrayList<Long>();
+        if (tc == null || state == null || window == null) return out;
+        if (state.recallWindowStart <= 0L || state.recallWindowStart != window.startSec) return out;
+        long now = nowSec(tc);
+        if (state.recallWaitStart <= 0L) {
+            state.recallWaitStart = now;
+        } else if (now - state.recallWaitStart >= RECALL_WAIT_MAX_SECONDS) {
+            state.recallMarchIds = "";   // 等待超时：放弃等待，按现有编队发车
+            state.recallWaitStart = 0L;
+            return out;
+        }
+        java.util.Set<Long> recalled = parseIds(state.recallMarchIds);
+        if (recalled.isEmpty()) return out;
+        java.util.Set<Long> onWay = new java.util.LinkedHashSet<Long>();
+        for (long[] t : ownMarchTargets(tc.engine)) onWay.add(t[0]);
+        for (Long id : recalled) {
+            if (id != null && onWay.contains(id)) out.add(id);
+        }
+        return out;
+    }
+
+    /** 逗号 id 列表解析（非法/≤0 忽略）。 */
+    static java.util.Set<Long> parseIds(String csv) {
+        java.util.Set<Long> out = new java.util.LinkedHashSet<Long>();
+        if (csv == null || csv.isEmpty()) return out;
+        for (String s : csv.split(",")) {
+            try {
+                long v = Long.parseLong(s.trim());
+                if (v > 0) out.add(v);
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        return out;
+    }
+
+    /** id 集合 → 逗号串。 */
+    static String joinIds(java.util.Collection<Long> ids) {
+        if (ids == null || ids.isEmpty()) return "";
+        StringBuilder sb = new StringBuilder();
+        for (Long id : ids) {
+            if (id == null || id <= 0) continue;
+            if (sb.length() > 0) sb.append(',');
+            sb.append(id);
+        }
+        return sb.toString();
     }
 
     /** 从推送快照解析本角色行军 [id,state,type]（只读，不额外发查询）。 */
@@ -850,7 +996,7 @@ public final class ServerBearTasks {
     }
 
     private static void collectOwnMarchTargets(Object node, List<long[]> out, int depth) {
-        if (node == null || depth > 4 || out.size() >= 16) return;
+        if (node == null || depth > 4 || out.size() >= 64) return;
         if (node instanceof Map) {
             Map<?, ?> map = (Map<?, ?>) node;
             long id = Exec.longOf(map.get("id"));
@@ -2060,8 +2206,23 @@ public final class ServerBearTasks {
 
     /** 新场次归一重试/预热状态（跨场次不串台账；同场次保留预算避免无限重试）。 */
     static void resetRetryIfNewWindow(BearState state, long windowStartSec) {
+        resetRetryIfNewWindow(state, windowStartSec, 0L);
+    }
+
+    /**
+     * 新场次归一（2026-11-08 修复）：reserve 在本场进行中会翻到下一场，windowOf 随之给出
+     * 下一场窗口——旧实现在此时清掉 nextLaunchRetryAt，本场的 60s 重试永久丢失
+     * （生产 21:30 场：415 后被 reset，cad 被推迟到 23:31，本场不再发车）。
+     * 规则：上次重试计划所属场次（retryWindowStart）仍在活动期内 → 视为同场次重试，
+     * 保留重试计划；真正进入新场次（已过旧场次结束）才重置。
+     */
+    static void resetRetryIfNewWindow(BearState state, long windowStartSec, long nowSec) {
         if (state == null) return;
         if (state.retryWindowStart == windowStartSec) return;
+        if (state.nextLaunchRetryAt > 0 && state.retryWindowStart > 0 && nowSec > 0
+                && nowSec < state.retryWindowStart + ACTIVITY_MINUTES * 60L) {
+            return;   // 本场仍在进行：保留重试计划，不把"reserve 翻场"当成新场次
+        }
         state.retryWindowStart = windowStartSec;
         state.downgradeRetries = 0;
         state.delayRetries = 0;
@@ -2809,6 +2970,14 @@ public final class ServerBearTasks {
         long prepGateWindowStart;
         /** 2026-11-07：本场已开启宠物战斗技能的场次起点（0=未开启）。 */
         long petSkillsWindowStart;
+        /**
+         * 2026-11-08（对齐网页版 DailyBearActionService.recallPending）：本场召回的行军 id（逗号）。
+         * 召回是异步的——全部回城（从行军列表消失）前不发车，否则必然 403 英雄占用。
+         */
+        String recallMarchIds = "";
+        long recallWindowStart;
+        /** 召回等待起始（秒；超过 RECALL_WAIT_MAX_SECONDS 放弃等待）。 */
+        long recallWaitStart;
 
         void mergeTimes(TrapTimes times) {
             if (times == null) return;
@@ -2888,6 +3057,11 @@ public final class ServerBearTasks {
             o.put("joinSkipWindowStart", state.joinSkipWindowStart);
             o.put("prepGateWindowStart", state.prepGateWindowStart);
             o.put("petSkillsWindowStart", state.petSkillsWindowStart);
+            o.put("recallWindowStart", state.recallWindowStart);
+            o.put("recallWaitStart", state.recallWaitStart);
+            if (state.recallMarchIds != null && !state.recallMarchIds.isEmpty()) {
+                o.put("recallMarchIds", state.recallMarchIds);
+            }
             if (state.joinSkipSlots != null && !state.joinSkipSlots.isEmpty()) {
                 o.put("joinSkipSlots", state.joinSkipSlots);
             }
@@ -2925,6 +3099,9 @@ public final class ServerBearTasks {
             state.joinSkipWindowStart = o.optLong("joinSkipWindowStart", 0);
             state.prepGateWindowStart = o.optLong("prepGateWindowStart", 0);
             state.petSkillsWindowStart = o.optLong("petSkillsWindowStart", 0);
+            state.recallWindowStart = o.optLong("recallWindowStart", 0);
+            state.recallWaitStart = o.optLong("recallWaitStart", 0);
+            state.recallMarchIds = o.optString("recallMarchIds", "");
             state.joinSkipSlots = o.optString("joinSkipSlots", "");
             state.lastLaunchText = o.optString("lastLaunchText", "");
         } catch (Throwable ignored) {

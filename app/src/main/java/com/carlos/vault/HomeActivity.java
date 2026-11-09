@@ -1566,14 +1566,39 @@ public class HomeActivity extends AccountVaultActivity {
                     }
                 } catch (Throwable ignored) {
                 }
-                // 服务器模式：状态来自 vault-server 回传缓存（本地无会话；sid 对得上才显示在线）
+                // 服务器模式（2026-11-08 修复）：优先按 (fpid,sid,uid) 取账号池 per-role 运行态，
+                // 与账号页/服务端 /accounts 同一数据源。今日页此前只拿账号级单会话 status，
+                // 同服双角色（sid 相同）会把另一个角色/账号级状态显示成本角色，两页对不上。
+                String[] poolLabel = null;
+                if (VaultSync.isServerMode(HomeActivity.this) && onlineAcc.fpid != null) {
+                    try {
+                        java.util.Map<String, org.json.JSONObject> byFpid =
+                                com.carlos.vault.AccountPoolCache.accountsByFpid(
+                                        VaultSync.cachedAccountPool(HomeActivity.this));
+                        org.json.JSONObject poolAcc = byFpid == null ? null : byFpid.get(onlineAcc.fpid);
+                        poolLabel = poolOnlineLabel(com.carlos.vault.AccountPoolCache.findRole(
+                                poolAcc, curSidF, currentRoleUid()));
+                    } catch (Throwable ignored) {
+                    }
+                }
+                // 服务器模式回落：账号级状态缓存（本地无会话）；sid+uid 都要对得上
                 org.json.JSONObject srv = VaultSync.isServerMode(HomeActivity.this)
                         && onlineAcc.fpid != null
                         ? VaultSync.cachedStatusOf(HomeActivity.this, onlineAcc.fpid) : null;
                 String srvSid = srv == null ? "" : srv.optString("sid", "");
+                long srvUid = srv == null ? 0L : parseLongSafe(srv.optString("activeUid", ""));
+                long heroWantUid = currentRoleUid();
                 boolean srvRoleMatch = srv != null
-                        && (srvSid.isEmpty() || parseSidSafe(srvSid) == curSidF);
-                if (srv != null && srvRoleMatch) {
+                        && (srvSid.isEmpty() || (parseSidSafe(srvSid) == curSidF
+                            && (srvUid <= 0 || heroWantUid <= 0 || srvUid == heroWantUid)));
+                if (poolLabel != null) {
+                    text = poolLabel[0];
+                    color = "on".equals(poolLabel[1]) ? UiStyle.ON_BRAND_OK
+                            : (poolLabel[0].startsWith("◌") || poolLabel[0].startsWith("△"))
+                                    ? UiStyle.ON_BRAND_WARN
+                            : poolLabel[0].startsWith("⚠") ? UiStyle.ON_BRAND_ERR
+                            : UiStyle.ON_BRAND_IDLE;
+                } else if (srv != null && srvRoleMatch) {
                     String st = srv.optString("state", "offline");
                     if (com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(st)) {
                         text = "● 日常在线";
@@ -3098,6 +3123,30 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     /**
+     * 账号池 per-role 运行态 → 在线文案（2026-11-08：今日页/账号页/角色管理统一口径）。
+     * 返回 [文案, "on"/"off"]；无池数据（旧服务端/尚未同步）返回 null，由调用方回落旧状态源。
+     */
+    static String[] poolOnlineLabel(org.json.JSONObject poolRole) {
+        final com.carlos.vault.daily.RoleRuntimeState st =
+                com.carlos.vault.AccountPoolCache.stateOfRole(poolRole);
+        if (st == null) return null;
+        if (st.online) return new String[]{"● 日常在线", "on"};
+        if (st.takeoverRecoveryActive
+                || (com.carlos.vault.daily.RoleRuntimeState.REC_DISABLED.equals(st.recoveryState)
+                    && st.statusMessage != null && st.statusMessage.contains("其他设备"))) {
+            return new String[]{"△ 被顶号暂停", "off"};
+        }
+        if (st.loginInProgress || st.startupInProgress
+                || com.carlos.vault.daily.RoleRuntimeState.REC_WAITING_RETRY.equals(st.recoveryState)) {
+            return new String[]{"◌ 重连中", "off"};
+        }
+        if (com.carlos.vault.daily.RoleRuntimeState.REC_ACTION_REQUIRED.equals(st.recoveryState)) {
+            return new String[]{"⚠ 需重导token", "off"};
+        }
+        return new String[]{"○ 离线", "off"};
+    }
+
+    /**
      * 角色行在线<b>文案与口径</b>（返回 [文案, "on"/"off"]）：
      * <ul>
      *   <li><b>服务器模式</b>（第二轮 UI 统一的主口径）：账号态取
@@ -3114,8 +3163,19 @@ public class HomeActivity extends AccountVaultActivity {
     private String[] roleOnlineLabel(AccountStore.Account a, RoleStore.Role r, boolean accOn,
                                      long actSid, long actUid, boolean isLiveAcc, long liveUid) {
         try {
-            // 服务器模式：统一服务器状态源（无缓存=刚打开还没同步，显示"同步中"）
+            // 服务器模式（2026-11-08）：优先账号池 per-role 运行态（与今日页/服务端 /accounts 同源），
+            // 避免账号级单会话 status 在同服双角色时把另一个角色的状态套到本行。
             if (VaultSync.isServerMode(this)) {
+                try {
+                    java.util.Map<String, org.json.JSONObject> byFpid =
+                            com.carlos.vault.AccountPoolCache.accountsByFpid(
+                                    VaultSync.cachedAccountPool(this));
+                    org.json.JSONObject poolAcc = byFpid == null ? null : byFpid.get(a.fpid);
+                    String[] lb = poolOnlineLabel(com.carlos.vault.AccountPoolCache.findRole(
+                            poolAcc, r.serverid, r.uid));
+                    if (lb != null) return lb;
+                } catch (Throwable ignored) {
+                }
                 org.json.JSONObject o = a.fpid == null ? null : VaultSync.cachedStatusOf(this, a.fpid);
                 if (o == null) return new String[]{"● 同步中", "off"};
                 String state = o.optString("state", "");

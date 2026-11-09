@@ -32,19 +32,25 @@ import java.util.concurrent.atomic.AtomicBoolean;
  *
  * <p>哪些角色常驻在线由 {@link #syncOnline()} 决定：开启「常驻在线」的账号 → 工作区全部启用角色。
  *
- * <p><b>同账号多角色并存（对齐原版 2026-10-18 复核）</b>：服务器在登录完成时踢掉该账号的
- * 既有会话（串行登录必互踢，code=46 同设备 / code=5 异设备）；但多条 loginauth<b>同时在途</b>
- * （都未完成登记）时可钻过踢人检查，全部登记成功后只要不掉线即长期共存。原版
- * `GameAccountSessionService` 用 `newVirtualThreadPerTaskExecutor()` 并发提交所有选中角色，
- * 没有错峰；并发上界由 `GameAccountLoginBudget(32)` 控制，失败按恢复/退避处理，不降级单会话。
- * 本地按同一语义：
+ * <p><b>同账号多角色并存（2026-11-08 对齐原版网页版复判）</b>：网页版
+ * {@code GameAccountSessionService} 为每角色单独开 AccountSession，{@code startOne} 只 detach
+ * 本角色；登录用 {@code newVirtualThreadPerTaskExecutor()} + {@code GameAccountLoginBudget(32)}
+ * 并发提交，单角色上线不碰兄弟会话。更关键的是登录身份：原版
+ * {@code ConfigJsonLoader.scopeFingerprintToRole} 把 device_id/distinct_id 按 accountRoleId
+ * 做 sha256 scoping——<b>同账号同服多角色各自一台独立设备</b>，服务器因此允许其长期并存
+ * （生产日志：531/532@888、536/537@888 同时在线；78 次单角色手动上线仅 2 次兄弟被顶）。
+ * 此前「服务器按账号唯一会话」的终判是在 web 端反抢干扰下得出的错误结论（同设备才会
+ * code=46 互踢）。
+ *
+ * <p>本地按同一语义：
  * <ul>
- *   <li>多角色账号登录 = 各角色线程 CountDownLatch <b>同刻发令</b>，并发 loginauth；</li>
- *   <li>全局公平信号量 {@link #LOGIN_BUDGET}（32）限流；</li>
+ *   <li>设备指纹按角色 uid 隔离（{@link AccountStore#roleIdentitySeed(String, long, long, long)}），
+ *       同服多角色稳定派生互异 device_id/distinct_id（{@link AccountStore} 内
+ *       {@code roleScopedIdentity}）；</li>
+ *   <li>多角色账号登录 = 各角色线程 CountDownLatch <b>同刻发令</b> + 全局预算 32；</li>
  *   <li>缺员时热补缺的角色；全员掉线才整号冷启动；</li>
  *   <li>失败按 8s×2ⁿ 封顶 300s 退避，<b>不降级单会话</b>。</li>
  * </ul>
- * 设备指纹按角色独立（{@link AccountStore#roleIdentitySeed}）仅为了身份稳定/风控分散。
  */
 public final class RoleSessionKeeper {
 
@@ -54,8 +60,10 @@ public final class RoleSessionKeeper {
     /**
      * 多角色登录策略（对齐原版 startSelectedSessions / submitStartupPipelines）：
      * 同账号各角色<b>同刻并发</b>提交 loginauth（原版用 VirtualThreadPerTaskExecutor，
-     * 没有错峰延迟），并发上界由 {@link #LOGIN_BUDGET} 控制。服务器若在登录完成时踢旧会话，
-     * 由各会话的恢复/退避处理；不做“错峰钻窗口”，也不做“连续失败降级单会话”。
+     * 没有错峰延迟），并发上界由 {@link #LOGIN_BUDGET} 控制。服务器只在
+     * <b>同账号+同设备</b>重复登录时踢旧会话（角色级指纹已隔离，见
+     * {@link com.carlos.vault.wjdr.RoleFingerprint}）；出现踢旧时由该会话的恢复/退避处理。
+     * 不做“错峰钻窗口”，也不做“连续失败降级单会话”。
      */
 
     /** 一条常驻会话（fpid:sid → 引擎 + 互助响应状态）。 */
@@ -63,6 +71,8 @@ public final class RoleSessionKeeper {
         public final WjdrEngine engine;
         public final String fpid;
         public final long sid;
+        /** 角色 uid（同服多角色区分/角色级设备指纹用；0=旧数据未知）。 */
+        public final long uid;
         public final String label;
 
         // ---- 互助响应状态（HelpResponder 维护；对标原版 DailyAllianceDonationState 的 helpRequests） ----
@@ -84,9 +94,14 @@ public final class RoleSessionKeeper {
         volatile CoreAssetLibrary assetLib;
 
         LiveSession(WjdrEngine engine, String fpid, long sid, String label) {
+            this(engine, fpid, sid, 0, label);
+        }
+
+        LiveSession(WjdrEngine engine, String fpid, long sid, long uid, String label) {
             this.engine = engine;
             this.fpid = fpid;
             this.sid = sid;
+            this.uid = uid;
             this.label = label == null ? fpid : label;
         }
 
@@ -96,6 +111,11 @@ public final class RoleSessionKeeper {
                 engine.tryReconnect();
             } catch (Throwable ignored) {
             }
+        }
+
+        /** 会话键（fpid:sid:uid；uid 未知退回旧键）。 */
+        String sessionKey() {
+            return key(fpid, sid, uid);
         }
     }
 
@@ -127,9 +147,17 @@ public final class RoleSessionKeeper {
     private static final class Desired {
         final AccountStore.Account acc;
         final List<Long> sids;
-        Desired(AccountStore.Account acc, List<Long> sids) {
+        /** 与 sids 同序的角色 uid（同服多角色区分/角色级设备指纹；未知填 0）。 */
+        final List<Long> uids;
+        Desired(AccountStore.Account acc, List<Long> sids, List<Long> uids) {
             this.acc = acc;
             this.sids = sids;
+            this.uids = uids == null ? new ArrayList<>() : uids;
+        }
+        /** 取第 i 个角色的 uid（越界/未知 → 0）。 */
+        long uidAt(int i) {
+            return (uids != null && i >= 0 && i < uids.size() && uids.get(i) != null)
+                    ? uids.get(i) : 0L;
         }
     }
 
@@ -218,8 +246,8 @@ public final class RoleSessionKeeper {
             }
             // 账号不完整（应有 N 条在线、实际缺员）也整号重赛
             if (!needRace && multi && d != null) {
-                for (long sid : d.sids) {
-                    LiveSession ls = sessions.get(key(fpid, sid));
+                for (int i = 0; i < d.sids.size(); i++) {
+                    LiveSession ls = sessions.get(key(fpid, d.sids.get(i), d.uidAt(i)));
                     if (ls == null || !WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
                         needRace = true;
                         raceReason = "在线缺员";
@@ -241,18 +269,23 @@ public final class RoleSessionKeeper {
      * 其它角色各自随机并固化）。
      */
     public LiveSession ensureOnline(AccountStore.Account acc, long sid) {
+        return ensureOnline(acc, sid, 0);
+    }
+
+    /** 单角色常规登录（带 uid：同服多角色时按 uid 取角色级设备指纹，避免同设备互踢）。 */
+    public LiveSession ensureOnline(AccountStore.Account acc, long sid, long uid) {
         if (acc == null || acc.fpid == null || acc.fpid.isEmpty()
                 || acc.token == null || acc.token.isEmpty() || sid <= 0) {
             return null;
         }
-        String k = key(acc.fpid, sid);
+        String k = key(acc.fpid, sid, uid);
         LiveSession ls = sessions.get(k);
         if (ls != null) {
             // token 已更新（用户重导）：旧凭证会话永远登不回去，直接重建
             if (acc.token.equals(ls.engine.savedToken())) return ls;
             closeSession(k);
         }
-        ls = new LiveSession(WjdrAndroid.newEngine(ctx), acc.fpid, sid, acc.label);
+        ls = new LiveSession(WjdrAndroid.newEngine(ctx), acc.fpid, sid, uid, acc.label);
         // 状态变化日志（灰度观察用：logcat 过滤 SessionKeeper）
         final LiveSession flsLog = ls;
         ls.engine.setStateListener(s -> {
@@ -274,7 +307,7 @@ public final class RoleSessionKeeper {
                 try {
                     AccountStore store = new AccountStore(ctx);
                     fls.engine.applyIdentity(store.roleIdentitySeed(
-                            fls.fpid, fls.sid, RoleStore.activeRole(ctx, fls.fpid)));
+                            fls.fpid, fls.sid, fls.uid, RoleStore.activeRole(ctx, fls.fpid)));
                 } catch (Throwable ignored) {
                 }
                 // 角色钉扎登录（uid 选角 + 落地校验）：serverid 会被服务器忽略恒落最近角色，
@@ -290,7 +323,8 @@ public final class RoleSessionKeeper {
                 com.carlos.vault.daily.guardian.GuardianEngine.init(ctx);
                 com.carlos.vault.daily.guardian.GuardianEngine.attach(ctx, fls);
                 try {
-                    new AccountStore(ctx).updateRoleSettings(fls.fpid, fls.sid, fls.engine.identityJson());
+                    new AccountStore(ctx).updateRoleSettings(
+                            fls.fpid, fls.sid, fls.uid, fls.engine.identityJson());
                 } catch (Throwable ignored) {
                 }
             } catch (Throwable ignored) {
@@ -304,7 +338,28 @@ public final class RoleSessionKeeper {
      *  借用即防自顶：已有常驻会话的号绝不能再 fresh 登录（同号同角色会互踢）。 */
     public LiveSession borrowOnline(String fpid, long sid) {
         if (fpid == null || fpid.isEmpty()) return null;
-        LiveSession ls = sessions.get(key(fpid, sid));
+        // 同服多角色（2026-11-08）：优先当前选中角色，避免把兄弟角色的数据当本角色返回
+        //（货架/商品等按角色不同；旧键语义下每个 sid 只有一条会话，等价于"当前角色"）。
+        long activeUid = 0;
+        try {
+            RoleStore.ActiveRole ar = RoleStore.activeRoleEx(ctx, fpid);
+            if (ar != null && ar.sid == sid) activeUid = ar.uid;
+        } catch (Throwable ignored) {
+        }
+        LiveSession fallback = null;
+        for (LiveSession ls : sessions.values()) {
+            if (!fpid.equals(ls.fpid) || ls.sid != sid) continue;
+            if (!WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) continue;
+            if (activeUid > 0 && ls.uid == activeUid) return ls;
+            if (fallback == null) fallback = ls;
+        }
+        return fallback;
+    }
+
+    /** 精确到角色的在线会话借用（同服多角色，2026-11-08）。 */
+    public LiveSession borrowOnline(String fpid, long sid, long uid) {
+        if (fpid == null || fpid.isEmpty()) return null;
+        LiveSession ls = sessions.get(key(fpid, sid, uid));
         return (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) ? ls : null;
     }
 
@@ -380,13 +435,22 @@ public final class RoleSessionKeeper {
                 if (!RoleStore.keepOnline(ctx, acc.fpid)) continue;
                 RoleStore.Schedule s = RoleStore.schedule(ctx, acc.fpid);
                 List<Long> sids = new ArrayList<>();
+                List<Long> uids = new ArrayList<>();
                 for (RoleStore.Role r : RoleStore.roles(ctx, acc.fpid)) {
-                    if (r.enabled && r.serverid > 0) sids.add(r.serverid);
+                    if (r.enabled && r.serverid > 0) {
+                        sids.add(r.serverid);
+                        uids.add(r.uid);
+                    }
                 }
-                if (sids.isEmpty() && s.serverid > 0) sids.add(s.serverid);
+                if (sids.isEmpty() && s.serverid > 0) {
+                    sids.add(s.serverid);
+                    uids.add(0L);
+                }
                 if (sids.isEmpty()) continue;
-                wantDesired.put(acc.fpid, new Desired(acc, sids));
-                for (long sid : sids) want.add(key(acc.fpid, sid));
+                wantDesired.put(acc.fpid, new Desired(acc, sids, uids));
+                for (int i = 0; i < sids.size(); i++) {
+                    want.add(key(acc.fpid, sids.get(i), uids.get(i)));
+                }
             }
             // 全量重建期望表（keep 关掉的账号随之移出，scan 不再为其重赛）
             desired.clear();
@@ -399,21 +463,6 @@ public final class RoleSessionKeeper {
         }
     }
 
-    /** 降级单会话时的选角：在线者优先（不打断已建立的会话），其次 activeRole，再次第一个启用角色。 */
-    private long pickSingle(String fpid, List<Long> sids) {
-        for (long sid : sids) {
-            LiveSession ls = sessions.get(key(fpid, sid));
-            if (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) return sid;
-        }
-        long act = 0;
-        try {
-            act = RoleStore.activeRole(ctx, fpid);
-        } catch (Throwable ignored) {
-        }
-        for (long sid : sids) if (sid == act) return sid;
-        return sids.get(0);
-    }
-
     /**
      * 账号会话编排：全员在线则无事；单角色账号常规登录；多角色缺员时——
      * <b>已有在线会话则热补</b>（只补缺的角色，不动在线的——复刻实测成功形态：02:08 的
@@ -422,18 +471,29 @@ public final class RoleSessionKeeper {
     private void ensureAccountOnline(Desired d) {
         String fpid = d.acc.fpid;
         if (d.sids.size() == 1) {
-            ensureOnline(d.acc, d.sids.get(0));
+            ensureOnline(d.acc, d.sids.get(0), d.uidAt(0));
             return;
         }
         java.util.List<Long> missing = new ArrayList<>();
+        java.util.List<Long> missingUids = new ArrayList<>();
         boolean anyOnline = false;
-        for (long sid : d.sids) {
-            LiveSession ls = sessions.get(key(fpid, sid));
-            if (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) anyOnline = true;
-            else missing.add(sid);
+        for (int i = 0; i < d.sids.size(); i++) {
+            long sid = d.sids.get(i);
+            LiveSession ls = sessions.get(key(fpid, sid, d.uidAt(i)));
+            if (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+                anyOnline = true;
+            } else {
+                missing.add(sid);
+                missingUids.add(d.uidAt(i));
+            }
         }
         if (missing.isEmpty()) return;
-        startRace(d.acc, missing, d.sids, anyOnline ? "热补缺员" : "整号竞速", anyOnline);
+        java.util.List<String> allKeys = new ArrayList<>();
+        for (int i = 0; i < d.sids.size(); i++) {
+            allKeys.add(key(fpid, d.sids.get(i), d.uidAt(i)));
+        }
+        startRace(d.acc, missing, missingUids, allKeys,
+                anyOnline ? "热补缺员" : "整号竞速", anyOnline);
     }
 
     /**
@@ -445,8 +505,8 @@ public final class RoleSessionKeeper {
      * scan 触发<b>整号重赛</b>（关旧再赛，绝不单独重连——单独重连必踢兄弟）；③竞速失败按
      * 8s×2ⁿ 封顶 300s 退避。
      */
-    void startRace(final AccountStore.Account acc, final List<Long> sids, final List<Long> allSids,
-                   final String reason, final boolean warm) {
+    void startRace(final AccountStore.Account acc, final List<Long> sids, final List<Long> uids,
+                   final List<String> allKeys, final String reason, final boolean warm) {
         final String fpid = acc.fpid;
         if (fpid == null || fpid.isEmpty() || sids == null || sids.isEmpty()) return;
         if (!raceInFlight.add(fpid)) return;   // 该账号已有竞速在跑
@@ -469,10 +529,12 @@ public final class RoleSessionKeeper {
         }
         // 冷启动才关全账号旧会话；热补不动在线会话（只清要重登的角色的半死会话）
         if (!warm) closeAccountSessions(fpid);
-        for (long sid : sids) {
-            LiveSession old = sessions.get(key(fpid, sid));
+        for (int i = 0; i < sids.size(); i++) {
+            long sid = sids.get(i);
+            long u = (uids != null && i < uids.size() && uids.get(i) != null) ? uids.get(i) : 0L;
+            LiveSession old = sessions.get(key(fpid, sid, u));
             if (old != null && !WjdrEngine.STATE_ONLINE.equals(old.engine.sessionState())) {
-                closeSession(key(fpid, sid));
+                closeSession(key(fpid, sid, u));
             }
         }
         final int n = sids.size();
@@ -487,7 +549,8 @@ public final class RoleSessionKeeper {
                         + "，" + reason + "）");
         for (int i = 0; i < n; i++) {
             final long sid = sids.get(i);
-            final LiveSession ls = new LiveSession(WjdrAndroid.newEngine(ctx), fpid, sid, acc.label);
+            final long uid = (uids != null && i < uids.size() && uids.get(i) != null) ? uids.get(i) : 0L;
+            final LiveSession ls = new LiveSession(WjdrAndroid.newEngine(ctx), fpid, sid, uid, acc.label);
             final LiveSession fls = ls;
             ls.engine.setStateListener(s -> {
                 android.util.Log.i("SessionKeeper",
@@ -496,7 +559,7 @@ public final class RoleSessionKeeper {
                 // W1：离开 ONLINE → 资产置 stale（重连后 init 重放会重新 READY）
                 if (!WjdrEngine.STATE_ONLINE.equals(s)) invalidateAssetLibrary(fls, "state=" + s);
             });
-            sessions.put(key(fpid, sid), ls);
+            sessions.put(key(fpid, sid, uid), ls);
             // W1 资产库：engine 创建后、login 前 attach（竞速线程稍后才 initialize/login）
             attachAssetLibrary(ls);
             Thread t = new Thread(() -> {
@@ -505,7 +568,7 @@ public final class RoleSessionKeeper {
                     try {
                         AccountStore store = new AccountStore(ctx);
                         fls.engine.applyIdentity(store.roleIdentitySeed(
-                                fls.fpid, fls.sid, RoleStore.activeRole(ctx, fls.fpid)));
+                                fls.fpid, fls.sid, fls.uid, RoleStore.activeRole(ctx, fls.fpid)));
                     } catch (Throwable ignored) {
                     }
                     startGate.await();   // 同刻发令：所有角色并发提交 loginauth
@@ -530,7 +593,8 @@ public final class RoleSessionKeeper {
                     com.carlos.vault.daily.guardian.GuardianEngine.init(ctx);
                     com.carlos.vault.daily.guardian.GuardianEngine.attach(ctx, fls);
                     try {
-                        new AccountStore(ctx).updateRoleSettings(fls.fpid, fls.sid, fls.engine.identityJson());
+                        new AccountStore(ctx).updateRoleSettings(
+                                fls.fpid, fls.sid, fls.uid, fls.engine.identityJson());
                     } catch (Throwable ignored) {
                     }
                 } catch (Throwable ignored) {
@@ -555,11 +619,11 @@ public final class RoleSessionKeeper {
             // 结算口径：结算时刻的实际会话态（含热补时未参赛的在线角色，不用线程内计数——
             // 顶号推送可比 login 返回晚若干毫秒，线程内计数会虚报成功）
             int ok = 0;
-            for (long sid : allSids) {
-                LiveSession ls = sessions.get(key(fpid, sid));
+            for (String k : allKeys) {
+                LiveSession ls = sessions.get(k);
                 if (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) ok++;
             }
-            if (ok == allSids.size()) {
+            if (ok == allKeys.size()) {
                 raceShift.put(fpid, 0);
                 raceFails.remove(fpid);
                 android.util.Log.i("SessionKeeper",
@@ -578,19 +642,11 @@ public final class RoleSessionKeeper {
         settle.start();
     }
 
-    private String pickSingleLog(String fpid, Desired d) {
-        try {
-            return "K" + pickSingle(fpid, d.sids);
-        } catch (Throwable t) {
-            return "?";
-        }
-    }
-
     /** 关闭该账号的全部常驻会话（fresh 登录其任意角色前调用：服务器按账号唯一会话，防互踢）。 */
     public void closeAccountSessions(String fpid) {
         if (fpid == null || fpid.isEmpty()) return;
         for (LiveSession ls : new ArrayList<>(sessions.values())) {
-            if (fpid.equals(ls.fpid)) closeSession(key(ls.fpid, ls.sid));
+            if (fpid.equals(ls.fpid)) closeSession(ls.sessionKey());
         }
     }
 
@@ -656,10 +712,19 @@ public final class RoleSessionKeeper {
     }
 
     /** 只关闭指定角色的常驻会话（对齐原版 startOne 的 detachSessions(accountRoleId)）：
-     *  fresh 登录某角色时不要连坐关闭同账号的兄弟角色会话。sid≤0 时 no-op。 */
+     *  fresh 登录某角色时不要连坐关闭同账号的兄弟角色会话。sid≤0 时 no-op。
+     *  同服多角色（sid 相同）时关闭该区服全部角色会话；精确到 uid 用 3 参重载。 */
     public void closeRoleSession(String fpid, long sid) {
         if (fpid == null || fpid.isEmpty() || sid <= 0) return;
-        closeSession(key(fpid, sid));
+        for (LiveSession ls : new ArrayList<>(sessions.values())) {
+            if (fpid.equals(ls.fpid) && ls.sid == sid) closeSession(ls.sessionKey());
+        }
+    }
+
+    /** 精确关闭某角色会话（同服多角色，2026-11-08）。 */
+    public void closeRoleSession(String fpid, long sid, long uid) {
+        if (fpid == null || fpid.isEmpty() || sid <= 0) return;
+        closeSession(key(fpid, sid, uid));
     }
 
     public void closeSessionsNotIn(Set<String> keep) {
@@ -668,7 +733,19 @@ public final class RoleSessionKeeper {
         }
     }
 
+    /** 旧键（单角色/旧数据）：{@code fpid:sid}。新代码请用 {@link #key(String, long, long)}。 */
     static String key(String fpid, long sid) {
         return fpid + ":" + sid;
+    }
+
+    /**
+     * 会话键（2026-11-08）：{@code fpid:sid:uid}。
+     *
+     * <p>同账号同服多角色 sid 相同，旧键 {@code fpid:sid} 会让两个 LiveSession 互相覆盖
+     * （后建覆盖先建、被覆盖会话既不进 map 也无法 close → 引擎/连接泄漏 + 日志误报）。
+     * uid≤0（旧数据/单角色未知 uid）退回旧键，保持兼容。
+     */
+    static String key(String fpid, long sid, long uid) {
+        return fpid + ":" + sid + (uid > 0 ? ":" + uid : "");
     }
 }

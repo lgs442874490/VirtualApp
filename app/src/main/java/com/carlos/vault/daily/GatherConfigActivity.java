@@ -706,7 +706,7 @@ public class GatherConfigActivity extends Activity {
     private String queueSummary(GatherConfigV2.QueueCfg q) {
         String mode;
         if (q.isRole()) {
-            mode = "指定编队" + (q.formationId > 0 ? "#" + q.formationId : "未选");
+            mode = "指定编队" + (q.formationId > 0 ? "" : "未选");
         } else {
             mode = "自动编队";
         }
@@ -723,8 +723,8 @@ public class GatherConfigActivity extends Activity {
     private String formationText(long formationId) {
         if (formationId <= 0) return "未选择";
         FormationStore.Formation f = FormationStore.byId(this, fpid, serverid, formationId);
-        if (f == null) return "#" + formationId + "（编队已删除，请重选）";
-        return "#" + f.id + " " + f.name;
+        if (f == null) return "编队已删除，请重选";
+        return f.name == null || f.name.isEmpty() ? "未命名编队" : f.name;
     }
 
     private String soldiersText(GatherConfigV2.QueueCfg q) {
@@ -918,7 +918,7 @@ public class GatherConfigActivity extends Activity {
                 q.marksman = f.marksman;
             }
             if (names.length() > 0) names.append('/');
-            names.append(f.name == null || f.name.isEmpty() ? ("#" + f.id) : f.name);
+            names.append(f.name == null || f.name.isEmpty() ? "未命名编队" : f.name);
         }
         markDirty();
         renderContent();

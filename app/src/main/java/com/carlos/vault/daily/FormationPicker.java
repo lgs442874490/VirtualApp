@@ -154,18 +154,82 @@ public final class FormationPicker {
                     applied ? UiStyle.OK_INK : UiStyle.INK2, false);
             bearStatus.setPadding(0, 0, 0, dp(act, 6));
             card.addView(bearStatus);
+            final TextView[] applyRef = new TextView[1];
             TextView apply = UiStyle.primaryBtn(act,
                     applied ? "重新应用巨熊编队模板" : "一键应用巨熊编队模板", () -> {
-                        String msg = FormationStore.applyBearPresetTemplate(act, fpid, sid, uid);
-                        if (msg == null) {
-                            UiStyle.toast(act, "等待角色英雄数据同步完成后再应用模板");
-                            return;
+                        // 2026-11-08（用户口径）：点击即「获取最新状态重新编队」——
+                        // 先刷新服务端编队目录，再拉一次 /state 回写本地 daily_state，
+                        // 最后按最新英雄/容量重新生成预设，避免误报"等待英雄同步"。
+                        if (applyRef[0] != null) {
+                            applyRef[0].setEnabled(false);
+                            applyRef[0].setAlpha(0.6f);
                         }
-                        sync(act);
-                        refresh.run();
-                        if (onChanged != null) onChanged.onChanged();
-                        UiStyle.toast(act, msg);
+                        UiStyle.toast(act, "正在同步最新编队/英雄数据…");
+                        VaultSync.formationCatalogRefresh(act, fpid, String.valueOf(sid), uid,
+                                (code, message, data) -> {
+                                    if (code != 0) {
+                                        act.runOnUiThread(() -> {
+                                            if (applyRef[0] != null) {
+                                                applyRef[0].setEnabled(true);
+                                                applyRef[0].setAlpha(1f);
+                                            }
+                                            UiStyle.toast(act, "同步失败："
+                                                    + (message == null || message.isEmpty()
+                                                        ? "请确认角色在线后重试" : message));
+                                        });
+                                        return;
+                                    }
+                                    // 服务端已直接回传最新目录：写入本地后立即应用（无需再拉大响应 /state）。
+                                    String catalog = data == null ? "" : data.optString("catalog", "");
+                                    if (!catalog.isEmpty()) {
+                                        FormationStore.writeCatalog(act, fpid, sid, uid, catalog);
+                                        act.runOnUiThread(() -> {
+                                            if (applyRef[0] != null) {
+                                                applyRef[0].setEnabled(true);
+                                                applyRef[0].setAlpha(1f);
+                                            }
+                                            String msg = FormationStore.applyBearPresetTemplate(act, fpid, sid, uid);
+                                            if (msg == null) {
+                                                UiStyle.toast(act,
+                                                        "目录已同步，但打熊队英雄仍为空：请稍后重试或检查角色在线");
+                                                return;
+                                            }
+                                            sync(act);
+                                            // 编队库（打熊队/上车队英雄）需随全量 sync 上传服务端，
+                                            // 否则服务端 formation_library 仍是被覆盖前的旧英雄。
+                                            VaultSync.syncAll(act);
+                                            refresh.run();
+                                            if (onChanged != null) onChanged.onChanged();
+                                            UiStyle.toast(act, msg);
+                                        });
+                                        return;
+                                    }
+                                    VaultSync.fetchState(act, (c2, m2, d2) -> act.runOnUiThread(() -> {
+                                        if (applyRef[0] != null) {
+                                            applyRef[0].setEnabled(true);
+                                            applyRef[0].setAlpha(1f);
+                                        }
+                                        if (c2 != 0) {
+                                            UiStyle.toast(act, "同步超时/失败（"
+                                                    + (m2 == null || m2.isEmpty() ? "网络异常" : m2)
+                                                    + "），请稍后重试");
+                                            return;
+                                        }
+                                        String msg = FormationStore.applyBearPresetTemplate(act, fpid, sid, uid);
+                                        if (msg == null) {
+                                            UiStyle.toast(act,
+                                                    "最新数据已同步，但英雄目录仍为空：请确认角色在线/稍后重试");
+                                            return;
+                                        }
+                                        sync(act);
+                                        VaultSync.syncAll(act);
+                                        refresh.run();
+                                        if (onChanged != null) onChanged.onChanged();
+                                        UiStyle.toast(act, msg);
+                                    }));
+                                });
                     });
+            applyRef[0] = apply;
             LinearLayout.LayoutParams applyLp = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
             applyLp.bottomMargin = dp(act, 6);
@@ -183,7 +247,7 @@ public final class FormationPicker {
             petCol.setOrientation(LinearLayout.VERTICAL);
             petCol.addView(text(act, "打熊使用宠物战斗技能", 12.5f, UiStyle.INK, true));
             TextView petHint = text(act,
-                    "开启后自动使用全部战斗技能（排除 550051「锋锐铁喙」）", 10.5f,
+                    "开启后自动使用全部战斗技能（不包含「锋锐铁喙」）", 10.5f,
                     UiStyle.INK2, false);
             petHint.setPadding(0, dp(act, 2), 0, 0);
             petCol.addView(petHint);
@@ -225,9 +289,10 @@ public final class FormationPicker {
         long fnIdValue = FormationStore.fnFormationId(act, fpid, sid, fnId);
         String launchLabel = "打熊队";
         String launchValue = FormationStore.MODE_ROLE.equals(fnMode) && fnIdValue > 0
-                ? "#" + fnIdValue + " " + nameOf(act, fpid, sid, fnIdValue) : "自动";
+                ? nameOf(act, fpid, sid, fnIdValue) : "自动";
         card.addView(UiStyle.dropdownRow(act, launchLabel, launchValue,
-                () -> pickFormationFor(act, fpid, sid, uid, null,
+                () -> pickFormationFor(act, fpid, sid, uid, null, fnMode,
+                        new long[]{fnIdValue},
                         (mode, ids, inf, lanc, mark, ratios) -> {
                             if (FormationStore.MODE_ROLE.equals(mode) && ids.length > 0) {
                                 FormationStore.saveFnMode(act, fpid, sid, fnId, FormationStore.MODE_ROLE);
@@ -255,14 +320,15 @@ public final class FormationPicker {
             if (!FormationStore.MODE_ROLE.equals(mode) || fid <= 0) {
                 value = "自动";
             } else {
-                value = "#" + fid + " " + nameOf(act, fpid, sid, fid);
+                value = nameOf(act, fpid, sid, fid);
             }
             LinearLayout row = new LinearLayout(act);
             row.setOrientation(LinearLayout.HORIZONTAL);
             row.setGravity(Gravity.CENTER_VERTICAL);
             TextView dd = UiStyle.dropdownRow(act, "上车队 " + joinId,
                     value + (enabled ? "" : "（已停用）"),
-                    () -> pickFormationFor(act, fpid, sid, uid, null,
+                    () -> pickFormationFor(act, fpid, sid, uid, null, mode,
+                            new long[]{fid},
                             (mode2, ids, inf, lanc, mark, ratios) -> {
                                 boolean cur = FormationStore.joinEnabled(
                                         FormationStore.joinFormation(act, fpid, sid, fnId, joinId));
@@ -317,6 +383,17 @@ public final class FormationPicker {
     public static void pickFormationFor(final Activity act, final String fpid, final long sid,
                                         final String uid, final List<Long> disabledIds,
                                         final OnFormationPickedDetail cb) {
+        pickFormationFor(act, fpid, sid, uid, disabledIds, null, null, cb);
+    }
+
+    /**
+     * 2026-11-09（用户反馈）：打开选择器时按「当前绑定」初始定位——
+     * 已选打熊队/熊上车N 时直接落在「巨熊编队」来源并选中该队，而不是默认「自动 5/2/3 盾矛弓」。
+     */
+    public static void pickFormationFor(final Activity act, final String fpid, final long sid,
+                                        final String uid, final List<Long> disabledIds,
+                                        final String initialMode, final long[] initialIds,
+                                        final OnFormationPickedDetail cb) {
         if (act == null) return;
         if (fpid == null || fpid.trim().isEmpty() || sid <= 0) {
             UiStyle.toast(act, "等待角色同步，请先选择角色");
@@ -338,8 +415,12 @@ public final class FormationPicker {
         final List<Long> disabled = disabledIds == null
                 ? new ArrayList<Long>() : disabledIds;
 
-        final String[] source = {SRC_AUTO};
-        final long[] selectedId = {0L};
+        long initialId = initialIds == null || initialIds.length == 0 ? 0L : initialIds[0];
+        String initialSource = FormationStore.MODE_ROLE.equals(
+                FormationStore.normalizeMode(initialMode)) && initialId != 0L
+                ? sourceOfId(initialId, lib, games) : SRC_AUTO;
+        final String[] source = {initialSource};
+        final long[] selectedId = {initialId};
         final LinearLayout body = new LinearLayout(act);
         body.setOrientation(LinearLayout.VERTICAL);
         body.setPadding(dp(act, 16), dp(act, 8), dp(act, 16), dp(act, 8));
@@ -445,8 +526,32 @@ public final class FormationPicker {
             return;
         }
         List<FormationModel> list = host.listOf(source[0]);
-        host.tabKey = list.isEmpty() ? "" : host.keyOf(list.get(0));
-        selectedId[0] = list.isEmpty() ? 0L : list.get(0).id;
+        FormationModel want = null;
+        for (FormationModel f : list) {
+            if (f != null && f.id == selectedId[0]) {
+                want = f;
+                break;
+            }
+        }
+        if (want == null && !list.isEmpty()) want = list.get(0);
+        host.tabKey = want == null ? "" : host.keyOf(want);
+        selectedId[0] = want == null ? 0L : want.id;
+    }
+
+    /** 编队 id 归属的来源 tab（游戏/巨熊/预设）。 */
+    private static String sourceOfId(long id, List<FormationModel> lib, List<FormationModel> games) {
+        if (id < 0) return SRC_GAME;
+        if (lib != null) {
+            for (FormationModel f : lib) {
+                if (f == null || f.id != id) continue;
+                if (isBear(f)) return SRC_BEAR;
+                return SRC_PRESET;
+            }
+        }
+        if (games != null) {
+            for (FormationModel f : games) if (f != null && f.id == id) return SRC_GAME;
+        }
+        return SRC_PRESET;
     }
 
     /** 只读 Board 不可用时的降级列表（保证选择器永远可操作）。 */
@@ -543,7 +648,7 @@ public final class FormationPicker {
         StringBuilder sb = new StringBuilder();
         for (long id : ids) {
             FormationModel f = find(lib, id);
-            String name = f == null ? ("#" + id + "（已删除）")
+            String name = f == null ? "编队已删除"
                     : (f.name == null || f.name.isEmpty() ? ("编队 " + f.id) : f.name);
             if (sb.length() > 0) sb.append('、');
             sb.append(name);

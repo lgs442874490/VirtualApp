@@ -71,12 +71,13 @@ public final class BehemothTeamCard {
         long formationId = FormationStore.fnFormationId(act, fpid, sid, fnId);
         String value;
         if (FormationStore.MODE_ROLE.equals(mode) && formationId > 0) {
-            value = nameOf(act, fpid, sid, formationId) + "（#" + formationId + "）";
+            value = nameOf(act, fpid, sid, formationId);   // 只显示编队名字（去掉 #编号）
         } else {
             value = "自动（最强盾 / 波根 / 吉娜）";
         }
         card.addView(UiStyle.dropdownRow(act, "巨兽队", value,
-                () -> FormationPicker.pickFormationFor(act, fpid, sid, uid, null,
+                () -> FormationPicker.pickFormationFor(act, fpid, sid, uid, null, mode,
+                        new long[]{formationId},
                         (pickedMode, ids, inf, lancer, marksman, ratios) -> {
                             if (FormationStore.MODE_ROLE.equals(pickedMode) && ids.length > 0) {
                                 FormationStore.saveFnMode(act, fpid, sid, fnId, FormationStore.MODE_ROLE);
@@ -134,7 +135,7 @@ public final class BehemothTeamCard {
             if (f != null && f.name != null && !f.name.trim().isEmpty()) return f.name;
         } catch (Throwable ignored) {
         }
-        return "#" + id;
+        return "编队已删除";
     }
 
     private static void sync(Activity act) {

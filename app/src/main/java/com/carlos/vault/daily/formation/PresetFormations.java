@@ -146,6 +146,30 @@ public final class PresetFormations {
                 }
             };
 
+    /**
+     * 英雄强度（2026-11-09 定论）：<b>代际优先</b>——游戏英雄目录没有可用战力字段
+     * （生产实测 {@code srv:formation:catalog} 里 40 个英雄的 {@code power} 全为 0，
+     * 网页版同样拿不到，故其模板按 {@code GENERATION_PLANS} 按代选人）。
+     * 排序：代际降序 → 星级 → 专武 → 等级 → 战力（有则用）→ id。
+     */
+    private static final Comparator<FormationStore.Hero> GENERATION_DESC =
+            new Comparator<FormationStore.Hero>() {
+                @Override
+                public int compare(FormationStore.Hero a, FormationStore.Hero b) {
+                    int c = Integer.compare(b.generation, a.generation);
+                    if (c != 0) return c;
+                    c = Integer.compare(b.starDisplay, a.starDisplay);
+                    if (c != 0) return c;
+                    c = Integer.compare(b.weaponLevel, a.weaponLevel);
+                    if (c != 0) return c;
+                    c = Long.compare(b.level, a.level);
+                    if (c != 0) return c;
+                    c = Long.compare(b.power, a.power);
+                    return c != 0 ? c : Long.compare(a.id, b.id);
+                }
+            };
+
+
     private PresetFormations() {
     }
 
@@ -361,21 +385,23 @@ public final class PresetFormations {
 
         // 10..19 熊上车：技能排序 → 前 6 队写入库；其余仅备选
         List<BearRidePick> picks = bearRidePicks(v, bearTeamHeroes);
-        Map<Integer, List<Long>> teamsByOrder = new LinkedHashMap<Integer, List<Long>>();
+        // 2026-11-09（用户口径）：上车队按「出征队列顺延」连续编号 1..6，技能排序只决定
+        // 队长分配顺序；旧实现按原始候选序号写库，会写成 熊上车2/3/5/7/8/10（UI 缺号）。
+        Map<Integer, List<Long>> teamsBySeq = new LinkedHashMap<Integer, List<Long>>();
         Set<Long> bearRideUsed = new LinkedHashSet<Long>(bearTeamHeroes);
         // 先预留全部候选队长：禁止高优先级队的补位抢走后续队队长（跨队英雄不得重复）
         for (BearRidePick pick : picks) bearRideUsed.add(Long.valueOf(pick.captainId));
+        int seq = 0;
         for (BearRidePick pick : picks) {
             List<Long> heroes = new ArrayList<Long>();
             heroes.add(pick.captainId);
             fillUp(v, heroes, bearRideUsed, FormationModel.HERO_MAX - heroes.size());
-            teamsByOrder.put(pick.order, heroes);
-        }
-        for (int i = 0; i < picks.size() && i < BEAR_RIDE_MAX_TEAMS; i++) {
-            r.keptBearRideIds.add(bearRideIndexToId(picks.get(i).order));
+            teamsBySeq.put(seq, heroes);
+            if (seq < BEAR_RIDE_MAX_TEAMS) r.keptBearRideIds.add(bearRideIndexToId(seq));
+            seq++;
         }
         for (int order = 0; order < BEAR_RIDE_NAMES.length; order++) {
-            List<Long> heroes = teamsByOrder.get(order);
+            List<Long> heroes = teamsBySeq.get(order);
             r.models.add(build(10 + order, BEAR_RIDE_NAMES[order],
                     BEAR_RIDE_TPL[order], 10, 20, 70,
                     heroes == null ? new ArrayList<Long>() : heroes, cat));
@@ -399,16 +425,22 @@ public final class PresetFormations {
 
     /**
      * 打熊队：盾优先级 ①满星满专武尼莫 → ②4 星以上赫克托 → ③尼莫或娜塔莉亚 → ④最强盾；
-     * 矛=米亚(缺→最强矛，避开熊上车队长)；弓=最强弓（避开熊上车队长）。
+     * 矛=米亚(缺→最强矛)；弓=<b>最强弓（战力+装备综合，游戏 power 口径）</b>。
+     *
+     * <p><b>2026-11-08 修正（用户口径）</b>：打熊队优先级<b>高于</b>熊上车队——选弓/矛
+     * <b>不避让熊上车队长</b>，最强英雄直接给发车队；上车队侧再用
+     * {@code bearRideUsed = 发车队英雄} 避让（见 {@link #resolve}），不会重复占用。
+     * 旧实现反向避让：账号里最强弓恰是上车队长时会被跳过，退而选到最弱一批的弓
+     * （生产 21:30 场：打熊队弓=50006 巴希提 gen0）。
      */
     private static List<Long> heroesForBearTeam(View v) {
         List<Long> out = new ArrayList<Long>();
         if (v == null) return out;
         addHero(out, bearTeamShield(v));
         long spear = v.resolve("米亚");
-        if (spear <= 0) spear = v.strongest(HeroCatalog.LANCER, BEAR_RIDE_CAPTAIN_ID_SET);
+        if (spear <= 0) spear = v.strongest(HeroCatalog.LANCER, null);
         addHero(out, spear);
-        addHero(out, v.strongest(HeroCatalog.MARKSMAN, BEAR_RIDE_CAPTAIN_ID_SET));
+        addHero(out, v.strongest(HeroCatalog.MARKSMAN, null));
         return out;
     }
 
@@ -666,6 +698,7 @@ public final class PresetFormations {
         final FormationCatalogStore cat;
         final List<FormationStore.Hero> heroes;
         final List<FormationStore.Hero> byPower;
+        final List<FormationStore.Hero> byGeneration;
         final Map<Long, FormationStore.Hero> index;
 
         View(FormationCatalogStore cat) {
@@ -677,6 +710,8 @@ public final class PresetFormations {
             for (FormationStore.Hero h : list) index.put(Long.valueOf(h.id), h);
             this.byPower = new ArrayList<FormationStore.Hero>(list);
             Collections.sort(byPower, POWER_DESC);
+            this.byGeneration = new ArrayList<FormationStore.Hero>(list);
+            Collections.sort(byGeneration, GENERATION_DESC);
         }
 
         FormationStore.Hero hero(long id) {
@@ -705,6 +740,9 @@ public final class PresetFormations {
         }
 
         long strongest(int profession, Set<Long> exclude) {
+            // 最强 = 游戏实力（网页版同口径）：服务端 HeroPowerCatalog 已按
+            // 等级×levelPowerRatio + 星级×starPowerRatio + 技能 + 装备(强化/天赋/突破) + 专武
+            // 算出 power（2026-11-09），故优先按 power；缺失时退化到 level/star/id。
             for (FormationStore.Hero h : byPower) {
                 if (exclude != null && exclude.contains(Long.valueOf(h.id))) continue;
                 if (FormationRules.professionOf(h) == profession) return h.id;

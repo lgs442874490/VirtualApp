@@ -238,6 +238,17 @@ public final class VaultSync {
                     // 2026-10-20：sync 成功只代表 payload 被接收，会话重启异步——
                     // 此处不再清 dirty；改由 learnServerRole 收到与本地一致的 activeUid
                     // 时按 fpid 清除（另有 TTL 兜底），避免旧快照把刚切的角色回滚。
+                    // 2026-11-08：服务端接受同步后清空「待删除账号」列表；被骤减保护拒绝时保留，
+                    // 下次（带 deletedFpids）重试仍可放行。
+                    try {
+                        boolean rejected = data != null
+                                && (data.optBoolean("emptyRejected", false)
+                                    || data.optBoolean("shrinkRejected", false));
+                        if (code == 0 && !rejected && data != null && data.optInt("accepted", 0) > 0) {
+                            new AccountStore(app).clearPendingDeleted();
+                        }
+                    } catch (Throwable ignored) {
+                    }
                     if (done != null) done.onResult(code, message, data);
                 }));
     }
@@ -1415,7 +1426,12 @@ public final class VaultSync {
                 JSONArray roles = new JSONArray();
                 for (RoleStore.Role r : RoleStore.roles(ctx, a.fpid)) {
                     if (r.serverid <= 0) continue;
-                    String rid = store.getRoleSettings(a.fpid, r.serverid);
+                    // 角色级指纹（2026-11-08）：优先 sid:uid 键（同服多角色各自一台设备），
+                    // 旧数据回落 sid 键；服务端按 sid:uid 学习/派生，避免同设备互踢。
+                    String rid = store.getRoleSettings(a.fpid, r.serverid, r.uid);
+                    if (rid == null || rid.isEmpty()) {
+                        rid = store.getRoleSettings(a.fpid, r.serverid);
+                    }
                     // 任务开关（服务器按角色执行整轮的依据）
                     // 有效配置（2026-10-28 功能型 bug A/B）：稀疏/旧 map 必须用全部任务默认值
                     // 补齐后再整包上传，否则服务端读不到 barracks/intel/arena 等键会判「配置未启用」，
@@ -1463,6 +1479,12 @@ public final class VaultSync {
         }
         f.put("accountsJson", accounts.toString());
         f.put("count", accounts.length());
+        // 2026-11-08：显式删除的账号随 sync 上传，服务端骤减保护据此放行（防其它设备整库覆盖误删）。
+        try {
+            String deleted = new AccountStore(ctx).pendingDeletedFpidsJoined();
+            if (!deleted.isEmpty()) f.put("deletedFpids", deleted);
+        } catch (Throwable ignored) {
+        }
         return f;
     }
 

@@ -162,14 +162,16 @@ public final class FnDetail {
         fn("act_truck",
                 new Sub("take", "领送达奖励", "已送达货车的奖励自动领取", true, null),
                 new Sub("send", "自动发车", "用一名英雄自动发出货车（劫掠他人默认关）", true, null),
-                new Sub("refresh", "刷新货车品质", "未达标货车自动刷新（品质<target_quality；免费优先，钻石刷新受 diamond_refresh_max 预算）", false, null));
+                new Sub("refresh", "刷新货车品质", "未达标货车自动刷新：优先消耗任务送的刷新券，用尽后按预算用钻石（100/200…逐次叠加，diamond_refresh_max 上限）", false, null));
         fn("act_arsenal_league",
                 new Sub("bet", "自动竞猜下注", "活动期自动下注（按战力选强侧；默认关）", false,
-                        new String[][]{{"100", "100币"}, {"500", "500币"}, {"1000", "1000币"}, {"4500", "4500币"}}));
+                        new String[][]{{"10000", "拉满 10000币"}, {"4500", "4500币"}, {"1000", "1000币"}}));
         fn("act_slg_league",
                 new Sub("like", "点赞", "给前三名点赞（幂等）", true, null));
         fn("act_cross_capital_revive",
-                new Sub("revive", "自动复活", "活动期检测到阵亡 → 全复活 + 联盟求助", true, null));
+                new Sub("revive", "自动复活", "活动期检测到阵亡 → 免费复活 30% + 联盟求助", true, null),
+                new Sub("help_revive", "援助盟友复活", "用自己的复活币帮阵亡最多的盟友复活（上限 20 币）", true, null),
+                new Sub("buy_diamond", "花钻石复活", "自己复活未达 90% 时用钻石买复活药剂：每份 +1%，第 1 份 50 钻、第 2 份 100、第 3 份 150…最多 10 份补满 90%", false, null));
         fn("ally_offline_guard",
                 new Sub("watch", "查询离线", "从战争/态势通知自动发现被攻击盟友并查询在线状态（无需输入 uid）", true, null),
                 new Sub("force", "强制上线", "离线盟友自动顶号上线开盾（按账号库定位角色）", false,

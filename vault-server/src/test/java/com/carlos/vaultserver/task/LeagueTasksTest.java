@@ -154,7 +154,43 @@ public class LeagueTasksTest {
         assertTrue("应发竞猜下注", idx >= 0);
         Map<String, Object> args = e.argsList.get(idx);
         assertEquals("按战力选强侧 2", 2, ((Number) args.get("side")).intValue());
-        assertEquals(4500L, ((Number) args.get("num")).longValue());
+        assertEquals("用户口径：每场拉满 10000", 10000L, ((Number) args.get("num")).longValue());
+    }
+
+    @Test
+    public void arsenalBetPicksTopThreeByPowerGapAtTenThousandCap() {
+        TestEngine e = new TestEngine();
+        Map<String, Object> gi = new LinkedHashMap<>();
+        gi.put("id", 2963001L);
+        gi.put("group_id", 17L);
+        e.guessInfo = gi;
+        // 4 场：差距 100 / 500 / 50 / 300 → 应选差最大的 3 场（500/300/100），每场 10000
+        Map<String, Object> infos = new LinkedHashMap<>();
+        long[][] rows = {{1L, 100L, 200L}, {2L, 100L, 600L}, {3L, 100L, 150L}, {4L, 100L, 400L}};
+        for (long[] r : rows) {
+            Map<String, Object> inf = new LinkedHashMap<>();
+            inf.put("match_id", r[0]);
+            inf.put("match", Map.of("sides", Map.of(
+                    "1", Map.of("power", r[1]),
+                    "2", Map.of("power", r[2]))));
+            infos.put(String.valueOf(r[0]), inf);
+        }
+        e.betInfo = infos;
+
+        JSONObject p = new JSONObject();
+        p.put("auto_bet", true);   // 未配 bet_amount → 每场上限 10000
+        ServerActivityTasks.arsenalLeague(tc(e, p));
+
+        assertEquals("每场都拉满 10000，最多 3 场", 3, count(e.calls, "req_arsenal_league_guess_bet_winner"));
+        java.util.List<Long> matchIds = new java.util.ArrayList<Long>();
+        for (int i = 0; i < e.calls.size(); i++) {
+            if ("req_arsenal_league_guess_bet_winner".equals(e.calls.get(i))) {
+                Map<String, Object> args = e.argsList.get(i);
+                matchIds.add(((Number) args.get("match_id")).longValue());
+                assertEquals("每场上限 10000", 10000L, ((Number) args.get("num")).longValue());
+            }
+        }
+        assertEquals("差距最大的三场（500/300/100）", java.util.Arrays.asList(2L, 4L, 1L), matchIds);
     }
 
     @Test
