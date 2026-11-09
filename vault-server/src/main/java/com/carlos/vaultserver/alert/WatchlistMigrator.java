@@ -102,14 +102,14 @@ public final class WatchlistMigrator {
             }
         }
 
-        // 3) App 本地 seed（uid → fid，平稳过渡默认启用）
+        // 3) App 本地 seed（uid → fid；默认暂停，用户在页面确认后再启用）
         if (localSeeds != null) {
             for (LocalSeed s : localSeeds) {
                 if (s.uid <= 0L) {
                     r.skipped++;
                     continue;
                 }
-                mergeOne(r, store, svc, dir, s.uid, s.note, s.kid, "MIGRATED_LOCAL", true, dryRun);
+                mergeOne(r, store, svc, dir, s.uid, s.note, s.kid, "MIGRATED_LOCAL", false, dryRun);
             }
         }
 

@@ -158,14 +158,14 @@ public class WatchlistMigratorTest {
     }
 
     @Test
-    public void localSeedsAreMigratedEnabledByDefault() throws Exception {
+    public void localSeedsAreMigratedPausedByDefault() throws Exception {
         writePlayerDirectory(57347368L, "900000001", "种子");
         java.util.List<WatchlistMigrator.LocalSeed> seeds = new java.util.ArrayList<>();
         seeds.add(new WatchlistMigrator.LocalSeed(57347368L, "本地种子", "888"));
         WatchlistMigrator.run(store, buildWps(), svc, seeds, false);
         VaultStore.AlertWatchEntry e = svc.find("900000001");
         assertNotNull(e);
-        assertTrue(e.enabled);
+        assertFalse("App 本地 seed 迁移后默认暂停", e.enabled);
         assertEquals("MIGRATED_LOCAL", e.source);
     }
 }
