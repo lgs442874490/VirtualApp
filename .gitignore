@@ -134,3 +134,6 @@ license-server/deploy/license-server-linux
 
 # DexPatch 发布 staging（tools/dexpatch_prepare.sh 生成）
 .dexpatch/
+
+# 部署总览（含主机/SSH/密钥路径），只存本地不入库
+docs/deploy/部署总览-*.md
