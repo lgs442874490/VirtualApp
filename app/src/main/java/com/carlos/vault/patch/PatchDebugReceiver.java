@@ -34,12 +34,23 @@ public class PatchDebugReceiver extends BroadcastReceiver {
 
     private static final String TAG = "DexPatch";
 
+    /**
+     * 是否 debug 构建。
+     *
+     * <p><b>不能用 {@code BuildConfig.DEBUG}</b>：本项目 release 也配置了
+     * {@code debuggable true}（run-as 调试容器数据依赖它），而 AGP 的
+     * {@code BuildConfig.DEBUG} 跟随 debuggable，导致生产包该值恒为 true，
+     * 签名校验会被整段跳过（2026-11-10 实测：无签名广播也能清除补丁）。
+     * 这里改用 BUILD_TYPE 精确区分构建类型。
+     */
+    private static final boolean IS_DEBUG_BUILD = "debug".equals(BuildConfig.BUILD_TYPE);
+
     @Override
     public void onReceive(Context context, Intent intent) {
         String action = intent == null ? "" : intent.getAction();
         // release 包不再一律拒绝：改为 HMAC 签名校验（见 hasValidSignature）。
         // 这样生产环境可用带签名的广播清除/查询补丁，同时不给任意应用留后门。
-        if (!BuildConfig.DEBUG && !hasValidSignature(intent, action)) {
+        if (!IS_DEBUG_BUILD && !hasValidSignature(intent, action)) {
             Log.w(TAG, "unsigned broadcast rejected: " + action);
             return;
         }
