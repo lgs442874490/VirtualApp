@@ -77,6 +77,13 @@ public final class WarNotifyGate {
     }
 
     /** 最近事件列表行（UI）：`MM-dd HH:mm 进攻 宿敌(3,4) @k888`。 */
+    /** 观察点事件（只有 text）：列表行用 text 首行。 */
+    public static String formatTextRow(long detectedAt, String text) {
+        String t = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(new Date(detectedAt));
+        String first = text == null ? "" : text.split("\n", -1)[0];
+        return t + " " + first;
+    }
+
     public static String formatEventRow(long detectedAt, String action, String targetName,
                                         boolean hasXY, int x, int y, long sid) {
         String t = new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(new Date(detectedAt));
@@ -201,6 +208,8 @@ public final class WarNotifyGate {
     /** 事件详情纯文本（点开弹窗）：6 项字段 + 结算 + 来源/事件号，缺失行自动省略。 */
     public static String formatEventDetail(JSONObject e) {
         if (e == null) return "";
+        String fullText = e.optString("text", "");
+        if (!fullText.isEmpty()) return fullText;   // 观察点事件：文案已是完整正文
         boolean settle = "settle".equals(e.optString("phase", ""));
         StringBuilder sb = new StringBuilder();
         long at = e.optLong("detectedAt", 0);

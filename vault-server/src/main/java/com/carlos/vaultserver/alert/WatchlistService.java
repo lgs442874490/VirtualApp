@@ -51,7 +51,9 @@ public final class WatchlistService {
         e.source = "USER";
         e.enabled = true;
         resolve(e);
-        return upsert(e);
+        boolean ok = upsert(e);
+        if (ok && e.uid > 0L) store.removeAlertUnresolvedByUid(e.uid);   // 补填成功：清掉旧占位
+        return ok;
     }
 
     public boolean update(String fid, String note, Boolean enabled) {

@@ -1269,6 +1269,15 @@ public final class VaultStore {
         }
     }
 
+    /** 用户补填 fid 成功后，按 uid 清掉迁移期 unresolved 占位。 */
+    public void removeAlertUnresolvedByUid(long uid) {
+        if (uid <= 0L) return;
+        synchronized (lock) {
+            boolean removed = alertUnresolved.removeIf(e -> e.uid == uid);
+            if (removed) saveLocked();
+        }
+    }
+
     /** 记录一条无法反查 fid 的旧条目（迁移用；legacyRaw 存原 uid/坐标）。 */
     public void addAlertUnresolved(AlertWatchEntry e) {
         if (e == null) return;

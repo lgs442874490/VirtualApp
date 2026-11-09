@@ -967,6 +967,7 @@ public final class WatchPointEngine {
         // 超时清理 + 告警去重表清理
         if (now - lastPruneAt > 60_000L) {
             lastPruneAt = now;
+            com.carlos.vaultserver.alert.AlertRegistry.sweepDeduper(now);
             // 名单里已删除的目标，跟踪状态一并清掉（防 map 无限增长）
             if (targetSeenAt.size() > 32) {
                 targetSeenAt.keySet().removeIf(uid -> !isMonitoredUid(uid));

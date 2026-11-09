@@ -68,8 +68,15 @@ public final class WatchEventStore {
 
     /** 追加事件（自动赋 seq 与 eventId）；返回带 seq 的最终事件。 */
     public JSONObject append(JSONObject event) {
-        JSONObject stored;
         synchronized (lock) {
+            return appendLocked(event);
+        }
+    }
+
+    /** 锁内追加（append/appendOnce 共用，保证幂等检查与写入原子）。 */
+    private JSONObject appendLocked(JSONObject event) {
+        JSONObject stored;
+        {
             stored = event == null ? new JSONObject() : new JSONObject(event.toString());
             stored.put("seq", ++seq);
             if (!stored.has("eventId") || stored.optString("eventId", "").isEmpty()) {
@@ -94,14 +101,12 @@ public final class WatchEventStore {
      */
     public boolean appendOnce(JSONObject event) {
         if (event == null) return false;
-        String key = event.optString("alertKey", "");
-        if (!key.isEmpty()) {
-            synchronized (lock) {
-                if (byAlertKey.containsKey(key)) return false;
-            }
+        synchronized (lock) {
+            String key = event.optString("alertKey", "");
+            if (!key.isEmpty() && byAlertKey.containsKey(key)) return false;
+            appendLocked(event);
+            return true;
         }
-        append(event);
-        return true;
     }
 
     /** cursor（上次最大 seq）之后的事件，最旧在前；超过 FETCH_LIMIT 分页取。 */

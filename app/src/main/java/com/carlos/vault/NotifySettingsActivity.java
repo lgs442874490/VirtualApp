@@ -403,21 +403,10 @@ public class NotifySettingsActivity extends Activity {
         return sb.toString();
     }
 
-    /** 名单 + 配置渲染（回调线程 → UI 线程）。 */
+    /** 配置渲染（回调线程 → UI 线程）。名单由 renderAlertEntries（新 fid 名单）单独渲染。 */
     private void renderWatchData(JSONObject data) {
-        JSONArray targets = data.optJSONArray("targets");
         JSONObject config = data.optJSONObject("config");
         runOnUiThread(() -> {
-            targetUidOrder.clear();
-            targetsBox.removeAllViews();
-            int n = targets == null ? 0 : targets.length();
-            if (n == 0) {
-                targetsBox.addView(hint("暂无监视目标 —— 用下方卡片添加（填游戏内 FID，见好友/战报页）。"));
-            }
-            for (int i = 0; i < n; i++) {
-                JSONObject t = targets.optJSONObject(i);
-                if (t != null) targetsBox.addView(targetRow(t));
-            }
             if (config != null) {
                 watchSw.setOn(config.optBoolean("enabled", false));
                 wecomSw.setOn(config.optBoolean("wecomEnabled", true));
@@ -576,56 +565,89 @@ public class NotifySettingsActivity extends Activity {
 
     /** 最近事件列表（取最近 20 条倒序展示）。 */
     private void refreshEvents() {
-        VaultSync.fetchEvents(this, 0, (code, message, data) -> {
-            if (code != 0 || data == null) return;
+        // P4：游标分页拉取（服务端单页 100，最多 5 页=500 条），倒序展示最近 100 条。
+        loadEventPages(0L, new JSONArray(), 0);
+    }
+
+    private void loadEventPages(long cursor, JSONArray acc, int pages) {
+        if (pages >= 5) {
+            renderEventRows(acc);
+            return;
+        }
+        VaultSync.fetchEvents(this, cursor, (code, message, data) -> {
+            if (code != 0 || data == null) {
+                renderEventRows(acc);
+                return;
+            }
             JSONArray events = data.optJSONArray("events");
-            runOnUiThread(() -> {
-                eventsBox.removeAllViews();
-                if (events == null || events.length() == 0) {
-                    eventsBox.addView(hint("暂无事件记录 —— 命中监视敌人动作后这里会出现时间线。"));
-                    return;
+            if (events == null || events.length() == 0) {
+                renderEventRows(acc);
+                return;
+            }
+            for (int i = 0; i < events.length(); i++) {
+                JSONObject e = events.optJSONObject(i);
+                if (e != null) acc.put(e);
+            }
+            JSONObject last = events.optJSONObject(events.length() - 1);
+            long lastSeq = last == null ? 0L : last.optLong("seq", 0L);
+            long ack = data.optLong("ackCursor", 0L);
+            if (lastSeq <= 0L || lastSeq >= ack) {
+                renderEventRows(acc);
+                return;
+            }
+            loadEventPages(lastSeq, acc, pages + 1);
+        });
+    }
+
+    private void renderEventRows(JSONArray events) {
+        runOnUiThread(() -> {
+            eventsBox.removeAllViews();
+            if (events == null || events.length() == 0) {
+                eventsBox.addView(hint("暂无事件记录 —— 命中关注玩家动作后这里会出现时间线。"));
+                return;
+            }
+            int from = Math.max(0, events.length() - 100);
+            for (int i = events.length() - 1; i >= from; i--) {
+                JSONObject e = events.optJSONObject(i);
+                if (e == null) continue;
+                JSONObject ep = e.optJSONObject("endpoint");
+                boolean hasXY = ep != null;
+                LinearLayout row = UiComponents.card(this);
+                row.setOrientation(LinearLayout.VERTICAL);
+                row.setPadding(dp(12), dp(8), dp(12), dp(8));
+                LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                rlp.bottomMargin = dp(6);
+                row.setLayoutParams(rlp);
+                TextView line = new TextView(this);
+                String text = e.optString("text", "");
+                line.setText(text.isEmpty()
+                        ? WarNotifyGate.formatEventRow(e.optLong("detectedAt", 0),
+                                e.optString("action", ""), e.optString("targetName", ""),
+                                hasXY, hasXY ? ep.optInt("x") : 0, hasXY ? ep.optInt("y") : 0,
+                                e.optLong("sid", 0))
+                        : WarNotifyGate.formatTextRow(e.optLong("detectedAt", 0), text));
+                line.setTextSize(12.5f);
+                line.setTextColor(UiStyle.INK);
+                row.addView(line);
+                // v4.1.8：第二行展示新字段（行为/兵力/ETA 或 结算/破城）
+                String sub = WarNotifyGate.formatEventSub(e);
+                if (!sub.isEmpty()) {
+                    TextView subV = new TextView(this);
+                    subV.setText(sub);
+                    subV.setTextSize(11f);
+                    subV.setPadding(0, dp(2), 0, 0);
+                    subV.setTextColor(UiStyle.INK2);
+                    row.addView(subV);
                 }
-                int from = Math.max(0, events.length() - 20);
-                for (int i = events.length() - 1; i >= from; i--) {
-                    JSONObject e = events.optJSONObject(i);
-                    if (e == null) continue;
-                    JSONObject ep = e.optJSONObject("endpoint");
-                    boolean hasXY = ep != null;
-                    LinearLayout row = UiComponents.card(this);
-                    row.setOrientation(LinearLayout.VERTICAL);
-                    row.setPadding(dp(12), dp(8), dp(12), dp(8));
-                    LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                    rlp.bottomMargin = dp(6);
-                    row.setLayoutParams(rlp);
-                    TextView line = new TextView(this);
-                    line.setText(WarNotifyGate.formatEventRow(e.optLong("detectedAt", 0),
-                            e.optString("action", ""), e.optString("targetName", ""),
-                            hasXY, hasXY ? ep.optInt("x") : 0, hasXY ? ep.optInt("y") : 0,
-                            e.optLong("sid", 0)));
-                    line.setTextSize(12.5f);
-                    line.setTextColor(UiStyle.INK);
-                    row.addView(line);
-                    // v4.1.8：第二行展示新字段（行为/兵力/ETA 或 结算/破城）
-                    String sub = WarNotifyGate.formatEventSub(e);
-                    if (!sub.isEmpty()) {
-                        TextView subV = new TextView(this);
-                        subV.setText(sub);
-                        subV.setTextSize(11f);
-                        subV.setPadding(0, dp(2), 0, 0);
-                        subV.setTextColor(UiStyle.INK2);
-                        row.addView(subV);
-                    }
-                    // 条目可点开详情（纯文本弹窗）
-                    UiStyle.press(row);
-                    row.setOnClickListener(v -> new AlertDialog.Builder(this,
-                                    AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                            .setTitle("事件详情")
-                            .setMessage(WarNotifyGate.formatEventDetail(e))
-                            .setPositiveButton("关闭", null).show());
-                    eventsBox.addView(row);
-                }
-            });
+                UiStyle.press(row);
+                row.setOnClickListener(v -> new AlertDialog.Builder(this,
+                                AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                        .setTitle("事件详情")
+                        .setMessage(WarNotifyGate.formatEventDetail(e))
+                        .setPositiveButton("关闭", null).show());
+                eventsBox.addView(row);
+            }
         });
     }
 

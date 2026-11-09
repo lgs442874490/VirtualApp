@@ -523,12 +523,6 @@ public final class WarNotify {
     /** 初始动作事件：侦查按「5 分钟窗口内每个敌人前 3 次」配额，其余按冷却 → 事件入库 → 企微 → 昵称异步回填。 */
     private void emitAction(String fpid, VaultStore.WatchConfig cfg, Track t, long endSec) {
         long now = System.currentTimeMillis();
-        // P3：与观察点共用 A2 全局去重（同一 owner+marchId 只推一次；a/c/d 各自独立）
-        if (!com.carlos.vaultserver.alert.AlertRegistry.firstA2(t.targetUid, t.marchId)) {
-            FileLog.info("战争通知跳过（观察点已推同一条行军）uid={} 行军{}",
-                    String.valueOf(t.targetUid), String.valueOf(t.marchId));
-            return;
-        }
         if (ACT_RECON.equals(t.action)) {
             // 用户 2026-11-01 硬规则：侦查类推送五分钟内每个敌人只推前三次（计数口径，取代通用冷却）
             if (!scoutQuota.allow(t.targetUid, now)) {
@@ -537,15 +531,21 @@ public final class WarNotify {
                         fpid, t.targetUid, t.marchId, ScoutPushQuota.MAX_PUSHES);
                 return;
             }
-        } else {
-            // P3：冷却按「攻击者+目标点+动作」；集结出征 30s，其余沿用 cooldownSeconds。
-            // a 打 b 与 a 打 c 是不同目标点，各自独立；c/d 打 b 是不同攻击者，各自独立。
-            long coolMs = t.marchType == 102L ? 30_000L : cfg.cooldownSeconds * 1000L;
-            if (throttled(t.targetUid + "|" + t.ex + ":" + t.ey + "|" + t.action, coolMs, now)) {
+        } else if (t.marchType != 102L) {
+            // 普通进攻仍按冷却节流；集结出征（102）不在这里拦——每一波都要进 30s 聚合器计数，
+            // 否则同目标 30s 内第 2 波被冷却丢弃，聚合永远只有首条、"共 N 波"补发失效。
+            if (throttled(t.targetUid + "|" + t.ex + ":" + t.ey + "|" + t.action,
+                    cfg.cooldownSeconds * 1000L, now)) {
                 FileLog.info("战争通知节流 {} uid={} {}（冷却中，丢弃）",
                         fpid, t.targetUid, t.action);
                 return;
             }
+        }
+        // P3：通过配额/冷却后再占 A2 全局去重键（避免被冷却丢弃时误占，导致观察点也漏推）
+        if (!com.carlos.vaultserver.alert.AlertRegistry.firstA2(t.targetUid, t.marchId)) {
+            FileLog.info("战争通知跳过（观察点已推同一条行军）uid={} 行军{}",
+                    String.valueOf(t.targetUid), String.valueOf(t.marchId));
+            return;
         }
         JSONObject e = baseEvent(t, now);
         e.put("phase", PHASE_ACTION);
@@ -590,6 +590,7 @@ public final class WarNotify {
             VaultStore.WatchConfig cfg = store.watchConfig();
             if (!cfg.wecomEnabled || cfg.webhookUrl == null || cfg.webhookUrl.trim().isEmpty()) return;
             long now = System.currentTimeMillis();
+            if (inQuietHours(cfg, now)) return;   // 静默只抑制企微，与即时告警同口径
             for (com.carlos.vaultserver.alert.AlertAggregator.Window w
                     : com.carlos.vaultserver.alert.AlertRegistry.a2Agg().flushExpired(now)) {
                 String summary = com.carlos.vaultserver.alert.AlertText.withCount(w.baseText, w.count,
@@ -1084,6 +1085,7 @@ public final class WarNotify {
             dq.removeIf(m -> now - m.at > MAIL_TTL_MS);
         }
         scoutQuota.sweep(now);   // 侦查配额表回收窗口外记录，防长期运行无界增长
+        com.carlos.vaultserver.alert.AlertRegistry.sweepDeduper(now);   // A2 全局去重表回收
     }
 
     /** 监视目标显示名：备注 &gt; 名称 &gt; 「未知名玩家」（通知里不带 uid）。 */
