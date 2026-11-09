@@ -993,6 +993,14 @@ public final class VaultSync {
         postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-update", done);
     }
 
+    public static void alertBulk(Context ctx, java.util.List<Map<String, Object>> targets,
+                                 Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "bulk");
+        f.put("targets", targets);
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-bulk", done);
+    }
+
     public static void alertRemove(Context ctx, String fid, Callback done) {
         Map<String, Object> f = signedCommonFields(ctx);
         f.put("action", "remove");

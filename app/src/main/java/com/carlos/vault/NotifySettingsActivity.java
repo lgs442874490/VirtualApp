@@ -345,9 +345,11 @@ public class NotifySettingsActivity extends Activity {
             renderWatchData(data);
         });
         // P4：关注玩家走新 fid 名单（旧的 uid 名单仅作迁移期兜底）
+        migrateLocalSeeds();
         VaultSync.alertList(this, (code, message, data) -> {
             if (code == 0 && data != null) {
-                runOnUiThread(() -> renderAlertEntries(data.optJSONArray("entries")));
+                runOnUiThread(() -> renderAlertEntries(data.optJSONArray("entries"),
+                        data.optJSONArray("unresolved")));
             }
         });
         refreshEvents();
@@ -426,12 +428,13 @@ public class NotifySettingsActivity extends Activity {
     }
 
     /** 关注玩家渲染（P4：fid 主键；覆盖旧 uid 名单视图）。 */
-    private void renderAlertEntries(JSONArray entries) {
+    private void renderAlertEntries(JSONArray entries, JSONArray unresolved) {
         if (targetsBox == null) return;
         targetUidOrder.clear();
         targetsBox.removeAllViews();
         int n = entries == null ? 0 : entries.length();
-        if (n == 0) {
+        int un = unresolved == null ? 0 : unresolved.length();
+        if (n == 0 && un == 0) {
             targetsBox.addView(hint("暂无关注玩家 —— 用下方卡片填游戏内 FID 添加。"));
             return;
         }
@@ -439,6 +442,59 @@ public class NotifySettingsActivity extends Activity {
             JSONObject e = entries.optJSONObject(i);
             if (e != null) targetsBox.addView(alertRow(e));
         }
+        // 迁移期反查不到 fid 的旧监视目标：仍在监控，页面提示补填（不能装作没这条）
+        for (int i = 0; i < un; i++) {
+            JSONObject u = unresolved.optJSONObject(i);
+            if (u == null) continue;
+            String raw = u.optString("legacyRaw", "");
+            LinearLayout row = UiComponents.card(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(12), dp(8), dp(12), dp(8));
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rlp.bottomMargin = dp(8);
+            row.setLayoutParams(rlp);
+            TextView t1 = new TextView(this);
+            t1.setText("旧监视目标（待补填 FID）");
+            t1.setTextSize(13f);
+            t1.setTypeface(Typeface.DEFAULT_BOLD);
+            t1.setTextColor(UiStyle.WARN_INK);
+            row.addView(t1);
+            TextView t2 = new TextView(this);
+            t2.setText((raw.isEmpty() ? "旧 uid" : raw)
+                    + " · 仍在监控；请在下方填对应 FID 重新添加");
+            t2.setTextSize(11.5f);
+            t2.setTextColor(UiStyle.INK2);
+            row.addView(t2);
+            targetsBox.addView(row);
+        }
+    }
+
+    /** 一次性：App 本地敌情 seed 上报到新名单（默认暂停，页面确认后启用）。 */
+    private void migrateLocalSeeds() {
+        if (com.carlos.vault.daily.EnemyWatchStore.migratedToAlert(this)) return;
+        java.util.List<com.carlos.vault.daily.EnemyWatchStore.Entry> local =
+                com.carlos.vault.daily.EnemyWatchStore.entries(this);
+        if (local == null || local.isEmpty()) {
+            com.carlos.vault.daily.EnemyWatchStore.setMigratedToAlert(this, true);
+            return;
+        }
+        java.util.List<Map<String, Object>> targets = new ArrayList<>();
+        for (com.carlos.vault.daily.EnemyWatchStore.Entry e : local) {
+            Map<String, Object> t = new HashMap<>();
+            t.put("uid", e.uid);
+            t.put("note", e.note == null ? "" : e.note);
+            t.put("kid", String.valueOf(e.kid));
+            targets.add(t);
+        }
+        com.carlos.vault.daily.EnemyWatchStore.setMigratedToAlert(this, true);
+        VaultSync.alertBulk(this, targets, (code, message, data) -> runOnUiThread(() -> {
+            if (code == 0) {
+                loadAll();
+            } else {
+                com.carlos.vault.daily.EnemyWatchStore.setMigratedToAlert(this, false);
+            }
+        }));
     }
 
     /** 单个关注玩家行：备注/昵称 + FID + 解析状态 + 启停 + 删除。 */

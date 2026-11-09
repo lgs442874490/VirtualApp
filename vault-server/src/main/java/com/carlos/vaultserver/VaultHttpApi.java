@@ -1356,20 +1356,55 @@ public final class VaultHttpApi {
                 return data;
             }
             case "bulk": {
-                // App 首次迁移本地 seed：targets:[{fid,note}]，逐条 upsert（幂等）
+                // App 本地 seed 上报：targets:[{uid 或 fid, note, kid}]。
+                // 默认 enabled=false（暂停），用户在页面确认后再启用；只给 uid 时服务端反查 fid，
+                // 反查不到则进 unresolved（uid 仍参与匹配，不漏监控）。
                 Object raw = fields.get("targets");
                 int n = 0;
+                int unresolved = 0;
                 if (raw instanceof java.util.List) {
                     for (Object o : (java.util.List<?>) raw) {
                         if (!(o instanceof java.util.Map)) continue;
                         java.util.Map<?, ?> m = (java.util.Map<?, ?>) o;
-                        Object fid = m.get("fid");
-                        if (fid == null) continue;
-                        Object note = m.get("note");
-                        if (svc.add(String.valueOf(fid), note == null ? "" : String.valueOf(note))) n++;
+                        String fid = m.get("fid") == null ? "" : String.valueOf(m.get("fid")).trim();
+                        String note = m.get("note") == null ? "" : String.valueOf(m.get("note")).trim();
+                        long uid = 0L;
+                        Object u = m.get("uid");
+                        if (u != null) {
+                            try {
+                                uid = Long.parseLong(String.valueOf(u).trim());
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        if (fid.isEmpty() && uid > 0L) {
+                            com.carlos.vaultserver.watchpoint.PlayerDirectory.Entry e =
+                                    com.carlos.vaultserver.watchpoint.PlayerDirectory.shared() == null
+                                            ? null
+                                            : com.carlos.vaultserver.watchpoint.PlayerDirectory.shared().byUid(uid);
+                            fid = e == null || e.fid == null ? "" : e.fid.trim();
+                        }
+                        if (fid.isEmpty()) {
+                            if (uid > 0L) {
+                                VaultStore.AlertWatchEntry ue =
+                                        new VaultStore.AlertWatchEntry("uid:" + uid);
+                                ue.uid = uid;
+                                ue.note = note;
+                                ue.health = "UNRESOLVED";
+                                ue.source = "MIGRATED_LOCAL";
+                                ue.legacyRaw = "uid:" + uid;
+                                store.addAlertUnresolved(ue);
+                                unresolved++;
+                            }
+                            continue;
+                        }
+                        if (svc.add(fid, note)) {
+                            svc.update(fid, null, false);   // 默认暂停
+                            n++;
+                        }
                     }
                 }
                 data.put("imported", n);
+                data.put("unresolved", unresolved);
                 data.put("entries", alertEntriesJson(svc));
                 return data;
             }

@@ -28,6 +28,8 @@ public final class EnemyWatchStore {
     private static final String KEY_SMS_ESCALATE_ONLY = "sms_escalate_only";
     private static final String KEY_ENTRIES = "entries";
     private static final String KEY_SEEDED = "seeded";
+    /** 本地 seed 是否已上报到服务端新名单（一次性迁移标记）。 */
+    private static final String KEY_MIGRATED = "migrated_to_alert";
     private static final String KEY_RECENT = "recent";
 
     /** 单个被标记敌人。 */
@@ -125,6 +127,14 @@ public final class EnemyWatchStore {
         } catch (Throwable ignored) {
         }
         return out;
+    }
+
+    public static boolean migratedToAlert(Context ctx) {
+        return sp(ctx).getBoolean(KEY_MIGRATED, false);
+    }
+
+    public static void setMigratedToAlert(Context ctx, boolean done) {
+        sp(ctx).edit().putBoolean(KEY_MIGRATED, done).apply();
     }
 
     /** 解析名单文本（每行 "kid:uid 备注"）并整体保存。返回非法行数（-1=uid 解析失败行数）。 */
