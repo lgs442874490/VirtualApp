@@ -31,6 +31,15 @@
 - 工作区中用户已有的未提交改动，未经确认不得改动、还原或提交。
 - 涉及删除文件/目录、覆盖配置等破坏性操作时，先与用户确认。
 
+## 开发/测试模型约定（2026-11-02）
+
+- **开发（写代码）用 `GLM-5.3-Flash`，测试与代码审查用 `GLM-5.3`**（智谱 Coding Plan，同一把 key）。
+- Key 只从 `~/.dsh-secrets/zhipu-coding.key` 读取（尾号 `Ar9i`）；**禁止**把 key 写进仓库/文档/日志。
+- 通道：开发 `~/.dsh-secrets/zcode-dev`（自动固定 flash）；测试/审查 `~/.dsh-secrets/zcode-test`
+  （2026-11-02 起固定 `glm-5.3`）。两者都带 flock + 配置备份恢复。
+- 底座：`~/.zcode/cli/config.json` 的 provider `zhipu-coding`，模型 `glm-5.3` / `glm-5.3-flash`。
+- 手工改该配置文件必须加锁并备份恢复；详见 `.workbuddy/memory/MEMORY.md` §9。
+
 ## 开发流水线（2026-11-10，强制）
 
 标准交付流程为四阶段，**一阶段一个会话**：
