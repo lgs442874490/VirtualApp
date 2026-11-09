@@ -131,3 +131,6 @@ license-server/deploy/license-server-linux
 
 # 真机抓包（T3）：uProxy tun2socks native（Apache-2.0），需随 App 打包
 !app/libs/**/libtun2socks.so
+
+# DexPatch 发布 staging（tools/dexpatch_prepare.sh 生成）
+.dexpatch/
