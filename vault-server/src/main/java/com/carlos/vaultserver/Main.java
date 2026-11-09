@@ -42,6 +42,9 @@ public final class Main {
         // 战争通知（敌人监视 + 企微机器人）：事件环形缓冲 + 推送中枢，接线会话与 API
         WatchEventStore watchEvents = new WatchEventStore(config.dataDir);
         watchEvents.load();
+        // 2026-11-09 告警中枢 P3：统一出口（观察点事件也入同一事件库，App 时间线/短信可见）
+        com.carlos.vaultserver.alert.AlertRegistry.install(
+                new com.carlos.vaultserver.alert.AlertOutbox(watchEvents));
         WarNotify war = new WarNotify(store, watchEvents, new WeComNotifier());
 
         SessionKeeper keeper = new SessionKeeper(store, config, new ClasspathAssets(), stateStore, war);

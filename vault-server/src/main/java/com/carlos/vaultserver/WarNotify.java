@@ -499,7 +499,8 @@ public final class WarNotify {
         } else {
             duration = Math.max(0, t.endServerSec - t.startServerSec);
         }
-        String key = fpid + "|" + t.targetUid + "|" + t.action + "|done";
+        // P3：冷却跨账号全局（键不含 fpid），同一目标同动作只推一次。
+        String key = t.targetUid + "|" + t.action + "|done";
         if (throttled(key, cfg.cooldownSeconds * 1000L, now)) {
             FileLog.info("战争结算节流 {} uid={} {}（冷却中，丢弃）", fpid, t.targetUid, t.action);
             return;
@@ -522,6 +523,12 @@ public final class WarNotify {
     /** 初始动作事件：侦查按「5 分钟窗口内每个敌人前 3 次」配额，其余按冷却 → 事件入库 → 企微 → 昵称异步回填。 */
     private void emitAction(String fpid, VaultStore.WatchConfig cfg, Track t, long endSec) {
         long now = System.currentTimeMillis();
+        // P3：与观察点共用 A2 全局去重（同一 owner+marchId 只推一次；a/c/d 各自独立）
+        if (!com.carlos.vaultserver.alert.AlertRegistry.firstA2(t.targetUid, t.marchId)) {
+            FileLog.info("战争通知跳过（观察点已推同一条行军）uid={} 行军{}",
+                    String.valueOf(t.targetUid), String.valueOf(t.marchId));
+            return;
+        }
         if (ACT_RECON.equals(t.action)) {
             // 用户 2026-11-01 硬规则：侦查类推送五分钟内每个敌人只推前三次（计数口径，取代通用冷却）
             if (!scoutQuota.allow(t.targetUid, now)) {
@@ -530,11 +537,15 @@ public final class WarNotify {
                         fpid, t.targetUid, t.marchId, ScoutPushQuota.MAX_PUSHES);
                 return;
             }
-        } else if (throttled(fpid + "|" + t.targetUid + "|" + t.action,
-                cfg.cooldownSeconds * 1000L, now)) {
-            FileLog.info("战争通知节流 {} uid={} {}（冷却中，丢弃）",
-                    fpid, t.targetUid, t.action);
-            return;
+        } else {
+            // P3：冷却按「攻击者+目标点+动作」；集结出征 30s，其余沿用 cooldownSeconds。
+            // a 打 b 与 a 打 c 是不同目标点，各自独立；c/d 打 b 是不同攻击者，各自独立。
+            long coolMs = t.marchType == 102L ? 30_000L : cfg.cooldownSeconds * 1000L;
+            if (throttled(t.targetUid + "|" + t.ex + ":" + t.ey + "|" + t.action, coolMs, now)) {
+                FileLog.info("战争通知节流 {} uid={} {}（冷却中，丢弃）",
+                        fpid, t.targetUid, t.action);
+                return;
+            }
         }
         JSONObject e = baseEvent(t, now);
         e.put("phase", PHASE_ACTION);
@@ -544,10 +555,50 @@ public final class WarNotify {
                 fpid, t.targetUid, t.action, String.valueOf(t.marchType), t.marchId,
                 stored.optString("eventId"));
         if (cfg.wecomEnabled && !cfg.webhookUrl.isEmpty() && !inQuietHours(cfg, now)) {
-            if (asyncWecom) wecomExec.execute(() -> sendWecom(cfg, t, stored));
-            else sendWecom(cfg, t, stored);
+            final String text = renderWecom(t, stored);
+            // 集结出征：同攻击者+同目标 30s 聚合；首条即时，后续静默，窗口结束补“共 N 波”。
+            if (t.marchType == 102L) {
+                String aggKey = "agg:" + t.targetUid + ":" + t.ex + ":" + t.ey;
+                if (!com.carlos.vaultserver.alert.AlertRegistry.a2Agg().feed(aggKey, text, now)) {
+                    resolveNameAsync(t);
+                    return;
+                }
+                settleExec.schedule(this::flushA2Aggregates, 30L, TimeUnit.SECONDS);
+            }
+            if (asyncWecom) wecomExec.execute(() -> notifier.send(cfg.webhookUrl, text));
+            else notifier.send(cfg.webhookUrl, text);
         }
         resolveNameAsync(t);
+    }
+
+    /** 渲染企微文本（补齐昵称后；只影响本次文案，不改库内快照）。 */
+    private String renderWecom(Track t, JSONObject stored) {
+        try {
+            ensureNameResolved(t);
+        } catch (Throwable tt) {
+            FileLog.info("企微昵称补齐失败 uid={}：{}", t.targetUid, String.valueOf(tt));
+        }
+        if (!t.attackerName.equals(stored.optString("attackerName", ""))) {
+            stored.put("attackerName", t.attackerName);
+        }
+        return wecomText(t.fpid, stored);
+    }
+
+    /** 30s 窗口到期：对多波窗口补发一条「共 N 波」汇总（与观察点共用同一聚合器）。 */
+    private void flushA2Aggregates() {
+        try {
+            VaultStore.WatchConfig cfg = store.watchConfig();
+            if (!cfg.wecomEnabled || cfg.webhookUrl == null || cfg.webhookUrl.trim().isEmpty()) return;
+            long now = System.currentTimeMillis();
+            for (com.carlos.vaultserver.alert.AlertAggregator.Window w
+                    : com.carlos.vaultserver.alert.AlertRegistry.a2Agg().flushExpired(now)) {
+                String summary = com.carlos.vaultserver.alert.AlertText.withCount(w.baseText, w.count,
+                        Beijing.fmt("HH:mm:ss").format(new java.util.Date()));
+                notifier.send(cfg.webhookUrl, summary);
+            }
+        } catch (Throwable tt) {
+            FileLog.warn("集结聚合补发异常：{}", String.valueOf(tt));
+        }
     }
 
     /** 事件公共字段（初始与结算共用；targetName 保留供 v4.1.7 旧 App 兼容）。 */

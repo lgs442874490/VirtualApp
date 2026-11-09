@@ -73,6 +73,22 @@ public final class AlertText {
         return sb.toString();
     }
 
+    /**
+     * 聚合补发文案：同一模板，标题追加「（共 N 波）」，时间行换成补发时间。
+     * 正文其余行（级别/攻击者/兵力/目标/ETA）保持不变。
+     */
+    public static String withCount(String baseText, int count, String nowTime) {
+        if (baseText == null || baseText.isEmpty()) return "";
+        String[] lines = baseText.split("\n", -1);
+        if (lines.length > 0) {
+            lines[0] = lines[0] + "（共 " + count + " 波）";
+        }
+        for (int i = 0; i < lines.length; i++) {
+            if (lines[i].startsWith("时间：")) lines[i] = "时间：" + nowTime;
+        }
+        return String.join("\n", lines);
+    }
+
     /** 秒 → 「H时M分」或「M分S秒」；与观察点 hms / 战争通知 hmsShort 一致。 */
     public static String hms(long seconds) {
         long s = Math.max(0L, seconds);

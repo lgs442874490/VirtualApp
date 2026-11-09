@@ -20,14 +20,16 @@ import java.util.List;
  */
 public final class WatchEventStore {
 
-    /** 环形容量：最近 200 条。 */
-    static final int CAP = 200;
+    /** 环形容量：最近 500 条（P3 观察点事件入库后共用）。 */
+    static final int CAP = 500;
     /** 单次拉取上限（防 App 端首拉全量过大；事件满 200 时分两页）。 */
     static final int FETCH_LIMIT = 100;
 
     private final Path file;
     private final Path backup;
     private final List<JSONObject> events = new ArrayList<>();
+    /** alertKey → 事件（幂等：同一条告警只入库一次）。 */
+    private final java.util.Map<String, JSONObject> byAlertKey = new java.util.LinkedHashMap<>();
     private long seq;
     private final Object lock = new Object();
 
@@ -39,6 +41,7 @@ public final class WatchEventStore {
     public void load() {
         synchronized (lock) {
             events.clear();
+            byAlertKey.clear();
             seq = 0;
             for (Path p : new Path[]{file, backup}) {
                 if (!Files.isRegularFile(p)) continue;
@@ -49,7 +52,10 @@ public final class WatchEventStore {
                     if (arr != null) {
                         for (int i = 0; i < arr.length(); i++) {
                             JSONObject e = arr.optJSONObject(i);
-                            if (e != null) events.add(e);
+                            if (e == null) continue;
+                            events.add(e);
+                            String k = e.optString("alertKey", "");
+                            if (!k.isEmpty()) byAlertKey.put(k, e);
                         }
                     }
                     return;
@@ -70,10 +76,32 @@ public final class WatchEventStore {
                 stored.put("eventId", "w" + seq);
             }
             events.add(stored);
-            while (events.size() > CAP) events.remove(0);
+            String k = stored.optString("alertKey", "");
+            if (!k.isEmpty()) byAlertKey.put(k, stored);
+            while (events.size() > CAP) {
+                JSONObject old = events.remove(0);
+                String ok = old.optString("alertKey", "");
+                if (!ok.isEmpty()) byAlertKey.remove(ok);
+            }
             saveLocked();
         }
         return stored;
+    }
+
+    /**
+     * 幂等追加：带 {@code alertKey} 且已存在时直接返回 false（不重复入库）。
+     * 观察点/推送两条通道共用同一事件库时，用它保证“同一条告警只出一条事件”。
+     */
+    public boolean appendOnce(JSONObject event) {
+        if (event == null) return false;
+        String key = event.optString("alertKey", "");
+        if (!key.isEmpty()) {
+            synchronized (lock) {
+                if (byAlertKey.containsKey(key)) return false;
+            }
+        }
+        append(event);
+        return true;
     }
 
     /** cursor（上次最大 seq）之后的事件，最旧在前；超过 FETCH_LIMIT 分页取。 */
