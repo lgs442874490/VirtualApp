@@ -56,6 +56,7 @@ public class UiStyle {
     public static final int WAIT_50      = 0xFFE8EEFF;   // wait 浅底（进行中底）
     public static final int WECHAT_GREEN = 0xFF07C160;   // 微信品牌绿（仅微信支付按钮）
     public static final int ERR_BORDER   = 0xFFF3B4B4;   // 危险操作区浅红描边
+    public static final int ERR_PRESS    = 0xFFDC2626;   // 危险实心按钮按压态
     public static final int INVERSE      = 0xFFF5F7FB;   // 深底上的浅字（轻提示/批量条）
     public static final int WHITE        = 0xFFFFFFFF;   // 纯白（文字/底）
     // 深底（品牌渐变/墨色批量条）上的浅色系，按语义对应状态色
@@ -69,6 +70,7 @@ public class UiStyle {
     public static final int WHITE_45     = 0x73FFFFFF;   // 深底 ghost 按钮描边
     public static final int BLACK_40     = 0x66000000;   // 弹层遮罩
     public static final int SCRIM        = 0x59080C17;   // 底部弹层遮罩（规范：压暗 35%）
+    public static final int SHADOW_FAB   = 0x40000000;   // 悬浮主按钮文字投影（25% 黑，非遮罩）
     // 状态徽章 bg/ink/solid 三层。type: ok/run/wait/warn/err/idle
     // INK 用于 10.5sp 小字，必须过 4.5:1；SOLID 只作圆点/底块（配白字），可比 INK 亮。
     public static final int OK_BG = 0xFFE7F8F1,  OK_INK = 0xFF047857,  OK_SOLID = 0xFF1F9D55;
@@ -77,6 +79,13 @@ public class UiStyle {
     public static final int WARN_BG = 0xFFFFF4E5, WARN_INK = 0xFFB45309, WARN_SOLID = 0xFFB7791F;
     public static final int ERR_BG = 0xFFFEECEC,  ERR_INK = 0xFFB91C1C, ERR_SOLID = 0xFFE5484D;
     public static final int IDLE_BG = 0xFFF1F3F7, IDLE_INK = 0xFF6B7280;
+
+    // ===== S4 圆角体系：任何页面/组件不得自造半径（编队 1:1 复刻模块为已裁定例外）=====
+    public static final int RADIUS_CARD   = 16;   // 卡片
+    public static final int RADIUS_BTN    = 12;   // 按钮 / 输入框
+    public static final int RADIUS_DIALOG = 20;   // 弹窗
+    public static final int RADIUS_ROW    = 10;   // 行按钮
+    public static final int RADIUS_PILL   = 999;  // 胶囊 / chip
 
     /** dp → px（四舍五入）。 */
     public static int dp(Context ctx, int v) {
@@ -151,7 +160,7 @@ public class UiStyle {
     public static LinearLayout card(Context ctx) {
         LinearLayout c = new LinearLayout(ctx);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setBackground(roundRectStroke(ctx, CARD, 16, LINE));
+        c.setBackground(roundRectStroke(ctx, CARD, RADIUS_CARD, LINE));
         c.setPadding(dp(ctx, 20), dp(ctx, 14), dp(ctx, 20), dp(ctx, 14));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -164,7 +173,7 @@ public class UiStyle {
     public static LinearLayout outlineCard(android.content.Context ctx) {
         LinearLayout c = new LinearLayout(ctx);
         c.setOrientation(LinearLayout.VERTICAL);
-        c.setBackground(roundRectStroke(ctx, CARD, 16, LINE));
+        c.setBackground(roundRectStroke(ctx, CARD, RADIUS_CARD, LINE));
         return c;
     }
 
@@ -208,7 +217,7 @@ public class UiStyle {
         v.setTextColor(ink);
         v.setGravity(android.view.Gravity.CENTER);
         v.setPadding(dp(ctx, 10), dp(ctx, 4), dp(ctx, 10), dp(ctx, 4));
-        v.setBackground(roundRectDp(ctx, bg, 999));   // 全圆胶囊
+        v.setBackground(roundRectDp(ctx, bg, RADIUS_PILL));   // 全圆胶囊
         return v;
     }
 
@@ -221,7 +230,7 @@ public class UiStyle {
         v.setTextColor(selected ? WHITE : BRAND_TEXT);
         v.setGravity(android.view.Gravity.CENTER);
         v.setPadding(dp(ctx, 12), dp(ctx, 6), dp(ctx, 12), dp(ctx, 6));
-        v.setBackground(roundRectDp(ctx, selected ? BRAND : BRAND_50, 999));
+        v.setBackground(roundRectDp(ctx, selected ? BRAND : BRAND_50, RADIUS_PILL));
         press(v);
         return v;
     }
@@ -235,7 +244,7 @@ public class UiStyle {
         v.setTextColor(selected ? WHITE : INK2);
         v.setGravity(android.view.Gravity.CENTER);
         v.setPadding(dp(ctx, 12), dp(ctx, 6), dp(ctx, 12), dp(ctx, 6));
-        v.setBackground(roundRectDp(ctx, selected ? BRAND : WHITE, 999));
+        v.setBackground(roundRectDp(ctx, selected ? BRAND : WHITE, RADIUS_PILL));
         press(v);
         return v;
     }
@@ -250,7 +259,7 @@ public class UiStyle {
         v.setTypeface(Typeface.DEFAULT_BOLD);
         v.setTextColor(enabledTextColors(WHITE));
         v.setGravity(android.view.Gravity.CENTER);
-        v.setBackground(pressRound(ctx, BRAND, BRAND_PRESS, 12));
+        v.setBackground(pressRound(ctx, BRAND, BRAND_PRESS, RADIUS_BTN));
         v.setMinHeight(dp(ctx, 48));
         press(v);
         if (onClick != null) v.setOnClickListener(x -> onClick.run());
@@ -266,9 +275,9 @@ public class UiStyle {
         v.setTextColor(enabledTextColors(BRAND_TEXT));
         v.setGravity(android.view.Gravity.CENTER);
         StateListDrawable g = new StateListDrawable();
-        g.addState(new int[]{-android.R.attr.state_enabled}, roundRectDp(ctx, SURFACE_3, 12));
-        g.addState(new int[]{android.R.attr.state_pressed}, roundRectDp(ctx, BRAND_50, 12));
-        g.addState(new int[]{}, roundRectStroke(ctx, WHITE, 12, BRAND_300));
+        g.addState(new int[]{-android.R.attr.state_enabled}, roundRectDp(ctx, SURFACE_3, RADIUS_BTN));
+        g.addState(new int[]{android.R.attr.state_pressed}, roundRectDp(ctx, BRAND_50, RADIUS_BTN));
+        g.addState(new int[]{}, roundRectStroke(ctx, WHITE, RADIUS_BTN, BRAND_300));
         v.setBackground(g);
         v.setMinHeight(dp(ctx, 44));
         press(v);
@@ -284,7 +293,7 @@ public class UiStyle {
         v.setTypeface(Typeface.DEFAULT_BOLD);
         v.setTextColor(enabledTextColors(WHITE));
         v.setGravity(android.view.Gravity.CENTER);
-        v.setBackground(pressRound(ctx, ERR_SOLID, 0xFFDC2626, 12));
+        v.setBackground(pressRound(ctx, ERR_SOLID, ERR_PRESS, RADIUS_BTN));
         v.setMinHeight(dp(ctx, 44));
         press(v);
         if (onClick != null) v.setOnClickListener(x -> onClick.run());
@@ -299,7 +308,7 @@ public class UiStyle {
         v.setTypeface(Typeface.DEFAULT_BOLD);
         v.setTextColor(enabledTextColors(BRAND_TEXT));
         v.setGravity(android.view.Gravity.CENTER);
-        v.setBackground(pressRound(ctx, Color.TRANSPARENT, BRAND_50, 12));
+        v.setBackground(pressRound(ctx, Color.TRANSPARENT, BRAND_50, RADIUS_BTN));
         v.setMinHeight(dp(ctx, 44));
         v.setPadding(dp(ctx, 12), 0, dp(ctx, 12), 0);
         press(v);
@@ -313,7 +322,7 @@ public class UiStyle {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(dp(ctx, 8), dp(ctx, 14), dp(ctx, 8), dp(ctx, 14));
-        row.setBackground(pressRound(ctx, SURFACE_2, SURFACE_3, 10));
+        row.setBackground(pressRound(ctx, SURFACE_2, SURFACE_3, RADIUS_ROW));
 
         TextView ic = new TextView(ctx);
         ic.setText(icon);
@@ -336,6 +345,7 @@ public class UiStyle {
                                                         String[] options, int selected,
                                                         final java.util.function.IntConsumer onSelect) {
         android.widget.LinearLayout wrap = new android.widget.LinearLayout(ctx);
+        // TODO(S4)：14 / 11 属历史档位，待收敛到 RADIUS_*；此处先不改以免变更视觉
         wrap.setBackground(roundRectDp(ctx, SURFACE_3, 14));
         wrap.setPadding(dp(ctx, 3), dp(ctx, 3), dp(ctx, 3), dp(ctx, 3));
         for (int i = 0; i < options.length; i++) {
@@ -390,13 +400,13 @@ public class UiStyle {
         et.setTextSize(13);
         et.setTextColor(INK);
         et.setHintTextColor(INK3);
-        et.setBackground(roundRectStroke(ctx, WHITE, 12, LINE_STRONG));
+        et.setBackground(roundRectStroke(ctx, WHITE, RADIUS_BTN, LINE_STRONG));
         et.setMinHeight(dp(ctx, 44));
         et.setPadding(dp(ctx, 12), dp(ctx, 10), dp(ctx, 12), dp(ctx, 10));
         et.setOnFocusChangeListener(new View.OnFocusChangeListener() {
             @Override
             public void onFocusChange(View v, boolean hasFocus) {
-                ((EditText) v).setBackground(roundRectStroke(ctx, WHITE, 12,
+                ((EditText) v).setBackground(roundRectStroke(ctx, WHITE, RADIUS_BTN,
                         hasFocus ? BRAND : LINE_STRONG));
             }
         });
@@ -418,7 +428,7 @@ public class UiStyle {
         v.setTextSize(13);
         v.setTextColor(INVERSE);
         v.setGravity(Gravity.CENTER);
-        v.setBackground(roundRectDp(ctx, INK, 12));
+        v.setBackground(roundRectDp(ctx, INK, RADIUS_BTN));
         v.setPadding(dp(ctx, 16), dp(ctx, 11), dp(ctx, 16), dp(ctx, 11));
         Toast t = new Toast(ctx);
         t.setView(v);
@@ -480,6 +490,19 @@ public class UiStyle {
 
     // ==================== 弹窗 ====================
 
+    /**
+     * 统一的阻塞式加载弹窗（S10）：<b>全项目唯一允许构造 ProgressDialog 的位置</b>。
+     *
+     * <p>ProgressDialog 自 API 26 起已废弃，但各页仍有 21 处阻塞式等待，直接换成「行内处理中」
+     * 会改动异步时序、需要逐页真机验证。先收敛到本工厂：废弃 API 只出现在这里，
+     * 后续替换为统一 loadingDialog / 行内态时只改这一处即可。
+     *
+     * <p>刻意不额外设置主题、cancelable、indeterminate —— 保持与各调用点原有行为完全一致。
+     */
+    public static android.app.ProgressDialog progressDialog(Context ctx) {
+        return new android.app.ProgressDialog(ctx);
+    }
+
     /** 弹窗动作按钮：主操作=BRAND 实心胶囊；危险=ERR_SOLID 实心；取消=SURFACE_3 胶囊。 */
     private static TextView dialogBtn(Context ctx, String text, int accent, boolean filled) {
         TextView v = new TextView(ctx);
@@ -491,12 +514,12 @@ public class UiStyle {
         v.setPadding(dp(ctx, 16), 0, dp(ctx, 16), 0);
         if (filled) {
             int bg = accent == ERR_INK ? ERR_SOLID : BRAND;
-            int bgPress = accent == ERR_INK ? 0xFFDC2626 : BRAND_PRESS;
+            int bgPress = accent == ERR_INK ? ERR_PRESS : BRAND_PRESS;
             v.setTextColor(WHITE);
-            v.setBackground(pressRound(ctx, bg, bgPress, 12));
+            v.setBackground(pressRound(ctx, bg, bgPress, RADIUS_BTN));
         } else {
             v.setTextColor(accent == ERR_INK ? ERR_INK : INK2);
-            v.setBackground(pressRound(ctx, SURFACE_3, LINE, 12));
+            v.setBackground(pressRound(ctx, SURFACE_3, LINE, RADIUS_BTN));
         }
         press(v);
         return v;
@@ -507,7 +530,7 @@ public class UiStyle {
                                        boolean multiline, OnInputResult callback) {
         LinearLayout box = new LinearLayout(ctx);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(roundRectDp(ctx, CARD, 20));
+        box.setBackground(roundRectDp(ctx, CARD, RADIUS_DIALOG));
         box.setPadding(dp(ctx, 24), dp(ctx, 20), dp(ctx, 24), dp(ctx, 20));
 
         TextView tv = new TextView(ctx);
@@ -554,7 +577,7 @@ public class UiStyle {
                                          String posText, int posColor, Runnable onConfirm) {
         LinearLayout box = new LinearLayout(ctx);
         box.setOrientation(LinearLayout.VERTICAL);
-        box.setBackground(roundRectDp(ctx, CARD, 20));
+        box.setBackground(roundRectDp(ctx, CARD, RADIUS_DIALOG));
         box.setPadding(dp(ctx, 24), dp(ctx, 20), dp(ctx, 24), dp(ctx, 20));
 
         TextView tv = new TextView(ctx);
@@ -965,18 +988,20 @@ public class UiStyle {
         return box;
     }
 
+    /** 雪花头像四组渐变（S1：色值只在本文件登记，业务页不得另起色值）。 */
+    private static final int[][] AVATAR_GRADIENTS = {
+            {0xFF2E5BFF, 0xFF22D3EE},
+            {0xFF0EA5A5, 0xFF2DD4BF},
+            {0xFFF59E0B, 0xFFF97316},
+            {0xFF6366F1, 0xFF8B5CF6},
+    };
+
     /** 圆形雪花头像（设计稿 S3/S4）：蓝/青/橙/紫四色按种子稳定取色。 */
     public static android.widget.FrameLayout snowAvatar(android.content.Context ctx,
                                                         int sizeDp, String seed) {
         android.widget.FrameLayout f = new android.widget.FrameLayout(ctx);
         int h = Math.abs((seed == null ? "" : seed).hashCode());
-        int[][] colors = {
-                {0xFF2E5BFF, 0xFF22D3EE},
-                {0xFF0EA5A5, 0xFF2DD4BF},
-                {0xFFF59E0B, 0xFFF97316},
-                {0xFF6366F1, 0xFF8B5CF6},
-        };
-        int[] c = colors[h % colors.length];
+        int[] c = AVATAR_GRADIENTS[h % AVATAR_GRADIENTS.length];
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.TL_BR, c);
         g.setShape(GradientDrawable.OVAL);
         f.setBackground(g);

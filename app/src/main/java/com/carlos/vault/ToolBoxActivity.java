@@ -8,7 +8,6 @@ import android.os.Bundle;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
-import android.widget.Button;
 import android.widget.EditText;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
@@ -368,10 +367,10 @@ public class ToolBoxActivity extends Activity {
                 .show();
     }
 
-    private Button btn(String text, View.OnClickListener onClick) {
-        Button b = new Button(this);
-        b.setText(text);
-        b.setOnClickListener(onClick);
+    /** 工具箱调试动作按钮：统一走 UiStyle ghost 按钮，不再用系统原生 Button 样式（S10）。 */
+    private View btn(String text, View.OnClickListener onClick) {
+        android.widget.TextView b = UiStyle.ghostBtn(this, text, null);
+        b.setOnClickListener(onClick);   // ghostBtn 已挂 press() 的 OnTouchListener，二者不冲突
         return b;
     }
 

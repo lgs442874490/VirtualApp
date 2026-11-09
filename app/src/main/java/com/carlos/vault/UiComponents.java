@@ -24,6 +24,8 @@ import android.widget.TextView;
  */
 public final class UiComponents {
     public static final float TEXT_DISPLAY = 30f;
+    /** 主 Tab 大标题（HomeActivity 四个主 Tab）；与详情页 TEXT_PAGE_TITLE 19 属不同层级。 */
+    public static final float TEXT_TAB_TITLE = 24f;
     public static final float TEXT_PAGE_TITLE = 19f;
     public static final float TEXT_HEADLINE = 16f;
     public static final float TEXT_BODY = 14f;
@@ -179,7 +181,7 @@ public final class UiComponents {
         return text(ctx, value, TEXT_CAPTION, color, false);
     }
 
-    /** 数值文本：等宽数字避免倒计时、UID 和进度刷新时横向抖动。 */
+    /** 数值文本：等宽数字避免倒计时、fid 和进度刷新时横向抖动。 */
     public static TextView numeric(Context ctx, String value, float sizeSp, int color, boolean bold) {
         TextView view = text(ctx, value, sizeSp, color, bold);
         view.setFontFeatureSettings("tnum");

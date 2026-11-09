@@ -649,8 +649,8 @@ public final class GuardianEngine {
             // P7 WarState 喂食：H0 侦查即入 / 新进攻软 +30 / H2 并发 / H3 极限压缩者（§6.11.1）
             feedWarNewTrack(app, fpid, kid, t, qualified, nowMs());
             String verdict = evaluate(app, fpid, kid, power, end - nowS);
-            event(app, fpid, kid, "🚨检测[" + t.kind() + "] uid" + owner + " → 盟友城(" + t.x + "," + t.y
-                    + (targetUid > 0 ? " uid" + targetUid : "") + ") ETA " + (end - nowS) + "s（"
+            event(app, fpid, kid, "🚨检测[" + t.kind() + "] fid" + owner + " → 盟友城(" + t.x + "," + t.y
+                    + (targetUid > 0 ? " fid" + targetUid : "") + ") ETA " + (end - nowS) + "s（"
                     + hhmmss(end) + "）power≈" + power + " → " + verdict);
             if (qualified) {
                 com.carlos.vault.daily.guardian.GuardianLaunch.onThreatQualified(app, fpid, kid, t);
@@ -666,7 +666,7 @@ public final class GuardianEngine {
                 t.lastCompressAt = System.currentTimeMillis();
                 if (t.compressCount >= 3 && !extremeLocked(owner)) {
                     EXTREME_LOCK.put(owner, System.currentTimeMillis() + 24 * 3600_000L);
-                    event(app, fpid, kid, "🚨EXTREME 锁存 uid" + owner + "（压缩" + t.compressCount
+                    event(app, fpid, kid, "🚨EXTREME 锁存 fid" + owner + "（压缩" + t.compressCount
                             + "次，24h 内其行军一律检测即发射+立刻加速）");
                 }
                 // P7 WarState：敌加减速 = 敌活跃（刷新敌情板静默计时）；EXTREME 锁存者压缩 → H3
@@ -677,7 +677,7 @@ public final class GuardianEngine {
                             t.type == 1 ? ThreatBoard.Kind.SCOUT : ThreatBoard.Kind.ATTACK, nowMs()));
                     if (extremeLocked(owner)) ws.onExtremeMarch(id, owner, nowMs());
                 }
-                event(app, fpid, kid, "⚡加速来袭[" + t.kind() + "] uid" + owner + " 行军" + id
+                event(app, fpid, kid, "⚡加速来袭[" + t.kind() + "] fid" + owner + " 行军" + id
                         + " 剩余 " + (prev - nowS) + "s → " + (end - nowS) + "s（烧道具了）");
                 // 加速来袭 = 敌方真实投入，绕过战力阈值直接触发驻防（公理：防御先于一切）
                 if (interceptOn(app, fpid, kid) && !t.forceQualified) {
@@ -715,8 +715,8 @@ public final class GuardianEngine {
         long armedUntil = com.carlos.vault.daily.guardian.GuardianHold.armIfNeeded(
                 app, fpid, kid, t.targetUid, t.owner, t.compressCount);
         if (armedUntil > 0) {
-            event(app, fpid, kid, "🛡常驻戒备开始：uid" + t.owner + " 为 EXTREME 惯犯（压缩 "
-                    + t.compressCount + " 次），uid" + t.targetUid + " 城驻防保留 "
+            event(app, fpid, kid, "🛡常驻戒备开始：fid" + t.owner + " 为 EXTREME 惯犯（压缩 "
+                    + t.compressCount + " 次），fid" + t.targetUid + " 城驻防保留 "
                     + com.carlos.vault.daily.guardian.GuardianHold.holdGarrisonMin(app, fpid, kid)
                     + " 分钟（敌撤/战报出不撤防，期间新威胁由在位驻防承接）");
         }
@@ -743,7 +743,7 @@ public final class GuardianEngine {
             }
         }
         String how = remain > 2 ? "召回解除（距落地 " + remain + "s）" : "已落地";
-        event(app, fpid, kid, "✔敌情解除[" + t.kind() + "] uid" + t.owner + " 行军" + id + " " + how);
+        event(app, fpid, kid, "✔敌情解除[" + t.kind() + "] fid" + t.owner + " 行军" + id + " " + how);
     }
 
     // ------------------------------------------------------------------ 规则评估（R1）

@@ -150,7 +150,7 @@ public final class ThreatBoard {
     public String archiveText(long now, long quietMs) {
         StringBuilder sb = new StringBuilder("敌情板归档×").append(enemies.size());
         for (Enemy e : enemies.values()) {
-            sb.append(" | uid").append(e.ownerUid)
+            sb.append(" | fid").append(e.ownerUid)
                     .append(" 信号").append(e.signalCount)
                     .append(" 次/最近 ").append(kindText(e.lastKind))
                     .append(" 静默 ").append((now - e.lastSignalAt) / 60_000L).append("min")
@@ -164,7 +164,7 @@ public final class ThreatBoard {
         if (enemies.isEmpty()) return "敌情板空";
         Enemy top = mostActive();
         return "威胁源×" + enemies.size()
-                + " · 最活跃 uid" + top.ownerUid + "(" + kindText(top.lastKind)
+                + " · 最活跃 fid" + top.ownerUid + "(" + kindText(top.lastKind)
                 + "×" + top.signalCount + ")"
                 + " · 静默进度 " + quietCount(now, quietMs) + "/" + enemies.size();
     }

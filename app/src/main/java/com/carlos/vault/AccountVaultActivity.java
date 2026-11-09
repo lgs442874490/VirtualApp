@@ -365,7 +365,7 @@ public class AccountVaultActivity extends Activity {
     }
 
     private void runProtocolPoc(AccountStore.Account account) {
-        ProgressDialog pd = new ProgressDialog(this);
+        ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("直连游戏服务器登录中…\n账号 " + account.fpid);
         pd.setCancelable(false);
         pd.show();
@@ -378,7 +378,7 @@ public class AccountVaultActivity extends Activity {
                     engine.initialize();
                     com.carlos.vault.wjdr.WjdrEngine.LoginResult r =
                             engine.login(p[0].fpid, p[0].token);
-                    return "✅ 登录成功\n\nuid: " + r.uid + "\n区服: " + r.serverId
+                    return "✅ 登录成功\n\nfid: " + r.uid + "\n区服: " + r.serverId
                             + "\n角色名: " + (r.gameName == null || r.gameName.isEmpty() ? "-" : r.gameName)
                             + "\n\n载荷摘要: " + r.loadSummary;
                 } catch (Throwable t) {
@@ -594,7 +594,7 @@ public class AccountVaultActivity extends Activity {
 
         TextView title = new TextView(this);
         title.setText("无尽号库");
-        title.setTextSize(22);
+        title.setTextSize(UiComponents.TEXT_PAGE_TITLE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.BRAND_TEXT);
         header.addView(title, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1));
@@ -667,7 +667,7 @@ public class AccountVaultActivity extends Activity {
         fab.setTextSize(26);
         fab.setTextColor(Color.WHITE);
         fab.setGravity(Gravity.CENTER);
-        fab.setShadowLayer(8, 0, 3, 0x40000000);
+        fab.setShadowLayer(8, 0, 3, UiStyle.SHADOW_FAB);
         GradientDrawable fabBg = new GradientDrawable();
         fabBg.setShape(GradientDrawable.OVAL);
         fabBg.setColor(UiStyle.BRAND);
@@ -1084,7 +1084,7 @@ public class AccountVaultActivity extends Activity {
      */
     private void runImport(String text, AccountImport.ConflictPolicy policy) {
         if (store == null) store = new AccountStore(this);
-        final ProgressDialog pd = new ProgressDialog(this);
+        final ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在导入…");
         pd.setCancelable(false);
         pd.show();
@@ -1302,7 +1302,7 @@ public class AccountVaultActivity extends Activity {
             return;
         }
         String show = labelOverride == null || labelOverride.isEmpty() ? acc.label : labelOverride;
-        ProgressDialog pd = new ProgressDialog(this);
+        ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在切换到 «" + show + "» …");
         pd.setCancelable(false);
         pd.show();
@@ -1575,7 +1575,7 @@ public class AccountVaultActivity extends Activity {
         switch (step) {
             case 0: // 克隆
                 if (engine.isGameInstalled()) { toast("已克隆，可跳过"); return; }
-                ProgressDialog cloning = new ProgressDialog(this);
+                ProgressDialog cloning = UiStyle.progressDialog(this);
                 cloning.setMessage("正在克隆游戏…（首次需要解包，请稍候）");
                 cloning.setCancelable(false);
                 cloning.show();
@@ -1771,10 +1771,15 @@ public class AccountVaultActivity extends Activity {
             // ⚠️ 修一处 bug：原写法判的是 fpid 而不是 token ⇒ "有 fpid、没 token"的入口
             // （例如备战号888：fpid=44714253、token 为空）会被**误显示成 token**，
             // 用户据此以为会用 token 登录，实际根本没有 token 可用。
-            // 三态：有 token ⇒ "token"；无 token 但已初始化（有快照）⇒ "原生"；都没有 ⇒ "无"。
+            // 三态：有 token ⇒ "令牌"；无 token 但已初始化（有快照）⇒ "原生"；都没有 ⇒ "未就绪"。
+            // D3（真机 2026-11-06）：原字面量 "token" 在 3 列窄卡里被右段时间挤成 "to…"，
+            // 改用等宽中文短标签保证不截断；完整口径走 contentDescription。
+            // 登录方式仍按用户裁决在号库九宫格保留（只有账号页不展示）。
             boolean hasToken = a != null && a.token != null && !a.token.isEmpty();
             boolean hasSnap = a != null && engine.hasEntrySnapshot(a.id);
-            subStatus.setText(hasToken ? "token" : (hasSnap ? "原生" : "无"));
+            subStatus.setText(hasToken ? "令牌" : (hasSnap ? "原生" : "未就绪"));
+            subStatus.setContentDescription(hasToken ? "登录方式：token"
+                    : (hasSnap ? "登录方式：原生" : "未就绪，无可用登录凭证"));
             long lastLogin = a == null ? 0L : a.lastLogin;
             subTime.setText(lastLogin > 0 ? FMT.format(new Date(lastLogin)) : "未用");
         }
@@ -1863,7 +1868,7 @@ public class AccountVaultActivity extends Activity {
         subRow.setGravity(Gravity.CENTER_VERTICAL);
 
         TextView subStatus = new TextView(this);
-        subStatus.setTextSize(10);
+        subStatus.setTextSize(UiComponents.TEXT_MICRO);
         subStatus.setMaxLines(1);
         subStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
         subStatus.setTextColor(UiStyle.INK2);
@@ -1872,7 +1877,7 @@ public class AccountVaultActivity extends Activity {
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
 
         TextView subTime = new TextView(this);
-        subTime.setTextSize(10);
+        subTime.setTextSize(UiComponents.TEXT_MICRO);
         subTime.setMaxLines(1);
         subTime.setTextColor(UiStyle.INK2);
         subTime.setGravity(Gravity.END);

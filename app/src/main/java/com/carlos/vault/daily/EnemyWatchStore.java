@@ -15,7 +15,7 @@ import java.util.Map;
  * 敌情监控（EnemyWatch）全局配置与事件留痕。
  * 与 FnParams 的按角色存储不同：被标记敌人是"账号域"的对象（跨角色的同服敌人），
  * 且监控挂在所有在线会话上，因此用全局 prefs（enemy_watch）单源。
- * 名单行格式："kid:uid 备注"，如 "888:57347368 仇人A"（备注可空）。
+ * 名单行格式："kid:fid 备注"，如 "888:57347368 仇人A"（备注可空）。
  */
 public final class EnemyWatchStore {
 
@@ -137,7 +137,7 @@ public final class EnemyWatchStore {
         sp(ctx).edit().putBoolean(KEY_MIGRATED, done).apply();
     }
 
-    /** 解析名单文本（每行 "kid:uid 备注"）并整体保存。返回非法行数（-1=uid 解析失败行数）。 */
+    /** 解析名单文本（每行 "kid:fid 备注"）并整体保存。返回非法行数（-1=uid 解析失败行数）。 */
     public static int save(Context ctx, boolean enabled, String webhook, String smsPhone,
                            boolean wecomOn, boolean smsOn, boolean smsEscalateOnly, String entriesText) {
         JSONArray arr = new JSONArray();

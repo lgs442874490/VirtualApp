@@ -206,11 +206,11 @@ public final class HeroTileView extends FrameLayout {
     public static int professionColor(int profession) {
         switch (profession) {
             case 1:
-                return 0xFF64748B;
+                return ManagerUi.PROF_COLOR_INFANTRY;
             case 2:
-                return 0xFF0EA5E9;
+                return ManagerUi.PROF_COLOR_LANCER;
             case 3:
-                return 0xFFF59E0B;
+                return ManagerUi.PROF_COLOR_MARKSMAN;
             default:
                 return UiStyle.INK3;
         }

@@ -75,9 +75,17 @@ public class HomeActivity extends AccountVaultActivity {
     private View accMask;          // 账号页加载遮罩（状态计算后台化期间的兜底）
     private int accGen;            // 防止快速刷新时旧结果覆盖新结果
     private int accView;           // 0=列表视图 1=卡片墙（旧版角色大方块卡）
-    private TextView accViewList, accViewCard;    // 设计稿 S3 的「列表 / 卡片」页签
+    private TextView accViewList, accViewCard;    // 旧「列表 / 卡片」页签（已降级，保留兼容）
+    /** 账号组默认折叠的全局控制与 04 折叠规则状态。 */
+    private boolean foldLock;                     // 用户手动「全部折叠」后，本次不再自动展开
+    /** 设计稿 L0 全局概览白卡 / 账号组列表标题行的常驻引用。 */
+    private TextView accGroupCap, accFoldBtn, accWsCount, accOnCount;
+    private android.widget.FrameLayout accViewToggle;   // 卡片视图兼容入口（顶栏单枚图标）
+    /** D8（真机 2026-11-06）：账号页 FAB 包裹层；展开任一账号组时收起，避免遮挡角色卡操作。 */
+    private android.widget.FrameLayout accFabWrap;
     private TextView accBatchBtn;                 // 批量管理按钮（长按行进入批量态时同步文案）
     private boolean batchMode;                    // 批量管理态：行首显示勾选框
+    /** 账号组展开状态：默认全部折叠，仅手动展开的账号 id 入集合；会话内保留，列表刷新不重置。 */
     private final java.util.Set<String> expandedAccs = new java.util.HashSet<>();
 
     // 账号页 · 账号池（M2：UI + 状态机 + 轮询，契约《账号池M2M3-App实现契约》§3）
@@ -518,7 +526,7 @@ public class HomeActivity extends AccountVaultActivity {
         tb.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
         title.setText("无尽号库");
-        title.setTextSize(24);
+        title.setTextSize(UiComponents.TEXT_TAB_TITLE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
         tb.addView(title);
@@ -571,23 +579,32 @@ public class HomeActivity extends AccountVaultActivity {
         heroSub.setTextSize(16);
         heroSub.setTypeface(Typeface.DEFAULT_BOLD);
         heroSub.setTextColor(UiStyle.WHITE);
-        // Hero 右侧要同时放账号名 + 长角色名（如 888-cch-小鹿矿工5号）+ 状态，
-        // 单行必然被省略号截断；改为最多两行，保证账号名与角色名都完整可读。
+        // D1（真机 2026-11-06）：状态不再与账号名/角色名同占一行。
+        // 原布局把「● 日常在线」塞进标题行，窄屏下把「测试账号 · 隆科多」挤成
+        // 「测试账号 · 隆」/「科多」两行，视觉破碎；状态移到独立行后标题不再争宽度。
+        // 仍保留最多两行，兼容「账号名 + 长角色名」的完整可读。
         heroSub.setMaxLines(2);
         heroSub.setEllipsize(android.text.TextUtils.TruncateAt.END);
         heroSubRow.addView(heroSub, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
         heroSubRow.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON_DOWN,
                 UiStyle.BRAND_100, 16), new LinearLayout.LayoutParams(dp(16), dp(16)));
+        LinearLayout onlineRow = new LinearLayout(this);
+        onlineRow.setOrientation(LinearLayout.HORIZONTAL);
+        onlineRow.setGravity(Gravity.CENTER_VERTICAL);
+        onlineRow.setPadding(0, dp(2), 0, 0);
         onlineDot = new TextView(this);
         onlineDot.setText("· 检测中");
-        onlineDot.setTextSize(11.5f);
+        onlineDot.setTextSize(UiComponents.TEXT_CAPTION);
         onlineDot.setTypeface(Typeface.DEFAULT_BOLD);
         onlineDot.setTextColor(UiStyle.ON_BRAND_OK);
-        heroSubRow.addView(onlineDot);
+        onlineRow.addView(onlineDot);
         UiStyle.press(heroSubRow);
         heroSubRow.setOnClickListener(v -> showRolePicker());
+        UiStyle.press(onlineRow);
+        onlineRow.setOnClickListener(v -> showRolePicker());
         right.addView(heroSubRow);
+        right.addView(onlineRow);
 
         // 活跃度档位进度条（进度表达规范：当前值/满档 + 下一档还差多少）
         LinearLayout actRow = new LinearLayout(this);
@@ -1293,6 +1310,13 @@ public class HomeActivity extends AccountVaultActivity {
 
     /** 列表/卡片页签视觉：选中项白底浮起，未选中透明。 */
     private void updateAccViewToggle() {
+        if (accViewToggle != null) {
+            accViewToggle.setBackground(UiStyle.roundRectStroke(this,
+                    accView == 1 ? UiStyle.BRAND_50 : UiStyle.WHITE, 10,
+                    accView == 1 ? UiStyle.BRAND_200 : UiStyle.LINE));
+            accViewToggle.setContentDescription(accView == 1 ? "返回列表视图" : "切换卡片视图");
+            return;
+        }
         if (accViewList == null || accViewCard == null) return;
         for (int i = 0; i < 2; i++) {
             TextView t = i == 0 ? accViewList : accViewCard;
@@ -2345,7 +2369,7 @@ public class HomeActivity extends AccountVaultActivity {
         tb.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
         title.setText("账号");
-        title.setTextSize(24);
+        title.setTextSize(UiComponents.TEXT_TAB_TITLE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
         tb.addView(title);
@@ -2372,6 +2396,22 @@ public class HomeActivity extends AccountVaultActivity {
         });
         batchBtn.setTag("batchBtn");
         accBatchBtn = batchBtn;
+        // 旧「列表 / 卡片」双页签降级为顶栏单枚图标：设计稿只定义分组列表，
+        // 不再让切换条占掉一整行、挤压 45 个账号组的可见区域。
+        accViewToggle = new android.widget.FrameLayout(this);
+        accViewToggle.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 10, UiStyle.LINE));
+        accViewToggle.addView(new UiStyle.Icon(this, UiStyle.Icon.GRID, UiStyle.INK2, 16),
+                new android.widget.FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER));
+        accViewToggle.setContentDescription("切换卡片视图");
+        UiStyle.press(accViewToggle);
+        accViewToggle.setOnClickListener(v -> {
+            accView = accView == 1 ? 0 : 1;
+            updateAccViewToggle();
+            refreshAccounts();
+        });
+        LinearLayout.LayoutParams vtlp = new LinearLayout.LayoutParams(dp(32), dp(32));
+        vtlp.rightMargin = dp(8);
+        top.addView(accViewToggle, vtlp);
         top.addView(batchBtn);
         box.addView(top);
         LinearLayout.LayoutParams tlp = new LinearLayout.LayoutParams(
@@ -2379,43 +2419,83 @@ public class HomeActivity extends AccountVaultActivity {
         tlp.bottomMargin = dp(12);
         top.setLayoutParams(tlp);
 
-        // 批量条（M2 契约 §3.1）：[全部上线/全部停止] + 进度文案 + [刷新]
-        // 批次7：服务器会话批量属 T2 会员功能；T1（普通版）不渲染（仅保留分身链路）
+        // ---- L0 全局概览与批量条（对齐 Ardot「账号页 · App 多账号分组版」A 画板）----
+        // 白卡常驻：全局计数所有 tier 可见；批量按钮属 T2，普通版只显示计数。
         final boolean canAutomation = gate(FeatureGate.Feature.AUTOMATION_STATUS);
+        LinearLayout globalCard = new LinearLayout(this);
+        globalCard.setOrientation(LinearLayout.VERTICAL);
+        globalCard.setBackground(UiStyle.roundRectStroke(this, UiStyle.WHITE, 12, UiStyle.LINE));
+        globalCard.setPadding(dp(14), dp(10), dp(14), dp(10));
+        LinearLayout.LayoutParams gclp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        gclp.bottomMargin = dp(10);
+        globalCard.setLayoutParams(gclp);
+        TextView gLabel = new TextView(this);
+        gLabel.setText("L0 全局 · 全部账号组");
+        gLabel.setTextSize(10.5f);
+        gLabel.setTextColor(UiStyle.INK3);
+        globalCard.addView(gLabel);
+        LinearLayout gCount = new LinearLayout(this);
+        gCount.setOrientation(LinearLayout.HORIZONTAL);
+        gCount.setPadding(0, dp(5), 0, 0);
+        accWsCount = new TextView(this);
+        accWsCount.setText("工作区 0");
+        accWsCount.setTextSize(14);
+        accWsCount.setTypeface(Typeface.DEFAULT_BOLD);
+        accWsCount.setTextColor(UiStyle.INK);
+        gCount.addView(accWsCount);
+        accOnCount = new TextView(this);
+        accOnCount.setText("在线 0");
+        accOnCount.setTextSize(14);
+        accOnCount.setTypeface(Typeface.DEFAULT_BOLD);
+        accOnCount.setTextColor(UiStyle.OK_INK);
+        LinearLayout.LayoutParams onlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        onlp.leftMargin = dp(14);
+        gCount.addView(accOnCount, onlp);
+        globalCard.addView(gCount);
         if (canAutomation) {
-        LinearLayout poolBar = new LinearLayout(this);
-        poolBar.setOrientation(LinearLayout.HORIZONTAL);
-        poolBar.setGravity(Gravity.CENTER_VERTICAL);
-        poolBar.setPadding(0, 0, 0, dp(8));
-        poolBarLoginAll = poolMiniBtn("全部上线",
-                UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
-        poolBarLoginAll.setOnClickListener(v -> runGlobalBatch(VaultSync.ACTION_LOGIN_ALL));
-        poolBar.addView(poolBarLoginAll);
-        LinearLayout.LayoutParams spl = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        spl.leftMargin = dp(8);
-        poolBarStopAll = poolMiniBtn("全部停止",
-                UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
-        poolBarStopAll.setOnClickListener(v -> runGlobalBatch(VaultSync.ACTION_STOP_ALL));
-        poolBar.addView(poolBarStopAll, spl);
-        poolBarProgress = new TextView(this);
-        poolBarProgress.setTextSize(11);
-        poolBarProgress.setTextColor(UiStyle.INK2);
-        poolBarProgress.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-        poolBarProgress.setMaxLines(1);
-        poolBar.addView(poolBarProgress, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        poolBarRefresh = poolMiniBtn("刷新", UiStyle.WHITE, UiStyle.INK2, UiStyle.LINE_STRONG);
-        LinearLayout.LayoutParams rlp2 = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        rlp2.leftMargin = dp(8);
-        poolBarRefresh.setOnClickListener(v -> {
-            pollPoolOnce();
-            refreshAccounts();
-        });
-        poolBar.addView(poolBarRefresh, rlp2);
-        box.addView(poolBar);
-        }   // end T2 batch bar
+            // 批量条（M2 契约 §3.1）：[全部上线/全部停止] + 进度文案 + [刷新]
+            LinearLayout poolBar = new LinearLayout(this);
+            poolBar.setOrientation(LinearLayout.HORIZONTAL);
+            poolBar.setGravity(Gravity.CENTER_VERTICAL);
+            poolBar.setPadding(0, dp(6), 0, 0);
+            poolBarLoginAll = poolMiniBtn("全部上线",
+                    UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+            poolBarLoginAll.setOnClickListener(v -> runGlobalBatch(VaultSync.ACTION_LOGIN_ALL));
+            poolBar.addView(poolBarLoginAll);
+            LinearLayout.LayoutParams spl = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            spl.leftMargin = dp(8);
+            poolBarStopAll = poolMiniBtn("全部停止",
+                    UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
+            poolBarStopAll.setOnClickListener(v -> runGlobalBatch(VaultSync.ACTION_STOP_ALL));
+            poolBar.addView(poolBarStopAll, spl);
+            poolBarProgress = new TextView(this);
+            poolBarProgress.setTextSize(11);
+            poolBarProgress.setTextColor(UiStyle.INK2);
+            poolBarProgress.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+            poolBarProgress.setMaxLines(1);
+            poolBar.addView(poolBarProgress, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+            poolBarRefresh = poolMiniBtn("刷新", UiStyle.WHITE, UiStyle.INK2, UiStyle.LINE_STRONG);
+            LinearLayout.LayoutParams rlp2 = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rlp2.leftMargin = dp(8);
+            poolBarRefresh.setOnClickListener(v -> {
+                pollPoolOnce();
+                refreshAccounts();
+            });
+            poolBar.addView(poolBarRefresh, rlp2);
+            globalCard.addView(poolBar);
+            TextView gNote = new TextView(this);
+            gNote.setText("批量 · 作用于全部已启用角色");
+            gNote.setTextSize(10.5f);
+            gNote.setTextColor(UiStyle.INK3);
+            gNote.setPadding(0, dp(5), 0, 0);
+            globalCard.addView(gNote);
+        }
+        box.addView(globalCard);
 
         // stale 横幅：上次状态获取失败 → 保留上次状态展示 +「点击重试」（不误判离线）
         // 批次7：账号池状态属 T2；T1 不做池轮询也不渲染横幅
@@ -2460,6 +2540,7 @@ public class HomeActivity extends AccountVaultActivity {
             @Override public void onTextChanged(CharSequence s, int a, int b, int c) { }
 
             @Override public void afterTextChanged(android.text.Editable s) {
+                foldLock = false;   // 搜索命中组自动展开
                 refreshAccounts();
             }
         });
@@ -2478,6 +2559,7 @@ public class HomeActivity extends AccountVaultActivity {
             UiStyle.press(c);
             c.setOnClickListener(v -> {
                 accountFilter = idx;
+                foldLock = false;   // 重新按 04 折叠规则自动展开异常组
                 refreshAccounts();
             });
             filterChips.add(c);
@@ -2487,38 +2569,39 @@ public class HomeActivity extends AccountVaultActivity {
             frow.addView(c, lp);
         }
 
-        // 列表 / 卡片 视图切换（设计稿 S3：选中项白底浮起）
-        LinearLayout viewTabs = new LinearLayout(this);
-        viewTabs.setOrientation(LinearLayout.HORIZONTAL);
-        viewTabs.setPadding(0, dp(6), 0, dp(4));
-        accViewList = new TextView(this);
-        accViewList.setText("列表");
-        accViewList.setTextSize(13);
-        accViewList.setTypeface(Typeface.DEFAULT_BOLD);
-        accViewList.setGravity(Gravity.CENTER);
-        accViewList.setPadding(dp(16), dp(7), dp(16), dp(7));
-        accViewCard = new TextView(this);
-        accViewCard.setText("卡片");
-        accViewCard.setTextSize(13);
-        accViewCard.setGravity(Gravity.CENTER);
-        accViewCard.setPadding(dp(16), dp(7), dp(16), dp(7));
-        viewTabs.addView(accViewList);
-        LinearLayout.LayoutParams vlp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        vlp.leftMargin = dp(10);
-        viewTabs.addView(accViewCard, vlp);
-        UiStyle.press(accViewList);
-        UiStyle.press(accViewCard);
-        accViewList.setOnClickListener(v -> {
-            accView = 0;
+        // ---- 账号组列表标题 + 全部折叠（设计稿 A 画板 / C 画板 04 折叠规则）----
+        LinearLayout groupHead = new LinearLayout(this);
+        groupHead.setOrientation(LinearLayout.HORIZONTAL);
+        groupHead.setGravity(Gravity.CENTER_VERTICAL);
+        groupHead.setPadding(0, dp(6), 0, dp(4));
+        accGroupCap = new TextView(this);
+        accGroupCap.setText("账号组 · 0");
+        accGroupCap.setTextSize(12);
+        accGroupCap.setTypeface(Typeface.DEFAULT_BOLD);
+        accGroupCap.setTextColor(UiStyle.INK);
+        groupHead.addView(accGroupCap, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        accFoldBtn = new TextView(this);
+        accFoldBtn.setText("全部展开");
+        accFoldBtn.setTextSize(11);
+        accFoldBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        accFoldBtn.setTextColor(UiStyle.BRAND_TEXT);
+        accFoldBtn.setPadding(dp(10), dp(4), dp(4), dp(4));
+        UiStyle.press(accFoldBtn);
+        accFoldBtn.setOnClickListener(v -> {
+            if (!expandedAccs.isEmpty()) {
+                expandedAccs.clear();
+                foldLock = true;      // 手动折叠后本次不再自动展开
+            } else {
+                foldLock = false;
+                if (accounts != null) {
+                    for (AccountStore.Account a0 : accounts) if (a0 != null) expandedAccs.add(a0.id);
+                }
+            }
             refreshAccounts();
         });
-        accViewCard.setOnClickListener(v -> {
-            accView = 1;
-            refreshAccounts();
-        });
-        box.addView(viewTabs);
-        updateAccViewToggle();
+        groupHead.addView(accFoldBtn);
+        box.addView(groupHead);
 
         ScrollView sc = new ScrollView(this);
         accountList = new LinearLayout(this);
@@ -2529,7 +2612,8 @@ public class HomeActivity extends AccountVaultActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1));
 
         // FAB ＋（新增；长按=批量导入）。设计 token：56dp 正圆 + 品牌底 + 浮起阴影
-        FrameLayout fabWrap = new FrameLayout(this);
+        // D8：保存包裹层引用，展开账号组时整层收起（见 syncAccFab）。
+        accFabWrap = new FrameLayout(this);
         TextView fab = new TextView(this);
         fab.setText("+");
         fab.setTextSize(30);
@@ -2545,15 +2629,28 @@ public class HomeActivity extends AccountVaultActivity {
                 Gravity.RIGHT | Gravity.BOTTOM);
         flp.rightMargin = dp(18);
         flp.bottomMargin = dp(92);
-        fabWrap.addView(fab, flp);
+        accFabWrap.addView(fab, flp);
         UiStyle.press(fab);
         fab.setOnClickListener(v -> showCreateEntry());
         fab.setOnLongClickListener(v -> {
             showBatchImport();
             return true;
         });
-        pageRoot.addView(fabWrap, new android.widget.FrameLayout.LayoutParams(
+        pageRoot.addView(accFabWrap, new android.widget.FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        syncAccFab();
+    }
+
+    /**
+     * D8（真机 2026-11-06）：账号组展开后，角色卡的行内操作按钮与区服文字会被固定悬浮的
+     * ＋ FAB 压住（真机 03-账号页-展开.png 实证）。折叠态保持原设计不变；只要有任一账号组
+     * 处于展开态就收起 FAB，用户仍可点组头折叠后新增账号，或走顶栏「批量管理」。
+     * 兼容旧卡片墙视图（accView==1）不收起，避免影响遗留入口。
+     */
+    private void syncAccFab() {
+        if (accFabWrap == null) return;
+        boolean show = accView != 0 || expandedAccs.isEmpty();
+        accFabWrap.setVisibility(show ? View.VISIBLE : View.GONE);
     }
 
     /** 角色行（账号卡展开后）：游戏角色名 · K区服 · 今日状态 · 上次 · ▶跑日常。 */
@@ -2613,9 +2710,9 @@ public class HomeActivity extends AccountVaultActivity {
             cell.addView(nm);
 
             TextView sub = new TextView(this);
-            boolean isToken = a.token != null && !a.token.isEmpty();
-            sub.setText((isToken ? "token" : "原生") + " · " + shortTime(a.lastLogin));
-            sub.setTextSize(9.5f);
+            // 11-05 口径：账号页不展示登录方式（token / 原生）与 UID，只保留最近使用时间。
+            sub.setText(shortTime(a.lastLogin));
+            sub.setTextSize(UiComponents.TEXT_MICRO);
             sub.setTextColor(UiStyle.INK2);
             sub.setGravity(Gravity.CENTER);
             sub.setMaxLines(1);
@@ -2628,12 +2725,12 @@ public class HomeActivity extends AccountVaultActivity {
         }
     }
 
-    /** 卡片视图：3 列账号图标墙（游戏图标 + 备注名 + 登录方式/上次登录）。 */
+    /** 卡片视图：3 列账号图标墙（游戏图标 + 备注名 + 上次登录；不展示登录方式/UID）。 */
     private void renderRoleMatrix(List<AccountStore.Account> shown,
                                   java.util.Map<String, List<RoleStore.Role>> rolesMap,
                                   java.util.Map<String, int[]> roleStats,
                                   java.util.Map<String, Long> roleLast) {
-        // 卡片视图 = 旧版 3 列入口墙：游戏图标 + 名称 + token/原生/无 + 最近登录。
+        // 卡片视图 = 旧版 3 列入口墙：游戏图标 + 名称 + 就绪态（内部判定用）+ 最近登录。
         int per = 3;
         LinearLayout row = null;
         for (int i2 = 0; i2 < shown.size(); i2++) {
@@ -2696,10 +2793,10 @@ public class HomeActivity extends AccountVaultActivity {
             String subLabel;
             switch (SessionProbe.classifySnapshot(hasToken, hasSnap, snapValid)) {
                 case SNAP_VALID:
-                    subLabel = hasToken ? "token" : "原生";
+                    subLabel = "已就绪";      // 本轮口径：不展示登录方式（token / 原生）
                     break;
                 case TOKEN_ONLY:
-                    subLabel = "token";
+                    subLabel = "已就绪";
                     break;
                 case SNAP_NO_SESSION:
                     // 有快照文件但没有有效登录会话 ⇒ 提示还要登录一次，不再冒充「原生」
@@ -2712,7 +2809,7 @@ public class HomeActivity extends AccountVaultActivity {
             }
             TextView subStatus = new TextView(this);
             subStatus.setText(subLabel);
-            subStatus.setTextSize(9.5f);
+            subStatus.setTextSize(UiComponents.TEXT_MICRO);
             subStatus.setMaxLines(1);
             subStatus.setEllipsize(android.text.TextUtils.TruncateAt.END);
             subStatus.setTextColor(UiStyle.INK2);
@@ -2724,7 +2821,7 @@ public class HomeActivity extends AccountVaultActivity {
             subTime.setText(a.lastLogin > 0
                     ? new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
                     .format(new java.util.Date(a.lastLogin)) : "未用");
-            subTime.setTextSize(9.5f);
+            subTime.setTextSize(UiComponents.TEXT_MICRO);
             subTime.setMaxLines(1);
             subTime.setTextColor(UiStyle.INK2);
             subTime.setGravity(Gravity.END);
@@ -3024,12 +3121,15 @@ public class HomeActivity extends AccountVaultActivity {
                             ? View.VISIBLE : View.GONE);
                 }
                 updateAccSeg();
+                // 04 折叠规则：异常筛选 / 搜索命中时自动展开；用户手动「全部折叠」后本次不自动展开
+                if ((accountFilter == 2 || !q.isEmpty()) && !foldLock) {
+                    for (AccountStore.Account a0 : fShown) expandedAccs.add(a0.id);
+                }
                 if (accView == 1) {
                     renderRoleMatrix(fShown, fRoles, fRoleStats, fRoleLast);
                 } else {
-                    // 列表视图 = 账号分组框（账号头 + 工作区角色表格，每行可单独登录）。
-                    // 第二轮 UI：弃用只有账号级登录按钮的简单卡片——同服多角色的
-                    // 每个工作区角色都必须可达（简单卡片只剩长按菜单一条路）。
+                    // 列表视图 = 账号组折叠卡（组头 + 展开后的三行式角色卡，每行可单独操作）。
+                    // 默认折叠：45 个账号组一屏可见 6–8 组，折叠态不 inflate 任何角色行。
                     for (AccountStore.Account a : fShown) {
                         accountList.addView(accountGroupCard(a, fStats.get(a.id),
                                 fRoles.get(a.id), fRoleStats, fRoleLast, fOnline,
@@ -3073,6 +3173,11 @@ public class HomeActivity extends AccountVaultActivity {
         String capText = accounts.size() + " 个账号 · 工作区 " + wsRoleCnt;
         if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) capText += " · " + onCnt + " 个在线";
         if (accountCap != null) accountCap.setText(capText);
+        if (accWsCount != null) accWsCount.setText("工作区 " + wsRoleCnt);
+        if (accOnCount != null) accOnCount.setText("在线 " + onCnt);
+        if (accGroupCap != null) accGroupCap.setText("账号组 · " + fShown.size());
+        if (accFoldBtn != null) accFoldBtn.setText(expandedAccs.isEmpty() ? "全部展开" : "全部折叠");
+        syncAccFab();    // D8：展开态收起 FAB，每次刷新都按最新折叠状态同步
         hideAccMask();   // 最新一轮已渲染，无论它是否 show 过遮罩都撤（防残留挡屏）
             });
           } catch (final Throwable t) {
@@ -3084,17 +3189,14 @@ public class HomeActivity extends AccountVaultActivity {
                 accountList.removeAllViews();
                 accountList.addView(emptyTip("账号数据加载失败：" + t));
                 refreshBatchBar();
+                syncAccFab();    // D8：异常态也同步一次，避免 FAB 停留在上一次的可见性
                 hideAccMask();
             });
           }
         }, "acc-refresh").start();
     }
 
-    // ==================== 账号页（v2 原型）：在线判定 / 游戏头像 / 表格化角色行 ====================
-
-    /** 角色表各列宽度（dp）。昵称列吃剩余宽度，其余定宽以保证逐行对齐（状态列容纳「● 已暂停·待恢复」）。 */
-    private static final int COL_ONLINE = 74, COL_ZONE = 24, COL_DONE = 38, COL_LAST = 38,
-            COL_GO = 74;
+    // ==================== 账号页：在线判定 / 游戏头像 / 分组卡片式角色行 ====================
 
     /**
      * 「在线」判定：该账号当前是否持有<b>有效登录态</b>。
@@ -3315,47 +3417,6 @@ public class HomeActivity extends AccountVaultActivity {
         return avatarView(sizeDp, label, seed);
     }
 
-    /** 登录方式徽标：token=靛（待领取色）/ 原生=绿，与原型 vbadge 配色一致。 */
-    private TextView loginBadge(AccountStore.Account a) {
-        boolean isToken = a.token != null && !a.token.isEmpty();
-        TextView b = UiStyle.badge(this, isToken ? "wait" : "ok", isToken ? "token" : "原生");
-        // 头行横向预算紧张：徽标宁可横向压缩也不竖排折行（「token」折成三行不可读）
-        b.setSingleLine(true);
-        b.setMaxLines(1);
-        return b;
-    }
-
-    /** UID 尾号（保留后 6 位，前缀省略号）。 */
-    private String uidTail(AccountStore.Account a) {
-        if (a == null || a.fpid == null || a.fpid.isEmpty()) return "—";
-        return a.fpid.length() <= 6 ? a.fpid : "…" + a.fpid.substring(a.fpid.length() - 6);
-    }
-
-    /** 角色区表头行：状态 / 角色 / 区号 / 今日完成 / 上次登录 /（操作列无标题）。 */
-    private android.view.View roleTableHead() {
-        LinearLayout r = new LinearLayout(this);
-        r.setOrientation(LinearLayout.HORIZONTAL);
-        r.setPadding(0, dp(3), 0, dp(5));
-        r.addView(colHead("状态", COL_ONLINE, Gravity.START));
-        r.addView(colHead("角色", 0, Gravity.START),
-                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        r.addView(colHead("今日完成", COL_DONE, Gravity.END));
-        r.addView(colHead("上次登录", COL_LAST, Gravity.END));
-        r.addView(colHead("", COL_GO, Gravity.END));
-        return r;
-    }
-
-    private TextView colHead(String text, int wDp, int gravity) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextSize(9.5f);
-        t.setTextColor(UiStyle.INK3);
-        t.setGravity(gravity);
-        t.setMaxLines(1);
-        if (wDp > 0) t.setWidth(dp(wDp));
-        return t;
-    }
-
     /** 上次登录的紧凑时间：今天→HH:mm，今年→MM-dd，更早→yy-MM-dd（列宽只有 52dp）。 */
     private String shortTime(long ts) {
         if (ts <= 0) return "—";
@@ -3401,12 +3462,17 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     /**
-     * 账号分组框：头行=备注名+登录方式(原生/token)+⚙；框内=已入工作区的角色独立入口卡。
+     * 账号组卡（对齐 Ardot「账号页 · App 多账号分组版」A / B 画板）。
      *
-     * <p>点击口径（2026-10-28 用户新 bug）：<b>整卡/角色行=进入账号详情</b>（showAccountDetail），
-     * 只有右上⚙「角色管理」才弹 {@link #showRoleManager}；批量模式下整卡=勾选切换；
-     * 长按整卡=账号菜单。子控件（勾选框/恢复设置/齿轮/角色行动作按钮）各自消费点击，
-     * 不会被整卡点击抢占。
+     * <p>组头常驻：头像 + 备注名 + 「工作区 N · 在线 N」 + 恢复设置图标 +
+     * 角色管理图标 + 折叠箭头；<b>默认折叠</b>，展开后才构建组级批量条与角色行卡片。
+     * 登录方式徽标与 UID 按本轮设计口径移除。
+     *
+     * <p>交互：点组头 = 折叠/展开（批量态下仍为勾选切换）；点卡片空白区 =
+     * 账号详情；长按 = 账号菜单。筛选「异常」或有搜索词时自动展开，方便直接看到异常角色。
+     * 展开态底部另给「查看账号详情」显式入口，保证原「点卡片进详情」的操作不丢。
+     *
+     * <p>性能：折叠态只 inflate 组头，45 个账号组不再一次性 inflate 全部角色行。
      */
     private android.view.View accountGroupCard(final AccountStore.Account a, final String[] st,
                                                final List<RoleStore.Role> roles,
@@ -3423,20 +3489,39 @@ public class HomeActivity extends AccountVaultActivity {
         blp.bottomMargin = dp(10);
         box.setLayoutParams(blp);
 
-        // 账号在线（快照会话口径）：头行徽标计数、角色行、角色管理弹层共用。
-        // 角色级：容器正挂着本账号（liveEntryId 匹配）时，用 live playerprefs 的 uid 精确反查
-        // "正在玩的那个角色"（会话 XML 只有 fpid，但 playerprefs 的 USER_SETTING_<uid> 有角色 uid）；
-        // 纯快照账号（未挂载）无法区分角色，维持激活角色（actSid）推断。
         final boolean accOn = online != null && Boolean.TRUE.equals(online.get(a.id));
         final long actSid = RoleStore.activeRole(this, a.fpid);
         final long actUid = RoleStore.activeRoleUid(this, a.fpid);
         final boolean isLiveAcc = liveEntryId != null && liveEntryId.equals(a.id);
 
-        // 头行：☐勾选 | 无尽冬日头像 | 名字 + [登录方式] UID | ⚙ 角色管理
+        // 组统计提前计算：折叠态也要在组头看到「工作区 N · 在线 N」
+        int enN = 0;
+        if (roles != null) for (RoleStore.Role r0 : roles) if (r0.enabled) enN++;
+        int poolOn = poolAcc == null ? -1 : poolAcc.optInt("onlineCount", -1);
+        boolean headOn = poolOn > 0 || accOn;
+        if (poolOn < 0 && !headOn) {
+            try {
+                for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
+                        : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
+                    if (a.fpid != null && a.fpid.equals(ls.fpid)
+                            && com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
+                        headOn = true;
+                        break;
+                    }
+                }
+            } catch (Throwable ignored) {
+            }
+        }
+        final boolean accErr = st != null && st.length > 0 && "err".equals(st[0]);
+        final String summary = "工作区 " + enN + " · 在线 "
+                + (poolOn >= 0 ? poolOn : (headOn ? 1 : 0)) + (accErr ? " · 异常" : "");
+        final boolean expanded = expandedAccs.contains(a.id);
+
+        // ---- 组头 ----
         LinearLayout head = new LinearLayout(this);
         head.setOrientation(LinearLayout.HORIZONTAL);
         head.setGravity(Gravity.CENTER_VERTICAL);
-        // 勾选（批量）
+
         final TextView check = new TextView(this);
         boolean sel = selectedAccounts.contains(a.id);
         check.setText(sel ? "✓" : "");
@@ -3454,20 +3539,14 @@ public class HomeActivity extends AccountVaultActivity {
         }
         check.setBackground(ckg);
         UiStyle.press(check);
-        check.setOnClickListener(v -> {
-            if (selectedAccounts.contains(a.id)) selectedAccounts.remove(a.id);
-            else selectedAccounts.add(a.id);
-            refreshAccounts();
-        });
+        check.setOnClickListener(v -> toggleBatch(a));
         head.addView(check, new LinearLayout.LayoutParams(dp(22), dp(22)));
 
-        // 无尽冬日头像（游戏真实图标；取不到回退渐变首字）
         android.view.View av = avatarView(40, a.label, a.id);
         LinearLayout.LayoutParams avlp = new LinearLayout.LayoutParams(dp(40), dp(40));
         avlp.leftMargin = dp(9);
         head.addView(av, avlp);
 
-        // 名字（取自备注）+ [登录方式] UID
         LinearLayout titleBox = new LinearLayout(this);
         titleBox.setOrientation(LinearLayout.VERTICAL);
         titleBox.setPadding(dp(9), 0, dp(6), 0);
@@ -3479,148 +3558,134 @@ public class HomeActivity extends AccountVaultActivity {
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         titleBox.addView(name);
-        LinearLayout metaRow = new LinearLayout(this);
-        metaRow.setOrientation(LinearLayout.HORIZONTAL);
-        metaRow.setGravity(Gravity.CENTER_VERTICAL);
-        metaRow.setPadding(0, dp(3), 0, 0);
-        metaRow.addView(loginBadge(a));
-        TextView uid = new TextView(this);
-        uid.setText("UID " + uidTail(a));
-        uid.setTextSize(10.5f);
-        uid.setTextColor(UiStyle.INK2);
-        uid.setPadding(dp(6), 0, 0, 0);
-        uid.setSingleLine(true);
-        uid.setMaxLines(1);
-        // 空间不足时优先压缩 UID（长串可截断），把宽度让给账号名与徽标
-        uid.setEllipsize(android.text.TextUtils.TruncateAt.MIDDLE);
-        metaRow.addView(uid, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        titleBox.addView(metaRow);
+        // 摘要替代原「登录方式徽标 + UID」；异常组用危险色强调
+        TextView sub = new TextView(this);
+        sub.setText(summary);
+        sub.setTextSize(11);
+        sub.setTextColor(accErr ? UiStyle.ERR_INK : (headOn ? UiStyle.OK_INK : UiStyle.INK2));
+        sub.setMaxLines(1);
+        sub.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        sub.setPadding(0, dp(3), 0, 0);
+        titleBox.addView(sub);
         head.addView(titleBox, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1));
 
-        // ⏱ 恢复设置（P1 契约 §三.3）：顶号自动恢复策略（账号级，作用于全部角色）
-        // 批次7：属服务器自动化（T2），普通版不渲染
+        // 恢复设置（账号级顶号恢复策略）——与角色管理同层级图标按钮
         if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
-            LinearLayout recPill = headerPill("恢复", UiStyle.Icon.CLOCK,
-                    UiStyle.INK2, UiStyle.SURFACE_3, UiStyle.LINE_STRONG);
-            // 头行横向预算紧张：胶囊只显示短文案，完整语义保留给无障碍描述
-            recPill.setContentDescription("恢复设置");
-            recPill.setOnClickListener(v -> showRecoverySettingsDialog(a));
-            LinearLayout.LayoutParams rplp = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            android.widget.FrameLayout rec = headerIconBtn(UiStyle.Icon.CLOCK,
+                    UiStyle.INK2, UiStyle.SURFACE_3, UiStyle.LINE_STRONG, "恢复设置");
+            rec.setOnClickListener(v -> showRecoverySettingsDialog(a));
+            LinearLayout.LayoutParams rplp = new LinearLayout.LayoutParams(dp(30), dp(30));
             rplp.rightMargin = dp(6);
-            head.addView(recPill, rplp);
+            head.addView(rec, rplp);
         }
-
-        // ⚙ 角色管理：唯一打开角色管理弹层的入口（用户口径：点卡片其它区域/角色行 = 进账号详情）。
-        // 图标为程序化矢量 Icon（文本字符会随机型字体异形）。
-        LinearLayout gear = headerPill("角色", UiStyle.Icon.GEAR,
-                UiStyle.BRAND_TEXT, UiStyle.BRAND_50, UiStyle.BRAND_200);
-        // 同上：短文案 + 完整无障碍描述
-        gear.setContentDescription("角色管理");
+        // 角色管理
+        android.widget.FrameLayout gear = headerIconBtn(UiStyle.Icon.GEAR,
+                UiStyle.BRAND_TEXT, UiStyle.BRAND_50, UiStyle.BRAND_200, "角色管理");
         gear.setOnClickListener(v -> showRoleManager(a, roles, accOn));
-        head.addView(gear);
+        head.addView(gear, new LinearLayout.LayoutParams(dp(30), dp(30)));
+        // 折叠箭头（矢量图标，展开时旋转 180°）
+        UiStyle.Icon arrow = new UiStyle.Icon(this, UiStyle.Icon.CHEVRON_DOWN, UiStyle.INK3, 16);
+        if (expanded) arrow.setRotation(180f);
+        LinearLayout.LayoutParams alp = new LinearLayout.LayoutParams(dp(16), dp(16));
+        alp.leftMargin = dp(4);
+        head.addView(arrow, alp);
+
+        UiStyle.press(head);
+        head.setOnClickListener(v -> {
+            if (batchMode) { toggleBatch(a); return; }
+            if (expandedAccs.contains(a.id)) expandedAccs.remove(a.id);
+            else expandedAccs.add(a.id);
+            refreshAccounts();
+        });
         box.addView(head);
 
-        // 框内：已启用角色 → 表格（状态/角色/区号/今日完成/上次登录/动作），全部可见可滚动
-        // （第二轮 UI：移除"最多 4 行 + 还有 N 个"折叠——同服多角色账号必须全部可达）
-        int enN = 0;
-        if (roles != null) for (RoleStore.Role r0 : roles) if (r0.enabled) enN++;
-        if (enN > 0) {
-            LinearLayout secH = new LinearLayout(this);
-            secH.setOrientation(LinearLayout.HORIZONTAL);
-            secH.setGravity(Gravity.CENTER_VERTICAL);
-            secH.setPadding(0, dp(6), 0, 0);
-            // 组头「工作区 N · 在线 N」（M2 网页版口径）：在线数优先服务器聚合，回退本地判定
-            TextView l = new TextView(this);
-            int poolOn = poolAcc == null ? -1 : poolAcc.optInt("onlineCount", -1);
-            boolean headOn = poolOn > 0 || accOn;
-            if (poolOn < 0 && !headOn) {
-                try {
-                    for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
-                            : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
-                        if (a.fpid != null && a.fpid.equals(ls.fpid)
-                                && com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
-                            headOn = true;
-                            break;
-                        }
+        // ---- 展开区：仅展开时构建，折叠态不 inflate 任何角色行 ----
+        if (expanded) {
+            LinearLayout detail = new LinearLayout(this);
+            detail.setOrientation(LinearLayout.VERTICAL);
+            if (enN > 0) {
+                LinearLayout secH = new LinearLayout(this);
+                secH.setOrientation(LinearLayout.HORIZONTAL);
+                secH.setGravity(Gravity.CENTER_VERTICAL);
+                secH.setPadding(0, dp(10), 0, dp(2));
+                TextView lbl = new TextView(this);
+                lbl.setText("本组批量");
+                lbl.setTextSize(10.5f);
+                lbl.setTextColor(UiStyle.INK3);
+                secH.addView(lbl, new LinearLayout.LayoutParams(0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                boolean accBusy = poolAccBusy.contains(a.fpid);
+                if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
+                    TextView accLoginAll = poolMiniBtn(accBusy ? "执行中" : "全部上线 " + enN,
+                            UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+                    accLoginAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_LOGIN_ALL));
+                    secH.addView(accLoginAll);
+                    TextView accStopAll = poolMiniBtn(accBusy ? "执行中" : "全部停止 " + enN,
+                            UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
+                    LinearLayout.LayoutParams aslp = new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                    aslp.leftMargin = dp(6);
+                    secH.addView(accStopAll, aslp);
+                    accStopAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_STOP_ALL));
+                    if (accBusy) {
+                        accLoginAll.setEnabled(false);
+                        accStopAll.setEnabled(false);
+                        accLoginAll.setAlpha(.5f);
+                        accStopAll.setAlpha(.5f);
                     }
-                } catch (Throwable ignored) {
                 }
-            }
-            l.setText("工作区 " + enN + " · 在线 " + (poolOn >= 0 ? poolOn : (headOn ? 1 : 0)));
-            l.setTextSize(10);
-            l.setTypeface(Typeface.DEFAULT_BOLD);
-            l.setTextColor(headOn ? UiStyle.OK_INK : UiStyle.INK3);
-            secH.addView(l, new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            // 账号级批量（M2 契约 §3.1 组头「全部上线/全部停止」= 工作区角色批量）
-            // 批次7：服务器会话批量属日常自动化（T2），普通版只保留「启动分身」入口
-            boolean accBusy = poolAccBusy.contains(a.fpid);
-            if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
-                TextView accLoginAll = poolMiniBtn(accBusy ? "执行中" : "全部上线",
-                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
-                accLoginAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_LOGIN_ALL));
-                secH.addView(accLoginAll);
-                TextView accStopAll = poolMiniBtn(accBusy ? "执行中" : "全部停止",
-                        UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
-                LinearLayout.LayoutParams aslp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                aslp.leftMargin = dp(6);
-                secH.addView(accStopAll, aslp);
-                accStopAll.setOnClickListener(v -> poolAccountAction(a, VaultSync.ACTION_STOP_ALL));
-                if (accBusy) {
-                    accLoginAll.setEnabled(false);
-                    accStopAll.setEnabled(false);
-                    accLoginAll.setAlpha(.5f);
-                    accStopAll.setAlpha(.5f);
+                detail.addView(secH);
+                long nowMs = System.currentTimeMillis();
+                for (final RoleStore.Role r : roles) {
+                    if (!r.enabled) continue;
+                    org.json.JSONObject poolRole = matchPoolRole(poolAcc, r);
+                    detail.addView(roleEntryCard(a, r,
+                            roleStats.get(a.fpid + ":" + r.serverid),
+                            roleLast.containsKey(a.fpid + ":" + r.serverid)
+                                    ? roleLast.get(a.fpid + ":" + r.serverid) : 0L,
+                            roleOnlineLabel(a, r, accOn, actSid, actUid, isLiveAcc, liveUid),
+                            com.carlos.vault.AccountPoolCache.stateOfRole(poolRole), poolRole,
+                            poolBusy.contains(a.fpid + ":" + r.serverid + ":" + r.uid), nowMs));
                 }
+            } else {
+                LinearLayout tipBox = new LinearLayout(this);
+                tipBox.setOrientation(LinearLayout.HORIZONTAL);
+                tipBox.setGravity(Gravity.CENTER_VERTICAL);
+                tipBox.setPadding(dp(4), dp(10), dp(4), dp(4));
+                TextView tip = new TextView(this);
+                tip.setText(roles == null || roles.isEmpty()
+                        ? "暂无工作区角色（登录一次自动发现）" : "尚未选择工作区角色");
+                tip.setTextSize(11.5f);
+                tip.setTextColor(UiStyle.INK2);
+                tipBox.addView(tip, new LinearLayout.LayoutParams(0,
+                        ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+                if (roles != null && !roles.isEmpty()) {
+                    TextView pick = poolMiniBtn("去角色管理",
+                            UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+                    pick.setOnClickListener(v -> showRoleManager(a, roles, accOn));
+                    tipBox.addView(pick);
+                }
+                detail.addView(tipBox);
             }
-            box.addView(secH);
-            box.addView(roleTableHead());
-            long nowMs = System.currentTimeMillis();
-            for (final RoleStore.Role r : roles) {
-                if (!r.enabled) continue;
-                org.json.JSONObject poolRole = matchPoolRole(poolAcc, r);
-                box.addView(roleEntryCard(a, r,
-                        roleStats.get(a.fpid + ":" + r.serverid),
-                        roleLast.containsKey(a.fpid + ":" + r.serverid)
-                                ? roleLast.get(a.fpid + ":" + r.serverid) : 0L,
-                        roleOnlineLabel(a, r, accOn, actSid, actUid, isLiveAcc, liveUid),
-                        com.carlos.vault.AccountPoolCache.stateOfRole(poolRole), poolRole,
-                        poolBusy.contains(a.fpid + ":" + r.serverid + ":" + r.uid), nowMs));
-            }
-        } else {
-            // 空态（M2 契约 §3.1）：无角色=引导登录发现；有角色未入工作区=「尚未选择工作区角色」+选择角色
-            LinearLayout tipBox = new LinearLayout(this);
-            tipBox.setOrientation(LinearLayout.HORIZONTAL);
-            tipBox.setGravity(Gravity.CENTER_VERTICAL);
-            tipBox.setPadding(dp(4), dp(10), dp(4), dp(4));
-            TextView tip = new TextView(this);
-            tip.setText(roles == null || roles.isEmpty()
-                    ? "暂无角色数据（登录一次自动发现）"
-                    : "尚未选择工作区角色");
-            tip.setTextSize(11.5f);
-            tip.setTextColor(UiStyle.INK2);
-            tipBox.addView(tip, new LinearLayout.LayoutParams(0,
-                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-            if (roles != null && !roles.isEmpty()) {
-                TextView pick = poolMiniBtn("选择角色",
-                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
-                pick.setOnClickListener(v -> showRoleManager(a, roles, accOn));
-                tipBox.addView(pick);
-            }
-            box.addView(tipBox);
+            // 账号详情入口：折叠改造后仍显式保留原来的「点卡片进详情」操作
+            TextView goDetail = new TextView(this);
+            goDetail.setText("查看账号详情 ›");
+            goDetail.setTextSize(11);
+            goDetail.setTextColor(UiStyle.BRAND_TEXT);
+            goDetail.setGravity(Gravity.END);
+            goDetail.setPadding(0, dp(8), dp(2), dp(2));
+            UiStyle.press(goDetail);
+            goDetail.setOnClickListener(v -> showAccountDetail(a));
+            detail.addView(goDetail);
+            box.addView(detail);
         }
-        // 点击账号框 = 进入账号详情（卡片视图 tile 同款；2026-10-28 用户新 bug：不再弹角色管理）；
-        // 批量模式下整卡点击 = 勾选切换（与卡片视图一致）。子控件自带点击消费，不受影响。
-        UiStyle.press(box);
+
+        // 点卡片空白区 = 进入账号详情；长按 = 账号菜单（原有操作保留）
         box.setOnClickListener(v -> {
             if (batchMode) toggleBatch(a);
             else showAccountDetail(a);
         });
-        // 长按账号框 = 账号菜单（批量/登录并运行/启动游戏/角色管理/排序，与简单卡片一致）
         box.setOnLongClickListener(v -> {
             if (!batchMode) accountMenu(a);
             return true;
@@ -3628,28 +3693,32 @@ public class HomeActivity extends AccountVaultActivity {
         return box;
     }
 
+    /** 组头图标按钮：30dp 圆角浅底 + 居中矢量图标（设计稿：恢复 / 角色管理同层级、减少面积）。 */
+    private android.widget.FrameLayout headerIconBtn(int icon, int ink, int bg, int stroke, String desc) {
+        android.widget.FrameLayout b = new android.widget.FrameLayout(this);
+        b.setBackground(UiStyle.roundRectStroke(this, bg, 10, stroke));
+        b.addView(new UiStyle.Icon(this, icon, ink, 16),
+                new android.widget.FrameLayout.LayoutParams(dp(16), dp(16), Gravity.CENTER));
+        b.setContentDescription(desc);
+        UiStyle.press(b);
+        return b;
+    }
+
     /**
-     * 角色行（账号框内嵌 · 表格化，M2 账号池版）：
-     * {@code 状态（● + 11 态文案） | 昵称 | 区号 | 今日完成 | 上次登录 | [上线/暂停/停止/登录]}。
+     * 角色行（三行式卡片，对齐 Ardot 设计稿 B 画板）。
      *
-     * <p>状态与动作渲染（M2 契约 §2/§3.1 + M4 §3.2 修复）：
-     * <ul>
-     *   <li>池状态可用（{@code poolState != null}）：文案/配色走 {@link RoleRuntimeState}
-     *       纯函数（与网页版 §2.3 逐字一致）；动作按矩阵——在线→[暂停][停止]，
-     *       暂停→[上线][停止]（服务端 login 等价 resume），其它非在线（含已停止/
-     *       需登录/待恢复/计划休眠）→[上线] role-action；行内不再出现
-     *       「登录（服务器自动化）」（保留在账号详情页与降级/无池路径）；</li>
-     *   <li>池状态不可用（旧服务端/请求失败）：沿用 {@link #roleOnlineLabel} 旧文案
-     *       与「登录」按钮（保留现有行为，stale 横幅提示）；</li>
-     *   <li>被顶号/待恢复 → 行下 banner「账号被顶号 · 待恢复 mm:ss」（倒计时随轮询刷新）。</li>
-     * </ul>
-     * P1 扩展（契约 §三）：「已暂停·待恢复」态附 pause_resume_at 倒计时；
-     * 长按行 = 角色动作菜单（重命名/移除/启用收纳）。防封登录已并入默认登录链路，
-     * 角色行不再展示防封开关（2026-11-05 用户口径）。
-     * 点<b>行</b>（非动作按钮区域）= 进入账号详情（2026-10-28 用户口径；角色管理只走卡片右上⚙）；
-     * 动作按钮走 role-action（进行中禁点，失败 toast 服务端
-     * message，成功后立即刷新）。点「上线」直接 role-action login（M2d：同账号
-     * 多角色并行在线，服务端不再互斥，无前置确认弹窗）。
+     * <p>行 1：状态胶囊 + 角色昵称 + 区服；行 2：今日完成 + 上次登录（标签 + 值）；
+     * 行 3：上线 / 暂停 / 停止 / 启动分身 四枚按钮常驻，按角色状态启用或禁用。
+     * 原六列横表在窄屏把状态压到 9.5sp、列宽写死，是「区域太小内容显示不出来」的根因。
+     *
+     * <p>防封开关已下线：按 2026-11-05「防封登录并入默认登录、不再展示开关」的产品口径
+     * （master 269aa14 / 78ecb86），角色卡不再有防封列，也不再引用
+     * {@code AccountPoolCache.antibanOf} / {@code PoolRoleActions.toggleAntiban}。
+     *
+     * <p>与设计稿的一处有意偏差（避免功能回归）：
+     * 上线/暂停/停止属 T2（FeatureGate.AUTOMATION_STATUS），T1 下渲染为禁用态，
+     * 保持四枚按钮的视觉一致，同时不产生点了必然失败的假按钮；
+     * 降级（旧服务端 / 无池数据）时「上线」不受门禁影响，沿用原有 legacy 登录链路。
      */
     private android.view.View roleEntryCard(final AccountStore.Account a, final RoleStore.Role r,
                                             int[] dayStats, long lastTs, String[] onlineKind,
@@ -3658,170 +3727,158 @@ public class HomeActivity extends AccountVaultActivity {
                                             final boolean roleBusy, final long nowMs) {
         LinearLayout wrap = new LinearLayout(this);
         wrap.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout row = new LinearLayout(this);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setPadding(0, dp(7), 0, dp(7));
-        wrap.addView(row, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        wrap.setPadding(dp(10), dp(9), dp(10), dp(9));
+        wrap.setBackground(UiStyle.roundRectStroke(this,
+                roleBusy ? UiStyle.SURFACE_2 : UiStyle.WHITE, 10,
+                roleBusy ? UiStyle.BRAND_200 : UiStyle.LINE));
+        LinearLayout.LayoutParams wrapLp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        wrapLp.topMargin = dp(6);
+        wrap.setLayoutParams(wrapLp);
 
         int done = dayStats == null ? 0 : dayStats[0];
         int total = dayStats == null ? 0 : dayStats[3];
 
-        // ① 状态：文字 + 颜色双重编码（不靠颜色单独分辨）。池状态=11 态文案，否则旧口径
-        TextView stv = new TextView(this);
-        int stColor = UiStyle.INK3;
+        // ---- 行 1：状态 + 角色昵称 + 区服 ----
+        LinearLayout line1 = new LinearLayout(this);
+        line1.setOrientation(LinearLayout.HORIZONTAL);
+        line1.setGravity(Gravity.CENTER_VERTICAL);
+        line1.setPadding(0, 0, 0, dp(7));
+        String stText;
+        int stBg, stInk;
         if (poolState != null) {
             String tone = poolState.tone();
-            stColor = "ok".equals(tone) ? UiStyle.OK_INK
-                    : "warn".equals(tone) ? UiStyle.WARN_INK
-                    : "err".equals(tone) ? UiStyle.ERR_INK
-                    : "busy".equals(tone) ? UiStyle.RUN_INK : UiStyle.INK3;
-            stv.setText("● " + poolState.label(nowMs));
+            if ("ok".equals(tone))        { stBg = UiStyle.OK_BG;   stInk = UiStyle.OK_INK; }
+            else if ("warn".equals(tone)) { stBg = UiStyle.WARN_BG; stInk = UiStyle.WARN_INK; }
+            else if ("err".equals(tone))  { stBg = UiStyle.ERR_BG;  stInk = UiStyle.ERR_INK; }
+            else if ("busy".equals(tone)) { stBg = UiStyle.RUN_BG;  stInk = UiStyle.RUN_INK; }
+            else                          { stBg = UiStyle.IDLE_BG; stInk = UiStyle.IDLE_INK; }
+            stText = "● " + poolState.label(nowMs);
         } else {
-            boolean online = onlineKind != null && "on".equals(onlineKind[1]);
-            stv.setText(onlineKind == null ? "● 离线" : onlineKind[0]);
-            stColor = online ? UiStyle.OK_INK : UiStyle.INK3;
+            boolean on = onlineKind != null && "on".equals(onlineKind[1]);
+            stBg = on ? UiStyle.OK_BG : UiStyle.IDLE_BG;
+            stInk = on ? UiStyle.OK_INK : UiStyle.IDLE_INK;
+            stText = onlineKind == null ? "● 离线" : onlineKind[0];
         }
-        stv.setTextSize(9.5f);
+        if (roleBusy) {
+            // 行内即时反馈：本地动作已发出、服务器状态尚未回来时，先锁定并显示处理中
+            stBg = UiStyle.RUN_BG;
+            stInk = UiStyle.RUN_INK;
+            stText = "◌ 处理中…";
+        }
+        TextView stv = new TextView(this);
+        stv.setText(stText);
+        stv.setTextSize(10.5f);
         stv.setTypeface(Typeface.DEFAULT_BOLD);
-        stv.setTextColor(stColor);
-        stv.setMaxLines(1);
+        stv.setTextColor(stInk);
+        stv.setSingleLine(true);
         stv.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        stv.setWidth(dp(COL_ONLINE));
-        row.addView(stv);
-
-        // ② 角色标签：888-cch-角色昵称（服务器号不带 K、联盟简称、昵称）
+        stv.setPadding(dp(8), dp(3), dp(8), dp(3));
+        stv.setBackground(UiStyle.roundRectDp(this, stBg, 999));
+        line1.addView(stv);
         TextView nm = new TextView(this);
         nm.setText(RoleDisplay.roleListLabel(r));
-        nm.setTextSize(12.5f);
+        nm.setTextSize(14);
         nm.setTypeface(Typeface.DEFAULT_BOLD);
         nm.setTextColor(UiStyle.INK);
         nm.setMaxLines(1);
         nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        row.addView(nm, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        LinearLayout.LayoutParams nmLp = new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
+        nmLp.leftMargin = dp(8);
+        line1.addView(nm, nmLp);
+        TextView zone = new TextView(this);
+        zone.setText("区服 " + r.serverid);
+        zone.setTextSize(11);
+        zone.setTextColor(UiStyle.INK2);
+        zone.setSingleLine(true);
+        line1.addView(zone);
+        wrap.addView(line1);
 
-        // ③ 今日完成 ④ 上次登录
+        // ---- 行 2：今日完成 / 上次登录（标签 + 值） ----
+        LinearLayout line2 = new LinearLayout(this);
+        line2.setOrientation(LinearLayout.HORIZONTAL);
+        line2.setPadding(0, 0, 0, dp(8));
         int dcol = total > 0 && done >= total ? UiStyle.OK_INK
                 : (done == 0 ? UiStyle.INK3 : UiStyle.WARN_INK);
-        row.addView(cellText(done + "/" + total, COL_DONE, 11.5f, dcol, Gravity.END, true));
-        row.addView(cellText(shortTime(lastTs), COL_LAST, 10.5f, UiStyle.INK2, Gravity.END, false));
+        line2.addView(fieldText("今日完成", done + "/" + total, dcol));
+        line2.addView(fieldText("上次登录", shortTime(lastTs), UiStyle.INK2));
+        wrap.addView(line2);
 
-        // ⑤ 防封登录已并入默认登录链路（2026-11-05 用户口径）：不再渲染防封开关列。
+        // ---- 行 3：四枚按钮常驻，按状态启用 / 禁用 ----
+        final boolean canT2 = gate(FeatureGate.Feature.AUTOMATION_STATUS);
+        final boolean degraded = poolState == null || poolState.degraded;
+        final boolean shelved = !degraded && !poolState.enabled;
+        final boolean matrixOk = canT2 && !degraded && !shelved && !roleBusy;
+        boolean allowUp = matrixOk && !poolState.online;
+        boolean allowPause = matrixOk && poolState.online;
+        boolean allowStop = matrixOk && (poolState.online || poolState.canResume());
 
-        // ⑥ 动作列（M2）：按状态矩阵渲染；进行中整列「执行中」禁点
-        LinearLayout goBox = new LinearLayout(this);
-        goBox.setOrientation(LinearLayout.HORIZONTAL);
-        goBox.setGravity(Gravity.END);
-        LinearLayout.LayoutParams goblp = new LinearLayout.LayoutParams(dp(COL_GO),
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        row.addView(goBox, goblp);
-        // 批次7：T1（普通版）账户页只提供「启动分身」入口 —— 复用既有 launchRole
-        // （内部走 VaultEngine/EntryDetail 启动链路，不新造协议）；上线/暂停/停止属 T2 服务器自动化。
-        if (!gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
-            TextView launch = poolMiniBtn("启动",
-                    UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
-            launch.setOnClickListener(v -> launchRole(a, r));
-            goBox.addView(launch);
-        } else if (poolState != null && !poolState.degraded && poolState.enabled && !roleBusy) {
-            if (poolState.online) {
-                // 在线 → [暂停][停止]
-                TextView pauseBtn = poolMiniBtn("暂停",
-                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
-                pauseBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_PAUSE));
-                goBox.addView(pauseBtn);
-                TextView stopBtn = poolMiniBtn("停止",
-                        UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
-                LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                slp.leftMargin = dp(4);
-                goBox.addView(stopBtn, slp);
-                stopBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_STOP));
-            } else if (poolState.canResume()) {
-                // 暂停 → [上线][停止]（服务端 login 对暂停会话等价 resume）
-                TextView upBtn = poolMiniBtn("上线",
-                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
-                upBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_LOGIN));
-                goBox.addView(upBtn);
-                TextView stopBtn = poolMiniBtn("停止",
-                        UiStyle.SURFACE_3, UiStyle.INK2, UiStyle.LINE_STRONG);
-                LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                slp.leftMargin = dp(4);
-                goBox.addView(stopBtn, slp);
-                stopBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_STOP));
-            } else {
-                // 非在线一律 role-action「上线」（M4 §3.2 修复：含已停止/需登录/待恢复/
-                // 计划休眠——池状态可用时「登录（服务器自动化）」不再出现在行内，
-                // 仅保留在降级/无池路径与账号详情页；M2d：上线直连 login，无互斥确认）
-                TextView upBtn = poolMiniBtn("上线",
-                        UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
-                upBtn.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_LOGIN));
-                goBox.addView(upBtn);
-            }
-        } else if (poolState != null && !poolState.degraded && !poolState.enabled) {
-            // 已收纳：动作矩阵全部禁用（契约 §2），去「角色管理」启用后再操作
-            TextView dis = poolMiniBtn("已收纳", UiStyle.SURFACE_3, UiStyle.INK3, UiStyle.LINE);
-            dis.setEnabled(false);
-            dis.setAlpha(.5f);
-            goBox.addView(dis);
-        } else if (roleBusy) {
-            TextView busy = poolMiniBtn("执行中", UiStyle.SURFACE_3, UiStyle.INK3, UiStyle.LINE);
-            busy.setEnabled(false);
-            busy.setAlpha(.6f);
-            goBox.addView(busy);
+        LinearLayout line3 = new LinearLayout(this);
+        line3.setOrientation(LinearLayout.HORIZONTAL);
+        line3.setGravity(Gravity.CENTER_VERTICAL);
+        TextView up = roleActionBtn("上线", allowUp || (degraded && !roleBusy && !shelved),
+                UiStyle.BRAND, UiStyle.WHITE, UiStyle.BRAND);
+        if (degraded) {
+            // 旧服务端 / 请求失败：沿用既有「登录并触发自动化」链路，不新造协议
+            up.setOnClickListener(v -> legacyLogin(a, r, up));
         } else {
-            // 降级（旧服务端/已收纳/无池数据）：保留现有「登录」行为
-            goBox.addView(legacyLoginBtn(a, r));
+            up.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_LOGIN));
         }
+        line3.addView(up);
+        TextView pause = roleActionBtn("暂停", allowPause,
+                UiStyle.WHITE, UiStyle.BRAND_TEXT, UiStyle.LINE_STRONG);
+        pause.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_PAUSE));
+        line3.addView(pause, roleBtnLp());
+        TextView stop = roleActionBtn("停止", allowStop,
+                UiStyle.ERR_BG, UiStyle.ERR_INK, UiStyle.ERR_BORDER);
+        stop.setOnClickListener(v -> poolRoleAction(a, r, VaultSync.ACTION_STOP));
+        line3.addView(stop, roleBtnLp());
+        // 启动分身：独立链路，所有 tier 可用；弹性 spacer 把它推到行尾
+        line3.addView(new View(this), new LinearLayout.LayoutParams(0, 1, 1f));
+        TextView launch = roleActionBtn(roleBusy ? "启动中…" : "启动分身", !roleBusy,
+                UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
+        LinearLayout.LayoutParams launchLp = new LinearLayout.LayoutParams(dp(76), dp(28));
+        launchLp.leftMargin = dp(6);
+        launch.setOnClickListener(v -> launchRole(a, r));
+        line3.addView(launch, launchLp);
+        wrap.addView(line3);
 
-        // ⑥.5 批次8（P0-2）：所有 tier 都能从账户页「启动分身」——
-        // 复用既有 launchRole（预登录对齐角色 → doSwitch → VaultEngine/EntryDetail 启动链路，
-        // 不新造协议）。行内动作列 COL_GO=74dp 放不下第三个按钮，故放行下独立小按钮；
-        // T1 的动作列已直接显示「启动」（见上），此处不再重复。
-        if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
-            LinearLayout launchBar = new LinearLayout(this);
-            launchBar.setOrientation(LinearLayout.HORIZONTAL);
-            launchBar.setGravity(Gravity.END);
-            launchBar.setPadding(dp(COL_ONLINE), dp(2), 0, dp(2));
-            TextView launch = poolMiniBtn(roleBusy ? "启动中…" : "▶ 启动分身",
-                    UiStyle.SURFACE_3, UiStyle.INK, UiStyle.LINE_STRONG);
-            launch.setEnabled(!roleBusy);
-            launch.setAlpha(roleBusy ? .5f : 1f);
-            launch.setOnClickListener(v -> launchRole(a, r));
-            launchBar.addView(launch);
-            wrap.addView(launchBar);
-        }
-
-        // ⑦ 被顶号/待恢复 banner（行下，M2 契约 §3.1）
+        // ---- 被顶号 / 待恢复 banner（保留）----
         if (poolState != null) {
             String banner = poolState.bannerText(nowMs);
             if (banner != null) {
                 TextView bv = new TextView(this);
                 bv.setText(banner);
-                bv.setTextSize(10);
+                bv.setTextSize(10.5f);
                 bv.setTypeface(Typeface.DEFAULT_BOLD);
                 bv.setTextColor(UiStyle.WARN_INK);
                 bv.setPadding(dp(8), dp(5), dp(8), dp(5));
                 bv.setBackground(UiStyle.roundRectDp(this, UiStyle.WARN_BG, 8));
                 LinearLayout.LayoutParams bvlp = new LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                bvlp.topMargin = dp(2);
+                bvlp.topMargin = dp(6);
                 wrap.addView(bv, bvlp);
             }
         }
 
-        // 点角色行（非动作按钮区域）= 进入账号详情（用户口径：不再弹角色管理，齿轮才是角色管理入口）；
-        // 批量模式下与整卡一致走勾选切换，避免误进详情；长按 = P1 角色动作菜单
-        // （重命名/移除/启用收纳——池数据可用才挂，旧服务端走角色管理本地开关）
-        UiStyle.press(row);
-        row.setOnClickListener(v -> {
+        if (roleBusy) {
+            TextView busyTip = new TextView(this);
+            busyTip.setText("处理中 · 成功后刷新组头计数，失败保留原状态，可再次点击重试");
+            busyTip.setTextSize(10.5f);
+            busyTip.setTextColor(UiStyle.RUN_INK);
+            busyTip.setPadding(0, dp(5), 0, 0);
+            wrap.addView(busyTip);
+        }
+
+        // 点角色卡（非按钮区）= 账号详情；长按 = 角色动作菜单
+        UiStyle.press(wrap);
+        wrap.setOnClickListener(v -> {
             if (batchMode) toggleBatch(a);
             else showAccountDetail(a);
         });
         if (poolRole != null && poolState != null && !poolState.degraded) {
-            row.setOnLongClickListener(v -> {
+            wrap.setOnLongClickListener(v -> {
                 PoolRoleActions.showMenu(HomeActivity.this, a, r,
                         poolRole.optBoolean("enabled", true), () -> runOnUiThread(() -> {
                             pollPoolOnce();
@@ -3833,15 +3890,57 @@ public class HomeActivity extends AccountVaultActivity {
         return wrap;
     }
 
-    /** 保留的行内「登录」按钮（= 登录并触发服务器自动化，非启动游戏客户端）。 */
-    private TextView legacyLoginBtn(final AccountStore.Account a, final RoleStore.Role r) {
-        TextView go = poolMiniBtn("登录", UiStyle.BRAND_50, UiStyle.BRAND_TEXT, UiStyle.BRAND_200);
-        go.setOnClickListener(v -> {
-            go.setEnabled(false);
-            go.setText("登录中");
-            loginRole(a, r.serverid, r.uid, () -> refreshAccounts());
-        });
-        return go;
+    /** 字段行：「标签  值」横排，替代原先定宽表格列。 */
+    private LinearLayout fieldText(String label, String value, int valueColor) {
+        LinearLayout f = new LinearLayout(this);
+        f.setOrientation(LinearLayout.HORIZONTAL);
+        f.setGravity(Gravity.CENTER_VERTICAL);
+        TextView l = new TextView(this);
+        l.setText(label);
+        l.setTextSize(10.5f);
+        l.setTextColor(UiStyle.INK3);
+        f.addView(l);
+        TextView v = new TextView(this);
+        v.setText(value);
+        v.setTextSize(12);
+        v.setTypeface(Typeface.DEFAULT_BOLD);
+        v.setTextColor(valueColor);
+        v.setPadding(dp(5), 0, dp(16), 0);
+        f.addView(v);
+        return f;
+    }
+
+    /** 角色行按钮：48×28，可用 / 禁用两套配色；禁用态 setEnabled(false) 拦截点击。 */
+    private TextView roleActionBtn(String text, boolean enabled, int bg, int ink, int stroke) {
+        TextView b = new TextView(this);
+        b.setText(text);
+        b.setTextSize(11);
+        b.setTypeface(Typeface.DEFAULT_BOLD);
+        b.setGravity(Gravity.CENTER);
+        b.setSingleLine(true);
+        b.setEnabled(enabled);
+        b.setTextColor(enabled ? ink : UiStyle.INK3);
+        b.setBackground(UiStyle.roundRectStroke(this,
+                enabled ? bg : UiStyle.SURFACE_3, 7,
+                enabled ? stroke : UiStyle.LINE));
+        b.setPadding(dp(6), dp(5), dp(6), dp(5));
+        b.setLayoutParams(new LinearLayout.LayoutParams(dp(48), dp(28)));
+        if (enabled) UiStyle.press(b);
+        return b;
+    }
+
+    /** 第二 / 第三枚按钮的 48×28 + 左间距。 */
+    private LinearLayout.LayoutParams roleBtnLp() {
+        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(dp(48), dp(28));
+        lp.leftMargin = dp(6);
+        return lp;
+    }
+
+    /** 降级态「上线」：沿用原 legacyLoginBtn 行为（登录并触发服务器自动化）。 */
+    private void legacyLogin(final AccountStore.Account a, final RoleStore.Role r, TextView btn) {
+        btn.setEnabled(false);
+        btn.setText("登录中");
+        loginRole(a, r.serverid, r.uid, () -> refreshAccounts());
     }
 
     // ==================== 账号池动作与批量（M2 契约 §3.1） ====================
@@ -3866,31 +3965,6 @@ public class HomeActivity extends AccountVaultActivity {
         b.setMinWidth(dp(34));
         UiStyle.press(b);
         return b;
-    }
-
-    /** 账号组头右侧胶囊按钮（恢复设置/角色管理共用）：圆角浅底 + 矢量图标 + 粗体字。 */
-    private LinearLayout headerPill(String text, int icon, int ink, int bg, int stroke) {
-        LinearLayout pill = new LinearLayout(this);
-        pill.setOrientation(LinearLayout.HORIZONTAL);
-        pill.setGravity(Gravity.CENTER);
-        GradientDrawable pbg = new GradientDrawable();
-        pbg.setColor(bg);
-        pbg.setCornerRadius(dp(10));
-        pbg.setStroke(dp(1), stroke);
-        pill.setBackground(pbg);
-        pill.setPadding(dp(9), dp(7), dp(9), dp(7));
-        pill.addView(new UiStyle.Icon(this, icon, ink));
-        TextView tx = new TextView(this);
-        tx.setText(text);
-        tx.setTextSize(11.5f);
-        tx.setTypeface(Typeface.DEFAULT_BOLD);
-        tx.setTextColor(ink);
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.leftMargin = dp(5);
-        pill.addView(tx, lp);
-        UiStyle.press(pill);
-        return pill;
     }
 
     // ==================== 恢复设置（P1 契约 §三.3） ====================
@@ -4234,19 +4308,6 @@ public class HomeActivity extends AccountVaultActivity {
         }
     }
 
-    /** 定宽单元格。 */
-    private TextView cellText(String text, int wDp, float size, int color, int gravity, boolean bold) {
-        TextView t = new TextView(this);
-        t.setText(text);
-        t.setTextSize(size);
-        t.setTextColor(color);
-        t.setGravity(gravity);
-        t.setMaxLines(1);
-        t.setWidth(dp(wDp));
-        if (bold) t.setTypeface(Typeface.DEFAULT_BOLD);
-        return t;
-    }
-
     /**
      * 以指定角色登录：先把激活角色对齐到它（数据写读同源），再走原有启动流程。
      *
@@ -4266,7 +4327,7 @@ public class HomeActivity extends AccountVaultActivity {
             VaultSync.notifyRoleSwitched(this, a.fpid);
         } catch (Throwable ignored) {
         }
-        final ProgressDialog pd = new ProgressDialog(this);
+        final ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在切换到 " + RoleDisplay.roleListLabel(r) + "（预登录对齐角色…）");
         pd.setCancelable(false);
         pd.show();
@@ -4372,7 +4433,7 @@ public class HomeActivity extends AccountVaultActivity {
         tb.setOrientation(LinearLayout.VERTICAL);
         TextView title = new TextView(this);
         title.setText("日常");
-        title.setTextSize(24);
+        title.setTextSize(UiComponents.TEXT_TAB_TITLE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
         tb.addView(title);
@@ -5247,7 +5308,7 @@ public class HomeActivity extends AccountVaultActivity {
         top.setGravity(Gravity.CENTER_VERTICAL);
         TextView title = new TextView(this);
         title.setText("我的");
-        title.setTextSize(24);
+        title.setTextSize(UiComponents.TEXT_TAB_TITLE);
         title.setTypeface(Typeface.DEFAULT_BOLD);
         title.setTextColor(UiStyle.INK);
         top.addView(title, new LinearLayout.LayoutParams(0,
@@ -5587,7 +5648,7 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     private void runHotUpdateCheck() {
-        final android.app.ProgressDialog pd = new ProgressDialog(this);
+        final android.app.ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("检查更新…");
         pd.setCancelable(false);
         pd.show();
@@ -5926,7 +5987,7 @@ public class HomeActivity extends AccountVaultActivity {
             android.content.ClipboardManager cm = (android.content.ClipboardManager)
                     getSystemService(CLIPBOARD_SERVICE);
             cm.setPrimaryClip(android.content.ClipData.newPlainText("accounts", sb.toString().trim()));
-            toast("已复制 " + selectedAccounts.size() + " 个账号（名称+UID）");
+            toast("已复制 " + selectedAccounts.size() + " 个账号（名称+fid）");
         });
         batchBar.addView(exp);
         // 删除（危险：确认后从号库移除）
@@ -6383,10 +6444,15 @@ public class HomeActivity extends AccountVaultActivity {
         LinearLayout logCard = UiStyle.outlineCard(this);
         logCard.setPadding(dp(12), dp(10), dp(12), dp(10));
         ScrollView logSc = new ScrollView(this);
+        // D4（真机 2026-11-06）：空数据态不再是一块纯白空白，按 C 画板「列表三态」给提示与引导。
+        // 注意：下方 update Runnable 首帧就会重设 log 文本，只在初始化处 setText 会被
+        // 空日志缓冲覆盖成空串（装机复验实证），所以空态判定必须落在刷新赋值点。
+        final String logEmptyTip = "暂无日志\n启动后这里会逐条显示执行结果。";
         final TextView log = new TextView(this);
         log.setTypeface(android.graphics.Typeface.MONOSPACE, android.graphics.Typeface.NORMAL);
-        log.setTextSize(10.5f);
+        log.setTextSize(UiComponents.TEXT_MICRO);
         log.setTextColor(UiStyle.INK2);
+        log.setText(logEmptyTip);
         logSc.addView(log);
         logCard.addView(logSc, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(150)));
@@ -6491,7 +6557,8 @@ public class HomeActivity extends AccountVaultActivity {
                     sb.append(l).append('\n');
                 }
             }
-            log.setText(sb.toString());
+            // D4：RUN.logs 为空时保留「列表三态」的空数据提示，不退化成纯白留白。
+            log.setText(sb.length() == 0 ? logEmptyTip : sb.toString());
             logSc.post(() -> logSc.fullScroll(ScrollView.FOCUS_DOWN));
         };
         update.run();

@@ -35,7 +35,7 @@ public final class WatchpointRules {
     /** uid：必须能解析为 >0 的长整型。 */
     public static String validateUid(String raw) {
         long uid = parseLong(raw);
-        return uid > 0 ? null : "uid 必须为大于 0 的数字";
+        return uid > 0 ? null : "fid 必须为大于 0 的数字";
     }
 
     /** 坐标：0~1200（含端点）。 */
@@ -114,7 +114,7 @@ public final class WatchpointRules {
             String err = validateTarget(String.valueOf(uid), o.optString("nick", ""),
                     String.valueOf(o.optInt("x")), String.valueOf(o.optInt("y")));
             if (err != null) return "第 " + (i + 1) + " 个监视目标：" + err;
-            if (!uids.add(uid)) return "监视目标 uid 重复: " + uid;
+            if (!uids.add(uid)) return "监视目标 fid 重复: " + uid;
         }
         return null;
     }

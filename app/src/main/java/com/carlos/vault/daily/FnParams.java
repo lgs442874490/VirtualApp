@@ -562,6 +562,17 @@ public final class FnParams {
             out.remove("target_uid");
             out.remove("target_point");
             out.remove("d_sec");
+            // 2026-11-05 修复（重放审查）：守护旧执行参数 UI 已下线（FnDetail 不再渲染这些子项），
+            // 但 GuardianEngine/GuardianHold/GuardianCalib 仍会读取；保存时一并清掉，
+            // 否则存量设备会继续按"预驻防/常驻戒备/攻方阈值/ETA 窗口/卡秒标定"的旧值执行且无法关闭。
+            out.remove("hold_garrison_min");
+            out.remove("pre_garrison");
+            out.remove("pre_garrison_targets");
+            out.remove("power_min");
+            out.remove("eta_max");
+            out.remove("delta_ms");
+            out.remove("dist_near");
+            out.remove("dist_mid");
             out.put("max_concurrent", Math.max(1, Math.min(6, cfg.maxConcurrent)));
             // 硬性规则 2026-11-04：驻防只给本盟，跨盟只能进攻 → 不保留任何"额外守护对象"输入口
             out.remove("protect_fids");

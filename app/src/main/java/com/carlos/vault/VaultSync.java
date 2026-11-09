@@ -509,7 +509,7 @@ public final class VaultSync {
                         status.optString("roleAlliance", ""));
             } else if (!learnMeta) {
                 Log.i(TAG, "跳过服务器角色元数据学习（防同服串行）fpid=" + fpid
-                        + " sid=" + sid + " uid=" + uid);
+                        + " sid=" + sid + " fid=" + uid);
             }
             // ---- 当前角色身份回写：双层防回滚门控 ----
             RoleStore.ActiveRole local = RoleStore.activeRoleEx(app, fpid);
@@ -538,7 +538,7 @@ public final class VaultSync {
                                 fpid + ":" + sid + (uid > 0 ? ":" + uid : ""))
                         .putLong("current_role_at", System.currentTimeMillis()).apply();
             }
-            Log.i(TAG, "采纳服务器角色 fpid=" + fpid + " sid=" + sid + " uid=" + uid + " name=" + name);
+            Log.i(TAG, "采纳服务器角色 fpid=" + fpid + " sid=" + sid + " fid=" + uid + " name=" + name);
         } catch (Throwable ignored) {
         }
     }

@@ -11,8 +11,8 @@ import java.util.List;
  * 口径各不相同），本类把口径收敛成一处：
  * <ul>
  *   <li><b>名称</b>：空（未同步）统一显示「未同步」；</li>
- *   <li><b>元数据行</b>：{@code K888 · UID 88280792 · 城堡 70 级 · 战力 20784万}，
- *       任一段缺失显示对应「未同步」（uid<=0 → {@code UID 未同步}；
+ *   <li><b>元数据行</b>：{@code K888 · fid 88280792 · 城堡 70 级 · 战力 20784万}，
+ *       任一段缺失显示对应「未同步」（uid<=0 → {@code fid 未同步}；
  *       level<=0 → {@code 城堡未同步}；power<=0 → {@code 战力未同步}）；</li>
  *   <li><b>服务器状态文案</b>：online→在线 / recovering→重连中 /
  *       takeover→被顶号暂停 / need_token→需重导token / 其余→离线。
@@ -20,7 +20,7 @@ import java.util.List;
  *   <li><b>工作区过滤</b>：只渲染已加入工作区（enabled）的角色。</li>
  * </ul>
  *
- * <p>同服多角色的可区分性由 {@code UID xxx} 段承担——不再使用「同服第N角色」
+ * <p>同服多角色的可区分性由 {@code fid xxx} 段承担——不再使用「同服第N角色」
  * （序号随行序漂移，且与 (sid,uid) 复合身份无稳定对应）。
  */
 public final class RoleDisplay {
@@ -70,20 +70,20 @@ public final class RoleDisplay {
     // ---------- 元数据行 ----------
 
     /**
-     * 标准元数据行：{@code K888 · UID 88280792 · 城堡 70 级 · 战力 20784万}。
+     * 标准元数据行：{@code K888 · fid 88280792 · 城堡 70 级 · 战力 20784万}。
      *
-     * <p>{@code K<sid>} 前缀保留区号信息（同服多角色靠 UID 段区分）。
+     * <p>{@code K<sid>} 前缀保留区号信息（同服多角色靠 fid 段区分）。
      * 任一段缺失显示对应「未同步」文案，不编造数值。
      *
      * @param sid    区服（serverid）
-     * @param uid    角色 uid（{@code <=0}=未同步）
+     * @param uid    角色 fid（{@code <=0}=未同步）
      * @param level  熔炉等级（{@code <=0}=未同步）
      * @param power  战力（{@code <=0}=未同步）
      */
     public static String roleMetaLine(long sid, long uid, long level, long power) {
         StringBuilder sb = new StringBuilder();
         sb.append("K").append(sid);
-        sb.append(" · ").append(uid > 0 ? "UID " + uid : "UID 未同步");
+        sb.append(" · ").append(uid > 0 ? "fid " + uid : "fid 未同步");
         sb.append(" · ").append(level > 0 ? "城堡 " + level + " 级" : "城堡未同步");
         sb.append(" · ").append(power > 0 ? "战力 " + wan(power) : "战力未同步");
         return sb.toString();

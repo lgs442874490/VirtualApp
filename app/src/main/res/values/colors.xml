@@ -1,6 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="colorAccent">#1E43D9</color>
+    <!-- 主题强调色：与 styles.xml 的 AppTheme / UITheme 保持一致（v2 主色 BRAND #2E5BFF）。 -->
+    <color name="colorAccent">#2E5BFF</color>
     <color name="white">#ffffff</color>
     <color name="color_6bc196">#6bc196</color>
     <color name="transparent">#00000000</color>
@@ -20,7 +21,16 @@
 
     <color name="colorPrimary">#2E5BFF</color>
 
-    <!-- ===== 无尽号库 v2 设计 token（与 com.carlos.vault.UiStyle 一一对应）===== -->
+    <!-- ===== 无尽号库 v2 设计 token =====
+         基础色（brand / bg / ink / line / *_ink）与 com.carlos.vault.UiStyle 一一对应。
+         【规范例外 · 2026-11-05】vault_*_solid 四项不是 UiStyle.*_SOLID 的镜像：
+           · UiStyle.*_SOLID = 状态圆点 / 底块，配白字；
+           · 这里 = VA 引擎遗留 XML 中 LabelView 的角标底色，文字色由各 XML 自行指定。
+           · vault_ok_solid   → item_launcher_app.xml 进程数角标，lv_text_color=白
+           · vault_warn_solid → item_clone_app.xml   克隆数角标，lv_text_color=黑
+             （必须亮底；换成深棕 WARN_SOLID #B7791F 会让黑字对比度不达标）
+           · vault_err_solid / vault_idle_solid → 当前无有效引用（idle 的唯一引用已注释）
+         ⇒ 不按 S1 强行对齐；如要改，必须先核对对应 XML 的 lv_text_color。 -->
     <color name="vault_brand">#2E5BFF</color>
     <color name="vault_brand_press">#1E43D9</color>
     <color name="vault_brand_text">#1E43D9</color>

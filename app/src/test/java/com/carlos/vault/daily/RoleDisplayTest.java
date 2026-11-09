@@ -60,28 +60,28 @@ public class RoleDisplayTest {
 
     @Test
     public void roleMetaLine_fullMeta_standardFormat() {
-        assertEquals("K888 · UID 88280792 · 城堡 70 级 · 战力 20784万",
+        assertEquals("K888 · fid 88280792 · 城堡 70 级 · 战力 20784万",
                 RoleDisplay.roleMetaLine(SID, UID_B, 70, 207_840_000L));
-        assertEquals("K888 · UID 35371154 · 城堡 1 级 · 战力 1234.6万",
+        assertEquals("K888 · fid 35371154 · 城堡 1 级 · 战力 1234.6万",
                 RoleDisplay.roleMetaLine(SID, UID_A, 1, 12_346_000L));
     }
 
     @Test
     public void roleMetaLine_missingSegments_showUnsynced() {
-        // uid 未知 → UID 未同步
-        assertEquals("K888 · UID 未同步 · 城堡 70 级 · 战力 20784万",
+        // uid 未知 → fid 未同步
+        assertEquals("K888 · fid 未同步 · 城堡 70 级 · 战力 20784万",
                 RoleDisplay.roleMetaLine(SID, 0, 70, 207_840_000L));
         // 等级未知 → 城堡未同步
-        assertEquals("K888 · UID 88280792 · 城堡未同步 · 战力 20784万",
+        assertEquals("K888 · fid 88280792 · 城堡未同步 · 战力 20784万",
                 RoleDisplay.roleMetaLine(SID, UID_B, 0, 207_840_000L));
         // 战力未知 → 战力未同步
-        assertEquals("K888 · UID 88280792 · 城堡 70 级 · 战力未同步",
+        assertEquals("K888 · fid 88280792 · 城堡 70 级 · 战力未同步",
                 RoleDisplay.roleMetaLine(SID, UID_B, 70, 0));
         // 全部未知：只剩 K 前缀 + 三个未同步段
-        assertEquals("K888 · UID 未同步 · 城堡未同步 · 战力未同步",
+        assertEquals("K888 · fid 未同步 · 城堡未同步 · 战力未同步",
                 RoleDisplay.roleMetaLine(SID, 0, 0, 0));
         // 负值同样按缺失处理（脏数据防御）
-        assertEquals("K888 · UID 未同步 · 城堡未同步 · 战力未同步",
+        assertEquals("K888 · fid 未同步 · 城堡未同步 · 战力未同步",
                 RoleDisplay.roleMetaLine(SID, -1, -5, -100));
     }
 

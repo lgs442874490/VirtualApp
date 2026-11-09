@@ -317,7 +317,7 @@ public final class RoleManagerSheet {
      * 标准元数据行（{@link RoleDisplay#roleMetaLine}，不再有「同服第N角色」）·
      * 统一状态行 · 开关（加入/移出工作区）。
      *
-     * <p>同服多角色（一个 token 同区服多个角色）时行内靠 {@code UID xxx} 段区分，
+     * <p>同服多角色（一个 token 同区服多个角色）时行内靠 {@code fid xxx} 段区分，
      * 开关按 (sid,uid) 定位——两个角色互不影响（旧实现按 sid 会串到另一行）。
      */
     private static View row(final Activity act, final AccountStore.Account a, final RoleStore.Role r,
@@ -345,7 +345,7 @@ public final class RoleManagerSheet {
         nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
         mid.addView(nm);
 
-        // （统一角色标签已含服务器/联盟/昵称，不再追加 UID/城堡/战力元数据行）
+        // （统一角色标签已含服务器/联盟/昵称，不再追加 fid/城堡/战力元数据行）
 
         // 统一状态行（服务器模式 cachedStatusOf / 本地模式会话快照；口径同账号页）
         TextView stv = new TextView(act);

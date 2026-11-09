@@ -147,7 +147,7 @@ public class FormationManagerActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         try {
-            getWindow().setStatusBarColor(0xFF000000);
+            getWindow().setStatusBarColor(ManagerUi.STATUS_BAR);
             getWindow().getDecorView().setSystemUiVisibility(
                     View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR);
         } catch (Throwable ignored) {
@@ -170,7 +170,7 @@ public class FormationManagerActivity extends Activity {
         }
 
         rootFrame = new FrameLayout(this);
-        rootFrame.setBackgroundColor(0x99080C17);
+        rootFrame.setBackgroundColor(ManagerUi.PAGE_SCRIM);
         setContentView(rootFrame);
 
         // 底部入口 focusFnId=bear → 直达我的编队→巨熊编队（T5 约定）

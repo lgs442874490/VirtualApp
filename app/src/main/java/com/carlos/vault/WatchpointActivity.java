@@ -78,25 +78,9 @@ public class WatchpointActivity extends Activity {
     // ============================== UI ==============================
 
     private View topBar() {
-        LinearLayout bar = new LinearLayout(this);
-        bar.setOrientation(LinearLayout.HORIZONTAL);
-        bar.setGravity(Gravity.CENTER_VERTICAL);
-        bar.setPadding(dp(18), dp(14), dp(18), dp(8));
-        TextView back = new TextView(this);
-        back.setText("‹");
-        back.setTextSize(26);
-        back.setTextColor(UiStyle.INK);
-        back.setPadding(dp(4), 0, dp(10), 0);
-        back.setOnClickListener(v -> finish());
-        bar.addView(back);
-        TextView title = new TextView(this);
-        title.setText("观察点");
-        title.setTextSize(20);
-        title.setTypeface(Typeface.DEFAULT_BOLD);
-        title.setTextColor(UiStyle.INK);
-        bar.addView(title, new LinearLayout.LayoutParams(0,
-                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
-        return bar;
+        // D6（真机 2026-11-06）：改用统一 topBar()，返回图标由自绘文字「‹」
+        // 换成与其余详情页一致的 ARROW_LEFT 矢量图标（S9）。
+        return UiComponents.topBar(this, "观察点", null, this::finish);
     }
 
     private View buildUi() {
@@ -238,8 +222,8 @@ public class WatchpointActivity extends Activity {
                         ? "服务端未升级（无 /v1/vault/watchpoint），请部署新版 jar 后重试"
                         : ("读取失败：" + safe(msg));
                 statusText.setText(hint);
-                envHint.setText("⚠️ " + hint);
-                envHint.setTextColor(0xFFC0392B);
+                envHint.setText("注意：" + hint);
+                envHint.setTextColor(UiStyle.ERR_INK);
                 return;
             }
             applySnapshot(data);
@@ -273,9 +257,9 @@ public class WatchpointActivity extends Activity {
         renderTargets();
         renderRects();
         if (!envEnabled) {
-            envHint.setText("⚠️ 服务器环境变量 VAULT_WATCHPOINT 未开启（当前不生效）；"
+            envHint.setText("注意：服务器环境变量 VAULT_WATCHPOINT 未开启（当前不生效）；"
                     + "文件 enabled=" + enabled + "。请联系运维开启后重启一次服务端。");
-            envHint.setTextColor(0xFFC0392B);
+            envHint.setTextColor(UiStyle.ERR_INK);
         } else {
             envHint.setText("服务器已启用（VAULT_WATCHPOINT=on）；当前文件 enabled=" + enabled
                     + "，保存后 5 秒内热载。");
@@ -408,7 +392,7 @@ public class WatchpointActivity extends Activity {
                 y.setText(String.valueOf(c.optInt("y")));
             }));
         });
-        AlertDialog dlg = new AlertDialog.Builder(this)
+        AlertDialog dlg = new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle(index >= 0 ? "编辑监视目标" : "添加监视目标")
                 .setView(form)
                 .setNegativeButton("取消", null)
@@ -429,7 +413,7 @@ public class WatchpointActivity extends Activity {
                         long uidVal = o.optLong("uid");
                         for (JSONObject t : targets) {
                             if (t.optLong("uid") == uidVal) {
-                                toast("uid 已存在: " + uidVal);
+                                toast("fid 已存在: " + uidVal);
                                 return;
                             }
                         }
@@ -460,7 +444,7 @@ public class WatchpointActivity extends Activity {
         EditText x2 = field("x2（x2-x1 ≤ 55）", cur == null ? "" : String.valueOf(cur.optInt("x2")));
         EditText y2 = field("y2（y2-y1 ≤ 55）", cur == null ? "" : String.valueOf(cur.optInt("y2")));
         for (EditText e : new EditText[]{name, x1, y1, x2, y2}) form.addView(e);
-        AlertDialog dlg = new AlertDialog.Builder(this)
+        AlertDialog dlg = new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle(index >= 0 ? "编辑保护矩形" : "添加保护矩形")
                 .setView(form)
                 .setNegativeButton("取消", null)
@@ -500,7 +484,7 @@ public class WatchpointActivity extends Activity {
     }
 
     private void confirmDelete(String what, String line, Runnable onOk) {
-        new AlertDialog.Builder(this)
+        new AlertDialog.Builder(this, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle("删除" + what)
                 .setMessage("确定删除？\n" + line)
                 .setNegativeButton("取消", null)

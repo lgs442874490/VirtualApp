@@ -352,7 +352,7 @@ public final class FormationBoardView {
                 badge.setEllipsize(android.text.TextUtils.TruncateAt.END);
                 badge.setPadding(ManagerUi.dp(act, 5), 0, ManagerUi.dp(act, 5), 0);
                 badge.setBackground(ManagerUi.round(act,
-                        active ? ManagerUi.PRIMARY : 0xFFEEF0F4, 8));
+                        active ? ManagerUi.PRIMARY : ManagerUi.BADGE_SLATE_BG, 8));
                 FrameLayout.LayoutParams blp = new FrameLayout.LayoutParams(
                         ManagerUi.dp(act, 36), ManagerUi.dp(act, 20), Gravity.TOP | Gravity.START);
                 blp.setMargins(ManagerUi.dp(act, 6), ManagerUi.dp(act, 5), 0, 0);
@@ -366,7 +366,7 @@ public final class FormationBoardView {
                     ManagerUi.dp(act, 5), ManagerUi.dp(act, 6), 0);
             icon.setClipToOutline(true);
             icon.setBackground(ManagerUi.round(act,
-                    active ? ManagerUi.PRIMARY_50 : 0xFFF1F5F9, 7));
+                    active ? ManagerUi.PRIMARY_50 : ManagerUi.SOFT_BLUE_BG, 7));
             if (tab.iconHeroId > 0) {
                 ImageView iv = new ImageView(act);
                 iv.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -492,7 +492,7 @@ public final class FormationBoardView {
                 ViewGroup.LayoutParams.WRAP_CONTENT, 0, 0, 2, 0, act));
 
         // 出征容量详情（32×32 · #6366F1 底白图标）
-        FrameLayout capIcon = ManagerUi.iconButton(act, 0xFF6366F1, null,
+        FrameLayout capIcon = ManagerUi.iconButton(act, ManagerUi.INFO_SOLID, null,
                 32, () -> callHost(() -> host.onCapacityDetail()));
         TextView capGlyph = ManagerUi.text(act, "兵", 11, Color.WHITE, true);
         capGlyph.setGravity(Gravity.CENTER);
@@ -504,7 +504,7 @@ public final class FormationBoardView {
         row.addView(capIcon, capLp);
 
         // 宠物技能增益（32×32）
-        FrameLayout petIcon = ManagerUi.iconButton(act, 0xFFF59E0B, null,
+        FrameLayout petIcon = ManagerUi.iconButton(act, ManagerUi.WARN_SOLID, null,
                 32, () -> callHost(() -> host.onPetCapacity()));
         TextView petGlyph = ManagerUi.text(act, "宠", 11, Color.WHITE, true);
         petGlyph.setGravity(Gravity.CENTER);
@@ -521,7 +521,7 @@ public final class FormationBoardView {
         FormationModel f = formation();
         boolean showSettings = automatic() || (f != null && !f.isGame());
         if (showSettings) {
-            FrameLayout set = ManagerUi.iconButton(act, 0xFFF1F5F9, null, 30,
+            FrameLayout set = ManagerUi.iconButton(act, ManagerUi.SOFT_BLUE_BG, null, 30,
                     () -> callHost(() -> host.onOpenSettings()));
             TextView plus = ManagerUi.text(act, "＋", 14, ManagerUi.TEXT3, true);
             plus.setGravity(Gravity.CENTER);
@@ -688,7 +688,7 @@ public final class FormationBoardView {
         // 底部压暗层（下 75dp）
         View scrim = new View(act);
         GradientDrawable g = new GradientDrawable(GradientDrawable.Orientation.BOTTOM_TOP,
-                new int[]{0xE60B1220, 0x590B1220, 0x000B1220});
+                new int[]{ManagerUi.HERO_GRAD_TOP, ManagerUi.HERO_GRAD_MID, ManagerUi.HERO_GRAD_END});
         scrim.setBackground(g);
         FrameLayout.LayoutParams slp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ManagerUi.dp(act, 95),
@@ -709,7 +709,7 @@ public final class FormationBoardView {
         int generation = hero == null ? HeroCatalog.generation(heroId)
                 : (hero.generation > 0 ? hero.generation : HeroCatalog.generation(heroId));
         String tierText = generation > 0 ? "S" + generation : "基础";
-        TextView tier = ManagerUi.text(act, tierText, 10.5f, 0xFFFDE68A, true);
+        TextView tier = ManagerUi.text(act, tierText, 10.5f, ManagerUi.TIER_INK, true);
         FrameLayout.LayoutParams tlp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ManagerUi.dp(act, 20),
                 Gravity.TOP | Gravity.START);
@@ -720,7 +720,7 @@ public final class FormationBoardView {
         if (interactive) {
             TextView remove = ManagerUi.text(act, "×", 13, Color.WHITE, true);
             remove.setGravity(Gravity.CENTER);
-            remove.setBackground(ManagerUi.circle(act, 0x66000000));
+            remove.setBackground(ManagerUi.circle(act, ManagerUi.REMOVE_SCRIM));
             FrameLayout.LayoutParams rlp = new FrameLayout.LayoutParams(
                     ManagerUi.dp(act, 22), ManagerUi.dp(act, 22), Gravity.TOP | Gravity.END);
             rlp.setMargins(0, ManagerUi.dp(act, 5), ManagerUi.dp(act, 5), 0);
@@ -741,7 +741,7 @@ public final class FormationBoardView {
         // 队长标记（左下，24×24 圆形星）
         if (isCaptain) {
             FrameLayout cap = new FrameLayout(act);
-            cap.setBackground(ManagerUi.circle(act, 0xFFFBBF24));
+            cap.setBackground(ManagerUi.circle(act, ManagerUi.CAPTAIN_BG));
             TextView star = ManagerUi.text(act, "★", 11, Color.WHITE, true);
             star.setGravity(Gravity.CENTER);
             cap.addView(star, new FrameLayout.LayoutParams(
@@ -773,7 +773,7 @@ public final class FormationBoardView {
         starRow.setGravity(Gravity.CENTER_VERTICAL);
         for (int i = 0; i < 5; i++) {
             TextView s = ManagerUi.text(act, "★", 10.5f,
-                    i < stars ? 0xFFFBBF24 : 0x66FFFFFF, false);
+                    i < stars ? ManagerUi.CAPTAIN_BG : ManagerUi.STAR_OFF, false);
             s.setPadding(0, 0, ManagerUi.dp(act, 1), 0);
             starRow.addView(s);
         }
@@ -1012,10 +1012,10 @@ public final class FormationBoardView {
 
         FrameLayout primary = new FrameLayout(act);
         primary.setBackground(enabled
-                ? ManagerUi.pressable(act, ManagerUi.PRIMARY, 0xFF4338CA, 16)
+                ? ManagerUi.pressable(act, ManagerUi.PRIMARY, ManagerUi.PRIMARY_PRESS, 16)
                 : ManagerUi.round(act, ManagerUi.PRIMARY_300, 16));
         TextView hintT = ManagerUi.text(act, hint, 10.5f,
-                enabled ? 0xCCFFFFFF : Color.WHITE, false);
+                enabled ? ManagerUi.WHITE_80 : Color.WHITE, false);
         FrameLayout.LayoutParams hlp = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.END);
