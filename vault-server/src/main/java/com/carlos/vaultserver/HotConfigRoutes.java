@@ -144,14 +144,21 @@ final class HotConfigRoutes {
             writeEnvelope(ex, 404, 3002, "patch empty");
             return;
         }
+        // 补丁 dex 属二进制但高度可压缩；gzip 后通常只剩原体积 30% 左右。
+        // OkHttp 会自动按 Content-Encoding 解压，客户端拿到的仍是原始 dex，
+        // 因此 sizeBytes/sha256 校验口径不变（按解压后内容）。
         ex.getResponseHeaders().set("Content-Type", PATCH_CONTENT_TYPE);
-        ex.getResponseHeaders().set("Content-Length", String.valueOf(len));
-        ex.sendResponseHeaders(200, len);
+        ex.getResponseHeaders().set("Content-Encoding", "gzip");
+        // 压缩后长度未知，用 chunked（sendResponseHeaders(200, 0)）
+        ex.sendResponseHeaders(200, 0);
         try (InputStream in = Files.newInputStream(file);
-             OutputStream out = ex.getResponseBody()) {
+             java.util.zip.GZIPOutputStream gz =
+                     new java.util.zip.GZIPOutputStream(ex.getResponseBody())) {
             byte[] buf = new byte[APK_BUFFER_BYTES];
             int n;
-            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            while ((n = in.read(buf)) > 0) {
+                gz.write(buf, 0, n);
+            }
         }
     }
 

@@ -55,6 +55,7 @@ public final class PatchStore {
             s.failCount = Integer.parseInt(p.getProperty("failCount", "0"));
             s.baseApkMd5 = p.getProperty("baseApkMd5", "");
             s.sha256 = p.getProperty("sha256", "");
+            s.lastHotVersion = Long.parseLong(p.getProperty("lastHotVersion", "0"));
         } catch (Throwable ignored) {
             // 首次运行无状态文件，返回默认值
         }
@@ -69,6 +70,7 @@ public final class PatchStore {
             p.setProperty("failCount", String.valueOf(s.failCount));
             p.setProperty("baseApkMd5", s.baseApkMd5 == null ? "" : s.baseApkMd5);
             p.setProperty("sha256", s.sha256 == null ? "" : s.sha256);
+            p.setProperty("lastHotVersion", String.valueOf(s.lastHotVersion));
             p.store(out, null);
         } catch (Throwable ignored) {
         }
@@ -89,5 +91,7 @@ public final class PatchStore {
         String baseApkMd5 = "";
         /** 落地时记录的补丁 sha256，启动时用于发现磁盘篡改。 */
         String sha256 = "";
+        /** 上次同步时生效的 hotconfig 版本，用于识别服务端「撤回补丁」。 */
+        long lastHotVersion;
     }
 }
