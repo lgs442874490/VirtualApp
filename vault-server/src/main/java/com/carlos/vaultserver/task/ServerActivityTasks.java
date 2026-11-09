@@ -876,12 +876,9 @@ public final class ServerActivityTasks {
                 } else {
                     m.skip("复活未成功(码" + Exec.codeOf(r) + ")");
                 }
-                // 2026-11-09（用户口径）：自己复活 = 免费 30% + 盟友援助 50% + 钻石购买医疗包 10%/次。
-                // 钻石消耗叠加（价格逐次递增）；开关 buy_diamond，买满 diamond_buys 次（默认 3 次 → 30+50+30≥90%）
-                // 即达到直接复活；未开启则只做免费部分（"有多少复活多少"）。
-                // 用户口径（2026-11-09）：总可复活 90% = 无条件 30% + 盟友援助 50%（50 复活币）
-                // + 钻石复活药剂 10%（每份 1%，第 1 份 50 钻、第 2 份 100、第 3 份 150…每次 +50 钻）。
-                // 即最多买 10 份补满；钻石消耗逐份叠加，失败即停。
+                // 2026-11-09（抓包校准）：总可复活 90% = 无条件 30% + 盟友援助 50%
+                // + 钻石复活药剂 10%（每份 1%，第 1 份 50 钻、第 2 份 100…每次 +50 钻）。
+                // 抓包：buy_medkit{count:1} → use_medkit_count 累加；药剂先买、再 revive 统一消耗。
                 boolean buyDiamond = tc.subOn("act_cross_capital_revive", "buy_diamond", false);
                 int maxMedkits = 10;
                 try {
@@ -891,26 +888,29 @@ public final class ServerActivityTasks {
                     }
                 } catch (Throwable ignored) {
                 }
+                int needMedkits = buyDiamond ? medkitNeed(init, maxMedkits) : 0;
                 int bought = 0;
                 long diamondSpent = 0L;
-                while (buyDiamond && bought < maxMedkits) {
-                    long price = 50L * (bought + 1);   // 50/100/150/…
+                for (int i = 0; i < needMedkits; i++) {
+                    long price = 50L * (i + 1);   // 50/100/150/…
                     GameMessage mk = tc.engine.request("req_cross_capital_war_buy_medkit",
                             Exec.args("count", 1));
                     if (!Exec.ok(mk)) {
-                        m.skip("钻石购买复活药剂失败(码" + Exec.codeOf(mk) + ")，停止购买（已花 "
-                                + diamondSpent + " 钻）");
-                        break;
-                    }
-                    diamondSpent += price;
-                    GameMessage again = tc.engine.request("req_cross_capital_war_revive", null);
-                    if (!Exec.ok(again)) {
-                        m.skip("购买复活药剂后复活失败(码" + Exec.codeOf(again) + ")");
+                        m.skip("钻石购买复活药剂失败(码" + Exec.codeOf(mk) + ")，已买 "
+                                + bought + " 份（" + diamondSpent + " 钻）");
                         break;
                     }
                     bought++;
-                    m.claimed("钻石复活+" + bought + "%（本份 " + price + " 钻，累计 "
-                            + diamondSpent + " 钻）");
+                    diamondSpent += price;
+                }
+                if (bought > 0) {
+                    GameMessage again = tc.engine.request("req_cross_capital_war_revive", null);
+                    if (Exec.ok(again)) {
+                        m.claimed("钻石复活药剂×" + bought + "（+" + bought + "% · 累计 "
+                                + diamondSpent + " 钻）");
+                    } else {
+                        m.skip("购买药剂后复活失败(码" + Exec.codeOf(again) + ")");
+                    }
                 }
                 GameMessage help = tc.engine.request(
                         "req_cross_capital_war_revive_call_alliance_help", null);
@@ -925,6 +925,35 @@ public final class ServerActivityTasks {
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "act_cross_capital_revive", "最强王国复活");
+    }
+
+    /** 按当前复活比例（revive_map/dead_map）计算还需几份钻石药剂补到 90%（0..maxNeed）。 */
+    static int medkitNeed(Map<String, Object> init, int maxNeed) {
+        try {
+            Map<String, Object> player = Exec.mapOf(init == null ? null : init.get("player"));
+            Map<String, Object> revive = player == null ? null : Exec.mapOf(player.get("revive_data"));
+            if (revive == null) return 0;
+            double dead = sumMap(revive.get("dead_map"));
+            double revived = sumMap(revive.get("revive_map"));
+            if (dead <= 0.0) return 0;
+            double needPct = 0.90 - revived / dead;
+            if (needPct <= 0.0) return 0;
+            return Math.max(0, Math.min(maxNeed, (int) Math.ceil(needPct * 100.0)));
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /** {k:{k,v:数量}} 求和。 */
+    private static double sumMap(Object raw) {
+        Map<String, Object> m = Exec.mapOf(raw);
+        if (m == null) return 0.0;
+        double total = 0.0;
+        for (Object v : m.values()) {
+            Map<String, Object> row = Exec.mapOf(v);
+            if (row != null) total += Exec.longOf(row.get("v"));
+        }
+        return total;
     }
 
     /** 最多援助的盟友数 / 每次援助次数（抓包样本 times=5）。 */
