@@ -209,6 +209,12 @@ public final class FormationPicker {
                                             applyRef[0].setEnabled(true);
                                             applyRef[0].setAlpha(1f);
                                         }
+                                        if (c2 != 0) {
+                                            UiStyle.toast(act, "同步超时/失败（"
+                                                    + (m2 == null || m2.isEmpty() ? "网络异常" : m2)
+                                                    + "），请稍后重试");
+                                            return;
+                                        }
                                         String msg = FormationStore.applyBearPresetTemplate(act, fpid, sid, uid);
                                         if (msg == null) {
                                             UiStyle.toast(act,

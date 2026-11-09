@@ -165,7 +165,7 @@ public final class FnDetail {
                 new Sub("refresh", "刷新货车品质", "未达标货车自动刷新：优先消耗任务送的刷新券，用尽后按预算用钻石（100/200…逐次叠加，diamond_refresh_max 上限）", false, null));
         fn("act_arsenal_league",
                 new Sub("bet", "自动竞猜下注", "活动期自动下注（按战力选强侧；默认关）", false,
-                        new String[][]{{"100", "100币"}, {"500", "500币"}, {"1000", "1000币"}, {"4500", "4500币"}}));
+                        new String[][]{{"10000", "拉满 10000币"}, {"4500", "4500币"}, {"1000", "1000币"}}));
         fn("act_slg_league",
                 new Sub("like", "点赞", "给前三名点赞（幂等）", true, null));
         fn("act_cross_capital_revive",

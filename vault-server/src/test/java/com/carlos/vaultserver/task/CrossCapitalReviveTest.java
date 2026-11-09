@@ -175,6 +175,26 @@ public class CrossCapitalReviveTest {
     }
 
     @Test
+    public void skipsHelpReviveWhenNoCouponsLeft() {
+        TestEngine e = new TestEngine();
+        Map<String, Object> i = init(6L, true);
+        // revive_coupon=0：复活币已用完，不应再援助（budget 以真实 0 为准，不回落 20）
+        @SuppressWarnings("unchecked")
+        Map<String, Object> player = (Map<String, Object>) i.get("player");
+        @SuppressWarnings("unchecked")
+        Map<String, Object> revive = (Map<String, Object>) player.get("revive_data");
+        revive.put("revive_coupon", 0L);
+        e.init = i;
+        Map<String, Object> members = new LinkedHashMap<>();
+        members.put("6308486", Map.of("uid", 6308486L, "rank", 1L));
+        Map<String, Object> root = new LinkedHashMap<>();
+        root.put("members", members);
+        e.membersInit = root;
+        ServerActivityTasks.crossCapitalRevive(tc(e));
+        assertFalse("复活币为 0 时不应再援助盟友", e.calls.contains("req_cross_capital_war_help_revive"));
+    }
+
+    @Test
     public void skipsWhenActivityClosed() {
         TestEngine e = new TestEngine();
         e.init = init(0L, true);

@@ -154,7 +154,7 @@ public class LeagueTasksTest {
         assertTrue("应发竞猜下注", idx >= 0);
         Map<String, Object> args = e.argsList.get(idx);
         assertEquals("按战力选强侧 2", 2, ((Number) args.get("side")).intValue());
-        assertEquals(4500L, ((Number) args.get("num")).longValue());
+        assertEquals("用户口径：每场拉满 10000", 10000L, ((Number) args.get("num")).longValue());
     }
 
     @Test

@@ -636,11 +636,15 @@ public final class ServerActivityTasks {
                 // 2026-11-09（用户口径）：刷新优先消耗「任务送的刷新券」(use_diamond=false)，
                 // 刷新券用尽才花钻石刷新（use_diamond=true，价格 100/200…逐次叠加，受预算 diamond_refresh_max）。
                 // 每辆车循环刷新直到品质 >= target_quality 或券/预算用尽。
+                // 2026-11-09（用户口径 + 审查修复）：刷新优先消耗任务券(use_diamond=false)，
+                // 券连续失败 2 次才转钻石；钻石按金额累计（第 1 次 100 钻、第 2 次 200…），
+                // 受 diamond_refresh_max（钻石金额）上限；品质连续 2 次不变即停，避免空耗。
                 if (tc.subOn("act_truck", "refresh", false)) {
                     int targetQuality = Math.max(1, tc.params("act_truck").optInt("target_quality", 5));
-                    int maxDiamond = Math.max(0, tc.params("act_truck").optInt("diamond_refresh_max", 0));
+                    long maxDiamond = Math.max(0L, tc.params("act_truck").optLong("diamond_refresh_max", 0L));
                     int refreshed = 0;
                     int diamondUsed = 0;
+                    long diamondSpent = 0L;
                     for (Map<String, Object> t : Exec.mapsOf(ni.get("truck_infos"))) {
                         long tid = Exec.longOf(t.get("truck_id"));
                         if (tid <= 0) tid = Exec.longOf(t.get("slot_id"));
@@ -649,17 +653,32 @@ public final class ServerActivityTasks {
                                 || Exec.longOf(t.get("status")) == 2;
                         if (finish) continue;
                         long quality = Exec.longOf(t.get("quality"));
+                        int failed = 0;
+                        int unchanged = 0;
                         for (int round = 0; round < 30 && quality < targetQuality; round++) {
                             GameMessage rr = tc.engine.request("req_truck_escort_refresh_truck_reward",
                                     Exec.args("id", id, "truck_id", tid, "use_diamond", false));
                             if (Exec.ok(rr)) {
+                                long q2 = qualityOf(rr, quality);
+                                if (q2 <= quality) {
+                                    if (++unchanged >= 2) break;
+                                } else {
+                                    unchanged = 0;
+                                }
+                                quality = q2;
                                 refreshed++;
-                                quality = qualityOf(rr, quality);
+                                failed = 0;
                                 continue;
                             }
-                            // 刷新券不足 → 改用钻石刷新（价格叠加；受 diamond_refresh_max 预算）
-                            if (maxDiamond <= 0 || diamondUsed >= maxDiamond) {
-                                m.skip("刷新券用尽且钻石预算已到上限，停止刷新");
+                            // 任务券刷新失败：连续 2 次才视为券用完 → 钻石刷新（按金额预算）
+                            if (++failed < 2) continue;
+                            if (maxDiamond <= 0L) {
+                                m.skip("刷新券不足（未配置钻石预算），停止刷新");
+                                break;
+                            }
+                            long price = 100L * (diamondUsed + 1);   // 100/200/300…
+                            if (diamondSpent + price > maxDiamond) {
+                                m.skip("钻石预算不足（已花 " + diamondSpent + " 钻），停止刷新");
                                 break;
                             }
                             GameMessage rd = tc.engine.request("req_truck_escort_refresh_truck_reward",
@@ -668,14 +687,15 @@ public final class ServerActivityTasks {
                                 m.skip("钻石刷新未通过(码" + Exec.codeOf(rd) + ")");
                                 break;
                             }
+                            diamondSpent += price;
                             diamondUsed++;
-                            refreshed++;
                             quality = qualityOf(rd, quality);
+                            refreshed++;
                         }
                     }
                     if (refreshed > 0) {
                         m.claimed("刷新货车×" + refreshed
-                                + (diamondUsed > 0 ? "（钻石×" + diamondUsed + "）" : ""));
+                                + (diamondUsed > 0 ? "（钻石×" + diamondUsed + " · " + diamondSpent + "钻）" : ""));
                     }
                 }
                 Map<String, Object> send = Exec.mapOf(ni.get("send_truck_info"));
@@ -739,9 +759,8 @@ public final class ServerActivityTasks {
                 if (guessId > 0L && groupId > 0L) {
                     // 2026-11-09（用户策略）：每场上限 10000 竞猜币；选「双方实力差距最大」的前 3 场拉满；
                     // 票不够时按差距顺序依次下注，下注失败即停（不再继续后续场次）。
-                    long perBet = strategy != null && strategy.has("bet")
-                            ? strategy.optLong("bet", 10000L) : p.optLong("bet_amount", 10000L);
-                    perBet = Math.max(1L, Math.min(10000L, perBet));
+                    // 用户口径：选差距最大的三场，每场「拉满一万」（上限 10000）。
+                    long perBet = 10000L;
                     int fixedSide = p.optInt("bet_side", 0);
                     if (fixedSide != 1 && fixedSide != 2) fixedSide = 0;   // 非法值按自动选强侧
                     GameMessage bi = tc.engine.request("req_arsenal_league_guess_get_winner_bet_info",
@@ -1020,11 +1039,12 @@ public final class ServerActivityTasks {
             }
             // 援助盟友消耗自己的「复活币」（抓包：初始 20，help_revive times=5 后 15）。
             // 用户口径：援助盟友复活只有 20 个复活币可用——总援助次数不得超过剩余复活币。
+            // 复活币预算：字段存在时以真实值（可为 0=已用完）为准；字段缺失才默认 20。
             long budget = 20L;
             Map<String, Object> player = Exec.mapOf(init == null ? null : init.get("player"));
             Map<String, Object> revive = player == null ? null : Exec.mapOf(player.get("revive_data"));
-            if (revive != null && Exec.longOf(revive.get("revive_coupon")) > 0L) {
-                budget = Exec.longOf(revive.get("revive_coupon"));
+            if (revive != null && revive.containsKey("revive_coupon")) {
+                budget = Math.max(0L, Exec.longOf(revive.get("revive_coupon")));
             }
             String ledgerKey = "help_" + window;
             java.util.Set<Long> helped = new java.util.LinkedHashSet<Long>();

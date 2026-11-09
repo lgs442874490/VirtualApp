@@ -222,7 +222,11 @@ public final class ServerBearTasks {
             // windowOf 判 WAITING → 60s 重试被 resetRetryIfNewWindow 清掉、任务被推迟到下一场，
             // 本场永远不再尝试（21:30 场 415 后重试丢失、cad 被推到 23:31）。
             // 本场（retryWindowStart）仍在活动期内时，强制按本场 ACTIVE 窗口继续重试。
+            boolean alreadyLaunched = launchedForWindow(tc.store.getString(launchedKeyOf(tc)),
+                    dayKey(nowSec), state.retryWindowStart);
             if (state.nextLaunchRetryAt > 0 && state.retryWindowStart > 0
+                    && state.lastLaunchCode != CODE_TRAP_MASS_TIME_EXPIRED
+                    && !alreadyLaunched
                     && nowSec >= state.retryWindowStart
                     && nowSec < state.retryWindowStart + ACTIVITY_MINUTES * 60L) {
                 window = new Window(Window.ACTIVE, Window.SRC_RESERVE,
@@ -526,8 +530,9 @@ public final class ServerBearTasks {
             }
             if (code == CODE_FORMATION_LIMIT && !formationLimitDowngraded) {
                 formationLimitDowngraded = true;
-                Map<String, Object> auto = downgrade301Formation(tc.engine,
-                        new java.util.LinkedHashSet<Long>());
+                java.util.Set<Long> bl415 = blacklistHeroes(new java.util.LinkedHashSet<Long>(),
+                        heroIdsOf(formation));
+                Map<String, Object> auto = downgrade301Formation(tc.engine, bl415);
                 if (formationReady(auto)) {
                     formation = auto;
                     formationSource = "415降级 自动编队 英雄=" + heroIdsOf(auto);
@@ -915,11 +920,22 @@ public final class ServerBearTasks {
         return done;
     }
 
+    /** 召回等待上限（秒）：行军迟迟不回城时放弃等待，避免整场不发车。 */
+    static final long RECALL_WAIT_MAX_SECONDS = 120L;
+
     /** 本场召回的仍"在途"行军 id（空=全部回城，可发车）。对齐网页版 recallPending。 */
     static java.util.List<Long> pendingRecallIds(TaskContext tc, BearState state, Window window) {
         java.util.List<Long> out = new java.util.ArrayList<Long>();
         if (tc == null || state == null || window == null) return out;
         if (state.recallWindowStart <= 0L || state.recallWindowStart != window.startSec) return out;
+        long now = nowSec(tc);
+        if (state.recallWaitStart <= 0L) {
+            state.recallWaitStart = now;
+        } else if (now - state.recallWaitStart >= RECALL_WAIT_MAX_SECONDS) {
+            state.recallMarchIds = "";   // 等待超时：放弃等待，按现有编队发车
+            state.recallWaitStart = 0L;
+            return out;
+        }
         java.util.Set<Long> recalled = parseIds(state.recallMarchIds);
         if (recalled.isEmpty()) return out;
         java.util.Set<Long> onWay = new java.util.LinkedHashSet<Long>();
@@ -970,7 +986,7 @@ public final class ServerBearTasks {
     }
 
     private static void collectOwnMarchTargets(Object node, List<long[]> out, int depth) {
-        if (node == null || depth > 4 || out.size() >= 16) return;
+        if (node == null || depth > 4 || out.size() >= 64) return;
         if (node instanceof Map) {
             Map<?, ?> map = (Map<?, ?>) node;
             long id = Exec.longOf(map.get("id"));
@@ -2950,6 +2966,8 @@ public final class ServerBearTasks {
          */
         String recallMarchIds = "";
         long recallWindowStart;
+        /** 召回等待起始（秒；超过 RECALL_WAIT_MAX_SECONDS 放弃等待）。 */
+        long recallWaitStart;
 
         void mergeTimes(TrapTimes times) {
             if (times == null) return;
@@ -3030,6 +3048,7 @@ public final class ServerBearTasks {
             o.put("prepGateWindowStart", state.prepGateWindowStart);
             o.put("petSkillsWindowStart", state.petSkillsWindowStart);
             o.put("recallWindowStart", state.recallWindowStart);
+            o.put("recallWaitStart", state.recallWaitStart);
             if (state.recallMarchIds != null && !state.recallMarchIds.isEmpty()) {
                 o.put("recallMarchIds", state.recallMarchIds);
             }
@@ -3071,6 +3090,7 @@ public final class ServerBearTasks {
             state.prepGateWindowStart = o.optLong("prepGateWindowStart", 0);
             state.petSkillsWindowStart = o.optLong("petSkillsWindowStart", 0);
             state.recallWindowStart = o.optLong("recallWindowStart", 0);
+            state.recallWaitStart = o.optLong("recallWaitStart", 0);
             state.recallMarchIds = o.optString("recallMarchIds", "");
             state.joinSkipSlots = o.optString("joinSkipSlots", "");
             state.lastLaunchText = o.optString("lastLaunchText", "");

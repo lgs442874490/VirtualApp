@@ -1657,11 +1657,15 @@ public final class VaultHttpApi {
         // 启用 gzip（JSON 压缩比约 10x）。OkHttp 默认带 Accept-Encoding: gzip 并自动解压，
         // 旧版 APK 无需改动即可受益。
         if (acceptsGzip(ex)) {
-            byte[] gz = gzip(bytes);
-            if (gz.length < bytes.length) {
-                ex.getResponseHeaders().set("Content-Encoding", "gzip");
-                ex.getResponseHeaders().add("Vary", "Accept-Encoding");
-                bytes = gz;
+            try {
+                byte[] gz = gzip(bytes);
+                if (gz.length < bytes.length) {
+                    ex.getResponseHeaders().set("Content-Encoding", "gzip");
+                    ex.getResponseHeaders().add("Vary", "Accept-Encoding");
+                    bytes = gz;
+                }
+            } catch (Throwable ignored) {
+                // 压缩失败回退未压缩（绝不阻断响应）
             }
         }
         ex.sendResponseHeaders(httpStatus, bytes.length);
