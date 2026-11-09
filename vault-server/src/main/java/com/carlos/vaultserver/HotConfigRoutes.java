@@ -39,8 +39,12 @@ final class HotConfigRoutes {
     static final String HOT_CONFIG_FILE = "hotconfig.json";
     /** 整包文件（相对 dataDir）。 */
     static final String APK_FILE = "download/app-latest.apk";
+    /** DexPatch 代码补丁文件（相对 dataDir）。 */
+    static final String PATCH_FILE = "patch/code.dex";
     /** Android 安装包 MIME（浏览器/系统下载器识别用）。 */
     static final String APK_CONTENT_TYPE = "application/vnd.android.package-archive";
+    /** 补丁 dex 的 MIME（二进制流）。 */
+    static final String PATCH_CONTENT_TYPE = "application/octet-stream";
     /** JSON 中下载地址的服务器占位符（替换为 scheme://Host）。 */
     static final String PLACEHOLDER_BASE = "{base}";
 
@@ -111,6 +115,36 @@ final class HotConfigRoutes {
         }
         ex.getResponseHeaders().set("Content-Type", APK_CONTENT_TYPE);
         // sendResponseHeaders(200, len) 会写 Content-Length；显式设置便于非 JDK 客户端/代理透传
+        ex.getResponseHeaders().set("Content-Length", String.valueOf(len));
+        ex.sendResponseHeaders(200, len);
+        try (InputStream in = Files.newInputStream(file);
+             OutputStream out = ex.getResponseBody()) {
+            byte[] buf = new byte[APK_BUFFER_BYTES];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+        }
+    }
+
+    /** GET /v1/vault/patch/code.dex：流式返回 dataDir/patch/code.dex（DexPatch 代码补丁）。 */
+    static void servePatch(HttpExchange ex, Path dataDir) throws IOException {
+        if (!isGet(ex)) return;
+        Path file = dataDir.resolve(PATCH_FILE);
+        if (!Files.isRegularFile(file)) {
+            writeEnvelope(ex, 404, 3002, "patch not found");
+            return;
+        }
+        long len;
+        try {
+            len = Files.size(file);
+        } catch (IOException e) {
+            writeEnvelope(ex, 500, 3001, "patch stat failed");
+            return;
+        }
+        if (len <= 0) {
+            writeEnvelope(ex, 404, 3002, "patch empty");
+            return;
+        }
+        ex.getResponseHeaders().set("Content-Type", PATCH_CONTENT_TYPE);
         ex.getResponseHeaders().set("Content-Length", String.valueOf(len));
         ex.sendResponseHeaders(200, len);
         try (InputStream in = Files.newInputStream(file);

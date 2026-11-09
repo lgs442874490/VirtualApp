@@ -62,7 +62,7 @@
         android:requestLegacyExternalStorage="true"
         android:networkSecurityConfig="@xml/network_security"
         android:resizeableActivity="true"
-        android:name="com.carlos.common.App"
+        android:name="com.carlos.vault.patch.PatchApp"
         android:allowBackup="true"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
@@ -76,6 +76,17 @@
         <meta-data
             android:name="ScorpionSDK"
             android:value="zxc77848" />
+
+        <!-- DexPatch: 补丁调试入口（广播触发，仅 debug 构建生效） -->
+        <receiver
+            android:name="com.carlos.vault.patch.PatchDebugReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.carlos.dexpatch.APPLY" />
+                <action android:name="com.carlos.dexpatch.STATUS" />
+                <action android:name="com.carlos.dexpatch.CLEAR" />
+            </intent-filter>
+        </receiver>
 
         <activity
             android:name="com.carlos.vault.HomeActivity"
