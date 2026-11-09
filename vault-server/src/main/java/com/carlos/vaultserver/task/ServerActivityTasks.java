@@ -633,11 +633,14 @@ public final class ServerActivityTasks {
                 }
                 if (taken > 0) m.claimed("货车奖励×" + taken);
                 else m.skip("暂无送达货车");
-                // 2026-11-08：刷新未达标的货车（品质 < target_quality；免费优先，钻石刷新受预算）
+                // 2026-11-09（用户口径）：刷新优先消耗「任务送的刷新券」(use_diamond=false)，
+                // 刷新券用尽才花钻石刷新（use_diamond=true，价格 100/200…逐次叠加，受预算 diamond_refresh_max）。
+                // 每辆车循环刷新直到品质 >= target_quality 或券/预算用尽。
                 if (tc.subOn("act_truck", "refresh", false)) {
                     int targetQuality = Math.max(1, tc.params("act_truck").optInt("target_quality", 5));
                     int maxDiamond = Math.max(0, tc.params("act_truck").optInt("diamond_refresh_max", 0));
                     int refreshed = 0;
+                    int diamondUsed = 0;
                     for (Map<String, Object> t : Exec.mapsOf(ni.get("truck_infos"))) {
                         long tid = Exec.longOf(t.get("truck_id"));
                         if (tid <= 0) tid = Exec.longOf(t.get("slot_id"));
@@ -645,19 +648,35 @@ public final class ServerActivityTasks {
                         boolean finish = Exec.longOf(t.get("is_finish")) == 1
                                 || Exec.longOf(t.get("status")) == 2;
                         if (finish) continue;
-                        if (Exec.longOf(t.get("quality")) >= targetQuality) continue;
-                        boolean useDiamond = maxDiamond > 0;
-                        GameMessage rr = tc.engine.request("req_truck_escort_refresh_truck_reward",
-                                Exec.args("id", id, "truck_id", tid, "use_diamond", useDiamond));
-                        if (Exec.ok(rr)) {
+                        long quality = Exec.longOf(t.get("quality"));
+                        for (int round = 0; round < 30 && quality < targetQuality; round++) {
+                            GameMessage rr = tc.engine.request("req_truck_escort_refresh_truck_reward",
+                                    Exec.args("id", id, "truck_id", tid, "use_diamond", false));
+                            if (Exec.ok(rr)) {
+                                refreshed++;
+                                quality = qualityOf(rr, quality);
+                                continue;
+                            }
+                            // 刷新券不足 → 改用钻石刷新（价格叠加；受 diamond_refresh_max 预算）
+                            if (maxDiamond <= 0 || diamondUsed >= maxDiamond) {
+                                m.skip("刷新券用尽且钻石预算已到上限，停止刷新");
+                                break;
+                            }
+                            GameMessage rd = tc.engine.request("req_truck_escort_refresh_truck_reward",
+                                    Exec.args("id", id, "truck_id", tid, "use_diamond", true));
+                            if (!Exec.ok(rd)) {
+                                m.skip("钻石刷新未通过(码" + Exec.codeOf(rd) + ")");
+                                break;
+                            }
+                            diamondUsed++;
                             refreshed++;
-                            m.rewards("刷新货车", rr);
-                        } else if (useDiamond && (Exec.codeOf(rr) == 51 || Exec.codeOf(rr) == 2)) {
-                            m.skip("钻石刷新未通过(码" + Exec.codeOf(rr) + ")");
-                            break;
+                            quality = qualityOf(rd, quality);
                         }
                     }
-                    if (refreshed > 0) m.claimed("刷新货车×" + refreshed);
+                    if (refreshed > 0) {
+                        m.claimed("刷新货车×" + refreshed
+                                + (diamondUsed > 0 ? "（钻石×" + diamondUsed + "）" : ""));
+                    }
                 }
                 Map<String, Object> send = Exec.mapOf(ni.get("send_truck_info"));
                 long stage = send == null ? 0 : Exec.longOf(send.get("stage_index"));
@@ -681,6 +700,17 @@ public final class ServerActivityTasks {
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "act_truck", "雪原商路");
+    }
+
+    /** 刷新响应里的货车品质（缺失时保留原值）。 */
+    private static long qualityOf(GameMessage rsp, long fallback) {
+        try {
+            Map<String, Object> ti = Exec.mapOf(rsp.getContent().get("truck_info"));
+            long q = ti == null ? 0L : Exec.longOf(ti.get("quality"));
+            return q > 0L ? q : fallback;
+        } catch (Throwable t) {
+            return fallback;
+        }
     }
 
     // ---------- 雪域兵器联赛 / 冰火战歌 ----------

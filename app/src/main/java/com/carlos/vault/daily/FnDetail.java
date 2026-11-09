@@ -162,7 +162,7 @@ public final class FnDetail {
         fn("act_truck",
                 new Sub("take", "领送达奖励", "已送达货车的奖励自动领取", true, null),
                 new Sub("send", "自动发车", "用一名英雄自动发出货车（劫掠他人默认关）", true, null),
-                new Sub("refresh", "刷新货车品质", "未达标货车自动刷新（品质<target_quality；免费优先，钻石刷新受 diamond_refresh_max 预算）", false, null));
+                new Sub("refresh", "刷新货车品质", "未达标货车自动刷新：优先消耗任务送的刷新券，用尽后按预算用钻石（100/200…逐次叠加，diamond_refresh_max 上限）", false, null));
         fn("act_arsenal_league",
                 new Sub("bet", "自动竞猜下注", "活动期自动下注（按战力选强侧；默认关）", false,
                         new String[][]{{"100", "100币"}, {"500", "500币"}, {"1000", "1000币"}, {"4500", "4500币"}}));
