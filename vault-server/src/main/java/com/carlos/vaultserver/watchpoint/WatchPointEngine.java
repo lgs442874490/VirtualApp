@@ -1999,6 +1999,10 @@ public final class WatchPointEngine {
     }
 
     private boolean isMonitoredUid(long uid) {
+        // P2：已安装 fid 名单时以名单为准；未安装（旧单测/未迁移部署）回退旧 monitorTargets。
+        if (com.carlos.vaultserver.alert.WatchlistRegistry.shared() != null) {
+            return com.carlos.vaultserver.alert.WatchlistRegistry.isWatchedUid(uid);
+        }
         for (WatchPointStore.Target t : store.monitorTargets) {
             if (t.uid == uid) return true;
         }

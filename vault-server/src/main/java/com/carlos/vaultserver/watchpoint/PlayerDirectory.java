@@ -61,6 +61,10 @@ public final class PlayerDirectory {
     }
 
     public static void install(Path dataDir) {
+        if (dataDir == null) {
+            SHARED = null;   // 测试/卸载：清空共享目录（避免跨用例静态状态泄漏）
+            return;
+        }
         PlayerDirectory d = new PlayerDirectory(dataDir.resolve("players_dir.json"));
         d.load();
         SHARED = d;

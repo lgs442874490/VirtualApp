@@ -53,12 +53,23 @@ public final class Main {
         // 只发告警（企业微信），不发日报/汇总；默认关闭，需 VAULT_WATCHPOINT=on 且 data/watchpoint.json enabled=true。
         com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore =
                 new com.carlos.vaultserver.watchpoint.WatchPointStore(config.dataDir);
+        watchPointStore.load();
+        // 2026-11-09 告警中枢 P2：fid 关注名单（迁移期与旧 watchTargets/monitorTargets 并存）。
+        // 目录先装好，迁移才能按 uid 反查 fid；迁移失败不影响观察点启动（未解析条目留在 alert.unresolved）。
+        com.carlos.vaultserver.watchpoint.PlayerDirectory.install(config.dataDir);
+        com.carlos.vaultserver.alert.WatchlistService alertWatchlist =
+                new com.carlos.vaultserver.alert.WatchlistService(store);
+        com.carlos.vaultserver.alert.WatchlistRegistry.install(alertWatchlist);
+        com.carlos.vaultserver.alert.WatchlistMigrator.MigrateReport alertMigrate =
+                com.carlos.vaultserver.alert.WatchlistMigrator.migrateIfNeeded(
+                        store, watchPointStore, alertWatchlist, false);
+        FileLog.info("告警名单：{}", alertWatchlist.allWatchedUids().size() + " 条已解析；迁移 "
+                + alertMigrate.summary());
         com.carlos.vaultserver.watchpoint.WatchPointEngine watchPoint =
                 new com.carlos.vaultserver.watchpoint.WatchPointEngine(
                         keeper, watchPointStore, store, new WeComNotifier());
         watchPoint.start();
         // 2026-10-31：把观察点实例共享给守护盟友（按坐标反查城 uid/联盟、保护矩形判定）。
-        com.carlos.vaultserver.watchpoint.PlayerDirectory.install(config.dataDir);
         com.carlos.vaultserver.watchpoint.WatchPointEngine.install(watchPoint);
 
         com.carlos.vaultserver.task.RoundScheduler scheduler =

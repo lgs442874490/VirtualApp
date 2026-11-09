@@ -135,6 +135,9 @@ public final class VaultHttpApi {
         // 战争通知（2026-10-22）：监视名单/通知配置/测试通知 + 事件游标同步
         server.createContext("/v1/vault/watch", ex -> guard(ex, "POST", "vaultWatch", this::handleWatch));
         server.createContext("/v1/vault/events", ex -> guard(ex, "POST", "vaultEvents", this::handleEvents));
+        // 告警中枢 P2（2026-11-09）：fid 关注名单 list/add/update/remove/bulk（旧 /watch、/watchpoint 并存）
+        server.createContext("/v1/vault/alert",
+                ex -> guard(ex, "POST", "vaultAlert", this::handleAlert));
         // 观察点配置（批次 B 2026-10-30）：get/set/enable/disable；写盘后引擎 5s 内 mtime 热载
         server.createContext("/v1/vault/watchpoint",
                 ex -> guard(ex, "POST", "vaultWatchpoint", this::handleWatchpoint));
@@ -1313,6 +1316,97 @@ public final class VaultHttpApi {
                 String.valueOf(wp.monitorTargets.size()), String.valueOf(wp.protectRects.size()),
                 String.valueOf(wp.alertTypes.size()), String.valueOf(wp.friendAids.size()));
         return watchpointSnapshot();
+    }
+
+    /**
+     * 告警中枢 P2：fid 关注名单。action=list/add/update/remove/bulk。
+     * 名单全局一份、不依赖 fpid；旧 /v1/vault/watch 保持原行为（迁移期双轨）。
+     */
+    private JSONObject handleAlert(Map<String, Object> fields) throws Exception {
+        com.carlos.vaultserver.alert.WatchlistService svc =
+                com.carlos.vaultserver.alert.WatchlistRegistry.shared();
+        if (svc == null) throw new BizError(3002, "告警中枢未启用");
+        String action = str(fields, "action");
+        if (action == null || action.isEmpty()) throw new BizError(3002, "缺少 action");
+        JSONObject data = new JSONObject();
+        switch (action) {
+            case "list":
+                data.put("entries", alertEntriesJson(svc));
+                data.put("unresolved", alertUnresolvedJson(svc));
+                return data;
+            case "add": {
+                if (!svc.add(str(fields, "fid"), str(fields, "note"))) {
+                    throw new BizError(3002, "FID 必须为纯数字（游戏领主档案里的那串数字）");
+                }
+                data.put("entries", alertEntriesJson(svc));
+                return data;
+            }
+            case "update": {
+                Boolean enabled = fields.containsKey("enabled")
+                        ? optBool(fields, "enabled", true) : null;
+                if (!svc.update(str(fields, "fid"), str(fields, "note"), enabled)) {
+                    throw new BizError(3002, "名单条目不存在");
+                }
+                data.put("entries", alertEntriesJson(svc));
+                return data;
+            }
+            case "remove": {
+                if (!svc.remove(str(fields, "fid"))) throw new BizError(3002, "名单条目不存在");
+                data.put("entries", alertEntriesJson(svc));
+                return data;
+            }
+            case "bulk": {
+                // App 首次迁移本地 seed：targets:[{fid,note}]，逐条 upsert（幂等）
+                Object raw = fields.get("targets");
+                int n = 0;
+                if (raw instanceof java.util.List) {
+                    for (Object o : (java.util.List<?>) raw) {
+                        if (!(o instanceof java.util.Map)) continue;
+                        java.util.Map<?, ?> m = (java.util.Map<?, ?>) o;
+                        Object fid = m.get("fid");
+                        if (fid == null) continue;
+                        Object note = m.get("note");
+                        if (svc.add(String.valueOf(fid), note == null ? "" : String.valueOf(note))) n++;
+                    }
+                }
+                data.put("imported", n);
+                data.put("entries", alertEntriesJson(svc));
+                return data;
+            }
+            default:
+                throw new BizError(3002, "未知 action: " + action);
+        }
+    }
+
+    private static JSONArray alertEntriesJson(com.carlos.vaultserver.alert.WatchlistService svc) {
+        JSONArray arr = new JSONArray();
+        for (VaultStore.AlertWatchEntry e : svc.list()) {
+            JSONObject o = new JSONObject();
+            o.put("fid", e.fid);
+            o.put("uid", e.uid);
+            o.put("nick", e.nick == null ? "" : e.nick);
+            o.put("kid", e.kid == null ? "" : e.kid);
+            o.put("note", e.note == null ? "" : e.note);
+            o.put("enabled", e.enabled);
+            o.put("health", e.health == null ? "UNRESOLVED" : e.health);
+            o.put("source", e.source == null ? "USER" : e.source);
+            o.put("resolvedAt", e.resolvedAt);
+            arr.put(o);
+        }
+        return arr;
+    }
+
+    private static JSONArray alertUnresolvedJson(com.carlos.vaultserver.alert.WatchlistService svc) {
+        JSONArray arr = new JSONArray();
+        for (VaultStore.AlertWatchEntry e : svc.unresolved()) {
+            JSONObject o = new JSONObject();
+            o.put("legacyRaw", e.legacyRaw == null ? "" : e.legacyRaw);
+            o.put("uid", e.uid);
+            o.put("note", e.note == null ? "" : e.note);
+            o.put("source", e.source == null ? "" : e.source);
+            arr.put(o);
+        }
+        return arr;
     }
 
     private JSONObject handleWatch(Map<String, Object> fields) throws Exception {

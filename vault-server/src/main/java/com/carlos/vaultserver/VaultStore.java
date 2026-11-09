@@ -233,6 +233,77 @@ public final class VaultStore {
         }
     }
 
+    /**
+     * 告警中枢关注名单条目（vault.json 根 alert.watchlist；fid 为主键，玩家肉眼可见）。
+     * uid 是内部解析缓存；health=UNRESOLVED 表示 fid 还没解析成功。
+     */
+    public static final class AlertWatchEntry {
+        public String fid = "";
+        public long uid;
+        public String nick = "";
+        public String kid = "";
+        public String note = "";
+        public boolean enabled = true;
+        public String health = "UNRESOLVED";
+        public String source = "USER";
+        public String legacyRaw = "";
+        public long resolvedAt;
+
+        public AlertWatchEntry() {
+        }
+
+        public AlertWatchEntry(String fid) {
+            this.fid = fid == null ? "" : fid.trim();
+        }
+
+        AlertWatchEntry copy() {
+            AlertWatchEntry c = new AlertWatchEntry(fid);
+            c.uid = uid;
+            c.nick = nick;
+            c.kid = kid;
+            c.note = note;
+            c.enabled = enabled;
+            c.health = health;
+            c.source = source;
+            c.legacyRaw = legacyRaw;
+            c.resolvedAt = resolvedAt;
+            return c;
+        }
+
+        JSONObject toJson() {
+            JSONObject o = new JSONObject();
+            o.put("fid", fid);
+            o.put("uid", uid);
+            o.put("nick", nick);
+            o.put("kid", kid);
+            o.put("note", note);
+            o.put("enabled", enabled);
+            o.put("health", health);
+            o.put("source", source);
+            o.put("legacyRaw", legacyRaw);
+            o.put("resolvedAt", resolvedAt);
+            return o;
+        }
+
+        static AlertWatchEntry fromJson(JSONObject o) {
+            if (o == null) return null;
+            String fid = o.optString("fid", "").trim();
+            if (fid.isEmpty()) return null;
+            AlertWatchEntry c = new AlertWatchEntry(fid);
+            c.uid = o.optLong("uid", 0L);
+            c.nick = o.optString("nick", "");
+            c.kid = o.optString("kid", "");
+            c.note = o.optString("note", "");
+            c.enabled = o.optBoolean("enabled", true);
+            String h = o.optString("health", "UNRESOLVED");
+            c.health = "OK".equals(h) || "STALE".equals(h) ? h : "UNRESOLVED";
+            c.source = o.optString("source", "USER");
+            c.legacyRaw = o.optString("legacyRaw", "");
+            c.resolvedAt = o.optLong("resolvedAt", 0L);
+            return c;
+        }
+    }
+
     /** watch 配置快照（深拷贝）。 */
     public WatchConfig watchConfig() {
         synchronized (lock) {
@@ -316,6 +387,12 @@ public final class VaultStore {
     private String takeoverPolicy = "human_first";
     /** 战争通知全局配置（watch 配置节）。 */
     private WatchConfig watchConfigLocked = new WatchConfig();
+    /** 告警中枢关注名单（vault.json 根 alert.watchlist；fid 主键，全局一份）。 */
+    private final List<AlertWatchEntry> alertWatchlist = new ArrayList<>();
+    /** 迁移时反查不到 fid 的旧条目（等用户补填 fid）。 */
+    private final List<AlertWatchEntry> alertUnresolved = new ArrayList<>();
+    /** 迁移是否已执行（幂等标记）。 */
+    private boolean alertMigrated;
     private final Object lock = new Object();
 
     public VaultStore(Path dataDir) {
@@ -489,6 +566,26 @@ public final class VaultStore {
                             }
                         }
                     }
+                    JSONObject al = root.optJSONObject("alert");
+                    if (al != null) {
+                        alertMigrated = al.optBoolean("migrated", false);
+                        alertWatchlist.clear();
+                        JSONArray wl = al.optJSONArray("watchlist");
+                        if (wl != null) {
+                            for (int i = 0; i < wl.length(); i++) {
+                                AlertWatchEntry e = AlertWatchEntry.fromJson(wl.optJSONObject(i));
+                                if (e != null) alertWatchlist.add(e);
+                            }
+                        }
+                        alertUnresolved.clear();
+                        JSONArray un = al.optJSONArray("unresolved");
+                        if (un != null) {
+                            for (int i = 0; i < un.length(); i++) {
+                                AlertWatchEntry e = AlertWatchEntry.fromJson(un.optJSONObject(i));
+                                if (e != null) alertUnresolved.add(e);
+                            }
+                        }
+                    }
                     return; // 主文件解析成功即不再看备份
                 } catch (Exception e) {
                     FileLog.warn("库文件解析失败 {}：{}，尝试下一份", p.getFileName(), e.getMessage());
@@ -615,6 +712,15 @@ public final class VaultStore {
             for (Long u : watchConfigLocked.roleUidScope) scope.put(u);
             wc.put("roleUidScope", scope);
             root.put("watch", wc);
+            JSONObject al = new JSONObject();
+            JSONArray wl = new JSONArray();
+            for (AlertWatchEntry e : alertWatchlist) wl.put(e.toJson());
+            al.put("watchlist", wl);
+            JSONArray un = new JSONArray();
+            for (AlertWatchEntry e : alertUnresolved) un.put(e.toJson());
+            al.put("unresolved", un);
+            al.put("migrated", alertMigrated);
+            root.put("alert", al);
             root.put("savedAt", System.currentTimeMillis());
 
             Files.createDirectories(file.getParent());
@@ -1073,6 +1179,105 @@ public final class VaultStore {
         }
     }
 
+    // ---------- 告警中枢：关注名单（fid 主键，全局一份；设计 §9） ----------
+
+    /** 关注名单快照（深拷贝）。 */
+    public List<AlertWatchEntry> alertWatchlist() {
+        synchronized (lock) {
+            List<AlertWatchEntry> out = new ArrayList<>();
+            for (AlertWatchEntry e : alertWatchlist) out.add(e.copy());
+            return out;
+        }
+    }
+
+    /** 反查不到 fid 的旧条目（迁移待处理）。 */
+    public List<AlertWatchEntry> alertUnresolved() {
+        synchronized (lock) {
+            List<AlertWatchEntry> out = new ArrayList<>();
+            for (AlertWatchEntry e : alertUnresolved) out.add(e.copy());
+            return out;
+        }
+    }
+
+    public boolean alertMigrated() {
+        synchronized (lock) {
+            return alertMigrated;
+        }
+    }
+
+    public void markAlertMigrated() {
+        synchronized (lock) {
+            alertMigrated = true;
+            saveLocked();
+        }
+    }
+
+    /**
+     * 新增/更新一条关注名单（fid 为主键）。返回 true=有新变化并已落盘。
+     * fid 必须为纯数字；同 fid 已存在则更新 uid/nick/kid/note/enabled/health 等。
+     */
+    public boolean upsertAlertWatch(AlertWatchEntry in) {
+        if (in == null) return false;
+        String fid = in.fid == null ? "" : in.fid.trim();
+        if (fid.isEmpty() || !fid.matches("\\d+")) return false;
+        synchronized (lock) {
+            AlertWatchEntry cur = null;
+            for (AlertWatchEntry e : alertWatchlist) {
+                if (fid.equals(e.fid)) { cur = e; break; }
+            }
+            if (cur == null) {
+                cur = new AlertWatchEntry(fid);
+                cur.uid = in.uid;
+                cur.nick = in.nick == null ? "" : in.nick;
+                cur.kid = in.kid == null ? "" : in.kid;
+                cur.note = in.note == null ? "" : in.note;
+                cur.enabled = in.enabled;
+                cur.health = in.health == null ? "UNRESOLVED" : in.health;
+                cur.source = in.source == null ? "USER" : in.source;
+                cur.legacyRaw = in.legacyRaw == null ? "" : in.legacyRaw;
+                cur.resolvedAt = in.resolvedAt;
+                alertWatchlist.add(cur);
+            } else {
+                if (in.uid > 0L) {
+                    cur.uid = in.uid;
+                    cur.health = in.health == null ? "OK" : in.health;
+                    cur.resolvedAt = System.currentTimeMillis();
+                }
+                if (in.nick != null && !in.nick.isEmpty()) cur.nick = in.nick;
+                if (in.kid != null && !in.kid.isEmpty()) cur.kid = in.kid;
+                if (in.note != null && !in.note.isEmpty()) cur.note = in.note;
+                cur.enabled = in.enabled;
+                if (in.source != null && !in.source.isEmpty()) cur.source = in.source;
+                if (in.legacyRaw != null && !in.legacyRaw.isEmpty()) cur.legacyRaw = in.legacyRaw;
+            }
+            final String legacy = cur.legacyRaw;
+            if (!legacy.isEmpty()) {
+                alertUnresolved.removeIf(u -> legacy.equals(u.legacyRaw));
+            }
+            saveLocked();
+            return true;
+        }
+    }
+
+    public boolean removeAlertWatch(String fid) {
+        String f = fid == null ? "" : fid.trim();
+        if (f.isEmpty()) return false;
+        synchronized (lock) {
+            boolean removed = alertWatchlist.removeIf(e -> f.equals(e.fid));
+            if (removed) saveLocked();
+            return removed;
+        }
+    }
+
+    /** 记录一条无法反查 fid 的旧条目（迁移用；legacyRaw 存原 uid/坐标）。 */
+    public void addAlertUnresolved(AlertWatchEntry e) {
+        if (e == null) return;
+        synchronized (lock) {
+            alertUnresolved.add(e.copy());
+            saveLocked();
+        }
+    }
+
     // ---------- 战争通知：监视名单 CRUD（2026-10-22） ----------
 
     /** 账号监视名单快照（深拷贝；无账号返回 null 以区分"不存在"与"空名单"）。 */
@@ -1271,6 +1476,13 @@ public final class VaultStore {
     public String policy() {
         synchronized (lock) {
             return takeoverPolicy;
+        }
+    }
+
+    /** 账号快照（迁移遍历用；不暴露内部可变列表）。 */
+    public List<Account> accounts() {
+        synchronized (lock) {
+            return new ArrayList<>(accounts);
         }
     }
 
