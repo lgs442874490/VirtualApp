@@ -36,11 +36,13 @@ public class PatchDebugReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        if (!BuildConfig.DEBUG) {
-            Log.w(TAG, "non-debug build, ignore");
+        String action = intent == null ? "" : intent.getAction();
+        // release 包不再一律拒绝：改为 HMAC 签名校验（见 hasValidSignature）。
+        // 这样生产环境可用带签名的广播清除/查询补丁，同时不给任意应用留后门。
+        if (!BuildConfig.DEBUG && !hasValidSignature(intent, action)) {
+            Log.w(TAG, "unsigned broadcast rejected: " + action);
             return;
         }
-        String action = intent == null ? "" : intent.getAction();
         Log.i(TAG, "onReceive action=" + action);
 
         if (ACTION_APPLY.equals(action)) {
@@ -77,6 +79,63 @@ public class PatchDebugReceiver extends BroadcastReceiver {
                 + " failCount=" + st.failCount;
         Log.i(TAG, msg);
         toast(context, msg);
+    }
+
+    /**
+     * release 包的广播签名校验。
+     *
+     * <p>签名串 = {@code HMAC-SHA256(action + "|" + ts, LicenseConfig.appSecret())}（hex），
+     * 由 {@code ts}（毫秒时间戳）限定 5 分钟有效期，降低重放风险。
+     *
+     * <p>生成方式（本机）：
+     * <pre>
+     * TS=$(date +%s%3N); SIG=$(printf '%s|%s' "com.carlos.dexpatch.CLEAR" "$TS" | openssl dgst -sha256 -hmac "$APP_SECRET" -r | cut -d' ' -f1)
+     * adb shell am broadcast -a com.carlos.dexpatch.CLEAR \
+     *   --es ts "$TS" --es sig "$SIG" -n com.carlos.multiapp/com.carlos.vault.patch.PatchDebugReceiver
+     * </pre>
+     */
+    private boolean hasValidSignature(Intent intent, String action) {
+        if (intent == null) {
+            return false;
+        }
+        String sig = intent.getStringExtra("sig");
+        String ts = intent.getStringExtra("ts");
+        if (sig == null || sig.isEmpty() || ts == null || ts.isEmpty()) {
+            return false;
+        }
+        long now = System.currentTimeMillis();
+        long t;
+        try {
+            t = Long.parseLong(ts);
+        } catch (Throwable e) {
+            return false;
+        }
+        if (Math.abs(now - t) > 5 * 60 * 1000L) {
+            Log.w(TAG, "signature expired");
+            return false;
+        }
+        String expect = hmacSha256(action + "|" + ts);
+        return expect != null && !expect.isEmpty() && expect.equalsIgnoreCase(sig);
+    }
+
+    private String hmacSha256(String data) {
+        try {
+            String secret = com.carlos.vault.license.LicenseConfig.appSecret();
+            if (secret == null || secret.isEmpty()) {
+                return "";
+            }
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+            mac.init(new javax.crypto.spec.SecretKeySpec(secret.getBytes("UTF-8"), "HmacSHA256"));
+            byte[] d = mac.doFinal(data.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) {
+                sb.append(Character.forDigit((b >> 4) & 0xF, 16));
+                sb.append(Character.forDigit(b & 0xF, 16));
+            }
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     private byte[] readAll(File f) throws Exception {

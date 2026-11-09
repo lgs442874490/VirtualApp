@@ -35,19 +35,42 @@ public final class PatchManager {
         try {
             HotConfig.init(ctx);
             JSONObject code = HotConfig.codePatch();
+            PatchStore.State st = PatchStore.load(ctx);
+            long hotVer = HotConfig.version();
+
+            // 撤回语义：服务端 hotconfig 升到更高版本、且不再下发 patches 时，视为「撤回补丁」。
+            // 这修复了原先「本地缓存版本更高就不回退」导致服务端删补丁后客户端仍继续尝试下载的问题。
             if (code == null) {
+                if (st.lastHotVersion < hotVer && PatchStore.patchFile(ctx).isFile()) {
+                    PatchStore.clear(ctx);
+                    Log.i(TAG, "patch revoked: hotconfig v" + hotVer + " without patches");
+                } else if (st.lastHotVersion != hotVer) {
+                    st.lastHotVersion = hotVer;
+                    PatchStore.save(ctx, st);
+                }
                 Log.i(TAG, "no code patch config");
                 return;
             }
+
+            // 显式撤回：{ "patches": { "code": { "version": N, "revoke": true } } }
+            if (code.optBoolean("revoke", false)) {
+                PatchStore.clear(ctx);
+                Log.i(TAG, "patch revoked explicitly by server");
+                return;
+            }
+
             PatchMeta meta = PatchMeta.fromJson(code);
             if (meta == null || meta.url.isEmpty()) {
                 Log.w(TAG, "bad code patch config");
                 return;
             }
 
-            PatchStore.State st = PatchStore.load(ctx);
             if (st.version >= meta.version) {
                 Log.i(TAG, "patch up to date v=" + st.version);
+                if (st.lastHotVersion != hotVer) {
+                    st.lastHotVersion = hotVer;
+                    PatchStore.save(ctx, st);
+                }
                 return;
             }
 
@@ -61,6 +84,11 @@ public final class PatchManager {
             }
 
             boolean ok = PatchLoader.install(ctx, bytes, meta.baseApkMd5, meta.version);
+            if (ok) {
+                PatchStore.State s2 = PatchStore.load(ctx);
+                s2.lastHotVersion = hotVer;
+                PatchStore.save(ctx, s2);
+            }
             Log.i(TAG, "sync done version=" + meta.version
                     + " size=" + bytes.length + " ok=" + ok);
         } catch (Throwable t) {
