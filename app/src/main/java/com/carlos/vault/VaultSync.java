@@ -1591,6 +1591,33 @@ public final class VaultSync {
         }
     }
 
+    /**
+     * 下载二进制响应体（DexPatch 补丁 dex 用）。
+     *
+     * <p>与 {@link #fetchText} 同一条客户端选择路径（生产 https 自签端点走 pin 客户端），
+     * 仅响应体按 byte[] 读取。
+     *
+     * @param ctx 仅用于语义占位（端点解析与客户端选择都在内部完成）
+     * @param url 绝对 URL
+     * @return 响应体字节；非 2xx / 网络异常返回 null
+     */
+    public static byte[] fetchBytes(Context ctx, String url) {
+        if (url == null || url.isEmpty()) return null;
+        try {
+            Request request = new Request.Builder().url(url).build();
+            try (Response response = clientFor(url).newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    Log.w(TAG, "fetchBytes 非 2xx http=" + response.code() + " url=" + url);
+                    return null;
+                }
+                return response.body() == null ? null : response.body().bytes();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "fetchBytes 失败 url=" + url + ": " + t.getMessage());
+            return null;
+        }
+    }
+
     private static void post(Context app, String path, String op, Map<String, Object> fields,
                              Callback cb) {
         try {

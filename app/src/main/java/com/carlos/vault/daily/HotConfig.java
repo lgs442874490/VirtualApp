@@ -313,4 +313,19 @@ public final class HotConfig {
         return version;
     }
 
+    /**
+     * 代码补丁配置（{@code patches.code} 块）；未配置返回 null。
+     *
+     * <p>该块由 DexPatch 消费：{@code PatchManager.sync} 读取后下载 / 校验 / 落地。
+     * 结构见 {@code PatchMeta}。保持只读，不影响原有 {@code nums/catalogs/claims} 语义。
+     */
+    public static JSONObject codePatch() {
+        JSONObject o = config;
+        if (o == null) {
+            return null;
+        }
+        JSONObject patches = o.optJSONObject("patches");
+        return patches == null ? null : patches.optJSONObject("code");
+    }
+
 }

@@ -152,6 +152,9 @@ public final class VaultHttpApi {
                 ex -> HotConfigRoutes.serveHotConfig(ex, config.dataDir));
         server.createContext("/v1/vault/app-latest.apk",
                 ex -> HotConfigRoutes.serveApk(ex, config.dataDir));
+        // DexPatch 代码补丁（2026-11-09）：dataDir/patch/code.dex 流式返回
+        server.createContext("/v1/vault/patch/code.dex",
+                ex -> HotConfigRoutes.servePatch(ex, config.dataDir));
         server.createContext("/healthz", ex -> {
             writeJson(ex, 200, envelope(0, "ok", new JSONObject()));
         });
