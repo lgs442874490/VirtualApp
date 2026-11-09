@@ -954,6 +954,12 @@ public final class FormationCatalog {
             if (detail == null) detail = root.get("detail");
             Map<String, Object> details = Exec.mapOf(detail);
             if (details == null) continue;
+            // 增量帧可能是单件明细（{uid,eid,hid,slv,rlv,...}）而非 uid→明细映射
+            if (details.containsKey("uid") || details.containsKey("eid")) {
+                long singleUid = Exec.longOf(details.get("uid"));
+                if (singleUid > 0L) equipByUid.put(singleUid, details);
+                continue;
+            }
             for (Map.Entry<String, Object> e : details.entrySet()) {
                 Map<String, Object> d = Exec.mapOf(e.getValue());
                 if (d == null) continue;

@@ -399,7 +399,7 @@ public final class VaultHttpApi {
     static java.util.Set<String> parseFpidSet(Object raw) {
         java.util.Set<String> out = new java.util.HashSet<String>();
         if (raw == null) return out;
-        for (String s : String.valueOf(raw).split("[,\s]+")) {
+        for (String s : String.valueOf(raw).split("[,\\s]+")) {
             String v = s.trim();
             if (!v.isEmpty()) out.add(v);
         }

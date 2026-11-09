@@ -32,6 +32,7 @@ public final class HeroPowerCatalog {
     private static final JSONArray HERO_LEVEL_POWER = MODEL.optJSONArray("heroLevelPower");
     private static final JSONArray HERO_STAR_POWER = MODEL.optJSONArray("heroStarPower");
     private static final JSONObject SKILL_POWER = MODEL.optJSONObject("skillPower");
+    private static final JSONObject SKILL_NEED_STAR = MODEL.optJSONObject("skillNeedStar");
     private static final JSONObject EQUIPMENT_POWER_RATIO = MODEL.optJSONObject("equipmentPowerRatio");
     private static final JSONArray EQUIPMENT_LEVEL_POWER = MODEL.optJSONArray("equipmentLevelPower");
     private static final JSONObject EQUIPMENT_TALENT_PERCENT = MODEL.optJSONObject("equipmentTalentPowerPercentage");
@@ -94,7 +95,12 @@ public final class HeroPowerCatalog {
             Long power = SKILL_POWER == null || !SKILL_POWER.has(key) ? null : SKILL_POWER.optLong(key, 0L);
             if (power == null) continue;
             boolean active = position == 0 || protocolLevel > 0L;
-            if (!active) continue;
+            if (!active) {
+                // 网页版语义：未激活但 needStar=0 的技能仍计入战力
+                Long needStar = SKILL_NEED_STAR == null ? null
+                        : (SKILL_NEED_STAR.has(key) ? SKILL_NEED_STAR.optLong(key, 0L) : null);
+                if (needStar == null || needStar != 0L) continue;
+            }
             total += power;
         }
         return total;

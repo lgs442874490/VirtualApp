@@ -797,7 +797,7 @@ public final class ServerActivityTasks {
                         int placed = 0;
                         for (long[] c : cands) {
                             if (placed >= 3) break;   // 最多 3 场
-                            String betKey = "bet_" + guessId + "_" + c[0];
+                            String betKey = "bet_" + guessId + "_" + groupId + "_" + c[0];
                             if (betState.optLong(betKey, 0L) > 0L) continue;   // 幂等
                             GameMessage bet = tc.engine.request("req_arsenal_league_guess_bet_winner",
                                     Exec.args("id", guessId, "group_id", groupId,
@@ -1069,7 +1069,7 @@ public final class ServerActivityTasks {
                     long uid = row == null ? 0L : Exec.longOf(row.get("uid"));
                     if (uid <= 0L) uid = Exec.longOf(e.getKey());
                     long dead = row == null ? 0L : Exec.longOf(row.get("total_dead_soldier"));
-                    if (uid > 0L && dead > 0L && !helped.contains(uid)) {
+                    if (uid > 0L && dead > 0L) {
                         cands.add(new long[]{uid, dead});
                     }
                 }
@@ -1082,23 +1082,31 @@ public final class ServerActivityTasks {
                     return Long.compare(b[1], a[1]);
                 }
             });
+            // 多轮援助：每轮每个盟友最多帮一次（times=5），币够可继续下一轮
+            // （20 币 ≈ 4 轮），直到预算耗尽或候选帮完；2026-11-09 审查修复：
+            // 旧实现整场只帮同一盟友一次，20 币用不完。
             StringBuilder ledger = new StringBuilder();
             int assisted = 0;
             long remaining = Math.max(0L, budget);
-            for (long[] c : cands) {
-                if (assisted >= HELP_REVIVE_MAX_ALLIES || remaining <= 0L) break;
-                long times = Math.min(HELP_REVIVE_TIMES, remaining);
-                if (times <= 0L) break;
-                GameMessage rsp = tc.engine.request("req_cross_capital_war_help_revive",
-                        Exec.args("uid", c[0], "times", times));
-                if (!Exec.ok(rsp)) continue;
-                remaining -= times;
-                assisted++;
-                if (ledger.length() > 0) ledger.append(',');
-                ledger.append(c[0]);
-                long suc = Exec.longOf(rsp.getContent().get("suc_times"));
-                m.claimed("援助盟友复活 uid=" + c[0] + " 次数=" + (suc > 0L ? suc : times)
-                        + "（复活币剩余 " + remaining + "）");
+            for (int round = 0; round < 4 && remaining > 0L; round++) {
+                boolean any = false;
+                for (long[] c : cands) {
+                    if (assisted >= HELP_REVIVE_MAX_ALLIES || remaining <= 0L) break;
+                    long times = Math.min(HELP_REVIVE_TIMES, remaining);
+                    if (times <= 0L) break;
+                    GameMessage rsp = tc.engine.request("req_cross_capital_war_help_revive",
+                            Exec.args("uid", c[0], "times", times));
+                    if (!Exec.ok(rsp)) continue;
+                    remaining -= times;
+                    assisted++;
+                    any = true;
+                    if (ledger.length() > 0) ledger.append(',');
+                    ledger.append(c[0]);
+                    long suc = Exec.longOf(rsp.getContent().get("suc_times"));
+                    m.claimed("援助盟友复活 uid=" + c[0] + " 次数=" + (suc > 0L ? suc : times)
+                            + "（复活币剩余 " + remaining + "）");
+                }
+                if (!any) break;
             }
             if (ledger.length() > 0) {
                 String prev = tc.modState("act_cross_capital_revive").optString(ledgerKey, "");

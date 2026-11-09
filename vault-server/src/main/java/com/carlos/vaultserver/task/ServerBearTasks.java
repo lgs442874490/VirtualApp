@@ -283,7 +283,11 @@ public final class ServerBearTasks {
                     launchedNow = launchRally(tc, m, cfg, state, nowSec, window);
                 }
                 Window refreshed = windowOf(nowSec(tc), state.reserve, state.start, cfg);
-                joinRallies(tc, m, cfg, state, nowSec(tc), refreshed);
+                // 2026-11-09 审查修复：召回未回城期间整体等待（与网页版 recallPending 一致），
+                // 避免上车/发车与召回行军抢英雄。
+                if (pendingRecall.isEmpty()) {
+                    joinRallies(tc, m, cfg, state, nowSec(tc), refreshed);
+                }
                 launchedForWindowNow = launchedNow || launchedForWindow(
                         tc.store.getString(launchedKeyOf(tc)), dayKey(nowSec), window.startSec);
                 // 批次5：发车尝试/成败/重试计划由 launchRally 直接写 mod.bear.launch（含错误码原码），
@@ -909,9 +913,15 @@ public final class ServerBearTasks {
             long id = t[0];
             long stateVal = t[1];
             String proto = stateVal == 2L ? "req_world_march_recall" : "req_world_march_off_work";
+            // 2026-11-09 审查修复：召回失败/异常的行军仍在途，一并纳入等待（120s 上限兜底），
+            // 避免"召回失败的行军"不等待就发车 → 403。
+            done.add(id);
             try {
                 GameMessage rsp = tc.engine.request(proto, Exec.args("id", id));
-                if (Exec.ok(rsp)) done.add(id);
+                if (!Exec.ok(rsp)) {
+                    FileLog.warn("巨熊准备窗召回未成功 fpid={} marchId={} 码={}", tc.fpid,
+                            String.valueOf(id), String.valueOf(Exec.codeOf(rsp)));
+                }
             } catch (Exception e) {
                 FileLog.warn("巨熊准备窗召回失败 fpid={} marchId={} proto={}：{}", tc.fpid,
                         String.valueOf(id), proto, ServerTasks.brief(String.valueOf(e.getMessage())));
