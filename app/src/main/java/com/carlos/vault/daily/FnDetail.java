@@ -171,7 +171,7 @@ public final class FnDetail {
         fn("act_cross_capital_revive",
                 new Sub("revive", "自动复活", "活动期检测到阵亡 → 免费复活 30% + 联盟求助", true, null),
                 new Sub("help_revive", "援助盟友复活", "用自己的复活币帮阵亡最多的盟友复活（上限 20 币）", true, null),
-                new Sub("buy_diamond", "花钻石复活", "自己复活未达 90% 时用钻石购买医疗包（每次 +10%，最多 3 次，价格叠加）", false, null));
+                new Sub("buy_diamond", "花钻石复活", "自己复活未达 90% 时用钻石买复活药剂：每份 +1%，第 1 份 50 钻、第 2 份 100、第 3 份 150…最多 10 份补满 90%", false, null));
         fn("ally_offline_guard",
                 new Sub("watch", "查询离线", "从战争/态势通知自动发现被攻击盟友并查询在线状态（无需输入 uid）", true, null),
                 new Sub("force", "强制上线", "离线盟友自动顶号上线开盾（按账号库定位角色）", false,

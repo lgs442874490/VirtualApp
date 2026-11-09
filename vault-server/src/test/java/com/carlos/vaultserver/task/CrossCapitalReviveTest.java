@@ -171,7 +171,7 @@ public class CrossCapitalReviveTest {
         ServerActivityTasks.crossCapitalRevive(ctx);
         int buys = 0;
         for (String c : e.calls) if ("req_cross_capital_war_buy_medkit".equals(c)) buys++;
-        assertEquals("开启钻石后应买 3 次医疗包（每次 +10%，30+50+30≥90%）", 3, buys);
+        assertEquals("开启钻石后应买 10 份复活药剂（每份 1%，30+50+10×1=90%）", 10, buys);
     }
 
     @Test
