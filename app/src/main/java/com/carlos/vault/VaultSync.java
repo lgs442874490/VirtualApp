@@ -64,6 +64,8 @@ public final class VaultSync {
     private static final String PATH_ACCOUNT_ACTION = "/v1/vault/account-action";
     private static final String PATH_GLOBAL_ACTION = "/v1/vault/global-action";
     private static final String PATH_WATCH = "/v1/vault/watch";
+    /** 告警中枢 P2/P4：fid 关注名单（服务端全局一份）。 */
+    private static final String PATH_ALERT = "/v1/vault/alert";
     /** 观察点配置（批次 B 2026-10-30；服务端写 data/watchpoint.json，引擎 5s 热载）。 */
     private static final String PATH_WATCHPOINT = "/v1/vault/watchpoint";
     private static final String PATH_EVENTS = "/v1/vault/events";
@@ -84,6 +86,7 @@ public final class VaultSync {
     private static final String OP_ACCOUNT_ACTION = "vaultAccountAction";
     private static final String OP_GLOBAL_ACTION = "vaultGlobalAction";
     private static final String OP_WATCH = "vaultWatch";
+    private static final String OP_ALERT = "vaultAlert";
     private static final String OP_WATCHPOINT = "vaultWatchpoint";
     private static final String OP_EVENTS = "vaultEvents";
     private static final String OP_MONITOR = "vaultMonitor";
@@ -965,6 +968,38 @@ public final class VaultSync {
     }
 
     /** 监视名单 + 全局通知配置（list）。回调在 OkHttp 线程。 */
+    // ---------- 告警中枢 P4：fid 关注名单（新接口；旧 watch* 迁移期并存） ----------
+
+    public static void alertList(Context ctx, Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "list");
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-list", done);
+    }
+
+    public static void alertAdd(Context ctx, String fid, String note, Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "add");
+        f.put("fid", fid == null ? "" : fid.trim());
+        f.put("note", note == null ? "" : note.trim());
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-add", done);
+    }
+
+    public static void alertUpdate(Context ctx, String fid, String note, Boolean enabled, Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "update");
+        f.put("fid", fid == null ? "" : fid.trim());
+        if (note != null) f.put("note", note);
+        if (enabled != null) f.put("enabled", enabled);
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-update", done);
+    }
+
+    public static void alertRemove(Context ctx, String fid, Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "remove");
+        f.put("fid", fid == null ? "" : fid.trim());
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-remove", done);
+    }
+
     public static void watchList(Context ctx, String fpid, Callback done) {
         watchPost(ctx, watchFields("list", fpid), done, "vault-watch-list");
     }

@@ -144,7 +144,7 @@ public class NotifySettingsActivity extends Activity {
         box.addView(masterCard);
 
         // —— 监视名单 ——
-        box.addView(UiStyle.sectionTitle(this, "监视名单"));
+        box.addView(UiStyle.sectionTitle(this, "关注玩家（FID）"));
         targetsBox = new LinearLayout(this);
         targetsBox.setOrientation(LinearLayout.VERTICAL);
         box.addView(targetsBox);
@@ -249,7 +249,20 @@ public class NotifySettingsActivity extends Activity {
         eventsBox = new LinearLayout(this);
         eventsBox.setOrientation(LinearLayout.VERTICAL);
         box.addView(eventsBox);
-        box.addView(hint("展示服务器最近记录（环形 200 条，含行为/发起人/兵力/结算）；点条目查看详情。下拉刷新重新拉取。"));
+        box.addView(hint("展示服务器最近记录（环形 500 条，含行为/发起人/兵力/结算与观察点告警）；点条目查看详情。"));
+
+        // —— 高级：观察点扫描参数 / 关注区域（旧「观察点」页，入口收进这里） ——
+        box.addView(UiStyle.sectionTitle(this, "高级"));
+        LinearLayout advLink = UiComponents.card(this);
+        advLink.setOrientation(LinearLayout.VERTICAL);
+        advLink.setPadding(dp(14), dp(12), dp(14), dp(12));
+        advLink.addView(UiComponents.text(this, "观察点扫描参数 / 关注区域", 13.5f, UiStyle.INK, true));
+        advLink.addView(UiComponents.caption(this,
+                "扫描间隔、保护矩形、友盟简称、迁城跟踪（旧「观察点」页）", UiStyle.INK2));
+        UiStyle.press(advLink);
+        advLink.setOnClickListener(v -> startActivity(
+                new android.content.Intent(this, com.carlos.vault.WatchpointActivity.class)));
+        box.addView(advLink);
 
         return page.root;
     }
@@ -330,6 +343,12 @@ public class NotifySettingsActivity extends Activity {
                 return;
             }
             renderWatchData(data);
+        });
+        // P4：关注玩家走新 fid 名单（旧的 uid 名单仅作迁移期兜底）
+        VaultSync.alertList(this, (code, message, data) -> {
+            if (code == 0 && data != null) {
+                runOnUiThread(() -> renderAlertEntries(data.optJSONArray("entries")));
+            }
         });
         refreshEvents();
     }
@@ -415,6 +434,82 @@ public class NotifySettingsActivity extends Activity {
                 }
             }
         });
+    }
+
+    /** 关注玩家渲染（P4：fid 主键；覆盖旧 uid 名单视图）。 */
+    private void renderAlertEntries(JSONArray entries) {
+        if (targetsBox == null) return;
+        targetUidOrder.clear();
+        targetsBox.removeAllViews();
+        int n = entries == null ? 0 : entries.length();
+        if (n == 0) {
+            targetsBox.addView(hint("暂无关注玩家 —— 用下方卡片填游戏内 FID 添加。"));
+            return;
+        }
+        for (int i = 0; i < n; i++) {
+            JSONObject e = entries.optJSONObject(i);
+            if (e != null) targetsBox.addView(alertRow(e));
+        }
+    }
+
+    /** 单个关注玩家行：备注/昵称 + FID + 解析状态 + 启停 + 删除。 */
+    private View alertRow(JSONObject e) {
+        final String fid = e.optString("fid", "");
+        String note = e.optString("note", "");
+        String nick = e.optString("nick", "");
+        String health = e.optString("health", "UNRESOLVED");
+        long uid = e.optLong("uid", 0L);
+        String display = !note.isEmpty() ? note : (!nick.isEmpty() ? nick : "FID " + fid);
+
+        LinearLayout row = UiComponents.card(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(8), dp(4), dp(8));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.bottomMargin = dp(8);
+        row.setLayoutParams(rlp);
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        TextView name = new TextView(this);
+        name.setText(display);
+        name.setTextSize(13.5f);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        name.setTextColor(e.optBoolean("enabled", true) ? UiStyle.INK : UiStyle.INK3);
+        mid.addView(name);
+        TextView sub = new TextView(this);
+        sub.setText("FID " + fid + (uid > 0 ? " · uid " + uid : "")
+                + ("OK".equals(health) ? "" : " · 待解析"));
+        sub.setTextSize(11.5f);
+        sub.setTextColor("OK".equals(health) ? UiStyle.INK2 : UiStyle.WARN_INK);
+        mid.addView(sub);
+        row.addView(mid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final UiStyle.Switch[] swBox = new UiStyle.Switch[1];
+        swBox[0] = new UiStyle.Switch(this, e.optBoolean("enabled", true), () -> {
+            boolean on = swBox[0].isOn();
+            VaultSync.alertUpdate(this, fid, null, on, null);
+            toast("已" + (on ? "启用" : "停用") + "关注");
+        });
+        row.addView(swBox[0]);
+        TextView del = new TextView(this);
+        del.setText("删除");
+        del.setTextSize(12);
+        del.setTextColor(UiStyle.ERR_INK);
+        del.setPadding(dp(12), dp(8), dp(8), dp(8));
+        UiStyle.press(del);
+        del.setOnClickListener(v -> new AlertDialog.Builder(this,
+                        AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("删除关注")
+                .setMessage("不再关注 " + display + "（FID " + fid + "）？")
+                .setPositiveButton("删除", (dg, w) -> VaultSync.alertRemove(this, fid,
+                        (code, message, data) -> runOnUiThread(() -> {
+                            toast(code == 0 ? "已删除" : "删除失败：" + message);
+                            loadAll();
+                        })))
+                .setNegativeButton("取消", null).show());
+        row.addView(del);
+        return row;
     }
 
     /** 单个监视目标行：显示名 + uid@kid + 开关 + 删除。 */
@@ -723,33 +818,27 @@ public class NotifySettingsActivity extends Activity {
         if (addTargetInFlight) return;
         String fid = text(addUidEt);
         if (!fid.matches("\\d+") || Long.parseLong(fid) <= 0) {
-            toast("FID 必须为大于 0 的数字（游戏内玩家ID）");
+            toast("FID 必须为大于 0 的数字（游戏领主档案里的那串数字）");
             return;
         }
         addTargetInFlight = true;
         addTargetBtn.setEnabled(false);
         addTargetBtn.setAlpha(0.5f);
-        List<String> targets = scopeList();
-        for (int i = 1; i < targets.size(); i++) {
-            VaultSync.watchAdd(this, targets.get(i), fid, text(addNameEt), text(addKidEt),
-                    text(addNoteEt), null);
-        }
-        VaultSync.watchAdd(this, fpid, fid, text(addNameEt), text(addKidEt), text(addNoteEt),
-                (code, message, data) -> runOnUiThread(() -> {
-                    addTargetInFlight = false;
-                    addTargetBtn.setEnabled(true);
-                    addTargetBtn.setAlpha(1f);
-                    if (code == 0) {
-                        toast("已添加监视");
-                        addUidEt.setText("");
-                        addNameEt.setText("");
-                        addKidEt.setText("");
-                        addNoteEt.setText("");
-                        loadAll();
-                    } else {
-                        toast("失败：" + (message == null ? String.valueOf(code) : message));
-                    }
-                }));
+        VaultSync.alertAdd(this, fid, text(addNoteEt), (code, message, data) -> runOnUiThread(() -> {
+            addTargetInFlight = false;
+            addTargetBtn.setEnabled(true);
+            addTargetBtn.setAlpha(1f);
+            if (code == 0) {
+                toast("已添加关注");
+                addUidEt.setText("");
+                addNameEt.setText("");
+                addKidEt.setText("");
+                addNoteEt.setText("");
+                loadAll();
+            } else {
+                toast("失败：" + (message == null ? String.valueOf(code) : message));
+            }
+        }));
     }
 
     private void saveWecom() {
