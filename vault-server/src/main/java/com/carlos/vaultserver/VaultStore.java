@@ -115,8 +115,10 @@ public final class VaultStore {
      * 配置默认值版本（2026-11-11「默认开启」策略）：
      * 版本达到本值的客户端配置视为“用户已按新默认看过/改过”，服务端不再强制迁移；
      * 低于本值（旧客户端）或缺失时，把 false 一次性迁移为新默认开。
+     *
+     * <p>v2：补齐跨端任务 guardian/war（服务端任务目录没有，v1 迁移漏掉）。
      */
-    public static final int CURRENT_CONFIG_DEFAULTS_VERSION = 1;
+    public static final int CURRENT_CONFIG_DEFAULTS_VERSION = 2;
 
     public static final class Account {
         public String fpid;

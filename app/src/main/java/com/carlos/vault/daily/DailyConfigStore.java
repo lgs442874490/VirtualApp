@@ -55,8 +55,8 @@ public class DailyConfigStore {
                 : "acc:" + fpid + ":" + serverid;
     }
 
-    /** 配置默认值迁移版本（2026-11-11「默认开启」策略）：与服务端 VaultStore 同值。 */
-    public static final int CONFIG_DEFAULTS_VERSION = 1;
+    /** 配置默认值迁移版本（2026-11-11「默认开启」策略）：与服务端 VaultStore 同值；v2 补 guardian/war。 */
+    public static final int CONFIG_DEFAULTS_VERSION = 2;
 
     private static final String PREFS = "daily_config";
 
