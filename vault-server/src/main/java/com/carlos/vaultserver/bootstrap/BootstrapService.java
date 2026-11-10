@@ -50,6 +50,8 @@ public final class BootstrapService {
     static final String INTEL_START_BATTLE_PROTOCOL = "req_intelligence_start_battle";
     /** 情报结算协议（原版 IntelligenceQuestSupport.END_BATTLE_PROTOCOL）。 */
     static final String INTEL_END_BATTLE_PROTOCOL = "req_intelligence_end_battle";
+    /** 产出资源领取（新版 BootstrapTutorialService.PRODUCED_NEED_UPDATE）：新号初始资源靠它进背包。 */
+    static final String PRODUCED_NEED_UPDATE = "req_produced_resource_need_update";
     /** 邮件大类上限（实测常见 1-6：系统/联盟/活动等，超出按失败忽略）。 */
     static final long MAIL_FIRST_TYPE_MAX = 6L;
     /** 邮件协议（新版 BootstrapMailService 同值）。 */
@@ -376,6 +378,10 @@ public final class BootstrapService {
         if (rename.isPresent()) {
             return rename.get();
         }
+        // 领取产出资源（最高优先级：新号初始资源只在这里，不领则资源恒 0）
+        if (claimProducedResources()) {
+            return actionResult("STARTED", "已领取产出资源");
+        }
         // 新手引导（新版 runNextStepInternal 第一步）：逐级上报引导步骤
         Map<String, Object> tutorial = tutorialAdvance(null);
         if (tutorial != null) {
@@ -613,6 +619,23 @@ public final class BootstrapService {
     private Map<String, Object> upgradeRejected(Action action, ProtocolException exception,
                                                 Map<String, Object> preparation) {
         int code = exception.code();
+        // 154：家具服务端已存在（本地未同步）→ 标记 1 级继续，不算失败（新版同语义）
+        if (code == 154 && action.kind() == ActionKind.CREATE_FURNITURE) {
+            state.markedFurniture(action.buildingId(), action.furnitureId(), 1L);
+            // 154 时服务端没有可用实例 id：本地不记录实例（furnitureInstanceId 会按公式兜底）
+            Map<String, Object> exists = actionResult("STARTED",
+                    action.buildingName() + " 的家具 " + action.furnitureId() + " 服务端已存在，按 1 级继续");
+            exists.put("step", stepView(action));
+            exists.put("responseCode", 154);
+            return exists;
+        }
+        // 77：建造队列尚未解锁 → 等待，换其它空闲队列
+        if (code == 77) {
+            Map<String, Object> locked = actionResult("WAITING", "建造队列尚未解锁，已改用其它空闲队列");
+            locked.put("step", stepView(action));
+            locked.put("responseCode", 77);
+            return locked;
+        }
         if (code == CONDITION_BUILDING_LEVEL_NOT_ENOUGH) {
             Map<String, Object> result = actionResult("RESYNC_REQUIRED",
                     "服务端判定前置建筑等级不足，本地建筑等级可能尚未同步，请等待全量同步后重试");
@@ -852,6 +875,34 @@ public final class BootstrapService {
         result.put("message", claimed.isEmpty()
                 ? "当前没有可领取的任务奖励" : "已领取 " + claimed.size() + " 项奖励");
         return result;
+    }
+
+    /**
+     * 领取「产出资源」（对齐新版 BootstrapTutorialService.refreshProducedResources）。
+     *
+     * <p>真实轮（2026-11-11）实证：新角色的初始资源在 {@code notify_produced_resource_init}
+     * 里（木材 103=1000、肉 102=3000），**不在背包**；必须调
+     * {@code req_produced_resource_need_update} 才会进背包。不领则木材恒为 0，
+     * 任何建造都被 51 拒绝——这是新号起号卡住的直接原因。
+     *
+     * @return true 表示本轮领取了产出资源
+     */
+    boolean claimProducedResources() {
+        Map<Long, Long> produced = state.producedResources();
+        if (produced.isEmpty()) {
+            return false;
+        }
+        if (!retryAllowed("produced")) return false;
+        try {
+            request(PRODUCED_NEED_UPDATE, Map.of());
+            markRetry("produced", 60_000L);
+            FileLog.info("[起号] 已领取产出资源 {} 项：{}",
+                    String.valueOf(produced.size()), String.valueOf(produced));
+            return true;
+        } catch (Exception e) {
+            markRetry("produced", 300_000L);
+            return false;
+        }
     }
 
     /**
@@ -1841,19 +1892,22 @@ public final class BootstrapService {
         if (serverId <= 0L) {
             throw new IllegalArgumentException("请选择目标区服");
         }
-        // 既有角色：用 (fpid, 区服, uid) 派生的稳定指纹，同一角色每次登录都是"同一台设备"
+        // 既有角色：用 (fpid, 区服, uid) 派生的稳定指纹，同一角色每次登录都是"同一台设备"。
+        // 注意：换指纹必须关连接 → 注入 → 重新 initialize+login，否则引擎处于未初始化态。
         try {
             WjdrEngine.LoginResult probe = engine.login(fpid, sdkToken, serverId, java.util.Map.of());
             long uid = probe.uid;
             if (uid > 0L) {
                 engine.close();
                 engine.applyIdentity(DeviceFingerprint.forRole(fpid, serverId, uid));
-                return new LoginOutcome(probe.uid, probe.serverId,
-                        probe.authContent == null ? Map.of() : probe.authContent, false,
-                        "已登录既有角色 uid=" + probe.uid + describeServer(probe.serverId));
+                engine.initialize();                               // 重建连接
+                WjdrEngine.LoginResult r = engine.login(fpid, sdkToken, serverId);   // 用新指纹登录
+                return new LoginOutcome(r.uid, r.serverId,
+                        r.authContent == null ? Map.of() : r.authContent, false,
+                        "已登录既有角色 uid=" + r.uid + describeServer(r.serverId));
             }
         } catch (Exception ignored) {
-            // 探测失败则走下面的常规登录
+            // 探测/重登失败则走下面的常规登录
         }
         WjdrEngine.LoginResult r = engine.login(fpid, sdkToken, serverId);
         return new LoginOutcome(r.uid, r.serverId,

@@ -531,6 +531,9 @@ public final class BootstrapBatchRunner {
                     notifyField(port, "notify_adventure_pve_info", "adventure_pve_info"));
             // 新手引导（新版 BootstrapTutorialState 数据源）
             putIfPresent(merged, "guide_list", notifyField(port, "notify_guide_init", "data"));
+            // 产出资源（新号初始资源来源，必须领取才会进背包）
+            putIfPresent(merged, "produced_list",
+                    notifyField(port, "notify_produced_resource_init", "data"));
             Map<String, Object> baseInfo = port.notify("notify_base_info");
             if (baseInfo != null) {
                 putIfPresent(merged, "stove_lv", baseInfo.get("stove_lv"));
@@ -540,8 +543,27 @@ public final class BootstrapBatchRunner {
             loadContent = merged;
             service.syncLoadData(loadContent);
             // 首轮记录一次资源/背包/建筑规模（真实轮排障：新号资源为 0 是 51 的常见原因）
+            // 每轮诊断（前 5 轮）：熔炉等级/busy/队列/动作结果，定位「只执行一次后停滞」
+            if (round < 5) {
+                FileLog.warn("起号轮{} 熔炉={} busy={} 队列={} 建筑数={}",
+                        String.valueOf(round),
+                        String.valueOf(service.state().furnaceLevel()),
+                        String.valueOf(service.state().busyBuildings()),
+                        String.valueOf(service.state().queueMapForTest()),
+                        String.valueOf(service.state().buildingLevels().size()));
+            }
             if (round == 0) {
                 // 诊断：确认各类推送是否到齐（缺哪类就补哪类合成）
+                FileLog.info("起号首轮已收推送协议({}个)：{}", String.valueOf(port.notifyProtos().size()),
+                        String.valueOf(port.notifyProtos()));
+                for (String proto : new String[]{"notify_hero_init", "notify_guide_init",
+                        "notify_produced_resource_init", "notify_adventure_pve_info"}) {
+                    Map<String, Object> raw = port.notify(proto);
+                    String text = String.valueOf(raw);
+                    FileLog.info("推送原文 {} keys={} 内容={}", proto,
+                            raw == null ? "null" : String.valueOf(raw.keySet()),
+                            text.length() > 300 ? text.substring(0, 300) : text);
+                }
                 FileLog.info("起号首轮推送：survivors={} heroes={} guides={} adventure={} 背包物品={}",
                         String.valueOf(service.state().survivors().size()),
                         String.valueOf(service.state().heroLevels().size()),
@@ -668,7 +690,12 @@ public final class BootstrapBatchRunner {
     /** 取推送里的一级字段（推送体已是 {@code {field:...}} 形状）；缺失返回 null。 */
     private static Object notifyField(BootstrapService.ProtocolPort port, String proto, String field) {
         Map<String, Object> n = port.notify(proto);
-        return n == null ? null : n.get(field);
+        if (n == null) return null;
+        Object v = n.get(field);
+        if (v != null) return v;
+        // engine.notifyData 已把 {data:{...}} 解包成内层 Map，此时不存在 data 键：
+        // 对这种形状直接返回整体（英雄/引导/产出资源都是这个形状）
+        return "data".equals(field) ? n : null;
     }
 
     /** 仅当值非空时写入（避免 null 覆盖 content 里已有的同名键）。 */

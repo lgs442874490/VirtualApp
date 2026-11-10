@@ -63,6 +63,8 @@ public final class BootstrapState {
     /** 工位占用：buildingId → (confFid → [sid])（新版 furnitureOccupants 同构）。 */
     private final java.util.LinkedHashMap<Long, java.util.LinkedHashMap<Long, java.util.List<Long>>> furnitureOccupants =
             new java.util.LinkedHashMap<>();
+    /** 待领取的产出资源（notify_produced_resource_init.data）：id → count。 */
+    private final java.util.LinkedHashMap<Long, Long> producedResources = new java.util.LinkedHashMap<>();
     /** 引导进度：guideId → 当前步骤（notify_guide_init.data）。 */
     private final java.util.LinkedHashMap<Long, Long> guideSteps = new java.util.LinkedHashMap<>();
     /** 引导是否就绪。 */
@@ -121,6 +123,7 @@ public final class BootstrapState {
         s.applyHeroes(firstOf(loadContent, "hero_list", "heroes", "hero"));
         s.applyAdventure(firstOf(loadContent, "adventure_pve_info", "adventure"));
         s.applyGuides(firstOf(loadContent, "guide_list", "guides"));
+        s.applyProduced(firstOf(loadContent, "produced_list", "produced"));
         s.roleUid = deepPositiveNumber(loadContent, "uid", "fid", "role_uid");
         s.roleName = deepText(loadContent, "name", "game_name", "display_name");
         // 排障用（真实轮 2026-11-10）：解析不到建筑/队列时打印实际顶层键，便于校准键名。
@@ -147,6 +150,22 @@ public final class BootstrapState {
             boolean sick = booleanValue(entry.get("is_sick")) || booleanValue(entry.get("isSick"));
             survivors.add(new Survivor(sid, fidWork, sick));
         }
+    }
+
+    /** 产出资源解析（id/count）。 */
+    private void applyProduced(Object raw) {
+        if (raw == null) return;
+        producedResources.clear();
+        for (Map<String, Object> entry : entries(raw)) {
+            long id = positive(number(entry.get("id")), number(entry.get("res_id")));
+            long count = Math.max(0L, number(entry.get("count")));
+            if (id > 0L && count > 0L) producedResources.put(id, count);
+        }
+    }
+
+    /** 待领取产出资源（只读）。 */
+    public Map<Long, Long> producedResources() {
+        return Map.copyOf(producedResources);
     }
 
     /** 引导步骤解析（id/step）。 */
@@ -427,6 +446,11 @@ public final class BootstrapState {
     /** 是否已有可用队伍（至少 1 个英雄）。 */
     public boolean hasAnyHero() {
         return !heroLevels.isEmpty();
+    }
+
+    /** 测试/诊断用：当前准入队列映射快照。 */
+    public Map<Long, Long> queueMapForTest() {
+        return Map.copyOf(queues);
     }
 
     /** 探险已通关卡数。 */
