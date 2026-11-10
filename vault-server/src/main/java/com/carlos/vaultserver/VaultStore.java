@@ -615,6 +615,13 @@ public final class VaultStore {
         }
     }
 
+    /**
+     * 跨端任务（App 有、服务端 {@code ServerTasks} 目录没有）：迁移时同样按新策略默认开。
+     * guardian/war 由独立引擎执行，但仍需 roleConfig 显式为 true 才进入节奏调度。
+     */
+    private static final java.util.Set<String> CROSS_CLIENT_DEFAULT_ON =
+            new java.util.HashSet<>(java.util.Arrays.asList("guardian", "war"));
+
     /** 2026-11-11 默认开启策略：把旧默认 false 迁移为目录默认开（未知键保持原值）。 */
     static void migrateConfigDefaults(Map<String, Boolean> cfg) {
         if (cfg == null || cfg.isEmpty()) return;
@@ -622,7 +629,9 @@ public final class VaultStore {
             if (!Boolean.FALSE.equals(e.getValue())) continue;
             com.carlos.vaultserver.task.ServerTasks.TaskDef def =
                     com.carlos.vaultserver.task.ServerTasks.byId(e.getKey());
-            if (def != null && def.enabledByDefault) e.setValue(Boolean.TRUE);
+            if ((def != null && def.enabledByDefault) || CROSS_CLIENT_DEFAULT_ON.contains(e.getKey())) {
+                e.setValue(Boolean.TRUE);
+            }
         }
     }
 
