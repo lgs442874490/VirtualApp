@@ -13,6 +13,7 @@ import com.carlos.vaultserver.formation.FormationResolver;
 import com.carlos.vaultserver.formation.FormationSpec;
 import com.carlos.vaultserver.formation.ResolvedFormation;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.time.Instant;
@@ -636,14 +637,22 @@ public final class ServerBearTasks {
                         tc.fpid, String.valueOf(tc.sid), String.valueOf(joinSlots.size()));
             }
         }
+        long ownUid = tc.engine.lastUid();
+        // 2026-11-11（对齐网页版 pendingJoins）：先对账上一轮“已请求未确认”的上车。
+        int[] reconciled = reconcilePendingJoins(tc, state, m, window, ownUid);
         int joinLimit = Math.max(cfg.joinCount, usingDefaultSlots ? joinSlots.size() : 0);
         int remaining = joinLimit - joined.size();
         if (remaining <= 0) {
-            m.skip("本场上车已达配置上限 " + joinLimit + " 队");
-            writeJoinMod(tc, "本场已上车 " + joined.size() + "/" + joinLimit + " 队（上限）");
+            // 仍先对账 pending，再按上限结束本轮
+            if (reconciled[0] + reconciled[1] > 0) {
+                writeJoinMod(tc, "本场上车已达上限 " + joined.size() + "/" + joinLimit
+                        + "；对账成功" + reconciled[0] + " 失败" + reconciled[1]);
+            } else {
+                m.skip("本场上车已达配置上限 " + joinLimit + " 队");
+                writeJoinMod(tc, "本场已上车 " + joined.size() + "/" + joinLimit + " 队（上限）");
+            }
             return;
         }
-        long ownUid = tc.engine.lastUid();
         long allianceId = state.targetAllianceId;
         List<RallyCandidate> candidates = rallyCandidates(tc.engine, state.targetX, state.targetY,
                 ownUid, allianceId, joined, nowSec);
@@ -757,7 +766,17 @@ public final class ServerBearTasks {
             // 先落台账（避免同一车头重复请求），再发请求
             tc.store.putString(key, joinedRecordAppend(tc.store.getString(key), day, window.startSec,
                     candidate.masterMarchId));
-            GameMessage rsp = tc.engine.request("req_world_march", payload);
+            GameMessage rsp;
+            try {
+                rsp = tc.engine.request("req_world_march", payload);
+            } catch (Exception e) {
+                // 2026-11-11：请求结果未知 → 记 pending，等待成员详情/通知对账，避免漏记/重复撞车。
+                pendingJoinAppend(state, window.startSec, 0, candidate, heroes, nowSec);
+                m.skip("上车请求异常，待对账（车头" + candidate.masterMarchId + "）");
+                writeJoinMod(tc, "上车请求异常(车头=" + candidate.masterMarchId + ")，待对账");
+                joinTextWritten = true;
+                continue;
+            }
             tried++;
             int code = rsp == null ? -1 : Exec.codeOf(rsp);
             if (code == 0) {
@@ -788,27 +807,34 @@ public final class ServerBearTasks {
                             String.valueOf(candidate.startX), String.valueOf(candidate.startY),
                             joinSource);
                 } else {
-                    m.skip("上车请求已发(车头" + candidate.masterMarchId + ")，成员详情未确认");
-                    writeJoinMod(tc, "上车已请求(车头=" + candidate.masterMarchId + ")，对账未确认"
+                    pendingJoinAppend(state, window.startSec, 0, candidate, heroes, nowSec);
+                    m.skip("上车请求已发(车头" + candidate.masterMarchId + ")，进入待对账");
+                    writeJoinMod(tc, "上车已请求(车头=" + candidate.masterMarchId + ")，待对账"
                             + (detailText.isEmpty() ? "" : " · " + detailText));
                     joinTextWritten = true;
                 }
                 continue;
             }
             if (code == CODE_ALREADY_JOINED) {
-                m.skip("当前账号已在目标集结或通知滞后（码2844）");
-                writeJoinMod(tc, "上车跳过(码2844) · 已在该集结或通知滞后");
+                pendingJoinAppend(state, window.startSec, 0, candidate, heroes, nowSec);
+                m.skip("当前账号已在目标集结或通知滞后（码2844），进入待对账");
+                writeJoinMod(tc, "上车跳过(码2844) · 已在该集结，待对账");
                 joinTextWritten = true;
+                usedHeroes.addAll(heroes);
+                continue;
             } else if (code == CODE_WORLD_MARCH_LIMIT) {
                 m.skip("行军队列已满（码2878），停止上车");
                 writeJoinMod(tc, "上车失败(码2878) · 行军队列已满");
                 joinTextWritten = true;
                 break;
             } else if (code == CODE_HERO_OCCUPIED) {
-                m.skip("上车英雄被占用（码403），停止上车");
-                writeJoinMod(tc, "上车失败(码403) · 英雄被占用");
+                // 2026-11-11：对齐网页版——403 记 pending 并继续下一车/下一槽，不整场放弃。
+                pendingJoinAppend(state, window.startSec, 0, candidate, heroes, nowSec);
+                m.skip("上车英雄被占用（码403），已记录待对账并换下一车");
+                writeJoinMod(tc, "上车失败(码403) · 英雄被占用，待对账");
                 joinTextWritten = true;
-                break;
+                usedHeroes.addAll(heroes);
+                continue;
             } else if (code == CODE_TRAP_MASS_TIME_EXPIRED) {
                 m.skip("巨熊集结已关闭（码5204）");
                 writeJoinMod(tc, "上车失败(码5204) · 集结已关闭");
@@ -821,7 +847,11 @@ public final class ServerBearTasks {
             }
         }
         if (!joinTextWritten) {
-            writeJoinMod(tc, "未上车 · 本轮无动作（上限/候选/槽）");
+            if (reconciled[0] + reconciled[1] > 0) {
+                writeJoinMod(tc, "上车对账：成功" + reconciled[0] + " 失败" + reconciled[1]);
+            } else {
+                writeJoinMod(tc, "未上车 · 本轮无动作（上限/候选/槽）");
+            }
         } else if (configuredAttempts != null && !configuredAttempts.isEmpty()) {
             // 已写具体结果；补充“启用槽/跳过槽”摘要便于生产核对（不改成功文案主体）
             try {
@@ -829,7 +859,155 @@ public final class ServerBearTasks {
             } catch (Throwable ignored) {
             }
         }
+        int pendingNow = pendingJoinCount(state, window.startSec);
+        if (pendingNow > 0) {
+            m.skip("本场上车待对账 " + pendingNow + " 支");
+            if (!joinTextWritten) {
+                writeJoinMod(tc, "上车待对账 " + pendingNow + " 支");
+            }
+        }
         saveState(tc, state);
+    }
+
+    /** 实时行军队列快照标记（资产库 queue.updatedAtMs；0=不可用）。 */
+    static long marchQueueUpdatedAt(WjdrEngine engine) {
+        try {
+            CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+            AssetSnapshot.Queue q = lib == null ? null : lib.queue();
+            return q == null ? 0L : q.updatedAtMs;
+        } catch (Throwable ignored) {
+            return 0L;
+        }
+    }
+
+    // ==================== 2026-11-11：待对账上车（对齐网页版 pendingJoins） ====================
+
+    /** 当前场次待对账数组（跨场次自动清空）。 */
+    static JSONArray pendingJoinArray(BearState state, long windowStartSec) {
+        if (state == null) return new JSONArray();
+        if (state.pendingJoinWindowStart != windowStartSec) {
+            state.pendingJoins = "";
+            state.pendingJoinWindowStart = windowStartSec;
+            return new JSONArray();
+        }
+        try {
+            return new JSONArray(state.pendingJoins == null || state.pendingJoins.isEmpty()
+                    ? "[]" : state.pendingJoins);
+        } catch (Throwable t) {
+            return new JSONArray();
+        }
+    }
+
+    static int pendingJoinCount(BearState state, long windowStartSec) {
+        return pendingJoinArray(state, windowStartSec).length();
+    }
+
+    static boolean pendingJoinContains(BearState state, long windowStartSec, long masterMarchId) {
+        JSONArray arr = pendingJoinArray(state, windowStartSec);
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o != null && o.optLong("mid", 0L) == masterMarchId) return true;
+        }
+        return false;
+    }
+
+    /** 记录一条“已请求、结果未确认”的上车；同车头去重。 */
+    static void pendingJoinAppend(BearState state, long windowStartSec, int formationId,
+                                  RallyCandidate candidate, List<Long> heroes, long nowSec) {
+        if (state == null || candidate == null || candidate.masterMarchId <= 0L) return;
+        JSONArray arr = pendingJoinArray(state, windowStartSec);
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o != null && o.optLong("mid", 0L) == candidate.masterMarchId) return;
+        }
+        try {
+            JSONObject o = new JSONObject();
+            o.put("fid", formationId);
+            o.put("mid", candidate.masterMarchId);
+            o.put("owner", candidate.ownerUid);
+            o.put("kid", candidate.ownerKid);
+            o.put("heroes", joinIds(heroes));
+            o.put("at", nowSec);
+            o.put("tries", 0);
+            arr.put(o);
+            state.pendingJoins = arr.toString();
+            state.pendingJoinWindowStart = windowStartSec;
+            // 待对账队伍的英雄同样视为占用，防止本轮/下轮重复使用（对齐网页版 protectedHeroes）。
+            state.joinHeroes = appendHeroIds(state.joinHeroes, heroes);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /**
+     * 对账上一轮 pending 上车（网页版 reconcilePendingJoins）：
+     * 最多查 2 条/轮；成员详情确认 → 成功；明确不在成员里 → 失败释放；
+     * 查询失败 → 保留（tries+1）；超时 180s 或尝试 3 次 → 释放并记失败。
+     */
+    static int[] reconcilePendingJoins(TaskContext tc, BearState state, Exec.Multi m,
+                                       Window window, long ownUid) {
+        JSONArray arr = pendingJoinArray(state, window.startSec);
+        if (arr.length() == 0) return new int[]{0, 0};
+        long now = nowSec(tc);
+        JSONArray keep = new JSONArray();
+        int ok = 0;
+        int fail = 0;
+        int checked = 0;
+        for (int i = 0; i < arr.length(); i++) {
+            JSONObject o = arr.optJSONObject(i);
+            if (o == null) continue;
+            long mid = o.optLong("mid", 0L);
+            long owner = o.optLong("owner", 0L);
+            long kid = o.optLong("kid", 0L);
+            long at = o.optLong("at", 0L);
+            int tries = o.optInt("tries", 0);
+            boolean expired = (at > 0L && now - at > 180L) || tries >= 3;
+            if (expired) {
+                fail++;
+                if (m != null) m.skip("上车对账超时(车头" + mid + ")，释放");
+                FileLog.info("巨熊上车对账超时释放 fpid={} sid={} masterMarchId={}",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(mid));
+                continue;
+            }
+            if (checked >= 2) {
+                keep.put(o);
+                continue;
+            }
+            GameMessage rsp = requestRallyDetailById(tc, mid, owner, kid);
+            checked++;
+            if (rsp == null) {
+                try {
+                    o.put("tries", tries + 1);
+                } catch (Throwable ignored) {
+                }
+                keep.put(o);
+                continue;
+            }
+            if (memberPresent(rsp.getContent(), ownUid)) {
+                ok++;
+                if (m != null) m.claimed("上车对账成功(车头" + mid + ")");
+                FileLog.info("巨熊上车对账成功 fpid={} sid={} masterMarchId={}",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(mid));
+            } else {
+                fail++;
+                if (m != null) m.skip("上车对账未确认(车头" + mid + ")，已释放");
+                FileLog.info("巨熊上车对账未确认 fpid={} sid={} masterMarchId={}",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(mid));
+            }
+        }
+        state.pendingJoins = keep.toString();
+        state.pendingJoinWindowStart = window.startSec;
+        saveState(tc, state);
+        return new int[]{ok, fail};
+    }
+
+    /** 按 pending 记录查询主集结成员详情（异常/超时返回 null）。 */
+    static GameMessage requestRallyDetailById(TaskContext tc, long masterMarchId, long owner, long kid) {
+        try {
+            return tc.engine.request("req_world_mass_master_detail", Exec.args(
+                    "id", masterMarchId, "owner", owner, "kid", kid));
+        } catch (Throwable t) {
+            return null;
+        }
     }
 
     /** 生产上车槽解析器：功能级/槽级 soldiers 合并后调用 FormationResolver（坏槽由 selectJoinSlots 收集原因）。 */
@@ -909,6 +1087,7 @@ public final class ServerBearTasks {
         java.util.List<Long> recalledIds = cfg.prepRecall
                 ? recallAllMarches(tc) : java.util.Collections.<Long>emptyList();
         int recalled = recalledIds.size();
+        state.recallSnapshotAt = marchQueueUpdatedAt(tc.engine);
         // 记录本场召回的行军 id：全部回城前不发车（对齐网页版"等待部队返回确认"）。
         state.recallWindowStart = window.startSec;
         state.recallMarchIds = joinIds(recalledIds);
@@ -987,6 +1166,12 @@ public final class ServerBearTasks {
         }
         java.util.Set<Long> recalled = parseIds(state.recallMarchIds);
         if (recalled.isEmpty()) return out;
+        long currentMarker = marchQueueUpdatedAt(tc.engine);
+        // 快照未推进时，不能把“列表里没有”当成已回城（可能只是还没收到新快照）；继续等到 T-0/120s。
+        if (state.recallSnapshotAt > 0L && currentMarker > 0L
+                && currentMarker <= state.recallSnapshotAt) {
+            return new java.util.ArrayList<Long>(recalled);
+        }
         java.util.Set<Long> onWay = new java.util.LinkedHashSet<Long>();
         for (long[] t : liveMarchTargets(tc.engine, now)) onWay.add(t[0]);
         for (Long id : recalled) {
@@ -3082,6 +3267,11 @@ public final class ServerBearTasks {
          */
         String recallMarchIds = "";
         long recallWindowStart;
+        /** 召回时的实时行军快照标记（queue.updatedAtMs；2026-11-11 对齐网页版 worldSnapshotMarker）。 */
+        long recallSnapshotAt;
+        /** 2026-11-11（对齐网页版 pendingJoins）：待对账上车请求（JSON 数组）。 */
+        String pendingJoins = "";
+        long pendingJoinWindowStart;
         /** 召回等待起始（秒；超过 RECALL_WAIT_MAX_SECONDS 放弃等待）。 */
         long recallWaitStart;
 
@@ -3161,6 +3351,11 @@ public final class ServerBearTasks {
             o.put("launchPrepareIndexUsed", state.launchPrepareIndexUsed);
             o.put("preheatRefreshAt", state.preheatRefreshAt);
             o.put("joinSkipWindowStart", state.joinSkipWindowStart);
+            o.put("recallSnapshotAt", state.recallSnapshotAt);
+            o.put("pendingJoinWindowStart", state.pendingJoinWindowStart);
+            if (state.pendingJoins != null && !state.pendingJoins.isEmpty()) {
+                o.put("pendingJoins", state.pendingJoins);
+            }
             o.put("prepGateWindowStart", state.prepGateWindowStart);
             o.put("petSkillsWindowStart", state.petSkillsWindowStart);
             o.put("recallWindowStart", state.recallWindowStart);
@@ -3203,6 +3398,9 @@ public final class ServerBearTasks {
             state.launchPrepareIndexUsed = o.optInt("launchPrepareIndexUsed", 0);
             state.preheatRefreshAt = o.optLong("preheatRefreshAt", 0);
             state.joinSkipWindowStart = o.optLong("joinSkipWindowStart", 0);
+            state.recallSnapshotAt = o.optLong("recallSnapshotAt", 0);
+            state.pendingJoinWindowStart = o.optLong("pendingJoinWindowStart", 0);
+            state.pendingJoins = o.optString("pendingJoins", "");
             state.prepGateWindowStart = o.optLong("prepGateWindowStart", 0);
             state.petSkillsWindowStart = o.optLong("petSkillsWindowStart", 0);
             state.recallWindowStart = o.optLong("recallWindowStart", 0);

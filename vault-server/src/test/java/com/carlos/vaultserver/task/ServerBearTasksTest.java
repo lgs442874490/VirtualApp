@@ -781,4 +781,25 @@ public class ServerBearTasksTest {
         assertEquals("资产库缺失时回退旧快照，且排除 99 集结", 1, targets.size());
         assertEquals(11L, targets.get(0)[0]);
     }
+
+    // ==================== 2026-11-11：上车待对账台账 ====================
+
+    @Test
+    public void pendingJoin_roundTripDedupeAndWindowReset() {
+        ServerBearTasks.BearState state = new ServerBearTasks.BearState();
+        ServerBearTasks.RallyCandidate c = candidate(504L, 2L, 411L, 123L, 456L, 10L, 20L);
+        ServerBearTasks.pendingJoinAppend(state, 100L, 1, c, Arrays.asList(50036L, 50005L), 999L);
+        assertEquals(1, ServerBearTasks.pendingJoinCount(state, 100L));
+        assertTrue(ServerBearTasks.pendingJoinContains(state, 100L, 504L));
+        org.json.JSONArray arr = ServerBearTasks.pendingJoinArray(state, 100L);
+        assertEquals("heroes", "50036,50005", arr.optJSONObject(0).optString("heroes"));
+
+        // 同车头重复记录不重复追加
+        ServerBearTasks.pendingJoinAppend(state, 100L, 1, c, Arrays.asList(50036L, 50005L), 1000L);
+        assertEquals(1, ServerBearTasks.pendingJoinCount(state, 100L));
+
+        // 新场次自动清空旧 pending
+        assertEquals(0, ServerBearTasks.pendingJoinCount(state, 200L));
+        assertEquals(200L, state.pendingJoinWindowStart);
+    }
 }
