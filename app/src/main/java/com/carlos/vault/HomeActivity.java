@@ -1058,9 +1058,17 @@ public class HomeActivity extends AccountVaultActivity {
                 }
                 return;
             }
-            if (p != null && pref.fpid != null && pref.fpid.equals(p.fpid)) return;  // 已一致
-            long sid = 0, uid = 0;
             long[] m = mainRole(pref);
+            // 2026-11-10 修复（P1-2）：fpid 相同不能直接认定「已一致」——切到暂无角色数据的账号
+            // 会写入占位键 "fpid:0"，之后该账号同步出角色时若在此早退，current_role 永远停在
+            // "fpid:0"，今日页按空键读 QuestStore（任务环/活跃度恒 0），与日常页 configSid 的
+            // 回退口径互相矛盾（真机：切到无角色账号→该账号登录出角色→回前台今日页数据为空）。
+            // 规则：同账号且（已有具体角色 或 该账号确实还没有角色）→ 保留现状；
+            //       同账号但仍是占位键、账号已有角色 → 重算成 fpid:sid[:uid]。
+            boolean sameAccount = p != null && pref.fpid != null && pref.fpid.equals(p.fpid);
+            boolean placeholder = p == null || p.sid <= 0;
+            if (sameAccount && !(placeholder && m[0] > 0)) return;  // 已一致
+            long sid = 0, uid = 0;
             if (m[0] > 0) {
                 sid = m[0];
                 uid = m[1];
