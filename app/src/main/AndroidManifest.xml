@@ -240,6 +240,11 @@
             android:name="com.carlos.vault.protocapture.ProtoCaptureActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
+        <!-- 诊断（2026-11-10）：工具箱子入口，页内 tab 聚合「客户端抓包 / 服务端监控」 -->
+        <activity
+            android:name="com.carlos.vault.daily.DiagnosticActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
         <!-- 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：工具箱「移民」进入；
              服务端 14 action + 开放前 15 分钟自动准备 + 50ms 抢位 + 重登对账。 -->
         <activity

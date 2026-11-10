@@ -106,8 +106,8 @@ public class ToolBoxActivity extends Activity {
         // （ENEMY_WATCH/DEV_MONITOR/WATCHPOINT/PROTOCOL_LOGGER）与本页渲染分支
         // （含迁城/移民/抓包、不含 ENEMY_WATCH）不同，曾出现「可用工具 · 6」却只显示 5 张卡。
         final int toolCount = (canMoveCity ? 1 : 0) + (canProto ? 1 : 0)
-                + (canWatchpoint ? 1 : 0) + (canCapture ? 1 : 0)
-                + (canMonitor ? 1 : 0) + (canMigrant ? 1 : 0);
+                + (canWatchpoint ? 1 : 0) + ((canCapture || canMonitor) ? 1 : 0)
+                + (canMigrant ? 1 : 0);
         if (toolCount > 0) {
             box.addView(sectionRow("可用工具 · " + toolCount, "诊断与监控"));
             // 迁城（T3 高级会员，2026-11-06）：网页版迁城 1:1 复刻——12 种协议/立即批量/
@@ -174,26 +174,21 @@ public class ToolBoxActivity extends Activity {
                         new Intent(this, com.carlos.vault.WatchpointActivity.class)));
                 box.addView(wpCard);
             }
-            // 真机抓包（T3，2026-11-01）：VpnService + tun2socks 免 root 抓游戏协议实时解码/导出。
-            if (canCapture) {
-                LinearLayout captureCard = toolCard(UiStyle.Icon.TARGET, "真机抓包",
-                        "免 root 抓游戏 TCP，sproto 实时解码/导出/分享", UiStyle.BRAND_50);
-                captureCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
+            // 诊断（2026-11-10）：把「真机抓包」与「真机监控」合并为一个入口，页内两个 tab 切换。
+            // 客户端抓包=本机 VPN 抓 TCP 并 sproto 解码；服务端监控=拉 /v1/vault/monitor 任务事件流。
+            // 两者数据源不同（本机网络层 vs 服务端任务层），不能互相替代，只是入口聚合。
+            if (canCapture || canMonitor) {
+                LinearLayout diagCard = toolCard(UiStyle.Icon.TARGET, "诊断",
+                        "客户端抓包 + 服务端监控（页内 tab 切换）", UiStyle.BRAND_50);
+                diagCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
                         UiStyle.INK3, 18));
-                captureCard.setOnClickListener(v -> startActivity(
-                        new Intent(this, com.carlos.vault.protocapture.ProtoCaptureActivity.class)));
-                box.addView(captureCard);
-            }
-            // 真机监控（T3 高级会员，2026-10-25）：服务端任务级协议监控只读页，点击进入。
-            // 服务端未部署该接口时页内提示「服务端未升级」，入口照常（先装 App 等部署）。
-            if (canMonitor) {
-                LinearLayout monitorCard = toolCard(UiStyle.Icon.TARGET, "真机监控",
-                        "服务端任务/协议实时监控（领取·任务）", UiStyle.BRAND_50);
-                monitorCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
-                        UiStyle.INK3, 18));
-                monitorCard.setOnClickListener(v -> startActivity(
-                        new Intent(this, com.carlos.vault.daily.MonitorActivity.class)));
-                box.addView(monitorCard);
+                final String diagTab = canCapture
+                        ? com.carlos.vault.daily.DiagnosticActivity.TAB_CAPTURE
+                        : com.carlos.vault.daily.DiagnosticActivity.TAB_MONITOR;
+                diagCard.setOnClickListener(v -> startActivity(
+                        new Intent(this, com.carlos.vault.daily.DiagnosticActivity.class)
+                                .putExtra(com.carlos.vault.daily.DiagnosticActivity.EXTRA_TAB, diagTab)));
+                box.addView(diagCard);
             }
         } else {
             // 批次8（P0-1）：无任何可见工具时**整组/占位都不渲染**（不放空卡片、不放“暂无”占位）。
