@@ -1015,7 +1015,8 @@ public final class ServerActivityTasks {
      * 按 total_dead_soldier 降序对未援助过的盟友发 help_revive {uid,times}。
      */
     private static void helpReviveAllies(TaskContext tc, Exec.Multi m, Map<String, Object> init) {
-        if (!tc.subOn("act_cross_capital_revive", "help_revive", true)) return;
+        // 2026-11-11 默认开启策略：援助盟友消耗「复活币」（道具），默认关；用户显式开才执行。
+        if (!tc.subOn("act_cross_capital_revive", "help_revive", false)) return;
         try {
             Map<String, Object> membersRoot = Exec.mapOf(tc.engine.notifyData("notify_alliance_member_init"));
             Map<String, Object> members = membersRoot == null ? null : Exec.mapOf(membersRoot.get("members"));
@@ -1274,6 +1275,11 @@ public final class ServerActivityTasks {
                     }
                     else if (code != 61 && code != 8251) m.skip("领奖码" + code);
 
+                    // 2026-11-11 默认开启策略：生成 BOSS 消耗活动零件（道具），默认关；用户显式开才执行。
+                    if (!tc.subOn("act_icehunter", "boss", false)) {
+                        m.subSkip("boss", "默认关（消耗零件）");
+                        return Exec.result(m, "act_icehunter", "冰原猎人");
+                    }
                     GameMessage sp = tc.engine.request("req_icefield_hunter_spawn_monster",
                             Exec.args("item_id", 600008L));
                     if (Exec.ok(sp)) {

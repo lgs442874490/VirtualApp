@@ -441,6 +441,8 @@ public class VaultHttpApiTest {
         acc.put("auto", true);
         acc.put("activeSid", "888");
         acc.put("activeUid", "35371154");
+        // 2026-11-11 默认开启策略：新客户端携带版本，显式 false 视为“用户手动关”原样保留。
+        acc.put("configDefaultsVersion", VaultStore.CURRENT_CONFIG_DEFAULTS_VERSION);
         JSONArray roles = new JSONArray();
         roles.put(roleRow("888", "35371154",
                 Map.of("gather", true, "mail", true), Map.of("mail", Map.of("x", 1))));

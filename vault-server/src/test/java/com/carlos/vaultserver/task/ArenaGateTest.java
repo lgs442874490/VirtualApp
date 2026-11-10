@@ -111,7 +111,7 @@ public class ArenaGateTest {
     @Test
     public void arenaTaskDisabled_releasesStaleGate() {
         ArenaGate.enterActive(A);
-        ArenaGate.releaseIfArenaTaskDisabled(A, null);   // arena 目录默认 false
+        ArenaGate.releaseIfArenaTaskDisabled(A, Map.of("arena", false));   // 显式关闭
         assertNull("竞技场任务未启用 → 清掉残留独占窗", ArenaGate.phase(A));
 
         ArenaGate.enterActive(A);

@@ -111,6 +111,13 @@ public final class VaultStore {
         }
     }
 
+    /**
+     * 配置默认值版本（2026-11-11「默认开启」策略）：
+     * 版本达到本值的客户端配置视为“用户已按新默认看过/改过”，服务端不再强制迁移；
+     * 低于本值（旧客户端）或缺失时，把 false 一次性迁移为新默认开。
+     */
+    public static final int CURRENT_CONFIG_DEFAULTS_VERSION = 1;
+
     public static final class Account {
         public String fpid;
         public String token = "";
@@ -149,6 +156,8 @@ public final class VaultStore {
          */
         public final Map<String, Map<String, Boolean>> roleConfigByUid = new LinkedHashMap<>();
         public final Map<String, Map<String, String>> roleParamsByUid = new LinkedHashMap<>();
+        /** 配置默认值迁移版本（0=旧客户端/未迁移；达到 CURRENT 后不再强制迁移）。 */
+        public int configDefaultsVersion;
         /** 账号池角色条目：roleKey(sid:uid) → 条目（M1 2026-10-21，服务器侧意图态）。 */
         public final Map<String, RoleEntry> roles = new LinkedHashMap<>();
         // ---------- 顶号恢复策略（P1 2026-10-21，账号级，作用于该账号全部角色） ----------
@@ -436,6 +445,7 @@ public final class VaultStore {
                         a.auto = o.optBoolean("auto", false);
                         a.windowStart = o.optInt("windowStart", 5);
                         a.windowEnd = o.optInt("windowEnd", 9);
+                        a.configDefaultsVersion = o.optInt("configDefaultsVersion", 0);
                         JSONObject cfgs = o.optJSONObject("roleConfig");
                         if (cfgs != null) {
                             for (Iterator<String> it = cfgs.keys(); it.hasNext(); ) {
@@ -586,12 +596,39 @@ public final class VaultStore {
                             }
                         }
                     }
+                    // 2026-11-11 默认开启策略：旧库（无版本字段/低于当前版本）一次性迁移 false→新默认开。
+                    boolean migrated = false;
+                    for (Account a : accounts) {
+                        if (a.configDefaultsVersion < CURRENT_CONFIG_DEFAULTS_VERSION) {
+                            migrateConfigMaps(a.roleConfig);
+                            migrateConfigMaps(a.roleConfigByUid);
+                            a.configDefaultsVersion = CURRENT_CONFIG_DEFAULTS_VERSION;
+                            migrated = true;
+                        }
+                    }
+                    if (migrated) saveLocked();
                     return; // 主文件解析成功即不再看备份
                 } catch (Exception e) {
                     FileLog.warn("库文件解析失败 {}：{}，尝试下一份", p.getFileName(), e.getMessage());
                 }
             }
         }
+    }
+
+    /** 2026-11-11 默认开启策略：把旧默认 false 迁移为目录默认开（未知键保持原值）。 */
+    static void migrateConfigDefaults(Map<String, Boolean> cfg) {
+        if (cfg == null || cfg.isEmpty()) return;
+        for (Map.Entry<String, Boolean> e : cfg.entrySet()) {
+            if (!Boolean.FALSE.equals(e.getValue())) continue;
+            com.carlos.vaultserver.task.ServerTasks.TaskDef def =
+                    com.carlos.vaultserver.task.ServerTasks.byId(e.getKey());
+            if (def != null && def.enabledByDefault) e.setValue(Boolean.TRUE);
+        }
+    }
+
+    static void migrateConfigMaps(Map<String, Map<String, Boolean>> cfgs) {
+        if (cfgs == null || cfgs.isEmpty()) return;
+        for (Map<String, Boolean> c : cfgs.values()) migrateConfigDefaults(c);
     }
 
     private void saveLocked() {
@@ -616,6 +653,7 @@ public final class VaultStore {
                 o.put("auto", a.auto);
                 o.put("windowStart", a.windowStart);
                 o.put("windowEnd", a.windowEnd);
+                o.put("configDefaultsVersion", a.configDefaultsVersion);
                 JSONObject cfgs = new JSONObject();
                 for (Map.Entry<String, Map<String, Boolean>> e : a.roleConfig.entrySet()) {
                     JSONObject cm = new JSONObject();
@@ -786,6 +824,15 @@ public final class VaultStore {
                 }
                 merged.roleConfigByUid.putAll(in.roleConfigByUid);
                 merged.roleParamsByUid.putAll(in.roleParamsByUid);
+                // 2026-11-11 默认开启策略：旧客户端（无版本/低版本）上传的 false 按新默认迁移；
+                // 新客户端已自行迁移并携带 current 版本，用户手动关（false）原样保留。
+                merged.configDefaultsVersion = Math.max(
+                        prev != null ? prev.configDefaultsVersion : 0, in.configDefaultsVersion);
+                if (merged.configDefaultsVersion < CURRENT_CONFIG_DEFAULTS_VERSION) {
+                    migrateConfigMaps(merged.roleConfig);
+                    migrateConfigMaps(merged.roleConfigByUid);
+                    merged.configDefaultsVersion = CURRENT_CONFIG_DEFAULTS_VERSION;
+                }
                 mergeRolesLocked(prev, merged, in);
                 accounts.add(merged);
             }
@@ -1536,6 +1583,7 @@ public final class VaultStore {
                 c.auto = a.auto;
                 c.windowStart = a.windowStart;
                 c.windowEnd = a.windowEnd;
+                c.configDefaultsVersion = a.configDefaultsVersion;
                 c.roleIdentity.putAll(a.roleIdentity);
                 for (Map.Entry<String, Map<String, Boolean>> e : a.roleConfig.entrySet()) {
                     c.roleConfig.put(e.getKey(), new LinkedHashMap<>(e.getValue()));

@@ -170,7 +170,7 @@ public final class FnDetail {
                 new Sub("like", "点赞", "给前三名点赞（幂等）", true, null));
         fn("act_cross_capital_revive",
                 new Sub("revive", "自动复活", "活动期检测到阵亡 → 免费复活 30% + 联盟求助", true, null),
-                new Sub("help_revive", "援助盟友复活", "用自己的复活币帮阵亡最多的盟友复活（上限 20 币）", true, null),
+                new Sub("help_revive", "援助盟友复活", "用自己的复活币帮阵亡最多的盟友复活（上限 20 币）", false, null),
                 new Sub("buy_diamond", "花钻石复活", "自己复活未达 90% 时用钻石买复活药剂：每份 +1%，第 1 份 50 钻、第 2 份 100、第 3 份 150…最多 10 份补满 90%", false, null));
         fn("ally_offline_guard",
                 new Sub("watch", "查询离线", "从战争/态势通知自动发现被攻击盟友并查询在线状态（无需输入 uid）", true, null),
@@ -178,7 +178,7 @@ public final class FnDetail {
                         new String[][]{{"1", "最多1个"}, {"3", "最多3个"}, {"5", "最多5个"}}));
         fn("act_icehunter",
                 new Sub("reward", "进度奖励", "冰原猎人档位奖励一键领取", true, null),
-                new Sub("boss", "生成并集结BOSS", "消耗零件生成BOSS并发起集结（需25体力）", true, null));
+                new Sub("boss", "生成并集结BOSS", "消耗零件生成BOSS并发起集结（需25体力）", false, null));
         fn("red_packet",
                 new Sub("alliance", "联盟频道", "联盟频道红包刷新与抢领（每日配额内）", true, null),
                 new Sub("world", "世界频道", "世界频道红包刷新与抢领", true, null));
@@ -259,7 +259,7 @@ public final class FnDetail {
         fn("alliance_shop",
                 new Sub("buy", "联盟日/周商店", "联盟币商品按勾选清单购买", true, null));
         fn("act_flamefangs",
-                new Sub("buy", "兑换期抢购", "活动兑换阶段按勾选档位自动兑换", true, null));
+                new Sub("buy", "兑换期抢购", "活动兑换阶段按勾选档位自动兑换", false, null));
         fn("act_frostfire",
                 new Sub("apply", "按时段报名", "每日自动报名所选时段的燃霜矿区战场", true, null),
                 new Sub("milestone", "里程碑奖励", "战场内里程碑奖励领取+积分上报", true, null));

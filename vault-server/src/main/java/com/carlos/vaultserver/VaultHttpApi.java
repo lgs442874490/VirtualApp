@@ -275,6 +275,7 @@ public final class VaultHttpApi {
             a.auto = o.optBoolean("auto", false);
             a.windowStart = o.optInt("windowStart", 5);
             a.windowEnd = o.optInt("windowEnd", 9);
+            a.configDefaultsVersion = o.optInt("configDefaultsVersion", 0);
             JSONArray roles = o.optJSONArray("roles");
             if (roles != null) {
                 for (int j = 0; j < roles.length(); j++) {
@@ -320,6 +321,13 @@ public final class VaultHttpApi {
                         if (prmMap != null) a.roleParams.put(rsid, prmMap);
                     }
                 }
+            }
+            // 2026-11-11 默认开启策略：旧客户端不带版本字段 → 上传的 false 是旧默认，一次性迁移；
+            // 新客户端带 current 版本，用户手动关保留。
+            if (a.configDefaultsVersion < VaultStore.CURRENT_CONFIG_DEFAULTS_VERSION) {
+                VaultStore.migrateConfigMaps(a.roleConfig);
+                VaultStore.migrateConfigMaps(a.roleConfigByUid);
+                a.configDefaultsVersion = VaultStore.CURRENT_CONFIG_DEFAULTS_VERSION;
             }
             incoming.add(a);
         }

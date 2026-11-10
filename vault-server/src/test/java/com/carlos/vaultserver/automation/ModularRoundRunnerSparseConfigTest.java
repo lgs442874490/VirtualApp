@@ -48,6 +48,11 @@ public class ModularRoundRunnerSparseConfigTest {
         sparse.put("arena", true);
         sparse.put("gather", true);
         sparse.put("intel", true);
+        // 2026-11-11 任务级默认全开：本用例改为验证「显式关闭」仍被门控
+        sparse.put("bank", false);
+        sparse.put("shop", false);
+        sparse.put("alliance_shop", false);
+        sparse.put("hunt", false);
         acc.roleConfig.put("913", sparse);
     }
 

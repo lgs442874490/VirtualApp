@@ -560,4 +560,28 @@ public class RewardClaimFixTest {
         assertEquals(stages, ServerTasks.loadModStages(tc, "card_bp_rx_2506003"));
         assertTrue(ServerTasks.loadModStages(tc, "card_bp_rx_missing").isEmpty());
     }
+
+    @Test
+    public void cardBp8204_dedupesTodayOnly() throws Exception {
+        // 2026-11-11：8204 归“该档暂不可领”，只写当日台账，不能写永久已领档。
+        WjdrEngine engine = new WjdrEngine(null) {
+            @Override
+            public GameMessage request(String proto, Map<String, Object> args) {
+                GameMessage g = new GameMessage();
+                g.getContent().put("code",
+                        "req_card_bp_collect_reward".equals(proto) ? 8204 : 0);
+                return g;
+            }
+        };
+        TaskContext tc = new TaskContext(engine, "48460403", 888L,
+                new StateStore(tmp.getRoot().toPath()), Collections.emptyMap(), "手动");
+        ServerTasks.ClaimStat st = new ServerTasks.ClaimStat();
+        boolean attempted = ServerTasks.claimCardBpStages(
+                tc, st, 2506003L, new LinkedHashMap<>(), 5L);
+        assertTrue(attempted);
+        assertTrue("8204 按当日台账去重",
+                ClaimLedger.isClaimed(tc, "card_bp", "2506003:1"));
+        assertFalse("8204 不得写入永久已领档",
+                ServerTasks.loadModStages(tc, "card_bp_rx_2506003").contains(1L));
+    }
 }

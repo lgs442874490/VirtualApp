@@ -64,6 +64,7 @@ public class TaskCadenceSchedulerTest {
         a.token = "tk";
         a.auto = auto;
         a.activeSid = String.valueOf(SID);
+        a.configDefaultsVersion = VaultStore.CURRENT_CONFIG_DEFAULTS_VERSION;
         if (roleConfig != null) a.roleConfig.put(String.valueOf(SID), roleConfig);
         List<VaultStore.Account> in = new ArrayList<>();
         in.add(a);

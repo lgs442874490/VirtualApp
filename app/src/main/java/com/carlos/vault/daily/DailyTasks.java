@@ -47,23 +47,23 @@ public final class DailyTasks {
         list.add(new TaskDef("alliance_chest", "联盟宝箱", true));
         list.add(new TaskDef("alliance_donate", "联盟捐献", true));
         list.add(new TaskDef("battle_shield", "战斗护盾", true));
-        list.add(new TaskDef("guardian", "守护盟友", false));
+        list.add(new TaskDef("guardian", "守护盟友", true));
         list.add(new TaskDef("war", "战争状态", true));
-        list.add(new TaskDef("shop", "商店购买", false));
+        list.add(new TaskDef("shop", "商店购买", true));
         list.add(new TaskDef("commander_gift", "统帅礼包", true));
         list.add(new TaskDef("achievement_claim", "成就奖励", true));
         // ===== 城镇 =====
         list.add(new TaskDef("research", "科技研究", true));
-        list.add(new TaskDef("building", "建筑升级", false));
+        list.add(new TaskDef("building", "建筑升级", true));
         list.add(new TaskDef("town_affairs", "城镇管理", true));
         list.add(new TaskDef("medic", "军医所", true));
-        list.add(new TaskDef("barracks", "兵营训练", false));
+        list.add(new TaskDef("barracks", "兵营训练", true));
         list.add(new TaskDef("pet", "宠物", true));
         list.add(new TaskDef("expert", "专家游历", true));
         list.add(new TaskDef("homeland", "晨曦岛", true));
         list.add(new TaskDef("fire_crystal", "火晶提炼", true));
         list.add(new TaskDef("climbtower", "地心探索", true));
-        list.add(new TaskDef("arena", "竞技场", false));
+        list.add(new TaskDef("arena", "竞技场", true));
         // ===== 活动 =====
         list.add(new TaskDef("act_balloon", "正中靶心", true));
         list.add(new TaskDef("act_pitchpot", "壶纳千祥", true));
@@ -73,38 +73,38 @@ public final class DailyTasks {
         list.add(new TaskDef("act_brawl", "欢乐乱斗", true));
         list.add(new TaskDef("act_fishing", "钓鱼", true));
         list.add(new TaskDef("act_endless", "无尽征程", true));
-        list.add(new TaskDef("act_joy", "怪攻守城", false));
-        list.add(new TaskDef("act_feast", "至尊盛宴", false));
-        list.add(new TaskDef("act_mercenary", "佣兵荣耀", false));
-        list.add(new TaskDef("act_truck", "雪原商路", false));
-        list.add(new TaskDef("act_arsenal_league", "雪域兵器联赛", false));
-        list.add(new TaskDef("act_slg_league", "冰火战歌", false));
-        list.add(new TaskDef("act_cross_capital_revive", "最强王国复活", false));
-        list.add(new TaskDef("ally_offline_guard", "离线联动", false));
-        list.add(new TaskDef("act_icehunter", "冰原猎人", false));
+        list.add(new TaskDef("act_joy", "怪攻守城", true));
+        list.add(new TaskDef("act_feast", "至尊盛宴", true));
+        list.add(new TaskDef("act_mercenary", "佣兵荣耀", true));
+        list.add(new TaskDef("act_truck", "雪原商路", true));
+        list.add(new TaskDef("act_arsenal_league", "雪域兵器联赛", true));
+        list.add(new TaskDef("act_slg_league", "冰火战歌", true));
+        list.add(new TaskDef("act_cross_capital_revive", "最强王国复活", true));
+        list.add(new TaskDef("ally_offline_guard", "离线联动", true));
+        list.add(new TaskDef("act_icehunter", "冰原猎人", true));
         list.add(new TaskDef("red_packet", "游戏红包", true));
-        list.add(new TaskDef("bank", "钻石银行", false));
-        list.add(new TaskDef("act_flamefangs", "烈焰獠牙", false));
-        list.add(new TaskDef("act_snowtrade", "雪原贸易站", false));
-        list.add(new TaskDef("act_frostfire", "燃霜矿区", false));
-        list.add(new TaskDef("social_gift", "社交礼物", false));
+        list.add(new TaskDef("bank", "钻石银行", true));
+        list.add(new TaskDef("act_flamefangs", "烈焰獠牙", true));
+        list.add(new TaskDef("act_snowtrade", "雪原贸易站", true));
+        list.add(new TaskDef("act_frostfire", "燃霜矿区", true));
+        list.add(new TaskDef("social_gift", "社交礼物", true));
         // ===== 野外 =====
-        list.add(new TaskDef("gather", "野外采集", false));
-        list.add(new TaskDef("intel", "情报任务", false));
+        list.add(new TaskDef("gather", "野外采集", true));
+        list.add(new TaskDef("intel", "情报任务", true));
         list.add(new TaskDef("behemoth", "巨兽狩猎", true));
         list.add(new TaskDef("bear", "巨熊行动", true));
-        list.add(new TaskDef("hunt", "自动狩猎", false));
-        list.add(new TaskDef("adventure_sweep", "探险速刷", false));
+        list.add(new TaskDef("hunt", "自动狩猎", true));
+        list.add(new TaskDef("adventure_sweep", "探险速刷", true));
         // ===== 联盟 =====
         list.add(new TaskDef("alliance_mobilization", "联盟动员", true));
-        list.add(new TaskDef("alliance_showdown", "争霸赛", false));
+        list.add(new TaskDef("alliance_showdown", "争霸赛", true));
         list.add(new TaskDef("alliance_help", "联盟互助", true));
         list.add(new TaskDef("homeland_visit", "晨曦岛拜访", true));
         // ===== 商店/其他 =====
-        list.add(new TaskDef("alliance_shop", "联盟商店", false));
+        list.add(new TaskDef("alliance_shop", "联盟商店", true));
         // 2026-11-06 决策2：backpack 被 FeatureGate.BACKPACK_ITEMS 隐藏（产品未确认），
         // 默认值同步改 false——隐藏的功能不默认执行（上传侧另有 filterHiddenDailyFns 兜底）。
-        list.add(new TaskDef("backpack", "背包道具", false));
+        list.add(new TaskDef("backpack", "背包道具", true));
         return list;
     }
 // ---------- 4. 每日任务奖励 ----------

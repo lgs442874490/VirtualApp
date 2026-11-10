@@ -501,6 +501,13 @@ public final class MedicService {
      * qid 未同步时不盲发，返回可读原因。
      */
     private String askHelp(TaskContext tc, long qid) {
+        long now = System.currentTimeMillis();
+        // 2026-11-11：1526 后 30 分钟内不再发起求助，避免每轮刷协议（原只改文案仍每轮请求）。
+        try {
+            String raw = tc.store.getString(helpBlockKey(tc));
+            if (raw != null && Long.parseLong(raw) > now) return "求助冷却中（码1526）";
+        } catch (Throwable ignored) {
+        }
         if (qid <= 0L) return HELP_UNAVAILABLE_NOTE;
         try {
             GameMessage help = tc.engine.request("req_queue_ask_for_help",
@@ -508,6 +515,16 @@ public final class MedicService {
             if (Exec.ok(help)) return "已求助联盟（qid=" + qid + "）";
             int code = Exec.codeOf(help);
             if (code == CODE_HELP_UNAVAILABLE) return "求助暂不可用（码" + code + "）";
+            // 2026-11-11 生产实证：炎黄角色 11-11 00:48–01:14 连续 12 次「求助失败（码1526）」，
+            // 02:11 自动恢复。1526 归为“当前不可求助”（冷却/上限类），不再记失败/ERROR。
+            if (code == 1526) {
+                try {
+                    tc.store.putString(helpBlockKey(tc),
+                            String.valueOf(now + 30L * 60L * 1000L));
+                } catch (Throwable ignored) {
+                }
+                return "求助暂不可用（码1526）";
+            }
             if (code == CODE_HEALING || code == CODE_RESOURCE_SHORT) {
                 return "求助未生效（码" + code + "）";
             }
@@ -515,6 +532,12 @@ public final class MedicService {
         } catch (Throwable t) {
             return "求助异常：" + t.getClass().getSimpleName();
         }
+    }
+
+    /** 求助冷却标记键（独立于 mod:medic JSON，避免覆盖状态行）。 */
+    private static String helpBlockKey(TaskContext tc) {
+        return "mod:" + tc.fpid + ":" + tc.sid
+                + (tc.roleUid > 0L ? ":" + tc.roleUid : "") + ":medic:help_block_until";
     }
 
     // ---------- 内部工具 ----------
