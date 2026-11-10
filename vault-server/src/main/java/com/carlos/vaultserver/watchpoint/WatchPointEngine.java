@@ -75,7 +75,10 @@ public final class WatchPointEngine {
     // 跨区角色（crossKidRoleUids）只是借用其它区服会话去查 store.kid 的地图；
     // 不支持多个区服同时监听（需多实例/多配置，另立需求）。
     private static final long ALERT_DEDUPE_MS = 15L * 60_000L;
-    private static final int SCAN_SEND_PER_TICK = 6;
+    /** 单会话每 tick 扫描块数（主循环 80ms 一批）；N 个在线会话时预算 = 该值 × N。 */
+    private static final int SCAN_SEND_PER_TICK = 4;
+    /** 单 tick 扫描块总预算上限（会话数很大时防请求突发）。 */
+    private static final int SCAN_MAX_BLOCKS_PER_TICK = 32;
 
     private enum Kind {MONITOR, PROTECT, SCAN, CROSS_PROBE}
 
@@ -438,9 +441,18 @@ public final class WatchPointEngine {
 
     private volatile boolean running;
     private Thread thread;
-    /** 令牌桶：必须用 double 累积，否则 80ms tick 下 floor 恒为 0 → 首轮后永远发不出请求。 */
-    private double tokens = 5.0d;
-    private long lastRefillAt = System.currentTimeMillis();
+    /**
+     * 每会话令牌桶（2026-11-10：由全局单桶改为按会话独立）。
+     * 必须用 double 累积，否则 80ms tick 下 floor 恒为 0 → 首轮后永远发不出请求。
+     * key = 角色 uid（稳定标识，不受引擎列表顺序/会话增减影响）：每桶速率 maxReqPerSec、容量 10、初始 5。
+     */
+    private final java.util.Map<Long, TokenBucket> tokenBuckets = new java.util.HashMap<>();
+
+    /** 单个会话的令牌桶状态。 */
+    private static final class TokenBucket {
+        double tokens = 5.0d;
+        long lastRefillAt;
+    }
     private long nextScanAt;
     private long storeMtime = -1L;
     private long lastStoreCheck;
@@ -620,11 +632,10 @@ public final class WatchPointEngine {
                 if (!baselineDone && !scan.active) {
                     baselineDone = true;
                     startScan("启动基线");
-                } else if (scan.active) {
-                    scanTick(engines);
-                } else {
-                    pollTick(engines);
                 }
+                // 2026-11-10：扫描不再独占 tick——监视/保护每 tick 照常跑，扫描并行推进，
+                // 消除整图扫描 15–20s 内监视目标/保护矩形全部停摆的空窗。
+                tick(engines);
                 flushPendingMoveAlerts();
                 maybeLogStats();
                 Thread.sleep(80L);
@@ -639,6 +650,16 @@ public final class WatchPointEngine {
                 }
             }
         }
+    }
+
+    /**
+     * 单个 tick：先常态轮询（监视/保护），再推进整图扫描（若在扫）。
+     * 包可见：单测断言「扫描期间轮询不停」。
+     */
+    void tick(java.util.List<WjdrEngine> engines) {
+        if (engines == null || engines.isEmpty()) return;
+        pollTick(engines);
+        if (scan.active) scanTick(engines);
     }
 
     /** 每 60s 打一条运维统计（证明轮询在跑：发送/回包/超时/告警）。 */
@@ -934,7 +955,6 @@ public final class WatchPointEngine {
         if (engines == null || engines.isEmpty()) return;
         int n = engines.size();
         long now = System.currentTimeMillis();
-        refillTokens(now);
         flushAggregates(now);
         if (store.fullScanIntervalMs > 0 && now >= nextScanAt) {
             startScan("周期基线刷新");
@@ -948,9 +968,12 @@ public final class WatchPointEngine {
             Ctx old = ctxBySession.get(session);
             boolean due = sent == null || now - sent >= store.monitorIntervalMs;
             if (!due || (old != null && !old.ended && now - old.sentAt < RESPONSE_TIMEOUT_MS)) continue;
-            if (!takeToken()) return;
+            // 2026-11-10：令牌按「目标 → 会话」分配到各自桶；该会话桶空只跳过本目标，
+            // 不再整轮 return（否则一个会话耗尽会拖住其它会话负责的目标）。
+            int eng = i % n;
+            if (!takeToken(engines.get(eng), now)) continue;
             WatchPointStore.Rect rect = rectAround(t.x, t.y, 27);
-            send(engines.get(i % n), session, rect, Kind.MONITOR);
+            send(engines.get(eng), session, rect, Kind.MONITOR);
         }
         // 保护矩形（20–30s）
         for (int i = 0; i < store.protectRects.size(); i++) {
@@ -960,14 +983,16 @@ public final class WatchPointEngine {
             Ctx old = ctxBySession.get(session);
             boolean due = sent == null || now - sent >= store.protectIntervalMs;
             if (!due || (old != null && !old.ended && now - old.sentAt < RESPONSE_TIMEOUT_MS)) continue;
-            if (!takeToken()) return;
             int mi = store.monitorTargets.size();
-            send(engines.get((i + mi) % n), session, rect, Kind.PROTECT);
+            int eng = (i + mi) % n;
+            if (!takeToken(engines.get(eng), now)) continue;
+            send(engines.get(eng), session, rect, Kind.PROTECT);
         }
         // 超时清理 + 告警去重表清理
         if (now - lastPruneAt > 60_000L) {
             lastPruneAt = now;
             com.carlos.vaultserver.alert.AlertRegistry.sweepDeduper(now);
+            pruneTokenBuckets(engines, now);
             // 名单里已删除的目标，跟踪状态一并清掉（防 map 无限增长）
             if (targetSeenAt.size() > 32) {
                 targetSeenAt.keySet().removeIf(uid -> !isMonitoredUid(uid));
@@ -1008,17 +1033,47 @@ public final class WatchPointEngine {
         }
     }
 
-    private void refillTokens(long now) {
-        long elapsed = now - lastRefillAt;
-        if (elapsed <= 0) return;
-        lastRefillAt = now;
-        tokens = Math.min(10.0d, tokens + store.maxReqPerSec * elapsed / 1000.0d);
+    /** 取该引擎所属会话的令牌（uid 绑定；身份未知/未登录完成时不发）。 */
+    private boolean takeToken(WjdrEngine engine, long now) {
+        long uid = 0L;
+        try {
+            uid = engine == null ? 0L : engine.lastUid();
+        } catch (Throwable ignored) {
+        }
+        return uid > 0L && takeToken(uid, now);
     }
 
-    private boolean takeToken() {
-        if (tokens < 1.0d) return false;
-        tokens -= 1.0d;
+    /** 取指定会话的令牌（按需 refill）：每会话速率 maxReqPerSec、容量 10、初始 5。 */
+    private boolean takeToken(long uid, long now) {
+        if (uid <= 0L) return false;
+        TokenBucket b = tokenBuckets.get(uid);
+        if (b == null) {
+            b = new TokenBucket();
+            b.lastRefillAt = now;
+            tokenBuckets.put(uid, b);
+        }
+        long elapsed = now - b.lastRefillAt;
+        if (elapsed > 0) {
+            b.lastRefillAt = now;
+            b.tokens = Math.min(10.0d, b.tokens + store.maxReqPerSec * elapsed / 1000.0d);
+        }
+        if (b.tokens < 1.0d) return false;
+        b.tokens -= 1.0d;
         return true;
+    }
+
+    /** 清理已下线会话的令牌桶（pollTick 的 60s prune 里调用，防 map 无界增长）。 */
+    private void pruneTokenBuckets(java.util.List<WjdrEngine> engines, long now) {
+        if (tokenBuckets.isEmpty()) return;
+        java.util.Set<Long> alive = new java.util.HashSet<>();
+        for (WjdrEngine e : engines) {
+            try {
+                long uid = e == null ? 0L : e.lastUid();
+                if (uid > 0L) alive.add(uid);
+            } catch (Throwable ignored) {
+            }
+        }
+        tokenBuckets.keySet().retainAll(alive);
     }
 
     private void send(WjdrEngine engine, int session, WatchPointStore.Rect rect, Kind kind) {
@@ -2511,7 +2566,9 @@ public final class WatchPointEngine {
         if (engines == null || engines.isEmpty()) return;
         int n = engines.size();
         long now = System.currentTimeMillis();
-        int budget = 4;   // 每 80ms 最多 4 块（N 个角色并行时总速率为 4N）
+        // 2026-11-10：预算随在线会话数放大（每会话每 tick SCAN_SEND_PER_TICK 块），
+        // 并受 SCAN_MAX_BLOCKS_PER_TICK 封顶；块仍按 i % n 轮转到各会话，单会话密度不变。
+        int budget = Math.min(SCAN_SEND_PER_TICK * n, SCAN_MAX_BLOCKS_PER_TICK);
         while (scan.nextTile < SCAN_TILES && budget-- > 0) {
             int slot = scan.nextTile++;
             int i = scan.order != null && slot < scan.order.length ? scan.order[slot] : slot;
@@ -2893,6 +2950,18 @@ public final class WatchPointEngine {
 
     void scanTickForTest(java.util.List<WjdrEngine> engines) {
         scanTick(engines);
+    }
+
+    boolean takeTokenForTest(long uid, long now) {
+        return takeToken(uid, now);
+    }
+
+    int tokenBucketCountForTest() {
+        return tokenBuckets.size();
+    }
+
+    void pruneTokenBucketsForTest(java.util.List<WjdrEngine> engines, long now) {
+        pruneTokenBuckets(engines, now);
     }
 
     void finishScanForTest() {
