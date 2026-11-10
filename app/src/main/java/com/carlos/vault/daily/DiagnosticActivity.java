@@ -55,6 +55,13 @@ public class DiagnosticActivity extends Activity {
         } catch (Throwable ignored) {
         }
 
+        // 2026-11-10：诊断页只对 GM 账户开放（本机永久 GM 或服务端 GM 票据）。
+        if (!com.carlos.vault.GmMode.isGm(this)
+                && FeatureGate.currentTier(this) != FeatureGate.TIER_GM) {
+            UiStyle.toast(this, "诊断工具仅对 GM 账户开放");
+            finish();
+            return;
+        }
         canCapture = FeatureGate.visible(this, FeatureGate.Feature.PROTO_CAPTURE)
                 && Build.VERSION.SDK_INT >= 21;
         canMonitor = FeatureGate.visible(this, FeatureGate.Feature.DEV_MONITOR);
