@@ -7,6 +7,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 import com.carlos.vault.daily.formation.FormationModel;
+import com.carlos.vault.daily.formation.PresetFormations;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -702,5 +703,22 @@ public class FormationStoreTest {
         assertEquals(1, back.size());
         assertEquals("采集木", back.get(0).name);
         assertEquals(FormationModel.MODE_PERCENTAGE, back.get(0).allocationMode);
+    }
+
+    @Test
+    public void legacyFormationIdMapping_mapsToPresetIds() {
+        // 2026-11-10（P1-7）：旧内置 id → 新预设 id
+        assertEquals(PresetFormations.ID_FIRST + 6L, FormationStore.mapLegacyFormationId(53L));  // 木
+        assertEquals(PresetFormations.ID_FIRST + 8L, FormationStore.mapLegacyFormationId(54L));  // 铁
+        assertEquals(PresetFormations.ID_FIRST + 7L, FormationStore.mapLegacyFormationId(55L));  // 煤
+        assertEquals(PresetFormations.ID_FIRST + 5L, FormationStore.mapLegacyFormationId(56L));  // 肉
+        assertEquals(PresetFormations.ID_FIRST, FormationStore.mapLegacyFormationId(57L));        // 巨兽
+        assertEquals(PresetFormations.ID_FIRST + 1L, FormationStore.mapLegacyFormationId(58L));  // 打野→狩猎
+        assertEquals(0L, FormationStore.mapLegacyFormationId(9000000001L));                       // 旧基础内置
+        assertEquals(0L, FormationStore.mapLegacyFormationId(9000000002L));
+        // 非旧 id 原样返回（新预设/自定义/游戏编队不受影响）
+        assertEquals(PresetFormations.ID_FIRST, FormationStore.mapLegacyFormationId(PresetFormations.ID_FIRST));
+        assertEquals(123L, FormationStore.mapLegacyFormationId(123L));
+        assertEquals(0L, FormationStore.mapLegacyFormationId(0L));
     }
 }
