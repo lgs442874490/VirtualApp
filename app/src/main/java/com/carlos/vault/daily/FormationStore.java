@@ -3,6 +3,7 @@ package com.carlos.vault.daily;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.carlos.vault.daily.gather.GatherConfigV2;
 import com.carlos.vault.daily.formation.FormationBinding;
 import com.carlos.vault.daily.formation.PresetFormations;
 import com.carlos.vault.daily.formation.FormationCatalogStore;
@@ -676,10 +677,17 @@ public final class FormationStore {
         if (ctx == null) return;
         List<FormationModel> lib = formations(ctx, fpid, sid);
         String before = fingerprint(lib);
+        // 2026-11-10（修复 P1-7）：先把库外对旧内置 id 的引用迁到新预设 id，再删库内旧编队，
+        // 否则升级后采集/巨兽/情报/巨熊上车的绑定会全部指向已删除的编队而静默 SKIP。
+        int migrated = migrateLegacyBindings(ctx, fpid, sid, uid);
+        if (migrated > 0) {
+            android.util.Log.i("FormationStore", "migrateLegacyBindings sid=" + sid + " uid=" + uid
+                    + " refs=" + migrated);
+        }
         int removed = removeLegacyBuiltIns(lib);
         FormationCatalogStore cat = catalogOf(ctx, fpid, sid, uid);
         int created = PresetFormations.ensure(lib, cat);
-        if (removed > 0 || created > 0 || !before.equals(fingerprint(lib))) {
+        if (migrated > 0 || removed > 0 || created > 0 || !before.equals(fingerprint(lib))) {
             writeModels(ctx, fpid, sid, lib, null);
         }
         try {
@@ -690,6 +698,132 @@ public final class FormationStore {
                     + " created=" + created + " bear=" + (bear == null ? "null" : bear.heroIds));
         } catch (Throwable ignored) {
         }
+    }
+
+    // ==================== 旧内置编队绑定迁移（2026-11-10，修复 P1-7） ====================
+
+    /** 旧内置编队 id → 新预设 id；返回 0 表示无对应预设（清为自动）。 */
+    static long mapLegacyFormationId(long id) {
+        if (id == 53L) return PresetFormations.ID_FIRST + 6L;   // 采集木 → 预设采集木
+        if (id == 54L) return PresetFormations.ID_FIRST + 8L;   // 采集铁 → 预设采集铁
+        if (id == 55L) return PresetFormations.ID_FIRST + 7L;   // 采集煤 → 预设采集煤
+        if (id == 56L) return PresetFormations.ID_FIRST + 5L;   // 采集肉 → 预设采集肉
+        if (id == 57L) return PresetFormations.ID_FIRST;        // 巨兽 → 预设巨兽/打熊
+        if (id == 58L) return PresetFormations.ID_FIRST + 1L;   // 打野 → 预设狩猎
+        if (id == 9000000001L || id == 9000000002L) return 0L;  // 旧基础内置（一盾兵/任意英雄一兵）无替代
+        return id;
+    }
+
+    /**
+     * 把库外对旧内置编队 id 的引用迁移到新预设 id（幂等；2026-11-10 修复 P1-7）。
+     *
+     * <p>覆盖三处：gather v2 的队列 / 联盟矿 / 重物搬运、各功能 params 的
+     * {@code formation_id}/{@code formation_ids}、巨熊 {@code join_formations}。
+     * 迁移完成后再由 {@link #removeLegacyBuiltIns(List)} 删除库内旧编队。
+     *
+     * @return 迁移的引用数量（0 = 无变化）
+     */
+    public static int migrateLegacyBindings(Context ctx, String fpid, long sid, String uid) {
+        if (ctx == null) return 0;
+        long uidNum = 0L;
+        try {
+            uidNum = uid == null || uid.trim().isEmpty() ? 0L : Long.parseLong(uid.trim());
+        } catch (Throwable ignored) {
+        }
+        int n = 0;
+        // 1) gather v2：6 条队列 + 联盟矿 + 重物搬运
+        try {
+            JSONObject gp = FnParams.params(ctx, fpid, sid, uidNum, "gather");
+            if (GatherConfigV2.hasV2(gp)) {
+                GatherConfigV2 cfg = GatherConfigV2.parse(gp);
+                boolean changed = false;
+                for (int i = 1; i <= GatherConfigV2.QUEUE_COUNT; i++) {
+                    GatherConfigV2.QueueCfg q = cfg.queue(i);
+                    if (q == null) continue;
+                    long mapped = mapLegacyFormationId(q.formationId);
+                    if (mapped != q.formationId) {
+                        q.formationId = mapped;
+                        if (mapped <= 0L) q.formationMode = GatherConfigV2.MODE_AUTOMATIC;
+                        changed = true;
+                        n++;
+                    }
+                }
+                long am = mapLegacyFormationId(cfg.allianceMineFormationId);
+                if (am != cfg.allianceMineFormationId) {
+                    cfg.allianceMineFormationId = am;
+                    if (am <= 0L) cfg.allianceMineFormationMode = GatherConfigV2.MODE_AUTOMATIC;
+                    changed = true;
+                    n++;
+                }
+                long hl = mapLegacyFormationId(cfg.heavyLiftingFormationId);
+                if (hl != cfg.heavyLiftingFormationId) {
+                    cfg.heavyLiftingFormationId = hl;
+                    if (hl <= 0L) cfg.heavyLiftingFormationMode = GatherConfigV2.MODE_AUTOMATIC;
+                    changed = true;
+                    n++;
+                }
+                if (changed) FnParams.saveParams(ctx, fpid, sid, uidNum, "gather", cfg.applyTo(gp));
+            }
+        } catch (Throwable ignored) {
+        }
+        // 2) 各功能 params：formation_id(s) + 巨熊 join_formations
+        for (FnRegistry.Fn fn : FnRegistry.all()) {
+            try {
+                JSONObject p = FnParams.params(ctx, fpid, sid, uidNum, fn.id);
+                if (p == null || p.length() == 0) continue;
+                boolean changed = false;
+                long[] ids = FormationBinding.parseIds(p);
+                if (ids.length > 0) {
+                    List<Long> keep = new ArrayList<Long>();
+                    boolean any = false;
+                    for (long id : ids) {
+                        long mapped = mapLegacyFormationId(id);
+                        if (mapped != id) any = true;
+                        if (mapped > 0L) keep.add(mapped);
+                    }
+                    if (any) {
+                        if (keep.isEmpty()) {
+                            p.remove(FormationBinding.KEY_ID);
+                            p.remove(FormationBinding.KEY_IDS);
+                            p.put(FormationBinding.KEY_MODE, "AUTOMATIC");
+                        } else {
+                            long[] arr = new long[keep.size()];
+                            for (int i = 0; i < arr.length; i++) arr[i] = keep.get(i);
+                            FormationBinding.applyIds(p, arr);
+                        }
+                        changed = true;
+                        n++;
+                    }
+                }
+                JSONArray joins = p.optJSONArray("join_formations");
+                if (joins != null) {
+                    boolean joinsChanged = false;
+                    for (int i = 0; i < joins.length(); i++) {
+                        JSONObject j = joins.optJSONObject(i);
+                        if (j == null) continue;
+                        long fid = j.optLong("formation_id", 0L);
+                        long mapped = mapLegacyFormationId(fid);
+                        if (mapped != fid) {
+                            if (mapped <= 0L) {
+                                j.remove("formation_id");
+                                j.put("mode", "AUTOMATIC");
+                            } else {
+                                j.put("formation_id", mapped);
+                            }
+                            joinsChanged = true;
+                            n++;
+                        }
+                    }
+                    if (joinsChanged) {
+                        p.put("join_formations", joins);
+                        changed = true;
+                    }
+                }
+                if (changed) FnParams.saveParams(ctx, fpid, sid, uidNum, fn.id, p);
+            } catch (Throwable ignored) {
+            }
+        }
+        return n;
     }
 
     /** 旧 API 兼容：等价 {@link #ensurePresets(Context, String, long, String)}。 */

@@ -680,7 +680,7 @@ public final class GuardProbe {
                     a.put("id", mid);
                     GameMessage r = engine.request("req_world_march_off_work", a, 8);
                     int c = codeOf(r);
-                    log("off_work 行军" + mid + "（援助 uid" + helpTarget + "）code=" + c);
+                    log("off_work 行军" + mid + "（援助 fid" + helpTarget + "）code=" + c);
                     if (c == 0) done++; else fail++;
                 }
                 log("撤防探针完成：成功 " + done + "，失败 " + fail);

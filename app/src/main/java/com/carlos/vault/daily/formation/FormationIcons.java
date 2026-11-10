@@ -24,6 +24,7 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ThreadFactory;
+import com.carlos.vault.daily.formation.ui.ManagerUi;
 
 /**
  * 编队英雄头像加载器（T6 app-assets）。
@@ -50,10 +51,10 @@ public final class FormationIcons {
     private static final int AVATAR_PX = 96;
 
     /** 职业占位色：盾 #64748B / 矛 #0EA5E9 / 弓 #F59E0B / 未知灰 #94A3B8（与 UI 职业色一致）。 */
-    private static final int COLOR_INFANTRY = 0xFF64748B;
-    private static final int COLOR_LANCER = 0xFF0EA5E9;
-    private static final int COLOR_MARKSMAN = 0xFFF59E0B;
-    private static final int COLOR_UNKNOWN = 0xFF94A3B8;
+    private static final int COLOR_INFANTRY = ManagerUi.PROF_COLOR_INFANTRY;
+    private static final int COLOR_LANCER = ManagerUi.PROF_COLOR_LANCER;
+    private static final int COLOR_MARKSMAN = ManagerUi.PROF_COLOR_MARKSMAN;
+    private static final int COLOR_UNKNOWN = ManagerUi.PROF_COLOR_UNKNOWN;
 
     private static final LruCache<String, Bitmap> CACHE = new LruCache<String, Bitmap>(cacheSizeBytes()) {
         @Override

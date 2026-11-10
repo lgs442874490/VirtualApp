@@ -902,7 +902,7 @@ public final class FormationManagerDialogs {
             if (onConfirm != null) onConfirm.run();
         });
         if (danger) {
-            okBtn.setBackground(ManagerUi.pressable(act, 0xFFE5484D, 0xFFDC2626, 10));
+            okBtn.setBackground(ManagerUi.pressable(act, ManagerUi.ERR_SOLID, ManagerUi.ERR_PRESS, 10));
         }
         btns.addView(okBtn);
         card.addView(btns);

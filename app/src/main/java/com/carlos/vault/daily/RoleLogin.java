@@ -96,16 +96,16 @@ public final class RoleLogin {
             Long trueUid = engine.discoverRoleUid(wantSid);
             if (trueUid != null && trueUid > 0 && trueUid != lr.uid) {
                 RoleStore.updateUid(ctx, fpid, wantSid, knownUid, trueUid);
-                heal = "；已探测到该区正确 uid=" + trueUid + " 并回写，下次重试自动纠正";
+                heal = "；已探测到该区正确 fid=" + trueUid + " 并回写，下次重试自动纠正";
             } else if (knownUid > 0 && trueUid == null) {
                 // 探测失败但现存 uid 已证实是别人的：清 0 回到按区登录的发现路径
                 RoleStore.updateUid(ctx, fpid, wantSid, knownUid, 0);
-                heal = "；原 uid 绑定已证伪清空，下次按区服重新发现";
+                heal = "；原 fid 绑定已证伪清空，下次按区服重新发现";
             }
         } catch (Throwable ignored) {
         }
-        return new IllegalStateException("落错角色：期望 K" + wantSid + (knownUid > 0 ? "(uid=" + knownUid + ")" : "(uid未知)")
-                + " 实际 K" + lr.serverId + " uid=" + lr.uid
+        return new IllegalStateException("落错角色：期望 K" + wantSid + (knownUid > 0 ? "(fid=" + knownUid + ")" : "(fid未知)")
+                + " 实际 K" + lr.serverId + " fid=" + lr.uid
                 + (lr.gameName == null || lr.gameName.isEmpty() ? "" : "「" + lr.gameName + "」")
                 + heal);
     }

@@ -27,6 +27,15 @@ import com.carlos.vault.daily.FormationStore;
  * <p>视觉基准：{@code design/ui-ref-编队-20261025/README.md} §2 —— 463dp 定宽弹窗、
  * 主色 {@code #4F46E5}、卡片白底 + 1px {@code #CFD5E0} 描边 + 圆角 16、页底 {@code #F3F5F9}。
  * 所有界面代码构建（无 XML），基础控件复用 {@link UiStyle}。
+ *
+ * <p><b>【UI 规范例外 · 2026-11-05 裁定】</b>本包是线上网页版编队界面的 <b>1:1 像素复刻</b>
+ * （对标稿见上，含 463dp 定宽、12dp 边距、13/15/16px 字号、8/10/12/16 圆角、职业色）。
+ * 因此下列项<b>不适用</b> S1/S2/S4/S5 的全局 v2 token，不要"统一"到 {@code UiStyle.BRAND}、
+ * 18dp 边距或 {@code UiComponents.TEXT_*}，否则会破坏复刻一致性：
+ * 色板、DESIGN_WIDTH_DP、designWidth() 的 marginDp、圆角档位、字号档位、职业色。
+ * 例外范围内仍必须遵守：颜色一律登记为本类具名常量（不得散落字面量）、
+ * 可点元素挂 {@link UiStyle#press}、轻提示用 {@link UiStyle#toast}、不使用已废弃 ProgressDialog。
+ * 详见 {@code qa/UI规范一致性核查清单-20261105.md}「例外适用范围」。
  */
 public final class ManagerUi {
 
@@ -57,6 +66,30 @@ public final class ManagerUi {
     public static final int ERR_BG = 0xFFFEECEC;
     public static final int ERR_INK = 0xFFB91C1C;
     public static final int SLATE = 0xFF64748B;           // 职业角标底（规格：#64748b 底白字）
+
+    // ===== 补充语义色（2026-11-05 统一登记，原散落在 FormationBoardView / HeroTileView 等）=====
+    // 例外范围内「颜色一律登记为具名常量」的落地；仍属对标稿色系，不并入 UiStyle。
+    public static final int BADGE_SLATE_BG  = 0xFFEEF0F4;  // 兵种徽章底
+    public static final int SOFT_BLUE_BG    = 0xFFF1F5F9;  // 次级浅蓝底
+    public static final int INFO_SOLID      = 0xFF6366F1;  // 容量 / 宠物信息图标底
+    public static final int WARN_SOLID      = 0xFFF59E0B;  // 战争增益图标底
+    public static final int PRIMARY_PRESS   = 0xFF4338CA;  // 主按钮按压态
+    public static final int HERO_GRAD_TOP   = 0xE60B1220;  // 英雄卡渐变（上/中/下）
+    public static final int HERO_GRAD_MID   = 0x590B1220;
+    public static final int HERO_GRAD_END   = 0x000B1220;
+    public static final int TIER_INK        = 0xFFFDE68A;  // tier 徽章字
+    public static final int REMOVE_SCRIM    = 0x66000000;  // 英雄卡移除按钮遮罩
+    public static final int CAPTAIN_BG      = 0xFFFBBF24;  // 队长标记 / 亮星
+    public static final int STAR_OFF        = 0x66FFFFFF;  // 暗星
+    public static final int WHITE_80        = 0xCCFFFFFF;  // 深底上的主按钮字（禁用态）
+    public static final int ERR_SOLID       = 0xFFE5484D;
+    public static final int ERR_PRESS       = 0xFFDC2626;
+    public static final int PROF_COLOR_INFANTRY   = 0xFF64748B;  // 盾
+    public static final int PROF_COLOR_LANCER     = 0xFF0EA5E9;  // 矛
+    public static final int PROF_COLOR_MARKSMAN   = 0xFFF59E0B;  // 弓
+    public static final int PROF_COLOR_UNKNOWN    = 0xFF94A3B8;
+    public static final int STATUS_BAR      = 0xFF000000;  // 编队页状态栏
+    public static final int PAGE_SCRIM      = 0x99080C17;  // 编队页背景遮罩
 
     /** 设计基准宽（463dp）。 */
     public static final int DESIGN_WIDTH_DP = 463;

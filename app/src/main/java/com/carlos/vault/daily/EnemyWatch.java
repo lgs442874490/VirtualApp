@@ -32,7 +32,7 @@ import java.util.concurrent.TimeUnit;
  * type 语义：1=侦查 2=进攻 5=驻防(增援)。
  *
  * 注意：world_situation 系列推送存在地图范围（观察哨周边/联盟相关），远处的标记敌人行军
- * 可能不进推送——由 req_world_march_detail_4_player_situation 定向轮询兜底（每 uid 60s±抖动，
+ * 可能不进推送——由 req_world_march_detail_4_player_situation 定向轮询兜底（每 fid 60s±抖动，
  * 服务器拒绝则自动停用轮询并留痕）。
  *
  * <p><b>侦查类推送限流（用户 2026-11-01 硬规则）</b>：侦查（type=1）滑动 5 分钟窗口内每个敌人
@@ -52,7 +52,7 @@ public final class EnemyWatch {
     private static final long WECOM_MIN_INTERVAL_MS = 3000L;
     /** 跟踪表 TTL：endtime 后 15 分钟未 del（推送丢失）则静默清除。 */
     private static final long TRACK_TTL_MS = 15 * 60_000L;
-    /** 定向轮询间隔（毫秒，每标记 uid）。 */
+    /** 定向轮询间隔（毫秒，每标记 fid）。 */
     private static final long POLL_MS = 60_000L;
 
     /** 每会话只挂一个 hook（key = fpid:sid）。 */
@@ -275,13 +275,13 @@ public final class EnemyWatch {
             TRACKED.put(id, t);
             String kind = type == 1 ? "侦查" : type == 2 ? "进攻" : type == 5 ? "驻防" : "行军#" + type;
             StringBuilder sb = new StringBuilder("🎯敌情·").append(kind).append('\n')
-                    .append(note.isEmpty() ? "" : "备注[" + note + "] ").append("uid ").append(owner).append('\n')
-                    .append("目标：").append(targetUid > 0 ? "uid " + targetUid + " " : "").append(t.xy).append('\n')
+                    .append(note.isEmpty() ? "" : "备注[" + note + "] ").append("fid ").append(owner).append('\n')
+                    .append("目标：").append(targetUid > 0 ? "fid " + targetUid + " " : "").append(t.xy).append('\n')
                     .append("预计到达：").append(Math.max(0, end - nowS)).append("s 后（").append(hhmmss(end)).append("）");
             if (power > 0) sb.append("\n兵力：power≈").append(power);
             sb.append("\n行军 ").append(id).append('@').append(kid);
             send(ctx, sb.toString(), false);
-            EnemyWatchStore.log(ctx, "命中 " + kind + " uid" + owner + " 行军" + id);
+            EnemyWatchStore.log(ctx, "命中 " + kind + " fid" + owner + " 行军" + id);
         } else if (t.muted) {
             if (end > 0) t.endServerSec = end;   // 超限静默的侦查：只维护跟踪，不推加速/重估
         } else if (end < t.endServerSec - SPEEDUP_MIN_S) {
@@ -291,7 +291,7 @@ public final class EnemyWatch {
             if (!t.escalated || nowMs - t.lastEscalateAt > ESCALATE_COOLDOWN_MS) {
                 t.escalated = true;
                 t.lastEscalateAt = nowMs;
-                String msg = "⚡敌情升级：" + (t.note.isEmpty() ? "" : "备注[" + t.note + "] ") + "uid " + t.owner
+                String msg = "⚡敌情升级：" + (t.note.isEmpty() ? "" : "备注[" + t.note + "] ") + "fid " + t.owner
                         + " 行军 " + id + " 加速中！剩余 " + Math.max(0, prevEnd - nowS) + "s → " + Math.max(0, end - nowS)
                         + "s（预计 " + hhmmss(end) + " 落地）";
                 send(ctx, msg, true);
@@ -315,7 +315,7 @@ public final class EnemyWatch {
         long nowS = System.currentTimeMillis() / 1000L;
         long remain = t.endServerSec - nowS;
         String how = remain > RECALL_MIN_S ? "召回（距落地还剩 " + remain + "s）" : "已落地";
-        send(ctx, "✅敌情解除：" + (t.note.isEmpty() ? "" : "备注[" + t.note + "] ") + "uid " + t.owner
+        send(ctx, "✅敌情解除：" + (t.note.isEmpty() ? "" : "备注[" + t.note + "] ") + "fid " + t.owner
                 + " 行军 " + marchId + " " + how, false);
         EnemyWatchStore.log(ctx, "解除 行军" + marchId + " " + how);
     }
@@ -387,7 +387,7 @@ public final class EnemyWatch {
                     if (!(detail instanceof Map)) continue;
                     handle(app, kid, "notify_world_situation_info_add", asMap(detail));
                 } catch (Throwable t) {
-                    EnemyWatchStore.log(app, TAG + " 轮询 uid" + uid + " 失败: " + t);
+                    EnemyWatchStore.log(app, TAG + " 轮询 fid" + uid + " 失败: " + t);
                 }
             }
         }

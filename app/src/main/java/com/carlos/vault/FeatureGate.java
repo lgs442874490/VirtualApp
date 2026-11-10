@@ -324,6 +324,8 @@ public final class FeatureGate {
      */
     public static int currentTier(Context ctx) {
         if (ctx == null) return TIER_NONE;
+        // 2026-11-10：本机永久 GM 标记（测试机专用）优先于票据，不受过期/吊销影响。
+        if (GmMode.isGm(ctx)) return TIER_GM;
         try {
             LicenseManager lm = LicenseManager.get(ctx);
             if (lm == null) return TIER_NONE;

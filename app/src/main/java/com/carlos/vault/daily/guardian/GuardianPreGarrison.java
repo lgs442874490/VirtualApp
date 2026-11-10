@@ -89,7 +89,7 @@ public final class GuardianPreGarrison {
                 targets.addAll(byTarget.values());
                 sortTargets(app, fpid, kid, targets);
             }
-            String trigger = ownerExtreme ? "H3 极限惯犯 uid" + t.owner : "H2 多路并发";
+            String trigger = ownerExtreme ? "H3 极限惯犯 fid" + t.owner : "H2 多路并发";
             int inflight = com.carlos.vault.daily.guardian.GuardianLaunch.inflightCount();
             for (GuardianEngine.Track cand : targets) {
                 Gate g = gate(true, coolingDown(fpid, kid, cand.targetUid, System.currentTimeMillis()),
@@ -180,7 +180,7 @@ public final class GuardianPreGarrison {
         GuardianEngine.Track pre = GuardianEngine.newPreTrack(fpid, kid, cand);
         if (pre == null) return;
         log(app, "🚀预驻防 → 盟友(" + pre.x + "," + pre.y
-                + (pre.targetUid > 0 ? " uid" + pre.targetUid : "") + "）触发=" + trigger
+                + (pre.targetUid > 0 ? " fid" + pre.targetUid : "") + "）触发=" + trigger
                 + "，滞留 " + DWELL_SEC / 60 + " 分钟（无威胁由清扫器撤回）");
         com.carlos.vault.daily.guardian.GuardianLaunch.preGarrison(app, fpid, kid, pre, trigger);
     }

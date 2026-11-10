@@ -262,7 +262,7 @@ public class AssetCenterActivity extends Activity {
         LinearLayout card = UiComponents.card(this);
         card.addView(title("数据健康", 15));
         card.addView(hint("角色键 " + fpid + ":" + serverid + (uid > 0L ? ":" + uid : "")
-                + (uid > 0L ? "（按 uid 独立投影）" : "（旧键，可能同服多角色覆盖）")));
+                + (uid > 0L ? "（按 fid 独立投影）" : "（旧键，可能同服多角色覆盖）")));
         String status = ready ? "就绪 · 版本 " + version : "同步中 · 版本 " + version;
         TextView line = hint(status + " · 更新于 " + fmtTs(projection.optLong("updatedAt", 0)));
         line.setTextColor(ready ? UiStyle.INK2 : UiStyle.WARN_INK);
@@ -292,7 +292,7 @@ public class AssetCenterActivity extends Activity {
         }
         String nick = meta.optString("nickName", "");
         card.addView(kv("昵称", nick.isEmpty() ? "（未同步）" : nick
-                + "  (uid " + projection.optLong("uid", 0) + ")"));
+                + "  (fid " + projection.optLong("uid", 0) + ")"));
         String alliance = meta.optString("allianceName", "");
         if (!alliance.isEmpty()) {
             card.addView(kv("联盟", alliance + meta.optString("allianceAbbr", "")));

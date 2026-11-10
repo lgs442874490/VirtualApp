@@ -258,10 +258,10 @@ public class WjdrEngine {
                     mapOf("params", (Object) params), seconds(15));
             long code = resp == null || resp.getContent() == null
                     ? -1L : toLong(resp.getContent().get("code"));
-            WjdrLog.i("[防封保护] 设备环境上报完成 uid={} code={} params={}",
+            WjdrLog.i("[防封保护] 设备环境上报完成 fid={} code={} params={}",
                     String.valueOf(uid), String.valueOf(code), params);
         } catch (Exception e) {
-            WjdrLog.w("[防封保护] 设备环境上报异常（已忽略，不阻断登录） uid={} message={}",
+            WjdrLog.w("[防封保护] 设备环境上报异常（已忽略，不阻断登录） fid={} message={}",
                     String.valueOf(uid), e.getMessage() == null ? String.valueOf(e) : e.getMessage());
         }
     }
@@ -292,17 +292,17 @@ public class WjdrEngine {
                     Object sdkResp = resp == null || resp.getContent() == null
                             ? null : resp.getContent().get("sdk_resp_data");
                     int sdkRespLen = sdkResp instanceof String ? ((String) sdkResp).length() : 0;
-                    WjdrLog.i("[防封保护] 易盾安全风控检测完成 uid={} code={} sdkRespLen={}",
+                    WjdrLog.i("[防封保护] 易盾安全风控检测完成 fid={} code={} sdkRespLen={}",
                             String.valueOf(uid), String.valueOf(code), String.valueOf(sdkRespLen));
                 } catch (Exception e) {
-                    WjdrLog.w("[防封保护] 易盾安全风控检测异常（已忽略，不影响运行） uid={} message={}",
+                    WjdrLog.w("[防封保护] 易盾安全风控检测异常（已忽略，不影响运行） fid={} message={}",
                             String.valueOf(uid),
                             e.getMessage() == null ? String.valueOf(e) : e.getMessage());
                 }
             }, Math.max(0, delaySeconds), TimeUnit.SECONDS);
         } catch (Throwable t) {
             dun163RiskCheckPerformed.set(false);   // 调度失败允许下次补做
-            WjdrLog.w("[防封保护] 风控检测调度失败（已忽略） uid={} message={}",
+            WjdrLog.w("[防封保护] 风控检测调度失败（已忽略） fid={} message={}",
                     String.valueOf(uid), String.valueOf(t));
         }
     }
@@ -401,7 +401,7 @@ public class WjdrEngine {
                 long pin = pinUid == null ? 0 : toLong(pinUid);
                 if (pin > 0 && result.uid != pin) {
                     throw new IllegalStateException(
-                            "落错角色：钉扎 uid=" + pin + " 实际 uid=" + result.uid
+                            "落错角色：钉扎 fid=" + pin + " 实际 fid=" + result.uid
                                     + "（serverid=" + result.serverId + "）");
                 }
 

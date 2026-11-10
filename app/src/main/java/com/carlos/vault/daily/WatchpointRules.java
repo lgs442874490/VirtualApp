@@ -35,7 +35,7 @@ public final class WatchpointRules {
     /** uid：必须能解析为 >0 的长整型。 */
     public static String validateUid(String raw) {
         long uid = parseLong(raw);
-        return uid > 0 ? null : "uid 必须为大于 0 的数字";
+        return uid > 0 ? null : "fid 必须为大于 0 的数字";
     }
 
     /** 坐标：0~1200（含端点）。 */
@@ -88,6 +88,30 @@ public final class WatchpointRules {
         return null;
     }
 
+    /** 友盟简称单项长度上限（如 USY / KFC 等联盟简称，留足余量）。 */
+    public static final int MAX_ABBR_LEN = 16;
+
+    /**
+     * 友盟简称列表（逗号分隔，如 {@code USY,KFC}）—— 2026-11-10 新增（修复 P1-1）。
+     *
+     * <p>页面输入框语义已从「友盟 aid 数字」改为「联盟简称」，但保存前仍走
+     * {@link #validateFriendAids}（只接受数字），导致服务端回填简称后整页保存被卡死。
+     * 本方法只校验项数与单项长度，不做数字校验；空串合法（=不限制）。
+     */
+    public static String validateAbbrs(String csv) {
+        String v = csv == null ? "" : csv.trim();
+        if (v.isEmpty()) return null;
+        int n = 0;
+        for (String part : v.split(",", -1)) {
+            String s = part.trim();
+            if (s.isEmpty()) continue;
+            if (s.length() > MAX_ABBR_LEN) return "友盟简称过长（>" + MAX_ABBR_LEN + " 字符）";
+            n++;
+        }
+        if (n > MAX_FRIEND_AIDS) return "友盟简称过多（>" + MAX_FRIEND_AIDS + "）";
+        return null;
+    }
+
     /** 告警类型列表（逗号分隔；每项 1~99999）。 */
     public static String validateAlertTypes(String csv) {
         Set<Long> ids = parseIds(csv);
@@ -114,7 +138,7 @@ public final class WatchpointRules {
             String err = validateTarget(String.valueOf(uid), o.optString("nick", ""),
                     String.valueOf(o.optInt("x")), String.valueOf(o.optInt("y")));
             if (err != null) return "第 " + (i + 1) + " 个监视目标：" + err;
-            if (!uids.add(uid)) return "监视目标 uid 重复: " + uid;
+            if (!uids.add(uid)) return "监视目标 fid 重复: " + uid;
         }
         return null;
     }
@@ -141,7 +165,7 @@ public final class WatchpointRules {
         if (err != null) return err;
         err = validateRects(rects);
         if (err != null) return err;
-        err = validateFriendAids(friendAids);
+        err = validateAbbrs(friendAids);   // 2026-11-10：friend 字段已是「联盟简称」，不再要求数字
         if (err != null) return err;
         return validateAlertTypes(alertTypes);
     }

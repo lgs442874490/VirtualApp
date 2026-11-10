@@ -91,6 +91,23 @@ public class WatchpointRulesTest {
     }
 
     @Test
+    public void validateAbbrs_acceptsAllianceShortNames() {
+        // 2026-11-10（P1-1）：简称合法——空串/字母/大小写/中文/含空格都通过
+        assertNull(WatchpointRules.validateAbbrs(""));
+        assertNull(WatchpointRules.validateAbbrs(null));
+        assertNull(WatchpointRules.validateAbbrs("USY,KFC"));
+        assertNull(WatchpointRules.validateAbbrs(" USY , KFC "));
+        assertNull(WatchpointRules.validateAbbrs("远航"));
+        assertNotNull(WatchpointRules.validateAbbrs("ABCDEFGHIJKLMNOPQ"));  // 17 字符超长
+        StringBuilder many = new StringBuilder();
+        for (int i = 0; i <= WatchpointRules.MAX_FRIEND_AIDS; i++) {
+            if (i > 0) many.append(',');
+            many.append("A").append(i);
+        }
+        assertNotNull(WatchpointRules.validateAbbrs(many.toString()));  // 超量
+    }
+
+    @Test
     public void validateAll_reportsFirstErrorInOrder() {
         JSONArray targets = new JSONArray().put(target(1L, "A", 1, 1));
         JSONArray rects = new JSONArray().put(rect("R", 0, 0, 55, 55));
@@ -100,7 +117,8 @@ public class WatchpointRulesTest {
                 WatchpointRules.validateAll(new JSONArray(), rects, "555", "1,2"));
         assertTrue(WatchpointRules.validateAll(targets, new JSONArray(), "555", "1,2")
                 .contains("保护矩形"));
-        assertTrue(WatchpointRules.validateAll(targets, rects, "x", "1,2").contains("友盟"));
+        // 2026-11-10：friend 字段语义改为「联盟简称」，字母/数字均合法；用超长简称触发友盟校验
+        assertTrue(WatchpointRules.validateAll(targets, rects, "ABCDEFGHIJKLMNOPQ", "1,2").contains("友盟"));
         assertTrue(WatchpointRules.validateAll(targets, rects, "555", "").contains("告警类型"));
     }
 

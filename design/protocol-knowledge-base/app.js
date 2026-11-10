@@ -32,42 +32,47 @@
     const f = state.filters; const query = f.query.trim().toLowerCase();
     const list = state.records.filter((item) => {
       const haystack = [item.name, item.summary, item.feature, item.parameters, item.dataScope, item.evidence, ...(item.tags || [])].join(" ").toLowerCase();
-      return (!query || haystack.includes(query)) && (!f.category || item.category === f.category) && (!f.direction || item.direction === f.direction) && (!f.source || item.source === f.source) && (!f.status || item.status === f.status);
+      return (state.view !== "pending" || item.status !== "已实证") && (!query || haystack.includes(query)) && (!f.category || item.category === f.category) && (!f.direction || item.direction === f.direction) && (!f.source || item.source === f.source) && (!f.status || item.status === f.status);
     });
     return list.sort((a, b) => f.sort === "name" ? a.name.localeCompare(b.name) : f.sort === "category" ? a.category.localeCompare(b.category, "zh-CN") || a.name.localeCompare(b.name) : (b.verifiedAt || b.updatedAt).localeCompare(a.verifiedAt || a.updatedAt));
   }
   function renderStats(state) {
     const verified = state.records.filter((x) => x.status === "已实证").length;
     const features = new Set(state.records.map((x) => x.feature)).size;
-    const requests = state.records.filter((x) => x.direction === "请求").length;
+    const pending = state.records.filter((x) => x.status !== "已实证").length;
     const stats = [
-      { n: state.records.length, label: "已收录协议", note: "集中管理", icon: "database", color: "#5364e8", tint: "#eef0ff" },
-      { n: verified, label: "完成实证", note: `${state.records.length ? Math.round(verified / state.records.length * 100) : 0}% 覆盖率`, icon: "shield", color: "#16866b", tint: "#e9f7f2" },
-      { n: features, label: "可支撑功能", note: "直接复用", icon: "grid", color: "#b47529", tint: "#fff5e6" },
-      { n: requests, label: "主动请求协议", note: `${state.records.length - requests} 条推送 / 响应`, icon: "send", color: "#397fae", tint: "#eaf5fb" }
+      { n: state.records.length, label: "已收录协议", note: "含项目全量索引", icon: "database", color: "#5364e8", tint: "#eef0ff" },
+      { n: verified, label: "完成实证", note: `${state.records.length ? Math.round(verified / state.records.length * 100) : 0}% 证据覆盖`, icon: "shield", color: "#16866b", tint: "#e9f7f2" },
+      { n: pending, label: "待实证协议", note: `${state.records.filter((x) => x.status === "命名推测").length} 条命名推测`, icon: "terminal", color: "#b47529", tint: "#fff5e6" },
+      { n: features, label: "可支撑功能", note: "按功能反查", icon: "grid", color: "#397fae", tint: "#eaf5fb" }
     ];
     $("#statsGrid").innerHTML = stats.map((s) => `<article class="stat-card" style="--color:${s.color};--tint:${s.tint}"><div class="stat-icon">${icon(s.icon)}</div><div class="stat-info"><strong>${s.n}</strong><span>${s.label}</span></div><span class="stat-note">${s.note}</span></article>`).join("");
   }
   function renderNavigation(state) {
     $("#navCount").textContent = state.records.length;
+    $("#pendingNavCount").textContent = state.records.filter((item) => item.status !== "已实证").length;
     $("#categoryNav").innerHTML = store.categories.map((category) => {
       const count = state.records.filter((item) => item.category === category).length;
       return `<button class="category-btn" data-category="${category}" style="--cat:${categoryColors[category]}"><i></i>${category}<b>${count}</b></button>`;
     }).join("");
     $$(".nav-item").forEach((button) => button.classList.toggle("active", button.dataset.view === state.view));
-    $$(".view").forEach((view) => view.classList.toggle("active", view.id === `${state.view}View`));
-    $("#viewTitle").textContent = { library: "协议库", features: "功能索引", sources: "证据来源" }[state.view];
+    $$(".view").forEach((view) => view.classList.toggle("active", view.id === (state.view === "pending" ? "libraryView" : `${state.view}View`)));
+    $("#viewTitle").textContent = { library: "协议库", pending: "待实证区", features: "功能索引", sources: "证据来源" }[state.view];
+    const isPending = state.view === "pending";
+    $("#libraryEyebrow").textContent = isPending ? "VERIFICATION QUEUE" : "PROTOCOL INTELLIGENCE";
+    $("#libraryTitle").textContent = isPending ? "待实证协议区" : "协议核心知识库";
+    $("#libraryDescription").textContent = isPending ? "已接入但缺少有效反馈，以及仅按命名推测的协议；完成实测后再升级为已实证。" : "从证据到实现，让每一条协议都能被检索、复用与信任。";
   }
   function renderList(state) {
     const records = filteredRecords(state); const f = state.filters;
     $("#resultCount").textContent = records.length;
     const activeFilters = [f.category, f.direction, f.source, f.status].filter(Boolean);
     $("#filterCount").hidden = !activeFilters.length; $("#filterCount").textContent = activeFilters.length;
-    $("#filterDescription").textContent = f.query || activeFilters.length ? "· 当前筛选结果" : "· 全部已收录";
+    $("#filterDescription").textContent = f.query || activeFilters.length ? "· 当前筛选结果" : state.view === "pending" ? "· 待实证与命名推测" : "· 全部已收录";
     $("#protocolList").innerHTML = records.map((item) => `<article class="protocol-row ${item.id === state.selectedId ? "selected" : ""}" data-id="${esc(item.id)}" tabindex="0">
       <div class="proto-name"><div class="proto-direction ${item.direction === "推送" ? "push" : ""}">${icon(item.direction === "推送" ? "arrowDown" : item.direction === "响应" ? "inbox" : "arrowUp")}</div><div class="proto-name-text"><strong title="${esc(item.name)}">${esc(item.name)}</strong><span>${esc(item.feature)} · ${esc(item.summary)}</span></div></div>
       <span class="category-chip" style="--cat:${categoryColors[item.category]}"><i></i>${esc(item.category)}</span>
-      <div class="source-cell"><span>${esc(item.source)}</span><b class="status-badge ${item.status === "部分实证" ? "partial" : ""}">${esc(item.status)}</b></div>
+      <div class="source-cell"><span>${esc(item.source)}</span><b class="status-badge ${item.status !== "已实证" ? "partial" : ""}">${esc(item.status)}</b></div>
       <span class="date-cell">${esc(item.verifiedAt || "未注明")}</span><button class="row-action" aria-label="查看详情">${icon("chevron")}</button></article>`).join("");
     $("#protocolList").hidden = !records.length; $("#emptyState").hidden = !!records.length;
   }
@@ -75,7 +80,7 @@
   function renderDetail(state) {
     const item = state.records.find((record) => record.id === state.selectedId);
     if (!item) { $("#detailPanel").innerHTML = `<div class="detail-empty">${icon("book")}<p>选择一条协议查看完整开发档案</p></div>`; return; }
-    $("#detailPanel").innerHTML = `<div class="detail-head"><div class="detail-top"><span class="record-id">${esc(item.id)} / ${esc(item.direction)}协议</span><div class="detail-actions"><button data-action="copy" title="复制协议名">${icon("copy")}</button><button data-action="edit" title="编辑协议">${icon("edit")}</button><button data-action="delete" class="delete" title="删除协议">${icon("trash")}</button></div></div><h2>${esc(item.name)}</h2><p>${esc(item.summary)}</p><div class="detail-meta"><span class="meta-chip verified">${esc(item.status)}</span><span class="meta-chip">${esc(item.category)} · ${esc(item.feature)}</span><span class="meta-chip">${esc(item.method)}</span></div></div>
+    $("#detailPanel").innerHTML = `<div class="detail-head"><div class="detail-top"><span class="record-id">${esc(item.id)} / ${esc(item.direction)}协议</span><div class="detail-actions"><button data-action="copy" title="复制协议名">${icon("copy")}</button><button data-action="edit" title="编辑协议">${icon("edit")}</button><button data-action="delete" class="delete" title="删除协议">${icon("trash")}</button></div></div><h2>${esc(item.name)}</h2><p>${esc(item.summary)}</p><div class="detail-meta"><span class="meta-chip ${item.status === "已实证" ? "verified" : "pending"}">${esc(item.status)}</span><span class="meta-chip">${esc(item.category)} · ${esc(item.feature)}</span><span class="meta-chip">${esc(item.method)}</span></div></div>
       <section class="detail-section"><h3><span>${icon("layers")}</span>来源与获取</h3><div class="info-list">${info("证据来源", item.source)}${info("获取方式", item.acquisition)}${info("验证日期", item.verifiedAt, "未注明")}</div></section>
       <section class="detail-section"><h3><span>${icon("shield")}</span>提交与获取边界</h3><div class="boundary-grid">${info("请求方式", item.method)}${info("鉴权要求", item.auth)}${info("参数与限制", item.parameters)}${info("可获取的数据范围", item.dataScope)}${info("提交限制 / 注意事项", item.limitations)}</div></section>
       <section class="detail-section"><h3><span>${icon("terminal")}</span>功能实现步骤</h3><ol class="steps">${item.implementationSteps.map((step) => `<li>${esc(step)}</li>`).join("")}</ol></section>
@@ -88,7 +93,7 @@
     $("#featureGrid").innerHTML = Array.from(groups.entries()).sort((a, b) => b[1].length - a[1].length).map(([feature, items]) => `<article class="feature-card" data-feature="${esc(feature)}"><div class="feature-card-top"><div class="feature-card-icon">${icon("grid")}</div><span class="category-chip" style="--cat:${categoryColors[items[0].category]}"><i></i>${esc(items[0].category)}</span></div><h3>${esc(feature)}</h3><p>${items.length} 条协议构成开发清单 · ${items.filter((x) => x.direction === "请求").length} 条主动请求 · ${items.filter((x) => x.direction === "推送").length} 条状态推送</p><div class="feature-protocols">${items.slice(0, 4).map((x) => `<code>${esc(x.name)}</code>`).join("")}${items.length > 4 ? `<code>+${items.length - 4}</code>` : ""}</div></article>`).join("");
   }
   function renderSources(state) {
-    const descriptions = { "ProtoLogger 登录快照": "登录 init 全量快照，适合确认初始状态字段与业务协议覆盖。", "ProtoLogger 事件监听": "在线实时事件证据，适合构建推送驱动和响应式自动化。", "网页版静态分析": "来自反编译调用链，需区分代码证据与线上动态实测。", "网页版移植实测": "已有功能移植与实测记录，可直接支撑同类功能开发。", "人工受控实测": "研发人员通过受控操作补充的协议、参数和边界证据。" };
+    const descriptions = { "ProtoLogger 登录快照": "登录 init 全量快照，适合确认初始状态字段与业务协议覆盖。", "ProtoLogger 事件监听": "在线实时事件证据，适合构建推送驱动和响应式自动化。", "网页版静态分析": "来自反编译调用链，需区分代码证据与线上动态实测。", "网页版移植实测": "已有功能移植与实测记录，可直接支撑同类功能开发。", "人工受控实测": "研发人员通过受控操作补充的协议、参数和边界证据。", "当前项目代码索引": "从 App 与 vault-server 当前源码提取调用点；只证明已接入，不代表协议有效。", "项目真机与生产实测": "具有真机、生产日志或专项 QA 的明确反馈，可追溯至验证报告。", "命名规约推断": "仅根据 notify/req 命名规律得到的候选，禁止直接用于生产调用。" };
     const sources = Array.from(new Set([...store.sources, ...state.records.map((x) => x.source)]));
     $("#sourceGrid").innerHTML = sources.map((source) => { const items = state.records.filter((x) => x.source === source); return `<article class="source-card"><span class="eyebrow">EVIDENCE SOURCE</span><h3>${esc(source)}</h3><div class="source-number">${items.length}</div><p>${esc(descriptions[source] || "自定义协议证据来源。")}</p><button data-source="${esc(source)}">查看该来源协议 →</button></article>`; }).join("");
   }
@@ -103,7 +108,7 @@
   function openEditor(item) {
     $("#editorTitle").textContent = item ? "编辑协议档案" : "收录新协议";
     $("#recordId").value = item ? item.id : "";
-    const values = { fName: item?.name || "", fCategory: item?.category || "奖励", fDirection: item?.direction || "推送", fFeature: item?.feature || "", fSummary: item?.summary || "", fStatus: item?.status || "已实证", fVerifiedAt: item?.verifiedAt || new Date().toISOString().slice(0, 10), fTags: (item?.tags || []).join(", "), fSource: item?.source || "ProtoLogger 事件监听", fMethod: item?.method || "被动监听", fAcquisition: item?.acquisition || "", fParameters: item?.parameters || "", fAuth: item?.auth || "", fLimitations: item?.limitations || "", fDataScope: item?.dataScope || "", fSteps: (item?.implementationSteps || []).join("\n"), fEvidence: item?.evidence || "", fRelated: (item?.related || []).join(", ") };
+    const values = { fName: item?.name || "", fCategory: item?.category || "奖励", fDirection: item?.direction || "推送", fFeature: item?.feature || "", fSummary: item?.summary || "", fStatus: item?.status || "待实证", fVerifiedAt: item?.verifiedAt || new Date().toISOString().slice(0, 10), fTags: (item?.tags || []).join(", "), fSource: item?.source || "ProtoLogger 事件监听", fMethod: item?.method || "被动监听", fAcquisition: item?.acquisition || "", fParameters: item?.parameters || "", fAuth: item?.auth || "", fLimitations: item?.limitations || "", fDataScope: item?.dataScope || "", fSteps: (item?.implementationSteps || []).join("\n"), fEvidence: item?.evidence || "", fRelated: (item?.related || []).join(", ") };
     Object.entries(values).forEach(([id, value]) => { $(`#${id}`).value = value; });
     $("#editorModal").hidden = false; document.body.style.overflow = "hidden"; setTimeout(() => $("#fName").focus(), 50);
   }

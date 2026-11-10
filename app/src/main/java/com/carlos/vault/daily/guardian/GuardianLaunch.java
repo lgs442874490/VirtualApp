@@ -54,7 +54,7 @@ public final class GuardianLaunch {
     public static void onThreatQualified(Context app, String fpid, long kid, GuardianEngine.Track t) {
         if (APP == null && app != null) APP = app.getApplicationContext();
         if (!LAUNCH_SLOTS.tryAcquire()) {
-            glog(app, "驻防并发已达上限(2)，跳过 uid" + t.owner + " 的威胁（敌若再加速会重新触发）");
+            glog(app, "驻防并发已达上限(2)，跳过 fid" + t.owner + " 的威胁（敌若再加速会重新触发）");
             return;
         }
         final Context c = app.getApplicationContext();
@@ -136,7 +136,7 @@ public final class GuardianLaunch {
         Long activeKey = t.targetUid > 0 ? t.targetUid : (long) t.marchId;
         String roleKey = fpid + ":" + kid;
         if (ACTIVE.putIfAbsent(activeKey, Boolean.TRUE) != null) {
-            glog(app, "该目标已有驻防任务在跑，跳过（uid" + activeKey + "）");
+            glog(app, "该目标已有驻防任务在跑，跳过（fid" + activeKey + "）");
             return;
         }
         ACTIVE_ROLES.add(roleKey);
@@ -180,7 +180,7 @@ public final class GuardianLaunch {
             if (existing != null && existing[3] != 0) {   // 3=驻扎也拦（2814 已实证同目标重复援助被拒）
                 boolean holding = GuardianHold.shouldHold(fpid, kid, t.targetUid,
                         System.currentTimeMillis());
-                glog(app, "该盟友城已有我方驻防（uid" + t.targetUid + " 状态" + existing[3]
+                glog(app, "该盟友城已有我方驻防（fid" + t.targetUid + " 状态" + existing[3]
                         + (holding ? "，🛡常驻戒备在位，威胁由其承接" : "") + "），不重复驻防");
                 return;
             }
@@ -216,7 +216,7 @@ public final class GuardianLaunch {
                 if (code == 1510 || code == 2815) {
                     // 1510=not_in_same_alliance / 2815=help_must_same_alliance：该目标已退盟（23:01 KK 实测）
                     AllyMap.evict(fpid, kid, t.targetUid);
-                    glog(app, "目标 uid" + t.targetUid + " 已不在联盟（" + code + "），移出盟友坐标表，放弃驻防");
+                    glog(app, "目标 fid" + t.targetUid + " 已不在联盟（" + code + "），移出盟友坐标表，放弃驻防");
                     return;
                 }
             } catch (Throwable ex) {
@@ -250,7 +250,7 @@ public final class GuardianLaunch {
             if (t.preGarrison) {
                 glog(app, "🚀预驻防：立即发射（不走精卡等待）");
             } else if (extreme) {
-                glog(app, "EXTREME 锁存者 uid" + t.owner + "：检测即发射+立刻加速，跳过精卡等待");
+                glog(app, "EXTREME 锁存者 fid" + t.owner + "：检测即发射+立刻加速，跳过精卡等待");
             }
             if (!extreme && calibrated && enemyEnd - nowS > planD + 3) {
                 long deltaMs = deltaMs(app, fpid, kid);
@@ -325,7 +325,7 @@ public final class GuardianLaunch {
                 if (lastCode == 2815) {
                     // 2815=help_must_same_alliance：目标已退盟（使馆查询未拦到的兜底路径）
                     AllyMap.evict(fpid, kid, t.targetUid);
-                    glog(app, "目标 uid" + t.targetUid + " 已不在联盟（2815），移出盟友坐标表，放弃驻防");
+                    glog(app, "目标 fid" + t.targetUid + " 已不在联盟（2815），移出盟友坐标表，放弃驻防");
                     return;
                 }
                 if (lastCode == 2878) {
@@ -452,7 +452,7 @@ public final class GuardianLaunch {
                 long armedUntil = GuardianHold.armIfNeeded(app, fpid, kid, t.targetUid, t.owner, t.compressCount);
                 if (armedUntil > 0) {
                     String holdLine = "🛡常驻戒备中（剩余" + GuardianHold.holdGarrisonMin(app, fpid, kid) + "m）";
-                    glog(app, "🛡常驻戒备武装（EXTREME 惯犯 uid" + t.owner
+                    glog(app, "🛡常驻戒备武装（EXTREME 惯犯 fid" + t.owner
                             + " 压缩 " + t.compressCount + " 次）：本次驻防保留，不随战报/敌撤撤防");
                     try {
                         FnParams.saveModText(app, fpid, kid, GuardianEngine.FN_ID,
@@ -472,7 +472,7 @@ public final class GuardianLaunch {
             }
             if (t.preGarrison) {
                 String line = "🚀预驻防 → 盟友(" + gx + "," + gy
-                        + (t.targetUid > 0 ? " uid" + t.targetUid : "") + "）已发出，到达 "
+                        + (t.targetUid > 0 ? " fid" + t.targetUid : "") + "）已发出，到达 "
                         + hhmmss(ourEnd) + "，无威胁滞留 "
                         + GuardianPreGarrison.DWELL_SEC / 60 + " 分钟后由清扫器撤回";
                 glog(app, line);
@@ -708,7 +708,7 @@ public final class GuardianLaunch {
         }
         try {
             com.carlos.vault.daily.EnemyWatch.alert(app,
-                    "🚨盟友城被攻，请手动增援！\n目标：uid" + (t.targetUid > 0 ? t.targetUid : "")
+                    "🚨盟友城被攻，请手动增援！\n目标：fid" + (t.targetUid > 0 ? t.targetUid : "")
                             + " 城(" + gx + "," + gy + ")\n敌到：约 " + Math.max(0, t.endServerSec - System.currentTimeMillis() / 1000L)
                             + "s 后（自动驻防被拒 code=" + code + "）", true);
         } catch (Throwable ignored) {
@@ -747,7 +747,7 @@ public final class GuardianLaunch {
         try {
             // P6 常驻戒备：保留窗口内的驻防不自动撤防（覆盖默认"战报出即撤防"路径）
             if (GuardianHold.shouldHold(fpid, kid, targetUid, System.currentTimeMillis())) {
-                glog(app, "🛡常驻戒备：uid" + targetUid + " 城驻防保留中"
+                glog(app, "🛡常驻戒备：fid" + targetUid + " 城驻防保留中"
                         + GuardianHold.holdStatusText(fpid, kid, System.currentTimeMillis()) + "，跳过撤防");
                 return;
             }
@@ -767,7 +767,7 @@ public final class GuardianLaunch {
                 if (mid > 0 && ty == 5L && (st == 3L || st == 2L) && ht == targetUid && !ids.contains(mid)) ids.add(mid);
             }
             if (ids.isEmpty()) {
-                glog(app, "撤防：uid" + targetUid + " 城未发现我方驻扎行军（可能已撤/在途）");
+                glog(app, "撤防：fid" + targetUid + " 城未发现我方驻扎行军（可能已撤/在途）");
                 INFLIGHT.remove(targetUid);
                 return;
             }
@@ -787,7 +787,7 @@ public final class GuardianLaunch {
                 String proto = inFlight ? "req_world_march_recall" : "req_world_march_off_work";
                 GameMessage r = engine.request(proto, a, 8);
                 glog(app, "撤防 " + proto.replace("req_world_march_", "") + " 行军" + mid
-                        + "（uid" + targetUid + (inFlight ? " 在途召回" : "") + "）code=" + ExecUtil.codeOf(r));
+                        + "（fid" + targetUid + (inFlight ? " 在途召回" : "") + "）code=" + ExecUtil.codeOf(r));
             }
             INFLIGHT.remove(targetUid);
         } catch (Throwable t) {
@@ -799,14 +799,14 @@ public final class GuardianLaunch {
      *  落地后再等 15s 仍无战斗邮件 → ❌未参战（后落地/敌已打完）；敌召回路径走 repatriate
      *  直调，无战报属正常——威胁未成立，不算防御失败。 */
     public static void repatriateDelayed(Context app, String fpid, long kid, long targetUid, long delayMs) {
-        glog(app, "敌方落地：战报出即撤防（" + delayMs / 1000L + "s 后，uid" + targetUid + "）");
+        glog(app, "敌方落地：战报出即撤防（" + delayMs / 1000L + "s 后，fid" + targetUid + "）");
         final long landMs = System.currentTimeMillis();
         Thread th = new Thread(() -> {
             sleep(delayMs);
             try {
                 // P6 常驻戒备：延迟到期时若已武装（新威胁/发射完成武装）→ 继续保留，且不算"无战报失败"
                 if (GuardianHold.shouldHold(fpid, kid, targetUid, System.currentTimeMillis())) {
-                    glog(app, "🛡常驻戒备：uid" + targetUid + " 城驻防保留中，跳过延迟撤防（战报判定一并跳过）");
+                    glog(app, "🛡常驻戒备：fid" + targetUid + " 城驻防保留中，跳过延迟撤防（战报判定一并跳过）");
                     return;
                 }
                 repatriate(app, fpid, kid, targetUid);
@@ -816,7 +816,7 @@ public final class GuardianLaunch {
             sleep(15_000L);
             long lastMail = com.carlos.vault.daily.guardian.GuardianEngine.lastBattleMailAt();
             if (lastMail < landMs) {
-                glog(app, "❌无战报：我方未参战（后落地/敌已打完）→ 本次驻防判定失败（uid" + targetUid + "）");
+                glog(app, "❌无战报：我方未参战（后落地/敌已打完）→ 本次驻防判定失败（fid" + targetUid + "）");
             }
         }, "guardian-repatriate");
         th.setDaemon(true);
@@ -856,7 +856,7 @@ public final class GuardianLaunch {
                 if (GuardianEngine.hasThreatOn(kid, v[1])) continue;   // 目标仍有威胁：继续驻
                 // P6 常驻戒备：保留窗口内的驻防不撤（清扫器让位，到期后由此处正常撤回）
                 if (GuardianHold.shouldHold(fpid, kid, v[1], System.currentTimeMillis())) {
-                    glog(app, "🛡常驻戒备：保留 uid" + v[1] + " 城驻防（清扫器让位，"
+                    glog(app, "🛡常驻戒备：保留 fid" + v[1] + " 城驻防（清扫器让位，"
                             + GuardianHold.holdStatusText(fpid, kid, System.currentTimeMillis()) + "）");
                     continue;
                 }
@@ -866,7 +866,7 @@ public final class GuardianLaunch {
                 try {
                     GameMessage r = engine.request("req_world_march_off_work", a, 8);
                     int sc = ExecUtil.codeOf(r);
-                    glog(app, "清扫：撤回无威胁驻防 行军" + v[0] + "（uid" + v[1] + "）code=" + sc);
+                    glog(app, "清扫：撤回无威胁驻防 行军" + v[0] + "（fid" + v[1] + "）code=" + sc);
                     if (sc == 0) freed++;
                     if (sc == 2806) SWEEP_DEAD.add(v[0]);   // 行军不存在：记下不再空转
                 } catch (Throwable t) {
@@ -1081,7 +1081,7 @@ public final class GuardianLaunch {
             long[] g = e.getValue();
             if (g.length > 0 && g[0] == marchId) {
                 INFLIGHT.remove(e.getKey());
-                glog(APP, "驻防记录已清理（行军" + marchId + " 结束，uid" + e.getKey() + "）");
+                glog(APP, "驻防记录已清理（行军" + marchId + " 结束，fid" + e.getKey() + "）");
                 return;
             }
         }

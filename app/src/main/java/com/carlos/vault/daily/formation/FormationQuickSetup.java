@@ -267,8 +267,25 @@ public final class FormationQuickSetup {
     }
 
     /** 预设 id：采集肉/木/煤/铁（9100000006..9）与巨兽/狩猎是否齐备。 */
+    /**
+     * 一键编队实际要绑定的预设 id（2026-11-10 修复 P0-3）：
+     * 巨兽/打熊 {@code ID_FIRST}、狩猎 {@code +1}、采集肉/木/煤/铁 {@code +5..+8}。
+     *
+     * <p>旧实现遍历 {@code ID_FIRST..ID_LAST} 全部 19 个 id，而 {@link PresetFormations#ensure}
+     * 按契约最多只落库 15 套（5 基础 + 4 采集 + 最多 6 队熊上车），全库永远凑不齐 19 个 →
+     * {@code ready} 恒 false，一键编队在任何环境都只输出「尚未同步」。
+     */
+    private static final long[] REQUIRED_PRESET_IDS = {
+            PresetFormations.ID_FIRST,          // 巨兽 / 打熊
+            PresetFormations.ID_FIRST + 1L,     // 狩猎（情报/自动狩猎共用）
+            PresetFormations.ID_FIRST + 5L,     // 采集肉
+            PresetFormations.ID_FIRST + 6L,     // 采集木
+            PresetFormations.ID_FIRST + 7L,     // 采集煤
+            PresetFormations.ID_FIRST + 8L,     // 采集铁
+    };
+
     private static boolean hasAllPresets(List<FormationModel> lib) {
-        for (long id = PresetFormations.ID_FIRST; id <= PresetFormations.ID_LAST; id++) {
+        for (long id : REQUIRED_PRESET_IDS) {
             if (FormationRules.findById(lib, id) == null) return false;
         }
         return true;

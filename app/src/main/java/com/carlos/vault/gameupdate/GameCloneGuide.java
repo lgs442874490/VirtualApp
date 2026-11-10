@@ -9,6 +9,7 @@ import android.os.AsyncTask;
 import android.os.Build;
 import android.widget.Toast;
 
+import com.carlos.vault.UiStyle;
 import com.carlos.vault.VaultEngine;
 
 import java.io.File;
@@ -106,7 +107,7 @@ public final class GameCloneGuide {
         if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) return true;
         if (activity == null || activity.isFinishing()) return true;
         final Uri uri = data.getData();
-        final ProgressDialog pd = new ProgressDialog(activity);
+        final ProgressDialog pd = UiStyle.progressDialog(activity);
         pd.setMessage("正在读取本地安装包…（大包需要一点时间）");
         pd.setCancelable(false);
         pd.show();

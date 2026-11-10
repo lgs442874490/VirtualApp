@@ -14,6 +14,7 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import com.carlos.vault.UiComponents;
 import com.carlos.vault.UiStyle;
 
 /**
@@ -189,7 +190,7 @@ public final class LicenseUi {
                 submit.setEnabled(false);
                 submit.setText("正在激活…");
 
-                ProgressDialog pd = new ProgressDialog(act);
+                ProgressDialog pd = UiStyle.progressDialog(act);
                 pd.setMessage("正在激活…");
                 pd.setCancelable(false);
                 pd.show();
@@ -260,7 +261,7 @@ public final class LicenseUi {
             retry.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View v) {
-                    final ProgressDialog pd = new ProgressDialog(act);
+                    final ProgressDialog pd = UiStyle.progressDialog(act);
                     pd.setMessage("正在联网校验…");
                     pd.setCancelable(false);
                     pd.show();
@@ -535,7 +536,7 @@ public final class LicenseUi {
                             UiStyle.toast(act, "兑换码不存在或格式错误");
                             return;
                         }
-                        final ProgressDialog pd = new ProgressDialog(act);
+                        final ProgressDialog pd = UiStyle.progressDialog(act);
                         pd.setMessage("正在激活…");
                         pd.setCancelable(false);
                         pd.show();
@@ -577,7 +578,7 @@ public final class LicenseUi {
     private static View titleBar(Activity act, String text) {
         TextView tv = new TextView(act);
         tv.setText(text);
-        tv.setTextSize(19);
+        tv.setTextSize(UiComponents.TEXT_PAGE_TITLE);
         tv.setTypeface(Typeface.DEFAULT_BOLD);
         tv.setTextColor(UiStyle.BRAND_TEXT);
         tv.setGravity(Gravity.CENTER);

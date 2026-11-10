@@ -371,7 +371,7 @@ public class EntryDetailActivity extends Activity {
 
     /**
      * 角色盒（第二轮 UI）：只渲染<b>已加入工作区</b>（enabled）的角色——
-     * 每行 = 头像 + 昵称 + 标准元数据行（UID/城堡/战力，缺失「未同步」）+
+     * 每行 = 头像 + 昵称 + 标准元数据行（fid/城堡/战力，缺失「未同步」）+
      * 统一状态行 + 徽章（当前角色/工作区）+「登录」（以该角色模拟登录在线）。
      *
      * <p>未加入工作区的角色不在此出现（去右上「管理」里开开关）；空态给可点提示。
@@ -839,7 +839,7 @@ public class EntryDetailActivity extends Activity {
 
     /** 原 doLaunch 主体：完整前置检查（授权 → 引擎 → 克隆 → 版本）全过才真正拉起。 */
     private void doLaunchAfterImeWarmup() {
-        final ProgressDialog pd = new ProgressDialog(this);
+        final ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("前置检查中…");
         pd.setCancelable(false);
         pd.show();
@@ -929,7 +929,7 @@ public class EntryDetailActivity extends Activity {
 
     /** 前置检查全过 → 真正拉起（原 launchEntry 链路不变）。 */
     private void startLaunch() {
-        ProgressDialog pd = new ProgressDialog(this);
+        ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在启动 «" + acc.label + "» …");
         pd.setCancelable(false);
         pd.show();
@@ -988,7 +988,7 @@ public class EntryDetailActivity extends Activity {
 
     /** 从系统原版克隆进容器，成功后自动重走前置检查并启动。 */
     private void cloneThenLaunch() {
-        final ProgressDialog pd = new ProgressDialog(this);
+        final ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在克隆游戏…");
         pd.setCancelable(false);
         pd.show();
@@ -1187,7 +1187,7 @@ public class EntryDetailActivity extends Activity {
             toast("正在切换/启动账号，请稍候再试");
             return;
         }
-        final ProgressDialog pd = new ProgressDialog(this);
+        final ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在从原生游戏重新克隆分身…");
         pd.setCancelable(false);
         pd.show();
@@ -1388,7 +1388,7 @@ public class EntryDetailActivity extends Activity {
      * （命中复制进 cache）。找到 → 确认弹窗进原有 校验 → 安装 → 重拉起 链路。
      */
     private void continueLocalApkUpdate() {
-        final ProgressDialog pd = new ProgressDialog(this);
+        final ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在扫描「下载」目录…");
         pd.setCancelable(false);
         pd.show();
@@ -1426,7 +1426,7 @@ public class EntryDetailActivity extends Activity {
     /** 本地包链路：跳过下载；size/sha 与 CDN 包不一定一致（渠道差异），只校验
      *  包名/versionCode 提升/签名，再覆盖安装并重拉起。 */
     private void verifyAndInstallLocal(final File apk) {
-        final ProgressDialog pd = new ProgressDialog(this);
+        final ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在校验本地更新包…");
         pd.setCancelable(false);
         pd.show();
@@ -1616,7 +1616,7 @@ public class EntryDetailActivity extends Activity {
             toast("入口没有号 ID：请先「设置 token」或原生登录一次");
             return;
         }
-        final ProgressDialog pd = new ProgressDialog(this);
+        final ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在从服务器获取 token…");
         pd.setCancelable(false);
         pd.show();
@@ -1658,7 +1658,7 @@ public class EntryDetailActivity extends Activity {
     }
 
     private void doExportToken() {
-        ProgressDialog pd = new ProgressDialog(this);
+        ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在读取当前登录…（会先关闭游戏）");
         pd.setCancelable(false);
         pd.show();
@@ -1714,7 +1714,7 @@ public class EntryDetailActivity extends Activity {
             toast(why);
             return;
         }
-        ProgressDialog pd = new ProgressDialog(this);
+        ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在保存登录状态…");
         pd.setCancelable(false);
         pd.show();

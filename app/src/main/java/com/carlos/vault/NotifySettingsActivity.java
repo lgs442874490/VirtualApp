@@ -125,7 +125,7 @@ public class NotifySettingsActivity extends Activity {
         box.addView(hint("监视名单按账号区分（该账号名下所有角色会话共同监视）；名单存服务器，多端共享。"));
         box.addView(hint("监视目标按坐标追踪：他一出兵就知道他从哪座城出发、打谁；迁城或被打飞后会自动搜索新坐标，"
                 + "找到即推送（先查他最后出现的位置周边，再扫全图未知区域）。"));
-        box.addView(hint("⚠️ 非监视目标（普通敌人）仍受游戏视野限制：只有打到你或盟友、或出现在已扫描区域时才会有事件。"));
+        box.addView(warnHint("非监视目标（普通敌人）仍受游戏视野限制：只有打到你或盟友、或出现在已扫描区域时才会有事件。"));
         box.addView(hint("采集点被攻击也会推（监视目标打采集点，或友盟采集点被打）：带攻击人坐标/出征信息、"
                 + "被攻击人、资源点坐标；每人 5 分钟最多 3 条。"));
 
@@ -182,7 +182,7 @@ public class NotifySettingsActivity extends Activity {
         wecomStatus.setTextSize(11.5f);
         wecomStatus.setPadding(dp(2), dp(8), 0, 0);
         wc.addView(wecomStatus);
-        wc.addView(hint("⚠️ 保存后需在上方「监视名单」添加敌人 uid 才会触发推送——webhook 只决定推送通道，名单决定监视谁。"));
+        wc.addView(warnHint("保存后需在上方「监视名单」添加敌人 fid 才会触发推送——webhook 只决定推送通道，名单决定监视谁。"));
         wc.addView(hint("推送频率受「冷却」约束；夜间静默时段只停企微推送，事件照常记录。"));
         box.addView(wc);
 
@@ -302,13 +302,20 @@ public class NotifySettingsActivity extends Activity {
         return h;
     }
 
+    /** D5（真机 2026-11-06）：警示说明不用 emoji，改用已登记的 WARN_INK 语义色 +「注意：」前缀。 */
+    private TextView warnHint(String text) {
+        TextView h = UiComponents.caption(this, "注意：" + text, UiStyle.WARN_INK);
+        h.setPadding(dp(4), dp(6), dp(4), 0);
+        return h;
+    }
+
     /** 添加监视行卡片。 */
     private View addCard() {
         LinearLayout card = UiComponents.card(this);
         card.setOrientation(LinearLayout.VERTICAL);
         card.setPadding(dp(12), dp(12), dp(12), dp(12));
-        // 2026-11-04：用户无法得知服务器内部 uid → 只填游戏内可见的 FID，服务端换算
-        addUidEt = field(card, "敌人 FID（必填）", "游戏内玩家ID，纯数字（见好友/战报页）");
+        // 2026-11-04：用户无法得知服务器内部 uid → 只填游戏内可见的 fid，服务端换算
+        addUidEt = field(card, "敌人 fid（必填）", "游戏内玩家 fid，纯数字（见好友/战报页）");
         addUidEt.setInputType(InputType.TYPE_CLASS_NUMBER);
         addNameEt = field(card, "名称（可选）", "游戏昵称");
         addKidEt = field(card, "区服 kid（可选）", "如 888");
@@ -563,7 +570,7 @@ public class NotifySettingsActivity extends Activity {
         targetUidOrder.add(uid);
         String d = t.optString("note", "");
         if (d.isEmpty()) d = t.optString("name", "");
-        if (d.isEmpty()) d = "uid " + uid;
+        if (d.isEmpty()) d = "fid " + uid;
         final String display = d;
 
         LinearLayout row = UiComponents.card(this);
@@ -584,7 +591,7 @@ public class NotifySettingsActivity extends Activity {
         mid.addView(name);
         TextView sub = new TextView(this);
         String kid = t.optString("kid", "");
-        sub.setText("uid " + uid + (kid.isEmpty() ? "" : " @k" + kid));
+        sub.setText("fid " + uid + (kid.isEmpty() ? "" : " @k" + kid));
         sub.setTextSize(11.5f);
         sub.setTextColor(UiStyle.INK2);
         mid.addView(sub);
@@ -608,7 +615,7 @@ public class NotifySettingsActivity extends Activity {
         del.setOnClickListener(v -> new AlertDialog.Builder(this,
                         AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
                 .setTitle("删除监视")
-                .setMessage("不再监视 " + display + "（uid " + uid + "）？")
+                .setMessage("不再监视 " + display + "（fid " + uid + "）？")
                 .setPositiveButton("删除", (dg, w) -> {
                     for (String p : scopeList()) VaultSync.watchRemove(this, p, uid, null);
                     toast("已删除（" + scopeList().size() + " 个账号）");
@@ -896,7 +903,7 @@ public class NotifySettingsActivity extends Activity {
         if (addTargetInFlight) return;
         String fid = text(addUidEt);
         if (!fid.matches("\\d+") || Long.parseLong(fid) <= 0) {
-            toast("FID 必须为大于 0 的数字（游戏领主档案里的那串数字）");
+            toast("fid 必须为大于 0 的数字（游戏内玩家ID）");
             return;
         }
         addTargetInFlight = true;
