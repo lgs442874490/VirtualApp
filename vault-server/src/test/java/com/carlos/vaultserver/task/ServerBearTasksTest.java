@@ -861,4 +861,22 @@ public class ServerBearTasksTest {
         assertEquals(789L, s2.get(0)[0]);
         assertEquals(152L, s2.get(0)[1]);
     }
+
+    @Test
+    public void memberMatch_detectsDifferentFormation() {
+        Map<String, Object> hero1 = new LinkedHashMap<>();
+        hero1.put("v", 50036L);
+        Map<String, Object> hero2 = new LinkedHashMap<>();
+        hero2.put("v", 50005L);
+        Map<String, Object> detail = new LinkedHashMap<>();
+        detail.put("owner", 123L);
+        detail.put("hero_map", Arrays.asList(hero1, hero2));
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("detail_list", Collections.singletonList(detail));
+
+        assertEquals(1, ServerBearTasks.memberMatch(content, 123L, Arrays.asList(50036L, 50005L)));
+        assertEquals(2, ServerBearTasks.memberMatch(content, 123L, Arrays.asList(50036L, 50007L)));
+        assertEquals(0, ServerBearTasks.memberMatch(content, 999L, Arrays.asList(50036L, 50005L)));
+        assertEquals(1, ServerBearTasks.memberMatch(content, 123L, Collections.<Long>emptyList()));
+    }
 }
