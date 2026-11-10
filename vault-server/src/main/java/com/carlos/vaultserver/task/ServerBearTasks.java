@@ -86,7 +86,7 @@ public final class ServerBearTasks {
     /** 开赛前准备提前量 10 分钟（DailyBearSchedule.PREPARATION_LEAD_MINUTES）。 */
     static final int PREP_LEAD_MINUTES = 10;
     /** 默认准备档 index=2 → 620 秒（DailyBearMarchExecutor:690-698）。 */
-    static final int DEFAULT_PREPARE_TIME_INDEX = 2;
+    static final int DEFAULT_PREPARE_TIME_INDEX = 1;
     /** 上车编队数上限 6（DailyBearActionConfig.NORMAL_QUEUE_LIMIT / 发起1+上车1-6）。 */
     static final int MAX_JOIN_COUNT = 6;
     /** 发起巨熊集结的行军 type（DailyBearMarchExecutor:677-680）。 */
@@ -641,6 +641,13 @@ public final class ServerBearTasks {
         // 2026-11-11（对齐网页版 pendingJoins）：先对账上一轮“已请求未确认”的上车。
         int[] reconciled = reconcilePendingJoins(tc, state, m, window, ownUid);
         int joinLimit = Math.max(cfg.joinCount, usingDefaultSlots ? joinSlots.size() : 0);
+        int queueCapacity = marchQueueCapacity(tc.engine);
+        if (queueCapacity > 0 && joinLimit > queueCapacity) {
+            FileLog.info("巨熊上车预算按队列容量夹取 fpid={} sid={} {} -> {}",
+                    tc.fpid, String.valueOf(tc.sid), String.valueOf(joinLimit),
+                    String.valueOf(queueCapacity));
+            joinLimit = queueCapacity;
+        }
         int remaining = joinLimit - joined.size();
         if (remaining <= 0) {
             // 仍先对账 pending，再按上限结束本轮
@@ -661,6 +668,15 @@ public final class ServerBearTasks {
             writeJoinMod(tc, "未上车 · 未发现可加入的巨熊集结（等待车头）");
             return;
         }
+        CandidateSelection preferredSelection = selectPreferredCandidates(
+                candidates, cfg, state, window, nowSec);
+        if (!preferredSelection.waitMessage.isEmpty()) {
+            m.skip(preferredSelection.waitMessage);
+            writeJoinMod(tc, "未上车 · " + preferredSelection.waitMessage);
+            saveState(tc, state);
+            return;
+        }
+        candidates = preferredSelection.candidates;
         Set<Long> usedHeroes = new LinkedHashSet<>();
         usedHeroes.addAll(parseHeroIds(state.launchHeroes));
         usedHeroes.addAll(parseHeroIds(state.joinHeroes));
@@ -787,7 +803,9 @@ public final class ServerBearTasks {
                     GameMessage detailRsp = requestRallyDetail(tc, candidate);
                     if (detailRsp != null) {
                         detailText = joinDetailSummary(detailRsp.getContent(), ownUid);
-                        confirmed = memberPresent(detailRsp.getContent(), ownUid);
+                        int match = memberMatch(detailRsp.getContent(), ownUid, heroes);
+                        confirmed = match == 1;
+                        if (match == 2) detailText = detailText + " · 英雄与本次编队不符";
                     } else {
                         detailText = "对账请求未返回";
                     }
@@ -869,6 +887,17 @@ public final class ServerBearTasks {
         saveState(tc, state);
     }
 
+    /** 实时行军队列容量（资产库 queue.capacity；0=不可用）。 */
+    static int marchQueueCapacity(WjdrEngine engine) {
+        try {
+            CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+            AssetSnapshot.Queue q = lib == null ? null : lib.queue();
+            return q == null ? 0 : q.capacity;
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
     /** 实时行军队列快照标记（资产库 queue.updatedAtMs；0=不可用）。 */
     static long marchQueueUpdatedAt(WjdrEngine engine) {
         try {
@@ -878,6 +907,128 @@ public final class ServerBearTasks {
         } catch (Throwable ignored) {
             return 0L;
         }
+    }
+
+    // ==================== 2026-11-11：指定车头（对齐网页版 preferredLeaders） ====================
+
+    /** 候选选择结果：waitMessage 非空=本轮等待指定车头，不发请求。 */
+    static final class CandidateSelection {
+        final List<RallyCandidate> candidates;
+        final String waitMessage;
+
+        CandidateSelection(List<RallyCandidate> candidates, String waitMessage) {
+            this.candidates = candidates == null ? new ArrayList<RallyCandidate>() : candidates;
+            this.waitMessage = waitMessage == null ? "" : waitMessage;
+        }
+    }
+
+    /** 指定车头在列表中的优先级（越小越优先；未命中 MAX）。 */
+    static int preferredLeaderIndex(RallyCandidate candidate, List<long[]> leaders) {
+        if (candidate == null || leaders == null) return Integer.MAX_VALUE;
+        for (int i = 0; i < leaders.size(); i++) {
+            long[] l = leaders.get(i);
+            if (l == null || l.length == 0) continue;
+            if (candidate.ownerUid == l[0]
+                    && (l.length < 2 || l[1] <= 0L || candidate.ownerKid == l[1])) {
+                return i;
+            }
+        }
+        return Integer.MAX_VALUE;
+    }
+
+    /**
+     * 按指定车头规则选候选（1:1 网页版 DailyBearMarchExecutor.selectCandidates:617-643）：
+     * 未启用/等待 0 → 全部；仅指定 → 只返回指定车头或等待；
+     * 指定车头存在 → 只返回指定车头；不存在 → 等待 N 秒后返回全部（指定车头优先）。
+     */
+    static CandidateSelection selectPreferredCandidates(List<RallyCandidate> candidates,
+                                                        BearConfig cfg, BearState state,
+                                                        Window window, long nowSec) {
+        List<RallyCandidate> all = candidates == null
+                ? new ArrayList<RallyCandidate>() : new ArrayList<>(candidates);
+        if (cfg == null || !cfg.preferredLeaderEnabled || cfg.preferredLeaderWaitSeconds == 0) {
+            resetPreferredWait(state);
+            return new CandidateSelection(all, "");
+        }
+        if (all.isEmpty()) {
+            resetPreferredWait(state);
+            return new CandidateSelection(all, "");
+        }
+        List<RallyCandidate> preferred = new ArrayList<>();
+        for (RallyCandidate c : all) {
+            if (preferredLeaderIndex(c, cfg.preferredLeaders) < Integer.MAX_VALUE) preferred.add(c);
+        }
+        java.util.Collections.sort(preferred, (a, b) -> {
+            int ia = preferredLeaderIndex(a, cfg.preferredLeaders);
+            int ib = preferredLeaderIndex(b, cfg.preferredLeaders);
+            if (ia != ib) return Integer.compare(ia, ib);
+            return Long.compare(a.masterMarchId, b.masterMarchId);
+        });
+        if (cfg.preferredLeaderOnly) {
+            resetPreferredWait(state);
+            return preferred.isEmpty()
+                    ? new CandidateSelection(new ArrayList<RallyCandidate>(),
+                    "仅加入指定车头，等待有效巨熊集结")
+                    : new CandidateSelection(preferred, "");
+        }
+        if (!preferred.isEmpty()) {
+            resetPreferredWait(state);
+            return new CandidateSelection(preferred, "");
+        }
+        String context = preferredLeaderWaitContext(candidates, cfg);
+        long startedAt = state == null ? 0L : state.preferredWaitStartedAt;
+        boolean changed = state == null
+                || state.preferredWaitWindowStart != (window == null ? 0L : window.startSec)
+                || startedAt <= 0L
+                || !context.equals(state.preferredWaitContext);
+        if (changed) {
+            if (state != null) {
+                state.preferredWaitWindowStart = window == null ? 0L : window.startSec;
+                state.preferredWaitStartedAt = nowSec;
+                state.preferredWaitContext = context;
+            }
+            startedAt = nowSec;
+        }
+        long elapsed = Math.max(0L, nowSec - startedAt);
+        if (elapsed < cfg.preferredLeaderWaitSeconds) {
+            long remaining = cfg.preferredLeaderWaitSeconds - elapsed;
+            return new CandidateSelection(new ArrayList<RallyCandidate>(),
+                    "等待指定车头发起巨熊集结，剩余 " + remaining + " 秒");
+        }
+        resetPreferredWait(state);
+        // 等待超时：全部候选，指定车头优先（其余保持原顺序）。
+        List<RallyCandidate> ordered = new ArrayList<>();
+        ordered.addAll(preferred);
+        for (RallyCandidate c : all) {
+            if (!preferred.contains(c)) ordered.add(c);
+        }
+        return new CandidateSelection(ordered, "");
+    }
+
+    /** 等待上下文（车头列表 + 候选车头 id 集合），变化时重新计时。 */
+    static String preferredLeaderWaitContext(List<RallyCandidate> candidates, BearConfig cfg) {
+        StringBuilder leaders = new StringBuilder();
+        if (cfg != null && cfg.preferredLeaders != null) {
+            for (long[] l : cfg.preferredLeaders) {
+                if (leaders.length() > 0) leaders.append(',');
+                leaders.append(l == null || l.length == 0 ? "0" : l[0] + "@" + (l.length > 1 ? l[1] : 0L));
+            }
+        }
+        List<Long> mids = new ArrayList<>();
+        if (candidates != null) {
+            for (RallyCandidate c : candidates) {
+                if (c != null) mids.add(c.masterMarchId);
+            }
+        }
+        java.util.Collections.sort(mids);
+        return (cfg == null ? 0 : cfg.preferredLeaderWaitSeconds) + ":" + leaders + "|" + mids;
+    }
+
+    static void resetPreferredWait(BearState state) {
+        if (state == null) return;
+        state.preferredWaitWindowStart = 0L;
+        state.preferredWaitStartedAt = 0L;
+        state.preferredWaitContext = "";
     }
 
     // ==================== 2026-11-11：待对账上车（对齐网页版 pendingJoins） ====================
@@ -982,16 +1133,20 @@ public final class ServerBearTasks {
                 keep.put(o);
                 continue;
             }
-            if (memberPresent(rsp.getContent(), ownUid)) {
+            java.util.Set<Long> expectedHeroes = parseIds(o.optString("heroes"));
+            int match = memberMatch(rsp.getContent(), ownUid, expectedHeroes);
+            if (match == 1) {
                 ok++;
                 if (m != null) m.claimed("上车对账成功(车头" + mid + ")");
                 FileLog.info("巨熊上车对账成功 fpid={} sid={} masterMarchId={}",
                         tc.fpid, String.valueOf(tc.sid), String.valueOf(mid));
             } else {
                 fail++;
-                if (m != null) m.skip("上车对账未确认(车头" + mid + ")，已释放");
-                FileLog.info("巨熊上车对账未确认 fpid={} sid={} masterMarchId={}",
-                        tc.fpid, String.valueOf(tc.sid), String.valueOf(mid));
+                if (m != null) m.skip("上车对账" + (match == 2 ? "英雄不符" : "未确认")
+                        + "(车头" + mid + ")，已释放");
+                FileLog.info("巨熊上车对账未确认 fpid={} sid={} masterMarchId={} match={}",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(mid),
+                        String.valueOf(match));
             }
         }
         state.pendingJoins = keep.toString();
@@ -1839,6 +1994,56 @@ public final class ServerBearTasks {
             }
         }
         return new ArrayList<>(new LinkedHashSet<>(out));
+    }
+
+    /**
+     * 解析指定车头 {@code preferred_leaders}（2026-11-11，对齐网页版 preferredLeaders）：
+     * 支持 "uid@kid,uid@kid" 字符串、JSONArray（元素为字符串或 {uid,kid} 对象）。
+     */
+    static List<long[]> parsePreferredLeaders(JSONObject p) {
+        List<long[]> out = new ArrayList<>();
+        if (p == null) return out;
+        Object raw = p.opt("preferred_leaders");
+        if (raw == null) raw = p.opt("preferredLeaders");
+        List<Object> rows = new ArrayList<>();
+        if (raw instanceof JSONArray) {
+            JSONArray arr = (JSONArray) raw;
+            for (int i = 0; i < arr.length(); i++) rows.add(arr.opt(i));
+        } else if (raw instanceof List) {
+            rows.addAll((List<?>) raw);
+        } else if (raw != null) {
+            String text = String.valueOf(raw).trim();
+            if (!text.isEmpty()) {
+                for (String part : text.split("[,;]")) rows.add(part.trim());
+            }
+        }
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        for (Object row : rows) {
+            long uid = 0L;
+            long kid = 0L;
+            if (row instanceof JSONObject) {
+                JSONObject o = (JSONObject) row;
+                uid = o.optLong("uid", 0L);
+                kid = o.optLong("kid", o.optLong("kingdomId", 0L));
+            } else if (row instanceof Map) {
+                Map<String, Object> m = anyToMap(row);
+                uid = Exec.longOf(m == null ? null : m.get("uid"));
+                kid = Exec.longOf(m == null ? null : m.get("kid"));
+                if (kid <= 0L && m != null) kid = Exec.longOf(m.get("kingdomId"));
+            } else if (row != null) {
+                String text = String.valueOf(row).trim();
+                String[] parts = text.split("@");
+                try {
+                    uid = Long.parseLong(parts[0].trim());
+                    if (parts.length > 1) kid = Long.parseLong(parts[1].trim());
+                } catch (NumberFormatException ignored) {
+                }
+            }
+            if (uid <= 0L) continue;
+            String key = uid + "@" + kid;
+            if (seen.add(key)) out.add(new long[]{uid, kid});
+        }
+        return out;
     }
 
     /** 发车编队来源文案（纯函数，写日志/mod 用）：hero_ids / squad_index(N) / 默认队1。 */
@@ -2935,6 +3140,47 @@ public final class ServerBearTasks {
         return slave != null && Exec.longOf(slave.get("master_marchid")) == masterMarchId;
     }
 
+    /** 集结成员详情里“自己”的英雄 id 集合（hero_map；兼容 {hero:{id}} / {id}/{v} 形状）。 */
+    static java.util.Set<Long> memberHeroIds(Map<String, Object> content, long ownUid) {
+        java.util.Set<Long> out = new java.util.LinkedHashSet<Long>();
+        if (content == null || ownUid <= 0) return out;
+        for (Map<String, Object> detail : Exec.mapsOf(content.get("detail_list"))) {
+            long owner = Exec.longOf(detail.get("owner"));
+            if (owner <= 0) owner = Exec.longOf(detail.get("uid"));
+            if (owner != ownUid) continue;
+            for (Map<String, Object> pair : Exec.mapsOf(detail.get("hero_map"))) {
+                long hid = 0L;
+                Map<String, Object> hero = Exec.mapOf(pair.get("hero"));
+                if (hero != null) hid = Exec.longOf(hero.get("id"));
+                if (hid <= 0) hid = Exec.longOf(pair.get("id"));
+                if (hid <= 0) hid = Exec.longOf(pair.get("v"));
+                if (hid > 0) out.add(hid);
+            }
+        }
+        return out;
+    }
+
+    /**
+     * 成员详情与本次编队英雄匹配：0=不在成员里；1=匹配/英雄未知；2=已加入但英雄不符。
+     * 对齐网页版 queryRallyMembers 的 DIFFERENT_FORMATION 判定。
+     */
+    static int memberMatch(Map<String, Object> content, long ownUid, java.util.Collection<Long> expected) {
+        if (content == null || ownUid <= 0) return 0;
+        boolean present = false;
+        for (Map<String, Object> detail : Exec.mapsOf(content.get("detail_list"))) {
+            long owner = Exec.longOf(detail.get("owner"));
+            if (owner <= 0) owner = Exec.longOf(detail.get("uid"));
+            if (owner == ownUid) {
+                present = true;
+                break;
+            }
+        }
+        if (!present) return 0;
+        java.util.Set<Long> actual = memberHeroIds(content, ownUid);
+        if (actual.isEmpty() || expected == null || expected.isEmpty()) return 1;
+        return actual.equals(new java.util.HashSet<Long>(expected)) ? 1 : 2;
+    }
+
     /** {@code req_world_mass_master_detail} 是否确认自己在集结成员里（网页版 queryRallyMembers:473-504）。 */
     static boolean memberPresent(Map<String, Object> content, long ownUid) {
         if (content == null || ownUid <= 0) return false;
@@ -3063,12 +3309,20 @@ public final class ServerBearTasks {
         String formationLibraryJson = "";
         /** 巨熊上车编队 1-6（App join_formations；空=沿用旧自动上车逻辑）。 */
         List<JoinFormationConfig> joinFormations = Collections.emptyList();
+        // ---- 2026-11-11 指定车头（对齐网页版 preferredLeaders） ----
+        boolean preferredLeaderEnabled;
+        boolean preferredLeaderOnly;
+        int preferredLeaderWaitSeconds;
+        /** 指定车头 [uid,kid] 列表（按优先级）。 */
+        List<long[]> preferredLeaders = Collections.emptyList();
 
         BearConfig(boolean launchEnabled, boolean joinEnabled, boolean prepareRecallEnabled,
                    boolean prepRecall, boolean petSkillsEnabled,
                    boolean launchWithoutReserve, int joinCount, int prepareTimeIndex,
                    int windowWeekday, int windowStartMinute, int windowDurationMinutes,
-                   List<Long> heroIds, int squadIndex) {
+                   List<Long> heroIds, int squadIndex,
+                   boolean preferredLeaderEnabled, boolean preferredLeaderOnly,
+                   int preferredLeaderWaitSeconds, List<long[]> preferredLeaders) {
             this.launchEnabled = launchEnabled;
             this.joinEnabled = joinEnabled;
             this.prepareRecallEnabled = prepareRecallEnabled;
@@ -3084,6 +3338,12 @@ public final class ServerBearTasks {
                     ? Collections.emptyList()
                     : Collections.unmodifiableList(new ArrayList<>(heroIds));
             this.squadIndex = Math.max(1, Math.min(6, squadIndex));
+            this.preferredLeaderEnabled = preferredLeaderEnabled;
+            this.preferredLeaderOnly = preferredLeaderOnly;
+            this.preferredLeaderWaitSeconds = Math.max(0, Math.min(86400, preferredLeaderWaitSeconds));
+            this.preferredLeaders = preferredLeaders == null
+                    ? Collections.emptyList()
+                    : Collections.unmodifiableList(new ArrayList<>(preferredLeaders));
         }
 
         int windowStartMinuteOfDay() {
@@ -3097,7 +3357,7 @@ public final class ServerBearTasks {
         static BearConfig defaults() {
             return new BearConfig(true, true, false, true, false, false, 1,
                     DEFAULT_PREPARE_TIME_INDEX, 5, 21 * 60, ACTIVITY_MINUTES,
-                    Collections.emptyList(), 1);
+                    Collections.emptyList(), 1, false, false, 2, Collections.emptyList());
         }
 
         /** 参数解析：launch_enabled/join_enabled/prepare_recall/join_count/prepare_time_index/
@@ -3134,7 +3394,11 @@ public final class ServerBearTasks {
                     p.optInt("window_weekday", 5),
                     startMinute, duration,
                     parseConfiguredHeroIds(p),
-                    p.optInt("squad_index", 1));
+                    p.optInt("squad_index", 1),
+                    optBool(p, "preferred_leader_enabled", false),
+                    optBool(p, "preferred_leader_only", false),
+                    p.optInt("preferred_leader_wait_seconds", 2),
+                    parsePreferredLeaders(p));
             // 批次10：统一编队参数（无这些键 → formationConfigured=false → 完全旧行为）
             cfg.paramsMap.putAll(paramsToMap(p));
             cfg.formationConfigured = hasGenericFormationConfig(cfg.paramsMap);
@@ -3272,6 +3536,10 @@ public final class ServerBearTasks {
         /** 2026-11-11（对齐网页版 pendingJoins）：待对账上车请求（JSON 数组）。 */
         String pendingJoins = "";
         long pendingJoinWindowStart;
+        /** 2026-11-11 指定车头等待（对齐网页版 preferredLeaderWait）。 */
+        long preferredWaitWindowStart;
+        long preferredWaitStartedAt;
+        String preferredWaitContext = "";
         /** 召回等待起始（秒；超过 RECALL_WAIT_MAX_SECONDS 放弃等待）。 */
         long recallWaitStart;
 
@@ -3353,6 +3621,11 @@ public final class ServerBearTasks {
             o.put("joinSkipWindowStart", state.joinSkipWindowStart);
             o.put("recallSnapshotAt", state.recallSnapshotAt);
             o.put("pendingJoinWindowStart", state.pendingJoinWindowStart);
+            o.put("preferredWaitWindowStart", state.preferredWaitWindowStart);
+            o.put("preferredWaitStartedAt", state.preferredWaitStartedAt);
+            if (state.preferredWaitContext != null && !state.preferredWaitContext.isEmpty()) {
+                o.put("preferredWaitContext", state.preferredWaitContext);
+            }
             if (state.pendingJoins != null && !state.pendingJoins.isEmpty()) {
                 o.put("pendingJoins", state.pendingJoins);
             }
@@ -3400,6 +3673,9 @@ public final class ServerBearTasks {
             state.joinSkipWindowStart = o.optLong("joinSkipWindowStart", 0);
             state.recallSnapshotAt = o.optLong("recallSnapshotAt", 0);
             state.pendingJoinWindowStart = o.optLong("pendingJoinWindowStart", 0);
+            state.preferredWaitWindowStart = o.optLong("preferredWaitWindowStart", 0);
+            state.preferredWaitStartedAt = o.optLong("preferredWaitStartedAt", 0);
+            state.preferredWaitContext = o.optString("preferredWaitContext", "");
             state.pendingJoins = o.optString("pendingJoins", "");
             state.prepGateWindowStart = o.optLong("prepGateWindowStart", 0);
             state.petSkillsWindowStart = o.optLong("petSkillsWindowStart", 0);
