@@ -60,6 +60,12 @@ public final class WatchPointEngine {
     private static final int SESSION_MONITOR_BASE = 100_000_000;
     private static final int SESSION_PROTECT_BASE = 100_000_100;
     private static final int SESSION_SCAN_BASE = 100_500_000;
+    /** 2026-11-11：A1 目标未知时的局部补查会话段（独立，避开监视/保护/扫描）。 */
+    private static final int SESSION_PROBE_BASE = 100_600_000;
+    /** A1 目标补查超时：超时按「未知」发送（该类告警最多延迟该时长）。 */
+    private static final long A1_PROBE_TIMEOUT_MS = 1500L;
+    /** 补查待发记录兜底清理上限（无回包时由 flushProbeTimeouts 按超时发送，此值只防泄漏）。 */
+    private static final long A1_PROBE_STALE_MS = 60_000L;
     private static final long RESPONSE_TIMEOUT_MS = 6000L;
     /** 批次 Q1：扫描完整性阈值（>=95% 才做告警判定）。 */
     private static final double SCAN_COMPLETE_RATIO = 0.95d;
@@ -80,7 +86,7 @@ public final class WatchPointEngine {
     /** 单 tick 扫描块总预算上限（会话数很大时防请求突发）。 */
     private static final int SCAN_MAX_BLOCKS_PER_TICK = 32;
 
-    private enum Kind {MONITOR, PROTECT, SCAN, CROSS_PROBE}
+    private enum Kind {MONITOR, PROTECT, SCAN, CROSS_PROBE, PROBE}
 
     private static final class Ctx {
         final int session;
@@ -340,6 +346,40 @@ public final class WatchPointEngine {
             Collections.newSetFromMap(new IdentityHashMap<>());
     private final Map<Integer, Ctx> ctxBySession = new ConcurrentHashMap<>();
     private final Map<Integer, Long> lastSent = new ConcurrentHashMap<>();
+    /**
+     * A1 目标补查待发队列（2026-11-11）：目标城暂不在缓存时，先查该坐标 55×55，
+     * 命中则用真实目标发一条；超时（{@link #A1_PROBE_TIMEOUT_MS}）按「未知」发，保证告警不丢。
+     */
+    private final Map<Integer, PendingA1> pendingA1 = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicInteger probeSeq =
+            new java.util.concurrent.atomic.AtomicInteger();
+
+    /** 一条等待目标补查的 A1 告警。 */
+    private static final class PendingA1 {
+        final String alertKey;
+        final long owner;
+        final long marchId;
+        final long type;
+        final long endtime;
+        final long troops;
+        final int ex;
+        final int ey;
+        final long createdAt;
+
+        PendingA1(String alertKey, long owner, long marchId, long type, int ex, int ey,
+                  long endtime, long troops, long createdAt) {
+            this.alertKey = alertKey;
+            this.owner = owner;
+            this.marchId = marchId;
+            this.type = type;
+            this.ex = ex;
+            this.ey = ey;
+            this.endtime = endtime;
+            this.troops = troops;
+            this.createdAt = createdAt;
+        }
+    }
+
     private final Map<Long, City> cityByUid = new ConcurrentHashMap<>();
     private final Map<String, City> cityByPoint = new ConcurrentHashMap<>();
     private final Map<Long, AtomicInteger> targetMisses = new ConcurrentHashMap<>();
@@ -637,6 +677,7 @@ public final class WatchPointEngine {
                 // 消除整图扫描 15–20s 内监视目标/保护矩形全部停摆的空窗。
                 tick(engines);
                 flushPendingMoveAlerts();
+                flushProbeTimeouts(System.currentTimeMillis());
                 maybeLogStats();
                 Thread.sleep(80L);
             } catch (InterruptedException e) {
@@ -1544,6 +1585,20 @@ public final class WatchPointEngine {
     private volatile long unmatchedLogAt;
 
     private void onComplete(Ctx ctx) {
+        if (ctx.kind == Kind.PROBE) {
+            // 2026-11-11：A1 目标补查回包——城已由 parseCity 写入缓存，这里补全目标后发送。
+            PendingA1 p = pendingA1.remove(ctx.session);
+            if (p != null) {
+                City target = cityNear(p.ex, p.ey);
+                FileLog.info("[{}] 敌情目标补查{} ({},{}){}", LOG,
+                        target == null ? "未命中" : "命中",
+                        String.valueOf(p.ex), String.valueOf(p.ey),
+                        target == null ? "，按未知发送" : " → uid " + target.uid + " " + nickOf(target));
+                sendOutgoing(p.alertKey, p.owner, p.type, p.ex, p.ey, p.endtime, p.troops,
+                        cityByUid.get(p.owner), target);
+            }
+            return;
+        }
         if (ctx.kind == Kind.CROSS_PROBE) {
             crossProbeSessions.remove(ctx.session);
             long uid = ctx.probeUid;
@@ -1678,7 +1733,7 @@ public final class WatchPointEngine {
                             String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
                     return;
                 }
-                alertOutgoing(owner, id, type, ex, ey, endtime, troopsOf(m), marchKey);
+                alertOutgoing(ctx, owner, id, type, ex, ey, endtime, troopsOf(m), marchKey);
                 return;
             }
             // 进攻/集结出征由战争警报统一推送（A2），观察点不重复推
@@ -2067,7 +2122,7 @@ public final class WatchPointEngine {
         return false;
     }
 
-    private void alertOutgoing(long owner, long marchId, long type, int ex, int ey, long endtime,
+    private void alertOutgoing(Ctx ctx, long owner, long marchId, long type, int ex, int ey, long endtime,
                                long troops, String marchKey) {
         String key = "out:" + owner + ":" + marchId;
         if (recentlyAlerted(key)) return;   // 同一条行军的轮询重放：不推送也不再扣配额
@@ -2075,6 +2130,27 @@ public final class WatchPointEngine {
         if (marchKey != null) alerted.put(marchKey, nowMs);   // 标记：另一通道不再重复推
         City ownerCity = cityByUid.get(owner);
         City target = cityNear(ex, ey);
+        if (target == null && ctx != null && ctx.engine != null) {
+            // 2026-11-11：目标城暂不在缓存（扫描间隙/迁城/重启重建中）→ 先对该坐标做一次
+            // 55×55 局部补查；命中后用真实目标发一条，超时按「未知」发（保证告警不丢）。
+            int probeSession = SESSION_PROBE_BASE + (probeSeq.incrementAndGet() & 0x3FFF);
+            PendingA1 p = new PendingA1(key, owner, marchId, type, ex, ey, endtime, troops, nowMs);
+            pendingA1.put(probeSession, p);
+            try {
+                send(ctx.engine, probeSession, rectAround(ex, ey, TILE / 2), Kind.PROBE);
+                FileLog.info("[{}] 敌情目标未知，局部补查 ({},{}) session={}",
+                        LOG, String.valueOf(ex), String.valueOf(ey), String.valueOf(probeSession));
+                return;
+            } catch (Throwable t) {
+                pendingA1.remove(probeSession);
+            }
+        }
+        sendOutgoing(key, owner, type, ex, ey, endtime, troops, ownerCity, target);
+    }
+
+    /** 发送一条 A1 敌情（target 为 null 时按「未知」渲染；调用方已做去重/配额）。 */
+    private void sendOutgoing(String key, long owner, long type, int ex, int ey,
+                              long endtime, long troops, City ownerCity, City target) {
         // 2026-11-04：攻击者名优先实时地图昵称（不用配置/目录旧名）
         String nick = nickOf(ownerCity);
         if (nick == null || nick.isEmpty()) nick = liveNick(owner);
@@ -2085,6 +2161,29 @@ public final class WatchPointEngine {
                 store.feintTroopsBelow);
         alert(key, text);
         trackAttacker(owner, ownerCity);
+    }
+
+    /**
+     * A1 目标补查超时：按当前缓存发送（期间可能已被别的推送补上目标），保证告警不丢。
+     * 主循环每 80ms 调用一次；同时兜底清理超长未处理记录。
+     */
+    private void flushProbeTimeouts(long now) {
+        if (pendingA1.isEmpty()) return;
+        for (Map.Entry<Integer, PendingA1> en : pendingA1.entrySet()) {
+            PendingA1 p = en.getValue();
+            if (now - p.createdAt < A1_PROBE_TIMEOUT_MS) continue;
+            if (!pendingA1.remove(en.getKey(), p)) continue;
+            City target = cityNear(p.ex, p.ey);
+            if (now - p.createdAt > A1_PROBE_STALE_MS) {
+                FileLog.warn("[{}] 敌情补查积压 {}ms 才处理 ({},{})", LOG,
+                        String.valueOf(now - p.createdAt), String.valueOf(p.ex), String.valueOf(p.ey));
+            }
+            sendOutgoing(p.alertKey, p.owner, p.type, p.ex, p.ey, p.endtime, p.troops,
+                    cityByUid.get(p.owner), target);
+            FileLog.info("[{}] 敌情补查超时 ({},{}) → {}", LOG,
+                    String.valueOf(p.ex), String.valueOf(p.ey),
+                    target == null ? "按未知发送" : "回包迟到命中");
+        }
     }
 
     /**
@@ -2993,6 +3092,16 @@ public final class WatchPointEngine {
 
     String lastAlertTextForTest() {
         return lastAlertText;
+    }
+
+    /** A1 目标补查待发队列长度（命中/超时后应归零）。 */
+    int pendingA1CountForTest() {
+        return pendingA1.size();
+    }
+
+    /** 单测：用指定时刻触发补查超时检查（避免真等 1.5s）。 */
+    void flushProbeTimeoutsForTest(long now) {
+        flushProbeTimeouts(now);
     }
 
     /** 节流窗口内排队的迁城通知数（2026-11-04：窗口内最新坐标必须排队待发）。 */
