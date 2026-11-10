@@ -246,4 +246,17 @@ public class VaultStoreTest {
                 b.roleConfigByUid.get("888:35371154").get("gather"));
         assertEquals("tk2", b.token);
     }
+
+    @Test
+    public void migrateConfigDefaults_opensGuardianAndWarButNotUnknown() {
+        Map<String, Boolean> cfg = new LinkedHashMap<>();
+        cfg.put("guardian", false);
+        cfg.put("war", false);
+        cfg.put("unknown_future_task", false);
+        VaultStore.migrateConfigDefaults(cfg);
+        assertEquals("跨端任务 guardian 应迁移为开", Boolean.TRUE, cfg.get("guardian"));
+        assertEquals("跨端任务 war 应迁移为开", Boolean.TRUE, cfg.get("war"));
+        assertEquals("未知键保持原值（不擅自开启未来/废弃键）", Boolean.FALSE,
+                cfg.get("unknown_future_task"));
+    }
 }
