@@ -71,16 +71,18 @@ public class PassportClientTest {
         // method 键首位（值为 method 名）
         assertEquals("method", firstEntry(form));
         assertEquals("loginWithPhoneCode", form.get("method"));
-        assertEquals("loginWithPhoneCode", form.get("service_name"));
+        // 真实客户端固定 service_name=passport-request（实测：传 method 名会得到 error=5）
+        assertEquals("passport-request", form.get("service_name"));
+        assertEquals("loginWithPhoneCode", form.get("method"));
         assertEquals("20173", form.get("game_id"));
         assertEquals("funsdk", form.get("domain"));
         assertEquals("U8.0.5.0-GOFCN-1", form.get("sdk_version"));
         assertEquals("13800138000", form.get("mobile"));
         assertEquals("1234", form.get("code"));
-        // profile 三字段同值
+        // 实证口径（2026-11-10 真实客户端反编译+实测）：guid 独立随机、origin_guid=md5(guid)、android_id=MAC
         assertEquals(FIXED_PROFILE.guid, form.get("guid"));
-        assertEquals(FIXED_PROFILE.guid, form.get("origin_guid"));
-        assertEquals(FIXED_PROFILE.guid, form.get("android_id"));
+        assertEquals(PassportIds.md5Hex(FIXED_PROFILE.guid), form.get("origin_guid"));
+        assertEquals(FIXED_PROFILE.macAddress, form.get("android_id"));
         assertEquals("funplus", form.get("install_channelid"));
         // session_key 空值被剔除
         assertFalse(form.containsKey("session_key"));
@@ -241,7 +243,8 @@ public class PassportClientTest {
         t.respond("{\"data\":{\"ok\":1}}");
         assertNotNull(client.realName("1", "sk", "张三", "11010119900307775X"));
         assertEquals(1, t.urls.size());
-        assertEquals("realNameVerify", t.formsList.get(0).get("service_name"));
+        assertEquals("passport-request", t.formsList.get(0).get("service_name"));
+        assertEquals("realNameVerify", t.formsList.get(0).get("method"));
         assertEquals("11010119900307775X", t.formsList.get(0).get("id_card"));
     }
 

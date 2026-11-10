@@ -295,6 +295,23 @@ public class BootstrapBatchRunnerTest {
         assertTrue(runner.entry(0).error.contains("钻石即时升级"));
     }
 
+    /**
+     * 真实轮回归（2026-11-10）：等待类阻塞原因不得判失败（新号资源不足、建筑正在建造、
+     * 等待同步都是正常中间态）；而「需要开启钻石即时升级」属于需人工改配置的状态，必须暴露失败。
+     */
+    @Test
+    public void isWaitableBlock_classifiesReasons() {
+        assertTrue(BootstrapBatchRunner.isWaitableBlock("资源或道具不足，等待补充后重试：建造 伐木场 到 1 级"));
+        assertTrue(BootstrapBatchRunner.isWaitableBlock("大熔炉 正在建造或升级，等待完成后继续"));
+        assertTrue(BootstrapBatchRunner.isWaitableBlock("等待建筑与队列全量状态同步"));
+        assertTrue(BootstrapBatchRunner.isWaitableBlock("当前没有空闲建筑队列"));
+        // 需人工介入（未开钻石即时升级）→ 非等待类，应失败暴露
+        assertFalse(BootstrapBatchRunner.isWaitableBlock("下一步 伐木场 2 级需要等待完成，请开启钻石即时升级"));
+        assertFalse(BootstrapBatchRunner.isWaitableBlock(""));
+        assertFalse(BootstrapBatchRunner.isWaitableBlock(null));
+        assertFalse(BootstrapBatchRunner.isWaitableBlock("前置建筑 999 不在门槛目录中，无法自动建造"));
+    }
+
     /** 单号超时上限（包级构造注入 0 毫秒立即触发）→ FAILED 带超时文案。 */
     @Test
     public void run_timeoutLimitMarksAccountFailed() {

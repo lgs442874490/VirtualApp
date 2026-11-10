@@ -83,6 +83,11 @@ public final class RegistrationService {
         out.encrypted = buildEncrypted(fpid, sk, deviceJsonText);
         out.createdAt = System.currentTimeMillis();
         FileLog.info("游客注册成功 fpid={} token={}", fpid, PassportIds.mask(sk));
+        // 游客号同样存档（无手机号，但 token 可换设备登录）
+        AccountArchive archive = AccountArchive.get();
+        if (archive != null) {
+            archive.recordRegistration(fpid, "", "guest", sk);
+        }
         return out;
     }
 
@@ -209,6 +214,19 @@ public final class RegistrationService {
 
         DeviceProfile profile = DeviceProfile.random();
 
+        // 旧短信基线（2026-11-10 真实轮教训）：接码平台号池会复用号码，池中可能残留
+        // 上一个使用者的历史短信。取号后先快照当前可见验证码，收码时只认与之不同的「新码」，
+        // 否则会把旧码当本次验证码提交 → 上游「验证码验证失败」。快照失败不阻断（视为无旧码）。
+        String baselineCode = "";
+        try {
+            SmsProvider.SmsMessage base = provider.fetchSms(order, cfg.keyword);
+            if (base != null && !base.waiting && base.code != null && !base.code.trim().isEmpty()) {
+                baselineCode = base.code.trim();
+            }
+        } catch (RuntimeException ignored) {
+            // 基线快照失败按「无旧码」处理
+        }
+
         // SEND_SMS：发码（60s 冷却由 PassportClient 维护）
         try {
             PassportClient.PassportResult sr = passport.sendSms(order.phone, "86", profile);
@@ -231,8 +249,9 @@ public final class RegistrationService {
             } catch (SmsException e) {
                 return fail(r, provider, order, "WAIT_SMS", "收取验证码失败: " + safeMsg(e), false);
             }
-            if (!msg.waiting && !msg.code.trim().isEmpty()) {
-                code = msg.code.trim();
+            String candidate = msg.code == null ? "" : msg.code.trim();
+            if (!msg.waiting && !candidate.isEmpty() && !candidate.equals(baselineCode)) {
+                code = candidate;
                 break;
             }
             if (waited + cfg.intervalMillis >= budget) {
@@ -247,7 +266,8 @@ public final class RegistrationService {
             waited += cfg.intervalMillis;
         }
         if (code == null) {
-            return fail(r, provider, order, "WAIT_SMS", "等待验证码超时未收到", true);
+            String extra = baselineCode.isEmpty() ? "" : "（仅见旧验证码，未收到新码）";
+            return fail(r, provider, order, "WAIT_SMS", "等待验证码超时未收到" + extra, true);
         }
         addStep(steps, "WAIT_SMS", true, "已收到验证码");
 
@@ -287,6 +307,12 @@ public final class RegistrationService {
         }
         r.fpid = fpid;
         r.sdkToken = sk;
+        // 账号存档（2026-11-11 用户要求）：记录 fpid ↔ 注册手机号 ↔ 接码平台，
+        // 掉登录时据此用原手机号重新取码登录（不存 sdkToken，它会变）。
+        AccountArchive archive = AccountArchive.get();
+        if (archive != null) {
+            archive.recordRegistration(fpid, order.phone, cfg.providerType, sk);
+        }
         JSONObject deviceJson = new JSONObject(profile.toLoginProfile());
         deviceJson.put("account", fpid);
         r.encrypted = buildEncrypted(fpid, sk, deviceJson.toString());
@@ -294,7 +320,8 @@ public final class RegistrationService {
         // RELEASE：成功路径归还号码（releaseQuietly 已记步骤轨迹）
         releaseQuietly(provider, order, steps);
         r.ok = true;
-        FileLog.info("手机号注册成功 phone={} fpid={}", order.phone, fpid);
+        // 手机号是账号找回凭证，日志一律掩码
+        FileLog.info("手机号注册成功 phone={} fpid={}", AccountArchive.mask(order.phone), fpid);
         return r;
     }
 
@@ -435,7 +462,8 @@ public final class RegistrationService {
             if (blockInstead) blockQuietly(provider, order, r.steps);
             else releaseQuietly(provider, order, r.steps);
         }
-        FileLog.warn("手机号注册失败 phone={} step={} error={}", r.phone, step, error);
+        FileLog.warn("手机号注册失败 phone={} step={} error={}",
+                AccountArchive.mask(r.phone), step, error);
         return r;
     }
 

@@ -114,15 +114,18 @@ public class VaultSyncBootstrapCallTest {
     public void bootstrapBatchStart_fields() throws Exception {
         String accountsJson = "[\"enc-line\",{\"fpid\":\"1\",\"sdkToken\":\"t\",\"label\":\"游客1\"}]";
         Map<String, Object> f = VaultSync.bootstrapBatchStartFields(
-                152L, 9, "测试盟", "角色甲", true, accountsJson);
+                152L, 9, "测试盟", "角色甲", true, true, false, accountsJson);
         assertEquals("batch-start", f.get("action"));
         assertEquals(152L, f.get("serverId"));
         assertEquals(9, f.get("targetFurnaceLevel"));
         assertEquals("测试盟", f.get("allianceName"));
         assertEquals("角色甲", f.get("roleName"));
         assertEquals(Boolean.TRUE, f.get("instantDiamond"));
+        // 真实轮（2026-11-10）：补资源两开关必须随请求下发，否则服务端无法领奖/买资源
+        assertEquals(Boolean.TRUE, f.get("claimRewards"));
+        assertEquals(Boolean.FALSE, f.get("buyShopResources"));
         assertEquals(accountsJson, f.get("accounts"));
-        assertEquals(7, f.size());
+        assertEquals(9, f.size());
     }
 
     @Test

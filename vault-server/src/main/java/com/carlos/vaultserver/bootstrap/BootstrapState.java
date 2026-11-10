@@ -1,5 +1,7 @@
 package com.carlos.vaultserver.bootstrap;
 
+import com.carlos.vaultserver.FileLog;
+
 import com.carlos.vault.wjdr.protocol.ProtocolValueSupport;
 
 import java.util.ArrayList;
@@ -46,6 +48,37 @@ public final class BootstrapState {
     private String roleName = "";
     /** 建筑全量是否已同步（loaddata 命中建筑字段）。 */
     private boolean buildingsReady;
+    /**
+     * 幸存者（真实轮 2026-11-11 实证：网页版起号第一步就是把闲置幸存者全部委任上岗，
+     * 否则资源永远为 0，任何建造都会 51 被拒）。
+     * 条目字段（s2c sproto survivor）：sid / status / fid_work（已委任的工作位）/ is_sick。
+     */
+    private final List<Survivor> survivors = new ArrayList<>();
+    /** 家具实例 id：buildingId → (confFid → 实例id)（新版 furnitureInstances 同构）。 */
+    private final java.util.LinkedHashMap<Long, java.util.LinkedHashMap<Long, Long>> furnitureInstances =
+            new java.util.LinkedHashMap<>();
+    /** 家具工位类型：buildingId → (confFid → type)。 */
+    private final java.util.LinkedHashMap<Long, java.util.LinkedHashMap<Long, Long>> furnitureTypes =
+            new java.util.LinkedHashMap<>();
+    /** 工位占用：buildingId → (confFid → [sid])（新版 furnitureOccupants 同构）。 */
+    private final java.util.LinkedHashMap<Long, java.util.LinkedHashMap<Long, java.util.List<Long>>> furnitureOccupants =
+            new java.util.LinkedHashMap<>();
+    /** 引导进度：guideId → 当前步骤（notify_guide_init.data）。 */
+    private final java.util.LinkedHashMap<Long, Long> guideSteps = new java.util.LinkedHashMap<>();
+    /** 引导是否就绪。 */
+    private boolean guideReady;
+    /** 英雄等级（id → lev，来自 notify_hero_init.data / notify_hero_update.data）。 */
+    private final java.util.LinkedHashMap<Long, Long> heroLevels = new java.util.LinkedHashMap<>();
+    /** 英雄碎片数（id → fragment_num）；仅 notify_hero_update 带。 */
+    private final java.util.LinkedHashMap<Long, Long> heroFragments = new java.util.LinkedHashMap<>();
+    /** 探险已通关卡数（notify_adventure_pve_info.adventure_pve_info.pass_checkpoint）。 */
+    private long adventurePassed;
+    /** 是否已做过首次史诗招募（notify_hero_search_data.epic_first_rearch）。 */
+    private boolean epicSearched;
+    /** 英雄数据是否就绪。 */
+    private boolean heroReady;
+    /** 探险数据是否就绪。 */
+    private boolean adventureReady;
     /** 队列全量是否已同步（loaddata 命中队列字段）。 */
     private boolean queuesReady;
     /** 背包物品是否已同步（loaddata 顶层命中背包键，对齐原版 backpackInitialized）。 */
@@ -84,9 +117,357 @@ public final class BootstrapState {
         s.applyResources(firstOf(loadContent, "items", "item"));
         s.backpackReady = loadContent.containsKey("bag") || loadContent.containsKey("backpack")
                 || loadContent.containsKey("items") || loadContent.containsKey("item");
+        s.applySurvivors(firstOf(loadContent, "survivor_list", "survivors"));
+        s.applyHeroes(firstOf(loadContent, "hero_list", "heroes", "hero"));
+        s.applyAdventure(firstOf(loadContent, "adventure_pve_info", "adventure"));
+        s.applyGuides(firstOf(loadContent, "guide_list", "guides"));
         s.roleUid = deepPositiveNumber(loadContent, "uid", "fid", "role_uid");
         s.roleName = deepText(loadContent, "name", "game_name", "display_name");
+        // 排障用（真实轮 2026-11-10）：解析不到建筑/队列时打印实际顶层键，便于校准键名。
+        if (!s.buildingsReady() || !s.queuesReady()) {
+            FileLog.warn("起号 loaddata 结构未完全命中：buildingsReady={} queuesReady={} 顶层键={}",
+                    String.valueOf(s.buildingsReady()), String.valueOf(s.queuesReady()),
+                    String.valueOf(loadContent.keySet()));
+        }
         return s;
+    }
+
+    /** 幸存者条目：sid 唯一；fidWork>0 表示已委任工作位；sick 表示生病不能上岗。 */
+    public record Survivor(long sid, long fidWork, boolean sick) {
+    }
+
+    /** 解析推送里的幸存者列表（兼容 list / {list:[...]} 两种形状）。 */
+    private void applySurvivors(Object raw) {
+        if (raw == null) return;
+        survivors.clear();
+        for (Map<String, Object> entry : entries(raw)) {
+            long sid = positive(number(entry.get("sid")), number(entry.get("id")));
+            if (sid <= 0L) continue;
+            long fidWork = positive(number(entry.get("fid_work")), number(entry.get("fidWork")));
+            boolean sick = booleanValue(entry.get("is_sick")) || booleanValue(entry.get("isSick"));
+            survivors.add(new Survivor(sid, fidWork, sick));
+        }
+    }
+
+    /** 引导步骤解析（id/step）。 */
+    private void applyGuides(Object raw) {
+        if (raw == null) return;
+        guideSteps.clear();
+        for (Map<String, Object> entry : entries(raw)) {
+            long id = positive(number(entry.get("id")), number(entry.get("guide_id")));
+            if (id <= 0L) continue;
+            guideSteps.put(id, Math.max(0L, number(entry.get("step"))));
+        }
+        guideReady = true;
+    }
+
+    /** 引导进度（只读副本）。 */
+    public Map<Long, Long> guideSteps() {
+        return Map.copyOf(guideSteps);
+    }
+
+    /** 引导是否就绪。 */
+    public boolean guideReady() {
+        return guideReady;
+    }
+
+    /** 本地推进引导步骤（上报成功后乐观更新）。 */
+    public void markGuideStep(long guideId, long step) {
+        guideSteps.put(guideId, step);
+    }
+
+    /** 英雄列表解析（id/lev；兼容 list 与 {data:[...]}）。 */
+    private void applyHeroes(Object raw) {
+        if (raw == null) return;
+        heroLevels.clear();
+        for (Map<String, Object> entry : entries(raw)) {
+            long id = positive(number(entry.get("id")), number(entry.get("hero_id")));
+            if (id <= 0L) continue;
+            heroLevels.put(id, Math.max(0L, number(entry.get("lev"))));
+        }
+        heroReady = !heroLevels.isEmpty();
+    }
+
+    /** 探险信息解析（pass_checkpoint）。 */
+    private void applyAdventure(Object raw) {
+        if (raw == null) return;
+        Map<String, Object> info = mapOf(raw);
+        if (info.isEmpty()) return;
+        adventurePassed = Math.max(0L, number(info.get("pass_checkpoint")));
+        adventureReady = true;
+    }
+
+    /**
+     * 某建筑下某工位类型的可用工位：confFid → 已占用幸存者列表（空列表 = 空闲工位）。
+     * 对齐新版 BootstrapBuildingState.furnitureByType。
+     */
+    public Map<Long, List<Long>> furnitureByType(long buildingId, long type) {
+        java.util.LinkedHashMap<Long, List<Long>> out = new java.util.LinkedHashMap<>();
+        java.util.Map<Long, Long> types = furnitureTypes.getOrDefault(buildingId, new java.util.LinkedHashMap<>());
+        for (Map.Entry<Long, Long> e : types.entrySet()) {
+            if (e.getValue() != null && e.getValue() == type) {
+                out.put(e.getKey(), furnitureOccupants(buildingId, e.getKey()));
+            }
+        }
+        return out;
+    }
+
+    /** 家具工位实例 id（委任时作为 fid_work）；未同步时按新版兜底公式推算。 */
+    public long furnitureInstanceId(long buildingId, long confFid) {
+        Long synced = furnitureInstances.getOrDefault(buildingId, new java.util.LinkedHashMap<>()).get(confFid);
+        if (synced != null && synced > 0L) return synced;
+        if (buildingId <= 0L || confFid <= 0L) return 0L;
+        return buildingId * 1_000_000L + confFid % 1_000_000L;
+    }
+
+    /** 某工位上的幸存者列表。 */
+    public List<Long> furnitureOccupants(long buildingId, long confFid) {
+        java.util.Map<Long, List<Long>> occ = furnitureOccupants.getOrDefault(buildingId, new java.util.LinkedHashMap<>());
+        List<Long> v = occ.get(confFid);
+        return v == null ? List.of() : List.copyOf(v);
+    }
+
+    /** 已在任意工位上岗的幸存者 id 集合。 */
+    public java.util.Set<Long> assignedSurvivorIds() {
+        java.util.LinkedHashSet<Long> out = new java.util.LinkedHashSet<>();
+        for (java.util.Map<Long, List<Long>> perBuilding : furnitureOccupants.values()) {
+            for (List<Long> list : perBuilding.values()) out.addAll(list);
+        }
+        return out;
+    }
+
+    /** 家具 confFid → 工位类型（新版 BootstrapBuildingState.catalogFurnitureType 完整表）。 */
+    static long furnitureTypeOf(long confFid) {
+        if (confFid == 101L || confFid == 102L) {
+            return 1L;
+        }
+        if (confFid == 103L) {
+            return 2L;
+        }
+        if (confFid == 104L) {
+            return 3L;
+        }
+        if (confFid == 105L) {
+            return 4L;
+        }
+        if (confFid == 106L) {
+            return 5L;
+        }
+        if (confFid == 107L) {
+            return 6L;
+        }
+        if (confFid == 108L) {
+            return 7L;
+        }
+        if (confFid == 109L) {
+            return 8L;
+        }
+        if (confFid >= 201L && confFid <= 203L) {
+            return 9L;
+        }
+        if (confFid == 204L) {
+            return 10L;
+        }
+        if (confFid == 205L || confFid == 206L) {
+            return 11L;
+        }
+        if (confFid == 208L) {
+            return 12L;
+        }
+        if (confFid == 210L) {
+            return 14L;
+        }
+        if (confFid == 211L) {
+            return 15L;
+        }
+        if (confFid == 212L) {
+            return 16L;
+        }
+        if (confFid == 213L) {
+            return 17L;
+        }
+        if (confFid >= 301L && confFid <= 306L) {
+            return 18L;
+        }
+        if (confFid == 307L) {
+            return 19L;
+        }
+        if (confFid == 308L) {
+            return 20L;
+        }
+        if (confFid == 309L) {
+            return 21L;
+        }
+        if (confFid == 310L) {
+            return 22L;
+        }
+        if (confFid == 311L) {
+            return 23L;
+        }
+        if (confFid >= 401L && confFid <= 406L) {
+            return 24L;
+        }
+        if (confFid == 407L) {
+            return 25L;
+        }
+        if (confFid == 408L) {
+            return 26L;
+        }
+        if (confFid == 409L) {
+            return 27L;
+        }
+        if (confFid == 410L) {
+            return 28L;
+        }
+        if (confFid == 411L) {
+            return 29L;
+        }
+        if (confFid >= 501L && confFid <= 506L) {
+            return 30L;
+        }
+        if (confFid == 507L) {
+            return 31L;
+        }
+        if (confFid == 508L) {
+            return 32L;
+        }
+        if (confFid == 509L) {
+            return 33L;
+        }
+        if (confFid == 510L) {
+            return 34L;
+        }
+        if (confFid == 511L) {
+            return 35L;
+        }
+        if (confFid >= 601L && confFid <= 605L) {
+            return 30L;
+        }
+        if (confFid == 606L) {
+            return 36L;
+        }
+        if (confFid == 607L) {
+            return 37L;
+        }
+        if (confFid == 608L) {
+            return 38L;
+        }
+        if (confFid == 609L) {
+            return 39L;
+        }
+        if (confFid == 610L) {
+            return 40L;
+        }
+        if (confFid == 611L) {
+            return 41L;
+        }
+        if (confFid == 701L) {
+            return 42L;
+        }
+        if (confFid >= 702L && confFid <= 707L) {
+            return 43L;
+        }
+        if (confFid == 708L) {
+            return 44L;
+        }
+        if (confFid == 709L) {
+            return 45L;
+        }
+        if (confFid == 710L) {
+            return 46L;
+        }
+        if (confFid == 711L) {
+            return 47L;
+        }
+        if (confFid == 712L) {
+            return 48L;
+        }
+        return 0L;
+    }
+
+    /** 英雄等级表（只读）。 */
+    public Map<Long, Long> heroLevels() {
+        return Map.copyOf(heroLevels);
+    }
+
+    /** 英雄碎片表（只读）。 */
+    public Map<Long, Long> heroFragments() {
+        return Map.copyOf(heroFragments);
+    }
+
+    /** 英雄数据是否就绪。 */
+    public boolean heroReady() {
+        return heroReady;
+    }
+
+    /** 等级最高的英雄 id（无英雄返回 0）。 */
+    public long highestLevelHero() {
+        long best = 0L;
+        long bestLevel = -1L;
+        for (Map.Entry<Long, Long> e : heroLevels.entrySet()) {
+            if (e.getValue() > bestLevel) {
+                bestLevel = e.getValue();
+                best = e.getKey();
+            }
+        }
+        return best;
+    }
+
+    /** 一键上阵前五：按等级降序取前 5 个英雄 id（不足补 0）。 */
+    public List<Long> topFiveHeroes() {
+        List<Map.Entry<Long, Long>> sorted = new ArrayList<>(heroLevels.entrySet());
+        sorted.sort((a, b) -> Long.compare(b.getValue(), a.getValue()));
+        ArrayList<Long> out = new ArrayList<>(5);
+        for (int i = 0; i < 5; i++) {
+            out.add(i < sorted.size() ? sorted.get(i).getKey() : 0L);
+        }
+        return List.copyOf(out);
+    }
+
+    /** 是否已有可用队伍（至少 1 个英雄）。 */
+    public boolean hasAnyHero() {
+        return !heroLevels.isEmpty();
+    }
+
+    /** 探险已通关卡数。 */
+    public long adventurePassed() {
+        return adventurePassed;
+    }
+
+    /** 英雄是否已做过首次史诗招募。 */
+    public boolean epicSearched() {
+        return epicSearched;
+    }
+
+    /** 标记已做过首次史诗招募。 */
+    public void markEpicSearched() {
+        this.epicSearched = true;
+    }
+
+    /** 标记探险通关（本地乐观推进，等下轮推送校准）。 */
+    public void markAdventurePassed(long checkpoint) {
+        this.adventurePassed = Math.max(this.adventurePassed, checkpoint);
+    }
+
+    /** 全部幸存者（只读快照）。 */
+    public List<Survivor> survivors() {
+        return List.copyOf(survivors);
+    }
+
+    /** 待委任的幸存者（未上岗且未生病）。 */
+    public List<Survivor> idleSurvivors() {
+        ArrayList<Survivor> out = new ArrayList<>();
+        for (Survivor v : survivors) {
+            if (v.fidWork() <= 0L && !v.sick()) out.add(v);
+        }
+        return out;
+    }
+
+    private static boolean booleanValue(Object raw) {
+        if (raw instanceof Boolean) return (Boolean) raw;
+        if (raw instanceof Number) return ((Number) raw).intValue() != 0;
+        String t = raw == null ? "" : String.valueOf(raw).trim();
+        return "true".equalsIgnoreCase(t) || "1".equals(t);
     }
 
     // ================= 查询 =================
@@ -279,6 +660,21 @@ public final class BootstrapState {
             long lv = positive(number(base.get("lv")), number(entry.get("lv")));
             if (bid <= 0L || fid <= 0L) continue;
             furniture.computeIfAbsent(bid, ignored -> new LinkedHashMap<>()).put(fid, Math.max(0L, lv));
+            // 工位类型与实例 id（精确委任需要）：conf_fid=类型 id、fid=实例 id、base.type=工位类型
+            long confFid = positive(number(base.get("conf_fid")), number(entry.get("conf_fid")));
+            if (confFid > 0L) {
+                long instanceId = positive(number(entry.get("fid")), fid);
+                if (instanceId > 0L) {
+                    furnitureInstances.computeIfAbsent(bid, ignored -> new LinkedHashMap<>())
+                            .put(confFid, instanceId);
+                }
+                long type = number(base.get("type"));
+                if (type <= 0L) type = furnitureTypeOf(confFid);
+                if (type > 0L) {
+                    furnitureTypes.computeIfAbsent(bid, ignored -> new LinkedHashMap<>())
+                            .put(confFid, type);
+                }
+            }
         }
     }
 

@@ -81,6 +81,10 @@ public class BootstrapActivity extends Activity {
     private EditText accountsInputEt;
     private EditText serverIdEt, furnaceEt, allianceEt, roleNameEt;
     private UiStyle.Switch instantDiamondSw;
+    /** 领任务奖励补资源（真实轮：新号资源为 0 时必须靠领奖推进）。 */
+    private UiStyle.Switch claimRewardsSw;
+    /** 统帅商店钻石补缺资源（面向有钻石的号）。 */
+    private UiStyle.Switch buyShopResourcesSw;
     private TextView importResultView;
     private TextView startBootBtn;
     private LinearLayout pickedListBox;
@@ -683,6 +687,25 @@ public class BootstrapActivity extends Activity {
         instantDiamondSw = new UiStyle.Switch(this, true, null);
         swRow.addView(instantDiamondSw);
         cfgCard.addView(swRow, rowParams(0, 8));
+
+        // 资源补充开关（2026-11-10 真实轮新增：新号资源为 0 且背包无资源包）
+        LinearLayout claimRow = new LinearLayout(this);
+        claimRow.setOrientation(LinearLayout.HORIZONTAL);
+        claimRow.setGravity(Gravity.CENTER_VERTICAL);
+        claimRow.addView(UiComponents.body(this, "领任务奖励补资源"),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        claimRewardsSw = new UiStyle.Switch(this, true, null);
+        claimRow.addView(claimRewardsSw);
+        cfgCard.addView(claimRow, rowParams(0, 8));
+
+        LinearLayout shopRow = new LinearLayout(this);
+        shopRow.setOrientation(LinearLayout.HORIZONTAL);
+        shopRow.setGravity(Gravity.CENTER_VERTICAL);
+        shopRow.addView(UiComponents.body(this, "商店钻石补缺资源（需有钻石）"),
+                new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        buyShopResourcesSw = new UiStyle.Switch(this, false, null);
+        shopRow.addView(buyShopResourcesSw);
+        cfgCard.addView(shopRow, rowParams(0, 8));
         panel.addView(cfgCard);
 
         // ③ 执行
@@ -823,7 +846,8 @@ public class BootstrapActivity extends Activity {
         }
         Map<String, Object> f = VaultSync.bootstrapBatchStartFields(
                 BootstrapForms.parsePositiveLong(text(serverIdEt)), target,
-                text(allianceEt), text(roleNameEt), instantDiamondSw.isOn(), accountsJson);
+                text(allianceEt), text(roleNameEt), instantDiamondSw.isOn(),
+                claimRewardsSw.isOn(), buyShopResourcesSw.isOn(), accountsJson);
         final long sid = BootstrapForms.parsePositiveLong(text(serverIdEt));
         final int targetLevel = target;
         startBootBtn.setEnabled(false);

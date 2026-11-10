@@ -30,6 +30,8 @@ public final class Main {
 
         // 起号注册（M3 2026-11-07）：批次仓读档（RUNNING 批次标记重启中断）+ 编排服务装配；
         // App 经 POST /v1/vault/registration 分发 express/real-name/provider-test/batch-* 动作。
+        // 账号存档（2026-11-11）：fpid ↔ 注册手机号 ↔ 区服角色，掉登录可据此重取码
+        com.carlos.vaultserver.registration.AccountArchive.install(config.dataDir);
         com.carlos.vaultserver.registration.RegistrationApi.install(config.dataDir);
 
         // 起号批量（M4b 2026-11-07）：批次仓/回流清单读档 + 生产会话工厂装配；

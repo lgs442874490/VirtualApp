@@ -20,11 +20,19 @@ public final class PassportConfig {
     public static final String DEFAULT_GAME_VERSION = "1.16.12";
     public static final String DEFAULT_LANGUAGE = "zh_CN";
     public static final String DEFAULT_ORIGIN_ADDRESS = "02:00:00:00:00:00";
-    public static final String DEFAULT_SMS_SEND_METHOD = "sendSms";
+    /**
+     * form 里 {@code service_name} 的真实值：游戏 {@code RequestHelper.request} 固定上传
+     * {@code "passport-request"}（<b>不是</b> method 名）。2026-11-10 dex 反编译+实测确认；
+     * 传错会导致所有 business method 返回 {@code error=5 未知错误}。
+     */
+    public static final String DEFAULT_SERVICE_NAME = "passport-request";
+    /** 发短信验证码：游戏 {@code sendCaptcha}（不是 sendSms）。实测成功返回 {"status":1,"data":{"result":1}}。 */
+    public static final String DEFAULT_SMS_SEND_METHOD = "sendCaptcha";
+    /** 手机号验证码登录。实测成功返回 status=1 + fpid/session_key。 */
     public static final String DEFAULT_SMS_LOGIN_METHOD = "loginWithPhoneCode";
-    /** 推定值：游客注册的 service_name，待真实轮校准。 */
-    public static final String DEFAULT_GUEST_REGISTER_METHOD = "registerGuest";
-    /** 推定值：实名认证的 service_name，待真实轮校准。 */
+    /** 游客快速注册：游戏 CGAccountType.Group.Express → express_signin。实测返回 is_new=true 新号。 */
+    public static final String DEFAULT_GUEST_REGISTER_METHOD = "express_signin";
+    /** 推定值：实名认证的 method，待真实轮校准（本地/未实名号实测用）。 */
     public static final String DEFAULT_REAL_NAME_METHOD = "realNameVerify";
 
     public final String baseUrl;
@@ -35,6 +43,8 @@ public final class PassportConfig {
     public final String gameVersion;
     public final String language;
     public final String originAddress;
+    /** form 里的 service_name（游戏固定 "passport-request"）。 */
+    public final String serviceName;
     public final String smsSendMethod;
     public final String smsLoginMethod;
     public final String guestRegisterMethod;
@@ -53,6 +63,7 @@ public final class PassportConfig {
         this.gameVersion = nonBlank(b.gameVersion, DEFAULT_GAME_VERSION);
         this.language = nonBlank(b.language, DEFAULT_LANGUAGE);
         this.originAddress = nonBlank(b.originAddress, DEFAULT_ORIGIN_ADDRESS);
+        this.serviceName = nonBlank(b.serviceName, DEFAULT_SERVICE_NAME);
         this.smsSendMethod = nonBlank(b.smsSendMethod, DEFAULT_SMS_SEND_METHOD);
         this.smsLoginMethod = nonBlank(b.smsLoginMethod, DEFAULT_SMS_LOGIN_METHOD);
         this.guestRegisterMethod = nonBlank(b.guestRegisterMethod, DEFAULT_GUEST_REGISTER_METHOD);
@@ -89,6 +100,7 @@ public final class PassportConfig {
         m.put("gameKey", PassportIds.mask(gameKey));
         m.put("sdkVersion", sdkVersion);
         m.put("gameVersion", gameVersion);
+        m.put("serviceName", serviceName);
         m.put("smsSendMethod", smsSendMethod);
         m.put("smsLoginMethod", smsLoginMethod);
         m.put("guestRegisterMethod", guestRegisterMethod);
@@ -116,6 +128,7 @@ public final class PassportConfig {
         private String gameVersion;
         private String language;
         private String originAddress;
+        private String serviceName;
         private String smsSendMethod;
         private String smsLoginMethod;
         private String guestRegisterMethod;
@@ -131,6 +144,7 @@ public final class PassportConfig {
         public Builder gameVersion(String v) { this.gameVersion = v; return this; }
         public Builder language(String v) { this.language = v; return this; }
         public Builder originAddress(String v) { this.originAddress = v; return this; }
+        public Builder serviceName(String v) { this.serviceName = v; return this; }
         public Builder smsSendMethod(String v) { this.smsSendMethod = v; return this; }
         public Builder smsLoginMethod(String v) { this.smsLoginMethod = v; return this; }
         public Builder guestRegisterMethod(String v) { this.guestRegisterMethod = v; return this; }

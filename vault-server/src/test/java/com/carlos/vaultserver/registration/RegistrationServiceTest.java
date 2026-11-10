@@ -10,6 +10,7 @@ import org.junit.Test;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -176,6 +177,48 @@ public class RegistrationServiceTest {
         // BLOCK 步骤记录在案
         assertTrue(r.steps.stream().anyMatch(s -> "BLOCK".equals(s.step) && s.ok));
         assertTrue("失败结果不带凭据", r.fpid.isEmpty());
+    }
+
+    /**
+     * 真实轮回归（2026-11-10）：接码平台号池复用号码会残留旧短信，实现必须跳过旧码只认新码，
+     * 否则会把旧码提交给游戏 → 上游「验证码验证失败」。
+     */
+    @Test
+    public void staleCode_isSkipped_newCodeIsUsed() {
+        Fakes.FakeSms sms = Fakes.FakeSms.single("19331521464", "2222");
+        sms.staleCode = "1111";   // 号池残留旧码
+        Fakes.RecordingSleeper sleeper = new Fakes.RecordingSleeper();
+        List<Map<String, String>> forms = new ArrayList<>();
+        RegistrationService svc = new RegistrationService(
+                Fakes.capturingPassport(forms, OK_SENT, OK_LOGIN), Fakes.factory(sms), sleeper);
+
+        PhoneResult r = svc.registerOnePhone(Fakes.cfg(1, 1), new CredentialBox());
+
+        assertTrue("应成功: " + r.error, r.ok);
+        assertEquals("FP900", r.fpid);
+        // 第 1 个表单是发码、第 2 个是登录；登录提交的必须是新码 2222，绝不能是旧码 1111
+        assertEquals("应发码+登录两次请求", 2, forms.size());
+        assertEquals("2222", forms.get(1).get("code"));
+    }
+
+    /** 只有旧码、始终没有新码 → 应超时失败且提示「仅见旧验证码」，不得把旧码当本次验证码。 */
+    @Test
+    public void onlyStaleCode_timesOutWithHint() {
+        Fakes.FakeSms sms = Fakes.FakeSms.single("19331521464", "2222");
+        sms.staleCode = "1111";
+        sms.waitingRounds = Integer.MAX_VALUE;
+        Fakes.RecordingSleeper sleeper = new Fakes.RecordingSleeper();
+        RegistrationService svc = new RegistrationService(
+                Fakes.scriptedPassport(OK_SENT), Fakes.factory(sms), sleeper);
+        PhoneBatchConfig cfg = Fakes.cfg(1, 1);
+        cfg.smsWaitSeconds = 12;
+        cfg.intervalMillis = 5_000L;
+
+        PhoneResult r = svc.registerOnePhone(cfg, new CredentialBox());
+
+        assertFalse(r.ok);
+        assertEquals("WAIT_SMS", r.step);
+        assertTrue("应提示仅见旧验证码: " + r.error, r.error.contains("旧验证码"));
     }
 
     @Test

@@ -16,9 +16,11 @@ public class DeviceProfileTest {
     @Test
     public void random_guidFieldsAreSame32Hex() {
         DeviceProfile p = DeviceProfile.random();
-        assertEquals(p.guid, p.originGuid);
-        assertEquals(p.guid, p.androidId);
+        // 实证口径：originGuid = md5(guid)；androidId = MAC（不是 guid）
+        assertEquals(com.carlos.vaultserver.passport.PassportIds.md5Hex(p.guid), p.originGuid);
+        assertEquals(p.macAddress, p.androidId);
         assertTrue(p.guid.matches("[0-9a-f]{32}"));
+        assertTrue("MAC 格式", p.macAddress.matches("([0-9a-f]{2}:){5}[0-9a-f]{2}"));
         assertTrue(p.distinctId.matches("[0-9a-f]{32}"));
         assertNotEquals(p.guid, p.distinctId);
     }
@@ -54,7 +56,7 @@ public class DeviceProfileTest {
         assertEquals("1.16.12", lp.get("version"));
         assertEquals("App_android_8_funplus", lp.get("package_tag"));
         assertEquals("funplus", lp.get("ad_source"));
-        assertEquals(p.androidId, lp.get("device_id"));
+        assertEquals(p.androidId, lp.get("device_id"));   // device_id = MAC（实证口径）
         assertEquals(10, lp.keySet().size());
         // account 之外无空值
         for (Map.Entry<String, String> e : lp.entrySet()) {

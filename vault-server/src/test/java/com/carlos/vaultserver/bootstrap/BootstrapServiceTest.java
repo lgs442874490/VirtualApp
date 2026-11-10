@@ -17,6 +17,8 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -36,6 +38,12 @@ public class BootstrapServiceTest {
     /** 脚本回放端口：按 proto 排队响应；未脚本化的 proto 默认 code=0。 */
     private static class ScriptedPort implements BootstrapService.ProtocolPort {
         final List<Map.Entry<String, Map<String, Object>>> calls = new ArrayList<>();
+        final Map<String, Map<String, Object>> notifies = new LinkedHashMap<>();
+
+        @Override
+        public Map<String, Object> notify(String proto) {
+            return notifies.get(proto);
+        }
         private final Map<String, ArrayDeque<Map<String, Object>>> scripted = new LinkedHashMap<>();
 
         @SafeVarargs
@@ -52,8 +60,28 @@ public class BootstrapServiceTest {
             GameMessage msg = new GameMessage();
             msg.setProto(proto);
             ArrayDeque<Map<String, Object>> q = scripted.get(proto);
-            msg.setContent(q != null && !q.isEmpty() ? q.poll()
-                    : new LinkedHashMap<>(Map.of("code", 0)));
+            if (q != null && !q.isEmpty()) {
+                msg.setContent(q.poll());
+            } else if (BootstrapService.MAIL_COVER_LIST.equals(proto)
+                    || BootstrapService.MAIL_BATCH_READ.equals(proto)
+                    || BootstrapService.ACHIEVEMENT_INFO.equals(proto)
+                    || BootstrapService.ACHIEVEMENT_REWARD.equals(proto)) {
+                msg.setContent(new LinkedHashMap<>(Map.of("code", 9003)));
+            } else if (BootstrapService.GUIDE_SET_STEP.equals(proto)) {
+                msg.setContent(new LinkedHashMap<>(Map.of("code", 9002)));
+            } else if (BootstrapService.HERO_SEARCH.equals(proto)
+                    || BootstrapService.HERO_UPGRADE.equals(proto)
+                    || BootstrapService.HERO_PROMOTE_STAR.equals(proto)
+                    || BootstrapService.ADVENTURE_BEGIN.equals(proto)
+                    || BootstrapService.ADVENTURE_END.equals(proto)) {
+                // 默认让英雄/探险协议失败：既有用例不关心，避免新增环节改变其流程
+                msg.setContent(new LinkedHashMap<>(Map.of("code", 9001)));
+            } else if (BootstrapService.EXCHANGE_CDKEY.equals(proto)) {
+                // 默认把兑换码当「永久失败」：既有用例不关心兑换码，避免新增环节改变其流程
+                msg.setContent(new LinkedHashMap<>(Map.of("code", 7201)));
+            } else {
+                msg.setContent(new LinkedHashMap<>(Map.of("code", 0)));
+            }
             return msg;
         }
 
@@ -870,4 +898,475 @@ public class BootstrapServiceTest {
         assertEquals(0, port.count("req_use_item"));
         assertEquals("已请求升级 大熔炉 到 2 级", r.get("message"));
     }
+
+    // ================= 任务奖励领取（真实轮 2026-11-10：新号资源为 0 只能靠领奖） =================
+
+    @Test
+    public void claimTaskRewards_claimsFromPushLists() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        // 推送：成长任务 1 个、章节任务 1 个、未领宝箱 1 个（已领的 get_flag=true 应排除）
+        port.notifies.put("notify_growthquests", content("quests",
+                List.of(content("id", 11L), content("id", 12L))));
+        port.notifies.put("notify_chapterquests", content(
+                "quests", List.of(content("id", 21L)),
+                "chapter_award", List.of(content("id", 31L, "get_flag", false),
+                        content("id", 32L, "get_flag", true))));
+        // 协议成功
+        port.when("req_get_growthquest_award", content("code", 0L), content("code", 0L));
+        port.when("req_get_chapterquest_award", content("code", 0L));
+        port.when("req_get_chapter_award", content("code", 0L));
+        port.when("req_seven_sign_one_click_award", content("code", 0L));
+        port.when("req_sign_21day_get_all_reward", content("code", 0L));
+
+        BootstrapService svc = new BootstrapService(port);
+        Map<String, Object> r = svc.claimTaskRewards();
+
+        @SuppressWarnings("unchecked") List<String> claimed = (List<String>) r.get("claimed");
+        assertEquals(7, claimed.size());   // 2 成长 + 1 章节 + 1 宝箱 + 2 签到 + 1 探险挂机
+        assertTrue("应含成长任务 11", claimed.contains("成长任务 11"));
+        assertTrue("应含章节宝箱 31", claimed.contains("章节宝箱 31"));
+        assertFalse("已领宝箱 32 不应再领", claimed.contains("章节宝箱 32"));
+        assertEquals(0, r.get("failed"));
+    }
+
+    @Test
+    public void claimTaskRewards_upstreamRejectionCountsAsFailed() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        port.notifies.put("notify_growthquests", content("quests", List.of(content("id", 11L))));
+        port.when("req_get_growthquest_award", content("code", 51L));   // 被拒
+        port.when("req_seven_sign_one_click_award", content("code", 0L));
+        port.when("req_sign_21day_get_all_reward", content("code", 0L));
+
+        BootstrapService svc = new BootstrapService(port);
+        Map<String, Object> r = svc.claimTaskRewards();
+
+        @SuppressWarnings("unchecked") List<String> claimed = (List<String>) r.get("claimed");
+        assertEquals(1, r.get("failed"));
+        assertFalse("被拒的不计入已领", claimed.contains("成长任务 11"));
+    }
+
+    @Test
+    public void claimTaskRewards_noPush_noQuestClaimed() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        BootstrapService svc = new BootstrapService(port);
+        Map<String, Object> r = svc.claimTaskRewards();
+        @SuppressWarnings("unchecked") List<String> claimed = (List<String>) r.get("claimed");
+        // 原版语义：两个签到协议无条件尝试（不依赖推送），任务奖必须依赖推送列表
+        for (String item : claimed) {
+            assertFalse("无推送时不应领任务奖: " + item,
+                    item.startsWith("成长任务") || item.startsWith("章节"));
+        }
+    }
+
+
+    // ================= 商店补资源（真实轮 2026-11-10：新号资源为 0，需钻石买） =================
+
+    @Test
+    public void buyMissingResources_purchasesByGapWithinDiamondBudget() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        // 钻石 100，木材缺口 25000（需 3 包，2 钻/包）
+        port.when("req_loaddata", content("uid", 9001L, "res", content("101", 100L)));
+        port.when("req_shop_info", content("goods", List.of(
+                content("itemId", 100123L, "goodsId", 555L),
+                content("itemId", 100133L, "goodsId", 556L))));
+        port.when("req_shop_buy", content("code", 0L));
+
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(port.request("req_loaddata", Map.of()).getContent());
+        Map<String, Object> r = svc.buyMissingResources(
+                List.of(new BuildingGateCatalog.Cost(103L, 25000L)));
+
+        @SuppressWarnings("unchecked") List<Map<String, Object>> purchases =
+                (List<Map<String, Object>>) r.get("purchases");
+        assertEquals(1, purchases.size());
+        assertEquals(3L, purchases.get(0).get("packs"));       // 25000/10000 向上取整
+        assertEquals(6L, purchases.get(0).get("diamondCost")); // 3 包 × 2 钻
+        assertEquals(6L, r.get("diamondSpent"));
+    }
+
+    @Test
+    public void buyMissingResources_noDiamonds_buysNothing() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_loaddata", content("uid", 9002L, "res", content("101", 0L)));
+        port.when("req_shop_info", content("goods", List.of(content("itemId", 100123L, "goodsId", 555L))));
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(port.request("req_loaddata", Map.of()).getContent());
+
+        Map<String, Object> r = svc.buyMissingResources(List.of(new BuildingGateCatalog.Cost(103L, 25000L)));
+        @SuppressWarnings("unchecked") List<Map<String, Object>> purchases =
+                (List<Map<String, Object>>) r.get("purchases");
+        assertTrue("没钻石不应购买", purchases.isEmpty());
+    }
+
+    @Test
+    public void shopCatalog_hasCommanderPackPrices() {
+        assertEquals(2L, BootstrapShopCatalog.priceOf(100123L));   // 1 万木材
+        assertEquals(10L, BootstrapShopCatalog.priceOf(100133L));  // 1 万煤矿
+        assertEquals(40L, BootstrapShopCatalog.priceOf(100143L));  // 1 万铁矿
+        assertEquals(0L, BootstrapShopCatalog.priceOf(1L));        // 未知商品
+    }
+
+
+    // ================= 探险挂机奖励（2026-11-11：网页版 0 基础起号补资源手段） =================
+
+    @Test
+    public void claimAdventureHangUp_success() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_open_hang_up_reward_view", content("code", 0L));
+        port.when("req_get_hang_up_reward", content("code", 0L, "rewards", "wood:100"));
+        BootstrapService svc = new BootstrapService(port);
+        Map<String, Object> r = svc.claimAdventureHangUp();
+        assertEquals(Boolean.TRUE, r.get("claimed"));
+        assertEquals(0L, r.get("code"));
+    }
+
+    @Test
+    public void claimAdventureHangUp_notReadySkipsWithoutError() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_open_hang_up_reward_view", content("code", 0L));
+        port.when("req_get_hang_up_reward", content("code", 4004L));   // 挂机时长未到
+        BootstrapService svc = new BootstrapService(port);
+        Map<String, Object> r = svc.claimAdventureHangUp();
+        assertEquals(Boolean.FALSE, r.get("claimed"));
+        assertTrue("应提示挂机时长未达条件: " + r.get("reason"),
+                String.valueOf(r.get("reason")).contains("挂机时长"));
+    }
+
+    @Test
+    public void claimAdventureHangUp_previewFailureDegrades() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_open_hang_up_reward_view", content("code", 5000L));  // 未解锁等
+        BootstrapService svc = new BootstrapService(port);
+        Map<String, Object> r = svc.claimAdventureHangUp();
+        assertFalse(Boolean.TRUE.equals(r.get("claimed")));
+    }
+
+
+    // ================= 幸存者委任（真实轮 2026-11-11：不委任则资源恒 0） =================
+
+    @Test
+    public void assignIdleSurvivors_startsAllIdleOnes() {
+        ScriptedPort port = new ScriptedPort();
+        // 精确协议成功（有工位数据时走 send_or_fired）
+        port.when("req_survivor_send_or_fired", content("code", 0L), content("code", 0L), content("code", 0L));
+        port.when("req_loaddata", content("uid", 9101L,
+                "survivor_list", List.of(
+                        content("sid", 2001L, "fid_work", 0L, "is_sick", false),
+                        content("sid", 2002L, "fid_work", 0L, "is_sick", false),
+                        content("sid", 2003L, "fid_work", 7001L, "is_sick", false))));
+        port.when("req_survivor_work_start", content("code", 0L), content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(port.request("req_loaddata", Map.of()).getContent());
+
+        Map<String, Object> r = svc.assignIdleSurvivors();
+        assertEquals(2, r.get("idleBefore"));
+        assertEquals(2, r.get("assignedCount"));
+        assertEquals(0, r.get("failed"));
+    }
+
+    @Test
+    public void runNext_assignsSurvivorsBeforeBuilding() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_loaddata", content("uid", 9102L,
+                "buildings", content("301", content("bid", 301L, "lv", 0L, "status", 0L)),
+                "queues", new ArrayList<>(),
+                "res", content("103", 0L),
+                "survivor_list", List.of(content("sid", 3001L, "fid_work", 0L, "is_sick", false))));
+        port.when("req_survivor_work_start", content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(port.request("req_loaddata", Map.of()).getContent());
+        svc.applyConfig(new BootstrapService.BootstrapConfig(true, 724L, 3, true, false, false, "", false, ""));
+
+        Map<String, Object> r = svc.runNext();
+        assertEquals("STARTED", r.get("status"));
+        assertTrue("应先委任幸存者: " + r.get("message"),
+                String.valueOf(r.get("message")).contains("幸存者"));
+    }
+
+
+    /** 最小引擎替身：createRole 只用到 login 返回的 uid/serverId/authContent。 */
+    private static final class FakeEngine extends com.carlos.vault.wjdr.WjdrEngine {
+        private final long uid;
+        private final long serverId;
+
+        FakeEngine(long uid, long serverId) {
+            super(null);
+            this.uid = uid;
+            this.serverId = serverId;
+        }
+
+        @Override
+        public LoginResult login(String fpid, String sdkToken, Long serverid,
+                                 java.util.Map<String, Object> extraParams) {
+            LoginResult r = new LoginResult();
+            r.uid = uid;
+            r.serverId = serverId > 0 ? serverId : (serverid == null ? 0L : serverid);
+            return r;
+        }
+    }
+
+    // ================= 建号前置校验（2026-11-11 用户提示「建号前置是账号在线」） =================
+
+    @Test
+    public void countRolesInServer_countsByServerId() {
+        Map<String, Object> roles = content("list", List.of(
+                content("serverid", 724L, "uid", 1L),
+                content("serverid", 724L, "uid", 2L),
+                content("serverid", 888L, "uid", 3L),
+                content("kid", 724L, "uid", 4L)));
+        assertEquals(3, BootstrapService.countRolesInServer(roles, 724L));
+        assertEquals(1, BootstrapService.countRolesInServer(roles, 888L));
+        assertEquals(0, BootstrapService.countRolesInServer(roles, 1L));
+    }
+
+    /** 新版口径：建号 uid<=0 视为服务端未创建角色，并带 block_create_role_endtime 提示。 */
+    @Test
+    public void createRole_uidZero_throwsWithBlockHint() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        BootstrapService svc = new BootstrapService(port);
+        com.carlos.vault.wjdr.WjdrEngine engine = new ZeroUidEngine();
+        try {
+            svc.createRole(engine, "f1", "tk", 724L, "");
+            fail("uid<=0 应判建号失败");
+        } catch (IllegalStateException e) {
+            assertTrue("应提示服务端没有创建角色: " + e.getMessage(),
+                    e.getMessage().contains("没有创建角色"));
+            assertTrue("应带建号限制时间戳提示: " + e.getMessage(),
+                    e.getMessage().contains("block_create_role_endtime") || e.getMessage().contains("禁止该账号建号"));
+        }
+    }
+
+    /** 建号成功：uid>0 且无限制。 */
+    @Test
+    public void createRole_successWithPositiveUid() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        BootstrapService svc = new BootstrapService(port);
+        FakeEngine engine = new FakeEngine(299459378L, 724L);
+        BootstrapService.LoginOutcome out = svc.createRole(engine, "f1", "tk", 724L, "");
+        assertEquals(299459378L, out.uid());
+    }
+
+    /** uid=0 且带 block 时间戳的引擎替身。 */
+    private static final class ZeroUidEngine extends com.carlos.vault.wjdr.WjdrEngine {
+        ZeroUidEngine() {
+            super(null);
+        }
+
+        @Override
+        public LoginResult login(String fpid, String sdkToken, Long serverid,
+                                 java.util.Map<String, Object> extraParams) {
+            LoginResult r = new LoginResult();
+            r.uid = 0L;
+            r.serverId = serverid == null ? 0L : serverid;
+            r.authContent = new java.util.LinkedHashMap<>();
+            r.authContent.put("block_create_role_endtime", System.currentTimeMillis() / 1000L + 3600L);
+            return r;
+        }
+    }
+
+
+    // ================= 兑换码（新版 BootstrapCdkeyCatalog：熔炉≥3 才兑换） =================
+
+    @Test
+    public void claimCdkeys_belowFurnace3_doesNothing() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_loaddata", content("uid", 9201L,
+                "buildings", content("301", content("bid", 301L, "lv", 2L, "status", 0L))));
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(port.request("req_loaddata", Map.of()).getContent());
+        assertEquals("熔炉 <3 不兑换", 0, svc.claimCdkeys());
+    }
+
+    @Test
+    public void claimCdkeys_furnace3_exchangesAllAndSkipsPermanentFailures() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_loaddata", content("uid", 9202L,
+                "buildings", content("301", content("bid", 301L, "lv", 3L, "status", 0L))));
+        // 显式给 13 个码都脚本成功响应（ScriptedPort 对兑换码默认是永久失败）
+        for (int i = 0; i < BootstrapService.CDKEYS.size(); i++) {
+            port.when("req_exchange_cdkey", content("code", 0L));
+        }
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(port.request("req_loaddata", Map.of()).getContent());
+
+        int claimed = svc.claimCdkeys();
+        assertEquals("13 个固定兑换码", 13, claimed);
+        // 第二次调用：已尝试过的不再请求
+        assertEquals(0, svc.claimCdkeys());
+        // 校验协议与参数
+        boolean sawExchange = port.calls.stream()
+                .anyMatch(c -> "req_exchange_cdkey".equals(c.getKey())
+                        && "WJDR666".equals(c.getValue().get("cdkey"))
+                        && Long.valueOf(2L).equals(((Number) c.getValue().get("platform")).longValue()));
+        assertTrue("应以 {cdkey, platform:2} 调用 req_exchange_cdkey", sawExchange);
+    }
+
+
+    // ================= 英雄与探险（新版 BootstrapHeroService / BootstrapAdventureService） =================
+
+    @Test
+    public void heroAdvance_recruitsAndUpgradesHighestHero() {
+        ScriptedPort port = new ScriptedPort();
+        // 招募协议成功（默认替身会让英雄协议失败）
+        port.when("req_hero_search_times", content("code", 0L), content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+        java.util.Map<String, Object> load = new java.util.LinkedHashMap<>();
+        load.put("hero_list", List.of(content("id", 5001L, "lev", 10L),
+                content("id", 5002L, "lev", 30L)));
+        svc.syncLoadData(load);
+
+        Map<String, Object> r = svc.heroAdvance();
+        assertNotNull("有英雄数据应产出动作", r);
+        assertTrue("应先做首次史诗招募: " + r.get("message"),
+                String.valueOf(r.get("message")).contains("史诗招募"));
+        // 第二次：招募阶梯（首次史诗已标记）
+        Map<String, Object> r2 = svc.heroAdvance();
+        assertNotNull(r2);
+        assertTrue(String.valueOf(r2.get("message")).contains("招募"));
+    }
+
+    @Test
+    public void heroAdvance_noHeroData_returnsNull() {
+        ScriptedPort port = new ScriptedPort();
+        BootstrapService svc = new BootstrapService(port);
+        assertNull("无英雄数据不应动作", svc.heroAdvance());
+    }
+
+    @Test
+    public void adventureBattle_noHeroes_skips() {
+        ScriptedPort port = new ScriptedPort();
+        BootstrapService svc = new BootstrapService(port);
+        assertNull("没有英雄打不了探险", svc.adventureBattle(0L));
+    }
+
+    @Test
+    public void adventureBattle_withHeroes_beginsAndEnds() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_begin_adventure_pve", content("is_fast", false));
+        port.when("req_end_adventure_pve", content("is_win", true));
+        BootstrapService svc = new BootstrapService(port);
+        java.util.Map<String, Object> load = new java.util.LinkedHashMap<>();
+        load.put("hero_list", List.of(content("id", 5002L, "lev", 30L)));
+        load.put("adventure_pve_info", content("pass_checkpoint", 0L));
+        svc.syncLoadData(load);
+
+        Map<String, Object> r = svc.adventureBattle(0L);
+        assertNotNull(r);
+        assertEquals("STARTED", r.get("status"));
+        assertTrue("应通关第 1 关: " + r.get("message"), String.valueOf(r.get("message")).contains("第 1 关"));
+        // 校验开局参数：checkpoint=1、五人队伍（不足补 0）
+        Map<String, Object> args = port.argsOf("req_begin_adventure_pve", 0);
+        assertEquals(1L, ((Number) args.get("checkpoint")).longValue());
+        @SuppressWarnings("unchecked")
+        Map<String, Object> squadData = (Map<String, Object>) args.get("fight_heros_data");
+        @SuppressWarnings("unchecked")
+        List<Long> heroes = (List<Long>) squadData.get("fight_heros");
+        assertEquals("队伍固定 5 个槽位", 5, heroes.size());
+        assertEquals(5002L, heroes.get(0).longValue());
+        assertEquals(0L, heroes.get(4).longValue());
+        assertEquals(1L, svc.stateForTest().adventurePassed());
+    }
+
+
+    // ================= 精确工位委任（新版 assignIdleSurvivorToProduction） =================
+
+    @Test
+    public void assignIdleSurvivors_preciseStationUsesSendOrFired() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_survivor_send_or_fired", content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+        java.util.Map<String, Object> load = new java.util.LinkedHashMap<>();
+        // 302 伐木场（Lv1），工位 confFid=401（类型 24），实例 fid=4010001，无人占用
+        java.util.Map<String, Object> b302 = content("bid", 302L, "lv", 1L, "status", 0L);
+        load.put("buildings", content("302", b302));
+        load.put("furnitures", List.of(content("bid", 302L, "conf_fid", 401L, "fid", 4010001L,
+                "lv", 1L, "type", 24L)));
+        load.put("survivor_list", List.of(content("sid", 5001L, "fid_work", 0L, "is_sick", false)));
+        svc.syncLoadData(load);
+
+        Map<String, Object> r = svc.assignIdleSurvivors();
+        assertEquals(1, r.get("assignedCount"));
+        Map<String, Object> args = port.argsOf("req_survivor_send_or_fired", 0);
+        assertEquals(5001L, ((Number) args.get("sid")).longValue());
+        assertEquals(4010001L, ((Number) args.get("fid_work")).longValue());
+        assertEquals(1L, ((Number) args.get("type")).longValue());
+    }
+
+
+    // ================= 新手引导（新版 BootstrapTutorialService） =================
+
+    @Test
+    public void tutorialAdvance_reportsNextStep() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_guide_set_step", content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+        java.util.Map<String, Object> load = new java.util.LinkedHashMap<>();
+        load.put("guide_list", List.of(content("id", 100101L, "step", 0L)));
+        svc.syncLoadData(load);
+
+        Map<String, Object> r = svc.tutorialAdvance(java.util.Map.of(100101L, 9L));
+        assertNotNull("有引导数据应推进", r);
+        assertEquals("STARTED", r.get("status"));
+        assertTrue(String.valueOf(r.get("message")).contains("第 1/9 步"));
+        // 校验上报参数
+        Map<String, Object> args = port.argsOf("req_guide_set_step", 0);
+        assertEquals(100101L, ((Number) args.get("id")).longValue());
+        assertEquals(1L, ((Number) args.get("step")).longValue());
+        assertEquals(1L, svc.stateForTest().guideSteps().get(100101L).longValue());
+    }
+
+    @Test
+    public void tutorialAdvance_alreadyAtMax_returnsNull() {
+        ScriptedPort port = new ScriptedPort();
+        BootstrapService svc = new BootstrapService(port);
+        java.util.Map<String, Object> load = new java.util.LinkedHashMap<>();
+        load.put("guide_list", List.of(content("id", 100101L, "step", 9L)));
+        svc.syncLoadData(load);
+        assertNull("已达 maxStep 不再上报", svc.tutorialAdvance(java.util.Map.of(100101L, 9L)));
+    }
+
+
+    // ================= 邮件与成就（新版 BootstrapMailService / BootstrapMilestoneService） =================
+
+    @Test
+    public void claimMails_readsActionableMailIds() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_mail_cover_list", content("code", 0L, "coverlist", List.of(
+                content("first_type", 1L, "mailid_new", "m1", "isread", 0L, "attach_statue", 0L),
+                content("first_type", 1L, "mailid_new", "m2", "isread", 1L, "attach_statue", 1L),
+                content("first_type", 1L, "mailid_new", "m3", "isread", 1L, "attach_statue", 0L))));
+        port.when("req_batch_mail_read", content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+
+        int claimed = svc.claimMails();
+        assertEquals("未读 m1 + 有附件 m2 应领，已读无附件 m3 跳过；calls=" + port.calls, 2, claimed);
+        Map<String, Object> args = port.argsOf("req_batch_mail_read", 0);
+        @SuppressWarnings("unchecked")
+        List<String> ids = (List<String>) args.get("mid_list_new");
+        assertEquals(2, ids.size());
+        assertTrue(ids.contains("m1") && ids.contains("m2"));
+        assertEquals(1L, ((Number) args.get("first_type")).longValue());
+    }
+
+    @Test
+    public void claimMails_noActionable_returnsZero() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_mail_cover_list", content("code", 0L, "coverlist", List.of(
+                content("first_type", 1L, "mailid_new", "m3", "isread", 1L, "attach_statue", 0L))));
+        BootstrapService svc = new BootstrapService(port);
+        assertEquals(0, svc.claimMails());
+    }
+
+    @Test
+    public void claimAchievements_claimsClaimableOnly() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_achievement_info", content("code", 0L, "list", List.of(
+                content("id", 11L, "state", 2L),
+                content("id", 12L, "state", 1L),
+                content("id", 13L, "can_get", 1L))));
+        port.when("req_achievement_get_reward", content("code", 0L), content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+        assertEquals("11(state=2) 与 13(can_get=1) 可领", 2, svc.claimAchievements());
+    }
+
 }

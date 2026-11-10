@@ -15,6 +15,7 @@ import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -67,6 +68,14 @@ public final class BootstrapBatchRunner {
     public static final int DEFAULT_TIMEOUT_MINUTES = 120;
     /** 全量状态拉取协议（每轮 runUntil 前校准，对齐 M4a「等待下一轮 loaddata 校准」）。 */
     private static final String LOAD_DATA = "req_loaddata";
+
+    /**
+     * 单号连续「无进展」轮数上限（每轮 {@link #ROUND_INTERVAL_MILLIS}）。
+     * 真实轮（2026-11-10）：新号资源不足建伐木场、建筑正在建造，都是**正常等待态**，
+     * 原版语义是等资源/等队列完成后继续，而非失败。故等待类原因连续 120 轮（约 10 分钟）
+     * 仍无进展才判停滞，异常类原因（不支持建筑/依赖成环等）仍立即失败。
+     */
+    private static final int MAX_IDLE_ROUNDS = 120;
 
     /** 批次 id：bb + yyyyMMddHHmmss + 两位序号。 */
     public final String id;
@@ -386,11 +395,32 @@ public final class BootstrapBatchRunner {
             BootstrapService service = new BootstrapService(session.port,
                     new BootstrapPlanner(), BootstrapCatalog.combined(), serviceSleeper);
             service.applyConfig(accountConfig());
-            BootstrapService.LoginOutcome outcome = service.createRole(session.engine,
-                    entry.fpid, entry.sdkToken, config.targetServerId(), config.roleName());
+            BootstrapService.LoginOutcome outcome;
+            try {
+                outcome = service.createRole(session.engine,
+                        entry.fpid, entry.sdkToken, config.targetServerId(), config.roleName());
+                entry.steps.add("建号成功 uid=" + outcome.uid());
+            } catch (Exception createError) {
+                // 角色已存在时 is_create=true 会被游戏拒绝（真实轮 code=9）：回退普通登录进既有角色
+                FileLog.warn("起号建号失败，回退既有角色登录 fpid={}：{}", entry.fpid,
+                        String.valueOf(createError.getMessage()));
+                session.engine.initialize();   // 二次 loginauth 必须走全新连接
+                outcome = service.loginExisting(session.engine,
+                        entry.fpid, entry.sdkToken, config.targetServerId());
+                entry.steps.add("已存在角色，直接登录 uid=" + outcome.uid());
+            }
             entry.state = AccountState.RUNNING;
             entry.uid = outcome.uid();
-            entry.steps.add("建号成功 uid=" + outcome.uid());
+            // 存档补写区服角色（手机号换号找回链路的第二段）
+            try {
+                com.carlos.vaultserver.registration.AccountArchive archive =
+                        com.carlos.vaultserver.registration.AccountArchive.get();
+                if (archive != null) {
+                    archive.recordRole(entry.fpid, config.targetServerId(), outcome.uid());
+                }
+            } catch (RuntimeException ignored) {
+                // 存档失败不影响起号
+            }
 
             runLeveling(session.port, service, entry);
 
@@ -434,11 +464,38 @@ public final class BootstrapBatchRunner {
      * 升级循环：每轮 {@code req_loaddata} 拉全量校准 → {@code runUntil} 批量推进 →
      * 熔炉达标即出；{@code started==0} 视为不可继续（停滞），单号超时上限防死循环。
      */
+    /** 等待类阻塞原因判定（真实轮校准：这些都不是错误，等时间即可恢复）。 */
+    static boolean isWaitableBlock(String reason) {
+        if (reason == null || reason.isBlank()) return false;
+        // 注意：不含「等待完成」——MANUAL 文案「需要等待完成，请开启钻石即时升级」属于需要
+        // 人工改配置才能推进的状态，必须立即失败暴露出来，不能当等待类空等。
+        for (String kw : new String[]{"资源或道具不足", "正在建造", "正在升级",
+                "等待建筑与队列", "等待同步", "没有空闲建筑队列", "等待资源"}) {
+            if (reason.contains(kw)) return true;
+        }
+        return false;
+    }
+
+    /** 轮间等待；被中断则置 cancelled 并返回 false（本号按取消收尾）。 */
+    private boolean sleepRound(AccountEntry entry) {
+        try {
+            roundSleeper.sleep(ROUND_INTERVAL_MILLIS);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            cancelled.set(true);
+            entry.state = AccountState.FAILED;
+            entry.error = "批次已取消";
+            return false;
+        }
+    }
+
     private void runLeveling(BootstrapService.ProtocolPort port, BootstrapService service,
                              AccountEntry entry) throws Exception {
         long target = config.targetFurnaceLevel();
         long deadline = System.currentTimeMillis() + timeoutMillis();
         int round = 0;
+        int idleRounds = 0;
         while (true) {
             if (cancelled.get()) {
                 entry.state = AccountState.FAILED;
@@ -453,7 +510,50 @@ public final class BootstrapBatchRunner {
                 failCount++;
                 return;
             }
-            service.syncLoadData(contentOf(port.request(LOAD_DATA, Map.of())));
+            port.collectNotifies(1500L);   // 游戏是推送式下发：先收推送再校准
+            Map<String, Object> loadContent = contentOf(port.request(LOAD_DATA, Map.of()));
+            // 真实轮（2026-11-10 实测）：req_loaddata 只回 {code}，建筑/队列/资源全在推送里——
+            //   notify_shelter_info.building_info（建筑明细）、notify_queue_info.queue_map（队列）、
+            //   notify_resource_init.data / notify_backpack_init.data（资源与背包）、
+            //   notify_base_info.stove_lv/uid/nickName（熔炉等级与角色）。
+            // 故先把推送合成到 content 再交给状态机（键名与 BootstrapState 既有候选一致）。
+            Map<String, Object> merged = new LinkedHashMap<>(loadContent);
+            putIfPresent(merged, "building_info", notifyField(port, "notify_shelter_info", "building_info"));
+            putIfPresent(merged, "queue_map", notifyField(port, "notify_queue_info", "queue_map"));
+            putIfPresent(merged, "res", notifyField(port, "notify_resource_init", "data"));
+            putIfPresent(merged, "bag", notifyField(port, "notify_backpack_init", "data"));
+            // 幸存者列表（真实轮 2026-11-11：委任上岗是资源产出的前提）
+            putIfPresent(merged, "survivor_list", notifyField(port, "notify_survivor_info", "survivor_list"));
+            putIfPresent(merged, "survivor_list", notifyField(port, "notify_survivor_add", "survivor_list"));
+            // 英雄与探险（新版 BootstrapTutorialState 数据源）：没有英雄打不了探险
+            putIfPresent(merged, "hero_list", notifyField(port, "notify_hero_init", "data"));
+            putIfPresent(merged, "adventure_pve_info",
+                    notifyField(port, "notify_adventure_pve_info", "adventure_pve_info"));
+            // 新手引导（新版 BootstrapTutorialState 数据源）
+            putIfPresent(merged, "guide_list", notifyField(port, "notify_guide_init", "data"));
+            Map<String, Object> baseInfo = port.notify("notify_base_info");
+            if (baseInfo != null) {
+                putIfPresent(merged, "stove_lv", baseInfo.get("stove_lv"));
+                putIfPresent(merged, "uid", baseInfo.get("uid"));
+                putIfPresent(merged, "name", baseInfo.get("nickName"));
+            }
+            loadContent = merged;
+            service.syncLoadData(loadContent);
+            // 首轮记录一次资源/背包/建筑规模（真实轮排障：新号资源为 0 是 51 的常见原因）
+            if (round == 0) {
+                FileLog.info("起号首轮状态 res={} bagItems={} buildings={} furnace={}",
+                        String.valueOf(service.state().resourceMap()),
+                        String.valueOf(loadContent.get("bag") instanceof java.util.List
+                                ? ((java.util.List<?>) loadContent.get("bag")).size() : -1),
+                        String.valueOf(service.state().buildingLevels().size()),
+                        String.valueOf(service.state().furnaceLevel()));
+            }
+            if (!service.state().buildingsReady() || !service.state().queuesReady()) {
+                // 推送未到齐（登录初期偶发）：记录一次便于排障，本轮按等待处理
+                FileLog.warn("起号推送未齐：buildingsReady={} queuesReady={} 已收协议数={}",
+                        String.valueOf(service.state().buildingsReady()),
+                        String.valueOf(service.state().queuesReady()), port.notifyProtos().size());
+            }
             round++;
             Map<String, Object> summary = service.runUntil(STEPS_PER_ROUND);
             Map<String, Object> stateView = (Map<String, Object>) summary.get("state");
@@ -465,16 +565,34 @@ public final class BootstrapBatchRunner {
                 return;
             }
             if (started == 0) {
-                entry.state = AccountState.FAILED;
                 String blocked = stateView == null ? ""
                         : String.valueOf(stateView.getOrDefault("blockedReason", ""));
                 String message = String.valueOf(summary.getOrDefault("message", ""));
-                entry.error = "起号停滞：" + (blocked.isBlank()
-                        ? (message.isBlank() ? "无进展且原因未知" : message) : blocked);
+                String reason = blocked.isBlank()
+                        ? (message.isBlank() ? "无进展且原因未知" : message) : blocked;
+                // 等待类原因（资源/道具不足、建筑正在建造、等待同步）→ 继续等，不判失败
+                if (isWaitableBlock(reason)) {
+                    idleRounds++;
+                    if (idleRounds > MAX_IDLE_ROUNDS) {
+                        entry.state = AccountState.FAILED;
+                        entry.error = "起号停滞超时：" + reason;
+                        entry.steps.add("失败：" + entry.error);
+                        failCount++;
+                        return;
+                    }
+                    if (idleRounds == 1 || idleRounds % 12 == 0) {
+                        entry.steps.add("第 " + round + " 轮等待中：" + reason);
+                    }
+                    if (!sleepRound(entry)) return;
+                    continue;
+                }
+                entry.state = AccountState.FAILED;
+                entry.error = "起号停滞：" + reason;
                 entry.steps.add("失败：" + entry.error);
                 failCount++;
                 return;
             }
+            idleRounds = 0;
             entry.steps.add("第 " + round + " 轮升级 " + started + " 步（熔炉 " + furnace + " 级）");
             try {
                 roundSleeper.sleep(ROUND_INTERVAL_MILLIS);
@@ -537,6 +655,17 @@ public final class BootstrapBatchRunner {
     }
 
     /** 响应内容防御式取值（null/缺 content → 空 map，语义同 BootstrapService.content）。 */
+    /** 取推送里的一级字段（推送体已是 {@code {field:...}} 形状）；缺失返回 null。 */
+    private static Object notifyField(BootstrapService.ProtocolPort port, String proto, String field) {
+        Map<String, Object> n = port.notify(proto);
+        return n == null ? null : n.get(field);
+    }
+
+    /** 仅当值非空时写入（避免 null 覆盖 content 里已有的同名键）。 */
+    private static void putIfPresent(Map<String, Object> target, String key, Object value) {
+        if (value != null && target != null) target.put(key, value);
+    }
+
     private static Map<String, Object> contentOf(GameMessage response) {
         return response == null || response.getContent() == null
                 ? Map.of() : response.getContent();

@@ -210,6 +210,13 @@ public final class BootstrapApi {
         public void collectNotifies(long millis) {
             engine.collectNotifies(millis);
         }
+
+        @Override
+        public java.util.Set<String> notifyProtos() {
+            String protos = engine.notifyProtos();
+            if (protos == null || protos.isEmpty()) return java.util.Set.of();
+            return new java.util.LinkedHashSet<>(java.util.Arrays.asList(protos.split(",")));
+        }
     }
 
     /**
@@ -306,10 +313,14 @@ public final class BootstrapApi {
                 e.label = label.trim();
             }
         }
+        // claimRewards/buyShopResources 可由请求覆盖：真实轮证实新号资源为 0 且背包无资源包，
+        // 必须领任务奖励（claimRewards=true）才能推进建设；默认沿用原版 false。
         BootstrapConfig cfg = new BootstrapConfig(true, serverId, target,
-                booleanField(f, "instantDiamond", true), false, false,
+                booleanField(f, "instantDiamond", true),
+                booleanField(f, "claimRewards", false),
+                booleanField(f, "buyShopResources", false),
                 str(f, "allianceName") == null ? "" : str(f, "allianceName").trim(),
-                false,
+                booleanField(f, "autoApplyWhenPrivate", false),
                 str(f, "roleName") == null ? "" : str(f, "roleName").trim());
         BootstrapBatchRunner runner = new BootstrapBatchRunner(cfg, accounts, storeOf(),
                 referralOf(), fac, BATCH_SLEEPER, timeoutMinutes, ACTIVE);

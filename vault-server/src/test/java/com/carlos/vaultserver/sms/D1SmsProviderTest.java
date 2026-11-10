@@ -284,4 +284,25 @@ public class D1SmsProviderTest {
         }
         return m;
     }
+
+    /** 真实轮回归（2026-11-10）：D1 未到码提示语不得被解析成验证码（尤其「请5秒后再收取」的 5）。 */
+    @Test
+    public void notYetReceivedHint_isWaiting_notCode() {
+        String hint = "尚未收到包含关键字“点点互动”的短信，请5秒后再收取。请确保设置了正确的关键字。[尚未收到]";
+        D1SmsProvider p = new D1SmsProvider("tk", null, url -> hint);
+        SmsProvider.SmsMessage msg = p.fetchSms(new SmsProvider.PhoneOrder("16280908634", ""), "点点互动");
+        assertTrue("应判定为未到码", msg.waiting);
+        assertEquals("不得把提示语数字当验证码", "", msg.code);
+    }
+
+    /** 真实轮回归：真实短信文本（手机号/价格/内容）应提取到关键词后的 4 位验证码。 */
+    @Test
+    public void realSmsText_extractsKeywordCode() {
+        String sms = "16280908634/0.22/【点点互动】您的验证码是：3710，5分钟内有效。为了您的账号安全，请不要把验证码泄露给任何人。";
+        D1SmsProvider p = new D1SmsProvider("tk", null, url -> sms);
+        SmsProvider.SmsMessage msg = p.fetchSms(new SmsProvider.PhoneOrder("16280908634", ""), "点点互动");
+        assertFalse("已到码不应 waiting", msg.waiting);
+        assertEquals("3710", msg.code);
+    }
+
 }

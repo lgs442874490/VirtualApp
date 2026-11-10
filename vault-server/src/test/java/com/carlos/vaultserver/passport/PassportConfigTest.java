@@ -21,10 +21,11 @@ public class PassportConfigTest {
         assertEquals("U8.0.5.0-GOFCN-1", c.sdkVersion);
         assertEquals("1.16.12", c.gameVersion);
         assertEquals("zh_CN", c.language);
-        assertEquals("sendSms", c.smsSendMethod);
+        assertEquals("passport-request", c.serviceName);
+        assertEquals("sendCaptcha", c.smsSendMethod);
         assertEquals("loginWithPhoneCode", c.smsLoginMethod);
         // 待真实轮校准的推定 method 名
-        assertEquals("registerGuest", c.guestRegisterMethod);
+        assertEquals("express_signin", c.guestRegisterMethod);
         assertEquals("realNameVerify", c.realNameMethod);
         assertEquals("", c.cgSeid);
         assertEquals("", c.fpcsSource);

@@ -256,4 +256,19 @@ public class BootstrapStateTest {
         BootstrapState s = BootstrapState.fromLoadData(load);
         assertEquals(42L, s.resourceCount(103L));
     }
+
+    /** 真实轮回归（2026-11-11）：幸存者列表解析与「闲置」判定（委任上岗的前提）。 */
+    @Test
+    public void survivors_parsedAndIdleDetected() {
+        java.util.Map<String, Object> load = new java.util.LinkedHashMap<>();
+        load.put("survivor_list", java.util.List.of(
+                java.util.Map.of("sid", 1001L, "fid_work", 0L, "is_sick", false),
+                java.util.Map.of("sid", 1002L, "fid_work", 5001L, "is_sick", false),
+                java.util.Map.of("sid", 1003L, "fid_work", 0L, "is_sick", true)));
+        BootstrapState st = BootstrapState.fromLoadData(load);
+        org.junit.Assert.assertEquals(3, st.survivors().size());
+        java.util.List<BootstrapState.Survivor> idle = st.idleSurvivors();
+        org.junit.Assert.assertEquals("只有 1001 可委任（1002 已上岗、1003 生病）", 1, idle.size());
+        org.junit.Assert.assertEquals(1001L, idle.get(0).sid());
+    }
 }

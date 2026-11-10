@@ -1336,13 +1336,16 @@ public final class VaultSync {
      * 加密串行、{@code {fpid,sdkToken,label?,encrypted?}} 对象或其混合（服务端统一解析）。
      */
     public static Map<String, Object> bootstrapBatchStartFields(long serverId, int targetFurnaceLevel,
-            String allianceName, String roleName, boolean instantDiamond, String accountsJson) {
+            String allianceName, String roleName, boolean instantDiamond,
+            boolean claimRewards, boolean buyShopResources, String accountsJson) {
         Map<String, Object> f = fieldsWithAction("batch-start");
         f.put("serverId", serverId);
         f.put("targetFurnaceLevel", targetFurnaceLevel);
         f.put("allianceName", safe(allianceName));
         f.put("roleName", safe(roleName));
         f.put("instantDiamond", instantDiamond);
+        f.put("claimRewards", claimRewards);
+        f.put("buyShopResources", buyShopResources);
         f.put("accounts", safe(accountsJson));
         return f;
     }

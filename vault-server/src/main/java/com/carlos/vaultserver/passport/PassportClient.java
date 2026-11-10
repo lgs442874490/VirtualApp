@@ -134,7 +134,8 @@ public final class PassportClient {
         Map<String, String> form = new LinkedHashMap<>();
         form.put("method", serviceName);
         form.put("game_id", config.gameId);
-        form.put("service_name", serviceName);
+        // 真实客户端固定上传 "passport-request"（不是 method 名）；传错会得到 error=5 未知错误
+        form.put("service_name", config.serviceName);
         form.put("l", config.language);
         form.put("game_version", config.gameVersion);
         form.put("domain", "funsdk");
@@ -254,14 +255,29 @@ public final class PassportClient {
             return firstNonBlank("session_key", "sdkToken", "sdk_token");
         }
 
-        /** 上游错误文本：data/root 层按序取 error|error_msg|message。 */
+        /** 上游错误文本：data/root 层按序取 msg|error|error_msg|message（实测错误在 data.msg）。 */
         public String errorText() {
-            String v = layerValue(data, "error", "error_msg", "message");
+            String v = layerValue(data, "msg", "error", "error_msg", "message");
             if (v == null && data != null) {
                 JSONObject lp = data.optJSONObject("login_profile");
-                if (lp != null) v = layerValue(lp, "error", "error_msg", "message");
+                if (lp != null) v = layerValue(lp, "msg", "error", "error_msg", "message");
             }
             return v == null ? "" : v;
+        }
+
+        /**
+         * 上游业务状态：实测成功响应为 {@code {"status":1,...}}，失败为 {@code {"status":0,"error":N}}。
+         * 缺失 status（如被 gate 拦下的非 JSON 包装）时返回 -1，由调用方按 fpid/sessionKey 是否为空判定。
+         */
+        public int status() {
+            if (data == null) return -1;
+            return data.optInt("status", -1);
+        }
+
+        /** 上游业务错误码（data.error）；缺失返回 -1。 */
+        public int errorCode() {
+            if (data == null) return -1;
+            return data.optInt("error", -1);
         }
 
         /** 原文摘要（≤300 字符），用于日志。 */

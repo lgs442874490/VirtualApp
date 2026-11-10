@@ -7,6 +7,7 @@ import com.carlos.vaultserver.sms.SmsProvider;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -49,6 +50,18 @@ final class Fakes {
         return PassportFacade.of(new PassportClient(null, scripted));
     }
 
+    /** 表单捕获版 scriptedPassport：额外把每次请求表单收进 sink（断言提交的验证码等参数）。 */
+    static PassportFacade capturingPassport(List<Map<String, String>> sink, String... responses) {
+        ConcurrentLinkedQueue<String> script = new ConcurrentLinkedQueue<>();
+        for (String r : responses) script.add(r);
+        PassportClient.Transport capturing = (url, headers, form) -> {
+            sink.add(new LinkedHashMap<>(form));
+            String next = script.poll();
+            return next == null ? "{}" : next;
+        };
+        return PassportFacade.of(new PassportClient(null, capturing));
+    }
+
     /** 网络故障版 passport：Transport 抛 IOException（断言网络失败分支）。 */
     static PassportFacade brokenPassport() {
         PassportClient.Transport broken = (url, headers, form) -> {
@@ -63,6 +76,11 @@ final class Fakes {
         final List<String> codes;
         /** 每号先返回 waiting 的次数（Integer.MAX_VALUE = 永不到码 → 超时分支）。 */
         int waitingRounds;
+        /**
+         * 号池残留的旧验证码（模拟真实轮：接码平台复用号码，池中有历史短信）。
+         * 非空时：取号后的基线快照与首次收码都会返回该旧码，实现须跳过它只认新码。
+         */
+        String staleCode = "";
         /** 非空时 acquireNumber 抛出（取号失败分支）。 */
         RuntimeException acquireError;
         /** 可空门闩：每次取号时 countdown（cancel 场景同步用）。 */
@@ -105,7 +123,16 @@ final class Fakes {
         public SmsMessage fetchSms(PhoneOrder order, String keyword) throws SmsException {
             int idx = Math.max(0, acquired.indexOf(order.phone));
             int n = fetchesByPhone.merge(idx, 1, Integer::sum);
-            if (fetchReached != null && n == 1) {
+            // n == 1 是取号后的「基线快照」，此时返回号池残留态：
+            //   有 staleCode 就是旧码（基线记下它，后续同码一律跳过）；
+            //   否则按无旧码（waiting）处理。
+            if (n == 1) {
+                return staleCode == null || staleCode.isEmpty()
+                        ? SmsMessage.waiting("{}")
+                        : SmsMessage.of(staleCode, "旧短信 您的验证码 " + staleCode, "{}");
+            }
+            int effective = n - 1;   // 基线之后的第几次收码
+            if (fetchReached != null && effective == 1) {
                 fetchReached.countDown();
                 if (fetchGate != null) {
                     try {
@@ -115,7 +142,11 @@ final class Fakes {
                     }
                 }
             }
-            if (n <= waitingRounds) return SmsMessage.waiting("{}");
+            // 旧码残留：在 waitingRounds 之外还会额外返回一次旧码（模拟真实轮观测到的现象）
+            if (staleCode != null && !staleCode.isEmpty() && effective == 1) {
+                return SmsMessage.of(staleCode, "旧短信 您的验证码 " + staleCode, "{}");
+            }
+            if (effective <= waitingRounds) return SmsMessage.waiting("{}");
             String code = codes.get(Math.min(idx, codes.size() - 1));
             return SmsMessage.of(code, "您的验证码 " + code + "，勿泄露", "{}");
         }

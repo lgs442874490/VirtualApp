@@ -169,6 +169,12 @@ public final class D1SmsProvider implements SmsProvider {
      * 解析不到任何数字 → waiting=true（一律按「短信未到」处理，不抛错）。
      */
     private SmsMessage parseSms(String body) {
+        // D1 未到码时的真实响应（2026-11-10 实测）：
+        //   尚未收到包含关键字"点点互动"的短信，请5秒后再收取。请确保设置了正确的关键字。[尚未收到]
+        // 必须在此之前判定，否则「请5秒后」里的 5 会被兜底规则当成验证码（真实轮踩过）。
+        if (body != null && (body.contains("尚未收到") || body.contains("[尚未收到]"))) {
+            return SmsMessage.waiting(body);
+        }
         JSONObject json = tryParseJson(body);
         String code = "";
         String content = "";
@@ -203,8 +209,9 @@ public final class D1SmsProvider implements SmsProvider {
         if (m.find()) {
             return m.group(1);
         }
-        m = ANY_NUMBER.matcher(text);
-        return m.find() ? m.group() : "";
+        // 不再使用「首段连续数字」兜底：真实轮证明它会把提示语里的数字（如「请5秒后再收取」）
+        // 误当验证码。解析不出宁可返回空（=未到码，继续等），由上层按超时处理。
+        return "";
     }
 
     /**
@@ -304,8 +311,9 @@ public final class D1SmsProvider implements SmsProvider {
 
     /** HttpURLConnection 生产实现：GET、UTF-8、10s 连接/15s 读超时、常规浏览器 UA。 */
     public static final class HttpUrlConnectionTransport implements Transport {
-        private static final int CONNECT_TIMEOUT_MILLIS = 10_000;
-        private static final int READ_TIMEOUT_MILLIS = 15_000;
+        /** D1 getPhone 实测 8.8s、release 可达 20s+（2026-11-10 真实轮），读超时放宽到 40s。 */
+        private static final int CONNECT_TIMEOUT_MILLIS = 15_000;
+        private static final int READ_TIMEOUT_MILLIS = 40_000;
         private static final String USER_AGENT =
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
                         + "Chrome/120.0.0.0 Safari/537.36";

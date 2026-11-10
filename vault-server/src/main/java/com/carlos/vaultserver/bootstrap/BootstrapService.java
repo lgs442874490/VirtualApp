@@ -50,6 +50,60 @@ public final class BootstrapService {
     static final String INTEL_START_BATTLE_PROTOCOL = "req_intelligence_start_battle";
     /** 情报结算协议（原版 IntelligenceQuestSupport.END_BATTLE_PROTOCOL）。 */
     static final String INTEL_END_BATTLE_PROTOCOL = "req_intelligence_end_battle";
+    /** 邮件大类上限（实测常见 1-6：系统/联盟/活动等，超出按失败忽略）。 */
+    static final long MAIL_FIRST_TYPE_MAX = 6L;
+    /** 邮件协议（新版 BootstrapMailService 同值）。 */
+    static final String MAIL_COVER_LIST = "req_mail_cover_list";
+    static final String MAIL_BATCH_READ = "req_batch_mail_read";
+    /** 成就/里程碑协议（新版 BootstrapMailService 同值）。 */
+    static final String ACHIEVEMENT_INFO = "req_achievement_info";
+    static final String ACHIEVEMENT_REWARD = "req_achievement_get_reward";
+    /** 新手引导协议（新版 BootstrapTutorialService.GUIDE_SET_STEP）。 */
+    static final String GUIDE_SET_STEP = "req_guide_set_step";
+    /** 英雄协议（新版 BootstrapHeroService 同值）。 */
+    static final String HERO_SEARCH = "req_hero_search_times";
+    static final String HERO_UPGRADE = "req_hero_upgrade";
+    static final String HERO_PROMOTE_STAR = "req_hero_promote_star";
+    /** 探险战斗协议（新版 BootstrapAdventureService 同值）。 */
+    static final String ADVENTURE_BEGIN = "req_begin_adventure_pve";
+    static final String ADVENTURE_END = "req_end_adventure_pve";
+    /** 探险战斗版本号（新版同值）。 */
+    static final long ADVENTURE_BATTLE_VERSION = 26042101L;
+    /** 兑换码协议（新版 BootstrapRewardService.EXCHANGE_CDKEY）。 */
+    static final String EXCHANGE_CDKEY = "req_exchange_cdkey";
+    /** 兑换码固定清单（新版 BootstrapCdkeyCatalog 原样）。 */
+    static final java.util.List<String> CDKEYS = java.util.List.of(
+            "WJDR666", "WJDR2025", "WOAIWJDR", "TILI520",
+            "吴嶮888", "吴嶮666", "金子888", "金子666", "大聪666", "大聪888",
+            "JC666", "JC888", "666WJDR2024");
+    /** 兑换码前置：熔炉达到该等级才兑换（新版 CDKEY_MIN_FURNACE_LEVEL）。 */
+    static final long CDKEY_MIN_FURNACE_LEVEL = 3L;
+    /** 兑换码错误码：稍后重试（新版 7208，5 分钟）。 */
+    static final int CDKEY_RETRY_LATER = 7208;
+    /** 兑换码错误码：永久失败（已兑换过/无效码），不再重试。 */
+    static final java.util.Set<Integer> CDKEY_PERMANENT_FAILURES =
+            java.util.Set.of(7201, 7202, 7203, 7204, 7205, 7206, 7207, 7209, 7210);
+
+    /**
+     * 幸存者上岗（真实轮 2026-11-11 网页版实证）：新号有若干闲置幸存者，
+     * 委任他们到工作位后资源才开始产出；不委任则资源恒为 0，任何建造都会被 51 拒绝。
+     * 协议取自游戏 c2s sproto：{@code req_survivor_work_start{sid}}。
+     */
+    static final String SURVIVOR_WORK_START = "req_survivor_work_start";
+    /** 精确委任：派幸存者到指定工位（新版 BootstrapService.SURVIVOR_SEND_OR_FIRED）。 */
+    static final String SURVIVOR_SEND_OR_FIRED = "req_survivor_send_or_fired";
+    /** 生产建筑（新版 BootstrapTutorialCatalog.PRODUCTION_BUILDINGS）。 */
+    static final List<Long> PRODUCTION_BUILDINGS = List.of(302L, 303L, 304L, 305L, 306L, 307L);
+    /** 生产工位类型（新版 PRODUCTION_STATION_TYPES）。 */
+    static final List<Long> PRODUCTION_STATION_TYPES = List.of(9L, 24L, 30L, 42L);
+    /** 探险挂机奖励（原版 DailyAdventureRewardService 同值）：预览 + 领取。 */
+    static final String ADVENTURE_PREVIEW = "req_open_hang_up_reward_view";
+    static final String ADVENTURE_CLAIM = "req_get_hang_up_reward";
+    /** 探险挂机奖励错误码：挂机时长未达领取条件。 */
+    static final int ADVENTURE_NOT_READY = 4004;
+    /** 任务奖励推送键（原版 BootstrapRewardState 同值）。 */
+    static final String NOTIFY_GROWTH_QUESTS = "notify_growthquests";
+    static final String NOTIFY_CHAPTER_QUESTS = "notify_chapterquests";
     /** 情报事件列表推送键：全量初始化（对齐 ServerFieldTasks.intel / IntelRound 数据源口径）。 */
     static final String NOTIFY_INTEL_INFO = "notify_intelligence_info";
     /** 情报事件列表推送键：增量合并。 */
@@ -58,6 +112,20 @@ public final class BootstrapService {
     static final String NOTIFY_INTEL_DEL = "notify_intelligence_events_del";
     /** 服务端错误码：情报事件已被处理/不存在（原版 IntelligenceQuestSupport.EVENT_NOT_FOUND_CODE）。 */
     static final int INTEL_EVENT_NOT_FOUND = 2501;
+    /** 统帅商店补资源（原版 BootstrapShopService 同值）：商店 id 701、资源包 itemId 与每包资源量。 */
+    static final long COMMANDER_SHOP_ID = 701L;
+    static final long WOOD_PACK_ITEM_ID = 100123L;
+    static final long COAL_PACK_ITEM_ID = 100133L;
+    static final long IRON_PACK_ITEM_ID = 100143L;
+    static final long PACK_SIZE = 10000L;
+    static final String SHOP_INFO = "req_shop_info";
+    static final String SHOP_BUY = "req_shop_buy";
+    /** 领奖协议（原版 BootstrapRewardService 同值）。 */
+    static final String GROWTH_AWARD = "req_get_growthquest_award";
+    static final String CHAPTER_QUEST_AWARD = "req_get_chapterquest_award";
+    static final String CHAPTER_AWARD = "req_get_chapter_award";
+    static final String SEVEN_SIGN_AWARD = "req_seven_sign_one_click_award";
+    static final String SIGN_21DAY_AWARD = "req_sign_21day_get_all_reward";
     /** 单次使用资源包数量上限（原版 DailyBackpackResourceCatalog.MAX_USE_COUNT）。 */
     private static final long MAX_USE_COUNT = 999999L;
     /** 服务端错误码：前置建筑等级不足。 */
@@ -97,6 +165,11 @@ public final class BootstrapService {
 
         /** 收集推送（阻塞指定毫秒，生产等待服务端把情报/资源推送送齐）。 */
         default void collectNotifies(long millis) {
+        }
+
+        /** 已收到的推送协议名（排障/状态定位用）。 */
+        default java.util.Set<String> notifyProtos() {
+            return java.util.Set.of();
         }
     }
 
@@ -211,7 +284,14 @@ public final class BootstrapService {
     private final BootstrapPlanner planner;
     private final Sleeper sleeper;
     private BootstrapState state = BootstrapState.empty();
+
+    /** 测试用：暴露内部状态（同包测试）。 */
+    BootstrapState stateForTest() {
+        return state;
+    }
     private BootstrapConfig config = BootstrapConfig.defaults();
+    /** 已尝试过的兑换码（永久失败或已兑换，避免重复请求）。 */
+    private final Set<String> attemptedCdkeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
     /** 改名成功缓存（对齐原版 renamedRoles：205 视为成功，避免重复请求）。 */
     private String renamedName = "";
     /** 最近一次改名失败文案（status 侧透出）。 */
@@ -295,6 +375,56 @@ public final class BootstrapService {
         Optional<Map<String, Object>> rename = renameIfNeeded(cfg);
         if (rename.isPresent()) {
             return rename.get();
+        }
+        // 新手引导（新版 runNextStepInternal 第一步）：逐级上报引导步骤
+        Map<String, Object> tutorial = tutorialAdvance(null);
+        if (tutorial != null) {
+            return tutorial;
+        }
+        // 邮件领奖（新版顺序：情报 → 邮件 → 里程碑 → 英雄）
+        int mails = claimMails();
+        if (mails > 0) {
+            Map<String, Object> result = actionResult("STARTED", "已领取 " + mails + " 封邮件附件");
+            result.put("mailCount", mails);
+            return result;
+        }
+        // 成就/里程碑奖励
+        int achievements = claimAchievements();
+        if (achievements > 0) {
+            Map<String, Object> result = actionResult("STARTED", "已领取 " + achievements + " 项成就奖励");
+            result.put("achievementCount", achievements);
+            return result;
+        }
+        // 英雄推进（新版顺序：招募/升星/升级；有英雄才有队伍打探险）
+        Map<String, Object> hero = heroAdvance();
+        if (hero != null) {
+            return hero;
+        }
+        // 探险战斗（新版 BootstrapAdventureService：有队伍才打；失败 30 分钟退避）
+        Map<String, Object> adventure = adventureBattle(0L);
+        if (adventure != null && "STARTED".equals(adventure.get("status"))) {
+            return adventure;
+        }
+        // 兑换码（新版 BootstrapService：熔炉 ≥3 才兑换，一次性拿大量资源/钻石）
+        if (state.furnaceLevel() >= CDKEY_MIN_FURNACE_LEVEL) {
+            int cdkeyClaimed = claimCdkeys();
+            if (cdkeyClaimed > 0) {
+                Map<String, Object> result = actionResult("STARTED",
+                        "已兑换 " + cdkeyClaimed + " 条兑换码并打开背包钻石");
+                result.put("rewardClaimed", true);
+                return result;
+            }
+        }
+        // 幸存者委任（必须在建造之前）：网页版实证——不委任则资源恒为 0、建造恒 51 被拒。
+        // 每轮检查一次，有新闲置者就上岗；本轮若有委任则直通返回，下一轮再建造。
+        if (!state.idleSurvivors().isEmpty()) {
+            Map<String, Object> assigned = assignIdleSurvivors();
+            if (number(assigned.get("assignedCount")) > 0L) {
+                Map<String, Object> result = actionResult("STARTED",
+                        String.valueOf(assigned.get("message")));
+                result.put("survivors", assigned);
+                return result;
+            }
         }
         // 情报挂点（对齐原版：熔炉 ≥ WORLD_MAP_UNLOCK_FURNACE_LEVEL 才启用；领取/快打
         // 结果非空则本轮直通返回，不阻塞建筑主线；推送不可得自动降级跳过）。
@@ -546,8 +676,664 @@ public final class BootstrapService {
         if (costs.isEmpty() || action.buildingId() == HERO_HALL_ID) {
             return result;
         }
+        // 真实轮（2026-11-10）：新号资源为 0 且背包无资源包，只能靠领任务奖励补资源——
+        // 这正是原版 claimRewards 开关的用途（原版 prepareResources → rewards.claimAll）。
+        if (cfg.claimRewards()) {
+            try {
+                result.put("rewards", claimTaskRewards());
+            } catch (RuntimeException e) {
+                result.put("rewards", Map.of("message", "领奖失败：" + e.getMessage()));
+            }
+        }
         result.put("backpack", useBackpackResourcePacks(costs));
+        // 真实轮（2026-11-10）：背包无资源包时，若开启 buyShopResources 则用钻石从统帅商店补缺资源
+        if (cfg.buyShopResources()) {
+            try {
+                result.put("purchase", buyMissingResources(costs));
+            } catch (RuntimeException e) {
+                result.put("purchase", Map.of("message", "补资源失败：" + e.getMessage()));
+            }
+        }
         return result;
+    }
+
+    /**
+     * 统帅商店补缺资源（语义对齐原版 BootstrapShopService.buyMissingResources）：
+     * 按木材/煤矿/铁矿缺口，用 {@code req_shop_info} 取商品与价格 → {@code req_shop_buy} 购买，
+     * 受钻石余额与单次 200 包上限约束。价格取 {@code bootstrap/daily-town-shop-catalog.json}。
+     */
+    Map<String, Object> buyMissingResources(List<Cost> costs) throws Exception {
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        if (costs == null || costs.isEmpty()) {
+            result.put("purchases", List.of());
+            result.put("message", "当前没有需要补充的资源");
+            return result;
+        }
+        // 缺口（普通 + 安全资源一起算）
+        long needWood = Math.max(0L, missingOf(costs, 103L));
+        long needCoal = Math.max(0L, missingOf(costs, 104L));
+        long needIron = Math.max(0L, missingOf(costs, 105L));
+        if (needWood <= 0L && needCoal <= 0L && needIron <= 0L) {
+            result.put("purchases", List.of());
+            result.put("message", "当前没有需要补充的资源");
+            return result;
+        }
+        Map<Long, Long> goodsByItem = shopGoods();
+        long diamonds = Math.max(0L, requestLong("diamond"));
+        ArrayList<Map<String, Object>> purchases = new ArrayList<>();
+        buyForMissing(goodsByItem, WOOD_PACK_ITEM_ID, needWood, diamonds, purchases);
+        buyForMissing(goodsByItem, COAL_PACK_ITEM_ID, needCoal,
+                Math.max(0L, diamonds - spentDiamonds(purchases)), purchases);
+        buyForMissing(goodsByItem, IRON_PACK_ITEM_ID, needIron,
+                Math.max(0L, diamonds - spentDiamonds(purchases)), purchases);
+        result.put("purchases", List.copyOf(purchases));
+        result.put("diamondSpent", spentDiamonds(purchases));
+        result.put("message", purchases.isEmpty()
+                ? "当前没有需要补充的资源" : "已补充 " + purchases.size() + " 类资源");
+        return result;
+    }
+
+    /** 某资源 id 的缺口（普通 + 安全资源合计后的缺口）。 */
+    private long missingOf(List<Cost> costs, long resourceId) {
+        for (Cost cost : costs) {
+            if (cost.id() == resourceId || cost.id() == safeResourceId(resourceId)) {
+                return Math.max(0L, cost.amount() - totalResourceCount(resourceId));
+            }
+        }
+        return 0L;
+    }
+
+    /** 商店商品：itemId → goodsId（从 req_shop_info 的推送/响应里取）。 */
+    private Map<Long, Long> shopGoods() throws Exception {
+        LinkedHashMap<Long, Long> out = new LinkedHashMap<>();
+        Map<String, Object> content = request(SHOP_INFO, Map.of("shop_id", COMMANDER_SHOP_ID)).getContent();
+        if (content == null) return out;
+        Object goods = firstNonEmpty(content.get("goods"), content.get("list"), content.get("data"));
+        if (goods instanceof Iterable) {
+            for (Object v : (Iterable<?>) goods) {
+                if (!(v instanceof Map)) continue;
+                Map<?, ?> m = (Map<?, ?>) v;
+                long itemId = number(m.get("itemId"));
+                long goodsId = number(m.get("goodsId"));
+                if (itemId <= 0L) itemId = number(m.get("item_id"));
+                if (goodsId <= 0L) goodsId = number(m.get("goods_id"));
+                if (itemId > 0L && goodsId > 0L) out.put(itemId, goodsId);
+            }
+        }
+        return out;
+    }
+
+    /** 按缺口购买某资源包（受钻石余额约束，单次最多 200 包）。 */
+    private void buyForMissing(Map<Long, Long> goodsByItem, long packItemId, long missing,
+                               long remainingDiamonds, List<Map<String, Object>> purchases) throws Exception {
+        if (missing <= 0L) return;
+        Long goodsId = goodsByItem.get(packItemId);
+        long price = catalogPrice(packItemId);
+        if (goodsId == null || price <= 0L) return;
+        long packs = (missing + PACK_SIZE - 1L) / PACK_SIZE;
+        long affordable = Math.min(packs, remainingDiamonds / price);
+        if (affordable <= 0L) return;
+        affordable = Math.min(affordable, 200L);
+        request(SHOP_BUY, Map.of("shop_id", COMMANDER_SHOP_ID, "goods_id", goodsId,
+                "count", (int) affordable));
+        LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+        entry.put("itemId", packItemId);
+        entry.put("packs", affordable);
+        entry.put("diamondCost", affordable * price);
+        purchases.add(entry);
+    }
+
+    /** 商品目录价格（bootstrap/daily-town-shop-catalog.json；缺失返回 0 = 不购买）。 */
+    private static long catalogPrice(long itemId) {
+        return BootstrapShopCatalog.priceOf(itemId);
+    }
+
+    private long spentDiamonds(List<Map<String, Object>> purchases) {
+        long total = 0L;
+        for (Map<String, Object> p : purchases) total += number(p.get("diamondCost"));
+        return total;
+    }
+
+    private long requestLong(String what) {
+        // 钻石余额：优先 state 资源表 101，其次安全资源 191
+        long direct = Math.max(0L, state.resourceCount(101L));
+        return direct > 0L ? direct : Math.max(0L, state.resourceCount(191L));
+    }
+
+    private static Object firstNonEmpty(Object... values) {
+        for (Object v : values) {
+            if (v != null) return v;
+        }
+        return null;
+    }
+
+    /**
+     * 领取任务奖励（语义对齐原版 BootstrapRewardService.claimAll）：
+     * 从推送 {@code notify_growthquests/notify_chapterquests} 累积可领 id →
+     * 依次 {@code req_get_growthquest_award{questid}}、{@code req_get_chapterquest_award{questid}}、
+     * {@code req_get_chapter_award{chapterid}}（{@code get_flag} 未领者），
+     * 再试七日签到与 21 天签到一键领奖。单项失败不影响其它项。
+     */
+    Map<String, Object> claimTaskRewards() throws Exception {
+        List<Long> growth = questIds(notifyValue(NOTIFY_GROWTH_QUESTS, "quests"));
+        List<Long> chapterQuests = questIds(notifyValue(NOTIFY_CHAPTER_QUESTS, "quests"));
+        List<Long> chapterRewards = unclaimedRewardIds(notifyValue(NOTIFY_CHAPTER_QUESTS, "chapter_award"));
+        if (growth.isEmpty() && chapterQuests.isEmpty() && chapterRewards.isEmpty()) {
+            // 推送未到，尝试两个一键领奖协议（七日签到/21 天签到）
+            growth = List.of();
+        }
+        ArrayList<String> claimed = new ArrayList<>();
+        int failed = 0;
+        for (long questId : growth) {
+            if (tryClaim(GROWTH_AWARD, Map.of("questid", questId))) claimed.add("成长任务 " + questId);
+            else failed++;
+        }
+        for (long questId : chapterQuests) {
+            if (tryClaim(CHAPTER_QUEST_AWARD, Map.of("questid", questId))) claimed.add("章节任务 " + questId);
+            else failed++;
+        }
+        for (long rewardId : chapterRewards) {
+            if (tryClaim(CHAPTER_AWARD, Map.of("chapterid", rewardId))) claimed.add("章节宝箱 " + rewardId);
+            else failed++;
+        }
+        for (String protocol : List.of(SEVEN_SIGN_AWARD, SIGN_21DAY_AWARD)) {
+            if (tryClaim(protocol, Map.of())) claimed.add(protocol);
+        }
+        // 探险挂机奖励（网页版 0 基础起号补资源手段之一）：预览刷新 → 尝试领取；
+        // 挂机时长未到（4004）视为正常跳过，不算失败。
+        Map<String, Object> adventure = claimAdventureHangUp();
+        if (Boolean.TRUE.equals(adventure.get("claimed"))) {
+            claimed.add("探险挂机奖励");
+        }
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        result.put("claimed", List.copyOf(claimed));
+        result.put("failed", failed);
+        result.put("adventure", adventure);
+        result.put("message", claimed.isEmpty()
+                ? "当前没有可领取的任务奖励" : "已领取 " + claimed.size() + " 项奖励");
+        return result;
+    }
+
+    /**
+     * 邮件领奖（对齐新版 BootstrapMailService.advance 的核心）：
+     * 按大类 {@code first_type} 拉封面 {@code req_mail_cover_list{first_type,beginidx,endidx}}
+     * → 对「未读或有附件」的邮件批量 {@code req_batch_mail_read{first_type, mid_list_new}}。
+     *
+     * @return 本轮处理封数（0 = 无可领邮件）
+     */
+    int claimMails() {
+        int claimed = 0;
+        for (long firstType = 1L; firstType <= MAIL_FIRST_TYPE_MAX; firstType++) {
+            String typeKey = "mail:type:" + firstType;
+            if (!retryAllowed(typeKey)) continue;
+            try {
+                Map<String, Object> payload = new LinkedHashMap<>();
+                payload.put("first_type", firstType);
+                payload.put("beginidx", 1L);
+                payload.put("endidx", 40L);
+                GameMessage cover = request(MAIL_COVER_LIST, payload);
+                Map<String, Object> content = cover == null || cover.getContent() == null
+                        ? Map.of() : cover.getContent();
+                ArrayList<String> ids = new ArrayList<>();
+                for (Map<String, Object> mail : maps(content.get("coverlist"))) {
+                    Object mid = mail.get("mailid_new");
+                    if (mid == null || String.valueOf(mid).trim().isEmpty()) continue;
+                    boolean read = number(mail.get("isread")) > 0L;
+                    boolean attach = number(mail.get("attach_statue")) == 1L;
+                    if (!read || attach) ids.add(String.valueOf(mid).trim());
+                }
+                if (ids.isEmpty()) continue;
+                LinkedHashMap<String, Object> readPayload = new LinkedHashMap<>();
+                readPayload.put("first_type", firstType);
+                readPayload.put("mid_list_new", List.copyOf(ids));
+                request(MAIL_BATCH_READ, readPayload);
+                claimed += ids.size();
+                clearRetry(typeKey);
+                FileLog.info("[起号] 已批量已读并领取 {} 封邮件附件（大类 {}）",
+                        String.valueOf(ids.size()), String.valueOf(firstType));
+            } catch (Exception e) {
+                // 该大类处理不了就退避，避免每轮都请求
+                markRetry(typeKey, 300_000L);
+            }
+        }
+        return claimed;
+    }
+
+    /**
+     * 成就/里程碑奖励（对齐新版 BootstrapMilestoneService 的核心）：
+     * {@code req_achievement_info} 拉信息 → 对可领项 {@code req_achievement_get_reward{id}}。
+     *
+     * @return 本轮领取项数
+     */
+    int claimAchievements() {
+        if (!retryAllowed("achievement")) return 0;
+        int claimed = 0;
+        try {
+            GameMessage info = request(ACHIEVEMENT_INFO, Map.of());
+            Map<String, Object> content = info == null || info.getContent() == null
+                    ? Map.of() : info.getContent();
+            Object raw = content.get("list");
+            if (raw == null) raw = content.get("achievements");
+            if (raw == null) raw = content.get("data");
+            for (Map<String, Object> item : maps(raw)) {
+                long id = number(item.get("id"));
+                if (id <= 0L) continue;
+                long state = number(item.get("state"));
+                boolean claimable = state == 2L || number(item.get("can_get")) > 0L
+                        || number(item.get("status")) == 2L;
+                if (!claimable) continue;
+                try {
+                    request(ACHIEVEMENT_REWARD, Map.of("id", id));
+                    claimed++;
+                } catch (Exception ignored) {
+                    // 单项失败不影响其它
+                }
+            }
+            if (claimed == 0) markRetry("achievement", 300_000L);
+        } catch (Exception e) {
+            markRetry("achievement", 300_000L);
+        }
+        return claimed;
+    }
+
+    /**
+     * 新手引导推进（对齐新版 BootstrapTutorialService.advanceGuides 的核心：
+     * 逐个 guide 逐级上报 {@code req_guide_set_step{id, step}} 直到 maxStep）。
+     *
+     * <p>真实轮（2026-11-11）验证：新号启动起号后引导 10 步全部完成（建造伐木场→工作台→
+     * 委任工人→厨房→灶台→民居床位→委任厨师→猎人之家→捕猎工位→委任猎人），是资源与解锁的前置。
+     *
+     * @param guideMaxSteps guideId → maxStep（由调用方从推送/目录提供，缺省按 1 步推进）
+     */
+    Map<String, Object> tutorialAdvance(Map<Long, Long> guideMaxSteps) {
+        if (!state.guideReady()) {
+            return null;
+        }
+        for (Map.Entry<Long, Long> e : state.guideSteps().entrySet()) {
+            long guideId = e.getKey();
+            long current = e.getValue();
+            long maxStep = guideMaxSteps == null ? 0L : guideMaxSteps.getOrDefault(guideId, 0L);
+            if (maxStep <= 0L || current >= maxStep) continue;
+            long next = current + 1L;
+            String retryKey = "guide:" + guideId + ":" + next;
+            if (!retryAllowed(retryKey)) continue;
+            try {
+                request(GUIDE_SET_STEP, Map.of("id", guideId, "step", next));
+                state.markGuideStep(guideId, next);
+                clearRetry(retryKey);
+                return actionResult("STARTED",
+                        "上报引导 " + guideId + " 第 " + next + "/" + maxStep + " 步");
+            } catch (Exception ex) {
+                markRetry(retryKey, 30_000L);
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 英雄推进（对齐新版 BootstrapHeroService.advance）：
+     * 首次史诗招募 → 招募阶梯（免费高级/免费史诗/道具高级/道具史诗/宝箱积分）
+     * → 有碎片英雄升星 → 最高级英雄升级。
+     *
+     * <p>顺序有讲究：先招募拿到英雄，才有队伍打探险；升星/升级提升战力才能过更高关卡。
+     * 返回 null 表示本轮无可做动作。
+     */
+    Map<String, Object> heroAdvance() {
+        if (!state.heroReady()) {
+            return null;
+        }
+        // 1) 新手引导的首次史诗招募（免费 1 次）
+        if (!state.epicSearched()) {
+            try {
+                request(HERO_SEARCH, Map.of("search_type", 2L, "cost_type", 1L, "times", 1L));
+                state.markEpicSearched();
+                return actionResult("STARTED", "请求首次史诗招募");
+            } catch (Exception e) {
+                state.markEpicSearched();   // 失败也标记，避免反复请求
+            }
+        }
+        // 2) 招募阶梯
+        long[][] ladder = {{1L, 1L}, {2L, 1L}, {1L, 2L}, {2L, 2L}, {3L, 3L}};
+        String[] labels = {"免费高级招募", "免费史诗招募", "道具高级招募", "道具史诗招募", "招募宝箱"};
+        for (int i = 0; i < ladder.length; i++) {
+            String key = "hero:recruit:" + i;
+            if (!retryAllowed(key)) continue;
+            try {
+                request(HERO_SEARCH, Map.of("search_type", ladder[i][0],
+                        "cost_type", ladder[i][1], "times", 1L));
+                markRetry(key, 1000L);
+                return actionResult("STARTED", "已请求" + labels[i] + " 1 次");
+            } catch (Exception e) {
+                markRetry(key, 1_800_000L);
+            }
+        }
+        // 3) 有碎片的英雄升星（碎片来自 notify_hero_update.fragment_num）
+        for (Map.Entry<Long, Long> e : state.heroFragments().entrySet()) {
+            if (e.getValue() <= 0L) continue;
+            String key = "hero:star:" + e.getKey();
+            if (!retryAllowed(key)) continue;
+            try {
+                request(HERO_PROMOTE_STAR, Map.of("id", e.getKey()));
+                return actionResult("STARTED", "请求英雄 " + e.getKey() + " 升星");
+            } catch (Exception ex) {
+                markRetry(key, 1_800_000L);
+            }
+        }
+        // 4) 最高级英雄升级（材料不足由游戏拒绝，退避 5 分钟）
+        long best = state.highestLevelHero();
+        if (best > 0L) {
+            String key = "hero:upgrade:" + best;
+            if (retryAllowed(key)) {
+                try {
+                    request(HERO_UPGRADE, Map.of("id", best));
+                    clearRetry(key);
+                    return actionResult("STARTED", "请求英雄 " + best + " 升级");
+                } catch (Exception ex) {
+                    markRetry(key, 300_000L);
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * 探险战斗（对齐新版 BootstrapAdventureService.advance）：
+     * 有队伍才打；{@code req_begin_adventure_pve{checkpoint, fight_heros_data}} →
+     * {@code req_end_adventure_pve{checkpoint, operatedata:[], enddata:[], version}}；
+     * is_fast / is_win 视为通关，失败退避 30 分钟。
+     *
+     * @param targetCheckpoint 目标关卡（0 = 不限制，打下一关）
+     */
+    Map<String, Object> adventureBattle(long targetCheckpoint) {
+        if (!state.hasAnyHero()) {
+            return null;   // 没有英雄打不了探险
+        }
+        long checkpoint = state.adventurePassed() + 1L;
+        if (targetCheckpoint > 0L && checkpoint > targetCheckpoint) {
+            return null;   // 已达目标
+        }
+        String retryKey = "adventure:checkpoint:" + checkpoint;
+        if (!retryAllowed(retryKey)) {
+            return null;
+        }
+        try {
+            Map<String, Object> beginPayload = new LinkedHashMap<>();
+            beginPayload.put("checkpoint", checkpoint);
+            beginPayload.put("fight_heros_data", Map.of("source", 1L,
+                    "fight_heros", state.topFiveHeroes()));
+            GameMessage begin = request(ADVENTURE_BEGIN, beginPayload);
+            Map<String, Object> beginContent = begin == null || begin.getContent() == null
+                    ? Map.of() : begin.getContent();
+            if (isTrue(beginContent.get("is_fast"))) {
+                state.markAdventurePassed(checkpoint);
+                clearRetry(retryKey);
+                return actionResult("STARTED", "快速探险通关第 " + checkpoint + " 关");
+            }
+            Map<String, Object> endPayload = new LinkedHashMap<>();
+            endPayload.put("checkpoint", checkpoint);
+            endPayload.put("operatedata", List.of());
+            endPayload.put("enddata", List.of());
+            endPayload.put("version", ADVENTURE_BATTLE_VERSION);
+            GameMessage end = request(ADVENTURE_END, endPayload);
+            Map<String, Object> endContent = end == null || end.getContent() == null
+                    ? Map.of() : end.getContent();
+            if (isTrue(endContent.get("is_win"))) {
+                state.markAdventurePassed(checkpoint);
+                clearRetry(retryKey);
+                return actionResult("STARTED", "通关探险第 " + checkpoint + " 关");
+            }
+            markRetry(retryKey, 1_800_000L);
+            return actionResult("WAITING", "探险第 " + checkpoint + " 关战力不足，等英雄升级后再试");
+        } catch (Exception e) {
+            markRetry(retryKey, 1_800_000L);
+            return null;
+        }
+    }
+
+    private static boolean isTrue(Object raw) {
+        if (raw instanceof Boolean) return (Boolean) raw;
+        if (raw instanceof Number) return ((Number) raw).intValue() != 0;
+        return "true".equalsIgnoreCase(String.valueOf(raw)) || "1".equals(String.valueOf(raw));
+    }
+
+    // ---------------- 重试退避表（对齐新版 tutorial.retryAllowed） ----------------
+
+    private final java.util.Map<String, Long> retryUntil = new java.util.concurrent.ConcurrentHashMap<>();
+
+    private boolean retryAllowed(String key) {
+        Long until = retryUntil.get(key);
+        return until == null || System.currentTimeMillis() >= until;
+    }
+
+    private void markRetry(String key, long delayMillis) {
+        retryUntil.put(key, System.currentTimeMillis() + delayMillis);
+    }
+
+    private void clearRetry(String key) {
+        retryUntil.remove(key);
+    }
+
+    /**
+     * 兑换兑换码（对齐新版 BootstrapRewardService.claimCdkeys）：
+     * 熔炉未达 {@link #CDKEY_MIN_FURNACE_LEVEL} 不兑换；逐码 {@code req_exchange_cdkey{cdkey, platform:2}}；
+     * 7208 稍后重试（本轮中断），永久失败码记入已尝试不再重试。
+     *
+     * @return 本轮成功兑换条数
+     */
+    int claimCdkeys() {
+        if (state.furnaceLevel() < CDKEY_MIN_FURNACE_LEVEL) {
+            return 0;
+        }
+        int claimed = 0;
+        for (String code : CDKEYS) {
+            if (attemptedCdkeys.contains(code)) continue;
+            try {
+                GameMessage response = request(EXCHANGE_CDKEY,
+                        Map.of("cdkey", code, "platform", 2L));
+                Map<String, Object> content = response == null || response.getContent() == null
+                        ? Map.of() : response.getContent();
+                long rc = number(content.get("code"));
+                attemptedCdkeys.add(code);
+                if (rc == 0L) {
+                    claimed++;
+                    FileLog.info("[起号] 兑换码 {} 兑换成功", code);
+                }
+            } catch (ProtocolException e) {
+                int failureCode = e.code();
+                if (failureCode == CDKEY_RETRY_LATER) {
+                    FileLog.info("[起号] 兑换码 {} 稍后重试（code=7208）", code);
+                    break;   // 本轮中断，5 分钟后再试
+                }
+                if (CDKEY_PERMANENT_FAILURES.contains(failureCode)) {
+                    attemptedCdkeys.add(code);
+                    FileLog.info("[起号] 兑换码 {} 永久失败 code={}，不再尝试", code, String.valueOf(failureCode));
+                }
+            } catch (Exception e) {
+                FileLog.warn("[起号] 兑换码 {} 兑换异常：{}", code, String.valueOf(e.getMessage()));
+            }
+        }
+        return claimed;
+    }
+
+    /**
+     * 把全部闲置幸存者委任上岗（网页版起号第一步，见 {@link #SURVIVOR_WORK_START}）。
+     *
+     * <p>真实轮实证（2026-11-11，724 区新建号）：启动起号后 25 秒内 idle 4→0、working 0→3，
+     * 木材 0→1446、熔炉 0→1；此前不委任时资源恒为 0、建造恒被 51 拒。故委任必须在
+     * 资源检查/建造之前执行。返回 {@code {assigned, failed, idleBefore}}。
+     */
+    Map<String, Object> assignIdleSurvivors() {
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        List<BootstrapState.Survivor> idle = state.idleSurvivors();
+        result.put("idleBefore", idle.size());
+        if (idle.isEmpty()) {
+            result.put("assigned", List.of());
+            result.put("assignedCount", 0);
+            result.put("failed", 0);
+            result.put("message", "没有需要委任的幸存者");
+            return result;
+        }
+        java.util.Set<Long> assignedIds = state.assignedSurvivorIds();
+        ArrayList<Long> assigned = new ArrayList<>();
+        int failed = 0;
+        // 精确委任（对齐新版 assignIdleSurvivorToProduction）：
+        // 遍历生产建筑 → 工位类型 → 找空闲工位 → 取闲置幸存者 → req_survivor_send_or_fired{sid, fid_work, type:1}
+        outer:
+        for (long buildingId : PRODUCTION_BUILDINGS) {
+            if (state.level(buildingId) <= 0L) continue;
+            for (long type : PRODUCTION_STATION_TYPES) {
+                for (Map.Entry<Long, List<Long>> station : state.furnitureByType(buildingId, type).entrySet()) {
+                    if (!station.getValue().isEmpty()) continue;   // 工位已有人
+                    long confFid = station.getKey();
+                    long fidWork = state.furnitureInstanceId(buildingId, confFid);
+                    if (fidWork <= 0L) continue;
+                    BootstrapState.Survivor pick = null;
+                    for (BootstrapState.Survivor v : idle) {
+                        if (!assignedIds.contains(v.sid())) { pick = v; break; }
+                    }
+                    if (pick == null) break outer;   // 没有闲置幸存者了
+                    String retryKey = "station:" + buildingId + ":" + confFid;
+                    if (!retryAllowed(retryKey)) continue;
+                    try {
+                        request(SURVIVOR_SEND_OR_FIRED,
+                                Map.of("sid", pick.sid(), "fid_work", fidWork, "type", 1L));
+                        assignedIds.add(pick.sid());
+                        assigned.add(pick.sid());
+                        clearRetry(retryKey);
+                        FileLog.info("[起号] 已把幸存者 {} 派到 {} 的工位 {}",
+                                String.valueOf(pick.sid()), String.valueOf(buildingId), String.valueOf(fidWork));
+                    } catch (Exception e) {
+                        markRetry(retryKey, 60_000L);
+                        failed++;
+                        FileLog.info("[起号] 工位 {} 派遣失败：{}", String.valueOf(fidWork),
+                                String.valueOf(e.getMessage()));
+                    }
+                }
+            }
+        }
+        // 兜底：精确委任没成功（无工位数据）时，用简化协议让游戏自动分配
+        if (assigned.isEmpty() && failed == 0) {
+            for (BootstrapState.Survivor v : idle) {
+                try {
+                    GameMessage response = request(SURVIVOR_WORK_START, Map.of("sid", v.sid()));
+                    Map<String, Object> content = response == null || response.getContent() == null
+                            ? Map.of() : response.getContent();
+                    if (number(content.get("code")) == 0L) assigned.add(v.sid());
+                } catch (Exception ignored) {
+                    // 兜底也失败则本轮不委任
+                }
+            }
+        }
+        result.put("assigned", List.copyOf(assigned));
+        result.put("assignedCount", assigned.size());
+        result.put("failed", failed);
+        result.put("message", assigned.isEmpty() ? "没有需要委任的幸存者"
+                : "已委任 " + assigned.size() + " 位幸存者上岗");
+        return result;
+    }
+
+    /**
+     * 领取探险挂机奖励（语义对齐原版 DailyAdventureRewardService.claimOnce）：
+     * {@code req_open_hang_up_reward_view} 刷新 → {@code req_get_hang_up_reward} 领取；
+     * 挂机时长未到（code 4004）或未解锁时按跳过处理（{@code claimed=false}），不抛错。
+     */
+    Map<String, Object> claimAdventureHangUp() {
+        LinkedHashMap<String, Object> result = new LinkedHashMap<>();
+        try {
+            request(ADVENTURE_PREVIEW, Map.of());
+        } catch (Exception e) {
+            result.put("claimed", false);
+            result.put("reason", "探险状态不可用：" + String.valueOf(e.getMessage()));
+            return result;
+        }
+        try {
+            GameMessage response = request(ADVENTURE_CLAIM, Map.of());
+            Map<String, Object> content = response == null || response.getContent() == null
+                    ? Map.of() : response.getContent();
+            long code = number(content.get("code"));
+            result.put("code", code);
+            result.put("claimed", code == 0L);
+            if (code != 0L) {
+                result.put("reason", code == ADVENTURE_NOT_READY
+                        ? "挂机时长未达到领取条件" : "领取被拒绝 code=" + code);
+            }
+            return result;
+        } catch (Exception e) {
+            result.put("claimed", false);
+            // 4004 = 挂机时长未达领取条件（原版按跳过处理，不是错误）
+            Integer code = protocolErrorCode(e);
+            if (code != null && code == ADVENTURE_NOT_READY) {
+                result.put("code", code);
+                result.put("reason", "挂机时长未达到领取条件");
+            } else {
+                result.put("reason", "领取异常：" + String.valueOf(e.getMessage()));
+            }
+            return result;
+        }
+    }
+
+    /** 从异常链里识别协议错误码（无则 null）。 */
+    private static Integer protocolErrorCode(Throwable t) {
+        for (Throwable c = t; c != null; c = c.getCause()) {
+            if (c instanceof ProtocolException) {
+                return ((ProtocolException) c).code();
+            }
+            if (c.getCause() == c) break;
+        }
+        return null;
+    }
+
+    /** 单次领奖；上游拒绝/异常返回 false（不中断其它项）。 */
+    private boolean tryClaim(String protocol, Map<String, Object> payload) {
+        try {
+            GameMessage response = request(protocol, payload);
+            Map<String, Object> content = response == null ? Map.of()
+                    : (response.getContent() == null ? Map.of() : response.getContent());
+            return number(content.get("code")) == 0L;
+        } catch (RuntimeException e) {
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** 推送里取一级字段（推送体已是 {field:...} 形状）。 */
+    private Object notifyValue(String proto, String field) {
+        Map<String, Object> n = port.notify(proto);
+        return n == null ? null : n.get(field);
+    }
+
+    /** 任务 id 列表解析（对齐原版 questIds：支持单对象与列表，取字段 id）。 */
+    private static List<Long> questIds(Object raw) {
+        ArrayList<Long> out = new ArrayList<>();
+        if (raw instanceof Map) {
+            long id = number(((Map<?, ?>) raw).get("id"));
+            if (id > 0L) out.add(id);
+            return out;
+        }
+        if (raw instanceof Iterable) {
+            for (Object v : (Iterable<?>) raw) {
+                if (!(v instanceof Map)) continue;
+                long id = number(((Map<?, ?>) v).get("id"));
+                if (id > 0L) out.add(id);
+            }
+        }
+        return out;
+    }
+
+    /** 未领宝箱 id（对齐原版 unclaimedRewardIds：get_flag 为 true 视为已领）。 */
+    private static List<Long> unclaimedRewardIds(Object raw) {
+        ArrayList<Long> out = new ArrayList<>();
+        if (!(raw instanceof Iterable)) return out;
+        for (Object v : (Iterable<?>) raw) {
+            if (!(v instanceof Map)) continue;
+            Map<?, ?> m = (Map<?, ?>) v;
+            long id = number(m.get("id"));
+            Object flag = m.get("get_flag");
+            boolean claimed = Boolean.TRUE.equals(flag) || "true".equalsIgnoreCase(String.valueOf(flag));
+            if (id > 0L && !claimed) out.add(id);
+        }
+        return out;
     }
 
     /**
@@ -948,11 +1734,54 @@ public final class BootstrapService {
      * <p>serverMismatch 判定对齐原版 verifyLoginTarget：期望 uid &gt; 0 且落地 uid 不一致 →
      * 抛「游戏账号登录到了其他角色…已中止登录」（文案逐字）。
      */
+
+    /** 拉一次角色清单（失败返回 null，不阻断建号）。 */
+    private Map<String, Object> roleListContent(WjdrEngine engine) {
+        try {
+            GameMessage response = request("req_role_list", Map.of());
+            return response == null ? null : response.getContent();
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    /** 统计清单里属于某区服的角色数（兼容 list / {list:[...]} 与 serverid/kid 两种键）。 */
+    static int countRolesInServer(Map<String, Object> roles, long serverId) {
+        if (roles == null || serverId <= 0L) return 0;
+        Object raw = firstNonNull(roles.get("list"), roles.get("roles"), roles.get("data"));
+        int count = 0;
+        for (Map<String, Object> role : maps(raw)) {
+            long sid = number(role.get("serverid"));
+            if (sid <= 0L) sid = number(role.get("server_id"));
+            if (sid <= 0L) sid = number(role.get("kid"));
+            if (sid == serverId) count++;
+        }
+        return count;
+    }
+
+    private static Object firstNonNull(Object... values) {
+        for (Object v : values) if (v != null) return v;
+        return null;
+    }
+
+    /** 秒 → 「X 小时 Y 分」中文时长。 */
+    private static String humanDuration(long seconds) {
+        if (seconds <= 0L) return "0 秒";
+        long h = seconds / 3600L;
+        long m = (seconds % 3600L) / 60L;
+        if (h > 0L) return h + " 小时" + (m > 0L ? " " + m + " 分" : "");
+        if (m > 0L) return m + " 分钟";
+        return seconds + " 秒";
+    }
+
     public LoginOutcome createRole(WjdrEngine engine, String fpid, String sdkToken,
                                    long serverId, long targetUid, String displayName) throws Exception {
         if (serverId <= 0L) {
             throw new IllegalArgumentException("请选择目标区服");
         }
+        // 建号 = 一次 loginauth + is_create=true（对齐新版 RegistrationRoleCreationService）。
+        // 建号限制（block_create_role_endtime）在 loginauth 响应里，失败时据此给明确中文提示；
+        // 不做额外的前置登录——新版同样是一次请求，避免多余会话与顶号风险。
         LinkedHashMap<String, Object> extraParams = new LinkedHashMap<>();
         extraParams.put("is_create", true);
         if (targetUid > 0L) {
@@ -964,6 +1793,15 @@ public final class BootstrapService {
         WjdrEngine.LoginResult r = engine.login(fpid, sdkToken, serverId, extraParams);
         long uid = r.uid;
         long landedServerId = r.serverId;
+        long blockEndtime = r.authContent == null ? 0L
+                : ProtocolValueSupport.number(r.authContent.get("block_create_role_endtime"));
+        String blockHint = blockEndtime <= 0L ? ""
+                : "（服务端禁止该账号建号至时间戳 " + blockEndtime + "）";
+        if (uid <= 0L) {
+            // 对齐新版文案：服务端没建出角色（建号冷却/同区角色数达上限/风控）
+            throw new IllegalStateException("建号失败：服务端没有创建角色" + blockHint
+                    + describeServer(serverId));
+        }
         if (targetUid > 0L && uid != targetUid) {
             throw new IllegalStateException("游戏账号登录到了其他角色：期望 uid=" + targetUid
                     + describeServer(serverId) + "，实际 uid=" + uid + describeServer(landedServerId)
@@ -979,6 +1817,24 @@ public final class BootstrapService {
     public LoginOutcome createRole(WjdrEngine engine, String fpid, String sdkToken,
                                    long serverId, String displayName) throws Exception {
         return createRole(engine, fpid, sdkToken, serverId, 0L, displayName);
+    }
+
+    /**
+     * 登录**已存在角色**（{@code is_create=false}）。
+     *
+     * <p>真实轮（2026-11-10）：同一账号第二次用 {@code is_create=true} 登录时游戏返回
+     * {@code loginauth code=9}（角色已存在/创建冲突）。故批量起号在「建号」失败且判定为
+     * 已存在角色时回退本方法，用普通登录进入既有角色继续升级。
+     */
+    public LoginOutcome loginExisting(WjdrEngine engine, String fpid, String sdkToken,
+                                      long serverId) throws Exception {
+        if (serverId <= 0L) {
+            throw new IllegalArgumentException("请选择目标区服");
+        }
+        WjdrEngine.LoginResult r = engine.login(fpid, sdkToken, serverId);
+        return new LoginOutcome(r.uid, r.serverId,
+                r.authContent == null ? Map.of() : r.authContent, false,
+                "已登录既有角色 uid=" + r.uid + describeServer(r.serverId));
     }
 
     private static String describeServer(long serverId) {
