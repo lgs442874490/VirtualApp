@@ -1111,16 +1111,9 @@ public final class ServerBearTasks {
             long mid = o.optLong("mid", 0L);
             long owner = o.optLong("owner", 0L);
             long kid = o.optLong("kid", 0L);
-            long at = o.optLong("at", 0L);
             int tries = o.optInt("tries", 0);
-            boolean expired = (at > 0L && now - at > 180L) || tries >= 3;
-            if (expired) {
-                fail++;
-                if (m != null) m.skip("上车对账超时(车头" + mid + ")，释放");
-                FileLog.info("巨熊上车对账超时释放 fpid={} sid={} masterMarchId={}",
-                        tc.fpid, String.valueOf(tc.sid), String.valueOf(mid));
-                continue;
-            }
+            // 2026-11-11 审查修复：pending 保留到本场结束/明确失败为止，不用固定 180s 过期，
+            // 避免“实际已上车但确认晚到”被误判成失败（网页版同样只按成员详情/场次清理）。
             if (checked >= 2) {
                 keep.put(o);
                 continue;
