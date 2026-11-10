@@ -8,6 +8,8 @@ import static org.junit.Assert.assertTrue;
 
 import com.carlos.vault.wjdr.WjdrEngine;
 
+import com.carlos.vault.wjdr.WjdrEngine;
+
 import org.json.JSONObject;
 import org.junit.Test;
 
@@ -753,5 +755,30 @@ public class ServerBearTasksTest {
         assertEquals(3L, out.get(0)[1]);
         assertEquals(4L, out.get(1)[0]);
         assertEquals(2L, out.get(1)[1]);
+    }
+
+    // ==================== 2026-11-10：实时行军列表兜底 ====================
+
+    @Test
+    public void liveMarchTargets_fallsBackToSnapshotsWhenAssetLibraryMissing() {
+        Map<String, Object> m1 = new LinkedHashMap<>();
+        m1.put("id", 11L);
+        m1.put("type", 4L);
+        m1.put("state", 3L);
+        Map<String, Object> m2 = new LinkedHashMap<>();
+        m2.put("id", 12L);
+        m2.put("type", 99L);
+        m2.put("state", 2L);
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("marches", Arrays.asList(m1, m2));
+        WjdrEngine engine = new WjdrEngine(null) {
+            @Override
+            public Map<String, Object> notifyContent(String proto) {
+                return "notify_player_march_add".equals(proto) ? content : null;
+            }
+        };
+        List<long[]> targets = ServerBearTasks.liveMarchTargets(engine, 1_793_000_000L);
+        assertEquals("资产库缺失时回退旧快照，且排除 99 集结", 1, targets.size());
+        assertEquals(11L, targets.get(0)[0]);
     }
 }
