@@ -96,4 +96,20 @@ public class FormationStoreBearPresetTest {
         assertFalse(FormationStore.bearPetSkillsParams(p, false).optBoolean("pet_skills"));
         assertFalse("缺省关闭", new JSONObject().optBoolean("pet_skills", false));
     }
+
+    @Test
+    public void bearPreferredParams_writesLeadersOnlyWait() throws Exception {
+        JSONObject p = new JSONObject();
+        FormationStore.bearPreferredParams(p, " 123@888, 456 ", true, 5);
+        assertEquals("123@888, 456", p.optString("preferred_leaders"));
+        assertTrue(p.optBoolean("preferred_leader_enabled"));
+        assertTrue(p.optBoolean("preferred_leader_only"));
+        assertEquals(5, p.optInt("preferred_leader_wait_seconds"));
+
+        FormationStore.bearPreferredParams(p, "", false, -3);
+        assertEquals("", p.optString("preferred_leaders"));
+        assertFalse(p.optBoolean("preferred_leader_enabled"));
+        assertFalse(p.optBoolean("preferred_leader_only"));
+        assertEquals("等待秒数夹取到 0", 0, p.optInt("preferred_leader_wait_seconds"));
+    }
 }

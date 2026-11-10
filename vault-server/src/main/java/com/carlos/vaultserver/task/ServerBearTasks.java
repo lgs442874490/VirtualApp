@@ -8,6 +8,7 @@ import com.carlos.vault.wjdr.pet.PetSkillCatalog;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.Beijing;
 import com.carlos.vaultserver.FileLog;
+import com.carlos.vaultserver.formation.FormationCatalog;
 import com.carlos.vaultserver.formation.FormationLibrary;
 import com.carlos.vaultserver.formation.FormationResolver;
 import com.carlos.vaultserver.formation.FormationSpec;
@@ -690,8 +691,9 @@ public final class ServerBearTasks {
         if (!joinSlots.isEmpty()) {
             FormationLibrary joinLib = FormationResolver.libraryFor(tc, TASK_ID);
             final FormationLibrary lib = joinLib;
+            final java.util.Map<Long, Long> reservedSoldiers = new LinkedHashMap<>();
             JoinSlotSelection selection = selectJoinSlots(joinSlots,
-                    slot -> resolveJoinSlot(tc, lib, slot));
+                    slot -> resolveJoinSlot(tc, lib, slot, reservedSoldiers));
             if (!selection.disabledIds.isEmpty()) {
                 FileLog.info("巨熊上车 disabled 槽跳过 fpid={} sid={} ids={}（不发请求/不计失败）",
                         tc.fpid, String.valueOf(tc.sid), String.valueOf(selection.disabledIds));
@@ -1167,14 +1169,72 @@ public final class ServerBearTasks {
 
     /** 生产上车槽解析器：功能级/槽级 soldiers 合并后调用 FormationResolver（坏槽由 selectJoinSlots 收集原因）。 */
     static JoinSlotPlan resolveJoinSlot(TaskContext tc, FormationLibrary lib, JoinFormationConfig slot) {
+        return resolveJoinSlot(tc, lib, slot, null);
+    }
+
+    /** 带同轮已预留兵量的槽解析：解析后按库存-预留夹取，并把本槽实际兵量累加回 reservedSoldiers。 */
+    static JoinSlotPlan resolveJoinSlot(TaskContext tc, FormationLibrary lib, JoinFormationConfig slot,
+                                        java.util.Map<Long, Long> reservedSoldiers) {
         Map<String, Object> params = mergeSoldiersForResolve(slot.params, lib);
         FormationResolver.ResolveOutcome out = FormationResolver.resolveOutcome(tc.engine, lib, params);
         if (!out.ready()) {
             return new JoinSlotPlan(slot, null, "", out.reason);
         }
         Map<String, Object> payload = out.formation.toFormationPayload();
-        return new JoinSlotPlan(slot, payload, out.formation.describe(),
-                payload == null ? "编队英雄/兵种为空" : "");
+        if (payload == null) {
+            return new JoinSlotPlan(slot, null, "", "编队英雄/兵种为空");
+        }
+        String reserveError = applyReservedSoldiers(tc, payload, reservedSoldiers);
+        if (reserveError != null) {
+            return new JoinSlotPlan(slot, null, "", reserveError);
+        }
+        return new JoinSlotPlan(slot, payload, out.formation.describe(), "");
+    }
+
+    /**
+     * 同轮多上车队兵量预留（对齐网页版 reservedSoldiers）：
+     * 按兵种库存减去已预留量夹取本队 soldier pairs；返回非空=预留后无兵可用。
+     */
+    static String applyReservedSoldiers(TaskContext tc, Map<String, Object> payload,
+                                        java.util.Map<Long, Long> reservedSoldiers) {
+        if (payload == null || reservedSoldiers == null) return null;
+        long[] stock;
+        try {
+            stock = FormationCatalog.soldierStock(tc.engine);
+        } catch (Throwable t) {
+            return null;   // 库存不可用：保持原编队（旧行为）
+        }
+        if (stock == null || stock[0] + stock[1] + stock[2] <= 0L) return null;
+        List<Map<String, Object>> pairs = Exec.mapsOf(payload.get("soldier"));
+        List<Map<String, Object>> out = new ArrayList<>();
+        long kept = 0L;
+        for (Map<String, Object> pair : pairs) {
+            long k = Exec.longOf(pair.get("k"));
+            long v = Exec.longOf(pair.get("v"));
+            int idx = soldierTypeIndex(k);
+            if (idx >= 0) {
+                long already = reservedSoldiers.getOrDefault(k, 0L);
+                long remain = Math.max(0L, stock[idx] - already);
+                if (v > remain) v = remain;
+            }
+            if (v <= 0L) continue;
+            Map<String, Object> copy = new LinkedHashMap<>(pair);
+            copy.put("v", v);
+            out.add(copy);
+            kept += v;
+            reservedSoldiers.merge(k, v, Long::sum);
+        }
+        if (kept <= 0L) return "同轮上车兵量预留后无可用兵力";
+        payload.put("soldier", out);
+        return null;
+    }
+
+    /** 兵种 k → 库存下标（11000/11100→0 盾、21000→1 矛、31000/31100→2 弓；其它 -1）。 */
+    static int soldierTypeIndex(long k) {
+        if (k == 11000L || k == 11100L) return 0;
+        if (k == 21000L || k == 21100L) return 1;
+        if (k == 31000L || k == 31100L) return 2;
+        return -1;
     }
 
     /**
@@ -1273,7 +1333,13 @@ public final class ServerBearTasks {
         for (long[] t : targets) {
             long id = t[0];
             long stateVal = t[1];
-            String proto = stateVal == 2L ? "req_world_march_recall" : "req_world_march_off_work";
+            String proto = autoRecallProto(t[2], stateVal);
+            if (proto.isEmpty()) {
+                // 2026-11-11 对齐网页版：state=2 需消耗召回道具、rally/返程/待命不自动召回。
+                FileLog.info("巨熊准备窗召回跳过 fpid={} marchId={} type={} state={}（不可自动召回）",
+                        tc.fpid, String.valueOf(id), String.valueOf(t[2]), String.valueOf(stateVal));
+                continue;
+            }
             try {
                 GameMessage rsp = tc.engine.request(proto, Exec.args("id", id));
                 int code = Exec.codeOf(rsp);
@@ -1295,6 +1361,17 @@ public final class ServerBearTasks {
             }
         }
         return done;
+    }
+
+    /**
+     * 自动召回协议（对齐网页版 recallDecision/automaticRecallable）：
+     * state=3（驻扎/采集）→ off_work；state=2（行军中）需召回道具，不自动化；rally/1/4/其它 → 空。
+     * 返回空串表示“不可自动召回”，调用方跳过。
+     */
+    static String autoRecallProto(long type, long state) {
+        if (type == 99L || type == 411L) return "";
+        if (state == 3L) return "req_world_march_off_work";
+        return "";
     }
 
     /** 召回等待上限（秒）：行军迟迟不回城时放弃等待，避免整场不发车。 */

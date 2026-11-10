@@ -3,9 +3,12 @@ package com.carlos.vault.daily;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.graphics.Typeface;
+import android.text.InputType;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
+import android.widget.CheckBox;
+import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -261,6 +264,54 @@ public final class FormationPicker {
                 if (onChanged != null) onChanged.onChanged();
             }));
             card.addView(petRow);
+
+            // 2026-11-11：指定车头（对齐网页版 preferredLeaders）
+            final String preferredLeaders = FormationStore.bearPreferredLeaders(act, fpid, sid, fnId);
+            final boolean preferredOnly = FormationStore.bearPreferredOnly(act, fpid, sid, fnId);
+            final int preferredWait = FormationStore.bearPreferredWaitSeconds(act, fpid, sid, fnId);
+            String preferredText = preferredLeaders.isEmpty()
+                    ? "不指定（优先任意车头）"
+                    : preferredLeaders + (preferredOnly ? " · 仅指定" : "")
+                    + " · 等待 " + preferredWait + "s";
+            card.addView(UiStyle.dropdownRow(act, "指定车头", preferredText, () -> {
+                LinearLayout box = new LinearLayout(act);
+                box.setOrientation(LinearLayout.VERTICAL);
+                box.setPadding(dp(act, 16), dp(act, 4), dp(act, 16), 0);
+                EditText leadersInput = new EditText(act);
+                leadersInput.setHint("uid@kid,uid@kid（留空=不指定）");
+                leadersInput.setText(preferredLeaders);
+                leadersInput.setInputType(InputType.TYPE_CLASS_TEXT);
+                box.addView(leadersInput);
+                CheckBox onlyBox = new CheckBox(act);
+                onlyBox.setText("仅加入指定车头（未出现则等待）");
+                onlyBox.setChecked(preferredOnly);
+                box.addView(onlyBox);
+                EditText waitInput = new EditText(act);
+                waitInput.setHint("等待秒数（默认 2）");
+                waitInput.setText(String.valueOf(preferredWait));
+                waitInput.setInputType(InputType.TYPE_CLASS_NUMBER);
+                box.addView(waitInput);
+                new AlertDialog.Builder(act, AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                        .setTitle("指定车头")
+                        .setView(box)
+                        .setPositiveButton("保存", (d, w) -> {
+                            String text = leadersInput.getText().toString().trim();
+                            int waitSec;
+                            try {
+                                waitSec = Integer.parseInt(waitInput.getText().toString().trim());
+                            } catch (Throwable t) {
+                                waitSec = 2;
+                            }
+                            FormationStore.saveBearPreferred(act, fpid, sid, fnId,
+                                    text, onlyBox.isChecked(), waitSec);
+                            sync(act);
+                            VaultSync.syncAll(act);
+                            refresh.run();
+                            if (onChanged != null) onChanged.onChanged();
+                        })
+                        .setNegativeButton("取消", null)
+                        .show();
+            }));
         }
 
         // 上车队数（按用户自己的出征队列数：1-6；同时是服务器 queue_count）

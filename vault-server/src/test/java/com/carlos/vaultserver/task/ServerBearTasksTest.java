@@ -879,4 +879,26 @@ public class ServerBearTasksTest {
         assertEquals(0, ServerBearTasks.memberMatch(content, 999L, Arrays.asList(50036L, 50005L)));
         assertEquals(1, ServerBearTasks.memberMatch(content, 123L, Collections.<Long>emptyList()));
     }
+
+    // ==================== 2026-11-11：自动召回判定 / 兵种下标 ====================
+
+    @Test
+    public void autoRecallProto_onlyStationedIsAutomatic() {
+        assertEquals("req_world_march_off_work", ServerBearTasks.autoRecallProto(4L, 3L));
+        assertEquals("行军中需召回道具，不自动", "", ServerBearTasks.autoRecallProto(2L, 2L));
+        assertEquals("返程不召回", "", ServerBearTasks.autoRecallProto(4L, 4L));
+        assertEquals("待命不召回", "", ServerBearTasks.autoRecallProto(4L, 1L));
+        assertEquals("rally 不召回", "", ServerBearTasks.autoRecallProto(99L, 3L));
+        assertEquals("rally 不召回", "", ServerBearTasks.autoRecallProto(411L, 3L));
+    }
+
+    @Test
+    public void soldierTypeIndex_mapsThreeTypes() {
+        assertEquals(0, ServerBearTasks.soldierTypeIndex(11000L));
+        assertEquals(0, ServerBearTasks.soldierTypeIndex(11100L));
+        assertEquals(1, ServerBearTasks.soldierTypeIndex(21000L));
+        assertEquals(2, ServerBearTasks.soldierTypeIndex(31000L));
+        assertEquals(2, ServerBearTasks.soldierTypeIndex(31100L));
+        assertEquals(-1, ServerBearTasks.soldierTypeIndex(99999L));
+    }
 }

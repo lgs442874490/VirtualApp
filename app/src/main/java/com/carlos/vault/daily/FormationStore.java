@@ -1577,6 +1577,66 @@ public final class FormationStore {
         return p;
     }
 
+    // ==================== 巨熊指定车头（2026-11-11，对齐网页版 preferredLeaders） ====================
+
+    /** 指定车头列表（bear params {@code preferred_leaders}，格式 uid@kid,uid@kid；空=不指定）。 */
+    public static String bearPreferredLeaders(Context ctx, String fpid, long sid, String fnId) {
+        try {
+            return FnParams.params(ctx, fpid, sid, normalizeFnId(fnId))
+                    .optString("preferred_leaders", "");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /** 是否仅加入指定车头（{@code preferred_leader_only}）。 */
+    public static boolean bearPreferredOnly(Context ctx, String fpid, long sid, String fnId) {
+        try {
+            return FnParams.params(ctx, fpid, sid, normalizeFnId(fnId))
+                    .optBoolean("preferred_leader_only", false);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 指定车头等待秒数（{@code preferred_leader_wait_seconds}，默认 2）。 */
+    public static int bearPreferredWaitSeconds(Context ctx, String fpid, long sid, String fnId) {
+        try {
+            int v = FnParams.params(ctx, fpid, sid, normalizeFnId(fnId))
+                    .optInt("preferred_leader_wait_seconds", 2);
+            return clampInt(v, 0, 86400);
+        } catch (Throwable t) {
+            return 2;
+        }
+    }
+
+    /** 写入指定车头配置（随 bear params 同步服务器）。 */
+    public static void saveBearPreferred(Context ctx, String fpid, long sid, String fnId,
+                                         String leaders, boolean only, int waitSeconds) {
+        try {
+            String id = normalizeFnId(fnId);
+            JSONObject p = FnParams.params(ctx, fpid, sid, id);
+            bearPreferredParams(p, leaders, only, waitSeconds);
+            FnParams.saveParams(ctx, fpid, sid, id, p);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    /** 纯函数：写入指定车头参数（便于 JVM 单测）；leaders 为空时关闭。 */
+    public static JSONObject bearPreferredParams(JSONObject params, String leaders,
+                                                 boolean only, int waitSeconds) {
+        JSONObject p = params == null ? new JSONObject() : params;
+        try {
+            String text = leaders == null ? "" : leaders.trim();
+            p.put("preferred_leaders", text);
+            p.put("preferred_leader_enabled", !text.isEmpty());
+            p.put("preferred_leader_only", only);
+            p.put("preferred_leader_wait_seconds", clampInt(waitSeconds, 0, 86400));
+        } catch (Throwable ignored) {
+        }
+        return p;
+    }
+
     // ==================== 游戏编队副本 / 一键编队（契约外补充 API） ====================
 
     /**
