@@ -475,7 +475,7 @@ public class ServerBearTasksTest {
         assertFalse("可选清场默认关（不破坏用户队列）", cfg.prepareRecallEnabled);
         assertFalse("未预约默认不发车（配置窗口只观察）", cfg.launchWithoutReserve);
         assertEquals("上车编队默认 1 队", 1, cfg.joinCount);
-        assertEquals("准备档默认 2（620 秒）", 2, cfg.prepareTimeIndex);
+        assertEquals("准备档默认 1（320 秒，对齐网页版）", 1, cfg.prepareTimeIndex);
         assertEquals("默认周五", 5, cfg.windowWeekday);
         assertEquals("默认 21:00", 21 * 60, cfg.windowStartMinuteOfDay());
         assertEquals("默认 30 分钟窗口", 30, cfg.windowDurationMinutes());
@@ -801,5 +801,64 @@ public class ServerBearTasksTest {
         // 新场次自动清空旧 pending
         assertEquals(0, ServerBearTasks.pendingJoinCount(state, 200L));
         assertEquals(200L, state.pendingJoinWindowStart);
+    }
+
+    // ==================== 2026-11-11：指定车头 ====================
+
+    @Test
+    public void preferredLeader_onlyKeepsMatchingCandidate() throws Exception {
+        org.json.JSONObject p = new org.json.JSONObject();
+        p.put("preferred_leader_enabled", true);
+        p.put("preferred_leader_only", true);
+        p.put("preferred_leaders", "123@888");
+        ServerBearTasks.BearConfig cfg = ServerBearTasks.BearConfig.of(p);
+        ServerBearTasks.RallyCandidate hit = candidate(504L, 2L, 411L, 123L, 888L, 10L, 20L);
+        hit.ownerKid = 888L;
+        ServerBearTasks.RallyCandidate miss = candidate(505L, 2L, 411L, 999L, 888L, 10L, 20L);
+        miss.ownerKid = 888L;
+        ServerBearTasks.CandidateSelection sel = ServerBearTasks.selectPreferredCandidates(
+                Arrays.asList(hit, miss), cfg, new ServerBearTasks.BearState(), null, 1000L);
+        assertEquals(1, sel.candidates.size());
+        assertEquals(504L, sel.candidates.get(0).masterMarchId);
+        assertTrue(sel.waitMessage.isEmpty());
+    }
+
+    @Test
+    public void preferredLeader_waitsThenFallsBackToAll() throws Exception {
+        org.json.JSONObject p = new org.json.JSONObject();
+        p.put("preferred_leader_enabled", true);
+        p.put("preferred_leader_only", false);
+        p.put("preferred_leader_wait_seconds", 2);
+        p.put("preferred_leaders", "123@888");
+        ServerBearTasks.BearConfig cfg = ServerBearTasks.BearConfig.of(p);
+        ServerBearTasks.RallyCandidate miss = candidate(505L, 2L, 411L, 999L, 888L, 10L, 20L);
+        ServerBearTasks.BearState state = new ServerBearTasks.BearState();
+        ServerBearTasks.CandidateSelection first = ServerBearTasks.selectPreferredCandidates(
+                Collections.singletonList(miss), cfg, state, null, 1000L);
+        assertTrue("首轮等待", !first.waitMessage.isEmpty());
+        assertTrue(first.candidates.isEmpty());
+        ServerBearTasks.CandidateSelection second = ServerBearTasks.selectPreferredCandidates(
+                Collections.singletonList(miss), cfg, state, null, 1002L);
+        assertEquals("等待 2 秒后回退全部候选", 1, second.candidates.size());
+        assertTrue(second.waitMessage.isEmpty());
+    }
+
+    @Test
+    public void parsePreferredLeaders_supportsStringAndObjects() throws Exception {
+        org.json.JSONObject p = new org.json.JSONObject();
+        p.put("preferred_leaders", "123@888, 456");
+        List<long[]> s1 = ServerBearTasks.parsePreferredLeaders(p);
+        assertEquals(2, s1.size());
+        assertEquals(123L, s1.get(0)[0]);
+        assertEquals(888L, s1.get(0)[1]);
+        assertEquals(456L, s1.get(1)[0]);
+
+        org.json.JSONObject p2 = new org.json.JSONObject();
+        p2.put("preferred_leaders", new org.json.JSONArray()
+                .put(new org.json.JSONObject().put("uid", 789).put("kid", 152)));
+        List<long[]> s2 = ServerBearTasks.parsePreferredLeaders(p2);
+        assertEquals(1, s2.size());
+        assertEquals(789L, s2.get(0)[0]);
+        assertEquals(152L, s2.get(0)[1]);
     }
 }
