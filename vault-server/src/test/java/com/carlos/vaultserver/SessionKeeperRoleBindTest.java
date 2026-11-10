@@ -112,12 +112,11 @@ public class SessionKeeperRoleBindTest {
     // ---------- activeUid>0：同服多角色直绑 ----------
 
     @Test
-    public void activeUid_positive_validatesRoleListThenBindsDirectly() throws Exception {
+    public void activeUid_positive_bindsDirectlyWithoutDefaultLogin() throws Exception {
         TestEngine e = engineWithBothRoles();
         LoginResult r = SessionKeeper.loginBoundRole(e, FPID, TOKEN, KID, String.valueOf(UID_B), stateStore);
-        // 校验：默认角色上线拉清单 → 全新连接 → 按 uid 直绑（不再走 sid→单uid 发现）
-        assertEquals(Arrays.asList("login:null", "discoverRoles", "initialize", "loginByRole:" + UID_B),
-                e.calls);
+        // 2026-11-08：直接按 uid 钉扎登录，不得先做"默认角色登录"（那条会话会顶掉兄弟角色）
+        assertEquals(Arrays.asList("loginByRole:" + UID_B), e.calls);
         assertEquals(UID_B, r.uid);
         // 缓存键含 uid（与旧 sid 键互不干扰），二次登录免校验
         assertEquals(String.valueOf(UID_B),
@@ -139,9 +138,8 @@ public class SessionKeeperRoleBindTest {
         stateStore.putString("srv:roleuid:" + FPID + ":" + KID + ":" + UID_A, String.valueOf(UID_A));
         TestEngine e = engineWithBothRoles();
         LoginResult r = SessionKeeper.loginBoundRole(e, FPID, TOKEN, KID, String.valueOf(UID_B), stateStore);
-        // B 首次仍需校验（A 的缓存键帮不上 B）
-        assertEquals(Arrays.asList("login:null", "discoverRoles", "initialize", "loginByRole:" + UID_B),
-                e.calls);
+        // B 首次同样直接按 uid 登录（不再做默认登录清单校验）
+        assertEquals(Arrays.asList("loginByRole:" + UID_B), e.calls);
         assertEquals(UID_B, r.uid);
     }
 
@@ -156,16 +154,17 @@ public class SessionKeeperRoleBindTest {
     }
 
     @Test
-    public void activeUid_positive_notInRoleList_fallsBackToLegacyDiscovery() throws Exception {
-        // App 下发的 uid 已过期（不在清单）：回退旧发现路径，不硬绑
+    public void activeUid_positive_staleUid_bindsOnceWithoutFallback() throws Exception {
+        // App 下发的 uid 已过期：仍只发一次 uid 钉扎登录，不再先默认登录、也不再二次回退登录
+        //（每次额外登录都会顶掉一个兄弟角色；落错由返回 uid 校验与上层 verifyIdentity 如实告警）。
         TestEngine e = new TestEngine();
-        e.roles = Arrays.asList(role(KID, UID_A));   // 清单里只有 A
+        e.roles = Arrays.asList(role(KID, UID_A));   // 清单里只有 A（旧实现会回退发现 A）
         e.discoverUid = UID_A;
         LoginResult r = SessionKeeper.loginBoundRole(e, FPID, TOKEN, KID, "99999999", stateStore);
-        // 校验失败 → 全新连接 → 旧路径：默认登录 → discoverRoleUid → initialize → loginByRole(A)
-        assertEquals(Arrays.asList("login:null", "discoverRoles", "initialize",
-                "login:null", "discoverRoleUid:" + KID, "initialize", "loginByRole:" + UID_A), e.calls);
-        assertEquals(UID_A, r.uid);
+        assertEquals(Arrays.asList("loginByRole:99999999"), e.calls);
+        assertEquals(99999999L, r.uid);
+        assertEquals("99999999",
+                stateStore.getString("srv:roleuid:" + FPID + ":" + KID + ":99999999"));
     }
 
     // ---------- activeUid 缺省：旧行为不变 ----------

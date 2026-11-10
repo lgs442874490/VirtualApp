@@ -75,11 +75,12 @@ public class FeatureGateMatrixTest {
     @Test
     public void unimplementedAlwaysHiddenEvenWithMatrix() {
         // 2026-11-06 决策6：RANKING 等零引用死枚举已删除；用仍保留的未实现项验证矩阵不越权。
+        // 注：MOVE_CITY 于 2026-11-06 立为已实现（网页版迁城 1:1 复刻），不再充当未实现样本。
         List<String> everything = Arrays.asList(
-                FeatureGate.Feature.MOVE_CITY.key,
+                FeatureGate.Feature.COORD_QUERY.key,
                 FeatureGate.Feature.BEHEMOTH_BATCH.key,
                 FeatureGate.Feature.WAR_STATE.key);
-        assertFalse(FeatureGate.visible(FeatureGate.Feature.MOVE_CITY,
+        assertFalse(FeatureGate.visible(FeatureGate.Feature.COORD_QUERY,
                 FeatureGate.TIER_GM, true, everything, RELEASE));
         assertFalse(FeatureGate.visible(FeatureGate.Feature.BEHEMOTH_BATCH,
                 FeatureGate.TIER_GM, true, everything, RELEASE));

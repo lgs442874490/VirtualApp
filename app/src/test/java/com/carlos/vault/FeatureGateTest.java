@@ -93,11 +93,31 @@ public class FeatureGateTest {
     @Test
     public void unimplementedPremiumFeatures_hiddenEvenAtTier3() {
         // 高阶但未开发：即使 T3 也不放出去（用户要求“没开发的不要放出去”）
-        assertTrue("前提：这些功能未实现", !FeatureGate.Feature.MOVE_CITY.implemented);
-        assertFalse(FeatureGate.visible(FeatureGate.Feature.MOVE_CITY, 3, RELEASE));
+        assertTrue("前提：这些功能未实现", !FeatureGate.Feature.COORD_QUERY.implemented);
         assertFalse(FeatureGate.visible(FeatureGate.Feature.COORD_QUERY, 3, RELEASE));
         assertFalse(FeatureGate.visible(FeatureGate.Feature.RECHARGE_RECORD, 3, RELEASE));
         assertFalse(FeatureGate.visible(FeatureGate.Feature.BEHEMOTH_BATCH, 3, RELEASE));
+    }
+
+    @Test
+    public void moveCity_isImplementedAndTier3Only() {
+        // 迁城 1:1 复刻（2026-11-06）：服务端 movecity 引擎 + App 页面已实现 → T3 可见
+        assertTrue("迁城已实现", FeatureGate.Feature.MOVE_CITY.implemented);
+        assertEquals(FeatureGate.TIER_PREMIUM, FeatureGate.Feature.MOVE_CITY.minTier);
+        assertTrue("T3 可见", FeatureGate.visible(FeatureGate.Feature.MOVE_CITY, 3, RELEASE));
+        assertTrue("debug 包 T3 可见", FeatureGate.visible(FeatureGate.Feature.MOVE_CITY, 3, DEBUG));
+        assertFalse("T2 不可见", FeatureGate.visible(FeatureGate.Feature.MOVE_CITY, 2, RELEASE));
+        assertFalse("T1 不可见", FeatureGate.visible(FeatureGate.Feature.MOVE_CITY, 1, RELEASE));
+        assertFalse("未激活不可见", FeatureGate.visible(FeatureGate.Feature.MOVE_CITY, 0, RELEASE));
+    }
+
+    @Test
+    public void visibleToolCount_includesMoveCity() {
+        int t3 = FeatureGate.visibleToolCount(3, RELEASE);
+        int t2 = FeatureGate.visibleToolCount(2, RELEASE);
+        // 迁城计入 T3 工具数（T3 相对 T2 多：敌情监控/真机监控/观察点/真机抓包/移民/迁城 = 6）
+        assertTrue("T3 工具数应大于 T2", t3 > t2);
+        assertEquals(t2 + 6, t3);
     }
 
     @Test
@@ -149,17 +169,47 @@ public class FeatureGateTest {
         boolean debug = FeatureGate.isDebugBuildType("release");
         assertFalse("release(T3) 不显示协议监听",
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
-        // M5（2026-11-07）：起号卡计入工具箱（起号+敌情监控+真机监控+观察点+真机抓包）
-        assertEquals("release(T3) 工具箱=起号+敌情监控+真机监控+观察点+真机抓包", 5, FeatureGate.visibleToolCount(3, debug));
+        assertEquals("release(T3) 工具箱=敌情监控+真机监控+观察点+真机抓包+移民+迁城", 6,
+                FeatureGate.visibleToolCount(3, debug));
     }
 
     @Test
     public void debugBuild_showsDebugTools() {
         boolean debug = FeatureGate.isDebugBuildType("debug");
         assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
-        assertEquals("debug(T3) 工具数=起号+敌情监控+真机监控+观察点+真机抓包+协议监听", 6,
+        assertEquals("debug(T3) 工具数=敌情监控+真机监控+观察点+真机抓包+移民+迁城+协议监听", 7,
                 FeatureGate.visibleToolCount(3, debug));
         assertEquals("debug(T1) 仅协议监听（敌情监控需 T3）", 1, FeatureGate.visibleToolCount(1, debug));
+    }
+
+    @Test
+    public void anyToolVisible_matchesVisibleToolCount_contract() {
+        // 2026-11-07 审查 P2-1：ToolBox 防旁路（anyToolVisible）与计数（visibleToolCount）
+        // 必须同源；这里锁纯函数口径下的等价性（Context 版共用同一份清单）。
+        for (int tier = 0; tier <= 3; tier++) {
+            for (boolean debug : new boolean[]{false, true}) {
+                boolean any = FeatureGate.visible(FeatureGate.Feature.ENEMY_WATCH, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.PROTO_CAPTURE, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, tier, debug)
+                        || FeatureGate.visible(FeatureGate.Feature.IMMIGRATION, tier, debug);
+                boolean hasCount = FeatureGate.visibleToolCount(tier, debug) > 0;
+                assertEquals("tier=" + tier + " debug=" + debug + " 防旁路与计数必须一致",
+                        any, hasCount);
+            }
+        }
+    }
+
+    @Test
+    public void immigration_isImplementedTier3() {
+        // 移民 2026-11-07 已实现：T3 可见、非调试专属
+        assertTrue(FeatureGate.Feature.IMMIGRATION.implemented);
+        assertFalse(FeatureGate.Feature.IMMIGRATION.debugOnly);
+        assertEquals(3, FeatureGate.Feature.IMMIGRATION.minTier);
+        assertEquals("immigration", FeatureGate.Feature.IMMIGRATION.key);
+        assertTrue(FeatureGate.visible(FeatureGate.Feature.IMMIGRATION, 3, false));
+        assertFalse(FeatureGate.visible(FeatureGate.Feature.IMMIGRATION, 2, false));
     }
 
     @Test
@@ -188,9 +238,9 @@ public class FeatureGateTest {
 
     @Test
     public void visibleToolCount_includesDevMonitorForT3() {
-        // ToolBox 卡片与 onCreate 防旁路判断同步：M5 起号计入后 T3 release 5 个工具；debug 额外协议监听=6
-        assertEquals(5, FeatureGate.visibleToolCount(3, false));
-        assertEquals(6, FeatureGate.visibleToolCount(3, true));
+        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 release 有 6 个工具（含移民/迁城）；debug 额外协议监听=7
+        assertEquals(6, FeatureGate.visibleToolCount(3, false));
+        assertEquals(7, FeatureGate.visibleToolCount(3, true));
         assertEquals("T2 仍无任何可用工具", 0, FeatureGate.visibleToolCount(2, false));
     }
 
@@ -258,7 +308,8 @@ public class FeatureGateTest {
         assertTrue(FeatureGate.reasonText(FeatureGate.Feature.ENEMY_WATCH).contains("高级会员"));
         assertTrue("守护盟友已实现→需高级会员", FeatureGate.reasonText(
                 FeatureGate.Feature.GUARDIAN).contains("高级会员"));
-        assertTrue(FeatureGate.reasonText(FeatureGate.Feature.MOVE_CITY).contains("尚未开放"));
+        assertTrue("迁城已实现→需高级会员", FeatureGate.reasonText(
+                FeatureGate.Feature.MOVE_CITY).contains("高级会员"));
         assertEquals("T1 功能无等级门槛，不应有提示文案",
                 "", FeatureGate.reasonText(FeatureGate.Feature.ACCOUNT_START));
     }

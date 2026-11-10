@@ -142,8 +142,10 @@ public final class FormationEntryCard {
             UiStyle.press(bindRow);
             bindRow.setOnClickListener(v -> {
                 try {
+                    String curMode = FormationStore.fnMode(act, fpid, sid, fnId);
+                    long[] curIds = FormationStore.fnFormationIds(act, fpid, sid, fnId);
                     com.carlos.vault.daily.FormationPicker.pickFormationFor(act, fpid, sid, uid,
-                            null,
+                            null, curMode, curIds,
                             (mode, ids, inf, lanc, mark, ratios) -> {
                                 if (FormationStore.MODE_ROLE.equals(mode)) {
                                     FormationStore.saveFnMode(act, fpid, sid, fnId, mode);
@@ -251,10 +253,13 @@ public final class FormationEntryCard {
             if (id <= 0) {
                 value = "尚未选择编队";
             } else if (f == null) {
-                value = "#" + id + "（编队已删除，请重选）";
+                value = "编队已删除，请重选";
             } else {
+                // 2026-11-08（用户口径）：只展示编队名字，不展示 #9100000003 之类内部编号。
+                String fname = f.name == null ? "" : f.name.trim();
+                if (fname.isEmpty()) fname = "自定义编队";
                 value = "英雄 " + f.heroIds.size() + " 名 · " + soldiersOf(f)
-                        + " · 来源=指定#" + id;
+                        + " · 来源=" + fname;
             }
             line.setText(value);
         } else {

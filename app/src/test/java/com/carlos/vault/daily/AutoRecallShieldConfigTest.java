@@ -44,4 +44,20 @@ public class AutoRecallShieldConfigTest {
         assertNull(FnParams.validateTroopsMin("5000", "召回兵力阈值"));
         assertNull(FnParams.validateTroopsMin("10000000", "召回兵力阈值"));
     }
+
+    @Test
+    public void diamondBudget_rejectsEmptyNonNumericNegativeAndOverMax() {
+        assertEquals("请输入每日钻石预算（0=不购买）", FnParams.validateDiamondBudget(null));
+        assertEquals("请输入每日钻石预算（0=不购买）", FnParams.validateDiamondBudget("  "));
+        assertEquals("钻石预算必须是数字", FnParams.validateDiamondBudget("x"));
+        assertEquals("钻石预算不能为负数", FnParams.validateDiamondBudget("-1"));
+        assertEquals("钻石预算不能超过 100000 钻", FnParams.validateDiamondBudget("100001"));
+    }
+
+    @Test
+    public void diamondBudget_acceptsZeroDefaultAndBoundary() {
+        assertNull(FnParams.validateDiamondBudget("0"));
+        assertNull(FnParams.validateDiamondBudget("1200"));
+        assertNull(FnParams.validateDiamondBudget("100000"));
+    }
 }

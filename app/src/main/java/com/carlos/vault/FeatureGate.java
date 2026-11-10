@@ -99,9 +99,16 @@ public final class FeatureGate {
         // 2026-11-06 决策6 曾作为零引用死枚举删除；现服务端 registration/bootstrap API
         // 已上线（M3/M4b），App 端 UI 落地 → implemented=true 转正，从工具箱入口卡进入。
         ACCOUNT_FARM("account_farm", TIER_PREMIUM, true, false, "起号"),
+        // 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：服务端 vault-server/migrant 包
+        // （14 个 action + 准备窗口 + 50ms 抢位 + 重登对账）+ App migrant 工作区。
+        // 危险动作（真实退盟/召回道具 800 钻/真实迁移）在页面内均有二次确认；活动窗口由游戏决定。
+        IMMIGRATION("immigration", TIER_PREMIUM, true, false, "移民"),
+        // 迁城（T3，2026-11-06）：网页版迁城 1:1 复刻——服务端 movecity 引擎
+        // （12 种协议/立即批量/定时抢位/任务管理）+ App daily/movecity/MoveCityActivity。
+        // 入口在工具箱；旧服务端无 /v1/vault/movecity 端点时页内提示「服务端未升级」。
+        MOVE_CITY("move_city", TIER_PREMIUM, true, false, "迁城"),
 
         // ===== T3 高级会员：尚未实现（即使 T3 也隐藏，立项完成后再打开） =====
-        MOVE_CITY("move_city", TIER_PREMIUM, false, false, "迁城"),
         COORD_QUERY("coord_query", TIER_PREMIUM, false, false, "坐标查询"),
         RECHARGE_RECORD("recharge_record", TIER_PREMIUM, false, false, "充值记录"),
         BEHEMOTH_BATCH("behemoth_batch", TIER_PREMIUM, false, false, "巨兽批量"),
@@ -123,11 +130,14 @@ public final class FeatureGate {
         // ===== 调试/实测项（仅调试包可见，正式包一律不渲染） =====
         PROTOCOL_LOGGER("protocol_logger", TIER_BASIC, true, true, "协议监听");
 
-        // 2026-11-06 决策6：删除零引用死枚举（RANKING/RALLY_ATTACK/ACTIVITY_RANK/
-        // MATCH3/TROOP_RUSH/PET_RESET/IMMIGRATION/RECON_REPORT 及 PROTOCOL_PROBE）——
+        // 2026-11-06 决策6：删除零引用死枚举（RANKING/RALLY_ATTACK/ACCOUNT_FARM/ACTIVITY_RANK/
+        // MATCH3/TROOP_RUSH/PET_RESET/RECON_REPORT 及 PROTOCOL_PROBE）——
         // 历史规划中功能的占位登记，生产代码零引用；PROTOCOL_PROBE 实际由 debugBuild 分支控制。
-        // 其中 ACCOUNT_FARM 已于 2026-11-07 随 M5 起号立项恢复（见上方枚举），其余仍按需
-        // 重新登记，不要凭空恢复。
+        // 立项后按需重新登记，不要凭空恢复。
+        // 2026-11-07 例外：IMMIGRATION 已按立项实现（服务端 migrant 包 + App migrant 工作区），
+        // 故保留在上方「T3 已实现」区（implemented=true），不属于死枚举。
+        // 2026-11-07 例外2：ACCOUNT_FARM 已按立项实现（起号：服务端 registration/bootstrap +
+        // App bootstrap 工作区），同样保留在上方「T3 已实现」区（implemented=true）。
 
         /** 稳定 key（日志/状态/document 用，不随中文名变化）。 */
         public final String key;
@@ -357,6 +367,8 @@ public final class FeatureGate {
     /**
      * 工具箱当前角色/构建/矩阵下的可用工具数（release 下 T3 起号 + 敌情监控 + 真机监控 +
      * 观察点 + 真机抓包；debug 包额外协议监听）。用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
+     * 工具箱当前角色/构建/矩阵下的可用工具数（release 下 T3 敌情监控 + 真机监控 + 观察点 +
+     * 真机抓包 + 迁城；debug 包额外协议监听）。用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
      */
     public static int visibleToolCount(Context ctx) {
         int n = 0;
@@ -365,8 +377,30 @@ public final class FeatureGate {
         if (visible(ctx, Feature.DEV_MONITOR)) n++;
         if (visible(ctx, Feature.WATCHPOINT)) n++;
         if (visible(ctx, Feature.PROTO_CAPTURE)) n++;
+        if (visible(ctx, Feature.MOVE_CITY)) n++;
         if (visible(ctx, Feature.PROTOCOL_LOGGER)) n++;
+        // 2026-11-07 审查 P1-1：生产走本 Context 版，此前只有 deprecated 纯函数版计入移民，
+        // 导致「工具箱可用工具数」与实际渲染不一致（移民卡在、计数却不算它）。
+        if (visible(ctx, Feature.IMMIGRATION)) n++;
         return n;
+    }
+
+    /**
+     * 工具箱是否至少有一个可用工具（2026-11-07 审查 P1-2）。
+     *
+     * <p>ToolBoxActivity.onCreate 的「防旁路」判断必须与本页实际渲染的工具集**同源**，
+     * 否则会出现「渲染了卡片但被防旁路挡下」或「放行了却渲染空壳」。
+     * 抽成一个方法后，onCreate 与 {@link #visibleToolCount(Context)} 共用同一份清单。
+     */
+    public static boolean anyToolVisible(Context ctx) {
+        return visible(ctx, Feature.ACCOUNT_FARM)
+                || visible(ctx, Feature.ENEMY_WATCH)
+                || visible(ctx, Feature.DEV_MONITOR)
+                || visible(ctx, Feature.WATCHPOINT)
+                || visible(ctx, Feature.PROTO_CAPTURE)
+                || visible(ctx, Feature.PROTOCOL_LOGGER)
+                || visible(ctx, Feature.IMMIGRATION)
+                || visible(ctx, Feature.MOVE_CITY);
     }
 
     /** 纯函数版本（无矩阵；保留给单测）。 */
@@ -378,7 +412,9 @@ public final class FeatureGate {
         if (visible(Feature.DEV_MONITOR, tier, false, null, debugBuild)) n++;
         if (visible(Feature.WATCHPOINT, tier, false, null, debugBuild)) n++;
         if (visible(Feature.PROTO_CAPTURE, tier, false, null, debugBuild)) n++;
+        if (visible(Feature.MOVE_CITY, tier, false, null, debugBuild)) n++;
         if (visible(Feature.PROTOCOL_LOGGER, tier, false, null, debugBuild)) n++;
+        if (visible(Feature.IMMIGRATION, tier, false, null, debugBuild)) n++;   // 2026-11-06 移民
         return n;
     }
 }

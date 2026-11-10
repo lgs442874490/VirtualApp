@@ -46,13 +46,17 @@ public class MarchCoordinatorTest {
             try {
                 behemoth.set(c.tryAcquire("behemoth", 1000)); // MARCH 写
                 held.countDown();
-                Thread.sleep(600);
+                // 2026-11-07 修复 flaky：原 600ms 窗口与本用例三段 tryLock（150+100+100ms）
+                // 余量过小（GC/JIT 抖动即可超窗 → arena 拿到锁 → 误报"未被挡"）。
+                // 持锁 1200ms 留足余量；被测语义（写锁互斥）不变。
+                Thread.sleep(1200);
                 behemoth.get().close();
             } catch (Exception ignored) {
             }
         });
         t.start();
         held.await();
+        assertNotNull("前置：behemoth 必须成功持有 MARCH 写锁", behemoth.get());
 
         long begin = System.currentTimeMillis();
         assertNull("behemoth 持 MARCH 写锁期间 gather(读) 必须超时让出",
@@ -60,7 +64,9 @@ public class MarchCoordinatorTest {
         long elapsed = System.currentTimeMillis() - begin;
         assertTrue("应在超时上限附近返回，而不是立即失败或死等", elapsed >= 100 && elapsed < 2000);
         assertNull(c.tryAcquire("hunt", 100));
-        assertNull("arena 需要 MARCH 写，同样被挡", c.tryAcquire("arena", 100));
+        long t2 = System.currentTimeMillis() - begin;
+        assertNull("arena 需要 MARCH 写，同样被挡（累计 " + t2 + "ms，窗口内应仍持锁）",
+                c.tryAcquire("arena", 100));
 
         t.join();
         // 释放后可再获取

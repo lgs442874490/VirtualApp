@@ -813,7 +813,9 @@ public final class FormationCatalog {
         Meta meta = meta(engine);
 
         // 英雄：hero_init 未到/为空时沿用旧目录（防「先空后满」把好目录冲掉）
-        List<Hero> heroes = heroesOf(engine.notifyData("notify_hero_init"));
+        // 2026-11-09：英雄实力按网页版 HeroPowerCatalog 计算（等级/星级/技能/装备/专武），
+        // 装备从 notify_equipment_info（登录全量）与 notify_equipment_update（增量）合并。
+        List<Hero> heroes = heroesOf(engine.notifyData("notify_hero_init"), equipmentByHero(engine));
         if (heroes.isEmpty() && prev != null && !prev.heroes.isEmpty()) {
             heroes = prev.heroes;
         } else {
@@ -933,6 +935,52 @@ public final class FormationCatalog {
         return out;
     }
 
+    /** 装备推送 → 英雄 id → 装备明细列表（登录全量 info + 增量 update 合并；uid 覆盖）。 */
+    @SuppressWarnings("unchecked")
+    static Map<Long, List<Map<String, Object>>> equipmentByHero(WjdrEngine engine) {
+        Map<Long, List<Map<String, Object>>> out = new java.util.LinkedHashMap<>();
+        if (engine == null) return out;
+        Map<Long, Map<String, Object>> equipByUid = new java.util.LinkedHashMap<>();
+        for (String proto : new String[]{"notify_equipment_info", "notify_equipment_update"}) {
+            Object raw;
+            try {
+                raw = engine.notifyData(proto);
+            } catch (Throwable t) {
+                continue;
+            }
+            Map<String, Object> root = Exec.mapOf(raw);
+            if (root == null) continue;
+            Object detail = root.get("equip_detail");
+            if (detail == null) detail = root.get("detail");
+            Map<String, Object> details = Exec.mapOf(detail);
+            if (details == null) continue;
+            // 增量帧可能是单件明细（{uid,eid,hid,slv,rlv,...}）而非 uid→明细映射
+            if (details.containsKey("uid") || details.containsKey("eid")) {
+                long singleUid = Exec.longOf(details.get("uid"));
+                if (singleUid > 0L) equipByUid.put(singleUid, details);
+                continue;
+            }
+            for (Map.Entry<String, Object> e : details.entrySet()) {
+                Map<String, Object> d = Exec.mapOf(e.getValue());
+                if (d == null) continue;
+                long uid = Exec.longOf(d.get("uid"));
+                if (uid <= 0L) {
+                    try {
+                        uid = Long.parseLong(e.getKey());
+                    } catch (Throwable ignored) {
+                    }
+                }
+                if (uid > 0L) equipByUid.put(uid, d);
+            }
+        }
+        for (Map<String, Object> d : equipByUid.values()) {
+            long hid = Exec.longOf(d.get("hid"));
+            if (hid <= 0L) continue;
+            out.computeIfAbsent(hid, k -> new java.util.ArrayList<>()).add(d);
+        }
+        return out;
+    }
+
     /**
      * 解析英雄推送（防御式，支持 {@code notify_hero_init} 三种实证形状）：
      * ① {@code {"50022.0":{id,name,lv,...}}}；② {@code {"data":[{id,...}]}}；
@@ -940,6 +988,13 @@ public final class FormationCatalog {
      */
     @SuppressWarnings("unchecked")
     static List<Hero> heroesOf(Map<String, Object> heroInit) {
+        return heroesOf(heroInit, null);
+    }
+
+    /** 英雄目录（2026-11-09）：带装备明细 → 计算英雄实力（power）。 */
+    @SuppressWarnings("unchecked")
+    static List<Hero> heroesOf(Map<String, Object> heroInit,
+                               Map<Long, List<Map<String, Object>>> equipByHero) {
         List<Hero> out = new ArrayList<>();
         if (heroInit == null) return out;
         Object data = heroInit.get("data");
@@ -963,7 +1018,10 @@ public final class FormationCatalog {
             }
         }
         for (Map<String, Object> m : rows) {
-            Hero h = heroOf(m);
+            long hid = Exec.longOf(m.get("id"));
+            if (hid <= 0) hid = Exec.longOf(m.get("hero_id"));
+            List<Map<String, Object>> equip = equipByHero == null ? null : equipByHero.get(hid);
+            Hero h = heroOf(m, equip);
             if (h != null) out.add(h);
         }
         out.sort(HERO_STRENGTH);
@@ -971,6 +1029,10 @@ public final class FormationCatalog {
     }
 
     private static Hero heroOf(Map<String, Object> m) {
+        return heroOf(m, null);
+    }
+
+    private static Hero heroOf(Map<String, Object> m, List<Map<String, Object>> equipment) {
         if (m == null) return null;
         long id = Exec.longOf(m.get("id"));
         if (id <= 0) id = Exec.longOf(m.get("hero_id"));
@@ -982,6 +1044,15 @@ public final class FormationCatalog {
         long star = firstLong(m, "star", "star_lv", "starLevel");
         long power = firstLong(m, "power", "fight_num", "fight_capacity",
                 "fight", "fight_power", "combat_power", "power_value");
+        // 2026-11-09：协议无战力字段 → 用网页版 HeroPowerCatalog 公式估算（含装备/专武）；
+        // 协议若显式给了 power 则保留协议值（HeroPowerCatalog.power 也会优先返回显式值）。
+        if (power <= 0L) {
+            try {
+                long computed = HeroPowerCatalog.power(m, equipment);
+                if (computed > 0L) power = computed;
+            } catch (Throwable ignored) {
+            }
+        }
         String status = firstString(m, "status", "state");
         long trainingLev = firstLong(m, "training_lev", "trainingLev");
         long capLevel = Math.max(level, trainingLev);   // 容量按有效等级（同 MarchCapacityCalculator）

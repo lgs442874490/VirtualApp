@@ -144,7 +144,7 @@ public class NotifySettingsActivity extends Activity {
         box.addView(masterCard);
 
         // —— 监视名单 ——
-        box.addView(UiStyle.sectionTitle(this, "监视名单"));
+        box.addView(UiStyle.sectionTitle(this, "关注玩家（FID）"));
         targetsBox = new LinearLayout(this);
         targetsBox.setOrientation(LinearLayout.VERTICAL);
         box.addView(targetsBox);
@@ -249,7 +249,20 @@ public class NotifySettingsActivity extends Activity {
         eventsBox = new LinearLayout(this);
         eventsBox.setOrientation(LinearLayout.VERTICAL);
         box.addView(eventsBox);
-        box.addView(hint("展示服务器最近记录（环形 200 条，含行为/发起人/兵力/结算）；点条目查看详情。下拉刷新重新拉取。"));
+        box.addView(hint("展示服务器最近记录（环形 500 条，含行为/发起人/兵力/结算与观察点告警）；点条目查看详情。"));
+
+        // —— 高级：观察点扫描参数 / 关注区域（旧「观察点」页，入口收进这里） ——
+        box.addView(UiStyle.sectionTitle(this, "高级"));
+        LinearLayout advLink = UiComponents.card(this);
+        advLink.setOrientation(LinearLayout.VERTICAL);
+        advLink.setPadding(dp(14), dp(12), dp(14), dp(12));
+        advLink.addView(UiComponents.text(this, "观察点扫描参数 / 关注区域", 13.5f, UiStyle.INK, true));
+        advLink.addView(UiComponents.caption(this,
+                "扫描间隔、保护矩形、友盟简称、迁城跟踪（旧「观察点」页）", UiStyle.INK2));
+        UiStyle.press(advLink);
+        advLink.setOnClickListener(v -> startActivity(
+                new android.content.Intent(this, com.carlos.vault.WatchpointActivity.class)));
+        box.addView(advLink);
 
         return page.root;
     }
@@ -331,6 +344,14 @@ public class NotifySettingsActivity extends Activity {
             }
             renderWatchData(data);
         });
+        // P4：关注玩家走新 fid 名单（旧的 uid 名单仅作迁移期兜底）
+        migrateLocalSeeds();
+        VaultSync.alertList(this, (code, message, data) -> {
+            if (code == 0 && data != null) {
+                runOnUiThread(() -> renderAlertEntries(data.optJSONArray("entries"),
+                        data.optJSONArray("unresolved")));
+            }
+        });
         refreshEvents();
     }
 
@@ -384,21 +405,10 @@ public class NotifySettingsActivity extends Activity {
         return sb.toString();
     }
 
-    /** 名单 + 配置渲染（回调线程 → UI 线程）。 */
+    /** 配置渲染（回调线程 → UI 线程）。名单由 renderAlertEntries（新 fid 名单）单独渲染。 */
     private void renderWatchData(JSONObject data) {
-        JSONArray targets = data.optJSONArray("targets");
         JSONObject config = data.optJSONObject("config");
         runOnUiThread(() -> {
-            targetUidOrder.clear();
-            targetsBox.removeAllViews();
-            int n = targets == null ? 0 : targets.length();
-            if (n == 0) {
-                targetsBox.addView(hint("暂无监视目标 —— 用下方卡片添加（填游戏内 FID，见好友/战报页）。"));
-            }
-            for (int i = 0; i < n; i++) {
-                JSONObject t = targets.optJSONObject(i);
-                if (t != null) targetsBox.addView(targetRow(t));
-            }
             if (config != null) {
                 watchSw.setOn(config.optBoolean("enabled", false));
                 wecomSw.setOn(config.optBoolean("wecomEnabled", true));
@@ -415,6 +425,136 @@ public class NotifySettingsActivity extends Activity {
                 }
             }
         });
+    }
+
+    /** 关注玩家渲染（P4：fid 主键；覆盖旧 uid 名单视图）。 */
+    private void renderAlertEntries(JSONArray entries, JSONArray unresolved) {
+        if (targetsBox == null) return;
+        targetUidOrder.clear();
+        targetsBox.removeAllViews();
+        int n = entries == null ? 0 : entries.length();
+        int un = unresolved == null ? 0 : unresolved.length();
+        if (n == 0 && un == 0) {
+            targetsBox.addView(hint("暂无关注玩家 —— 用下方卡片填游戏内 FID 添加。"));
+            return;
+        }
+        for (int i = 0; i < n; i++) {
+            JSONObject e = entries.optJSONObject(i);
+            if (e != null) targetsBox.addView(alertRow(e));
+        }
+        // 迁移期反查不到 fid 的旧监视目标：仍在监控，页面提示补填（不能装作没这条）
+        for (int i = 0; i < un; i++) {
+            JSONObject u = unresolved.optJSONObject(i);
+            if (u == null) continue;
+            String raw = u.optString("legacyRaw", "");
+            LinearLayout row = UiComponents.card(this);
+            row.setOrientation(LinearLayout.VERTICAL);
+            row.setPadding(dp(12), dp(8), dp(12), dp(8));
+            LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+            rlp.bottomMargin = dp(8);
+            row.setLayoutParams(rlp);
+            TextView t1 = new TextView(this);
+            t1.setText("旧监视目标（待补填 FID）");
+            t1.setTextSize(13f);
+            t1.setTypeface(Typeface.DEFAULT_BOLD);
+            t1.setTextColor(UiStyle.WARN_INK);
+            row.addView(t1);
+            TextView t2 = new TextView(this);
+            t2.setText((raw.isEmpty() ? "旧 uid" : raw)
+                    + " · 仍在监控；请在下方填对应 FID 重新添加");
+            t2.setTextSize(11.5f);
+            t2.setTextColor(UiStyle.INK2);
+            row.addView(t2);
+            targetsBox.addView(row);
+        }
+    }
+
+    /** 一次性：App 本地敌情 seed 上报到新名单（默认暂停，页面确认后启用）。 */
+    private void migrateLocalSeeds() {
+        if (com.carlos.vault.daily.EnemyWatchStore.migratedToAlert(this)) return;
+        java.util.List<com.carlos.vault.daily.EnemyWatchStore.Entry> local =
+                com.carlos.vault.daily.EnemyWatchStore.entries(this);
+        if (local == null || local.isEmpty()) {
+            com.carlos.vault.daily.EnemyWatchStore.setMigratedToAlert(this, true);
+            return;
+        }
+        java.util.List<Map<String, Object>> targets = new ArrayList<>();
+        for (com.carlos.vault.daily.EnemyWatchStore.Entry e : local) {
+            Map<String, Object> t = new HashMap<>();
+            t.put("uid", e.uid);
+            t.put("note", e.note == null ? "" : e.note);
+            t.put("kid", String.valueOf(e.kid));
+            targets.add(t);
+        }
+        com.carlos.vault.daily.EnemyWatchStore.setMigratedToAlert(this, true);
+        VaultSync.alertBulk(this, targets, (code, message, data) -> runOnUiThread(() -> {
+            if (code == 0) {
+                loadAll();
+            } else {
+                com.carlos.vault.daily.EnemyWatchStore.setMigratedToAlert(this, false);
+            }
+        }));
+    }
+
+    /** 单个关注玩家行：备注/昵称 + FID + 解析状态 + 启停 + 删除。 */
+    private View alertRow(JSONObject e) {
+        final String fid = e.optString("fid", "");
+        String note = e.optString("note", "");
+        String nick = e.optString("nick", "");
+        String health = e.optString("health", "UNRESOLVED");
+        long uid = e.optLong("uid", 0L);
+        String display = !note.isEmpty() ? note : (!nick.isEmpty() ? nick : "FID " + fid);
+
+        LinearLayout row = UiComponents.card(this);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(12), dp(8), dp(4), dp(8));
+        LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        rlp.bottomMargin = dp(8);
+        row.setLayoutParams(rlp);
+        LinearLayout mid = new LinearLayout(this);
+        mid.setOrientation(LinearLayout.VERTICAL);
+        TextView name = new TextView(this);
+        name.setText(display);
+        name.setTextSize(13.5f);
+        name.setTypeface(Typeface.DEFAULT_BOLD);
+        name.setTextColor(e.optBoolean("enabled", true) ? UiStyle.INK : UiStyle.INK3);
+        mid.addView(name);
+        TextView sub = new TextView(this);
+        sub.setText("FID " + fid + (uid > 0 ? " · uid " + uid : "")
+                + ("OK".equals(health) ? "" : " · 待解析"));
+        sub.setTextSize(11.5f);
+        sub.setTextColor("OK".equals(health) ? UiStyle.INK2 : UiStyle.WARN_INK);
+        mid.addView(sub);
+        row.addView(mid, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1));
+        final UiStyle.Switch[] swBox = new UiStyle.Switch[1];
+        swBox[0] = new UiStyle.Switch(this, e.optBoolean("enabled", true), () -> {
+            boolean on = swBox[0].isOn();
+            VaultSync.alertUpdate(this, fid, null, on, null);
+            toast("已" + (on ? "启用" : "停用") + "关注");
+        });
+        row.addView(swBox[0]);
+        TextView del = new TextView(this);
+        del.setText("删除");
+        del.setTextSize(12);
+        del.setTextColor(UiStyle.ERR_INK);
+        del.setPadding(dp(12), dp(8), dp(8), dp(8));
+        UiStyle.press(del);
+        del.setOnClickListener(v -> new AlertDialog.Builder(this,
+                        AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                .setTitle("删除关注")
+                .setMessage("不再关注 " + display + "（FID " + fid + "）？")
+                .setPositiveButton("删除", (dg, w) -> VaultSync.alertRemove(this, fid,
+                        (code, message, data) -> runOnUiThread(() -> {
+                            toast(code == 0 ? "已删除" : "删除失败：" + message);
+                            loadAll();
+                        })))
+                .setNegativeButton("取消", null).show());
+        row.addView(del);
+        return row;
     }
 
     /** 单个监视目标行：显示名 + uid@kid + 开关 + 删除。 */
@@ -481,56 +621,89 @@ public class NotifySettingsActivity extends Activity {
 
     /** 最近事件列表（取最近 20 条倒序展示）。 */
     private void refreshEvents() {
-        VaultSync.fetchEvents(this, 0, (code, message, data) -> {
-            if (code != 0 || data == null) return;
+        // P4：游标分页拉取（服务端单页 100，最多 5 页=500 条），倒序展示最近 100 条。
+        loadEventPages(0L, new JSONArray(), 0);
+    }
+
+    private void loadEventPages(long cursor, JSONArray acc, int pages) {
+        if (pages >= 5) {
+            renderEventRows(acc);
+            return;
+        }
+        VaultSync.fetchEvents(this, cursor, (code, message, data) -> {
+            if (code != 0 || data == null) {
+                renderEventRows(acc);
+                return;
+            }
             JSONArray events = data.optJSONArray("events");
-            runOnUiThread(() -> {
-                eventsBox.removeAllViews();
-                if (events == null || events.length() == 0) {
-                    eventsBox.addView(hint("暂无事件记录 —— 命中监视敌人动作后这里会出现时间线。"));
-                    return;
+            if (events == null || events.length() == 0) {
+                renderEventRows(acc);
+                return;
+            }
+            for (int i = 0; i < events.length(); i++) {
+                JSONObject e = events.optJSONObject(i);
+                if (e != null) acc.put(e);
+            }
+            JSONObject last = events.optJSONObject(events.length() - 1);
+            long lastSeq = last == null ? 0L : last.optLong("seq", 0L);
+            long ack = data.optLong("ackCursor", 0L);
+            if (lastSeq <= 0L || lastSeq >= ack) {
+                renderEventRows(acc);
+                return;
+            }
+            loadEventPages(lastSeq, acc, pages + 1);
+        });
+    }
+
+    private void renderEventRows(JSONArray events) {
+        runOnUiThread(() -> {
+            eventsBox.removeAllViews();
+            if (events == null || events.length() == 0) {
+                eventsBox.addView(hint("暂无事件记录 —— 命中关注玩家动作后这里会出现时间线。"));
+                return;
+            }
+            int from = Math.max(0, events.length() - 100);
+            for (int i = events.length() - 1; i >= from; i--) {
+                JSONObject e = events.optJSONObject(i);
+                if (e == null) continue;
+                JSONObject ep = e.optJSONObject("endpoint");
+                boolean hasXY = ep != null;
+                LinearLayout row = UiComponents.card(this);
+                row.setOrientation(LinearLayout.VERTICAL);
+                row.setPadding(dp(12), dp(8), dp(12), dp(8));
+                LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                rlp.bottomMargin = dp(6);
+                row.setLayoutParams(rlp);
+                TextView line = new TextView(this);
+                String text = e.optString("text", "");
+                line.setText(text.isEmpty()
+                        ? WarNotifyGate.formatEventRow(e.optLong("detectedAt", 0),
+                                e.optString("action", ""), e.optString("targetName", ""),
+                                hasXY, hasXY ? ep.optInt("x") : 0, hasXY ? ep.optInt("y") : 0,
+                                e.optLong("sid", 0))
+                        : WarNotifyGate.formatTextRow(e.optLong("detectedAt", 0), text));
+                line.setTextSize(12.5f);
+                line.setTextColor(UiStyle.INK);
+                row.addView(line);
+                // v4.1.8：第二行展示新字段（行为/兵力/ETA 或 结算/破城）
+                String sub = WarNotifyGate.formatEventSub(e);
+                if (!sub.isEmpty()) {
+                    TextView subV = new TextView(this);
+                    subV.setText(sub);
+                    subV.setTextSize(11f);
+                    subV.setPadding(0, dp(2), 0, 0);
+                    subV.setTextColor(UiStyle.INK2);
+                    row.addView(subV);
                 }
-                int from = Math.max(0, events.length() - 20);
-                for (int i = events.length() - 1; i >= from; i--) {
-                    JSONObject e = events.optJSONObject(i);
-                    if (e == null) continue;
-                    JSONObject ep = e.optJSONObject("endpoint");
-                    boolean hasXY = ep != null;
-                    LinearLayout row = UiComponents.card(this);
-                    row.setOrientation(LinearLayout.VERTICAL);
-                    row.setPadding(dp(12), dp(8), dp(12), dp(8));
-                    LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                    rlp.bottomMargin = dp(6);
-                    row.setLayoutParams(rlp);
-                    TextView line = new TextView(this);
-                    line.setText(WarNotifyGate.formatEventRow(e.optLong("detectedAt", 0),
-                            e.optString("action", ""), e.optString("targetName", ""),
-                            hasXY, hasXY ? ep.optInt("x") : 0, hasXY ? ep.optInt("y") : 0,
-                            e.optLong("sid", 0)));
-                    line.setTextSize(12.5f);
-                    line.setTextColor(UiStyle.INK);
-                    row.addView(line);
-                    // v4.1.8：第二行展示新字段（行为/兵力/ETA 或 结算/破城）
-                    String sub = WarNotifyGate.formatEventSub(e);
-                    if (!sub.isEmpty()) {
-                        TextView subV = new TextView(this);
-                        subV.setText(sub);
-                        subV.setTextSize(11f);
-                        subV.setPadding(0, dp(2), 0, 0);
-                        subV.setTextColor(UiStyle.INK2);
-                        row.addView(subV);
-                    }
-                    // 条目可点开详情（纯文本弹窗）
-                    UiStyle.press(row);
-                    row.setOnClickListener(v -> new AlertDialog.Builder(this,
-                                    AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                            .setTitle("事件详情")
-                            .setMessage(WarNotifyGate.formatEventDetail(e))
-                            .setPositiveButton("关闭", null).show());
-                    eventsBox.addView(row);
-                }
-            });
+                UiStyle.press(row);
+                row.setOnClickListener(v -> new AlertDialog.Builder(this,
+                                AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
+                        .setTitle("事件详情")
+                        .setMessage(WarNotifyGate.formatEventDetail(e))
+                        .setPositiveButton("关闭", null).show());
+                eventsBox.addView(row);
+            }
         });
     }
 
@@ -723,33 +896,27 @@ public class NotifySettingsActivity extends Activity {
         if (addTargetInFlight) return;
         String fid = text(addUidEt);
         if (!fid.matches("\\d+") || Long.parseLong(fid) <= 0) {
-            toast("FID 必须为大于 0 的数字（游戏内玩家ID）");
+            toast("FID 必须为大于 0 的数字（游戏领主档案里的那串数字）");
             return;
         }
         addTargetInFlight = true;
         addTargetBtn.setEnabled(false);
         addTargetBtn.setAlpha(0.5f);
-        List<String> targets = scopeList();
-        for (int i = 1; i < targets.size(); i++) {
-            VaultSync.watchAdd(this, targets.get(i), fid, text(addNameEt), text(addKidEt),
-                    text(addNoteEt), null);
-        }
-        VaultSync.watchAdd(this, fpid, fid, text(addNameEt), text(addKidEt), text(addNoteEt),
-                (code, message, data) -> runOnUiThread(() -> {
-                    addTargetInFlight = false;
-                    addTargetBtn.setEnabled(true);
-                    addTargetBtn.setAlpha(1f);
-                    if (code == 0) {
-                        toast("已添加监视");
-                        addUidEt.setText("");
-                        addNameEt.setText("");
-                        addKidEt.setText("");
-                        addNoteEt.setText("");
-                        loadAll();
-                    } else {
-                        toast("失败：" + (message == null ? String.valueOf(code) : message));
-                    }
-                }));
+        VaultSync.alertAdd(this, fid, text(addNoteEt), (code, message, data) -> runOnUiThread(() -> {
+            addTargetInFlight = false;
+            addTargetBtn.setEnabled(true);
+            addTargetBtn.setAlpha(1f);
+            if (code == 0) {
+                toast("已添加关注");
+                addUidEt.setText("");
+                addNameEt.setText("");
+                addKidEt.setText("");
+                addNoteEt.setText("");
+                loadAll();
+            } else {
+                toast("失败：" + (message == null ? String.valueOf(code) : message));
+            }
+        }));
     }
 
     private void saveWecom() {

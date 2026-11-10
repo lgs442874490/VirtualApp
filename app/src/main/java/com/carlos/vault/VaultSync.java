@@ -64,6 +64,8 @@ public final class VaultSync {
     private static final String PATH_ACCOUNT_ACTION = "/v1/vault/account-action";
     private static final String PATH_GLOBAL_ACTION = "/v1/vault/global-action";
     private static final String PATH_WATCH = "/v1/vault/watch";
+    /** 告警中枢 P2/P4：fid 关注名单（服务端全局一份）。 */
+    private static final String PATH_ALERT = "/v1/vault/alert";
     /** 观察点配置（批次 B 2026-10-30；服务端写 data/watchpoint.json，引擎 5s 热载）。 */
     private static final String PATH_WATCHPOINT = "/v1/vault/watchpoint";
     private static final String PATH_EVENTS = "/v1/vault/events";
@@ -72,6 +74,8 @@ public final class VaultSync {
     private static final String PATH_REGISTRATION = "/v1/vault/registration";
     /** 起号批量与回流（M4b/M5 2026-11-07）：action 分发（import / batch-* / referral-* / single-*）。 */
     private static final String PATH_BOOTSTRAP = "/v1/vault/bootstrap";
+    /** 迁城（2026-11-06 网页版 1:1 复刻）：服务端 movecity 引擎统一动作端点。 */
+    private static final String PATH_MOVECITY = "/v1/vault/movecity";
     private static final String OP_SYNC = "vaultSync";
     private static final String OP_TOKEN = "vaultToken";
     /** 恢复读通道 OP：与写通道 vaultToken 分开，服务端按 op 绑定验签，互不串用。 */
@@ -86,6 +90,7 @@ public final class VaultSync {
     private static final String OP_ACCOUNT_ACTION = "vaultAccountAction";
     private static final String OP_GLOBAL_ACTION = "vaultGlobalAction";
     private static final String OP_WATCH = "vaultWatch";
+    private static final String OP_ALERT = "vaultAlert";
     private static final String OP_WATCHPOINT = "vaultWatchpoint";
     private static final String OP_EVENTS = "vaultEvents";
     private static final String OP_MONITOR = "vaultMonitor";
@@ -93,6 +98,7 @@ public final class VaultSync {
     private static final String OP_REGISTRATION = "vaultRegistration";
     /** 起号批量 op（与 vault-server guard 绑定验签，M4b 契约）。 */
     private static final String OP_BOOTSTRAP = "vaultBootstrap";
+    private static final String OP_MOVECITY = "vaultMovecity";
 
     /**
      * 本地回调码（非服务端业务码）：{@code /v1/vault/token/get} 回 code=0 但 data 缺非空
@@ -251,6 +257,17 @@ public final class VaultSync {
                     // 2026-10-20：sync 成功只代表 payload 被接收，会话重启异步——
                     // 此处不再清 dirty；改由 learnServerRole 收到与本地一致的 activeUid
                     // 时按 fpid 清除（另有 TTL 兜底），避免旧快照把刚切的角色回滚。
+                    // 2026-11-08：服务端接受同步后清空「待删除账号」列表；被骤减保护拒绝时保留，
+                    // 下次（带 deletedFpids）重试仍可放行。
+                    try {
+                        boolean rejected = data != null
+                                && (data.optBoolean("emptyRejected", false)
+                                    || data.optBoolean("shrinkRejected", false));
+                        if (code == 0 && !rejected && data != null && data.optInt("accepted", 0) > 0) {
+                            new AccountStore(app).clearPendingDeleted();
+                        }
+                    } catch (Throwable ignored) {
+                    }
                     if (done != null) done.onResult(code, message, data);
                 }));
     }
@@ -981,6 +998,46 @@ public final class VaultSync {
     }
 
     /** 监视名单 + 全局通知配置（list）。回调在 OkHttp 线程。 */
+    // ---------- 告警中枢 P4：fid 关注名单（新接口；旧 watch* 迁移期并存） ----------
+
+    public static void alertList(Context ctx, Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "list");
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-list", done);
+    }
+
+    public static void alertAdd(Context ctx, String fid, String note, Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "add");
+        f.put("fid", fid == null ? "" : fid.trim());
+        f.put("note", note == null ? "" : note.trim());
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-add", done);
+    }
+
+    public static void alertUpdate(Context ctx, String fid, String note, Boolean enabled, Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "update");
+        f.put("fid", fid == null ? "" : fid.trim());
+        if (note != null) f.put("note", note);
+        if (enabled != null) f.put("enabled", enabled);
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-update", done);
+    }
+
+    public static void alertBulk(Context ctx, java.util.List<Map<String, Object>> targets,
+                                 Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "bulk");
+        f.put("targets", targets);
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-bulk", done);
+    }
+
+    public static void alertRemove(Context ctx, String fid, Callback done) {
+        Map<String, Object> f = signedCommonFields(ctx);
+        f.put("action", "remove");
+        f.put("fid", fid == null ? "" : fid.trim());
+        postSigned(ctx, PATH_ALERT, OP_ALERT, f, "vault-alert-remove", done);
+    }
+
     public static void watchList(Context ctx, String fpid, Callback done) {
         watchPost(ctx, watchFields("list", fpid), done, "vault-watch-list");
     }
@@ -1421,6 +1478,107 @@ public final class VaultSync {
         return AccountPoolCache.isUnsupported(ctx);
     }
 
+    // ---------- 迁城（2026-11-06 网页版 1:1 复刻：POST /v1/vault/movecity，op=vaultMovecity） ----------
+
+    /**
+     * 迁城统一动作通道。请求字段扁平（action/protocol/accountsJson/executeAt/advanceMillis/
+     * autoLogin/jobId/fpid），账号列表以 JSON 数组字符串 {@code accountsJson} 携带
+     * （与 syncFields/watchpointSet 同款「签名层只出现扁平标量」约定）。
+     *
+     * <p>服务端旧版本无此端点时：业务码 3002「服务端未启用迁城功能」或 HTTP 404 非 JSON
+     * → {@code code=-1} 且 message 含 "HTTP 404"，页面据此显示「服务端未升级」提示条。
+     * 未开服务器模式回调 {@code code=-1,message=server_mode_off}（与 watch/monitor 同口径）。
+     * 回调在 OkHttp 线程。
+     */
+    private static void movecityPost(Context ctx, Map<String, Object> fields, Callback done,
+                                     String threadName) {
+        final Context app = ctx.getApplicationContext();
+        if (!isServerMode(app)) {
+            if (done != null) done.onResult(-1, "server_mode_off", null);
+            return;
+        }
+        new Thread(() -> post(app, PATH_MOVECITY, OP_MOVECITY, fields, done), threadName).start();
+    }
+
+    private static Map<String, Object> movecityFields(String action) {
+        Map<String, Object> f = new TreeMap<>();
+        f.put("action", action);
+        return f;
+    }
+
+    /**
+     * 迁城协议表（action=protocols）：12 种迁城协议（label/proto/needs_point/needs_kid/
+     * required_item_id/item_shortage_code）。页面有同表硬编码兜底，本请求用于对齐服务端目录。
+     * 回调在 OkHttp 线程。
+     */
+    public static void movecityProtocols(Context ctx, Callback done) {
+        movecityPost(ctx, movecityFields("protocols"), done, "vault-movecity-protocols");
+    }
+
+    /**
+     * 立即迁城（action=execute，多账号批量）：每账号各带目标坐标，服务端并发执行后
+     * 异步聚合结果（客户端随后用 jobs/job 查询）。回调在 OkHttp 线程。
+     *
+     * @param protocol  协议 proto 名（如 req_world_move_city）
+     * @param accounts  账号数组 [{fpid,name,x,y,kid,selected}]
+     * @param autoLogin 账号离线时是否执行前自动上线（默认路径 false）
+     */
+    public static void movecityExecute(Context ctx, String protocol, JSONArray accounts,
+                                       boolean autoLogin, Callback done) {
+        Map<String, Object> f = movecityFields("execute");
+        f.put("protocol", protocol == null ? "" : protocol);
+        f.put("accountsJson", accounts == null ? "[]" : accounts.toString());
+        f.put("count", accounts == null ? 0 : accounts.length());
+        f.put("autoLogin", autoLogin);
+        movecityPost(ctx, f, done, "vault-movecity-execute");
+    }
+
+    /**
+     * 创建定时迁城（action=schedule，单账号）：executeAt 为北京时间
+     * {@code yyyy-MM-dd HH:mm:ss}；advanceMillis 提前释放量 0-100ms（服务端 clamp）。
+     * 回调在 OkHttp 线程。
+     */
+    public static void movecitySchedule(Context ctx, String protocol, JSONArray accounts,
+                                        String executeAt, int advanceMillis, boolean autoLogin,
+                                        Callback done) {
+        Map<String, Object> f = movecityFields("schedule");
+        f.put("protocol", protocol == null ? "" : protocol);
+        f.put("accountsJson", accounts == null ? "[]" : accounts.toString());
+        f.put("count", accounts == null ? 0 : accounts.length());
+        f.put("executeAt", executeAt == null ? "" : executeAt);
+        f.put("advanceMillis", Math.max(0, Math.min(100, advanceMillis)));
+        f.put("autoLogin", autoLogin);
+        movecityPost(ctx, f, done, "vault-movecity-schedule");
+    }
+
+    /** 任务列表（action=jobs）：{scheduled:[job], finished:[job]}。回调在 OkHttp 线程。 */
+    public static void movecityJobs(Context ctx, Callback done) {
+        movecityPost(ctx, movecityFields("jobs"), done, "vault-movecity-jobs");
+    }
+
+    /** 任务详情（action=job）：含逐次 attempt_details。回调在 OkHttp 线程。 */
+    public static void movecityJob(Context ctx, String jobId, Callback done) {
+        Map<String, Object> f = movecityFields("job");
+        f.put("jobId", jobId == null ? "" : jobId);
+        movecityPost(ctx, f, done, "vault-movecity-job");
+    }
+
+    /** 取消未开始的定时任务（action=cancel）。回调在 OkHttp 线程。 */
+    public static void movecityCancel(Context ctx, String jobId, Callback done) {
+        Map<String, Object> f = movecityFields("cancel");
+        f.put("jobId", jobId == null ? "" : jobId);
+        movecityPost(ctx, f, done, "vault-movecity-cancel");
+    }
+
+    /** 从定时任务移除账号（action=remove-account）。回调在 OkHttp 线程。 */
+    public static void movecityRemoveAccount(Context ctx, String jobId, String fpid,
+                                             Callback done) {
+        Map<String, Object> f = movecityFields("remove-account");
+        f.put("jobId", jobId == null ? "" : jobId);
+        f.put("fpid", fpid == null ? "" : fpid);
+        movecityPost(ctx, f, done, "vault-movecity-remove-account");
+    }
+
     // ---------- 状态缓存（UI 读） ----------
 
     /** 服务器回传的账号状态（无缓存/该号缺项返回 null）。 */
@@ -1478,7 +1636,12 @@ public final class VaultSync {
                 JSONArray roles = new JSONArray();
                 for (RoleStore.Role r : RoleStore.roles(ctx, a.fpid)) {
                     if (r.serverid <= 0) continue;
-                    String rid = store.getRoleSettings(a.fpid, r.serverid);
+                    // 角色级指纹（2026-11-08）：优先 sid:uid 键（同服多角色各自一台设备），
+                    // 旧数据回落 sid 键；服务端按 sid:uid 学习/派生，避免同设备互踢。
+                    String rid = store.getRoleSettings(a.fpid, r.serverid, r.uid);
+                    if (rid == null || rid.isEmpty()) {
+                        rid = store.getRoleSettings(a.fpid, r.serverid);
+                    }
                     // 任务开关（服务器按角色执行整轮的依据）
                     // 有效配置（2026-10-28 功能型 bug A/B）：稀疏/旧 map 必须用全部任务默认值
                     // 补齐后再整包上传，否则服务端读不到 barracks/intel/arena 等键会判「配置未启用」，
@@ -1526,6 +1689,12 @@ public final class VaultSync {
         }
         f.put("accountsJson", accounts.toString());
         f.put("count", accounts.length());
+        // 2026-11-08：显式删除的账号随 sync 上传，服务端骤减保护据此放行（防其它设备整库覆盖误删）。
+        try {
+            String deleted = new AccountStore(ctx).pendingDeletedFpidsJoined();
+            if (!deleted.isEmpty()) f.put("deletedFpids", deleted);
+        } catch (Throwable ignored) {
+        }
         return f;
     }
 
@@ -1559,6 +1728,32 @@ public final class VaultSync {
         f.put("pkg", ctx.getPackageName());
         f.put("appVersion", "vault-sync-1");
         return f;
+    }
+
+    // ---------- 通用签名通道（跨模块复用，2026-11-06 移民接入） ----------
+
+    /**
+     * 通用签名 POST：与 {@link #roleAction} 走**同一条**签名/信封通道。
+     *
+     * <p>存在的意义：签名密钥（{@code SECRET_OBF}/XOR key）、规范化格式、非 JSON 响应文案
+     * 全在本类唯一一份。若让业务模块（如 migrant）自行复制，密钥轮换时会静默失效且难排查，
+     * 属安全敏感的重复实现。
+     *
+     * <p>调用方：用 {@link #signedCommonFields(Context)} 取公共字段 → 补自己的业务字段 →
+     * 调用本方法。回调在 OkHttp 工作线程。
+     */
+    public static void postSigned(Context ctx, String path, String op,
+                                  Map<String, Object> fields, String threadName, Callback done) {
+        final Context app = ctx.getApplicationContext();
+        final Map<String, Object> f = fields == null
+                ? new TreeMap<String, Object>() : fields;
+        new Thread(() -> post(app, path, op, f, done),
+                threadName == null ? "vault-signed" : threadName).start();
+    }
+
+    /** 通用签名 POST 的公共字段（pkg/appVersion，与全部既有端点同口径）。 */
+    public static Map<String, Object> signedCommonFields(Context ctx) {
+        return commonFields(ctx.getApplicationContext());
     }
 
     // ---------- HTTP（签名 + 信封） ----------
@@ -1602,6 +1797,33 @@ public final class VaultSync {
             }
         } catch (Throwable t) {
             Log.w(TAG, "fetchText 失败 url=" + url + ": " + t.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 下载二进制响应体（DexPatch 补丁 dex 用）。
+     *
+     * <p>与 {@link #fetchText} 同一条客户端选择路径（生产 https 自签端点走 pin 客户端），
+     * 仅响应体按 byte[] 读取。
+     *
+     * @param ctx 仅用于语义占位（端点解析与客户端选择都在内部完成）
+     * @param url 绝对 URL
+     * @return 响应体字节；非 2xx / 网络异常返回 null
+     */
+    public static byte[] fetchBytes(Context ctx, String url) {
+        if (url == null || url.isEmpty()) return null;
+        try {
+            Request request = new Request.Builder().url(url).build();
+            try (Response response = clientFor(url).newCall(request).execute()) {
+                if (!response.isSuccessful()) {
+                    Log.w(TAG, "fetchBytes 非 2xx http=" + response.code() + " url=" + url);
+                    return null;
+                }
+                return response.body() == null ? null : response.body().bytes();
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "fetchBytes 失败 url=" + url + ": " + t.getMessage());
             return null;
         }
     }

@@ -677,9 +677,18 @@ public final class FormationStore {
         List<FormationModel> lib = formations(ctx, fpid, sid);
         String before = fingerprint(lib);
         int removed = removeLegacyBuiltIns(lib);
-        int created = PresetFormations.ensure(lib, catalogOf(ctx, fpid, sid, uid));
+        FormationCatalogStore cat = catalogOf(ctx, fpid, sid, uid);
+        int created = PresetFormations.ensure(lib, cat);
         if (removed > 0 || created > 0 || !before.equals(fingerprint(lib))) {
             writeModels(ctx, fpid, sid, lib, null);
+        }
+        try {
+            FormationModel bear = FormationRules.findById(lib, PresetFormations.ID_BEAR_TEAM);
+            android.util.Log.i("FormationStore", "ensurePresets sid=" + sid + " uid=" + uid
+                    + " catalogConfigured=" + (cat != null && cat.configured())
+                    + " catalogHeroes=" + (cat == null ? -1 : cat.heroOptions().size())
+                    + " created=" + created + " bear=" + (bear == null ? "null" : bear.heroIds));
+        } catch (Throwable ignored) {
         }
     }
 
@@ -908,6 +917,19 @@ public final class FormationStore {
             return new JSONObject(raw.trim());
         } catch (Throwable t) {
             return null;
+        }
+    }
+
+    /**
+     * 写入服务端直接回传的编队目录（2026-11-08：{@code formation.catalog-refresh} 返回
+     * {@code catalog}，避免再拉大响应 /state 导致超时）。
+     */
+    public static void writeCatalog(Context ctx, String fpid, long sid, String uid, String json) {
+        if (ctx == null || json == null || json.trim().isEmpty()) return;
+        try {
+            ctx.getSharedPreferences("daily_state", Context.MODE_PRIVATE).edit()
+                    .putString(catalogStateKey(fpid, sid, uid), json.trim()).apply();
+        } catch (Throwable ignored) {
         }
     }
 
@@ -1359,6 +1381,22 @@ public final class FormationStore {
                 }
             }
 
+            com.carlos.vault.daily.formation.FormationModel bearTeam =
+                    FormationRules.findById(lib, PresetFormations.ID_BEAR_TEAM);
+            try {
+                com.carlos.vault.daily.formation.FormationCatalogStore cat =
+                        catalogOf(ctx, fpid, sid, uid);
+                android.util.Log.i("FormationStore", "applyBear sid=" + sid + " uid=" + uid
+                        + " catalogConfigured=" + (cat != null && cat.configured())
+                        + " catalogHeroes=" + (cat == null ? -1 : cat.heroOptions().size())
+                        + " bear=" + (bearTeam == null ? "null" : bearTeam.heroIds));
+            } catch (Throwable ignored) {
+            }
+            if (bearTeam == null || bearTeam.heroIds.isEmpty()) {
+                android.util.Log.w("FormationStore",
+                        "applyBearPreset: 打熊队英雄为空（目录未就绪/尚未生成），拒绝应用");
+                return null;
+            }
             JSONObject p = FnParams.params(ctx, fpid, sid, "bear");
             // 本场上车上限=角色出征队列数（未配置 queue_count 时按目录游戏编队槽数推断）
             int queueCount = fnQueueCount(ctx, fpid, sid, "bear");

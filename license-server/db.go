@@ -86,6 +86,11 @@ func initSchema(db *sql.DB) error {
 	if err := ensureRoleFeatureSeed(db); err != nil {
 		return fmt.Errorf("初始化默认权限矩阵失败: %w", err)
 	}
+	// 2026-11-07：新实现功能（immigration / formation_manage）的旧矩阵行是「未实现恒 0」占位，
+	// 目录置 implemented=1 后仍需一次性修正，否则 featuresForRole 仍不下发（见 features.go 注释）。
+	if err := migrateMatrixNewlyImplemented(db); err != nil {
+		return fmt.Errorf("迁移新实现功能矩阵失败: %w", err)
+	}
 	return nil
 }
 

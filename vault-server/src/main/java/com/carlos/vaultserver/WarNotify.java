@@ -1,6 +1,9 @@
 package com.carlos.vaultserver;
 
 import com.carlos.vault.daily.ScoutPushQuota;
+import com.carlos.vaultserver.alert.AlertRules;
+import com.carlos.vaultserver.alert.AlertText;
+import com.carlos.vaultserver.alert.AlertVerdict;
 import com.carlos.vaultserver.task.Exec;
 
 import org.json.JSONObject;
@@ -323,57 +326,11 @@ public final class WarNotify {
      * 不依赖观察点城缓存是否已扫全：缓存缺失（cityAt=null）时对应条件不拒绝，退回旧行为。
      */
     public static MarchVerdict classifyMarch(String proto, Map<String, Object> m) {
-        if (m == null) return MarchVerdict.no("no_owner", 0L, 0L, 0L, 0L);
-        long marchId = Exec.longOf(m.get("id"));
-        long owner = Exec.longOf(m.get("owner"));
-        long type = Exec.longOf(m.get("type"));
-        long state = Exec.longOf(m.get("state"));
-        if (marchId <= 0 || owner <= 0) {
-            return MarchVerdict.no("no_owner", marchId, owner, type, state);
-        }
-        int[] xy = endpointOf(m);
-        int[] sp = startPointOf(m);
-        // 2026-11-04：打野/巨兽/采集等 PvE 行军不推（资源类由观察点单独推）。
-        if (isPveMarch(m)) return MarchVerdict.no("type", marchId, owner, type, state);
-        // 2026-11-04：目标是联盟总部/旗子/王城 → 由观察点按归属推「建设/破坏」，这里不重复推。
-        if (xy != null
-                && com.carlos.vaultserver.watchpoint.WatchPointEngine.buildingAt(xy[0], xy[1]) != null) {
-            return MarchVerdict.no("type", marchId, owner, type, state);
-        }
-        // 2026-11-02 误报修复：只推敌情行军（侦查/进攻/集结）；采集/驻防/建设援助/狩猎一律不推。
-        // 典型误报：监视目标派队列去建联盟总部，返程被当成「出征」推送。
-        if (state >= 3L) return MarchVerdict.no("state", marchId, owner, type, state);
-        // 2026-11-03：侦查统一由「观察点·敌情」推送，战争警报不再重复推一次
-        if (type == 1L) return MarchVerdict.no("scout", marchId, owner, type, state);
-        // 「加入集结」不推（只提醒发起集结 / 集结出征）
-        if (isRallyFollower(m, type)) return MarchVerdict.no("follower", marchId, owner, type, state);
-        if (!isPvpMarch(type) && (proto == null || !proto.contains("mass_march"))) {
-            return MarchVerdict.no("type", marchId, owner, type, state);
-        }
-        // 回自己城（援助/建设返程、撤军）不是打谁
-        if (xy != null && sp != null && xy[0] == sp[0] && xy[1] == sp[1]) {
-            return MarchVerdict.no("loopback", marchId, owner, type, state);
-        }
-        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo tgtCity =
-                xy == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(xy[0], xy[1]);
-        com.carlos.vaultserver.watchpoint.WatchPointEngine.CityInfo atkCity =
-                sp == null ? null : com.carlos.vaultserver.watchpoint.WatchPointEngine.cityAt(sp[0], sp[1]);
-        if (tgtCity != null && tgtCity.uid == owner) {
-            return MarchVerdict.no("self", marchId, owner, type, state);
-        }
-        long atkAid = atkCity == null ? 0L : atkCity.aid;
-        long tgtAid = tgtCity == null ? 0L : tgtCity.aid;
-        // 2026-11-03 误报修复：同一联盟不可能「集结/进攻自己人」——
-        // 这类帧其实是「加入集结/集结巨兽/联盟内部增援」，目标城联盟与发起人相同，直接跳过。
-        if (atkAid > 0L && tgtAid > 0L && atkAid == tgtAid) {
-            return MarchVerdict.no("same_alliance", marchId, owner, type, state);
-        }
-        // 集结类（含巨兽/野外集结）：目标是「城」才算敌情；没有目标城的集结（巨兽、资源点）不推
-        boolean rally = isRallyType(type) || (proto != null && proto.contains("mass_march"));
-        if (rally && (tgtCity == null || tgtAid <= 0L)) {
-            return MarchVerdict.no("rally_not_city", marchId, owner, type, state);
-        }
-        return MarchVerdict.ok(marchId, owner, type, state);
+        // P1：唯一口径在 AlertRules（同序等价抽取）；这里只做旧类型映射，保持旧拒绝码不变。
+        AlertVerdict v = AlertRules.classifyMarch(proto, m);
+        return v.accepted
+                ? MarchVerdict.ok(v.marchId, v.ownerUid, v.type, v.state)
+                : MarchVerdict.no(v.reject, v.marchId, v.ownerUid, v.type, v.state);
     }
 
     /** 内容里是否含命中任意账号监视名单的 owner（跨账号会话过滤用）。 */
@@ -542,7 +499,8 @@ public final class WarNotify {
         } else {
             duration = Math.max(0, t.endServerSec - t.startServerSec);
         }
-        String key = fpid + "|" + t.targetUid + "|" + t.action + "|done";
+        // P3：冷却跨账号全局（键不含 fpid），同一目标同动作只推一次。
+        String key = t.targetUid + "|" + t.action + "|done";
         if (throttled(key, cfg.cooldownSeconds * 1000L, now)) {
             FileLog.info("战争结算节流 {} uid={} {}（冷却中，丢弃）", fpid, t.targetUid, t.action);
             return;
@@ -573,10 +531,20 @@ public final class WarNotify {
                         fpid, t.targetUid, t.marchId, ScoutPushQuota.MAX_PUSHES);
                 return;
             }
-        } else if (throttled(fpid + "|" + t.targetUid + "|" + t.action,
-                cfg.cooldownSeconds * 1000L, now)) {
-            FileLog.info("战争通知节流 {} uid={} {}（冷却中，丢弃）",
-                    fpid, t.targetUid, t.action);
+        } else if (t.marchType != 102L) {
+            // 普通进攻仍按冷却节流；集结出征（102）不在这里拦——每一波都要进 30s 聚合器计数，
+            // 否则同目标 30s 内第 2 波被冷却丢弃，聚合永远只有首条、"共 N 波"补发失效。
+            if (throttled(t.targetUid + "|" + t.ex + ":" + t.ey + "|" + t.action,
+                    cfg.cooldownSeconds * 1000L, now)) {
+                FileLog.info("战争通知节流 {} uid={} {}（冷却中，丢弃）",
+                        fpid, t.targetUid, t.action);
+                return;
+            }
+        }
+        // P3：通过配额/冷却后再占 A2 全局去重键（避免被冷却丢弃时误占，导致观察点也漏推）
+        if (!com.carlos.vaultserver.alert.AlertRegistry.firstA2(t.targetUid, t.marchId)) {
+            FileLog.info("战争通知跳过（观察点已推同一条行军）uid={} 行军{}",
+                    String.valueOf(t.targetUid), String.valueOf(t.marchId));
             return;
         }
         JSONObject e = baseEvent(t, now);
@@ -587,10 +555,51 @@ public final class WarNotify {
                 fpid, t.targetUid, t.action, String.valueOf(t.marchType), t.marchId,
                 stored.optString("eventId"));
         if (cfg.wecomEnabled && !cfg.webhookUrl.isEmpty() && !inQuietHours(cfg, now)) {
-            if (asyncWecom) wecomExec.execute(() -> sendWecom(cfg, t, stored));
-            else sendWecom(cfg, t, stored);
+            final String text = renderWecom(t, stored);
+            // 集结出征：同攻击者+同目标 30s 聚合；首条即时，后续静默，窗口结束补“共 N 波”。
+            if (t.marchType == 102L) {
+                String aggKey = "agg:" + t.targetUid + ":" + t.ex + ":" + t.ey;
+                if (!com.carlos.vaultserver.alert.AlertRegistry.a2Agg().feed(aggKey, text, now)) {
+                    resolveNameAsync(t);
+                    return;
+                }
+                settleExec.schedule(this::flushA2Aggregates, 30L, TimeUnit.SECONDS);
+            }
+            if (asyncWecom) wecomExec.execute(() -> notifier.send(cfg.webhookUrl, text));
+            else notifier.send(cfg.webhookUrl, text);
         }
         resolveNameAsync(t);
+    }
+
+    /** 渲染企微文本（补齐昵称后；只影响本次文案，不改库内快照）。 */
+    private String renderWecom(Track t, JSONObject stored) {
+        try {
+            ensureNameResolved(t);
+        } catch (Throwable tt) {
+            FileLog.info("企微昵称补齐失败 uid={}：{}", t.targetUid, String.valueOf(tt));
+        }
+        if (!t.attackerName.equals(stored.optString("attackerName", ""))) {
+            stored.put("attackerName", t.attackerName);
+        }
+        return wecomText(t.fpid, stored);
+    }
+
+    /** 30s 窗口到期：对多波窗口补发一条「共 N 波」汇总（与观察点共用同一聚合器）。 */
+    private void flushA2Aggregates() {
+        try {
+            VaultStore.WatchConfig cfg = store.watchConfig();
+            if (!cfg.wecomEnabled || cfg.webhookUrl == null || cfg.webhookUrl.trim().isEmpty()) return;
+            long now = System.currentTimeMillis();
+            if (inQuietHours(cfg, now)) return;   // 静默只抑制企微，与即时告警同口径
+            for (com.carlos.vaultserver.alert.AlertAggregator.Window w
+                    : com.carlos.vaultserver.alert.AlertRegistry.a2Agg().flushExpired(now)) {
+                String summary = com.carlos.vaultserver.alert.AlertText.withCount(w.baseText, w.count,
+                        Beijing.fmt("HH:mm:ss").format(new java.util.Date()));
+                notifier.send(cfg.webhookUrl, summary);
+            }
+        } catch (Throwable tt) {
+            FileLog.warn("集结聚合补发异常：{}", String.valueOf(tt));
+        }
     }
 
     /** 事件公共字段（初始与结算共用；targetName 保留供 v4.1.7 旧 App 兼容）。 */
@@ -809,7 +818,7 @@ public final class WarNotify {
 
     /** 集结相关类型：10/12 集结中、99 集结随从、100 集结、102 集结主体。 */
     static boolean isRallyType(long type) {
-        return type == 10L || type == 12L || type == 99L || type == 100L || type == 102L;
+        return AlertRules.isRallyType(type);
     }
 
     /**
@@ -818,31 +827,21 @@ public final class WarNotify {
      * 打野(302)、建设援助等一律不推。侦查(1)由观察点负责，这里也返回 false。
      */
     static boolean isPvpMarch(long type) {
-        // 2026-11-04 用户口径：A2 敌袭只报「进攻(2)/集结出征(102)」；发起集结(100)归 A1 情报。
-        return type == 2L || type == 102L;
+        return AlertRules.isPvpType(type);
     }
 
-    /** PvE 行军（打野/巨兽等）——2026-11-04 用户口径：不推送。 */
+    /**
+     * PvE 行军（打野/巨兽等）——2026-11-04 用户口径：不推送。
+     * 2026-11-09：与观察点 A2 同口径（顶层动作键 + target 怪物子对象 + mass master_type），
+     * 避免「巨兽模板集结」在战争通知通道再被当成集结出征。
+     */
     static boolean isPveMarch(Map<String, Object> m) {
-        if (m == null) return true;
-        for (String k : new String[]{"mass_boss", "atk_monster", "mass_icefield_hunter_boss",
-                "atk_monster_auto", "transaction_slg", "collect", "collect_resource",
-                "recon_resource", "mass_alliance_trap", "atk_world_boss", "mass_world_boss",
-                "pet_catch", "truck_escort", "alliance_collect_resource", "build_trap"}) {
-            if (m.containsKey(k)) return true;
-        }
-        return false;
+        return AlertRules.isPveMarch(m);
     }
 
     /** 是否为「加入集结」帧：带 mass_slave（随从）或 type=99。 */
     static boolean isRallyFollower(Map<String, Object> m, long type) {
-        if (type == 99L) return true;
-        Object slave = m.get("mass_slave");
-        if (slave == null) slave = m.get("massSlave");
-        if (slave instanceof Map) return !((Map<?, ?>) slave).isEmpty();
-        if (slave instanceof List) return !((List<?>) slave).isEmpty();
-        return slave != null && !String.valueOf(slave).trim().isEmpty()
-                && !"0".equals(String.valueOf(slave).trim());
+        return AlertRules.isRallyFollower(m, type);
     }
 
     /** 行为映射（v4.1.8）：集结协议=集结城堡；type 1=侦查 2=进攻城堡 5=驻防；余=出征。 */
@@ -857,24 +856,12 @@ public final class WarNotify {
 
     /** endpoint 坐标：march.endpoint{x,y} 优先，退化 march.target{x,y}；取不到 null。 */
     static int[] endpointOf(Map<String, Object> m) {
-        for (String key : new String[]{"endpoint", "target"}) {
-            Map<String, Object> p = Exec.mapOf(m.get(key));
-            if (p == null) continue;
-            int x = (int) Exec.longOf(p.get("x"));
-            int y = (int) Exec.longOf(p.get("y"));
-            if (x != 0 || y != 0) return new int[]{x, y};
-        }
-        return null;
+        return AlertRules.endpointOf(m);
     }
 
     /** 发起人坐标：march.startpoint{x,y}；取不到 null。 */
     static int[] startPointOf(Map<String, Object> m) {
-        Map<String, Object> p = Exec.mapOf(m.get("startpoint"));
-        if (p == null) return null;
-        int x = (int) Exec.longOf(p.get("x"));
-        int y = (int) Exec.longOf(p.get("y"));
-        if (x == 0 && y == 0) return null;
-        return new int[]{x, y};
+        return AlertRules.startPointOf(m);
     }
 
     /**
@@ -993,31 +980,20 @@ public final class WarNotify {
      * 结算事件（phase=settle）以「🏁 进攻结算」行替代到达倒计时。
      */
     String wecomText(String fpid, JSONObject event) {
-        // 2026-11-04 用户口径：A2 敌袭（只推发起，不推结算）。
+        // P1：A2 文案统一在 AlertText；P1 保持旧阈值 1000，P2 起读 alert.feintTroopsBelow。
         long marchType = event.optLong("marchType", 0L);
-        String behavior = marchType == 102L ? "集结出征" : "进攻";
         long total = event.optLong("troopsTotal", 0L);
-        StringBuilder sb = new StringBuilder("🚨 敌袭·").append(behavior).append('\n');
-        sb.append("级别：").append(total <= 0L ? "未知"
-                : (total < 1000L ? "⚪ 佯攻" : "🔴 威胁进攻")).append('\n');
-        sb.append("攻击者：").append(attackerLabel(event)).append('\n');
-        sb.append("兵力：").append(total > 0L ? String.valueOf(total) : "未知").append('\n');
-        sb.append("目标：");
         Object ep = event.optJSONObject("endpoint");
-        if (ep instanceof JSONObject) {
-            int tx = ((JSONObject) ep).optInt("x");
-            int ty = ((JSONObject) ep).optInt("y");
-            String label = targetLabelAt(tx, ty);
-            sb.append(label.isEmpty() ? "（未知）" : label);
-            sb.append('(').append(tx).append(',').append(ty).append(')');
-        } else {
-            sb.append("（未知）");
-        }
+        boolean hasEp = ep instanceof JSONObject;
+        int tx = hasEp ? ((JSONObject) ep).optInt("x") : 0;
+        int ty = hasEp ? ((JSONObject) ep).optInt("y") : 0;
+        String label = hasEp ? targetLabelAt(tx, ty) : "";
         long endSec = event.optLong("endtime", 0L);
         long nowS = System.currentTimeMillis() / 1000L;
-        sb.append("\nETA：").append(hmsShort(Math.max(0L, endSec - nowS))).append('\n');
-        sb.append("时间：").append(Beijing.fmt("HH:mm:ss").format(new java.util.Date()));
-        return sb.toString();
+        return AlertText.incoming(AlertText.a2Behavior(marchType), AlertText.level(total, 1000L),
+                attackerLabel(event), total, label, tx, ty, hasEp,
+                Math.max(0L, endSec - nowS),
+                Beijing.fmt("HH:mm:ss").format(new java.util.Date()));
     }
 
     /** 攻击者显示名：联盟简称放前面（[SYD]昵称）。 */
@@ -1109,6 +1085,7 @@ public final class WarNotify {
             dq.removeIf(m -> now - m.at > MAIL_TTL_MS);
         }
         scoutQuota.sweep(now);   // 侦查配额表回收窗口外记录，防长期运行无界增长
+        com.carlos.vaultserver.alert.AlertRegistry.sweepDeduper(now);   // A2 全局去重表回收
     }
 
     /** 监视目标显示名：备注 &gt; 名称 &gt; 「未知名玩家」（通知里不带 uid）。 */

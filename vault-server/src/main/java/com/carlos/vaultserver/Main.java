@@ -50,6 +50,9 @@ public final class Main {
         // 战争通知（敌人监视 + 企微机器人）：事件环形缓冲 + 推送中枢，接线会话与 API
         WatchEventStore watchEvents = new WatchEventStore(config.dataDir);
         watchEvents.load();
+        // 2026-11-09 告警中枢 P3：统一出口（观察点事件也入同一事件库，App 时间线/短信可见）
+        com.carlos.vaultserver.alert.AlertRegistry.install(
+                new com.carlos.vaultserver.alert.AlertOutbox(watchEvents));
         WarNotify war = new WarNotify(store, watchEvents, new WeComNotifier());
 
         SessionKeeper keeper = new SessionKeeper(store, config, new ClasspathAssets(), stateStore, war);
@@ -61,12 +64,23 @@ public final class Main {
         // 只发告警（企业微信），不发日报/汇总；默认关闭，需 VAULT_WATCHPOINT=on 且 data/watchpoint.json enabled=true。
         com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore =
                 new com.carlos.vaultserver.watchpoint.WatchPointStore(config.dataDir);
+        watchPointStore.load();
+        // 2026-11-09 告警中枢 P2：fid 关注名单（迁移期与旧 watchTargets/monitorTargets 并存）。
+        // 目录先装好，迁移才能按 uid 反查 fid；迁移失败不影响观察点启动（未解析条目留在 alert.unresolved）。
+        com.carlos.vaultserver.watchpoint.PlayerDirectory.install(config.dataDir);
+        com.carlos.vaultserver.alert.WatchlistService alertWatchlist =
+                new com.carlos.vaultserver.alert.WatchlistService(store);
+        com.carlos.vaultserver.alert.WatchlistRegistry.install(alertWatchlist);
+        com.carlos.vaultserver.alert.WatchlistMigrator.MigrateReport alertMigrate =
+                com.carlos.vaultserver.alert.WatchlistMigrator.migrateIfNeeded(
+                        store, watchPointStore, alertWatchlist, false);
+        FileLog.info("告警名单：{}", alertWatchlist.allWatchedUids().size() + " 条已解析；迁移 "
+                + alertMigrate.summary());
         com.carlos.vaultserver.watchpoint.WatchPointEngine watchPoint =
                 new com.carlos.vaultserver.watchpoint.WatchPointEngine(
                         keeper, watchPointStore, store, new WeComNotifier());
         watchPoint.start();
         // 2026-10-31：把观察点实例共享给守护盟友（按坐标反查城 uid/联盟、保护矩形判定）。
-        com.carlos.vaultserver.watchpoint.PlayerDirectory.install(config.dataDir);
         com.carlos.vaultserver.watchpoint.WatchPointEngine.install(watchPoint);
 
         com.carlos.vaultserver.task.RoundScheduler scheduler =
@@ -84,9 +98,40 @@ public final class Main {
                 new com.carlos.vaultserver.task.TaskCadenceScheduler(store, stateStore, keeper);
         cadence.start();
 
+        // 迁城 1:1 复刻（2026-11-06）：12 协议 + 立即/定时迁城 + 任务管理；
+        // 行为基准 wjdr-review 网页版 MoveCityService（常量/时间线/状态机/文案逐项对齐）。
+        // 回滚：VAULT_MOVECITY=off（默认 on；off 时不注册引擎，movecity 端点返回 3002）。
+        final com.carlos.vaultserver.movecity.MoveCityEngine moveCity;
+        if (!"off".equalsIgnoreCase(System.getenv("VAULT_MOVECITY"))) {
+            com.carlos.vaultserver.movecity.MoveCityStore moveCityStore =
+                    new com.carlos.vaultserver.movecity.MoveCityStore(config.dataDir);
+            moveCity = new com.carlos.vaultserver.movecity.MoveCityEngine(
+                    new com.carlos.vaultserver.movecity.KeeperTransport(keeper), moveCityStore);
+            moveCity.restore(moveCityStore.loadJobs());
+            FileLog.info("迁城引擎已启用（恢复任务见 data/movecity_jobs.json）");
+        } else {
+            moveCity = null;
+            FileLog.info("迁城引擎已禁用（VAULT_MOVECITY=off）");
+        }
+
         // 批次 B：观察点配置端点（get/set/enable）——写 data/watchpoint.json，引擎按 mtime 5s 热载
+        // 移民（藏宝阁-自由移民，2026-11-06）：任务持久化 + 角色级执行引擎 + 1s 调度。
+        // 到点抢位在角色会话线程内跑；serverClock 复用 WjdrEngine.serverClock()（既有实现，勿重写）。
+        com.carlos.vaultserver.migrant.MigrantJobStore migrantJobs =
+                new com.carlos.vaultserver.migrant.MigrantJobStore(config.dataDir);
+        migrantJobs.load();
+        com.carlos.vaultserver.migrant.MigrantEngine migrantEngine =
+                new com.carlos.vaultserver.migrant.MigrantEngine(keeper, store, migrantJobs, stateStore);
+        com.carlos.vaultserver.migrant.MigrantScheduler migrantScheduler =
+                new com.carlos.vaultserver.migrant.MigrantScheduler(keeper, store, migrantJobs, migrantEngine);
+        migrantScheduler.start();
+        FileLog.info("移民模块：已启动（任务 {} 个）", String.valueOf(migrantJobs.count()));
+
         VaultHttpApi api = new VaultHttpApi(config, store, keeper, stateStore, scheduler, war,
-                watchPointStore);
+                watchPointStore, moveCity);
+        // 移民（migrant）与本模块共用同一 HTTP 面：迁城走构造注入，移民走挂载（两者互不影响）。
+        api.attachMigrant(new com.carlos.vaultserver.migrant.MigrantApi(
+                keeper, store, stateStore, migrantJobs, migrantEngine));
         api.start();
 
         // 每日自动化日报（批次5）：北京时间定点（默认 09:00，VAULT_DIGEST_TIME=HH:mm 覆盖）汇总近 24h
@@ -118,7 +163,11 @@ public final class Main {
             digest.stop();
             api.stop();
             cadence.stop();
+            // 移民：先停调度（不再发起新动作），再落盘任务，避免关停时丢 attempts
+            migrantScheduler.stop();
+            migrantJobs.flush();
             scheduler.stop();
+            if (moveCity != null) moveCity.shutdown();
             keeper.shutdownAll();
             stateStore.flush();
             com.carlos.vaultserver.monitor.MonitorStore.shutdown();

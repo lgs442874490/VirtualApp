@@ -1671,6 +1671,8 @@ private View buildUi() {
         final boolean shieldAnti = FnParams.subOn(this, fpid, sid, F, "shield_anti_harass", false);
         final String shieldTroops = FnParams.strategy(this, fpid, sid, F, "shield_troops_min", troopsDef);
         final boolean buyDiamond = FnParams.subOn(this, fpid, sid, F, "shield_buy_diamond", false);
+        final String diamondBudget = FnParams.strategy(this, fpid, sid, F, "shield_diamond_budget",
+                FnParams.BS_DIAMOND_BUDGET_DEFAULT);
         final boolean forceOnline = FnParams.subOn(this, fpid, sid, F, "force_online", false);
 
         LinearLayout card = UiComponents.card(this);
@@ -1683,7 +1685,7 @@ private View buildUi() {
         card.addView(title);
         TextView intro = new TextView(this);
         intro.setText("服务端执行：模式二选一；卡秒默认抵达前 2 秒（最小 2 / 最大 600）；"
-                + "兵力阈值 0=不限，仅在防骚扰开启时生效。");
+                + "兵力阈值 0=不限，仅在防骚扰开启时生效；钻石购盾默认关，开启后按日预算控制花费。");
         intro.setTextSize(10.5f);
         intro.setTextColor(UiStyle.INK2);
         intro.setPadding(0, dp(4), 0, 0);
@@ -1748,8 +1750,10 @@ private View buildUi() {
         final UiStyle.Switch[] buyDiamondRef = new UiStyle.Switch[1];
         buyDiamondRef[0] = new UiStyle.Switch(this, buyDiamond, () -> { });
         card.addView(switchRow("背包无盾时钻石购盾",
-                "仅在背包无护盾且风险触发时购买 2 小时护盾（真实花钻，默认关；单次最多 1 个）",
+                "仅在背包无护盾且风险触发时购买 2 小时护盾（真实花钻，默认关；单次最多 1 个，受下方日预算约束）",
                 buyDiamondRef[0]));
+        final EditText diamondBudgetEt = numTextField("每日钻石预算（钻，0=不购买）", diamondBudget);
+        card.addView(fieldRow("钻石花费预算（钻/日）", diamondBudgetEt));
 
         // —— 当前护盾（服务端状态；只读） ——
         card.addView(configSection("当前护盾"));
@@ -1775,6 +1779,7 @@ private View buildUi() {
             String gatherTroopsRaw = textOf(gatherTroopsEt);
             String shieldEtaRaw = textOf(shieldEtaEt);
             String shieldTroopsRaw = textOf(shieldTroopsEt);
+            String diamondBudgetRaw = textOf(diamondBudgetEt);
             String err = FnParams.validateEtaSec(gatherEtaRaw);
             if (err != null) {
                 toast("自动召回：" + err);
@@ -1793,6 +1798,11 @@ private View buildUi() {
             err = FnParams.validateTroopsMin(shieldTroopsRaw, "开盾兵力阈值");
             if (err != null) {
                 toast(err);
+                return;
+            }
+            err = FnParams.validateDiamondBudget(diamondBudgetRaw);
+            if (err != null) {
+                toast("自动开盾：" + err);
                 return;
             }
 
@@ -1814,6 +1824,7 @@ private View buildUi() {
             FnParams.saveSubOn(this, fpid, sid, F, "shield_anti_harass", shieldAntiRef[0].isOn());
             FnParams.saveStrategy(this, fpid, sid, F, "shield_troops_min", shieldTroopsRaw);
             FnParams.saveSubOn(this, fpid, sid, F, "shield_buy_diamond", buyDiamondRef[0].isOn());
+            FnParams.saveStrategy(this, fpid, sid, F, "shield_diamond_budget", diamondBudgetRaw);
             FnParams.saveSubOn(this, fpid, sid, F, "force_online", forceRef[0].isOn());
             VaultSync.onAccountsChanged(this);
             toast("护盾配置已保存并同步服务器");

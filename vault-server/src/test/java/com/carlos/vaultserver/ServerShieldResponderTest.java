@@ -25,6 +25,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BiConsumer;
 
 /**
  * 反应式开盾（P1-2）单测：WAR/RECON 推送 → 门控 → 幂等 → 让位保护 → 状态留痕。
@@ -49,9 +50,20 @@ public class ServerShieldResponderTest {
         long uid = OWN_UID;
         final List<String> requested = new ArrayList<>();
         final List<Map<String, Object>> argLog = new ArrayList<>();
+        final List<BiConsumer<String, Map<String, Object>>> hooks = new ArrayList<>();
 
         TestEngine() {
             super(null);
+        }
+
+        @Override
+        public void addMessageHook(BiConsumer<String, Map<String, Object>> hook) {
+            if (hook != null) hooks.add(hook);
+        }
+
+        /** 模拟引擎收到推送：驱动 attach 注册的全部钩子（验证 SITUATION_PROTOS 分发）。 */
+        void push(String proto, Map<String, Object> content) {
+            for (BiConsumer<String, Map<String, Object>> h : hooks) h.accept(proto, content);
         }
 
         @Override
@@ -239,11 +251,11 @@ public class ServerShieldResponderTest {
         assertTrue(mod.getString("reactive").contains("被进攻"));
         assertTrue(mod.getString("reactive").contains("8小时免费护盾已开启"));
         assertEquals("反应式", mod.getString("reactive_trg"));
-        // 开盾成功 → 8 小时幂等窗
+        // 开盾成功 → 仅 60s 防风暴冷却；幂等由盾账本 shieldActive 判定（不再用 8h 窗）
         long cool = r.nextAttemptAt.get();
         long t0 = System.currentTimeMillis();
-        assertTrue(cool >= t0 + ServerShieldResponder.SHIELD_ACTIVE_MILLIS - 2000);
-        assertTrue(cool <= t0 + ServerShieldResponder.SHIELD_ACTIVE_MILLIS + 2000);
+        assertTrue(cool >= t0 + ServerShieldResponder.OPEN_SUCCESS_COOLDOWN_MILLIS - 2000);
+        assertTrue(cool <= t0 + ServerShieldResponder.OPEN_SUCCESS_COOLDOWN_MILLIS + 2000);
     }
 
     @Test
@@ -971,6 +983,129 @@ public class ServerShieldResponderTest {
         assertTrue(new JSONObject(modText()).getString("reactive").contains("被进攻"));
     }
 
+    // ================= 2026-11-07：预警推送形状/多波合并/集结主体/全量快照/del 形状 =================
+
+    @Test
+    public void singleMarchShape_triggersShield() {
+        // 实证 2026-10-15 §2.2：敌进攻发射帧是 {"march":{...}} 单数形状（此前被解析器丢弃）。
+        account(true, null);   // 默认 immediate
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("march", marchOf(13080L, 2, OWN_UID));
+        r.onPush(content, OWN_UID);
+
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+        assertEquals("WAR", r.lastEventKind);
+    }
+
+    @Test
+    public void multiWave_keepsEarliestEta() {
+        // 多波进攻：后到的更晚波次不得推迟已记录的更早卡秒点，否则第一波到达时无盾。
+        account(true, "{\"sub\":{\"reactive\":true}}");   // before_arrival 默认 2 秒
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+        long earliestCheck = r.etaCheckAtMs;
+        assertTrue("首波应挂起到到达前 2 秒", earliestCheck > 0L);
+
+        // 第二波更晚（+600s）：不得把卡秒点推迟到第二波
+        r.onPush(withEndtime(alliancePush(13081L, 2, OWN_UID, 1), sec.get() + 600L), OWN_UID);
+        assertFalse(r.tick(e));
+        assertEquals("多波风险应保留最早到达时间", earliestCheck, r.etaCheckAtMs);
+        assertTrue(e.requested.isEmpty());
+
+        // 到第一波到达前 1 秒：开盾（而不是等第二波）
+        nowMs.addAndGet(299_000L);
+        sec.addAndGet(299L);
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+    }
+
+    @Test
+    public void rallyMainType102_triggersShield() {
+        // 实证 A-1：102=集结主体（此前只认 100，集结主体打城不开盾）。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+
+        r.onPush(alliancePush(15002L, 102, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+        assertEquals("WAR", r.lastEventKind);
+    }
+
+    @Test
+    public void fullSnapshotProto_triggersShield() {
+        // 登录/重连全量快照 notify_world_situation_info（此前不在白名单，在途进攻丢失）。
+        // 真实形状是 situation_info（见 AssetParsers.worldSituation），不是 marches。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        ServerShieldResponder r = responder();
+        r.attach(e);
+
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("id", 9L);
+        entry.put("march", marchOf(13080L, 2, OWN_UID));
+        Map<String, Object> snapshot = new LinkedHashMap<>();
+        snapshot.put("situation_info", Map.of("9.0", entry));
+        e.push("notify_world_situation_info", snapshot);
+
+        assertEquals("全量快照槽位应记录映射",
+                Long.valueOf(13080L), r.situationSlotMarch.get(9L));
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+    }
+
+    @Test
+    public void situationDel_idArr_clearsSlotMapping() {
+        // 观察哨 del 用 {"id_arr":[9.0]}（槽位 id）表达；应按槽位映射清掉敌方行军缓存。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        ServerShieldResponder r = responder();
+        r.attach(e);
+
+        e.push("notify_world_situation_info_add", worldPush(13080L, 2));
+        assertEquals("槽位 9.0 应映射到 marchId 13080",
+                Long.valueOf(13080L), r.situationSlotMarch.get(9L));
+
+        Map<String, Object> del = new LinkedHashMap<>();
+        del.put("id_arr", List.of("9.0"));
+        e.push("notify_world_situation_info_del", del);
+        assertFalse("del 后槽位映射应清理", r.situationSlotMarch.containsKey(9L));
+    }
+
+    @Test
+    public void situationDel_topLevelId_removesTrackedMarch() {
+        // 设计契约：alliance_situation_del 形如 {"id":11261}（无 marches 包裹）。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        ServerShieldResponder r = responder();
+        r.attach(e);
+
+        e.push("notify_world_alliance_situation_add", alliancePush(11261L, 2, OWN_UID, 1));
+        assertEquals(1, r.trackedEnemyMarchCount());
+
+        Map<String, Object> del = new LinkedHashMap<>();
+        del.put("id", 11261L);
+        e.push("notify_world_alliance_situation_del", del);
+        assertEquals(0, r.trackedEnemyMarchCount());
+    }
+
     // ================= 2026-11-06 决策：护盾只读新键（旧 eta_sec/troops_min 不再兼容） =================
 
     @Test
@@ -1002,6 +1137,140 @@ public class ServerShieldResponderTest {
         assertEquals("immediate", r.shieldMode(tc));
         assertEquals(60L, r.shieldEtaSec(tc));
         assertEquals(5000L, r.shieldTroopsMin(tc));
+    }
+
+    // ================= 2026-11-07：免费盾假成功 / 幂等窗对齐 / 失败保留风险 =================
+
+    @Test
+    public void freeShieldMissingCode_notClaimed_retryCooldown() {
+        // 响应缺 code 无法确认开盾：不得判 CLAIMED（否则假写 8h 盾账本 + 8h 幂等窗）。
+        account(true, "{\"sub\":{\"reactive\":true},"
+                + "\"strategy\":{\"shield_mode\":\"immediate\"}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        GameMessage noCode = new GameMessage();
+        noCode.setContent(new LinkedHashMap<>());
+        e.responses.put("req_city_item_free_use", noCode);
+        ServerShieldResponder r = responder();
+
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+
+        JSONObject mod = new JSONObject(modText());
+        assertFalse("缺 code 不能写已开盾",
+                mod.getString("reactive").contains("8小时免费护盾已开启"));
+        assertTrue("应保留未开盾/重试语义", mod.getString("reactive").contains("未开盾"));
+        long t0 = System.currentTimeMillis();
+        assertTrue("缺 code 应按失败冷却而非 8h 幂等窗",
+                r.nextAttemptAt.get() <= t0 + ServerShieldResponder.RETRY_COOLDOWN_MILLIS + 2000);
+    }
+
+    @Test
+    public void shieldExpired_opensAgain() {
+        // 盾到期/被撤销后：幂等由账本判定，不能被历史 8h nextAttemptAt 长期挡住。
+        account(true, null);   // immediate
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_700_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertEquals(1, e.requested.size());
+
+        // 9 小时后盾已过期；新攻击应再次开盾
+        nowMs.addAndGet(9 * 3600_000L);
+        sec.addAndGet(9 * 3600L);
+        r.onPush(alliancePush(13081L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertEquals("盾过期后应允许再次开盾", 2, e.requested.size());
+    }
+
+    @Test
+    public void noAvailableShield_keepsRisk_retriesAfterCooldown() {
+        // 免费盾不可用 + 无背包 + 钻石关：风险不能被一次失败消费，5 分钟后应重试。
+        account(true, null);
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(51));   // 今日已用
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_700_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(alliancePush(13080L, 2, OWN_UID, 1), OWN_UID);
+        assertTrue(r.tick(e));
+        assertEquals(1, e.requested.size());
+
+        // 5 分钟后（无新推送）：风险仍保留 → 自动重试
+        nowMs.addAndGet(ServerShieldResponder.RETRY_COOLDOWN_MILLIS);
+        sec.addAndGet(ServerShieldResponder.RETRY_COOLDOWN_MILLIS / 1000L);
+        assertTrue(r.tick(e));
+        assertEquals("失败后 5 分钟应重试", 2, e.requested.size());
+    }
+
+    // ================= 2026-11-08：钻石购盾日预算用户可配（默认 1200 钻） =================
+
+    @Test
+    public void diamondBudget_defaultIs1200AndAllowsThreeBuys() {
+        TestEngine e = new TestEngine();
+        TaskContext tc = new TaskContext(e, "111", SID, state, new HashMap<>(), "测试");
+        ServerShieldResponder r = responder();
+        long sec = 1_700_000_000L;
+
+        assertEquals(1200L, r.diamondBudget(tc));
+        assertTrue(r.allowDiamondBuy(tc, sec));
+        r.recordDiamondBuy(sec);
+        r.recordDiamondBuy(sec);
+        assertTrue("默认预算 1200 钻可买 3 个（还剩 1 个）", r.allowDiamondBuy(tc, sec));
+        r.recordDiamondBuy(sec);
+        assertFalse("3 个后预算用尽", r.allowDiamondBuy(tc, sec));
+    }
+
+    @Test
+    public void diamondBudget_custom800_allowsTwoBuys() {
+        TestEngine e = new TestEngine();
+        Map<String, JSONObject> params = new HashMap<>();
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"800\"}}"));
+        TaskContext tc = new TaskContext(e, "111", SID, state, params, "测试");
+        ServerShieldResponder r = responder();
+        long sec = 1_700_000_000L;
+
+        assertEquals(800L, r.diamondBudget(tc));
+        r.recordDiamondBuy(sec);
+        assertTrue(r.allowDiamondBuy(tc, sec));
+        r.recordDiamondBuy(sec);
+        assertFalse("800 钻只够 2 个", r.allowDiamondBuy(tc, sec));
+    }
+
+    @Test
+    public void diamondBudget_zeroDisablesAndInvalidFallsBack() {
+        TestEngine e = new TestEngine();
+        Map<String, JSONObject> params = new HashMap<>();
+        ServerShieldResponder r = responder();
+
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"0\"}}"));
+        TaskContext zero = new TaskContext(e, "111", SID, state, params, "测试");
+        assertEquals(0L, r.diamondBudget(zero));
+        assertFalse("预算 0 = 不购买", r.allowDiamondBuy(zero, 1_700_000_000L));
+
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"abc\"}}"));
+        TaskContext bad = new TaskContext(e, "111", SID, state, params, "测试");
+        assertEquals("非法值回退 1200", 1200L, r.diamondBudget(bad));
+
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"-5\"}}"));
+        TaskContext negative = new TaskContext(e, "111", SID, state, params, "测试");
+        assertEquals("负数回退 1200", 1200L, r.diamondBudget(negative));
+
+        params.put("battle_shield", new JSONObject(
+                "{\"strategy\":{\"shield_diamond_budget\":\"150000\"}}"));
+        TaskContext over = new TaskContext(e, "111", SID, state, params, "测试");
+        assertEquals("超上限夹到 100000", 100000L, r.diamondBudget(over));
     }
 
     private static Map<String, Object> marchOf(long id, long type, long targetUid) {

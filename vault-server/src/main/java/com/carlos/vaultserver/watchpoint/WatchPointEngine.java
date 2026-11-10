@@ -5,6 +5,8 @@ import com.carlos.vaultserver.FileLog;
 import com.carlos.vaultserver.SessionKeeper;
 import com.carlos.vaultserver.VaultStore;
 import com.carlos.vaultserver.WeComNotifier;
+import com.carlos.vaultserver.alert.AlertRules;
+import com.carlos.vaultserver.alert.AlertText;
 
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -391,7 +393,7 @@ public final class WatchPointEngine {
      * 第一次坐标变化开启窗口，窗口内只累计最新坐标；窗口到期（默认 60s）才推一条，
      * 前面的中间坐标一律不推（用户：前面几次都是无效推送）。
      */
-    private volatile long moveAlertWindowMs = 60_000L;
+    private volatile long moveAlertWindowMs = 30_000L;   // P3：用户口径 30s 聚合（迁城+集结）
     /** 聚合窗口内待推的最新坐标（uid → pending；windowStart=窗口起点）。 */
     private final Map<Long, PendingMove> pendingMoveAlert = new java.util.concurrent.ConcurrentHashMap<>();
     /** 最近一次地图城对象（type=1）给出的实时昵称：uid → nick（2026-11-04：推送只用实时昵称）。 */
@@ -426,6 +428,7 @@ public final class WatchPointEngine {
         }
     }
     private final Map<String, Long> alerted = new ConcurrentHashMap<>();
+    // A2 集结出征 30s 聚合：同攻击者+同目标；窗口与战争通知共用（AlertRegistry.a2Agg）。
     private final ExecutorService alertExec = Executors.newSingleThreadExecutor(r -> {
         Thread t = new Thread(r, "watchpoint-alert");
         t.setDaemon(true);
@@ -516,8 +519,12 @@ public final class WatchPointEngine {
     private final java.util.concurrent.atomic.AtomicLong statSelfIgnored = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong statUnknownTargetIgnored = new java.util.concurrent.atomic.AtomicLong();
     private final java.util.concurrent.atomic.AtomicLong statRallyFollowerIgnored = new java.util.concurrent.atomic.AtomicLong();
+    /** 2026-11-09：保护矩形内 PvE 行军（巨兽/野外集结等）被 A2 敌袭静默的计数。 */
+    private final java.util.concurrent.atomic.AtomicLong statPveIgnored = new java.util.concurrent.atomic.AtomicLong();
     /** 未知目标候选 INFO 去重（同 type/owner/坐标只记一次，防日志刷屏）。 */
     private final Set<String> unknownTargetLogged = ConcurrentHashMap.newKeySet();
+    /** PvE 来袭候选静默 INFO 去重（同 type/owner/坐标只记一次）。 */
+    private final Set<String> pveIncomingLogged = ConcurrentHashMap.newKeySet();
     private long lastStatsAt;
     private volatile boolean lastTickHadEngine;
     private volatile java.util.List<String> lastEngineDescs = java.util.Collections.emptyList();
@@ -640,7 +647,7 @@ public final class WatchPointEngine {
         if (now - lastStatsAt < 60_000L) return;
         lastStatsAt = now;
         FileLog.info("[{}] 运行统计：有会话={} 会话={} 监视发送={}(回包{} 超时{}) 保护发送={}(回包{}) 告警={} 扫描={} 城缓存={}"
-                        + " 自循环忽略={} 未知目标忽略={} 随从静默={} 角色数={} 账号数={}",
+                        + " 自循环忽略={} 未知目标忽略={} 随从静默={} PvE静默={} 角色数={} 账号数={}",
                 LOG, String.valueOf(lastTickHadEngine),
                 String.join(",", lastEngineDescs),
                 String.valueOf(statSentMonitor.get()), String.valueOf(statOkMonitor.get()),
@@ -649,6 +656,7 @@ public final class WatchPointEngine {
                 scan.active ? "进行中" : "空闲", String.valueOf(cityByUid.size()),
                 String.valueOf(statSelfIgnored.get()), String.valueOf(statUnknownTargetIgnored.get()),
                 String.valueOf(statRallyFollowerIgnored.get()),
+                String.valueOf(statPveIgnored.get()),
                 String.valueOf(lastEngineDescs.size()), String.valueOf(lastAccountCount));
     }
 
@@ -927,6 +935,7 @@ public final class WatchPointEngine {
         int n = engines.size();
         long now = System.currentTimeMillis();
         refillTokens(now);
+        flushAggregates(now);
         if (store.fullScanIntervalMs > 0 && now >= nextScanAt) {
             startScan("周期基线刷新");
             return;
@@ -958,6 +967,7 @@ public final class WatchPointEngine {
         // 超时清理 + 告警去重表清理
         if (now - lastPruneAt > 60_000L) {
             lastPruneAt = now;
+            com.carlos.vaultserver.alert.AlertRegistry.sweepDeduper(now);
             // 名单里已删除的目标，跟踪状态一并清掉（防 map 无限增长）
             if (targetSeenAt.size() > 32) {
                 targetSeenAt.keySet().removeIf(uid -> !isMonitoredUid(uid));
@@ -1626,6 +1636,14 @@ public final class WatchPointEngine {
             }
             // A2 敌袭：只报「进攻(2)/集结出征(102)」
             if (type != 2L && type != 102L) return;
+            // 2026-11-09 误报修复（用户实测）：巨兽模板的集结出征实为 PvE 行军，不能当敌袭推送。
+            // 原来这里只判 type/友盟城/友军，缺 PvE 过滤（采集点分支有，A2 分支漏了）。
+            String pve = pveMarchReason(m);
+            if (!pve.isEmpty()) {
+                statPveIgnored.incrementAndGet();
+                logPveIncomingSkip(type, owner, ex, ey, pve);
+                return;
+            }
             // 来袭只对「已知友盟城」告警；联盟未知目标仅 INFO 记录候选，不推送。
             if (targetCity == null || targetAid <= 0L) {
                 statUnknownTargetIgnored.incrementAndGet();
@@ -1653,6 +1671,17 @@ public final class WatchPointEngine {
                 String.valueOf(ex), String.valueOf(ey));
     }
 
+    /** PvE 来袭候选静默（同 type/owner/坐标只记一次；reason 便于部署后核对命中字段）。 */
+    private void logPveIncomingSkip(long type, long owner, int ex, int ey, String reason) {
+        String key = type + ":" + owner + ":" + ex + ":" + ey;
+        if (pveIncomingLogged.size() > 2000) pveIncomingLogged.clear();
+        if (!pveIncomingLogged.add(key)) return;
+        FileLog.info("[{}] 来袭候选被过滤（PvE 巨兽/野外集结，不推送）：type={} 攻击者=uid{} "
+                        + "目标=({},{}) 特征={}",
+                LOG, String.valueOf(type), String.valueOf(owner),
+                String.valueOf(ex), String.valueOf(ey), reason);
+    }
+
     // ---------- 告警判定纯函数（2026-10-28 误报修复；单测见 WatchPointAlertFilterTest） ----------
 
     /**
@@ -1664,8 +1693,7 @@ public final class WatchPointEngine {
      * 坐标未知（-1）时不参与起点=终点判定（避免脏数据误杀）。
      */
     static boolean isSelfMarch(int sx, int sy, int ex, int ey, long targetUid, long owner) {
-        if (sx >= 0 && sy >= 0 && sx == ex && sy == ey) return true;
-        return targetUid > 0L && targetUid == owner;
+        return AlertRules.isSelfLoop(sx, sy, ex, ey, targetUid, owner);
     }
 
     /**
@@ -1675,17 +1703,13 @@ public final class WatchPointEngine {
      */
     static boolean shouldAlertIncoming(boolean selfMarch, long ownerAid, long targetAid,
                                        Set<Long> friendAids, long type, boolean rallyFollowerAlerts) {
-        if (selfMarch) return false;
-        if (targetAid <= 0L) return false;                                     // 目标联盟未知 → 不告警
-        if (friendAids == null || !friendAids.contains(targetAid)) return false; // 非友盟城
-        if (ownerAid > 0L && friendAids.contains(ownerAid)) return false;      // 友军自己人
-        if (!rallyFollowerAlerts && (type == 99L || type == 100L)) return false; // 随从告警可关
-        return true;
+        return AlertRules.incomingAllowed(selfMarch, ownerAid, targetAid, friendAids, type,
+                rallyFollowerAlerts);
     }
 
     /** 敌情告警判定（MONITOR）：自循环已单独过滤；同联盟/自家城之间的行军不算"打谁"（原有口径）。 */
     static boolean shouldAlertMonitor(long ownerAid, long targetAid) {
-        return !(ownerAid > 0L && targetAid > 0L && ownerAid == targetAid);
+        return AlertRules.monitorAllowed(ownerAid, targetAid);
     }
 
     /** 联盟标注（纯函数）：aid&gt;0 → " [标签]"；联盟未知(aid&lt;=0) → "（联盟未知）"，不再留空白。 */
@@ -1978,6 +2002,10 @@ public final class WatchPointEngine {
     }
 
     private boolean isMonitoredUid(long uid) {
+        // P2：已安装 fid 名单时以名单为准；未安装（旧单测/未迁移部署）回退旧 monitorTargets。
+        if (com.carlos.vaultserver.alert.WatchlistRegistry.shared() != null) {
+            return com.carlos.vaultserver.alert.WatchlistRegistry.isWatchedUid(uid);
+        }
         for (WatchPointStore.Target t : store.monitorTargets) {
             if (t.uid == uid) return true;
         }
@@ -2043,19 +2071,16 @@ public final class WatchPointEngine {
 
     /** A2 敌袭行为：2 进攻 / 102 集结出征。 */
     static String a2Behavior(long type) {
-        if (type == 102L) return "集结出征";
-        return "进攻";
+        return AlertText.a2Behavior(type);
     }
 
     private void alertIncoming(long owner, City ownerCity, long marchId, long type,
                                int ex, int ey, long endtime, long troops, String marchKey) {
-        // 集结随从/集结类按「目标点」聚合去重：一次集结几十个随从，避免刷屏与触发企微 20 条/分钟限速
-        String key = (type == 99L || type == 100L || type == 102L || type == 10L || type == 12L)
-                ? "in-rally:" + ex + ":" + ey
-                : "in:" + owner + ":" + marchId;
+        String key = "in:" + owner + ":" + marchId;
+        // P3：与战争通知共用 A2 全局去重（同一行军只推一次；不同攻击者各自独立）
+        if (!com.carlos.vaultserver.alert.AlertRegistry.firstA2(owner, marchId)) return;
         if (recentlyAlerted(key)) return;
         long nowMs = System.currentTimeMillis();
-        if (marchKey != null) alerted.put(marchKey, nowMs);
         City target = cityNear(ex, ey);
         // 2026-11-04：攻击者名优先实时地图昵称
         String who = nickOf(ownerCity);
@@ -2065,8 +2090,28 @@ public final class WatchPointEngine {
                 type, nickOf(target), target == null ? 0L : target.aid,
                 ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText(),
                 store.feintTroopsBelow);
+        // 2026-11-09 用户口径：集结出征按「攻击者+目标」30s 聚合。
+        // 首条即时推；同攻击者同目标后续波次静默；窗口结束补“共 N 波”。
+        // 不同攻击者打同一目标是不同窗口，各自首条立即推（a 打 b / c 打 b / d 打 b 都要推）。
+        if (type == 102L) {
+            if (!com.carlos.vaultserver.alert.AlertRegistry.a2Agg().feed("agg:" + owner + ":" + ex + ":" + ey, text, nowMs)) {
+                trackAttacker(owner, ownerCity);
+                return;
+            }
+        } else if (marchKey != null) {
+            alerted.put(marchKey, nowMs);
+        }
         alert(key, text);
         trackAttacker(owner, ownerCity);
+    }
+
+    /** 聚合窗口到期：对 count&gt;1 的窗口补发一条「共 N 波」汇总。 */
+    private void flushAggregates(long now) {
+        for (com.carlos.vaultserver.alert.AlertAggregator.Window w : com.carlos.vaultserver.alert.AlertRegistry.a2Agg().flushExpired(now)) {
+            String summary = com.carlos.vaultserver.alert.AlertText.withCount(
+                    w.baseText, w.count, nowText());
+            alert("agg-done:" + w.key + ":" + w.firstAt, summary);
+        }
     }
 
     /** 采集点缓存（只读，单测用）。 */
@@ -2141,6 +2186,41 @@ public final class WatchPointEngine {
             if (m.containsKey(k)) return true;
         }
         return false;
+    }
+
+    /** 巨兽/世界 boss 目标子对象（target 内命中任一即 PvE；打城时 target.map_city，不会命中）。 */
+    static final String[] PVE_TARGET_KEYS = {
+            "map_monster", "map_boss", "map_world_boss", "monster", "world_boss"
+    };
+
+    /**
+     * PvE 行军判定（deep 口径，返回命中特征；空串=非 PvE）。2026-11-09 用户实测：
+     * {@code type=102} 的「巨兽模板」集结被观察点 A2 误报为「集结出征」——顶层 PvE 动作键之外，
+     * 巨兽标记还可能落在 target 子对象或 mass 的 master_type 里，故补齐三层判定。
+     *
+     * <p>只认已知 PvE 的 master_type（501 冰原猎手 / 411 巨熊 / 5004 巨兽类）；
+     * 102 不在此列（保留「集结出征」能力，避免误杀真实打城集结）。
+     */
+    public static String pveMarchReason(Map<?, ?> m) {
+        if (m == null) return "null";
+        for (String k : PVE_MARCH_KEYS) {
+            if (m.containsKey(k)) return "key:" + k;
+        }
+        Map<?, ?> target = asMap(m.get("target"));
+        for (String k : PVE_TARGET_KEYS) {
+            if (target.containsKey(k)) return "target:" + k;
+        }
+        for (String mk : new String[]{"mass_master", "mass_slave", "mass", "mass_info"}) {
+            Map<?, ?> mass = asMap(m.get(mk));
+            long mt = asLong(mass.get("master_type"), 0L);
+            if (mt == 501L || mt == 411L || mt == 5004L) return mk + ".master_type:" + mt;
+        }
+        return "";
+    }
+
+    /** 是否 PvE 行军（deep 口径；A2 两条通道共用，避免口径漂移）。 */
+    public static boolean isPveMarchDeep(Map<?, ?> m) {
+        return !pveMarchReason(m).isEmpty();
     }
 
     /** uid → 联盟 aid：优先实时城缓存，其次玩家目录；未知 0。 */
@@ -2339,28 +2419,17 @@ public final class WatchPointEngine {
                                     long type, String targetNick, long targetAid,
                                     int ex, int ey, long etaSeconds, long troops, String nowTime,
                                     long feintBelow) {
-        // 2026-11-04 用户口径：🚨 敌袭·{行为}；级别/攻击者/兵力/目标/ETA/时间。
-        StringBuilder sb = new StringBuilder("🚨 敌袭·").append(a2Behavior(type)).append('\n');
-        sb.append("级别：").append(levelTag(troops, feintBelow)).append('\n');
-        sb.append("攻击者：").append(prefixed(attackerAid, aidLabels, attackerNick)).append('\n');
-        sb.append("兵力：").append(troops > 0L ? String.valueOf(troops) : "未知").append('\n');
-        sb.append("目标：");
-        if (targetNick != null && !targetNick.isEmpty()) {
-            sb.append(prefixed(targetAid, aidLabels, targetNick));
-        } else {
-            sb.append("（未知）");
-        }
-        sb.append('(').append(ex).append(',').append(ey).append(")\n");
-        sb.append("ETA：").append(hms(etaSeconds)).append('\n');
-        sb.append("时间：").append(nowTime);
-        return sb.toString();
+        // P1：A2 文案统一在 AlertText；输出与旧实现逐字一致。
+        String target = targetNick == null || targetNick.isEmpty()
+                ? "" : prefixed(targetAid, aidLabels, targetNick);
+        return AlertText.incoming(AlertText.a2Behavior(type), AlertText.level(troops, feintBelow),
+                prefixed(attackerAid, aidLabels, attackerNick), troops, target, ex, ey,
+                etaSeconds, nowTime);
     }
 
     /** 级别：⚪ 佯攻 / 🔴 威胁进攻（兵力未知=未知）。 */
     static String levelTag(long troops, long feintBelow) {
-        if (troops <= 0L) return "未知";
-        if (feintBelow <= 0L) return "🔴 威胁进攻";
-        return troops < feintBelow ? "⚪ 佯攻" : "🔴 威胁进攻";
+        return AlertText.level(troops, feintBelow);
     }
 
     /** 2026-11-02：整图扫描完成后，若玩家目录过期则后台重建（uid/fid/简称/aid 互查）。 */
@@ -2660,6 +2729,13 @@ public final class WatchPointEngine {
         statAlerts.incrementAndGet();
         lastAlertText = text;
         FileLog.info("[{}] {}", LOG, text.replace('\n', ' ').replace('\r', ' '));
+        // P3：观察点告警入事件库（App 时间线/短信可见）；幂等键 scan:<旧key>。
+        com.carlos.vaultserver.alert.AlertOutbox outbox =
+                com.carlos.vaultserver.alert.AlertRegistry.shared();
+        if (outbox != null) {
+            outbox.emit(com.carlos.vaultserver.alert.AlertOutbox.routeOfText(text),
+                    "scan:" + key, text, now, "SCAN");
+        }
         if (!store.wecomEnabled) return;
         VaultStore.WatchConfig cfg = vaultStore.watchConfig();
         if (!cfg.wecomEnabled || cfg.webhookUrl == null || cfg.webhookUrl.trim().isEmpty()) return;
@@ -2795,6 +2871,7 @@ public final class WatchPointEngine {
         m.put("selfIgnored", statSelfIgnored.get());
         m.put("unknownTargetIgnored", statUnknownTargetIgnored.get());
         m.put("rallyFollowerIgnored", statRallyFollowerIgnored.get());
+        m.put("pveIgnored", statPveIgnored.get());
         m.put("uptimeMs", running ? System.currentTimeMillis() - startedAt : 0L);
         return m;
     }

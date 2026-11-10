@@ -22,7 +22,11 @@ public class ProtoCaptureDebugReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context ctx, Intent intent) {
-        if (!BuildConfig.DEBUG || intent == null || intent.getAction() == null) return;
+        // 安全修复（2026-11-10）：本项目 release 也 debuggable=true，
+        // BuildConfig.DEBUG 在 release 恒为 true，用它做守卫会让生产包
+        // 的抓包启停/导出对外部应用完全开放。必须用 BUILD_TYPE 判断。
+        if (!"debug".equals(BuildConfig.BUILD_TYPE)
+                || intent == null || intent.getAction() == null) return;
         String action = intent.getAction();
         try {
             if (ACTION_START.equals(action)) {

@@ -278,6 +278,9 @@ public class AccountStore {
      * 取某角色的设备指纹 JSON（独立键 {@code role_settings:<fpid>:<sid>}）。刻意不进 accounts
      * 数组——那份序列化有 save()/toJsonArray() 两处必须同步的坑，独立键零迁移零风险。
      * 无则返回 {@code ""}（调用方回落引擎随机生成）。
+     *
+     * <p>uid 未知的旧调用保持旧键；新代码用 {@link #getRoleSettings(String, long, long)}
+     * 读 {@code sid:uid} 键（同服多角色各自一台设备，2026-11-08 对齐原版网页版）。
      */
     public String getRoleSettings(String fpid, long sid) {
         if (fpid == null || fpid.isEmpty() || sid <= 0) return "";
@@ -285,10 +288,25 @@ public class AccountStore {
         return v == null ? "" : v;
     }
 
+    /** 取某角色（sid+uid）的设备指纹；无 uid 时回落旧 sid 键。 */
+    public String getRoleSettings(String fpid, long sid, long uid) {
+        if (fpid == null || fpid.isEmpty() || sid <= 0) return "";
+        if (uid <= 0) return getRoleSettings(fpid, sid);
+        String v = sp.getString("role_settings:" + fpid + ":" + sid + ":" + uid, "");
+        return v == null ? "" : v;
+    }
+
     /** 记录/更新某角色的设备指纹（引擎登录后回写固化，此后该角色复用同一"设备"）。 */
     public void updateRoleSettings(String fpid, long sid, String settings) {
+        updateRoleSettings(fpid, sid, 0, settings);
+    }
+
+    /** 记录/更新某角色（sid+uid）的设备指纹；uid<=0 时写旧 sid 键（兼容旧调用）。 */
+    public void updateRoleSettings(String fpid, long sid, long uid, String settings) {
         if (fpid == null || fpid.isEmpty() || sid <= 0 || settings == null || settings.isEmpty()) return;
-        String k = "role_settings:" + fpid + ":" + sid;
+        String k = uid > 0
+                ? "role_settings:" + fpid + ":" + sid + ":" + uid
+                : "role_settings:" + fpid + ":" + sid;
         if (settings.equals(sp.getString(k, ""))) return;   // 未变化不写盘
         sp.edit().putString(k, settings).apply();
     }
@@ -296,23 +314,78 @@ public class AccountStore {
     /**
      * 角色登录用的身份种子（含从账号级旧指纹的迁移规则）：
      * <ul>
-     *   <li>已有角色级指纹 → 直接复用；</li>
-     *   <li>没有且是主角色（当前选中，{@code sid == mainSid}）→ 沿用账号级旧指纹
-     *       （对服务器仍是"同一台设备"，不换脸）；</li>
-     *   <li>没有且是其它角色 → 返回空串，由引擎随机生成新"设备"，登录成功后固化；</li>
-     *   <li>{@code sid <= 0}（默认角色登录）→ 沿用账号级指纹（旧行为，默认角色即主角色）。</li>
+     *   <li>已有 {@code sid:uid} 角色级指纹 → 直接复用（登录成功后固化，永不变）；</li>
+     *   <li>仅有旧 {@code sid} 键且该区服无兄弟角色 → 沿用（单角色/旧数据零迁移、不换脸）；</li>
+     *   <li>仅有旧 {@code sid} 键且同区服还有其它角色 → 按 {@code fpid|sid|uid} 稳定派生
+     *       （每角色一台设备，避免同设备互踢——对齐原版 ConfigJsonLoader.scopeFingerprintToRole）；</li>
+     *   <li>都没有且是主角色 → 沿用账号级旧指纹；其它角色 → 返回空串由引擎随机生成，
+     *       登录成功后按 {@code sid:uid} 固化。</li>
      * </ul>
      *
-     * <p><b>注意：角色级指纹只是身份稳定性/风控分散手段，不能实现同账号多角色并行在线</b>——
-     * 服务器按账号（fpid）唯一会话，同账号新登录必踢旧会话（2026-10-07/08 终判实验：同指纹
-     * 收 code=46、异指纹收 code=5，均互踢；见 RoleSessionKeeper 类注释）。
+     * <p><b>2026-11-08 结论修正</b>：原「服务器按账号唯一会话、同账号新登录必踢旧」的终判
+     * 是在 web 端反抢干扰下得出的；网页版生产实测同账号同服双角色可长期同时在线
+     * （531/532@888、536/537@888），关键前提是<b>每个角色一台独立设备</b>。
      */
     public String roleIdentitySeed(String fpid, long sid, long mainSid) {
+        return roleIdentitySeed(fpid, sid, 0, mainSid);
+    }
+
+    /** 角色登录身份种子（uid 维度，2026-11-08；uid<=0 时退化为旧 sid 键语义）。 */
+    public String roleIdentitySeed(String fpid, long sid, long uid, long mainSid) {
         if (fpid == null || fpid.isEmpty()) return "";
         if (sid <= 0) return getSettings(fpid);
-        String role = getRoleSettings(fpid, sid);
-        if (!role.isEmpty()) return role;
-        return sid == mainSid ? getSettings(fpid) : "";
+        String exact = uid > 0 ? getRoleSettings(fpid, sid, uid) : "";
+        String sidSeed = getRoleSettings(fpid, sid);
+        boolean hasSibling = uid > 0 && hasSiblingRole(fpid, sid, uid);
+        String scoped = sidSeed.isEmpty() ? "" : roleScopedIdentity(sidSeed, fpid, sid, uid);
+        return resolveRoleSeed(exact, sidSeed, getSettings(fpid), scoped,
+                uid, sid, mainSid, hasSibling);
+    }
+
+    /**
+     * 纯函数：给定各级种子与「同区服是否有兄弟角色」决定本角色登录种子
+     * （无 Android 依赖，JVM 单测直跑）。
+     *
+     * <p>2026-11-08 修复：主角色在"同服有兄弟"时<b>不能</b>沿用账号级指纹——否则 A 用
+     * 账号级指纹固化后、B 切换为主角色时又拿到同一指纹，两者被视为同一台设备互踢。
+     */
+    static String resolveRoleSeed(String exactSeed, String sidSeed, String accountSeed,
+                                  String scopedSeed, long uid, long sid, long mainSid,
+                                  boolean hasSibling) {
+        if (uid > 0 && exactSeed != null && !exactSeed.isEmpty()) return exactSeed;
+        if (sidSeed != null && !sidSeed.isEmpty()) {
+            if (uid > 0 && hasSibling) return scopedSeed == null ? "" : scopedSeed;
+            return sidSeed;
+        }
+        // 主角色只有在同区服没有兄弟角色时才沿用账号级旧指纹；同服多角色一律不共享。
+        if (sid == mainSid && (uid <= 0 || !hasSibling)) {
+            return accountSeed == null ? "" : accountSeed;
+        }
+        return "";
+    }
+
+    /** 同区服是否还有其它角色（roles 表判断；查不到视为无，保持旧行为）。 */
+    private boolean hasSiblingRole(String fpid, long sid, long uid) {
+        try {
+            java.util.List<com.carlos.vault.daily.RoleStore.Role> roles =
+                    com.carlos.vault.daily.RoleStore.roles(appCtx, fpid);
+            if (roles == null) return false;
+            for (com.carlos.vault.daily.RoleStore.Role r : roles) {
+                if (r == null || r.serverid != sid) continue;
+                if (r.uid > 0 && r.uid != uid) return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        return false;
+    }
+
+    /**
+     * 角色级指纹派生（与 vault-server 共用 {@link com.carlos.vault.wjdr.RoleFingerprint}，
+     * 两端规则不再各自维护）。只改 device_id/distinct_id；ip/机型保持账号级。
+     */
+    static String roleScopedIdentity(String baseJson, String fpid, long sid, long uid) {
+        return com.carlos.vault.wjdr.RoleFingerprint.scoped(
+                baseJson, fpid, String.valueOf(sid), String.valueOf(uid));
     }
 
     /**
@@ -365,8 +438,57 @@ public class AccountStore {
         save(out);
         // 同时清掉该凭证的角色表/当前角色/任务开关，避免“删除后旧角色仍被当成当前角色”。
         if (removed != null) {
+            // 2026-11-08：记录本次显式删除的 fpid，随下一次全量 sync 告知服务端放行
+            //（服务端对「缺失且有 token 的账号」有骤减保护，避免其它设备整库覆盖误删）。
+            markFpidDeleted(removed.fpid);
             com.carlos.vault.daily.RoleStore.removeAccount(appCtx, removed.fpid);
         }
+    }
+
+    // ---------- 待提交的账号删除（2026-11-08，配合服务端骤减同步保护） ----------
+
+    private static final String KEY_DELETED_FPIDS = "deleted_fpids";
+
+    /** 记录一个已被本地删除、待随全量 sync 告知服务端的 fpid（去重、上限 200）。 */
+    public void markFpidDeleted(String fpid) {
+        if (fpid == null || fpid.isEmpty()) return;
+        java.util.Set<String> set = pendingDeletedFpids();
+        if (!set.add(fpid)) return;
+        sp.edit().putString(KEY_DELETED_FPIDS, joinFpids(set)).apply();
+    }
+
+    /** 待提交删除的 fpid 集合（逗号分隔存储）。 */
+    public java.util.Set<String> pendingDeletedFpids() {
+        java.util.Set<String> out = new java.util.LinkedHashSet<String>();
+        String raw = sp.getString(KEY_DELETED_FPIDS, "");
+        if (raw == null || raw.isEmpty()) return out;
+        for (String s : raw.split(",")) {
+            String v = s.trim();
+            if (!v.isEmpty() && out.size() < 200) out.add(v);
+        }
+        return out;
+    }
+
+    /** 逗号分隔串（sync 上传用）；无待删除返回空串。 */
+    public String pendingDeletedFpidsJoined() {
+        return joinFpids(pendingDeletedFpids());
+    }
+
+    /** 服务端已接受同步后清空待删除列表。 */
+    public void clearPendingDeleted() {
+        if (!pendingDeletedFpids().isEmpty()) {
+            sp.edit().remove(KEY_DELETED_FPIDS).apply();
+        }
+    }
+
+    private static String joinFpids(java.util.Set<String> set) {
+        StringBuilder sb = new StringBuilder();
+        for (String v : set) {
+            if (v == null || v.isEmpty()) continue;
+            if (sb.length() > 0) sb.append(',');
+            sb.append(v);
+        }
+        return sb.toString();
     }
 
     public String getLastEntry() {

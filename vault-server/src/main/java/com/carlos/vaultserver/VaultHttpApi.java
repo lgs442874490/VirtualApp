@@ -56,10 +56,18 @@ public final class VaultHttpApi {
     private final com.carlos.vaultserver.task.RoundScheduler roundScheduler;
     /** 战争通知中枢（可 null：测试旧构造；watch/events 端点返回 3002）。 */
     private final WarNotify war;
+
+    /** 迁城 1:1 复刻（2026-11-06）：引擎可为 null（单测旧构造兼容 → movecity 端点返回 3002）。 */
+    private final com.carlos.vaultserver.movecity.MoveCityEngine moveCity;
     /** 观察点配置仓（批次 B 2026-10-30；可 null：测试旧构造/watchpoint 端点返回 3002）。 */
     private final com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore;
     private final ApiSign.NonceCache nonceCache = new ApiSign.NonceCache();
     private HttpServer server;
+    /**
+     * 移民模块（藏宝阁-自由移民，2026-11-06）：可 null（旧构造/单测），此时端点返回 3002。
+     * 用 attach 注入而不加构造重载，避免既有构造器继续膨胀。
+     */
+    private volatile com.carlos.vaultserver.migrant.MigrantApi migrant;
 
     public VaultHttpApi(VaultConfig config, VaultStore store, SessionControl keeper, StateStore stateStore) {
         this(config, store, keeper, stateStore, null);
@@ -82,6 +90,14 @@ public final class VaultHttpApi {
                         StateStore stateStore, com.carlos.vaultserver.task.RoundScheduler roundScheduler,
                         WarNotify war,
                         com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore) {
+        this(config, store, keeper, stateStore, roundScheduler, war, watchPointStore, null);
+    }
+
+    public VaultHttpApi(VaultConfig config, VaultStore store, SessionControl keeper,
+                        StateStore stateStore, com.carlos.vaultserver.task.RoundScheduler roundScheduler,
+                        WarNotify war,
+                        com.carlos.vaultserver.watchpoint.WatchPointStore watchPointStore,
+                        com.carlos.vaultserver.movecity.MoveCityEngine moveCity) {
         this.config = config;
         this.store = store;
         this.keeper = keeper;
@@ -89,6 +105,7 @@ public final class VaultHttpApi {
         this.roundScheduler = roundScheduler;
         this.war = war;
         this.watchPointStore = watchPointStore;
+        this.moveCity = moveCity;
     }
 
     public void start() throws IOException {
@@ -108,6 +125,9 @@ public final class VaultHttpApi {
         server.createContext("/v1/vault/state", ex -> guard(ex, "POST", "vaultState", this::handleState));
         server.createContext("/v1/vault/policy", ex -> guard(ex, "POST", "vaultPolicy", this::handlePolicy));
         server.createContext("/v1/vault/automation", ex -> guard(ex, "POST", "vaultAutomation", this::handleAutomation));
+        // 移民（藏宝阁-自由移民，2026-11-06）：单端点 + action 分发（同 role-action 惯例）。
+        // 网页版是 /api/migrant/* 14 个 REST 端点，本项目统一走 ApiSign 信封。
+        server.createContext("/v1/vault/migrant", ex -> guard(ex, "POST", "vaultMigrant", this::handleMigrant));
         // 账号池控制面（M1 2026-10-21，契约 §3）：列表/角色动作/账号批量/全局批量
         server.createContext("/v1/vault/accounts", ex -> guard(ex, "POST", "vaultAccounts", this::handleAccounts));
         server.createContext("/v1/vault/role-action", ex -> guard(ex, "POST", "vaultRoleAction", this::handleRoleAction));
@@ -116,6 +136,9 @@ public final class VaultHttpApi {
         // 战争通知（2026-10-22）：监视名单/通知配置/测试通知 + 事件游标同步
         server.createContext("/v1/vault/watch", ex -> guard(ex, "POST", "vaultWatch", this::handleWatch));
         server.createContext("/v1/vault/events", ex -> guard(ex, "POST", "vaultEvents", this::handleEvents));
+        // 告警中枢 P2（2026-11-09）：fid 关注名单 list/add/update/remove/bulk（旧 /watch、/watchpoint 并存）
+        server.createContext("/v1/vault/alert",
+                ex -> guard(ex, "POST", "vaultAlert", this::handleAlert));
         // 观察点配置（批次 B 2026-10-30）：get/set/enable/disable；写盘后引擎 5s 内 mtime 热载
         server.createContext("/v1/vault/watchpoint",
                 ex -> guard(ex, "POST", "vaultWatchpoint", this::handleWatchpoint));
@@ -127,11 +150,18 @@ public final class VaultHttpApi {
         // 起号批量（M4b 2026-11-07）：import/batch-*/referral-*/single-* 动作分发
         server.createContext("/v1/vault/bootstrap",
                 ex -> guard(ex, "POST", "vaultBootstrap", this::handleBootstrap));
+        // 迁城 1:1 复刻（2026-11-06）：protocols/execute/schedule/jobs/job/cancel/remove-account
+        // （action 分发，语义对齐原版 /api/movecity/move-city/* REST 面）
+        server.createContext("/v1/vault/movecity",
+                ex -> guard(ex, "POST", "vaultMovecity", this::handleMovecity));
         // 热更新自托管（2026-10-25）：App 默认更新源，无签名；详见 HotConfigRoutes
         server.createContext("/v1/vault/hotconfig",
                 ex -> HotConfigRoutes.serveHotConfig(ex, config.dataDir));
         server.createContext("/v1/vault/app-latest.apk",
                 ex -> HotConfigRoutes.serveApk(ex, config.dataDir));
+        // DexPatch 代码补丁（2026-11-09）：dataDir/patch/code.dex 流式返回
+        server.createContext("/v1/vault/patch/code.dex",
+                ex -> HotConfigRoutes.servePatch(ex, config.dataDir));
         server.createContext("/healthz", ex -> {
             writeJson(ex, 200, envelope(0, "ok", new JSONObject()));
         });
@@ -147,6 +177,13 @@ public final class VaultHttpApi {
     /** 测试用：实际监听地址（端口 0 时取分配结果）。 */
     com.sun.net.httpserver.HttpServer server() {
         return server;
+    }
+
+    /**
+     * 注入移民模块（Main 用）。测试旧构造不注入 → /v1/vault/migrant 返回 3002。
+     */
+    public void attachMigrant(com.carlos.vaultserver.migrant.MigrantApi api) {
+        this.migrant = api;
     }
 
     // ---------- 处理器骨架 ----------
@@ -201,6 +238,21 @@ public final class VaultHttpApi {
     }
 
     // ---------- 业务端点 ----------
+
+    /**
+     * 移民端点（14 个 action 由 {@link com.carlos.vaultserver.migrant.MigrantApi#handle} 分发）。
+     * 未注入（旧构造/单测）返回 3002，语义同 watch/watchpoint 的降级约定。
+     */
+    private JSONObject handleMigrant(Map<String, Object> fields) throws Exception {
+        com.carlos.vaultserver.migrant.MigrantApi api = this.migrant;
+        if (api == null) throw new BizError(3002, "移民模块未启用");
+        try {
+            return api.handle(fields);
+        } catch (com.carlos.vaultserver.migrant.MigrantApi.BizError e) {
+            // 模块内业务错误 → 统一信封（HTTP 200 + code），与 1004/3002 等同构
+            throw new BizError(e.code, e.getMessage());
+        }
+    }
 
     private JSONObject handleSync(Map<String, Object> fields) throws Exception {
         String accountsJson = str(fields, "accountsJson");
@@ -295,13 +347,76 @@ public final class VaultHttpApi {
             data.put("message", "服务端已有 " + currentAccounts + " 个账号，空列表同步被拒绝（防误清空）");
             return data;
         }
+        // 骤减保护（2026-11-08）：多设备/多 App 实例共用同一身份库时，任一设备本地账号较少
+        // （卸载重装/换机/另一实例）都会整库覆盖，把其它设备账号删掉（生产 20:02:40：
+        // 5 账号 → 1 账号，其它设备点「全部上线」报「账号不存在」）。
+        // 规则：incoming 缺失的「服务端已有且有 token」账号数达到显著比例（≥2 且超过半数）时
+        // 拒绝覆盖；App 显式删除账号时随 sync 携带 deletedFpids（或 allowShrink=true）放行。
+        // 缺失 1 个账号（如主设备对齐另一实例的单号）不拦，避免阻碍正常恢复。
+        java.util.Set<String> incomingFpids = new java.util.HashSet<>();
+        for (VaultStore.Account a : incoming) {
+            if (a != null && a.fpid != null && !a.fpid.isEmpty()) incomingFpids.add(a.fpid);
+        }
+        java.util.Set<String> deletedFpids = parseFpidSet(fields.get("deletedFpids"));
+        java.util.List<String> missingFpids = new java.util.ArrayList<>();
+        for (VaultStore.Account old : store.snapshot()) {
+            if (old == null || old.fpid == null || old.fpid.isEmpty()) continue;
+            if (incomingFpids.contains(old.fpid)) continue;
+            if (old.token == null || old.token.isEmpty()) continue;   // 无 token 的空壳允许自然收敛
+            if (deletedFpids.contains(old.fpid)) continue;            // App 显式删除
+            missingFpids.add(old.fpid);
+        }
+        boolean allowShrink = truthy(fields.get("allowShrink")) || truthy(fields.get("force"));
+        if (!allowShrink && shouldRejectShrink(currentAccounts, missingFpids.size())) {
+            FileLog.warn("身份库骤减同步已拒绝：服务端 {} 个账号，incoming={}，缺失且有 token {} 个={}"
+                            + "（防其它设备本地账号较少整库覆盖；确需删除请带 deletedFpids/allowShrink）",
+                    String.valueOf(currentAccounts), String.valueOf(incoming.size()),
+                    String.valueOf(missingFpids.size()), missingFpids.toString());
+            JSONObject data = new JSONObject();
+            data.put("accepted", 0);
+            data.put("shrinkRejected", true);
+            data.put("serverAccounts", currentAccounts);
+            data.put("missingAccounts", new org.json.JSONArray(missingFpids));
+            data.put("message", "服务器账号库有其它设备同步的账号（" + missingFpids.size()
+                    + " 个），本次同步会删除它们，已拒绝；如需删除账号请走删除流程");
+            return data;
+        }
+        // 迁城 1:1 复刻（2026-11-06）：全量同步中消失的账号联动取消未开始的定时迁城任务
+        // （原版 removeParentAccount 语义；防已删账号的任务到点白跑/报错）。
+        java.util.Set<String> before = new java.util.HashSet<>();
+        for (VaultStore.Account a : store.snapshot()) before.add(a.fpid);
         int n = store.replaceAll(incoming);
+        if (moveCity != null) {
+            for (String fpid : before) {
+                if (store.find(fpid) == null) moveCity.removeAccountEverywhere(fpid);
+            }
+        }
         keeper.reconcile();
         FileLog.info("身份库同步：{} 条（keep={}）", String.valueOf(n),
                 String.valueOf(incoming.stream().filter(a -> a.keep).count()));
         JSONObject data = new JSONObject();
         data.put("accepted", n);
         return data;
+    }
+
+    /**
+     * 全量同步骤减判定（2026-11-08）：缺失「服务端已有且有 token」的账号数达到
+     * ≥2 且超过服务端账号数一半时拒绝（防多设备互相整库覆盖）。
+     * 缺失 1 个不拦（主设备与另一实例单号对齐/正常恢复）；显式删除走 deletedFpids/allowShrink。
+     */
+    static boolean shouldRejectShrink(int currentAccounts, int missingTokenAccounts) {
+        return missingTokenAccounts >= 2 && missingTokenAccounts * 2 > currentAccounts;
+    }
+
+    /** 解析逗号/空白分隔的 fpid 列表（App 显式删除账号时随 sync 携带）。 */
+    static java.util.Set<String> parseFpidSet(Object raw) {
+        java.util.Set<String> out = new java.util.HashSet<String>();
+        if (raw == null) return out;
+        for (String s : String.valueOf(raw).split("[,\\s]+")) {
+            String v = s.trim();
+            if (!v.isEmpty()) out.add(v);
+        }
+        return out;
     }
 
     private JSONObject handleToken(Map<String, Object> fields) throws Exception {
@@ -1267,6 +1382,132 @@ public final class VaultHttpApi {
         return watchpointSnapshot();
     }
 
+    /**
+     * 告警中枢 P2：fid 关注名单。action=list/add/update/remove/bulk。
+     * 名单全局一份、不依赖 fpid；旧 /v1/vault/watch 保持原行为（迁移期双轨）。
+     */
+    private JSONObject handleAlert(Map<String, Object> fields) throws Exception {
+        com.carlos.vaultserver.alert.WatchlistService svc =
+                com.carlos.vaultserver.alert.WatchlistRegistry.shared();
+        if (svc == null) throw new BizError(3002, "告警中枢未启用");
+        String action = str(fields, "action");
+        if (action == null || action.isEmpty()) throw new BizError(3002, "缺少 action");
+        JSONObject data = new JSONObject();
+        switch (action) {
+            case "list":
+                data.put("entries", alertEntriesJson(svc));
+                data.put("unresolved", alertUnresolvedJson(svc));
+                return data;
+            case "add": {
+                if (!svc.add(str(fields, "fid"), str(fields, "note"))) {
+                    throw new BizError(3002, "FID 必须为纯数字（游戏领主档案里的那串数字）");
+                }
+                data.put("entries", alertEntriesJson(svc));
+                return data;
+            }
+            case "update": {
+                Boolean enabled = fields.containsKey("enabled")
+                        ? optBool(fields, "enabled", true) : null;
+                if (!svc.update(str(fields, "fid"), str(fields, "note"), enabled)) {
+                    throw new BizError(3002, "名单条目不存在");
+                }
+                data.put("entries", alertEntriesJson(svc));
+                return data;
+            }
+            case "remove": {
+                if (!svc.remove(str(fields, "fid"))) throw new BizError(3002, "名单条目不存在");
+                data.put("entries", alertEntriesJson(svc));
+                return data;
+            }
+            case "bulk": {
+                // App 本地 seed 上报：targets:[{uid 或 fid, note, kid}]。
+                // 默认 enabled=false（暂停），用户在页面确认后再启用；只给 uid 时服务端反查 fid，
+                // 反查不到则进 unresolved（uid 仍参与匹配，不漏监控）。
+                Object raw = fields.get("targets");
+                int n = 0;
+                int unresolved = 0;
+                if (raw instanceof java.util.List) {
+                    for (Object o : (java.util.List<?>) raw) {
+                        if (!(o instanceof java.util.Map)) continue;
+                        java.util.Map<?, ?> m = (java.util.Map<?, ?>) o;
+                        String fid = m.get("fid") == null ? "" : String.valueOf(m.get("fid")).trim();
+                        String note = m.get("note") == null ? "" : String.valueOf(m.get("note")).trim();
+                        long uid = 0L;
+                        Object u = m.get("uid");
+                        if (u != null) {
+                            try {
+                                uid = Long.parseLong(String.valueOf(u).trim());
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        if (fid.isEmpty() && uid > 0L) {
+                            com.carlos.vaultserver.watchpoint.PlayerDirectory.Entry e =
+                                    com.carlos.vaultserver.watchpoint.PlayerDirectory.shared() == null
+                                            ? null
+                                            : com.carlos.vaultserver.watchpoint.PlayerDirectory.shared().byUid(uid);
+                            fid = e == null || e.fid == null ? "" : e.fid.trim();
+                        }
+                        if (fid.isEmpty()) {
+                            if (uid > 0L) {
+                                VaultStore.AlertWatchEntry ue =
+                                        new VaultStore.AlertWatchEntry("uid:" + uid);
+                                ue.uid = uid;
+                                ue.note = note;
+                                ue.health = "UNRESOLVED";
+                                ue.source = "MIGRATED_LOCAL";
+                                ue.legacyRaw = "uid:" + uid;
+                                store.addAlertUnresolved(ue);
+                                unresolved++;
+                            }
+                            continue;
+                        }
+                        if (svc.add(fid, note)) {
+                            svc.update(fid, null, false);   // 默认暂停
+                            n++;
+                        }
+                    }
+                }
+                data.put("imported", n);
+                data.put("unresolved", unresolved);
+                data.put("entries", alertEntriesJson(svc));
+                return data;
+            }
+            default:
+                throw new BizError(3002, "未知 action: " + action);
+        }
+    }
+
+    private static JSONArray alertEntriesJson(com.carlos.vaultserver.alert.WatchlistService svc) {
+        JSONArray arr = new JSONArray();
+        for (VaultStore.AlertWatchEntry e : svc.list()) {
+            JSONObject o = new JSONObject();
+            o.put("fid", e.fid);
+            o.put("uid", e.uid);
+            o.put("nick", e.nick == null ? "" : e.nick);
+            o.put("kid", e.kid == null ? "" : e.kid);
+            o.put("note", e.note == null ? "" : e.note);
+            o.put("enabled", e.enabled);
+            o.put("health", e.health == null ? "UNRESOLVED" : e.health);
+            o.put("source", e.source == null ? "USER" : e.source);
+            o.put("resolvedAt", e.resolvedAt);
+            arr.put(o);
+        }
+        return arr;
+    }
+
+    private static JSONArray alertUnresolvedJson(com.carlos.vaultserver.alert.WatchlistService svc) {
+        JSONArray arr = new JSONArray();
+        for (VaultStore.AlertWatchEntry e : svc.unresolved()) {
+            JSONObject o = new JSONObject();
+            o.put("legacyRaw", e.legacyRaw == null ? "" : e.legacyRaw);
+            o.put("uid", e.uid);
+            o.put("note", e.note == null ? "" : e.note);
+            o.put("source", e.source == null ? "" : e.source);
+            arr.put(o);
+        }
+        return arr;
+    }
+
     private JSONObject handleWatch(Map<String, Object> fields) throws Exception {
         if (war == null) throw new BizError(3002, "战争通知未启用");
         String action = str(fields, "action");
@@ -1478,6 +1719,18 @@ public final class VaultHttpApi {
         return com.carlos.vaultserver.bootstrap.BootstrapApi.handle(fields);
     }
 
+    /** 迁城 1:1 复刻（2026-11-06）：action 分发委托 {@code MoveCityApi}；业务校验错 → 3002。 */
+    private JSONObject handleMovecity(Map<String, Object> fields) {
+        if (moveCity == null) {
+            throw new BizError(3002, "服务端未启用迁城功能");
+        }
+        try {
+            return com.carlos.vaultserver.movecity.MoveCityApi.handle(moveCity, fields);
+        } catch (IllegalArgumentException e) {
+            throw new BizError(3002, e.getMessage());
+        }
+    }
+
     private String sessionStateOf(String fpid) {
         try {
             for (SessionControl.SessionStatus s : keeper.status()) {
@@ -1561,9 +1814,44 @@ public final class VaultHttpApi {
     private static void writeJson(HttpExchange ex, int httpStatus, JSONObject body) throws IOException {
         byte[] bytes = body.toString().getBytes(StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", "application/json; charset=utf-8");
+        // 2026-11-08：公网链路带宽有限（/state 915KB 实测 24s，App 请求超时 → 账号页「状态获取失败」），
+        // 启用 gzip（JSON 压缩比约 10x）。OkHttp 默认带 Accept-Encoding: gzip 并自动解压，
+        // 旧版 APK 无需改动即可受益。
+        if (acceptsGzip(ex)) {
+            try {
+                byte[] gz = gzip(bytes);
+                if (gz.length < bytes.length) {
+                    ex.getResponseHeaders().set("Content-Encoding", "gzip");
+                    ex.getResponseHeaders().add("Vary", "Accept-Encoding");
+                    bytes = gz;
+                }
+            } catch (Throwable ignored) {
+                // 压缩失败回退未压缩（绝不阻断响应）
+            }
+        }
         ex.sendResponseHeaders(httpStatus, bytes.length);
         try (OutputStream out = ex.getResponseBody()) {
             out.write(bytes);
         }
+    }
+
+    /** 请求是否接受 gzip（Accept-Encoding 含 gzip）。 */
+    private static boolean acceptsGzip(HttpExchange ex) {
+        try {
+            String ae = ex.getRequestHeaders().getFirst("Accept-Encoding");
+            return ae != null && ae.toLowerCase(java.util.Locale.ROOT).contains("gzip");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** gzip 压缩（失败由调用方按未压缩返回，绝不阻断响应）。 */
+    private static byte[] gzip(byte[] data) throws IOException {
+        java.io.ByteArrayOutputStream bos =
+                new java.io.ByteArrayOutputStream(Math.max(64, data.length / 4));
+        try (java.util.zip.GZIPOutputStream gz = new java.util.zip.GZIPOutputStream(bos)) {
+            gz.write(data);
+        }
+        return bos.toByteArray();
     }
 }

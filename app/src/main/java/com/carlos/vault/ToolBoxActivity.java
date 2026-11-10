@@ -63,12 +63,9 @@ public class ToolBoxActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        // 批次7 防旁路：本页只有 T3（起号/敌情监控/真机监控/观察点/真机抓包）与调试工具；
-        // 无任何可用工具时（含直接 Intent 启动绕过 Home 入口门控）直接返回，不放空壳页也不泄露功能清单。
-        if (!FeatureGate.visible(this, FeatureGate.Feature.ACCOUNT_FARM)
-                && !FeatureGate.visible(this, FeatureGate.Feature.ENEMY_WATCH)
-                && !FeatureGate.visible(this, FeatureGate.Feature.DEV_MONITOR)
-                && !FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER)) {
+        // 批次7 防旁路：本页只有 T3（敌情监控/真机监控/迁城/移民等）与调试工具；无任何可用工具时
+        // （含直接 Intent 启动绕过 Home 入口门控）直接返回，不放空壳页也不泄露功能清单。
+        if (!FeatureGate.anyToolVisible(this)) {
             toast(FeatureGate.reasonText(FeatureGate.Feature.TOOLBOX));
             finish();
             return;
@@ -94,15 +91,32 @@ public class ToolBoxActivity extends Activity {
         // 三消/爆兵/宠物洗练/移民抢位/侦察战报/迁城/坐标查询/充值记录/巨兽批量等均无实现）；
         // ③ 工具箱内调试/实测项仅调试包可见。
         // 注意：统一走 FeatureGate.visible(this, feature)（服务端矩阵优先），不要再传 tier 纯函数。
+        final boolean canMoveCity = FeatureGate.visible(this, FeatureGate.Feature.MOVE_CITY);     // T3 高阶（迁城）
         final boolean canFarm = FeatureGate.visible(this, FeatureGate.Feature.ACCOUNT_FARM);     // T3 起号（M5）
         final boolean canMonitor = FeatureGate.visible(this, FeatureGate.Feature.DEV_MONITOR);    // T3 高阶（正式包可见）
         final boolean canWatchpoint = FeatureGate.visible(this, FeatureGate.Feature.WATCHPOINT);   // T3 高阶
         final boolean canCapture = FeatureGate.visible(this, FeatureGate.Feature.PROTO_CAPTURE)
                 && android.os.Build.VERSION.SDK_INT >= 21;   // 真机抓包：T3 + API21+
+        // 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：服务端 14 action + 准备窗口
+        // （开放前 15 分钟上号/退盟/召回）+ 50ms 抢位 + 重登对账；危险动作均二次确认。
+        // 服务端任务型模块 → 追加服务器模式前置。
+        final boolean canMigrant = FeatureGate.visible(this, FeatureGate.Feature.IMMIGRATION)
+                && com.carlos.vault.VaultSync.isServerMode(this);
         final boolean canProto = FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER); // 仅调试包
         final int toolCount = FeatureGate.visibleToolCount(this);
         if (toolCount > 0) {
             box.addView(sectionRow("可用工具 · " + toolCount, "诊断与监控"));
+            // 迁城（T3 高级会员，2026-11-06）：网页版迁城 1:1 复刻——12 种协议/立即批量/
+            // 定时抢位/任务管理，服务端执行。旧服务端无该端点时页内提示「服务端未升级」。
+            if (canMoveCity) {
+                LinearLayout moveCard = toolCard(UiStyle.Icon.COMPASS, "迁城",
+                        "12 种迁城协议 · 立即批量/定时抢位（服务器执行）", UiStyle.BRAND_50);
+                moveCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
+                        UiStyle.INK3, 18));
+                moveCard.setOnClickListener(v -> startActivity(
+                        new Intent(this, com.carlos.vault.daily.movecity.MoveCityActivity.class)));
+                box.addView(moveCard);
+            }
             // 起号（M5，2026-11-07）：BootstrapActivity 注册接码/批量起号/账号回流三区页。
             if (canFarm) {
                 LinearLayout farmCard = toolCard(UiStyle.Icon.USERS, "起号",
@@ -131,6 +145,30 @@ public class ToolBoxActivity extends Activity {
                 attachToggle(protoCard, protoSw[0]);
                 refreshProtoCard(protoCard, protoSw[0]);
                 box.addView(protoCard);
+            }
+            // 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：服务端 14 action + 准备窗口
+            // （开放前 15 分钟上号/退盟/召回）+ 50ms 抢位 + 重登对账；页面内危险动作均二次确认。
+            if (canMigrant) {
+                LinearLayout migrantCard = toolCard(UiStyle.Icon.COMPASS, "移民",
+                        "自由移民 · 资格预检、边界任务与毫秒级抢位", UiStyle.BRAND_50);
+                migrantCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
+                        UiStyle.INK3, 18));
+                migrantCard.setOnClickListener(v -> {
+                    // 身份口径与资产中心一致：前台 home:current_role（fpid:sid[:uid]）。
+                    // 解析失败时交回 Activity 自身回退（MigrantWorkspaceActivity 内部同源兜底）。
+                    String raw = getSharedPreferences("home", MODE_PRIVATE)
+                            .getString("current_role", "");
+                    com.carlos.vault.daily.CurrentRoleKey.Parts p =
+                            com.carlos.vault.daily.CurrentRoleKey.parse(raw);
+                    if (p != null) {
+                        com.carlos.vault.migrant.MigrantWorkspaceActivity.launch(
+                                this, p.fpid, p.sid, p.uid);
+                    } else {
+                        startActivity(new Intent(this,
+                                com.carlos.vault.migrant.MigrantWorkspaceActivity.class));
+                    }
+                });
+                box.addView(migrantCard);
             }
             // 观察点（批次 B 2026-10-30）：App 内可视化编辑服务器 data/watchpoint.json（get/set/enable）。
             if (canWatchpoint) {
