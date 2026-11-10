@@ -1,6 +1,9 @@
 package com.carlos.vaultserver.task;
 
 import com.carlos.vault.wjdr.WjdrEngine;
+import com.carlos.vault.wjdr.asset.AssetSnapshot;
+import com.carlos.vault.wjdr.asset.CoreAssetLibrary;
+import com.carlos.vault.wjdr.asset.CoreAssetRegistry;
 import com.carlos.vault.wjdr.pet.PetSkillCatalog;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.Beijing;
@@ -124,6 +127,10 @@ public final class ServerBearTasks {
     static final int CODE_HERO_NOT_IN_CITY = 301;
     /** 巨熊 301 降级重试最大轮数（网页版语义：拉黑 301 英雄后换其余英雄组合，最多 2 轮）。 */
     static final int MAX_BEAR_301_ROUNDS = 2;
+    /** 默认打熊队预设（无显式编队时服务端回退；2026-11-10 生产修复）。 */
+    static final long DEFAULT_BEAR_LAUNCH_FORMATION_ID = 9100000003L;
+    /** 默认熊上车1 预设起点（1-6 = +0..+5）。 */
+    static final long DEFAULT_BEAR_RIDE_FIRST_ID = 9100000010L;
     /** 开赛前召回/暂停队列的提前量（秒）：用户 2026-11-07 口径 = 5 分钟。 */
     static final long PREP_RECALL_SECONDS = 300L;
     /** 编队士兵数超限（406）：取消兵量自适应后仍保留一次 60s 延时重试。 */
@@ -617,10 +624,23 @@ public final class ServerBearTasks {
         String key = joinsKeyOf(tc);
         String day = dayKey(nowSec);
         List<Long> joined = joinedMasters(tc.store.getString(key), day, window.startSec);
-        int remaining = cfg.joinCount - joined.size();
+        // 2026-11-10：无 join_formations 时，服务端按库内熊上车1-6 生成默认槽（有则用，无则走旧自动）。
+        List<JoinFormationConfig> joinSlots = cfg.joinFormations;
+        boolean usingDefaultSlots = false;
+        if (joinSlots.isEmpty()) {
+            FormationLibrary defaultJoinLib = FormationResolver.libraryFor(tc, TASK_ID);
+            joinSlots = defaultJoinSlots(defaultJoinLib, cfg);
+            usingDefaultSlots = !joinSlots.isEmpty();
+            if (usingDefaultSlots) {
+                FileLog.info("巨熊上车使用默认模板槽 fpid={} sid={} count={}",
+                        tc.fpid, String.valueOf(tc.sid), String.valueOf(joinSlots.size()));
+            }
+        }
+        int joinLimit = Math.max(cfg.joinCount, usingDefaultSlots ? joinSlots.size() : 0);
+        int remaining = joinLimit - joined.size();
         if (remaining <= 0) {
-            m.skip("本场上车已达配置上限 " + cfg.joinCount + " 队");
-            writeJoinMod(tc, "本场已上车 " + joined.size() + "/" + cfg.joinCount + " 队（上限）");
+            m.skip("本场上车已达配置上限 " + joinLimit + " 队");
+            writeJoinMod(tc, "本场已上车 " + joined.size() + "/" + joinLimit + " 队（上限）");
             return;
         }
         long ownUid = tc.engine.lastUid();
@@ -642,10 +662,10 @@ public final class ServerBearTasks {
 
         // ---------- 批次11：join_formations 槽预解析（坏槽跳过继续；disabled 直接跳过） ----------
         List<JoinAttempt> configuredAttempts = null;
-        if (!cfg.joinFormations.isEmpty()) {
+        if (!joinSlots.isEmpty()) {
             FormationLibrary joinLib = FormationResolver.libraryFor(tc, TASK_ID);
             final FormationLibrary lib = joinLib;
-            JoinSlotSelection selection = selectJoinSlots(cfg.joinFormations,
+            JoinSlotSelection selection = selectJoinSlots(joinSlots,
                     slot -> resolveJoinSlot(tc, lib, slot));
             if (!selection.disabledIds.isEmpty()) {
                 FileLog.info("巨熊上车 disabled 槽跳过 fpid={} sid={} ids={}（不发请求/不计失败）",
@@ -668,12 +688,14 @@ public final class ServerBearTasks {
                         String.valueOf(tc.sid), note);
             }
             if (configuredAttempts.isEmpty()) {
-                StringBuilder summary = new StringBuilder("本场上车结束：可用上车编队为 0");
+                // 2026-11-10：编队槽全部不可用（如低等级角色预设无英雄）→ 回退旧自动编队，
+                // 不再整场放弃上车；自动编队会按空闲英雄/客户端布阵尝试。
+                StringBuilder summary = new StringBuilder("上车编队槽均不可用，回退自动编队");
                 if (!selection.skippedNotes.isEmpty()) summary.append("（").append(selection.notesText()).append("）");
                 m.skip(summary.toString());
-                writeJoinMod(tc, "未上车 · " + summary);
-                saveState(tc, state);
-                return;
+                FileLog.info("巨熊上车回退自动 fpid={} sid={} {}", tc.fpid,
+                        String.valueOf(tc.sid), summary);
+                configuredAttempts = null;
             }
         }
 
@@ -803,7 +825,7 @@ public final class ServerBearTasks {
         } else if (configuredAttempts != null && !configuredAttempts.isEmpty()) {
             // 已写具体结果；补充“启用槽/跳过槽”摘要便于生产核对（不改成功文案主体）
             try {
-                tc.saveModText(TASK_ID, "join_slots", "启用槽=" + enabledJoinFormationIds(cfg));
+                tc.saveModText(TASK_ID, "join_slots", "启用槽=" + enabledJoinFormationIds(joinSlots));
             } catch (Throwable ignored) {
             }
         }
@@ -905,24 +927,35 @@ public final class ServerBearTasks {
         return startSec - nowSec <= PREP_RECALL_SECONDS && doneWindowStart != startSec;
     }
 
-    /** 召回本角色全部在途/驻扎行军（state=2→recall；其余→off_work；排除 99/411）。 */
+    /** 召回本角色全部在途/驻扎行军（state=2→recall；其余→off_work；排除 99/411）。
+     *
+     * <p>2026-11-10 生产修复：只使用<b>实时资产库</b>行军列表；返回 2806（行军不存在）的行军
+     * 立即从等待清单剔除，避免“等一个不存在的旧行军回城”卡死整场发车。
+     */
     static java.util.List<Long> recallAllMarches(TaskContext tc) {
-        List<long[]> targets = ownMarchTargets(tc.engine);
+        long now = nowSec(tc);
+        List<long[]> targets = liveMarchTargets(tc.engine, now);
         java.util.List<Long> done = new java.util.ArrayList<Long>();
         for (long[] t : targets) {
             long id = t[0];
             long stateVal = t[1];
             String proto = stateVal == 2L ? "req_world_march_recall" : "req_world_march_off_work";
-            // 2026-11-09 审查修复：召回失败/异常的行军仍在途，一并纳入等待（120s 上限兜底），
-            // 避免"召回失败的行军"不等待就发车 → 403。
-            done.add(id);
             try {
                 GameMessage rsp = tc.engine.request(proto, Exec.args("id", id));
-                if (!Exec.ok(rsp)) {
-                    FileLog.warn("巨熊准备窗召回未成功 fpid={} marchId={} 码={}", tc.fpid,
-                            String.valueOf(id), String.valueOf(Exec.codeOf(rsp)));
+                int code = Exec.codeOf(rsp);
+                if (code == 2806) {
+                    FileLog.info("巨熊准备窗召回跳过 fpid={} marchId={}：行军不存在（码2806）",
+                            tc.fpid, String.valueOf(id));
+                    continue;
                 }
+                if (code != 0) {
+                    FileLog.warn("巨熊准备窗召回未成功 fpid={} marchId={} 码={}", tc.fpid,
+                            String.valueOf(id), String.valueOf(code));
+                }
+                // 成功/暂时失败都等待其从实时列表消失；2806 已跳过，不会永久等待。
+                done.add(id);
             } catch (Exception e) {
+                done.add(id);
                 FileLog.warn("巨熊准备窗召回失败 fpid={} marchId={} proto={}：{}", tc.fpid,
                         String.valueOf(id), proto, ServerTasks.brief(String.valueOf(e.getMessage())));
             }
@@ -939,6 +972,12 @@ public final class ServerBearTasks {
         if (tc == null || state == null || window == null) return out;
         if (state.recallWindowStart <= 0L || state.recallWindowStart != window.startSec) return out;
         long now = nowSec(tc);
+        // 2026-11-10：开赛后不再等待（用户口径：T-0 必须发车）；防止旧行军 id 拖死整场。
+        if (now >= window.startSec) {
+            state.recallMarchIds = "";
+            state.recallWaitStart = 0L;
+            return out;
+        }
         if (state.recallWaitStart <= 0L) {
             state.recallWaitStart = now;
         } else if (now - state.recallWaitStart >= RECALL_WAIT_MAX_SECONDS) {
@@ -949,9 +988,14 @@ public final class ServerBearTasks {
         java.util.Set<Long> recalled = parseIds(state.recallMarchIds);
         if (recalled.isEmpty()) return out;
         java.util.Set<Long> onWay = new java.util.LinkedHashSet<Long>();
-        for (long[] t : ownMarchTargets(tc.engine)) onWay.add(t[0]);
+        for (long[] t : liveMarchTargets(tc.engine, now)) onWay.add(t[0]);
         for (Long id : recalled) {
             if (id != null && onWay.contains(id)) out.add(id);
+        }
+        // 等待中的 id 已全部消失 → 视为回城，清空等待台账
+        if (out.isEmpty()) {
+            state.recallMarchIds = "";
+            state.recallWaitStart = 0L;
         }
         return out;
     }
@@ -982,7 +1026,33 @@ public final class ServerBearTasks {
         return sb.toString();
     }
 
-    /** 从推送快照解析本角色行军 [id,state,type]（只读，不额外发查询）。 */
+    /**
+     * 本角色当前行军 [id,state,type]（实时资产库优先；库不可用才回退旧推动快照）。
+     *
+     * <p>2026-11-10 生产修复：旧实现只读 init/add 的**累积**快照，包含已结束行军，
+     * 召回全部返回 2806，进而卡死“等待回城”。资产库 queue.marches 是实时全量列表。
+     */
+    static List<long[]> liveMarchTargets(WjdrEngine engine, long nowSec) {
+        List<long[]> out = new ArrayList<>();
+        if (engine == null) return out;
+        try {
+            CoreAssetLibrary lib = CoreAssetRegistry.global().get(engine);
+            AssetSnapshot.Queue q = lib == null ? null : lib.queue();
+            if (q != null && q.updatedAtMs > 0L) {
+                for (AssetSnapshot.QueueMarch m : q.marches) {
+                    if (m == null || m.id <= 0) continue;
+                    if (!MARCH_RECALL_TYPES.contains(Long.valueOf(m.type))) continue;
+                    if (m.endTime > 0L && m.endTime < nowSec - 60L) continue;   // 已过期残影
+                    out.add(new long[]{m.id, m.state, m.type});
+                }
+                return out;
+            }
+        } catch (Throwable ignored) {
+        }
+        return ownMarchTargets(engine);
+    }
+
+    /** 旧快照兜底（资产库不可用时）：累积 init/add 快照 [id,state,type]。 */
     static List<long[]> ownMarchTargets(WjdrEngine engine) {
         List<long[]> out = new ArrayList<>();
         if (engine == null) return out;
@@ -1673,6 +1743,23 @@ public final class ServerBearTasks {
             return new BearFormationChoice(payload, resolved.describe(),
                     payload == null ? "编队英雄/兵种为空" : "");
         }
+        // 2026-11-10：无显式编队参数时，若角色编队库含默认打熊队预设，优先使用，
+        // 避免回退 squad_index(1) 导致 403/415（生产 11-08/11-10 多角色失败主因）。
+        FormationLibrary defaultLib = FormationResolver.libraryFor(tc, TASK_ID);
+        if (defaultLib.byId(DEFAULT_BEAR_LAUNCH_FORMATION_ID) != null) {
+            Map<String, Object> params = new LinkedHashMap<>();
+            params.put("formation_mode", "ROLE");
+            params.put("formation_id", DEFAULT_BEAR_LAUNCH_FORMATION_ID);
+            FormationResolver.ResolveOutcome def = FormationResolver.resolveOutcome(
+                    tc.engine, defaultLib, params);
+            if (def.ready()) {
+                Map<String, Object> defPayload = def.formation.toFormationPayload();
+                if (formationReady(defPayload)) {
+                    return new BearFormationChoice(defPayload,
+                            "默认打熊队模板(" + def.formation.describe() + ")", "");
+                }
+            }
+        }
         String label = effectiveFormationSource(tc.engine, cfg);
         Map<String, Object> payload = launchFormation(tc.engine, cfg);
         return new BearFormationChoice(payload, label,
@@ -1769,6 +1856,25 @@ public final class ServerBearTasks {
                     + (formationId > 0 ? "#" + formationId : "")
                     + " 兵=" + infantry + "/" + lancer + "/" + marksman + "]";
         }
+    }
+
+    /** 无 join_formations 时的默认上车槽：库内存在的熊上车1-6（最多 6）。 */
+    static List<JoinFormationConfig> defaultJoinSlots(FormationLibrary lib, BearConfig cfg) {
+        List<JoinFormationConfig> out = new ArrayList<>();
+        if (lib == null) return out;
+        int max = MAX_JOIN_COUNT;   // 默认模板固定尝试 1-6（库内有多少用多少）
+        for (int slot = 1; slot <= max; slot++) {
+            long fid = DEFAULT_BEAR_RIDE_FIRST_ID + (slot - 1);
+            if (lib.byId(fid) == null) continue;
+            Map<String, Object> slotParams = new LinkedHashMap<>();
+            slotParams.put("formation_mode", "ROLE");
+            slotParams.put("formation_id", fid);
+            slotParams.put("id", slot);
+            slotParams.put("mode", "ROLE");
+            slotParams.put("enabled", true);
+            out.add(new JoinFormationConfig(slot, true, "ROLE", fid, 0L, 0L, 0L, slotParams));
+        }
+        return out;
     }
 
     /**
