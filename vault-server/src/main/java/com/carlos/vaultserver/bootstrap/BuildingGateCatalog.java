@@ -95,7 +95,7 @@ public final class BuildingGateCatalog {
             c.parseBuildings(root.optJSONObject("buildings"));
             c.parseFurniture(root.optJSONObject("furniture"));
         } catch (Exception e) {
-            FileLog.warn("[起号] 门槛目录加载失败（降级为空目录）: %s",
+            FileLog.warn("[起号] 门槛目录加载失败（降级为空目录）: {}",
                     e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage());
         }
         instance = c;

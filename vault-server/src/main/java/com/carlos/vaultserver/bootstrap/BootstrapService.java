@@ -600,7 +600,7 @@ public final class BootstrapService {
             state.markedFurniture(action.buildingId(), action.furnitureId(),
                     appliedLevel > 0L ? appliedLevel : action.toLevel());
         }
-        FileLog.info("[起号] 已请求%s（instantDiamond=%b）", action.label(), cfg.instantDiamond());
+        FileLog.info("[起号] 已请求{}（instantDiamond={}）", action.label(), cfg.instantDiamond());
         Map<String, Object> result = actionResult("STARTED",
                 "已请求" + action.label() + backpackUseSummary(preparation));
         result.put("step", stepView(action));
@@ -1368,7 +1368,7 @@ public final class BootstrapService {
                 try {
                     request(USE_ITEM_PROTOCOL, pack.payload(useCount));
                 } catch (ProtocolException exception) {
-                    FileLog.warn("[起号] 使用资源包被拒绝 itemId=%d code=%d",
+                    FileLog.warn("[起号] 使用资源包被拒绝 itemId={} code={}",
                             pack.itemId(), exception.code());
                     continue;
                 }
@@ -1415,7 +1415,7 @@ public final class BootstrapService {
                 if (exception.code() == INTEL_EVENT_NOT_FOUND) {
                     continue; // 已领过/已处理：跳过不计数（对齐原版 remove+continue）
                 }
-                FileLog.warn("[起号] 领取情报奖励被拒绝 id=%d code=%d", id, exception.code());
+                FileLog.warn("[起号] 领取情报奖励被拒绝 id={} code={}", id, exception.code());
                 break;
             }
         }
@@ -1458,10 +1458,10 @@ public final class BootstrapService {
             request(INTEL_START_BATTLE_PROTOCOL, startPayload);
             request(INTEL_END_BATTLE_PROTOCOL, Map.of("id", id));
         } catch (ProtocolException exception) {
-            FileLog.warn("[起号] 发起情报战斗被拒绝 id=%d code=%d", id, exception.code());
+            FileLog.warn("[起号] 发起情报战斗被拒绝 id={} code={}", id, exception.code());
             return Optional.empty();
         } catch (Exception exception) {
-            FileLog.warn("[起号] 发起情报战斗失败 id=%d error=%s", id,
+            FileLog.warn("[起号] 发起情报战斗失败 id={} error={}", id,
                     exception.getMessage() == null ? String.valueOf(exception) : exception.getMessage());
             return Optional.empty();
         }
@@ -1782,6 +1782,16 @@ public final class BootstrapService {
         // 建号 = 一次 loginauth + is_create=true（对齐新版 RegistrationRoleCreationService）。
         // 建号限制（block_create_role_endtime）在 loginauth 响应里，失败时据此给明确中文提示；
         // 不做额外的前置登录——新版同样是一次请求，避免多余会话与顶号风险。
+        // 建号前注入「本角色独立设备指纹」（对齐网页版 ensureAccountFingerprint）：
+        // 网页版 30 秒内同区连建两号不被拒，靠的就是每个角色不同的 device_id/distinct_id/login_ip；
+        // 共用指纹会触发游戏侧设备风控（实测 loginauth code=25）。
+        try {
+            String fingerprint = DeviceFingerprint.forNewRole(fpid, serverId,
+                    String.valueOf(System.currentTimeMillis()));
+            engine.applyIdentity(fingerprint);
+        } catch (RuntimeException ignored) {
+            // 注入失败退回引擎默认随机指纹（仍比固定指纹安全）
+        }
         LinkedHashMap<String, Object> extraParams = new LinkedHashMap<>();
         extraParams.put("is_create", true);
         if (targetUid > 0L) {
@@ -1808,7 +1818,7 @@ public final class BootstrapService {
                     + "，已中止登录。请检查该角色的区服资料后重试");
         }
         String message = "已在该区服创建新角色并登录";
-        FileLog.info("[起号] 建号成功 uid=%d server=%d", uid, landedServerId);
+        FileLog.info("[起号] 建号成功 uid={} server={}", uid, landedServerId);
         return new LoginOutcome(uid, landedServerId, r.authContent,
                 serverId > 0L && landedServerId > 0L && landedServerId != serverId, message);
     }
@@ -1830,6 +1840,20 @@ public final class BootstrapService {
                                       long serverId) throws Exception {
         if (serverId <= 0L) {
             throw new IllegalArgumentException("请选择目标区服");
+        }
+        // 既有角色：用 (fpid, 区服, uid) 派生的稳定指纹，同一角色每次登录都是"同一台设备"
+        try {
+            WjdrEngine.LoginResult probe = engine.login(fpid, sdkToken, serverId, java.util.Map.of());
+            long uid = probe.uid;
+            if (uid > 0L) {
+                engine.close();
+                engine.applyIdentity(DeviceFingerprint.forRole(fpid, serverId, uid));
+                return new LoginOutcome(probe.uid, probe.serverId,
+                        probe.authContent == null ? Map.of() : probe.authContent, false,
+                        "已登录既有角色 uid=" + probe.uid + describeServer(probe.serverId));
+            }
+        } catch (Exception ignored) {
+            // 探测失败则走下面的常规登录
         }
         WjdrEngine.LoginResult r = engine.login(fpid, sdkToken, serverId);
         return new LoginOutcome(r.uid, r.serverId,

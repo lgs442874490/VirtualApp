@@ -31,6 +31,16 @@ public final class PassportIds {
         }
     }
 
+    /** SHA-256 → 小写 hex（设备指纹派生用）。 */
+    public static String sha256Hex(String s) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            return toHex(md.digest(s.getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     public static String md5Hex(String s) {
         try {
             MessageDigest md = MessageDigest.getInstance("MD5");

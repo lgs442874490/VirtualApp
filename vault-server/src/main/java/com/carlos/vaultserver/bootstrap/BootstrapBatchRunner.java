@@ -290,7 +290,7 @@ public final class BootstrapBatchRunner {
         String startText = "开始批量起号：区服 " + config.targetServerId()
                 + "，目标大熔炉 " + config.targetFurnaceLevel() + " 级";
         summaryMessage = startText;
-        FileLog.info("起号批次 %s：id=%d 个账号 timeout=%dmin", startText, entries.size(),
+        FileLog.info("起号批次 {}：id={} 个账号 timeout={}min", startText, entries.size(),
                 timeoutMinutes);
         store.append(view()); // 首次落盘建档；后续每号结束走 update
 
@@ -510,7 +510,7 @@ public final class BootstrapBatchRunner {
                 failCount++;
                 return;
             }
-            port.collectNotifies(1500L);   // 游戏是推送式下发：先收推送再校准
+            port.collectNotifies(6000L);   // 游戏是推送式下发：登录后要等全量推送（实测需 >5s）
             Map<String, Object> loadContent = contentOf(port.request(LOAD_DATA, Map.of()));
             // 真实轮（2026-11-10 实测）：req_loaddata 只回 {code}，建筑/队列/资源全在推送里——
             //   notify_shelter_info.building_info（建筑明细）、notify_queue_info.queue_map（队列）、
@@ -540,6 +540,16 @@ public final class BootstrapBatchRunner {
             loadContent = merged;
             service.syncLoadData(loadContent);
             // 首轮记录一次资源/背包/建筑规模（真实轮排障：新号资源为 0 是 51 的常见原因）
+            if (round == 0) {
+                // 诊断：确认各类推送是否到齐（缺哪类就补哪类合成）
+                FileLog.info("起号首轮推送：survivors={} heroes={} guides={} adventure={} 背包物品={}",
+                        String.valueOf(service.state().survivors().size()),
+                        String.valueOf(service.state().heroLevels().size()),
+                        String.valueOf(service.state().guideSteps().size()),
+                        String.valueOf(service.state().adventurePassed()),
+                        String.valueOf(loadContent.get("bag") instanceof java.util.List
+                                ? ((java.util.List<?>) loadContent.get("bag")).size() : -1));
+            }
             if (round == 0) {
                 FileLog.info("起号首轮状态 res={} bagItems={} buildings={} furnace={}",
                         String.valueOf(service.state().resourceMap()),
