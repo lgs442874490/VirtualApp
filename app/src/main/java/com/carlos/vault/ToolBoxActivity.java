@@ -101,7 +101,13 @@ public class ToolBoxActivity extends Activity {
         final boolean canMigrant = FeatureGate.visible(this, FeatureGate.Feature.IMMIGRATION)
                 && com.carlos.vault.VaultSync.isServerMode(this);
         final boolean canProto = FeatureGate.visible(this, FeatureGate.Feature.PROTOCOL_LOGGER); // 仅调试包
-        final int toolCount = FeatureGate.visibleToolCount(this);
+        // D2（真机 2026-11-06，重放时被 master 版覆盖，2026-11-10 恢复）：
+        // 计数必须等于下方实际渲染的卡片数。FeatureGate.visibleToolCount 统计口径
+        // （ENEMY_WATCH/DEV_MONITOR/WATCHPOINT/PROTOCOL_LOGGER）与本页渲染分支
+        // （含迁城/移民/抓包、不含 ENEMY_WATCH）不同，曾出现「可用工具 · 6」却只显示 5 张卡。
+        final int toolCount = (canMoveCity ? 1 : 0) + (canProto ? 1 : 0)
+                + (canWatchpoint ? 1 : 0) + (canCapture ? 1 : 0)
+                + (canMonitor ? 1 : 0) + (canMigrant ? 1 : 0);
         if (toolCount > 0) {
             box.addView(sectionRow("可用工具 · " + toolCount, "诊断与监控"));
             // 迁城（T3 高级会员，2026-11-06）：网页版迁城 1:1 复刻——12 种协议/立即批量/
