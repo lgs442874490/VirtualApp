@@ -107,7 +107,7 @@ public class ToolBoxActivity extends Activity {
         // （含迁城/移民/抓包、不含 ENEMY_WATCH）不同，曾出现「可用工具 · 6」却只显示 5 张卡。
         final int toolCount = (canMoveCity ? 1 : 0) + (canProto ? 1 : 0)
                 + (canWatchpoint ? 1 : 0)
-                + ((com.carlos.vault.GmMode.isGm(this) && (canCapture || canMonitor)) ? 1 : 0)
+                + ((FeatureGate.currentTier(this) == FeatureGate.TIER_GM) ? 1 : 0)
                 + (canMigrant ? 1 : 0);
         if (toolCount > 0) {
             box.addView(sectionRow("可用工具 · " + toolCount, "诊断与监控"));
@@ -178,7 +178,8 @@ public class ToolBoxActivity extends Activity {
             // 诊断（2026-11-10）：把「真机抓包」与「真机监控」合并为一个入口，页内两个 tab 切换。
             // 客户端抓包=本机 VPN 抓 TCP 并 sproto 解码；服务端监控=拉 /v1/vault/monitor 任务事件流。
             // 两者数据源不同（本机网络层 vs 服务端任务层），不能互相替代，只是入口聚合。
-            if (com.carlos.vault.GmMode.isGm(this) && (canCapture || canMonitor)) {
+            // GM 账户一定可见（不依赖服务端矩阵是否下发 proto_capture/dev_monitor）
+            if (FeatureGate.currentTier(this) == FeatureGate.TIER_GM) {
                 LinearLayout diagCard = toolCard(UiStyle.Icon.TARGET, "诊断",
                         "客户端抓包 + 服务端监控（页内 tab 切换）", UiStyle.BRAND_50);
                 diagCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,

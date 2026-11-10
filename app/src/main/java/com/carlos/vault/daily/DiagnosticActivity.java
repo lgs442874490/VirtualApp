@@ -127,6 +127,16 @@ public class DiagnosticActivity extends Activity {
         if (TAB_MONITOR.equals(currentTab) && monitorPanel != null) monitorPanel.pause();
         currentTab = tab;
         renderTab();
+        resumeCurrent();   // 切过去的面板立即刷新（否则服务端监控切过去不轮询）
+    }
+
+    /** 恢复当前 tab 面板的刷新。 */
+    private void resumeCurrent() {
+        if (TAB_CAPTURE.equals(currentTab)) {
+            if (capturePanel != null) capturePanel.resume();
+        } else if (monitorPanel != null) {
+            monitorPanel.resume();
+        }
     }
 
     /** 按当前 tab 显示对应面板并启动其刷新。 */
@@ -162,9 +172,7 @@ public class DiagnosticActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
-        boolean captureSel = TAB_CAPTURE.equals(currentTab);
-        if (captureSel && capturePanel != null) capturePanel.resume();
-        else if (!captureSel && monitorPanel != null) monitorPanel.resume();
+        resumeCurrent();
     }
 
     @Override
