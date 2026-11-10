@@ -58,8 +58,11 @@ public class BearLaunchRetryTest {
 
     @Test
     public void retry5204_downgrades620to320_immediately() {
+        JSONObject p = new JSONObject();
+        p.put("prepare_time_index", 2);   // 620s（显式）
+        ServerBearTasks.BearConfig cfg = ServerBearTasks.BearConfig.of(p);
         ServerBearTasks.LaunchRetry retry = ServerBearTasks.launchRetryDecision(
-                5204, T_MID, activeWindow(), defaults(), freshState());
+                5204, T_MID, activeWindow(), cfg, freshState());
         assertTrue("5204 应重试", retry.retry);
         assertTrue("5204 应同轮立即重试", retry.immediate);
         assertEquals("默认档 2(620s) 降为 1(320s)", 1, retry.nextPrepareIndex);
@@ -103,10 +106,13 @@ public class BearLaunchRetryTest {
     public void retry5204_windowTooShort_noRetry() {
         // 距结束仅 300s < 320s(降档后准备) + 60s 安全余量
         long now = END - 300L;
-        ServerBearTasks.Window w = ServerBearTasks.windowOf(now, START, 0L, defaults());
+        JSONObject p = new JSONObject();
+        p.put("prepare_time_index", 2);   // 显式 620s，降档后 320s + 60s 余量 > 300s
+        ServerBearTasks.BearConfig cfg = ServerBearTasks.BearConfig.of(p);
+        ServerBearTasks.Window w = ServerBearTasks.windowOf(now, START, 0L, cfg);
         assertEquals(ServerBearTasks.Window.ACTIVE, w.phase);
         ServerBearTasks.LaunchRetry retry = ServerBearTasks.launchRetryDecision(
-                5204, now, w, defaults(), freshState());
+                5204, now, w, cfg, freshState());
         assertFalse("窗口剩余不足，不再降档重试", retry.retry);
         assertTrue(retry.reason.contains("窗口剩余"));
     }
@@ -120,7 +126,7 @@ public class BearLaunchRetryTest {
         assertTrue("401 应重试", retry.retry);
         assertFalse("401 走延时重试，不是同轮立即重试", retry.immediate);
         assertEquals("60s 后重试", T_MID + ServerBearTasks.LAUNCH_RETRY_DELAY_SEC, retry.retryAtSec);
-        assertEquals("延时重试沿用当前准备档", 2, retry.nextPrepareIndex);
+        assertEquals("延时重试沿用当前准备档", 1, retry.nextPrepareIndex);
     }
 
     @Test
@@ -173,8 +179,8 @@ public class BearLaunchRetryTest {
 
     @Test
     public void retry401_windowTooShort_noRetry() {
-        // 距结束 600s < 620s(准备档) + 60s 安全余量
-        long now = END - 600L;
+        // 距结束 300s < 320s(默认准备档) + 60s 安全余量
+        long now = END - 300L;
         ServerBearTasks.Window w = ServerBearTasks.windowOf(now, START, 0L, defaults());
         ServerBearTasks.LaunchRetry retry = ServerBearTasks.launchRetryDecision(
                 401, now, w, defaults(), freshState());
@@ -198,7 +204,7 @@ public class BearLaunchRetryTest {
 
     @Test
     public void effectivePrepareIndex_defaultAndDowngraded() {
-        assertEquals("默认用配置档 2", 2, ServerBearTasks.effectivePrepareIndex(defaults(), freshState()));
+        assertEquals("默认用配置档 1", 1, ServerBearTasks.effectivePrepareIndex(defaults(), freshState()));
         ServerBearTasks.BearState state = freshState();
         state.launchPrepareIndexUsed = 1;
         assertEquals("降档后沿用降档值 1", 1, ServerBearTasks.effectivePrepareIndex(defaults(), state));
