@@ -150,12 +150,23 @@ public final class ModularRoundRunner {
         // 跳过“待迁移”补记、采集收尾，并且不消耗当天整轮（不写 srv:lastrun）。
         boolean sessionClosed = hasSessionClosed(results);
         if (!sessionClosed && fnOnly == null && roleConfig != null) {
-            // 配置开启但模块化目录未收录的动作：如实记待迁移，不静默丢失。
+            // 配置开启但模块化目录未收录的动作：回退 legacy 执行器，避免“配置已开但不跑”。
+            // 例：homeland（晨曦岛）尚未迁入模块化目录，2026-11-11 前只记“待迁移”导致线上不执行。
             for (Map.Entry<String, Boolean> e : roleConfig.entrySet()) {
                 if (!Boolean.TRUE.equals(e.getValue())) continue;
                 if (reg.moduleOfAction(e.getKey()) != null) continue;
-                TaskOutcome r = new TaskOutcome(e.getKey(), e.getKey(),
-                        TaskOutcome.Category.SKIPPED, "待迁移到模块化目录");
+                ServerTasks.TaskDef def = ServerTasks.byId(e.getKey());
+                TaskOutcome r;
+                if (def != null) {
+                    try {
+                        r = def.executor.run(tc);
+                    } catch (Throwable t) {
+                        r = ServerTasks.classifyException(t, def.name);
+                    }
+                } else {
+                    r = new TaskOutcome(e.getKey(), e.getKey(),
+                            TaskOutcome.Category.SKIPPED, "待迁移到模块化目录");
+                }
                 RoundRunner.applyResult(store, role, e.getKey(), r, trigger, false, activeWriter);
             }
         }

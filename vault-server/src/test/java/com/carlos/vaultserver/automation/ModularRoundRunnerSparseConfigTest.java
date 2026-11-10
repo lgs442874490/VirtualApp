@@ -92,4 +92,19 @@ public class ModularRoundRunnerSparseConfigTest {
         assertNull("单任务不得触发其它动作", store.getString("log:111:913:gather"));
         assertNull("单任务不得消耗当天整轮", store.snapshot().get("srv:lastrun:111"));
     }
+
+    @Test
+    public void unregisteredLegacyActionRunsInsteadOfPendingMigration() {
+        // 2026-11-11：homeland 未迁入模块化目录；配置开启时必须回退 legacy 执行器，
+        // 不得只记“待迁移到模块化目录”（线上曾导致晨曦岛修复不生效）。
+        acc.roleConfig.get("913").put("homeland", true);
+        ModularRoundRunner.runRound(engine, acc, 913L, store, null, null, "定时");
+
+        String raw = store.getString("log:111:913:homeland");
+        assertNotNull("未收录动作应回退执行并写日志", raw);
+        JSONArray arr = new JSONArray(raw);
+        assertTrue("日志非空", arr.length() > 0);
+        org.junit.Assert.assertFalse("不得只记待迁移",
+                arr.getJSONObject(0).getString("reason").contains("待迁移到模块化目录"));
+    }
 }
