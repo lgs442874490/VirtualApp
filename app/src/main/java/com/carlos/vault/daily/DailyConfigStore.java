@@ -55,8 +55,52 @@ public class DailyConfigStore {
                 : "acc:" + fpid + ":" + serverid;
     }
 
+    /** 配置默认值迁移版本（2026-11-11「默认开启」策略）：与服务端 VaultStore 同值。 */
+    public static final int CONFIG_DEFAULTS_VERSION = 1;
+
+    private static final String PREFS = "daily_config";
+
+    /** 本地配置默认值版本（0=未迁移；上传给服务端用于判断是否信任用户的 false）。 */
+    public static int configDefaultsVersion(android.content.Context ctx) {
+        try {
+            return ctx.getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+                    .getInt("config_defaults_version", 0);
+        } catch (Throwable t) {
+            return 0;
+        }
+    }
+
+    /**
+     * 一次性迁移（2026-11-11 策略）：旧默认 false 的新默认开任务改为 true。
+     *
+     * <p>只跑一次（prefs 版本标记）；迁移后用户手动关闭的 false 不再被覆盖。
+     * 覆盖 meta 模板与所有 acc: 角色配置，避免只迁移当前角色、其它角色下次上传又把旧 false 带回。
+     */
+    private void migrateDefaultsLocked(List<DailyTasks.TaskDef> defs) {
+        if (defs == null) return;
+        try {
+            if (prefs.getInt("config_defaults_version", 0) >= CONFIG_DEFAULTS_VERSION) return;
+            for (String key : prefs.getAll().keySet()) {
+                if (!"meta".equals(key) && !key.startsWith("acc:")) continue;
+                Map<String, Boolean> cfg = readJson(key);
+                if (cfg == null) continue;
+                boolean changed = false;
+                for (DailyTasks.TaskDef d : defs) {
+                    if (d != null && d.enabledByDefault && Boolean.FALSE.equals(cfg.get(d.id))) {
+                        cfg.put(d.id, Boolean.TRUE);
+                        changed = true;
+                    }
+                }
+                if (changed) writeJson(key, cfg);
+            }
+            prefs.edit().putInt("config_defaults_version", CONFIG_DEFAULTS_VERSION).apply();
+        } catch (Throwable ignored) {
+        }
+    }
+
     /** 读取元配置（模板）。null → 用全任务默认值初始化。 */
     public Map<String, Boolean> metaConfig(List<DailyTasks.TaskDef> defs) {
+        migrateDefaultsLocked(defs);
         Map<String, Boolean> m = readJson("meta");
         if (m == null) {
             m = new LinkedHashMap<>();
@@ -137,6 +181,7 @@ public class DailyConfigStore {
     /** 角色 uid 维度的有效配置（稀疏/旧配置补齐为全量后写回**该 uid 键**）。 */
     public Map<String, Boolean> effectiveRoleConfig(String fpid, long serverid, long uid,
                                                     List<DailyTasks.TaskDef> defs) {
+        migrateDefaultsLocked(defs);
         Map<String, Boolean> raw = roleConfig(fpid, serverid, uid);
         Map<String, Boolean> filled = fillMissing(raw, defs);
         if (raw == null || !raw.equals(filled)) {

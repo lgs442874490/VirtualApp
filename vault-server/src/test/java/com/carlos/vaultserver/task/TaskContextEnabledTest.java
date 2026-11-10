@@ -36,8 +36,7 @@ public class TaskContextEnabledTest {
         cfg.put("gather", true);
         TaskContext tc = ctx(cfg);
         assertTrue("显式启用 gather", tc.taskEnabled("gather"));
-        assertFalse("intel 目录默认 false 且未显式启用 → 未启用（修复前采集被永久让位的根因）",
-                tc.taskEnabled("intel"));
+        assertTrue("intel 2026-11-11 起默认开（策略：任务级全开）", tc.taskEnabled("intel"));
         assertTrue("supply 目录默认 true → 启用", tc.taskEnabled("supply"));
         assertFalse("未知任务 id 保守视为未启用", tc.taskEnabled("no_such_task"));
         assertFalse("空 id 未启用", tc.taskEnabled(""));
@@ -49,14 +48,14 @@ public class TaskContextEnabledTest {
         cfg.put("supply", false);
         TaskContext tc = ctx(cfg);
         assertFalse("显式 false 覆盖目录默认 true", tc.taskEnabled("supply"));
-        assertTrue("intel 未显式配置 → 仍按目录默认 false", !tc.taskEnabled("intel"));
+        assertTrue("intel 未显式配置 → 按新默认开", tc.taskEnabled("intel"));
     }
 
     @Test
     public void nullConfigMeansCatalogDefaults() {
         TaskContext tc = ctx(null);
-        assertFalse(tc.taskEnabled("intel"));
-        assertFalse(tc.taskEnabled("gather"));
+        assertTrue(tc.taskEnabled("intel"));
+        assertTrue(tc.taskEnabled("gather"));
         assertTrue(tc.taskEnabled("supply"));
     }
 

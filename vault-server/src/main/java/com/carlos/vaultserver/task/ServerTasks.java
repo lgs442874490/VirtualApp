@@ -89,62 +89,62 @@ public final class ServerTasks {
         l.add(new TaskDef("achievement_claim", "成就奖励", true, ServerTasks::achievementClaim));
         // ===== 城镇 =====
         l.add(new TaskDef("research", "科技研究", true, ServerFieldTasks::research));
-        l.add(new TaskDef("building", "建筑升级", false, ServerFieldTasks::building));
+        l.add(new TaskDef("building", "建筑升级", true, ServerFieldTasks::building));
         l.add(new TaskDef("town_affairs", "城镇管理", true, ServerTownTasks::townAffairs));
         l.add(new TaskDef("medic", "军医所", true, ServerTownTasks::medic));
-        l.add(new TaskDef("barracks", "兵营训练", false, ServerTownTasks::barracks));
+        l.add(new TaskDef("barracks", "兵营训练", true, ServerTownTasks::barracks));
         l.add(new TaskDef("pet", "宠物", true, ServerTownTasks::pet));
         l.add(new TaskDef("expert", "专家游历", true, ServerTownTasks::expert));
         l.add(new TaskDef("homeland", "晨曦岛", true, ServerTownTasks::homeland));
         l.add(new TaskDef("fire_crystal", "火晶提炼", true, ServerTownTasks::fireCrystal));
         l.add(new TaskDef("climbtower", "地心探索", true, ServerTownTasks::climbtower));
-        l.add(new TaskDef("arena", "竞技场", false, ServerTownTasks::arena));
+        l.add(new TaskDef("arena", "竞技场", true, ServerTownTasks::arena));
         // ===== 活动 =====
         l.add(new TaskDef("act_balloon", "正中靶心", true, ServerActivityTasks::balloon));
         l.add(new TaskDef("act_pitchpot", "壶纳千祥", true, ServerActivityTasks::pitchpot));
         l.add(new TaskDef("act_snowclean", "除雪", true, ServerActivityTasks::snowclean));
         l.add(new TaskDef("act_icebound", "冰封宝藏", true, ServerActivityTasks::icebound));
         l.add(new TaskDef("act_polar", "逐光之旅", true, ServerActivityTasks::polar));
-        l.add(new TaskDef("act_flamefangs", "烈焰獠牙", false, ServerShopLeagueTasks::flamefangs));
-        l.add(new TaskDef("act_snowtrade", "雪原贸易站", false, ServerShopLeagueTasks::snowTrade));
+        l.add(new TaskDef("act_flamefangs", "烈焰獠牙", true, ServerShopLeagueTasks::flamefangs));
+        l.add(new TaskDef("act_snowtrade", "雪原贸易站", true, ServerShopLeagueTasks::snowTrade));
         l.add(new TaskDef("act_brawl", "欢乐乱斗", true, ServerActivityTasks::brawl));
-        l.add(new TaskDef("act_frostfire", "燃霜矿区", false, ServerShopLeagueTasks::frostfire));
+        l.add(new TaskDef("act_frostfire", "燃霜矿区", true, ServerShopLeagueTasks::frostfire));
         l.add(new TaskDef("act_fishing", "钓鱼", true, ServerActivityTasks::fishing));
         l.add(new TaskDef("act_endless", "无尽征程", true, ServerActivityTasks::endlessJourney));
-        l.add(new TaskDef("act_joy", "怪攻守城", false, ServerActivityTasks::joyAction));
-        l.add(new TaskDef("act_feast", "至尊盛宴", false, ServerActivityTasks::supremacyFeast));
-        l.add(new TaskDef("act_mercenary", "佣兵荣耀", false, ServerActivityTasks::mercenary));
-        l.add(new TaskDef("act_truck", "雪原商路", false, ServerActivityTasks::truckEscort));
-        l.add(new TaskDef("act_icehunter", "冰原猎人", false, ServerActivityTasks::icefieldHunter));
+        l.add(new TaskDef("act_joy", "怪攻守城", true, ServerActivityTasks::joyAction));
+        l.add(new TaskDef("act_feast", "至尊盛宴", true, ServerActivityTasks::supremacyFeast));
+        l.add(new TaskDef("act_mercenary", "佣兵荣耀", true, ServerActivityTasks::mercenary));
+        l.add(new TaskDef("act_truck", "雪原商路", true, ServerActivityTasks::truckEscort));
+        l.add(new TaskDef("act_icehunter", "冰原猎人", true, ServerActivityTasks::icefieldHunter));
         // ===== 联赛 =====
-        l.add(new TaskDef("act_arsenal_league", "雪域兵器联赛", false, ServerActivityTasks::arsenalLeague));
-        l.add(new TaskDef("act_slg_league", "冰火战歌", false, ServerActivityTasks::slgLeague));
-        l.add(new TaskDef("act_cross_capital_revive", "最强王国复活", false,
+        l.add(new TaskDef("act_arsenal_league", "雪域兵器联赛", true, ServerActivityTasks::arsenalLeague));
+        l.add(new TaskDef("act_slg_league", "冰火战歌", true, ServerActivityTasks::slgLeague));
+        l.add(new TaskDef("act_cross_capital_revive", "最强王国复活", true,
                 ServerActivityTasks::crossCapitalRevive));
-        l.add(new TaskDef("ally_offline_guard", "离线联动", false,
+        l.add(new TaskDef("ally_offline_guard", "离线联动", true,
                 ServerActivityTasks::allyOfflineGuard));
         // ===== 野外 =====
-        l.add(new TaskDef("gather", "野外采集", false, ServerFieldTasks::gather));
-        l.add(new TaskDef("intel", "情报任务", false, ServerFieldTasks::intel));
+        l.add(new TaskDef("gather", "野外采集", true, ServerFieldTasks::gather));
+        l.add(new TaskDef("intel", "情报任务", true, ServerFieldTasks::intel));
         l.add(new TaskDef("behemoth", "巨兽狩猎", true, ServerTasks::behemoth));
         l.add(new TaskDef("bear", "巨熊行动", true, ServerTasks::bear));
-        l.add(new TaskDef("hunt", "自动狩猎", false, ServerFieldTasks::hunt));
-        l.add(new TaskDef("adventure_sweep", "探险速刷", false, ServerFieldTasks::adventureSweep));
+        l.add(new TaskDef("hunt", "自动狩猎", true, ServerFieldTasks::hunt));
+        l.add(new TaskDef("adventure_sweep", "探险速刷", true, ServerFieldTasks::adventureSweep));
         l.add(new TaskDef("battle_shield", "战斗护盾", true, ServerTasks::freeShield));
         // ===== 联盟 =====
         l.add(new TaskDef("alliance_chest", "联盟宝箱", true, ServerTasks::allianceChest));
         l.add(new TaskDef("alliance_donate", "联盟捐献", true, ServerTasks::allianceDonate));
         l.add(new TaskDef("alliance_mobilization", "联盟动员", true, ServerShopLeagueTasks::mobilization));
-        l.add(new TaskDef("alliance_showdown", "争霸赛", false, ServerShopLeagueTasks::showdown));
+        l.add(new TaskDef("alliance_showdown", "争霸赛", true, ServerShopLeagueTasks::showdown));
         l.add(new TaskDef("alliance_help", "联盟互助", true, ServerShopLeagueTasks::allianceHelp));
         l.add(new TaskDef("homeland_visit", "晨曦岛拜访", true, ServerShopLeagueTasks::homelandVisit));
         // ===== 商店/其他 =====
-        l.add(new TaskDef("shop", "商店购买", false, ServerShopLeagueTasks::shopBuy));
-        l.add(new TaskDef("alliance_shop", "联盟商店", false, ServerShopLeagueTasks::allianceShop));
+        l.add(new TaskDef("shop", "商店购买", true, ServerShopLeagueTasks::shopBuy));
+        l.add(new TaskDef("alliance_shop", "联盟商店", true, ServerShopLeagueTasks::allianceShop));
         l.add(new TaskDef("red_packet", "游戏红包", true, ServerActivityTasks::redPacket));
-        l.add(new TaskDef("bank", "钻石银行", false, ServerActivityTasks::bank));
+        l.add(new TaskDef("bank", "钻石银行", true, ServerActivityTasks::bank));
         l.add(new TaskDef("backpack", "背包道具", true, ServerShopLeagueTasks::backpack));
-        l.add(new TaskDef("social_gift", "社交礼物", false, ServerShopLeagueTasks::socialGift));
+        l.add(new TaskDef("social_gift", "社交礼物", true, ServerShopLeagueTasks::socialGift));
         return l;
     }
 
@@ -1137,6 +1137,7 @@ public final class ServerTasks {
             }
             List<Object> boxes = listOfRaw(content.get("geted_boxid"));
             int integralAfter = toInt(content.get("integral"));
+            boolean hasIntegral = content.containsKey("integral");
             int newlyClaimed = Math.max(0, unclaimedBefore - unclaimedAfter);
             if (newlyClaimed > 0) {
                 TaskOutcome r = new TaskOutcome("daily_mission", "每日任务奖励",
@@ -1161,6 +1162,13 @@ public final class ServerTasks {
             }
             if (unclaimedBefore == 0) {
                 // 积分变化可能只是任务结算/服务端刷新，不能单独当作“领取到账”证据。
+                if (hasIntegral && integralAfter <= 0) {
+                    // 2026-11-11 生产实证：测试账号三角色活跃度 0、宝箱 0 档，旧文案却报“已全部领取”，
+                    // 掩盖了“今日每日任务根本没推进”。活跃度 0 明确降级，便于 UI/摘要暴露。
+                    return new TaskOutcome("daily_mission", "每日任务奖励",
+                            TaskOutcome.Category.DEGRADED,
+                            "活跃度 0，今日每日任务未推进（无已完成未领任务）");
+                }
                 return new TaskOutcome("daily_mission", "每日任务奖励",
                         TaskOutcome.Category.SKIPPED,
                         "今日任务奖励已全部领取（活跃度 " + integralAfter + "）");
@@ -2105,7 +2113,7 @@ public final class ServerTasks {
             case 7401: case 7404: case 40610: case 40611: case 40612: case 7602:
             case 40502: case 40503: case 11723: case 11724: case 11727: case 11728: case 2926:
             case 7301: case 7302: case 7303: case 7306: case 7307:
-            case 8201: case 8202: case 8203:
+            case 8201: case 8202: case 8203: case 8204:
             case 4502: case 4503:
             case 1201: case 1202: case 1204: case 1215:
             case 3601: case 3602: case 6101:
@@ -2150,8 +2158,8 @@ public final class ServerTasks {
                 return "远征宝藏暂不可领（码" + code + "）";
             case 8201: case 8202: case 7301: case 7303: case 7306:
                 return "未达到可领档位（码" + code + "）";
-            case 7302: case 7307: case 8203:
-                return "该档已领或批量失败（码" + code + "）";
+            case 7302: case 7307: case 8203: case 8204:
+                return "该档已领或暂不可领（码" + code + "）";
             case 4503:
                 return "统帅特权未激活";
             case 1528:
@@ -2798,6 +2806,8 @@ public final class ServerTasks {
         boolean attempted = false;
         for (long stage = 1L; stage <= 100L; stage++) {
             if (rx.contains(stage)) continue;
+            // 8204 只做当日去重（ClaimLedger 跨天失效），不写永久 rx，避免“未达成”被永久跳过。
+            if (ClaimLedger.isClaimed(tc, "card_bp", activityId + ":" + stage)) continue;
             if (!activityBudgetLeft(st)) {
                 stopped = true;
                 st.skipped("card_bp", "本轮请求上限" + ACTIVITY_MAX_REQUESTS_PER_ROUND + "已到（下轮继续）");
@@ -2813,8 +2823,14 @@ public final class ServerTasks {
                 rx.add(stage);
                 continue;
             }
+            if (code == 8204) {
+                // 2026-11-11：该档暂不可领；按当日台账去重，次日/活动进度变化后可重试。
+                ClaimLedger.mark(tc, "card_bp", activityId + ":" + stage);
+                stopped = true;
+                break;
+            }
             if (code == 8203 || code == 7302 || code == 7307) {
-                rx.add(stage);       // 网页版 8203=该档已领完，继续下一档
+                rx.add(stage);       // 8203=该档已领完，继续下一档
                 continue;
             }
             if (code == 8201 || code == 8202 || code == 7301 || code == 7303 || code == 7306) {

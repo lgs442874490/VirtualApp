@@ -55,9 +55,9 @@ public class DailyConfigStoreEffectiveConfigTest {
 
         assertEquals("补齐后必须与服务端契约一致的全量项数", DEFS.size(), filled.size());
         assertEquals("显式配置保留", Boolean.TRUE, filled.get("gather"));
-        assertEquals("练兵默认关闭", Boolean.FALSE, filled.get("barracks"));
-        assertEquals("情报默认关闭", Boolean.FALSE, filled.get("intel"));
-        assertEquals("竞技场默认关闭", Boolean.FALSE, filled.get("arena"));
+        assertEquals("练兵 2026-11-11 起默认开", Boolean.TRUE, filled.get("barracks"));
+        assertEquals("情报 2026-11-11 起默认开", Boolean.TRUE, filled.get("intel"));
+        assertEquals("竞技场 2026-11-11 起默认开", Boolean.TRUE, filled.get("arena"));
         assertEquals("军医所默认开启", Boolean.TRUE, filled.get("medic"));
         assertEquals("登录好礼默认开启", Boolean.TRUE, filled.get("login_rewards"));
 
@@ -104,15 +104,15 @@ public class DailyConfigStoreEffectiveConfigTest {
         FnRegistry.Fn login = fn("login_rewards");
         Map<String, Boolean> empty = new LinkedHashMap<>();
 
-        assertFalse("练兵默认关闭（修复前 App 显示为开）",
+        assertTrue("练兵 2026-11-11 起默认开",
                 DailyConfigStore.effectiveOn(empty, barracks));
-        assertFalse("情报默认关闭", DailyConfigStore.effectiveOn(empty, intel));
-        assertFalse("竞技场默认关闭", DailyConfigStore.effectiveOn(empty, arena));
+        assertTrue("情报 2026-11-11 起默认开", DailyConfigStore.effectiveOn(empty, intel));
+        assertTrue("竞技场 2026-11-11 起默认开", DailyConfigStore.effectiveOn(empty, arena));
         assertTrue("登录好礼默认开启", DailyConfigStore.effectiveOn(empty, login));
         // 稀疏配置缺键时同样回落默认，而不是“缺键=开”
         Map<String, Boolean> sparse = new LinkedHashMap<>();
         sparse.put("gather", true);
-        assertFalse(DailyConfigStore.effectiveOn(sparse, barracks));
+        assertTrue("稀疏配置缺键同样回落新默认开", DailyConfigStore.effectiveOn(sparse, barracks));
     }
 
     /** 显式配置优先于默认；用户打开后必须显示开并上传 true。 */

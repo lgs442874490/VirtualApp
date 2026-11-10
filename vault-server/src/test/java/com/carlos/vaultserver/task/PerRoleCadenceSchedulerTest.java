@@ -92,6 +92,7 @@ public class PerRoleCadenceSchedulerTest {
         a.auto = true;
         a.activeSid = String.valueOf(SID);
         a.activeUid = String.valueOf(UID_MAIN);
+        a.configDefaultsVersion = VaultStore.CURRENT_CONFIG_DEFAULTS_VERSION;
         if (sidConfig != null) a.roleConfig.put(String.valueOf(SID), sidConfig);
         List<VaultStore.Account> in = new ArrayList<>();
         in.add(a);
@@ -548,9 +549,12 @@ public class PerRoleCadenceSchedulerTest {
     @Test
     public void onMode_arenaGateBlocksGatedRoleOnly() {
         VaultStore.Account acc = seed(true, null);
-        // 关掉白名单任务，确保主控在独占窗内没有任何可派任务
-        acc.roleConfigByUid.put(SID + ":" + UID_MAIN,
-                new LinkedHashMap<>(Map.of("battle_shield", false, "medic", false)));
+        // 2026-11-11 任务级默认全开：显式关掉全部任务，仅保留一个非白名单任务，
+        // 使主控在独占窗内无任务可派、同时能记录 arena_exclusive 阻塞统计。
+        Map<String, Boolean> off = new LinkedHashMap<>();
+        for (ServerTasks.TaskDef d : ServerTasks.all()) off.put(d.id, false);
+        off.put("gather", true);
+        acc.roleConfigByUid.put(SID + ":" + UID_MAIN, off);
         TaskCadenceScheduler scheduler = scheduler(true, 20, 0);
         long now = bj(2026, 10, 30, 12, 0);
         ArenaGate.enterActive(MAIN, now);

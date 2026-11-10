@@ -185,6 +185,7 @@ public class VaultStoreTest {
         a.roleConfigByUid.put("888:35371154", cfg("gather", false, "mail", true));
         a.roleParamsByUid.put("888:35371154", params("mail", "{\"x\":1}"));
         a.roleConfigByUid.put("888:88280792", cfg("mail", false));
+        a.configDefaultsVersion = VaultStore.CURRENT_CONFIG_DEFAULTS_VERSION;
         s1.replaceAll(List.of(a));
 
         VaultStore s2 = new VaultStore(dir);
@@ -237,10 +238,12 @@ public class VaultStoreTest {
         VaultStore.Account a = acc("111", true, "tk");
         a.roleConfigByUid.put("888:35371154", cfg("gather", false));
         s1.replaceAll(List.of(a));
-        // 旧 App（不带 roleConfigByUid）再同步：不得清掉服务器已存的 per-uid 配置（迁移/回滚安全）
+        // 旧 App（不带 roleConfigByUid）再同步：不得清掉服务器已存的 per-uid 配置（迁移/回滚安全）；
+        // 2026-11-11 起旧客户端无 configDefaultsVersion → 旧默认 false 一次性迁移为新默认开。
         s1.replaceAll(List.of(acc("111", true, "tk2")));
         VaultStore.Account b = s1.find("111");
-        assertEquals(Boolean.FALSE, b.roleConfigByUid.get("888:35371154").get("gather"));
+        assertEquals("旧默认 false 已迁移为开（旧 App 无版本字段）", Boolean.TRUE,
+                b.roleConfigByUid.get("888:35371154").get("gather"));
         assertEquals("tk2", b.token);
     }
 }

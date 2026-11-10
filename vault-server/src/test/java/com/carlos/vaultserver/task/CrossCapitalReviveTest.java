@@ -151,7 +151,14 @@ public class CrossCapitalReviveTest {
         Map<String, Object> root = new LinkedHashMap<>();
         root.put("members", members);
         e.membersInit = root;
-        ServerActivityTasks.crossCapitalRevive(tc(e));
+        // 2026-11-11 默认开启策略：援助盟友消耗复活币，默认关；本测试显式开启验证逻辑。
+        java.util.Map<String, JSONObject> params = new HashMap<>();
+        JSONObject p = new JSONObject();
+        JSONObject sub = new JSONObject();
+        sub.put("help_revive", true);
+        p.put("sub", sub);
+        params.put("act_cross_capital_revive", p);
+        ServerActivityTasks.crossCapitalRevive(new TaskContext(e, "111", SID, state, params, "测试"));
         assertTrue("应查询联盟成员复活数据", e.calls.contains("req_cross_capital_war_get_user_revive_data"));
         assertTrue("应援助盟友复活", e.calls.contains("req_cross_capital_war_help_revive"));
     }

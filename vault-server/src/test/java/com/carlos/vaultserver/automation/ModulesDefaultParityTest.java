@@ -43,7 +43,8 @@ public class ModulesDefaultParityTest {
         for (ServerTasks.TaskDef d : ServerTasks.all()) {
             if (!d.enabledByDefault) expectedOff.add(d.id);
         }
-        assertFalse("目录默认关闭集合不应为空（否则测试失去意义）", expectedOff.isEmpty());
+        // 2026-11-11 默认开启策略：任务级全部默认开，目录默认关闭集合应为空。
+        assertTrue("目录默认关闭集合应为空（策略：任务级全开）", expectedOff.isEmpty());
         for (String id : expectedOff) {
             ActionDefinition a = actionOf(Modules.registry(), id);
             assertNotNull("目录任务未进入模块: " + id, a);

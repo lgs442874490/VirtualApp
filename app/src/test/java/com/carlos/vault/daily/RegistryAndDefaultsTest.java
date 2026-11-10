@@ -83,42 +83,15 @@ public class RegistryAndDefaultsTest {
 
     @Test
     public void defaultOffMatrix_exactly21() {
+        // 2026-11-11 默认开启策略：任务级全部默认开，默认关集合为空。
+        // 需要关闭的能力改由「消耗钻石/道具的子项默认关」与 FeatureGate 隐藏过滤承接。
         Set<String> expectedOff = new HashSet<>();
-        expectedOff.add("shop");
-        expectedOff.add("adventure_sweep");
-        expectedOff.add("building");
-        expectedOff.add("barracks");
-        expectedOff.add("arena");
-        expectedOff.add("act_joy");
-        expectedOff.add("act_feast");
-        expectedOff.add("act_mercenary");
-        expectedOff.add("act_truck");
-        expectedOff.add("act_icehunter");
-        expectedOff.add("bank");
-        expectedOff.add("act_flamefangs");
-        expectedOff.add("act_snowtrade");
-        expectedOff.add("act_frostfire");
-        expectedOff.add("social_gift");
-        expectedOff.add("gather");
-        expectedOff.add("intel");
-        expectedOff.add("hunt");
-        expectedOff.add("alliance_showdown");
-        expectedOff.add("alliance_shop");
-        expectedOff.add("guardian");
-        // 2026-11-06 决策2：backpack 被 FeatureGate 隐藏（产品未确认）→ 默认关，
-        // 保证「UI 不可见的功能不默认执行」（上传侧另有 filterHiddenDailyFns 兜底）。
-        expectedOff.add("backpack");
-        // 2026-11-08：新增活动/联动功能默认关（上线后由用户按需开启）
-        expectedOff.add("act_arsenal_league");
-        expectedOff.add("act_slg_league");
-        expectedOff.add("act_cross_capital_revive");
-        expectedOff.add("ally_offline_guard");
 
         Set<String> actualOff = new HashSet<>();
         for (DailyTasks.TaskDef d : DailyTasks.all()) {
             if (!d.enabledByDefault) actualOff.add(d.id);
         }
-        assertEquals("默认关清单必须逐项一致（高消耗/高风控默认关）", expectedOff, actualOff);
+        assertEquals("默认关清单必须为空（2026-11-11 起任务级全开）", expectedOff, actualOff);
     }
 
     /**

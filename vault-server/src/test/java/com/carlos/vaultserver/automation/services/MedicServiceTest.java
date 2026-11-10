@@ -378,6 +378,33 @@ public class MedicServiceTest {
     }
 
     @Test
+    public void heal_help1526_skipsAndCooldownsNextRound() throws Exception {
+        FakeEngine engine = new FakeEngine();
+        engine.notifies.put("notify_hospital_init", map(
+                "wound_soldiers", pairs(Exec.kv(10101, 400))));
+        engine.hospitalQueueQid = 12L;
+        engine.responses.add(map("code", 0));
+        engine.responses.add(map("code", 1526));
+
+        MedicService svc = new MedicService();
+        TaskOutcome r = svc.heal(context(engine), 400, false, true);
+        assertEquals(TaskOutcome.Category.CLAIMED, r.category);
+        assertEquals("skip:求助暂不可用（码1526）（1批后）", r.subResults.get("help"));
+
+        // 2026-11-11：1526 后 30 分钟冷却，第二轮只治疗、不再发求助请求。
+        engine.notifies.put("notify_hospital_init", map(
+                "wound_soldiers", pairs(Exec.kv(10101, 400))));
+        engine.responses.add(map("code", 0));
+        TaskOutcome r2 = svc.heal(context(engine), 400, false, true);
+        assertEquals("skip:求助冷却中（码1526）（1批后）", r2.subResults.get("help"));
+        int helpRequests = 0;
+        for (String p : engine.requestProtos) {
+            if ("req_queue_ask_for_help".equals(p)) helpRequests++;
+        }
+        assertEquals("1526 后冷却期内不得再发求助", 1, helpRequests);
+    }
+
+    @Test
     public void heal_honoursMedicSubSwitch() {
         // App 执行参数卡「自动治疗」子开关（medic.sub.heal）：关掉后服务端不得偷偷治疗。
         FakeEngine engine = new FakeEngine();

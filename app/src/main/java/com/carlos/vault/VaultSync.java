@@ -1423,6 +1423,10 @@ public final class VaultSync {
                 int[] win = RoleStore.window(ctx);
                 o.put("windowStart", win[0]);
                 o.put("windowEnd", win[1]);
+                // 2026-11-11 默认开启策略：本地迁移版本。服务端据此判断上传的 false 是
+                // “用户手动关”还是“旧客户端旧默认”，只对未迁移客户端做一次性迁移。
+                o.put("configDefaultsVersion",
+                        com.carlos.vault.daily.DailyConfigStore.configDefaultsVersion(ctx));
                 JSONArray roles = new JSONArray();
                 for (RoleStore.Role r : RoleStore.roles(ctx, a.fpid)) {
                     if (r.serverid <= 0) continue;

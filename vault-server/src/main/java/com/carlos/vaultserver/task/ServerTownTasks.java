@@ -1391,18 +1391,100 @@ public final class ServerTownTasks {
                 }
             }
             // 2026-11-08：海岛免费商品 8002（每日 1 次，无资源扣减）+ 每周免费钻石（101×200）
+            // 2026-11-11 修复：15018/15071 为游戏侧“暂不可用/已领”类返回；按日/周去重，
+            // 避免每轮重复请求（原实现每天每角色 15–21 条 ERROR）。
+            JSONObject hs = homelandState(tc);
+            String today = dayKey();
+            String week = weekKey();
             if (tc.subOn("homeland", "free_store", true)) {
-                tryStep(tc, m, "免费商店", "free_store", "req_homeland_buy_store_item",
-                        Exec.args("item", Exec.args("id", 8002L, "count", 1L)));
+                if (today.equals(hs.optString("free_store_day", ""))) {
+                    m.subSkip("free_store", "今日已处理");
+                } else {
+                    GameMessage rsp = tc.engine.request("req_homeland_buy_store_item",
+                            Exec.args("item", Exec.args("id", 8002L, "count", 1L)));
+                    int code = Exec.codeOf(rsp);
+                    if (Exec.ok(rsp)) {
+                        m.claimed("免费商店");
+                        m.rewards("免费商店", rsp);
+                        m.subOk("free_store", "免费商店✓");
+                        hs.put("free_store_day", today);
+                        saveHomelandState(tc, hs);
+                    } else if (code == 15018) {
+                        m.skip("免费商店暂不可用");
+                        m.subSkip("free_store", "暂不可用（码15018）");
+                        hs.put("free_store_day", today);
+                        saveHomelandState(tc, hs);
+                    } else if (isHomelandRetryable(code)) {
+                        m.skip("免费商店无可收");
+                        m.subSkip("free_store", "无可收（码" + code + "）");
+                    } else {
+                        m.skip("免费商店码" + code);
+                        m.subFail("free_store", "码" + code);
+                    }
+                }
             }
             if (tc.subOn("homeland", "weekly_diamond", true)) {
-                tryStep(tc, m, "每周钻石", "weekly_diamond", "req_homeland_token_shop_weekly_recv", null);
+                if (week.equals(hs.optString("weekly_diamond_week", ""))) {
+                    m.subSkip("weekly_diamond", "本周已处理");
+                } else {
+                    GameMessage rsp = tc.engine.request("req_homeland_token_shop_weekly_recv", null);
+                    int code = Exec.codeOf(rsp);
+                    if (Exec.ok(rsp)) {
+                        m.claimed("每周钻石");
+                        m.rewards("每周钻石", rsp);
+                        m.subOk("weekly_diamond", "每周钻石✓");
+                        hs.put("weekly_diamond_week", week);
+                        saveHomelandState(tc, hs);
+                    } else if (code == 15071) {
+                        m.skip("每周钻石暂不可用");
+                        m.subSkip("weekly_diamond", "暂不可用（码15071）");
+                        hs.put("weekly_diamond_week", week);
+                        saveHomelandState(tc, hs);
+                    } else if (isHomelandRetryable(code)) {
+                        m.skip("每周钻石无可收");
+                        m.subSkip("weekly_diamond", "无可收（码" + code + "）");
+                    } else {
+                        m.skip("每周钻石码" + code);
+                        m.subFail("weekly_diamond", "码" + code);
+                    }
+                }
             }
         } catch (Exception e) {
             if (sessionLost(e)) return ServerTasks.classifyException(e, "晨曦岛");
             m.fail(ServerTasks.brief(String.valueOf(e.getMessage())));
         }
         return Exec.result(m, "homeland", "晨曦岛");
+    }
+
+    /** 晨曦岛当日/当周去重状态（mod:fpid:sid[:uid]:homeland）。 */
+    private static JSONObject homelandState(TaskContext tc) {
+        try {
+            String raw = tc.store.getString(TaskContext.modKey(tc.fpid, tc.sid, tc.roleUid, "homeland"));
+            return raw == null || raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
+        } catch (Throwable t) {
+            return new JSONObject();
+        }
+    }
+
+    private static void saveHomelandState(TaskContext tc, JSONObject s) {
+        try {
+            tc.store.putString(TaskContext.modKey(tc.fpid, tc.sid, tc.roleUid, "homeland"), s.toString());
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String dayKey() {
+        return Beijing.fmt("yyyy-MM-dd").format(new java.util.Date());
+    }
+
+    private static String weekKey() {
+        return Beijing.fmt("yyyy-ww").format(new java.util.Date());
+    }
+
+    /** 与 tryStep 白名单一致：这类码属于“当前无可收”，可下轮重试，不写去重台账。 */
+    private static boolean isHomelandRetryable(int code) {
+        return code == 15002 || code == 15005 || code == 15029 || code == 15048
+                || code == 2 || code == 7401 || code == 7404;
     }
 
     private static void collectPoints(Map<String, Object> m, List<Map<String, Object>> out, int depth) {
@@ -2567,7 +2649,8 @@ public final class ServerTownTasks {
             m.claimed(name);
             m.rewards(name, rsp);
             if (subId != null) m.subOk(subId, name + "✓");
-        } else if (code == 15002 || code == 15005 || code == 15029 || code == 15048 || code == 2 || code == 7401 || code == 7404) {
+        } else if (code == 15002 || code == 15005 || code == 15018 || code == 15029 || code == 15048
+                || code == 15071 || code == 2 || code == 7401 || code == 7404) {
             m.skip(name + "无可收");
             if (subId != null) m.subSkip(subId, "无可收");
         } else {

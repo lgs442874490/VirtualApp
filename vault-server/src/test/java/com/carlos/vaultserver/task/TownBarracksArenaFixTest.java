@@ -169,12 +169,12 @@ public class TownBarracksArenaFixTest {
     }
 
     @Test
-    public void defaultCatalogKeepsBarracksAndArenaOff() {
-        // 网页版默认关（ServerTasks 目录 enabledByDefault=false）：不勾选不得偷跑
+    public void defaultCatalogKeepsBarracksAndArenaOn() {
+        // 2026-11-11 默认开启策略：任务级全开（兵营/竞技场也默认启用）
         VaultStore.Account a = seed(null);
         List<String> enabled = scheduler.enabledTaskIds(a, SID);
-        assertFalse("barracks 默认关", enabled.contains("barracks"));
-        assertFalse("arena 默认关", enabled.contains("arena"));
+        assertTrue("barracks 默认开", enabled.contains("barracks"));
+        assertTrue("arena 默认开", enabled.contains("arena"));
         assertTrue("medic 默认开", enabled.contains("medic"));
     }
 
