@@ -619,4 +619,25 @@ public class BearFormationTest {
         c.startY = 20L;
         return c;
     }
+
+    // ======================= 2026-11-10：默认模板/默认上车槽 =======================
+
+    @Test
+    public void defaultJoinSlots_usesExistingRidePresetsOnly() {
+        FormationLibrary lib = FormationLibrary.parse("{\"formations\":["
+                + "{\"id\":9100000010,\"name\":\"熊上车1\",\"hero_ids\":[50036]},"
+                + "{\"id\":9100000011,\"name\":\"熊上车2\",\"hero_ids\":[50026]}]}");
+        List<ServerBearTasks.JoinFormationConfig> slots = ServerBearTasks.defaultJoinSlots(
+                lib, ServerBearTasks.BearConfig.defaults());
+        assertEquals("库内只存在 2 套熊上车预设", 2, slots.size());
+        assertEquals(1, slots.get(0).id);
+        assertEquals("ROLE", slots.get(0).mode);
+        assertEquals(9100000010L, slots.get(0).formationId);
+        assertEquals(2, slots.get(1).id);
+        assertEquals(9100000011L, slots.get(1).formationId);
+        assertTrue(slots.get(0).enabled);
+
+        assertTrue("空库不生成默认槽",
+                ServerBearTasks.defaultJoinSlots(null, ServerBearTasks.BearConfig.defaults()).isEmpty());
+    }
 }
