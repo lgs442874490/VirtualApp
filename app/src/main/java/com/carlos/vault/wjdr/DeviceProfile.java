@@ -94,27 +94,31 @@ public final class DeviceProfile {
             Collections.unmodifiableList(Arrays.asList(POOL));
 
     static {
-        // 池数据自检（AC-1）：开发期配置错误直接暴露，运行期只读不可变
+        // 池数据自检（AC-1）：数据错误只记日志、不阻断类初始化（P2-3：避免一条脏数据导致
+        // 整个登录链路 NoClassDefFoundError）；运行期由 normalize*/回退逻辑兜底。
         Set<String> seen = new HashSet<>();
         for (DeviceModel m : POOL) {
-            if (m == null) throw new IllegalStateException("设备伪装机型池含 null");
-            if (normalizeManufacturer(m.manufacturer) == null) {
-                throw new IllegalStateException("机型池 manufacturer 非法: " + m);
+            String problem = poolProblem(m, seen);
+            if (problem == null) {
+                if (m != null) seen.add(m.model);
+            } else {
+                WjdrLog.w("[设备伪装] pool_invalid reason={} item={}", problem, String.valueOf(m));
             }
-            if (!m.manufacturer.equals(m.brand)) {
-                throw new IllegalStateException("机型池 brand 必须等于 manufacturer: " + m);
-            }
-            String model = normalizeModel(m.model);
-            if (model == null) throw new IllegalStateException("机型池 model 非法: " + m);
-            if (!m.manufacturer.equalsIgnoreCase(firstSegment(model))) {
-                throw new IllegalStateException("机型池 model 首段与 manufacturer 不一致: " + m);
-            }
-            if (m.androidVersion < MIN_ANDROID_VERSION
-                    || m.androidVersion > MAX_ANDROID_VERSION) {
-                throw new IllegalStateException("机型池 androidVersion 越界: " + m);
-            }
-            if (!seen.add(m.model)) throw new IllegalStateException("机型池 model 重复: " + m);
         }
+    }
+
+    /** 池数据自检项；返回 null 表示合法。 */
+    private static String poolProblem(DeviceModel m, Set<String> seen) {
+        if (m == null) return "null_entry";
+        if (normalizeManufacturer(m.manufacturer) == null) return "manufacturer_invalid";
+        if (!m.manufacturer.equals(m.brand)) return "brand_mismatch";
+        String model = normalizeModel(m.model);
+        if (model == null) return "model_invalid";
+        if (!m.manufacturer.equalsIgnoreCase(firstSegment(model))) return "model_prefix_mismatch";
+        if (m.androidVersion < MIN_ANDROID_VERSION
+                || m.androidVersion > MAX_ANDROID_VERSION) return "android_version_out_of_range";
+        if (seen.contains(m.model)) return "model_duplicate";
+        return null;
     }
 
     /** 机型池中的一条记录（不可变）。 */
@@ -208,29 +212,20 @@ public final class DeviceProfile {
         String manufacturer = null;
         if (version == 2) {
             manufacturer = normalizeManufacturer(text(o, "manufacturer"));
-            if (manufacturer == null && o.has("manufacturer")) {
-                warnFallback(fpid, "manufacturer", "invalid");
+            String prefix = manufacturerFromModel(model);
+            if (manufacturer == null) {
+                if (o.has("manufacturer")) warnFallback(fpid, "manufacturer", "invalid");
+            } else if (prefix != null && !manufacturer.equalsIgnoreCase(prefix)) {
+                // P2-2：v2 存档中 manufacturer 与 device 首段冲突时以 device 为准，保证自洽
+                warnFallback(fpid, "manufacturer", "conflicts_with_device");
+                manufacturer = prefix;
             }
         }
         if (manufacturer == null) manufacturer = manufacturerFromModel(model);
         if (manufacturer == null) manufacturer = base.manufacturer;
 
-        int androidVersion;
-        if (o.has("android_version")) {
-            int rawVersion = o.optInt("android_version", DEFAULT_ANDROID_VERSION);
-            androidVersion = clampAndroidVersion(rawVersion);
-            if (androidVersion != rawVersion) warnFallback(fpid, "android_version", "out_of_range");
-        } else {
-            androidVersion = poolAndroidVersion(model);   // 缺失回填（池内取池版本，否则 13）
-        }
-        int deviceLv;
-        if (o.has("device_lv")) {
-            int rawLv = o.optInt("device_lv", DEFAULT_DEVICE_LV);
-            deviceLv = clampDeviceLv(rawLv);
-            if (deviceLv != rawLv) warnFallback(fpid, "device_lv", "out_of_range");
-        } else {
-            deviceLv = DEFAULT_DEVICE_LV;
-        }
+        int androidVersion = androidVersionOfJson(o, fpid, model);
+        int deviceLv = deviceLvOfJson(o, fpid);
 
         String deviceId = normalizeDeviceId(text(o, "device_id"));
         if (deviceId == null) {
@@ -252,6 +247,48 @@ public final class DeviceProfile {
                 deviceId, distinctId, ip);
     }
 
+    /** 系统版本解析：缺失按池回填；存在必须是 Number 且 11–14（P2-6：跨 org.json 类型差异）。 */
+    private static int androidVersionOfJson(JSONObject o, String fpid, String model) {
+        Object raw = o.opt("android_version");
+        if (raw == null || raw == JSONObject.NULL) return poolAndroidVersion(model);
+        if (!(raw instanceof Number)) {
+            warnFallback(fpid, "android_version", "type_mismatch");
+            return DEFAULT_ANDROID_VERSION;
+        }
+        int v = ((Number) raw).intValue();
+        int clamped = clampAndroidVersion(v);
+        if (clamped != v) warnFallback(fpid, "android_version", "out_of_range");
+        return clamped;
+    }
+
+    /** 设备等级解析：缺失回填 3；存在必须是 1–5 的 Number。 */
+    private static int deviceLvOfJson(JSONObject o, String fpid) {
+        Object raw = o.opt("device_lv");
+        if (raw == null || raw == JSONObject.NULL) return DEFAULT_DEVICE_LV;
+        if (!(raw instanceof Number)) {
+            warnFallback(fpid, "device_lv", "type_mismatch");
+            return DEFAULT_DEVICE_LV;
+        }
+        int v = ((Number) raw).intValue();
+        int clamped = clampDeviceLv(v);
+        if (clamped != v) warnFallback(fpid, "device_lv", "out_of_range");
+        return clamped;
+    }
+
+    /** 从机型推导厂商（引擎在机型已固化、厂商未固化时保持自洽）；推导失败返回 null。 */
+    public static String manufacturerOf(String model) {
+        return manufacturerFromModel(model);
+    }
+
+    /** 机型对应系统版本；不在池内返回 0（由调用方回退）。 */
+    public static int androidVersionOf(String model) {
+        if (model == null) return 0;
+        for (DeviceModel m : POOL) {
+            if (m.model.equalsIgnoreCase(model)) return m.androidVersion;
+        }
+        return 0;
+    }
+
     /** 校验回退日志（FR-7）：含 fpid，不打印完整指纹。 */
     private static void warnFallback(String fpid, String field, String reason) {
         WjdrLog.w("[设备伪装] field={} reason={} fpid={}",
@@ -263,8 +300,18 @@ public final class DeviceProfile {
      * 为空时回退 {@link SecureRandom}（不抛异常）。
      */
     public static Device generate(String fpid, long serverId) {
+        return generate(fpid, serverId, 0L);
+    }
+
+    /**
+     * 角色维度生成（P0 修复）：seed = {@code fpid|serverId|roleUid}（roleUid&gt;0 时）。
+     *
+     * <p>同账号同服多角色在无角色级指纹时上层注入空串，必须仍得到不同设备，否则游戏服
+     * 按"同账号同设备"互踢。roleUid&lt;=0 保持账号级语义（旧行为）。
+     */
+    public static Device generate(String fpid, long serverId, long roleUid) {
         if (fpid == null || fpid.trim().isEmpty()) return randomDevice();
-        String seed = fpid + "|" + serverId;
+        String seed = roleUid > 0 ? fpid + "|" + serverId + "|" + roleUid : fpid + "|" + serverId;
         byte[] digest = sha256(seed);
         DeviceModel m = pickFromDigest(digest);
         return new Device(m.model, m.manufacturer, m.brand, m.androidVersion, DEFAULT_DEVICE_LV,

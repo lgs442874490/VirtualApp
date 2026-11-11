@@ -11,6 +11,7 @@ import java.util.Set;
 import java.util.regex.Pattern;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -358,5 +359,62 @@ public class DeviceProfileTest {
             end++;
         }
         return model.substring(0, end).toLowerCase(Locale.ROOT);
+    }
+
+    // ===================== P0 修复：角色维度隔离 =====================
+
+    @Test
+    public void generate_differsForDifferentRoleUid() throws Exception {
+        DeviceProfile.Device a = DeviceProfile.generate("fpid-role", 888L, 1001L);
+        DeviceProfile.Device b = DeviceProfile.generate("fpid-role", 888L, 1002L);
+        assertNotEquals("同账号同服不同角色必须不同设备 device_id",
+                a.deviceId, b.deviceId);
+        assertNotEquals("同账号同服不同角色必须不同 distinct_id",
+                a.distinctId, b.distinctId);
+        assertNotEquals("角色级与账号级(uid=0)也不应撞车",
+                a.deviceId, DeviceProfile.generate("fpid-role", 888L, 0L).deviceId);
+        // 同一角色重试必须稳定（不漂移）
+        assertEquals(a.deviceId, DeviceProfile.generate("fpid-role", 888L, 1001L).deviceId);
+        assertEquals(a.distinctId, DeviceProfile.generate("fpid-role", 888L, 1001L).distinctId);
+        assertEquals(a.ip, DeviceProfile.generate("fpid-role", 888L, 1001L).ip);
+    }
+
+    // ===================== P2 修复 =====================
+
+    @Test
+    public void parse_v2ManufacturerConflictUsesDevicePrefix() throws Exception {
+        String json = new JSONObject()
+                .put("v", 2)
+                .put("device", "Xiaomi 14")
+                .put("manufacturer", "vivo")            // 与机型首段冲突
+                .put("brand", "vivo")
+                .put("android_version", 14)
+                .put("device_lv", 3)
+                .put("device_id", "0123456789abcdef0123456789abcdef")
+                .put("distinct_id", "fedcba9876543210fedcba9876543210")
+                .put("ip", "36.128.12.34")
+                .toString();
+        DeviceProfile.Device d = DeviceProfile.parse(json, "fpid-x");
+        assertNotNull(d);
+        assertEquals("以 device 首段为准保持自洽", "Xiaomi", d.manufacturer);
+        assertEquals("brand 与 manufacturer 一致", "Xiaomi", d.brand);
+    }
+
+    @Test
+    public void parse_fieldTypesMustBeNumbers() throws Exception {
+        String json = new JSONObject()
+                .put("v", 2)
+                .put("device", "vivo X200 Pro")
+                .put("manufacturer", "vivo")
+                .put("android_version", "14")           // 字符串类型 -> 回退
+                .put("device_lv", "5")                  // 字符串类型 -> 回退
+                .put("device_id", "0123456789abcdef0123456789abcdef")
+                .put("distinct_id", "fedcba9876543210fedcba9876543210")
+                .put("ip", "36.128.12.34")
+                .toString();
+        DeviceProfile.Device d = DeviceProfile.parse(json, "fpid-x");
+        assertNotNull(d);
+        assertEquals("字符串系统版本按非法回退 13", 13, d.androidVersion);
+        assertEquals("字符串设备等级按非法回退 3", 3, d.deviceLv);
     }
 }

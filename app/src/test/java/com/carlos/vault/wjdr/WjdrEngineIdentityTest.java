@@ -237,4 +237,94 @@ public class WjdrEngineIdentityTest {
                     "13", WjdrEngine.buildDeviceParams("android", "m", v, 3).get(2));
         }
     }
+
+    // ===================== P0 修复：角色维度隔离 / 真实时序 =====================
+
+    @Test
+    public void buildLoginPayload_differsByRoleUid() throws Exception {
+        Map<String, Object> a = newEngine().buildLoginPayload("fpid-role", "tok", 888L, 1001L);
+        Map<String, Object> b = newEngine().buildLoginPayload("fpid-role", "tok", 888L, 1002L);
+        assertNotEquals("同账号同服不同角色必须不同 device_id",
+                a.get("device_id"), b.get("device_id"));
+        assertNotEquals("同账号同服不同角色必须不同 distinct_id",
+                a.get("distinct_id"), b.get("distinct_id"));
+        // 同一角色重试稳定
+        Map<String, Object> again = newEngine().buildLoginPayload("fpid-role", "tok", 888L, 1001L);
+        assertEquals(a.get("device_id"), again.get("device_id"));
+        assertEquals(a.get("distinct_id"), again.get("distinct_id"));
+        assertEquals(a.get("ip"), again.get("ip"));
+    }
+
+    @Test
+    public void buildLoginPayload_uidZeroMatchesAccountLevel() throws Exception {
+        Map<String, Object> legacy = newEngine().buildLoginPayload("fpid-x", "tok", 888L);
+        Map<String, Object> zero = newEngine().buildLoginPayload("fpid-x", "tok", 888L, 0L);
+        assertEquals("uid=0 保持账号级语义（旧 3 参兼容）",
+                legacy.get("device_id"), zero.get("device_id"));
+    }
+
+    @Test
+    public void applyIdentity_beforeFpidKnownDoesNotPinRandomIdentity() throws Exception {
+        // 真实时序：登录前 applyIdentity，此时引擎还不知道 fpid。若把回退随机值 pin 住，
+        // 同账号同服多角色会拿到同一台设备（P0 的另一种触发方式）。
+        String json = new JSONObject()
+                .put("device", "vivo X200 Pro")
+                .put("device_id", "abc1234567")          // 非法 -> 不得 pin
+                .put("distinct_id", "fedcba9876543210fedcba9876543210")  // 合法 -> pin
+                .put("ip", "999.1.1.1")                  // 非法 -> 不得 pin
+                .toString();
+        WjdrEngine e1 = newEngine();
+        e1.applyIdentity(json);
+        WjdrEngine e2 = newEngine();
+        e2.applyIdentity(json);
+        Map<String, Object> a = e1.buildLoginPayload("fpid-t", "tok", 888L, 1001L);
+        Map<String, Object> b = e2.buildLoginPayload("fpid-t", "tok", 888L, 1002L);
+        assertNotEquals("非法 device_id 不应被随机值 pin 住：不同角色必须不同",
+                a.get("device_id"), b.get("device_id"));
+        assertNotEquals("非法 ip 不应被随机值 pin 住：不同角色必须不同",
+                a.get("ip"), b.get("ip"));
+        assertEquals("非法 device_id 回退值应等于同角色确定性生成（未 pin 随机值）",
+                newEngine().buildLoginPayload("fpid-t", "tok", 888L, 1001L).get("device_id"),
+                a.get("device_id"));
+        assertEquals("非法 ip 回退值应等于同角色确定性生成（未 pin 随机值）",
+                newEngine().buildLoginPayload("fpid-t", "tok", 888L, 1001L).get("ip"),
+                a.get("ip"));
+        assertEquals("合法字段照常 pinned", "fedcba9876543210fedcba9876543210", a.get("distinct_id"));
+        assertEquals("合法机型照常 pinned", "vivo X200 Pro", a.get("device"));
+    }
+
+    @Test
+    public void applyIdentity_emptyClearsPreviouslyPinnedIdentity() throws Exception {
+        String json = new JSONObject()
+                .put("v", 2)
+                .put("device", "HUAWEI Mate 60")
+                .put("manufacturer", "HUAWEI")
+                .put("brand", "HUAWEI")
+                .put("android_version", 12)
+                .put("device_lv", 3)
+                .put("device_id", "0123456789abcdef0123456789abcdef")
+                .put("distinct_id", "fedcba9876543210fedcba9876543210")
+                .put("ip", "39.144.7.8")
+                .toString();
+        WjdrEngine engine = newEngine();
+        engine.applyIdentity(json);
+        engine.applyIdentity("");            // 空注入 = 无固定指纹，必须清掉旧 pinned
+        Map<String, Object> payload = engine.buildLoginPayload("fpid-clear", "tok", 888L, 1001L);
+        assertNotEquals("空注入后不得复用上一账号的设备",
+                "0123456789abcdef0123456789abcdef", payload.get("device_id"));
+        Map<String, Object> fresh = newEngine().buildLoginPayload("fpid-clear", "tok", 888L, 1001L);
+        assertEquals("空注入后回到确定性生成", fresh.get("device_id"), payload.get("device_id"));
+    }
+
+    @Test
+    public void applyIdentity_reconnectReplayUsesRoleSeed() throws Exception {
+        // 重连重放路径：loginByRole 的 uid 进入 savedExtraParams，重连时必须仍按角色维度生成
+        WjdrEngine engine = newEngine();
+        Map<String, Object> first = engine.buildLoginPayload("fpid-reconnect", "tok", 888L, 1001L);
+        engine.applyIdentity(engine.identityJson());   // 模拟固化后重连注入
+        Map<String, Object> replay = engine.buildLoginPayload("fpid-reconnect", "tok", 888L, 1001L);
+        assertEquals(first.get("device_id"), replay.get("device_id"));
+        assertEquals(first.get("distinct_id"), replay.get("distinct_id"));
+        assertEquals(first.get("ip"), replay.get("ip"));
+    }
 }

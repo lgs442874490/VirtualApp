@@ -84,21 +84,55 @@ public class WjdrEngine {
         return bytes != null ? bytes : new byte[0];
     }
 
-    /** 注入账号固定设备指纹（来自 AccountStore.getSettings/roleIdentitySeed；缺字段/非法字段单字段回退）。 */
+    /**
+     * 注入账号固定设备指纹（AccountStore.settings / roleIdentitySeed）。
+     *
+     * <p>空串/null/非 JSON 视为"无固定指纹"并清空旧 pinned（P2-4：引擎复用时不得串号）。
+     * 只固化 JSON 中真实存在且合法的字段；非法/缺失字段不 pin，交给 {@link #buildLoginPayload}
+     * 按 (fpid, serverid, roleUid) 确定性生成，避免登录前拿不到 fpid 时把随机值固化（P2-1）。
+     */
     public void applyIdentity(String settingsJson) {
-        if (settingsJson == null || settingsJson.isEmpty()) return;
+        if (settingsJson == null || settingsJson.isEmpty()) {
+            clearPinnedIdentity();
+            return;
+        }
         String fpid = savedFpid != null ? savedFpid : (lastFpid != null ? lastFpid : "");
-        // 统一走 DeviceProfile：v1 兼容回填、v2 严格校验；非法/缺失字段按确定性种子回退，绝不阻断登录。
+        org.json.JSONObject o;
+        try {
+            o = new org.json.JSONObject(settingsJson);
+        } catch (Throwable t) {
+            clearPinnedIdentity();
+            return;
+        }
         DeviceProfile.Device d = DeviceProfile.parse(settingsJson, fpid);
-        if (d == null) return;
-        pinnedDistinctId = d.distinctId;
-        pinnedDeviceId = d.deviceId;
-        pinnedLoginIp = d.ip;
-        pinnedDeviceModel = d.model;
-        pinnedManufacturer = d.manufacturer;
-        pinnedBrand = d.brand;
-        pinnedAndroidVersion = d.androidVersion;
+        if (d == null) {
+            clearPinnedIdentity();
+            return;
+        }
+        boolean modelFromJson = o.has("device")
+                && DeviceProfile.normalizeModel(o.optString("device", "")) != null;
+        pinnedDeviceModel = modelFromJson ? d.model : null;
+        pinnedManufacturer = modelFromJson ? d.manufacturer : null;
+        pinnedBrand = modelFromJson ? d.brand : null;
+        pinnedAndroidVersion = modelFromJson ? d.androidVersion : 0;
         pinnedDeviceLv = d.deviceLv;
+        pinnedDistinctId = o.has("distinct_id")
+                ? DeviceProfile.normalizeDeviceId(o.optString("distinct_id", "")) : null;
+        pinnedDeviceId = o.has("device_id")
+                ? DeviceProfile.normalizeDeviceId(o.optString("device_id", "")) : null;
+        pinnedLoginIp = o.has("ip") ? DeviceProfile.normalizeIp(o.optString("ip", "")) : null;
+    }
+
+    /** 清空固定指纹（空注入/非 JSON 时调用，保证引擎复用不同账号不串号）。 */
+    private void clearPinnedIdentity() {
+        pinnedDistinctId = null;
+        pinnedDeviceId = null;
+        pinnedLoginIp = null;
+        pinnedDeviceModel = null;
+        pinnedManufacturer = null;
+        pinnedBrand = null;
+        pinnedAndroidVersion = 0;
+        pinnedDeviceLv = 0;
     }
 
     /** 导出本次登录实际使用的设备指纹（v2 JSON，回写 AccountStore；下次登录复用同一"设备"）。 */
@@ -402,7 +436,11 @@ public class WjdrEngine {
         try {
             requestLock.lock();
             try {
-                Map<String, Object> payload = buildLoginPayload(fpid, sdkToken, serverid);
+                // 角色维度设备 seed（P0）：loginByRole 的 uid 经 extraParams 下传，
+                // 同账号同服多角色在无角色级指纹时也不会撞设备。
+                Object roleUidObj = extraParams == null ? null : extraParams.get("uid");
+                long roleUid = roleUidObj == null ? 0L : toLong(roleUidObj);
+                Map<String, Object> payload = buildLoginPayload(fpid, sdkToken, serverid, roleUid);
                 if (extraParams != null) payload.putAll(extraParams);
                 long t0 = GameServerClock.monoNow();
                 GameMessage auth = lockedRequest("loginauth", payload, seconds(15));
@@ -1097,17 +1135,35 @@ public class WjdrEngine {
 
     /** 登录载荷构建（包内可见：供 JVM 单测校验字段集合与指纹一致性）。 */
     Map<String, Object> buildLoginPayload(String fpid, String sdkToken, Long serverid) {
+        return buildLoginPayload(fpid, sdkToken, serverid, 0L);
+    }
+
+    /**
+     * 登录载荷构建（角色维度）：roleUid&gt;0 时设备 seed 含角色 uid，保证同账号同服多角色
+     * 在无角色级指纹时也不会撞设备（P0 修复）。
+     */
+    Map<String, Object> buildLoginPayload(String fpid, String sdkToken, Long serverid,
+                                          long roleUid) {
         LinkedHashMap<String, Object> p = new LinkedHashMap<>();
         // 固定指纹优先（每账号持久一份）；未注入则按 fpid+serverid 确定性生成——同一角色
         // 登录失败重试得到同一台设备（2026-11-11 修复"每次重试换设备"的漂移）。
         long sid = serverid != null && serverid > 0 ? serverid : 0L;
-        DeviceProfile.Device base = DeviceProfile.generate(fpid, sid);
+        DeviceProfile.Device base = DeviceProfile.generate(fpid, sid, roleUid);
         String distinctId = pinnedDistinctId != null ? pinnedDistinctId : base.distinctId;
         String deviceId = pinnedDeviceId != null ? pinnedDeviceId : base.deviceId;
         String loginIp = pinnedLoginIp != null ? pinnedLoginIp : base.ip;
         String deviceModel = pinnedDeviceModel != null ? pinnedDeviceModel : base.model;
-        String manufacturer = pinnedManufacturer != null ? pinnedManufacturer : base.manufacturer;
-        int androidVersion = pinnedAndroidVersion > 0 ? pinnedAndroidVersion : base.androidVersion;
+        // 机型已固化但厂商/版本缺失时，从机型推导（保证 v2 输出自洽），推导失败再用确定性基线
+        String manufacturer = pinnedManufacturer;
+        if (manufacturer == null) {
+            manufacturer = DeviceProfile.manufacturerOf(deviceModel);
+            if (manufacturer == null) manufacturer = base.manufacturer;
+        }
+        int androidVersion = pinnedAndroidVersion;
+        if (androidVersion <= 0) {
+            androidVersion = DeviceProfile.androidVersionOf(deviceModel);
+            if (androidVersion <= 0) androidVersion = base.androidVersion;
+        }
         int deviceLv = pinnedDeviceLv > 0 ? pinnedDeviceLv : base.deviceLv;
         lastDistinctId = distinctId;
         lastDeviceId = deviceId;
