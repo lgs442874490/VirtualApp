@@ -408,7 +408,9 @@ public final class BootstrapBatchRunner {
                 activeSessions.put(entry.fpid, session);
             }
             BootstrapService service = new BootstrapService(session.port,
-                    new BootstrapPlanner(), BootstrapCatalog.combined(), serviceSleeper);
+                    new BootstrapPlanner(), BootstrapCatalog.combined(), serviceSleeper,
+                    // hold 表按 fpid 进程级共享：单号挂点与批次看到同一份 51 退避（审查 P1-2）
+                    BootstrapHoldStore.shared(), entry.fpid);
             service.applyConfig(accountConfig());
             BootstrapService.LoginOutcome outcome;
             try {
@@ -488,10 +490,30 @@ public final class BootstrapBatchRunner {
         for (String kw : new String[]{"资源或道具不足", "正在建造", "正在升级",
                 "等待建筑与队列", "等待同步", "没有空闲建筑队列", "等待资源",
                 // 家具达建筑等级上限/队列未解锁：升级建筑后自愈，属正常等待（2026-11-11 实测）
-                "已达当前建筑等级上限", "队列尚未解锁"}) {
+                "已达当前建筑等级上限", "队列尚未解锁",
+                // 51 长退避（卡点 A）：这是预期等待而非停滞，必须计入等待类，
+                // 否则会被 isWaitableBlock 判成「异常」立即 FAILED（审查 P2-5）
+                "动作退避中"}) {
             if (reason.contains(kw)) return true;
         }
         return false;
+    }
+
+    /**
+     * 51 长退避等待（卡点 A）：30 分钟是预期等待，不能按普通停滞计数——
+     * {@link #MAX_IDLE_ROUNDS}×5s 仅 10 分钟，会在 hold 到期前误判失败。
+     */
+    static boolean isHoldWait(String reason) {
+        return reason != null && reason.contains("动作退避中");
+    }
+
+    /**
+     * 「只有辅助动作」假进展计数的下一值：出现真实建筑动作或处于 51 长退避时重置到当前轮；
+     * 否则保持上次建筑动作轮次（连续 60 轮无建筑动作才判失败）。
+     */
+    static int nextLastBuildingRound(int round, int lastBuildingRound,
+                                     boolean buildingStep, boolean holdWait) {
+        return buildingStep || holdWait ? round : lastBuildingRound;
     }
 
     /** 轮间等待；被中断则置 cancelled 并返回 false（本号按取消收尾）。 */
@@ -685,15 +707,24 @@ public final class BootstrapBatchRunner {
                         ? (message.isBlank() ? "无进展且原因未知" : message) : blocked;
                 // 等待类原因（资源/道具不足、建筑正在建造、等待同步）→ 继续等，不判失败
                 if (isWaitableBlock(reason)) {
-                    idleRounds++;
-                    if (idleRounds > MAX_IDLE_ROUNDS) {
-                        entry.state = AccountState.FAILED;
-                        entry.error = "起号停滞超时：" + reason;
-                        entry.steps.add("失败：" + entry.error);
-                        failCount++;
-                        return;
+                    if (isHoldWait(reason)) {
+                        // 51 长退避是预期等待：不累计停滞轮数，也不计入「只有辅助动作」空转
+                        // （30 分钟 ≈ 120 轮，远超 MAX_IDLE_ROUNDS 与 60 轮阈值），由批次总超时兜底。
+                        // 实跑 2026-11-12 证据：未重置时会在 hold 到期后因一次辅助动作成功而误判
+                        // 「连续 133 轮只有辅助动作」失败。
+                        idleRounds = 0;
+                        lastBuildingRound = nextLastBuildingRound(round, lastBuildingRound, false, true);
+                    } else {
+                        idleRounds++;
+                        if (idleRounds > MAX_IDLE_ROUNDS) {
+                            entry.state = AccountState.FAILED;
+                            entry.error = "起号停滞超时：" + reason;
+                            entry.steps.add("失败：" + entry.error);
+                            failCount++;
+                            return;
+                        }
                     }
-                    if (idleRounds == 1 || idleRounds % 12 == 0) {
+                    if (idleRounds == 1 || round % 12 == 0) {
                         entry.steps.add("第 " + round + " 轮等待中：" + reason);
                     }
                     if (!sleepRound(entry)) return;
@@ -710,7 +741,7 @@ public final class BootstrapBatchRunner {
             // 返回 started>0，但熔炉可能原地不动。只有带 step 的才是建筑/家具动作；
             // 连续 60 轮（约 5 分钟）无建筑动作 → 视为停滞，避免 120 分钟空转。
             if (summary.containsKey("step")) {
-                lastBuildingRound = round;
+                lastBuildingRound = nextLastBuildingRound(round, lastBuildingRound, true, false);
             } else if (round - lastBuildingRound > 60) {
                 entry.state = AccountState.FAILED;
                 entry.error = "起号停滞：连续 " + (round - lastBuildingRound)

@@ -5,6 +5,7 @@ import com.carlos.vaultserver.bootstrap.BuildingGateCatalog.Prerequisite;
 import com.carlos.vaultserver.bootstrap.BootstrapPlanner.Action;
 import com.carlos.vaultserver.bootstrap.BootstrapPlanner.ActionKind;
 import com.carlos.vaultserver.bootstrap.BootstrapPlanner.Catalog;
+import com.carlos.vaultserver.bootstrap.BootstrapPlanner.HoldPolicy;
 import com.carlos.vaultserver.bootstrap.BootstrapPlanner.Plan;
 import com.carlos.vaultserver.bootstrap.BootstrapPlanner.Request;
 import com.carlos.vaultserver.bootstrap.BootstrapPlanner.ResourceAvailability;
@@ -27,6 +28,9 @@ import static org.junit.Assert.assertTrue;
  * fake 目录注入的环形依赖与深度嵌套、maxActions 截断、资源不足文案。
  */
 public class BootstrapPlannerTest {
+
+    /** 51 hold 时长（与 BootstrapService.ACTION_HOLD_MILLIS 一致；此处固定 30 分钟文案 1800 秒）。 */
+    private static final long ACTION_HOLD_MILLIS = 1_800_000L;
 
     private final BootstrapPlanner planner = new BootstrapPlanner();
 
@@ -338,5 +342,45 @@ public class BootstrapPlannerTest {
         Action furniture = new Action(ActionKind.UPGRADE_FURNITURE, 302L, "伐木场", 401L, 1L, 2L, List.of());
         assertEquals("伐木场 家具 401 升级到 2 级", furniture.label());
         assertFalse(furniture.usesQueue());
+    }
+
+    // ================= 卡点 A 方案 B：hold 参与规划（跳过依赖链，保留独立动作） =================
+
+    @Test
+    public void holdPolicy_skipsHeldFurnitureChain_keepsIndependentFurniture() {
+        // 家具 101 建造被 hold：101 的 create+upgrade 都不可执行；家具 103 与 101 独立，仍可执行；
+        // 301 2→3 依赖 308 补齐，不能出现在可执行动作里。
+        HoldPolicy hold101 = action -> action.kind() == ActionKind.CREATE_FURNITURE
+                && action.furnitureId() == 101L ? ACTION_HOLD_MILLIS : 0L;
+        Plan plan = planner.plan(new Request(Map.of(301L, 2L, 308L, 1L), Map.of(),
+                Map.of(301L, 3L), Set.of(), ResourceAvailability.ALWAYS,
+                BootstrapPlanner.DEFAULT_MAX_ACTIONS, hold101));
+
+        assertTrue(plan.holdBlocked());
+        assertEquals(ACTION_HOLD_MILLIS, plan.holdRemainingMillis());
+        assertTrue(plan.blockedReason().contains("动作退避中，剩余 1800 秒"));
+        assertEquals(ActionKind.CREATE_FURNITURE, plan.actions().get(0).kind());
+        assertEquals("被 hold 的 101 整链被跳过，独立可执行的 103 仍在",
+                103L, plan.actions().get(0).furnitureId());
+        assertFalse("101 的依赖动作不得出现",
+                plan.actions().stream().anyMatch(a -> a.furnitureId() == 101L));
+        assertFalse("依赖 308 的熔炉升级不得出现",
+                plan.actions().stream().anyMatch(a -> a.buildingId() == 301L));
+        assertFalse(plan.complete());
+    }
+
+    @Test
+    public void holdPolicy_heldBuildingActionStopsDependentLevels() {
+        // 308 0→1 被 hold：依赖它的 308 后续等级与 301 2→3 都不能作为可执行动作。
+        HoldPolicy hold308 = action -> action.kind() == ActionKind.UPGRADE_BUILDING
+                && action.buildingId() == 308L ? 900_000L : 0L;
+        Plan plan = planner.plan(new Request(Map.of(301L, 2L), Map.of(), Map.of(301L, 3L), Set.of(),
+                ResourceAvailability.ALWAYS, BootstrapPlanner.DEFAULT_MAX_ACTIONS, hold308));
+
+        assertTrue(plan.holdBlocked());
+        assertEquals(900_000L, plan.holdRemainingMillis());
+        assertTrue("被 hold 的链首不得让后继依赖动作变为可执行", plan.actions().isEmpty());
+        assertFalse(plan.complete());
+        assertTrue(plan.blockedReason().contains("动作退避中"));
     }
 }

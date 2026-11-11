@@ -61,6 +61,15 @@ public class BootstrapApiTest {
     /** 脚本回放端口：req_loaddata 回熔炉达标 loaddata（批次同步跑完即 SUCCESS）。 */
     private static final class ScriptedPort implements ProtocolPort {
         final List<Map.Entry<String, Map<String, Object>>> calls = new ArrayList<>();
+        private final Map<String, java.util.ArrayDeque<Map<String, Object>>> scripted =
+                new LinkedHashMap<>();
+
+        @SafeVarargs
+        final void when(String proto, Map<String, Object>... contents) {
+            java.util.ArrayDeque<Map<String, Object>> q =
+                    scripted.computeIfAbsent(proto, ignored -> new java.util.ArrayDeque<>());
+            q.addAll(Arrays.asList(contents));
+        }
 
         @Override
         public GameMessage request(String proto, Map<String, Object> args) {
@@ -82,7 +91,12 @@ public class BootstrapApiTest {
                         "aid", 7L, "name", "远征军", "abbr", "YZJ", "public", 1L,
                         "count", 50L, "member_max", 100L, "lv", 5L)));
             }
-            content.put("code", 0);
+            java.util.ArrayDeque<Map<String, Object>> q = scripted.get(proto);
+            if (q != null && !q.isEmpty()) {
+                content.putAll(q.poll());
+            } else {
+                content.put("code", 0);
+            }
             msg.setContent(content);
             return msg;
         }
@@ -93,6 +107,7 @@ public class BootstrapApiTest {
 
     @Before
     public void setUp() {
+        BootstrapHoldStore.shared().clearAll();
         Path dir = tmp.getRoot().toPath();
         store = new BootstrapBatchStore(dir);
         referral = new BootstrapReferral(dir);
@@ -295,6 +310,47 @@ public class BootstrapApiTest {
             assertTrue("serviceOf 应经 port 发 req_loaddata", sawLoadData);
         } finally {
             BootstrapApi.ACTIVE.remove("fp-live");
+        }
+    }
+
+    /**
+     * 卡点 A / P1-2 回归：单号挂点每次请求都重建 {@link BootstrapService}，51 hold 必须
+     * 跨请求可见（{@link BootstrapHoldStore} 按 fpid 进程级共享）。
+     *
+     * <p>第 1 次请求「建造 民居1 到 1 级」被 51 hold；第 2 次请求不得再重发同一个必然被拒的
+     * 请求，而应返回 WAITING「动作退避中」（其余动作都依赖民居1，故无可绕行动作）。
+     */
+    @Test
+    public void singleRunNext_holdVisibleAcrossRequests_doesNotRetryHeldAction() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_upgrade_building", Map.of("code", 51L), Map.of("code", 51L),
+                Map.of("code", 0L));
+        String fpid = "fp-hold-" + System.nanoTime();
+        BootstrapApi.ACTIVE.put(fpid, new Session(new FakeEngine(), port));
+        try {
+            JSONObject first = BootstrapApi.handle(fields("action", "single-run-next", "fpid", fpid));
+            assertFalse(first.optString("error", ""), first.has("error"));
+            assertEquals("WAITING", first.optString("status"));
+            assertTrue(first.optString("message").contains("资源或道具不足"));
+
+            JSONObject second = BootstrapApi.handle(fields("action", "single-run-next", "fpid", fpid));
+            assertFalse(second.optString("error", ""), second.has("error"));
+            assertEquals("WAITING", second.optString("status"));
+            assertTrue("跨请求 hold 生效：应返回退避等待文案",
+                    second.optString("message").contains("动作退避中"));
+
+            int retriedHeld = 0;
+            for (Map.Entry<String, Map<String, Object>> call : port.calls) {
+                if ("req_upgrade_building".equals(call.getKey())
+                        && Long.valueOf(308L).equals(call.getValue().get("bid"))) {
+                    retriedHeld++;
+                }
+            }
+            assertEquals("被 hold 的民居1 动作只应出现在首次请求（51 首发 + 补偿重试）",
+                    2, retriedHeld);
+        } finally {
+            BootstrapApi.ACTIVE.remove(fpid);
+            BootstrapHoldStore.shared().clearScope(fpid);
         }
     }
 

@@ -47,6 +47,12 @@ public class BootstrapBatchRunnerTest {
     @Rule
     public TemporaryFolder tmp = new TemporaryFolder();
 
+    /** 共享 hold 表是进程级：每个用例前清空，避免 fpid 复用时串用例（卡点 A 新增）。 */
+    @org.junit.Before
+    public void resetSharedHolds() {
+        BootstrapHoldStore.shared().clearAll();
+    }
+
     private static final BootstrapService.Sleeper NO_SLEEP = millis -> {
     };
 
@@ -305,11 +311,36 @@ public class BootstrapBatchRunnerTest {
         assertTrue(BootstrapBatchRunner.isWaitableBlock("大熔炉 正在建造或升级，等待完成后继续"));
         assertTrue(BootstrapBatchRunner.isWaitableBlock("等待建筑与队列全量状态同步"));
         assertTrue(BootstrapBatchRunner.isWaitableBlock("当前没有空闲建筑队列"));
+        // 卡点 A：51 长退避的等待文案必须算等待类，不能判成停滞立即 FAILED
+        assertTrue(BootstrapBatchRunner.isWaitableBlock("动作退避中，剩余 1800 秒"));
         // 需人工介入（未开钻石即时升级）→ 非等待类，应失败暴露
         assertFalse(BootstrapBatchRunner.isWaitableBlock("下一步 伐木场 2 级需要等待完成，请开启钻石即时升级"));
         assertFalse(BootstrapBatchRunner.isWaitableBlock(""));
         assertFalse(BootstrapBatchRunner.isWaitableBlock(null));
         assertFalse(BootstrapBatchRunner.isWaitableBlock("前置建筑 999 不在门槛目录中，无法自动建造"));
+    }
+
+    /** 卡点 A：51 长退避不能按普通停滞计数（10 分钟上限会在 30 分钟 hold 到期前误判）。 */
+    @Test
+    public void isHoldWait_onlyHoldReason() {
+        assertTrue(BootstrapBatchRunner.isHoldWait("动作退避中，剩余 1800 秒"));
+        assertFalse(BootstrapBatchRunner.isHoldWait("资源或道具不足，等待补充后重试"));
+        assertFalse(BootstrapBatchRunner.isHoldWait(""));
+        assertFalse(BootstrapBatchRunner.isHoldWait(null));
+    }
+
+    /**
+     * 实跑 2026-11-12 回归：hold 等待轮必须重置「只有辅助动作」计数，
+     * 否则 30 分钟 hold 期间累计 >60 轮，任一次辅助动作成功都会误判停滞。
+     */
+    @Test
+    public void nextLastBuildingRound_holdWaitResetsAuxiliaryOnlyCounter() {
+        assertEquals("hold 等待轮：计数跟随当前轮",
+                80, BootstrapBatchRunner.nextLastBuildingRound(80, 0, false, true));
+        assertEquals("真实建筑动作：计数跟随当前轮",
+                61, BootstrapBatchRunner.nextLastBuildingRound(61, 0, true, false));
+        assertEquals("普通辅助动作轮：保持上次建筑动作轮次",
+                0, BootstrapBatchRunner.nextLastBuildingRound(61, 0, false, false));
     }
 
     /** 单号超时上限（包级构造注入 0 毫秒立即触发）→ FAILED 带超时文案。 */

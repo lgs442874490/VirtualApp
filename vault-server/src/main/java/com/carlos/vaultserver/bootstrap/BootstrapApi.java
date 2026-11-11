@@ -441,7 +441,7 @@ public final class BootstrapApi {
         if (session == null) {
             throw new IllegalStateException("该号不在线，起号会话未运行");
         }
-        BootstrapService service = serviceOf(session);
+        BootstrapService service = serviceOf(session, fpid);
         JSONObject out;
         switch (action) {
             case "single-status":
@@ -481,10 +481,15 @@ public final class BootstrapApi {
      * 装配后先经 port 发 {@code req_loaddata} 同步全量状态（对齐批次线程
      * {@link BootstrapBatchRunner} 每轮校准方式），否则 single-run-next / run-until /
      * level-building 因建筑队列未就绪永远 WAITING。
+     *
+     * <p>退避表例外（审查 P1-2）：{@link BootstrapHoldStore#shared()} 按 fpid 共享，
+     * 否则每次请求新建 service 会把上一次请求写入的 51 hold 丢掉，30 分钟长退避在单号
+     * 路径永不生效。
      */
-    private static BootstrapService serviceOf(Session session) throws Exception {
+    private static BootstrapService serviceOf(Session session, String fpid) throws Exception {
         BootstrapService service = new BootstrapService(session.port, new BootstrapPlanner(),
-                BootstrapCatalog.combined(), BATCH_SLEEPER);
+                BootstrapCatalog.combined(), BATCH_SLEEPER,
+                BootstrapHoldStore.shared(), fpid);
         service.applyConfig(new BootstrapConfig(true, 0L, BootstrapConfig.DEFAULT_TARGET_FURNACE_LEVEL,
                 true, false, false, "", false, ""));
         service.syncLoadData(contentOf(session.port.request("req_loaddata", Map.of())));

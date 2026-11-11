@@ -297,6 +297,10 @@ public final class BootstrapService {
     private final Catalog catalog;
     private final BootstrapPlanner planner;
     private final Sleeper sleeper;
+    /** 退避表（hold/retry）：生产按 fpid 跨请求共享，单测可注入隔离实例。 */
+    private final BootstrapHoldStore holds;
+    /** 退避表作用域（生产 = fpid；构造未指定时用空串，实例内自洽）。 */
+    private final String holdScope;
     private BootstrapState state = BootstrapState.empty();
 
     /** 测试用：暴露内部状态（同包测试）。 */
@@ -324,12 +328,23 @@ public final class BootstrapService {
         this(port, new BootstrapPlanner(), BootstrapCatalog.combined(), REAL_SLEEPER);
     }
 
-    /** 全量注入装配（单测用）。 */
+    /** 全量注入装配（单测用；退避表随实例隔离）。 */
     public BootstrapService(ProtocolPort port, BootstrapPlanner planner, Catalog catalog, Sleeper sleeper) {
+        this(port, planner, catalog, sleeper, new BootstrapHoldStore(), "");
+    }
+
+    /**
+     * 退避表注入装配（生产批次/单号挂点用）：传入 {@link BootstrapHoldStore#shared()} 与
+     * 账号 fpid，使 51 hold 跨请求、跨 service 实例可见（审查 P1-2）。
+     */
+    BootstrapService(ProtocolPort port, BootstrapPlanner planner, Catalog catalog, Sleeper sleeper,
+                     BootstrapHoldStore holds, String holdScope) {
         this.port = port;
         this.planner = planner;
         this.catalog = catalog;
         this.sleeper = sleeper == null ? REAL_SLEEPER : sleeper;
+        this.holds = holds == null ? new BootstrapHoldStore() : holds;
+        this.holdScope = holdScope == null ? "" : holdScope;
     }
 
     // ================= 配置与状态注入 =================
@@ -488,7 +503,19 @@ public final class BootstrapService {
             return actionResult("WAITING", "等待建筑与队列全量状态同步");
         }
         Plan plan = planNext(cfg, BootstrapPlanner.DEFAULT_MAX_ACTIONS);
+        // 卡点 A（方案 B）：规划器已把 51 退避动作及其依赖动作排除，只留独立可执行动作；
+        // 被排除的动作不会再被请求，因此不会把自己的 hold 续期（审查 P1-1）。
         if (plan.actions().isEmpty()) {
+            if (plan.holdBlocked()) {
+                // 全部可行动作都在退避中 / 只剩依赖它们的动作：必须是 WAITING，
+                // 绝不能因为 plan.complete() 的历史语义（「无阻塞」而非「无动作」）误报 COMPLETED。
+                long seconds = Math.max(1L, (plan.holdRemainingMillis() + 999L) / 1000L);
+                String reason = "动作退避中，剩余 " + seconds + " 秒";
+                Map<String, Object> result = actionResult("WAITING", reason);
+                result.put("blockedReason", reason);
+                result.put("holdRemainingSeconds", seconds);
+                return result;
+            }
             if (plan.complete()) {
                 Map<String, Object> result = actionResult("COMPLETED",
                         "大熔炉已到达目标等级 " + cfg.targetFurnaceLevel());
@@ -500,7 +527,7 @@ public final class BootstrapService {
             result.put("blockedReason", plan.blockedReason());
             return result;
         }
-        return executeFirstAction(cfg, plan);
+        return executeFirstAction(cfg, plan.actions().get(0));
     }
 
     /**
@@ -551,14 +578,16 @@ public final class BootstrapService {
         }
         Plan plan = planner.plan(new Request(currentLevels(), state.furnitureLevels(),
                 Map.of(buildingId, current + 1L), state.busyBuildings(),
-                ResourceAvailability.ALWAYS, BootstrapPlanner.DEFAULT_MAX_ACTIONS));
+                ResourceAvailability.ALWAYS, BootstrapPlanner.DEFAULT_MAX_ACTIONS,
+                // 手动点名升级是显式操作：无视 51 退避（审查 P2-2 建议口径）。
+                BootstrapPlanner.HoldPolicy.NONE));
         if (plan.actions().isEmpty()) {
             Map<String, Object> result = actionResult("WAITING",
                     plan.blockedReason().isEmpty() ? "该建筑当前没有可执行动作" : plan.blockedReason());
             result.put("blockedReason", plan.blockedReason());
             return result;
         }
-        return executeFirstAction(cfg, plan);
+        return executeFirstAction(cfg, plan.actions().get(0));
     }
 
     // ================= 改名 =================
@@ -612,8 +641,7 @@ public final class BootstrapService {
 
     // ================= 执行首个动作 =================
 
-    private Map<String, Object> executeFirstAction(BootstrapConfig cfg, Plan plan) throws Exception {
-        Action action = plan.actions().get(0);
+    private Map<String, Object> executeFirstAction(BootstrapConfig cfg, Action action) throws Exception {
         Map<String, Object> preparation = prepareResources(cfg, action);
         if (action.usesQueue() && !cfg.instantDiamond()) {
             return actionResult("MANUAL", "下一步 " + action.buildingName() + " " + action.toLevel()
@@ -705,11 +733,12 @@ public final class BootstrapService {
         if (code == ITEM_NOT_ENOUGH) {
             // 51：对该动作做长退避（实测部分家具即使资源看似充足也会被拒，
             // 属该家具自身前置限制）。不退还每轮重试同一动作，主线会被永久卡住。
-            String holdKey = "hold:" + action.kind() + ":" + action.buildingId()
-                    + ":" + action.furnitureId();
-            markRetry(holdKey, 1_800_000L);
-            if (!retryAllowed(holdKey + ":logged")) {
-                markRetry(holdKey + ":logged", 1_800_000L);
+            // 键与 runNext 过滤侧共用 holdKey(action)，避免字符串静默失配。
+            String actionHoldKey = holdKey(action);
+            markRetry(actionHoldKey, ACTION_HOLD_MILLIS);
+            // 每 30 分钟只宣告一次（方向修正：首次 51 也要打印，否则实跑误以为没进分支）
+            if (retryAllowed(actionHoldKey + ":logged")) {
+                markRetry(actionHoldKey + ":logged", ACTION_HOLD_MILLIS);
                 FileLog.warn("[起号] 动作暂不可行（51），30 分钟内不再尝试：{}", action.label());
             }
             if (retryAllowed("res:diag")) {
@@ -1507,8 +1536,8 @@ public final class BootstrapService {
                 markRetry("adventure:waitlog", 120_000L);
                 FileLog.info("[起号] 探险第 {} 关仍在失败退避中，{} 秒后重试",
                         String.valueOf(checkpoint),
-                        String.valueOf(Math.max(0L, (retryUntil.getOrDefault(retryKey, 0L)
-                                - System.currentTimeMillis()) / 1000L)));
+                        String.valueOf(Math.max(0L,
+                                holds.remainingMillis(holdScope, retryKey) / 1000L)));
             }
             return null;
         }
@@ -1557,19 +1586,31 @@ public final class BootstrapService {
 
     // ---------------- 重试退避表（对齐新版 tutorial.retryAllowed） ----------------
 
-    private final java.util.Map<String, Long> retryUntil = new java.util.concurrent.ConcurrentHashMap<>();
-
+    /**
+     * 退避状态存放在 {@link BootstrapHoldStore}（按 fpid 分域，进程级）：单号挂点每次请求
+     * 重建 service 时 hold 不丢（审查 P1-2）。
+     */
     private boolean retryAllowed(String key) {
-        Long until = retryUntil.get(key);
-        return until == null || System.currentTimeMillis() >= until;
+        return holds.allowed(holdScope, key);
     }
 
     private void markRetry(String key, long delayMillis) {
-        retryUntil.put(key, System.currentTimeMillis() + delayMillis);
+        holds.mark(holdScope, key, delayMillis);
     }
 
     private void clearRetry(String key) {
-        retryUntil.remove(key);
+        holds.clear(holdScope, key);
+    }
+
+    /** 51 动作长退避时长（30 分钟）：该动作本身前置不满足，重试无意义。 */
+    static final long ACTION_HOLD_MILLIS = 1_800_000L;
+
+    /**
+     * 动作退避键：写入侧（{@link #upgradeRejected}）与读取侧（{@link #runNext} 过滤）
+     * 必须共用，避免手写字符串静默失配（审查 P2-1）。
+     */
+    static String holdKey(Action action) {
+        return "hold:" + action.kind() + ":" + action.buildingId() + ":" + action.furnitureId();
     }
 
     /**
@@ -2415,7 +2456,21 @@ public final class BootstrapService {
     private Plan planNext(BootstrapConfig cfg, int maxActions) {
         return planner.plan(new Request(currentLevels(), state.furnitureLevels(),
                 Map.of(FURNACE_ID, (long) cfg.targetFurnaceLevel()), state.busyBuildings(),
-                ResourceAvailability.ALWAYS, maxActions));
+                ResourceAvailability.ALWAYS, maxActions, actionHoldPolicy()));
+    }
+
+    /**
+     * 51 退避策略（卡点 A 方案 B）：处于 hold 的动作返回剩余毫秒，规划器据此跳过该动作
+     * 及其依赖动作，只保留其它独立可执行动作——避免「跳过链首执行后继」被服务端 806 拒。
+     */
+    private BootstrapPlanner.HoldPolicy actionHoldPolicy() {
+        return action -> {
+            String key = holdKey(action);
+            if (retryAllowed(key)) {
+                return 0L;
+            }
+            return Math.max(1L, holds.remainingMillis(holdScope, key));
+        };
     }
 
     private Map<Long, Long> currentLevels() {

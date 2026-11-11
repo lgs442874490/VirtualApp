@@ -103,6 +103,12 @@ public final class BootstrapPlanner {
         private final List<Action> actions = new ArrayList<>();
         private String blockedReason = "";
         private boolean limitReached;
+        /** 卡点 A（方案 B）：是否存在被 51 退避屏蔽的动作（此时目标不可达，只能等待）。 */
+        private boolean holdBlocked;
+        /** 被屏蔽动作里最短的剩余退避毫秒（用于 WAITING 文案「剩余 N 秒」）。 */
+        private long holdRemainingMillis;
+        /** hold 命中计数（区分「子分支因 hold 阻塞」与真实阻塞，用于继续规划其它独立前置）。 */
+        private int holdHits;
 
         private Planner(Request request) {
             Objects.requireNonNull(request);
@@ -144,7 +150,12 @@ public final class BootstrapPlanner {
             if (limitReached) {
                 complete = false;
             }
-            return new Plan(actions, blockedReason, complete);
+            if (holdBlocked) {
+                // 有动作处于 51 退避 → 目标未达成（旧实现 complete 只表示「无阻塞」，
+                // 不能拿它判断完成，否则全 hold 会误报 COMPLETED）。
+                complete = false;
+            }
+            return new Plan(actions, blockedReason, complete, holdBlocked, holdRemainingMillis);
         }
 
         /** 判定把建筑升到 targetLevel 是否被阻塞；不阻塞时把升级动作追加进 actions。 */
@@ -203,8 +214,15 @@ public final class BootstrapPlanner {
                         limitReached = true;
                         return true;
                     }
-                    actions.add(new Action(ActionKind.UPGRADE_BUILDING, buildingId,
-                            catalog.buildingName(buildingId), 0L, level - 1L, level, costs));
+                    Action upgradeAction = new Action(ActionKind.UPGRADE_BUILDING, buildingId,
+                            catalog.buildingName(buildingId), 0L, level - 1L, level, costs);
+                    if (held(upgradeAction)) {
+                        // 本级建筑动作在 51 退避中：不可执行，且更高等级依赖本级 → 整条链停在这里；
+                        // 已生成的前置/家具动作保持不变（它们不依赖本级升级）。
+                        blockHold(upgradeAction);
+                        return true;
+                    }
+                    actions.add(upgradeAction);
                     levels.put(buildingId, level);
                 }
                 return false;
@@ -214,14 +232,25 @@ public final class BootstrapPlanner {
         }
 
         private boolean prerequisitesBlocked(long buildingId, long level, int depth) {
+            boolean blockedByHold = false;
             for (Prerequisite prerequisite : catalog.prerequisites(buildingId, level)) {
-                if (currentLevel(prerequisite.id()) >= prerequisite.amount()
-                        || !isBlocked(prerequisite.id(), prerequisite.amount(), depth + 1)) {
+                if (currentLevel(prerequisite.id()) >= prerequisite.amount()) {
+                    continue;
+                }
+                int holdHitsBefore = holdHits;
+                boolean blocked = isBlocked(prerequisite.id(), prerequisite.amount(), depth + 1);
+                if (!blocked) {
+                    continue;
+                }
+                if (holdHits > holdHitsBefore) {
+                    // 该前置因 51 hold 被屏蔽：本级建筑动作不能生成（上层会返回 true），
+                    // 但其它前置互相独立，继续规划它们，等待期间仍可准备（方案 B）。
+                    blockedByHold = true;
                     continue;
                 }
                 return true;
             }
-            return false;
+            return blockedByHold;
         }
 
         /** 升到 level 级需满足 level-1 级的家具门槛：不足则补创建 + 升级动作。 */
@@ -229,6 +258,7 @@ public final class BootstrapPlanner {
             if (level <= 1L) {
                 return false;
             }
+            boolean blockedByHold = false;
             for (Cost requirement : catalog.furnitureRequirement(buildingId, level - 1L)) {
                 long currentFurnitureLevel;
                 long requiredLevel = requirement.amount();
@@ -249,12 +279,20 @@ public final class BootstrapPlanner {
                                 + requirement.id() + " 所需资源不足，等待资源补充");
                         return true;
                     }
+                    Action createAction = new Action(ActionKind.CREATE_FURNITURE, buildingId,
+                            catalog.buildingName(buildingId), requirement.id(), 0L, 1L, createCosts);
+                    if (held(createAction)) {
+                        // 该家具整条补齐链在退避中：跳过它（含后续升级），继续其它家具门槛，
+                        // 本级建筑动作由 blockedByHold 拦住（方案 B，避免执行依赖动作被 806/120 拒）。
+                        blockHold(createAction);
+                        blockedByHold = true;
+                        continue;
+                    }
                     if (actions.size() >= request.maxActions()) {
                         limitReached = true;
                         return true;
                     }
-                    actions.add(new Action(ActionKind.CREATE_FURNITURE, buildingId,
-                            catalog.buildingName(buildingId), requirement.id(), 0L, 1L, createCosts));
+                    actions.add(createAction);
                     putFurnitureLevel(buildingId, requirement.id(), 1L);
                     currentFurnitureLevel = 1L;
                 }
@@ -266,16 +304,22 @@ public final class BootstrapPlanner {
                             + requirement.id() + " 所需资源不足，等待资源补充");
                     return true;
                 }
+                Action upgradeAction = new Action(ActionKind.UPGRADE_FURNITURE, buildingId,
+                        catalog.buildingName(buildingId), requirement.id(),
+                        currentFurnitureLevel, requiredLevel, upgradeCosts);
+                if (held(upgradeAction)) {
+                    blockHold(upgradeAction);
+                    blockedByHold = true;
+                    continue;
+                }
                 if (actions.size() >= request.maxActions()) {
                     limitReached = true;
                     return true;
                 }
-                actions.add(new Action(ActionKind.UPGRADE_FURNITURE, buildingId,
-                        catalog.buildingName(buildingId), requirement.id(),
-                        currentFurnitureLevel, requiredLevel, upgradeCosts));
+                actions.add(upgradeAction);
                 putFurnitureLevel(buildingId, requirement.id(), requiredLevel);
             }
-            return false;
+            return blockedByHold;
         }
 
         private boolean experienceBlocked(long buildingId, long level) {
@@ -329,6 +373,25 @@ public final class BootstrapPlanner {
                     .put(furnitureId, level);
         }
 
+        /** 该动作是否处于 51 退避中（HoldPolicy 返回剩余毫秒 > 0）。 */
+        private boolean held(Action action) {
+            return request.holdPolicy().holdRemainingMillis(action) > 0L;
+        }
+
+        /**
+         * 记录「动作处于 51 退避」并中止当前链：不生成该动作（因此也不会生成依赖它的后续动作），
+         * 但保留已经生成的独立前置动作。剩余时间取最短值，供 WAITING 文案使用。
+         */
+        private void blockHold(Action action) {
+            long remaining = Math.max(1L, request.holdPolicy().holdRemainingMillis(action));
+            holdHits++;
+            holdBlocked = true;
+            holdRemainingMillis = holdRemainingMillis <= 0L
+                    ? remaining : Math.min(holdRemainingMillis, remaining);
+            long seconds = Math.max(1L, (holdRemainingMillis + 999L) / 1000L);
+            block("动作退避中，剩余 " + seconds + " 秒");
+        }
+
         private void block(String reason) {
             if (blockedReason == null || blockedReason.isEmpty()) {
                 blockedReason = reason;
@@ -341,7 +404,7 @@ public final class BootstrapPlanner {
     /** 规划请求：当前等级表 / 家具等级表 / 目标等级表 / 忙碌建筑 / 资源可用性 / 动作上限。 */
     public record Request(Map<Long, Long> buildingLevels, Map<Long, Map<Long, Long>> furnitureLevels,
                           Map<Long, Long> targets, Set<Long> busyBuildings,
-                          ResourceAvailability resources, int maxActions) {
+                          ResourceAvailability resources, int maxActions, HoldPolicy holdPolicy) {
         public Request {
             buildingLevels = buildingLevels == null ? Map.of() : Map.copyOf(buildingLevels);
             furnitureLevels = furnitureLevels == null ? Map.of() : Map.copyOf(furnitureLevels);
@@ -349,20 +412,49 @@ public final class BootstrapPlanner {
             busyBuildings = busyBuildings == null ? Set.of() : Set.copyOf(busyBuildings);
             resources = resources == null ? ResourceAvailability.ALWAYS : resources;
             maxActions = maxActions <= 0 ? DEFAULT_MAX_ACTIONS : Math.min(maxActions, 300);
+            holdPolicy = holdPolicy == null ? HoldPolicy.NONE : holdPolicy;
         }
 
         /** 兼容便捷构造：资源恒可用 + 默认动作上限（对齐原版 4 参构造）。 */
         public Request(Map<Long, Long> buildingLevels, Map<Long, Map<Long, Long>> furnitureLevels,
                        Map<Long, Long> targets, Set<Long> busyBuildings) {
             this(buildingLevels, furnitureLevels, targets, busyBuildings,
-                    ResourceAvailability.ALWAYS, DEFAULT_MAX_ACTIONS);
+                    ResourceAvailability.ALWAYS, DEFAULT_MAX_ACTIONS, HoldPolicy.NONE);
+        }
+
+        /** 兼容便捷构造：无 hold 语义（显式指定资源/动作上限）。 */
+        public Request(Map<Long, Long> buildingLevels, Map<Long, Map<Long, Long>> furnitureLevels,
+                       Map<Long, Long> targets, Set<Long> busyBuildings,
+                       ResourceAvailability resources, int maxActions) {
+            this(buildingLevels, furnitureLevels, targets, busyBuildings,
+                    resources, maxActions, HoldPolicy.NONE);
         }
     }
 
-    /** 规划结果：动作序列 + 首个阻塞原因 + 目标是否全部达成。 */
-    public record Plan(List<Action> actions, String blockedReason, boolean complete) {
+    /**
+     * 51 退避策略（卡点 A 方案 B）：规划时把处于退避中的动作视为「暂不可达」，
+     * 不生成它及其依赖动作，只保留其它独立可执行动作。
+     *
+     * <p>由 {@link BootstrapService} 注入真实退避表；缺省 {@link #NONE} 表示无退避（单测/手动路径）。
+     */
+    @FunctionalInterface
+    public interface HoldPolicy {
+        HoldPolicy NONE = action -> 0L;
+
+        /** 该动作剩余退避毫秒；&lt;=0 表示当前可执行。 */
+        long holdRemainingMillis(Action action);
+    }
+
+    /** 规划结果：动作序列 + 首个阻塞原因 + 目标是否全部达成 + hold 阻塞信息。 */
+    public record Plan(List<Action> actions, String blockedReason, boolean complete,
+                       boolean holdBlocked, long holdRemainingMillis) {
         public Plan {
             actions = actions == null ? List.of() : List.copyOf(actions);
+        }
+
+        /** 兼容旧构造：无 hold 阻塞。 */
+        public Plan(List<Action> actions, String blockedReason, boolean complete) {
+            this(actions, blockedReason, complete, false, 0L);
         }
 
         public List<Action> actions() {

@@ -2,6 +2,8 @@ package com.carlos.vaultserver.bootstrap;
 
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
+import com.carlos.vaultserver.bootstrap.BootstrapPlanner.Action;
+import com.carlos.vaultserver.bootstrap.BootstrapPlanner.ActionKind;
 import com.carlos.vaultserver.bootstrap.BootstrapService.BootstrapConfig;
 import com.carlos.vaultserver.bootstrap.BootstrapService.LoginOutcome;
 
@@ -103,6 +105,24 @@ public class BootstrapServiceTest {
     private static final BootstrapService.Sleeper NO_SLEEP = millis -> {
     };
 
+    /** 可控时钟：验证「退避到期后恢复尝试」而不真实睡眠（卡点 A 必测 3）。 */
+    private static final class MutableClock implements java.util.function.LongSupplier {
+        private long now;
+
+        MutableClock(long start) {
+            this.now = start;
+        }
+
+        @Override
+        public long getAsLong() {
+            return now;
+        }
+
+        void advance(long millis) {
+            now += millis;
+        }
+    }
+
     private static Map<String, Object> content(Object... kv) {
         LinkedHashMap<String, Object> m = new LinkedHashMap<>();
         for (int i = 0; i + 1 < kv.length; i += 2) m.put(String.valueOf(kv[i]), kv[i + 1]);
@@ -126,6 +146,16 @@ public class BootstrapServiceTest {
                                             BootstrapConfig cfg) {
         BootstrapService svc = new BootstrapService(port, new BootstrapPlanner(),
                 BootstrapCatalog.combined(), NO_SLEEP);
+        svc.applyConfig(cfg);
+        svc.syncLoadData(load);
+        return svc;
+    }
+
+    /** 注入退避表/作用域（模拟生产按 fpid 共享，单测可换可控时钟）。 */
+    private static BootstrapService service(ScriptedPort port, Map<String, Object> load,
+                                            BootstrapConfig cfg, BootstrapHoldStore holds, String scope) {
+        BootstrapService svc = new BootstrapService(port, new BootstrapPlanner(),
+                BootstrapCatalog.combined(), NO_SLEEP, holds, scope);
         svc.applyConfig(cfg);
         svc.syncLoadData(load);
         return svc;
@@ -287,6 +317,97 @@ public class BootstrapServiceTest {
         assertEquals("FAILED", r.get("status"));
         assertEquals("升级被服务端拒绝：req_upgrade_building 返回错误码 999", r.get("message"));
         assertEquals(999, r.get("errorCode"));
+    }
+
+    // ================= 卡点 A：51 hold 联动 planner（审查 P1-1/P1-3） =================
+
+    /** 熔炉 2 级 + 民居1 1 级：目标熔炉 3 的首个动作是「民居1 家具 101 建造」。 */
+    private static Map<String, Object> readyLoadFurnace3() {
+        Map<String, Object> buildings = new LinkedHashMap<>();
+        buildings.put("301", content("bid", 301L, "lv", 2L, "status", 0L));
+        buildings.put("308", content("bid", 308L, "lv", 1L, "status", 0L));
+        return content("uid", 8001L, "name", "旧名字", "buildings", buildings,
+                "queues", new ArrayList<>(), "res", content("103", 100000, "101", 500));
+    }
+
+    private static BootstrapConfig furnace3Config() {
+        return new BootstrapConfig(true, 0L, 3, true, false, false, "", false, "");
+    }
+
+    /** 必测 1：首个动作被 51 hold 后，下一轮必须跳过它、执行 plan 里独立可执行的后续动作。 */
+    @Test
+    public void runNext_heldAction_skipsToNextAction() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        // 家具 101 建造连续两次 51 → 30 分钟 hold；其升级依赖它，必须跳过整条 101 链；
+        // 家具 103 与 101 相互独立 → 下一轮应执行 103 建造。
+        port.when("req_create_furniture", content("code", 51L), content("code", 51L),
+                content("code", 0L));
+        BootstrapService svc = service(port, readyLoadFurnace3(), furnace3Config());
+
+        Map<String, Object> first = svc.runNext();
+        assertEquals("WAITING", first.get("status"));
+        assertTrue(String.valueOf(first.get("message")).contains("资源或道具不足"));
+        assertEquals(2, port.count("req_create_furniture"));
+
+        Map<String, Object> second = svc.runNext();
+        assertEquals("STARTED", second.get("status"));
+        assertEquals("已请求民居1 家具 103 建造", second.get("message"));
+        int last = port.count("req_create_furniture") - 1;
+        assertEquals("跳过被 hold 的家具 101，执行独立的家具 103",
+                Map.of("bid", 308L, "conf_fid", 103L),
+                port.argsOf("req_create_furniture", last));
+    }
+
+    /** 必测 2：plan 内所有可行动作都在 hold → 必须 WAITING（含剩余秒数），绝不能误报 COMPLETED。 */
+    @Test
+    public void runNext_allActionsHeld_waitingNotCompleted() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_upgrade_building", content("code", 51L), content("code", 51L));
+        MutableClock clock = new MutableClock(1_000_000L);
+        BootstrapHoldStore holds = new BootstrapHoldStore(clock);
+        BootstrapService svc = service(port, readyLoad(1L, 1L), enabledConfig(),
+                holds, "fp-all-hold");
+
+        Map<String, Object> first = svc.runNext();   // 唯一动作「熔炉 1→2」被 51 hold
+        assertEquals("WAITING", first.get("status"));
+
+        Map<String, Object> second = svc.runNext();
+        // plan.complete() 的历史语义是「无阻塞」，不能拿它判完成
+        assertEquals("WAITING", second.get("status"));
+        assertFalse("全 hold 不得误报 COMPLETED", "COMPLETED".equals(second.get("status")));
+        assertEquals("动作退避中，剩余 1800 秒", second.get("message"));
+        assertEquals(1800L, second.get("holdRemainingSeconds"));
+        // 被跳过后不再发升级请求（仍为 51 补偿重试的 2 次）
+        assertEquals(2, port.count("req_upgrade_building"));
+    }
+
+    /** 必测 3：被跳过的动作不得刷新 hold；到期后必须恢复尝试。 */
+    @Test
+    public void runNext_heldAction_notRenewedAndRecoversAfterExpiry() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_create_furniture", content("code", 51L), content("code", 51L),
+                content("code", 0L), content("code", 0L));
+        MutableClock clock = new MutableClock(2_000_000L);
+        BootstrapHoldStore holds = new BootstrapHoldStore(clock);
+        String scope = "fp-renew";
+        BootstrapService svc = service(port, readyLoadFurnace3(), furnace3Config(), holds, scope);
+
+        svc.runNext();   // 家具 101 建造被 51 → 写入 30 分钟 hold
+        Action held = new Action(ActionKind.CREATE_FURNITURE, 308L, "民居1",
+                101L, 0L, 1L, List.of());
+        String key = BootstrapService.holdKey(held);
+        long deadline = holds.deadlineMillis(scope, key);
+        assertEquals(2_000_000L + BootstrapService.ACTION_HOLD_MILLIS, deadline);
+
+        clock.advance(10_000L);
+        Map<String, Object> skipped = svc.runNext();
+        assertEquals("已请求民居1 家具 103 建造", skipped.get("message"));
+        assertEquals("被跳过的动作不得续期 hold", deadline, holds.deadlineMillis(scope, key));
+
+        clock.advance(1_790_001L);   // 越过到期点
+        Map<String, Object> resumed = svc.runNext();
+        assertEquals("到期后恢复尝试被 hold 的动作", "已请求民居1 家具 101 建造",
+                resumed.get("message"));
     }
 
     // ================= runUntil =================
@@ -901,7 +1022,10 @@ public class BootstrapServiceTest {
         Map<String, Object> load = content("uid", 8001L, "name", "旧名字",
                 "buildings", buildings, "queues", new ArrayList<>(),
                 "res", content("103", 50L, "193", 200L, "101", 500),
-                "bag", content("100021", 3L));
+                // 2026-11-11 起 topUpResources 会无条件开「固定资源箱」（useAllFixedPacks），
+                // 本用例只验证「按缺口开包」：改用自选箱 100101（不属固定箱段），
+                // 安全资源足够时仍应一次都不开。
+                "bag", content("100101", 3L));
         BootstrapService svc = service(port, load, enabledConfig());
         Map<String, Object> r = svc.runNext();
         assertEquals("STARTED", r.get("status"));
