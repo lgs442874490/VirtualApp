@@ -188,6 +188,11 @@ public final class RoleManagerSheet {
         // 「发现角色」：req_server_list_simple + req_role_list 全量查询（本地表只含登录过的角色，
         // 玩家在游戏里新开的区服角色不会自动出现——2026-10-12 用户反馈角色管理列表不全）。
         discover.setOnClickListener(v -> {
+            // P2-8：只填号 ID 未填 token 时先给出可操作提示，不再白跑一次 loginauth。
+            if (a.token == null || a.token.isEmpty()) {
+                sub.setText("该账号没有 token：请先「设置 token」或原生登录一次再发现角色");
+                return;
+            }
             discover.setEnabled(false);
             discover.setAlpha(0.5f);
             sub.setText("发现角色中…（登录游戏服务器查询全角色清单）");
@@ -211,7 +216,10 @@ public final class RoleManagerSheet {
                             eng.close();
                         }
                     }
-                    if (roles0 != null) {
+                    // P2-8：discoverRoles 恒返回列表（内部吞异常），空表不能当作"服务器无角色"。
+                    if (roles0 != null && roles0.isEmpty()) {
+                        err = "未获取到角色清单（登录失败或服务器返回空），请检查 token 后重试";
+                    } else if (roles0 != null) {
                         found = roles0.size();
                         for (WjdrEngine.RoleInfo ri : roles0) {
                             int before = RoleStore.roles(act, a.fpid).size();

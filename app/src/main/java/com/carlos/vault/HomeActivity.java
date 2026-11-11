@@ -372,8 +372,10 @@ public class HomeActivity extends AccountVaultActivity {
         try {
             VaultSync.syncAll(this);
             VaultSync.fetchState(this, (code, message, data) -> {
-                getSharedPreferences("home", MODE_PRIVATE).edit()
-                        .putLong("last_fullsync", System.currentTimeMillis()).apply();
+                if (code == 0) {
+                    getSharedPreferences("home", MODE_PRIVATE).edit()
+                            .putLong("last_fullsync", System.currentTimeMillis()).apply();
+                }
                 runOnUiThread(() -> {
                     if (accountCap != null) refreshAccounts();
                     refreshAllPages();

@@ -27,7 +27,8 @@ public class DailySchedulerService extends Service {
     private static final int NOTIF_ID = 4210;
     private static final long ALARM_INTERVAL_MS = 30 * 60 * 1000L;  // 闹钟兜底 30 分钟
 
-    private static DailySchedulerService instance;
+    /** 应用级 Context（不随 Service 销毁置空，供通知监听写入事件日志）。 */
+    private static Context APP;
 
     @Override
     public IBinder onBind(Intent intent) {
@@ -37,7 +38,7 @@ public class DailySchedulerService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        instance = this;
+        APP = getApplicationContext();
         startForeground(NOTIF_ID, buildNotification("后台保活已开启"));
         WarNotifyPoller.start(this);           // 战争通知事件轮询（幂等；短信开关关闭时空转）
         try {
@@ -56,7 +57,8 @@ public class DailySchedulerService extends Service {
 
     /** 供通知监听等组件拿外部文件目录（事件日志用）。 */
     static java.io.File appFiles() {
-        return instance != null ? instance.getExternalFilesDir(null) : null;
+        Context app = APP;
+        return app == null ? null : app.getExternalFilesDir(null);
     }
 
     /**
@@ -125,7 +127,6 @@ public class DailySchedulerService extends Service {
 
     @Override
     public void onDestroy() {
-        instance = null;
         super.onDestroy();
     }
 

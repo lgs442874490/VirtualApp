@@ -315,8 +315,8 @@ public final class SubCardUi {
         return buys == null ? 0 : buys.length();
     }
 
-    /** 店铺分页对话框（对标游戏内商店分类）：顶部店铺 tab 一次看一家；店头含币种+余额；
-     *  在线时先展示"当前货架"（可立即购买），下方为自动采购清单；勾选状态跨页保持。 */
+    /** 店铺分页对话框（对标游戏内商店分类）：顶部店铺 tab 一次看一家；
+     *  展示目录价与自动采购清单，勾选状态跨页保持。 */
     private static void showShopDialog(final Context ctx, final String fpid, final long sid, final String fnId,
                                        java.util.List<Long> shopIds, String sessionTag) {
         java.util.Map<Long, java.util.List<ShopTasks.Good>> catalog = ShopTasks.shops(ctx);
@@ -341,6 +341,11 @@ public final class SubCardUi {
                 l.add(g);
             }
             perShop.put(shopId, merged);
+        }
+        // P2-1：目录为空/商店 id 不匹配时不能对空数组取 [0]（AIOOBE 崩溃）。
+        if (perShop.isEmpty()) {
+            UiStyle.toast(ctx, "商店目录为空或与商店 id 不匹配，请稍后重试");
+            return;
         }
         // 勾选状态（plainName → bool），跨分页保持；初始来自已保存的 buys。
         // 2026-11-08：改用 LinkedHashMap 保留勾选顺序，保存为 buy_list（按顺序购买）。
