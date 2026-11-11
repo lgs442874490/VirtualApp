@@ -1526,17 +1526,34 @@ public final class VaultStore {
                 if (!a.fpid.equals(fpid)) continue;
                 if (sid != null && !sid.isEmpty()) {
                     String key = (uid == null || uid.isEmpty()) ? sid : roleKey(sid, uid);
-                    String prev = a.roleIdentity.get(key);
-                    if (prev != null && !prev.isEmpty()) return; // 已有固定设备，不覆盖
+                    if (!shouldReplaceIdentity(a.roleIdentity.get(key), identityJson)) return;
                     a.roleIdentity.put(key, identityJson);
-                } else if (a.identity == null || a.identity.isEmpty()) {
-                    a.identity = identityJson;
                 } else {
-                    return;
+                    if (!shouldReplaceIdentity(a.identity, identityJson)) return;
+                    a.identity = identityJson;
                 }
                 saveLocked();
                 return;
             }
+        }
+    }
+
+    /**
+     * 身份固化覆盖规则（需求 FR-4：v1 老数据下次成功登录自然升级 v2）：
+     * 空值→写入；v1→v2 升级；v2 已固化→不覆盖（设备固定不漂移）；v2 不被旧引擎 v1 降级。
+     */
+    private static boolean shouldReplaceIdentity(String prev, String next) {
+        if (prev == null || prev.isEmpty()) return true;
+        if (isV2Identity(prev)) return false;
+        return isV2Identity(next);
+    }
+
+    /** 是否 v2 指纹（{@code "v":2}）；非 JSON 视为旧格式。 */
+    private static boolean isV2Identity(String json) {
+        try {
+            return new JSONObject(json).optInt("v", 0) == 2;
+        } catch (Throwable t) {
+            return false;
         }
     }
 

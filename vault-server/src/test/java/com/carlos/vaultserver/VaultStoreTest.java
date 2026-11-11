@@ -80,11 +80,42 @@ public class VaultStoreTest {
     }
 
     @Test
-    public void learnIdentity_notOverwriteExisting() {
+    public void learnIdentity_notOverwriteExistingV2() {
         store.replaceAll(List.of(acc("111", true, "tk1")));
-        store.learnIdentity("111", "888", "{\"distinct_id\":\"first\"}");
-        store.learnIdentity("111", "888", "{\"distinct_id\":\"second\"}");
-        assertEquals("{\"distinct_id\":\"first\"}", store.find("111").roleIdentity.get("888"));
+        store.learnIdentity("111", "888", "{\"v\":2,\"distinct_id\":\"first\"}");
+        store.learnIdentity("111", "888", "{\"v\":2,\"distinct_id\":\"second\"}");
+        assertEquals("v2 已固化设备不覆盖",
+                "{\"v\":2,\"distinct_id\":\"first\"}", store.find("111").roleIdentity.get("888"));
+    }
+
+    @Test
+    public void learnIdentity_upgradesV1ToV2KeepingDevice() {
+        store.replaceAll(List.of(acc("111", true, "tk1")));
+        String v1 = "{\"distinct_id\":\"d1\",\"device_id\":\"e1\",\"ip\":\"36.128.12.34\","
+                + "\"device\":\"vivo X200 Pro\"}";
+        String v2 = "{\"v\":2,\"distinct_id\":\"d1\",\"device_id\":\"e1\",\"ip\":\"36.128.12.34\","
+                + "\"device\":\"vivo X200 Pro\",\"manufacturer\":\"vivo\",\"brand\":\"vivo\","
+                + "\"android_version\":14,\"device_lv\":3}";
+        store.learnIdentity("111", "888", v1);
+        store.learnIdentity("111", "888", v2);
+        assertEquals("老 v1 数据登录后升级为 v2（设备字段不变）",
+                v2, store.find("111").roleIdentity.get("888"));
+        // 升级后再次固化的 v2 不覆盖（设备固定）
+        store.learnIdentity("111", "888", v2.replace("\"d1\"", "\"d2\""));
+        assertEquals("升级后不再漂移", v2, store.find("111").roleIdentity.get("888"));
+        // v2 不允许被旧引擎的 v1 降级
+        store.learnIdentity("111", "888", v1);
+        assertEquals("v2 不被 v1 降级", v2, store.find("111").roleIdentity.get("888"));
+    }
+
+    @Test
+    public void learnIdentity_upgradesAccountLevelV1ToV2() {
+        store.replaceAll(List.of(acc("111", true, "tk1")));
+        String v1 = "{\"distinct_id\":\"d1\"}";
+        String v2 = "{\"v\":2,\"distinct_id\":\"d1\",\"manufacturer\":\"vivo\"}";
+        store.learnIdentity("111", "", v1);
+        store.learnIdentity("111", "", v2);
+        assertEquals("账号级 v1 数据同样升级 v2", v2, store.find("111").identity);
     }
 
     @Test
