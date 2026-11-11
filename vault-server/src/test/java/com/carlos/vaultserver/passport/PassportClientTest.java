@@ -244,7 +244,7 @@ public class PassportClientTest {
         assertNotNull(client.realName("1", "sk", "张三", "11010119900307775X"));
         assertEquals(1, t.urls.size());
         assertEquals("passport-request", t.formsList.get(0).get("service_name"));
-        assertEquals("realNameVerify", t.formsList.get(0).get("method"));
+        assertEquals("idCardVerified", t.formsList.get(0).get("method"));
         assertEquals("11010119900307775X", t.formsList.get(0).get("id_card"));
     }
 

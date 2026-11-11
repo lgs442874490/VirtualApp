@@ -26,7 +26,7 @@ public class PassportConfigTest {
         assertEquals("loginWithPhoneCode", c.smsLoginMethod);
         // 待真实轮校准的推定 method 名
         assertEquals("express_signin", c.guestRegisterMethod);
-        assertEquals("realNameVerify", c.realNameMethod);
+        assertEquals("idCardVerified", c.realNameMethod);
         assertEquals("", c.cgSeid);
         assertEquals("", c.fpcsSource);
     }
