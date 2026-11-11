@@ -116,10 +116,13 @@ public final class PassportClient {
             throw new IllegalArgumentException("缺少 session_key");
         }
         Map<String, String> params = new LinkedHashMap<>();
-        params.put("fpid", fpid.trim());
-        params.put("session_key", sessionKey.trim());
+        // 新版 PhoneRegistrationPassportGateway.verifyRealName 的权威载荷：
+        // {check_way:"2", name, id_card, fpid, session_key}
+        params.put("check_way", "2");
         params.put("name", name.trim());
         params.put("id_card", idCard.trim());
+        params.put("fpid", fpid.trim());
+        params.put("session_key", sessionKey.trim());
         return call(config.realNameMethod, params, null);
     }
 

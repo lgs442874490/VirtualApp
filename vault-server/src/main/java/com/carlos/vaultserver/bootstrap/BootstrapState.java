@@ -567,9 +567,15 @@ public final class BootstrapState {
 
     /** 待委任的幸存者（未上岗且未生病）。 */
     public List<Survivor> idleSurvivors() {
+        // 真实上岗状态以家具 sid_list 为准（实测 2026-11-11：survivor 的 fid_work 恒为 0，
+        // 若只看 fid_work 会把已在岗的人当闲置，导致委任时找不到可用人、白人重复派工）。
+        java.util.Set<Long> working = assignedSurvivorIds();
         ArrayList<Survivor> out = new ArrayList<>();
         for (Survivor v : survivors) {
-            if (v.fidWork() <= 0L && !v.sick()) out.add(v);
+            if (v.sick()) continue;
+            if (working.contains(v.sid())) continue;
+            if (v.fidWork() > 0L) continue;
+            out.add(v);
         }
         return out;
     }
@@ -753,6 +759,13 @@ public final class BootstrapState {
             long qid = positive(number(entry.get("qid")), number(base.get("qid")));
             levels.put(id, Math.max(0L, lv));
             statuses.put(id, Math.max(0L, status));
+            // 家具（=工位）嵌在 base.furniture 里（实测 2026-11-11）：
+            // {bid:{base:{lv,status,furniture:{"<fid>":{fid,base:{conf_fid,type,lv},sid_list:[...]}}}}}
+            Object nestedFurniture = base.get("furniture");
+            if (nestedFurniture == null) nestedFurniture = entry.get("furniture");
+            if (nestedFurniture != null) {
+                applyFurnitureOfBuilding(id, nestedFurniture);
+            }
             if (qid > 0L) {
                 queues.put(id, qid);
                 knownQueues.add(qid);
@@ -761,6 +774,41 @@ public final class BootstrapState {
             any = true;
         }
         if (any) buildingsReady = true;
+    }
+
+    /**
+     * 解析某建筑内的家具（=生产工位）。数据形状（实测 2026-11-11）：
+     * {@code {"<fid>": {fid, base:{conf_fid, type, lv}, sid_list:[sid...]}}}
+     *
+     * <p>sid_list 就是该工位上已上岗的幸存者——这是「委任到精确工位」的数据来源，
+     * 也是判断某工位是否空闲的唯一依据。
+     */
+    private void applyFurnitureOfBuilding(long buildingId, Object raw) {
+        if (buildingId <= 0L || raw == null) return;
+        Map<Long, Long> instances = furnitureInstances.computeIfAbsent(buildingId,
+                ignored -> new java.util.LinkedHashMap<>());
+        Map<Long, Long> types = furnitureTypes.computeIfAbsent(buildingId,
+                ignored -> new java.util.LinkedHashMap<>());
+        Map<Long, java.util.List<Long>> occupants = furnitureOccupants.computeIfAbsent(buildingId,
+                ignored -> new java.util.LinkedHashMap<>());
+        for (Map<String, Object> entry : entries(raw)) {
+            Map<String, Object> base = mapOf(entry.get("base"));
+            long confFid = positive(number(base.get("conf_fid")), number(entry.get("conf_fid")));
+            if (confFid <= 0L) continue;
+            long instanceId = positive(number(entry.get("fid")), 0L);
+            if (instanceId > 0L) instances.put(confFid, instanceId);
+            long type = number(base.get("type"));
+            if (type <= 0L) type = number(entry.get("type"));
+            if (type <= 0L) type = furnitureTypeOf(confFid);
+            if (type > 0L) types.put(confFid, type);
+            java.util.ArrayList<Long> assigned = new java.util.ArrayList<>();
+            for (Object sid : (entry.get("sid_list") instanceof Iterable
+                    ? (Iterable<?>) entry.get("sid_list") : java.util.List.of())) {
+                long survivorId = number(sid);
+                if (survivorId > 0L) assigned.add(survivorId);
+            }
+            occupants.put(confFid, assigned);
+        }
     }
 
     private void applyFurniture(Object raw) {

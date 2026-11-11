@@ -32,8 +32,8 @@ public final class PassportConfig {
     public static final String DEFAULT_SMS_LOGIN_METHOD = "loginWithPhoneCode";
     /** 游客快速注册：游戏 CGAccountType.Group.Express → express_signin。实测返回 is_new=true 新号。 */
     public static final String DEFAULT_GUEST_REGISTER_METHOD = "express_signin";
-    /** 推定值：实名认证的 method，待真实轮校准（本地/未实名号实测用）。 */
-    public static final String DEFAULT_REAL_NAME_METHOD = "realNameVerify";
+    /** 实名认证 method。真值来自新版 PhoneRegistrationPassportGateway.ID_CARD_VERIFIED_METHOD（2026-11-11 校准）。 */
+    public static final String DEFAULT_REAL_NAME_METHOD = "idCardVerified";
 
     public final String baseUrl;
     public final String path;

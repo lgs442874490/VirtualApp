@@ -1500,6 +1500,12 @@ public final class BootstrapService {
             return result;
         }
         java.util.Set<Long> assignedIds = state.assignedSurvivorIds();
+        int stationTotal = 0;
+        for (long b : PRODUCTION_BUILDINGS) {
+            for (long t : PRODUCTION_STATION_TYPES) stationTotal += state.furnitureByType(b, t).size();
+        }
+        FileLog.info("[起号] 委任诊断：闲置={} 已上岗={} 工位总数={}",
+                String.valueOf(idle.size()), String.valueOf(assignedIds.size()), String.valueOf(stationTotal));
         ArrayList<Long> assigned = new ArrayList<>();
         int failed = 0;
         // 精确委任（对齐新版 assignIdleSurvivorToProduction）：

@@ -576,6 +576,21 @@ public final class BootstrapBatchRunner {
                 FileLog.info("起号首轮背包物品明细(>=100000)：{} 资源(<100000)：{}",
                         String.valueOf(service.state().backpackItemMap()),
                         String.valueOf(service.state().resourceMap()));
+                for (String k : loadContent.keySet()) {
+                    if (k.toLowerCase().contains("furn") || k.toLowerCase().contains("build")) {
+                        String v = String.valueOf(loadContent.get(k));
+                        FileLog.info("loaddata 字段 {} = {}", k, v.length() > 300 ? v.substring(0, 300) : v);
+                    }
+                }
+                FileLog.info("起号首轮幸存者明细：{}", String.valueOf(service.state().survivors()));
+                for (long bid : new long[]{302L, 303L, 304L, 305L, 306L}) {
+                    FileLog.info("工位诊断 建筑{} 等级={} 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}",
+                            String.valueOf(bid), String.valueOf(service.state().level(bid)),
+                            String.valueOf(service.state().furnitureByType(bid, 24L)),
+                            String.valueOf(service.state().furnitureByType(bid, 9L)),
+                            String.valueOf(service.state().furnitureByType(bid, 30L)),
+                            String.valueOf(service.state().furnitureByType(bid, 42L)));
+                }
                 FileLog.info("起号首轮推送：survivors={} heroes={} guides={} adventure={} 背包物品={}",
                         String.valueOf(service.state().survivors().size()),
                         String.valueOf(service.state().heroLevels().size()),
