@@ -241,7 +241,8 @@ public class BootstrapStateTest {
         load.put("queue_map", queueMap);
         BootstrapState s = BootstrapState.fromLoadData(load);
         assertTrue(s.queuesReady());
-        assertEquals(1L, s.idleQueueId());   // 队列 9 被跳过 → 回退候选 1
+        // 队列数据里只有非建筑队列 → 没有可用建筑队列（新版语义：不能建造，不再回退猜 1）
+        assertEquals(0L, s.idleQueueId());
     }
 
     @Test

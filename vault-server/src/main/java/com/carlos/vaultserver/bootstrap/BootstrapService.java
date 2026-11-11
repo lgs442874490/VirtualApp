@@ -125,6 +125,15 @@ public final class BootstrapService {
     static final long PACK_SIZE = 10000L;
     static final String SHOP_INFO = "req_shop_info";
     static final String SHOP_BUY = "req_shop_buy";
+    /** 建造队列加速协议（新版 BootstrapService.QUEUE_SPEED）。 */
+    static final String QUEUE_SPEED = "req_building_queue_speed";
+    /** 加速道具 id（新版 SPEEDUP_ITEM_IDS）。 */
+    static final List<Long> SPEEDUP_ITEM_IDS =
+            List.of(200201L, 200202L, 200203L, 200204L, 200205L, 200206L);
+    /** 大熔炉点火协议：熔炉首次升级（fromLevel<=0）前必须点火。 */
+    static final String STOVE_COMBUSTION_SWITCH = "req_stove_combustion_switch";
+    /** 队列加速错误码：队列已结束（视为成功）。 */
+    static final int QUEUE_ALREADY_FINISHED = 71;
     /** 领奖协议（原版 BootstrapRewardService 同值）。 */
     static final String GROWTH_AWARD = "req_get_growthquest_award";
     static final String CHAPTER_QUEST_AWARD = "req_get_chapterquest_award";
@@ -405,6 +414,10 @@ public final class BootstrapService {
         if (claimProducedResources()) {
             return actionResult("STARTED", "已领取产出资源");
         }
+        // 秒完正在施工的队列（2 分钟 0→9 的关键：建造→秒完→立刻下一轮）
+        if (finishBusyQueue()) {
+            return actionResult("STARTED", "已秒完施工队列，继续升级");
+        }
         // 新手引导（新版 runNextStepInternal 第一步）：逐级上报引导步骤
         Map<String, Object> tutorial = tutorialAdvance(null);
         if (tutorial != null) {
@@ -604,6 +617,7 @@ public final class BootstrapService {
             return actionResult("WAITING", "当前没有空闲建筑队列");
         }
         GameMessage response;
+        igniteFurnaceIfNeeded(action);
         try {
             response = request(protocol(action), payload(cfg, action, queueId));
         } catch (ProtocolException exception) {
@@ -680,6 +694,14 @@ public final class BootstrapService {
             locked.put("step", stepView(action));
             locked.put("responseCode", 77);
             return locked;
+        }
+        if (code == ITEM_NOT_ENOUGH) {
+            StringBuilder sb = new StringBuilder();
+            for (Cost c : action.costs()) {
+                sb.append("资源").append(c.id()).append("[需").append(c.amount())
+                  .append("/有").append(totalResourceCount(c.id())).append("] ");
+            }
+            FileLog.info("[起号] 51 缺口明细 {}：{}", action.label(), sb.toString());
         }
         if (code == CONDITION_BUILDING_LEVEL_NOT_ENOUGH) {
             Map<String, Object> result = actionResult("RESYNC_REQUIRED",
@@ -793,6 +815,7 @@ public final class BootstrapService {
         long diamonds = Math.max(knownDiamonds, Math.max(0L, state.resourceCount(101L)));
         if (retryAllowed("shop:diag")) {
             markRetry("shop:diag", 120_000L);
+            FileLog.info("[起号] 商店商品 itemId 清单={} goodsId={}", String.valueOf(goodsByItem.keySet()), String.valueOf(goodsByItem.values()));
             FileLog.info("[起号] 商店诊断：商品数={} 钻石={} 背包钻石道具种类={} 缺口肉={} 木={} 煤={} 铁={}",
                     String.valueOf(goodsByItem.size()), String.valueOf(diamonds),
                     String.valueOf(diamondItemsInBag().size()),
@@ -884,13 +907,23 @@ public final class BootstrapService {
         if (missing <= 0L) return;
         Long goodsId = goodsByItem.get(packItemId);
         long price = catalogPrice(packItemId);
+        FileLog.info("[起号] buyForMissing 入参 itemId={} 缺口={} goodsId={} 价格={} 钻石={}",
+                String.valueOf(packItemId), String.valueOf(missing),
+                String.valueOf(goodsId), String.valueOf(price), String.valueOf(remainingDiamonds));
         if (goodsId == null || price <= 0L) return;
         long packs = (missing + PACK_SIZE - 1L) / PACK_SIZE;
         long affordable = Math.min(packs, remainingDiamonds / price);
         if (affordable <= 0L) return;
         affordable = Math.min(affordable, 200L);
-        request(SHOP_BUY, Map.of("shop_id", COMMANDER_SHOP_ID, "goods_id", goodsId,
-                "count", (int) affordable));
+        try {
+            request(SHOP_BUY, Map.of("shop_id", COMMANDER_SHOP_ID, "goods_id", goodsId,
+                    "count", (int) affordable));
+        } catch (ProtocolException e) {
+            FileLog.info("[起号] 商店购买失败 itemId={} goodsId={} 数量={} code={}",
+                    String.valueOf(packItemId), String.valueOf(goodsId),
+                    String.valueOf(affordable), String.valueOf(e.code()));
+            throw e;
+        }
         FileLog.info("[起号] 统帅商店购买 itemId={} 数量={} 花费={}钻",
                 String.valueOf(packItemId), String.valueOf(affordable),
                 String.valueOf(affordable * price));
@@ -1013,6 +1046,79 @@ public final class BootstrapService {
             }
         }
         return used;
+    }
+
+    /**
+     * 秒完正在施工的建造队列（对齐新版 BootstrapService.finishBusyQueue）。
+     *
+     * <p><b>这是「2 分钟从 0 升到 9 级」的关键</b>：每轮先检测是否有建造队列在跑，
+     * 有则用加速道具（200201-200206）或钻石 {@code req_building_queue_speed} 立即完成，
+     * 使下一轮马上能开新建造。没有这一步，每次建造都要按真实工时排队，永远快不起来。
+     *
+     * @return 本轮是否秒完了一个队列
+     */
+    boolean finishBusyQueue() {
+        long busyQueueId = state.busyQueueId();
+        if (busyQueueId <= 0L) {
+            return false;
+        }
+        long busyBuildingId = state.buildingOnQueue(busyQueueId);
+        if (speedUpQueue(busyQueueId)) {
+            if (busyBuildingId > 0L) {
+                state.markBuildingInstantUpgrade(busyBuildingId, state.level(busyBuildingId) + 1L);
+            }
+            FileLog.info("[起号] 已秒完正在施工的建造队列 {}，继续升级", String.valueOf(busyQueueId));
+            return true;
+        }
+        return false;
+    }
+
+    /** 队列加速：先道具后钻石（对齐新版 speedUpWithItems → QUEUE_SPEED）。 */
+    private boolean speedUpQueue(long queueId) {
+        if (queueId <= 0L) return false;
+        // ① 加速道具
+        for (long itemId : SPEEDUP_ITEM_IDS) {
+            long count = Math.max(0L, state.itemCount(itemId));
+            if (count <= 0L) continue;
+            try {
+                request(QUEUE_SPEED, Map.of("qid", queueId, "use_diamond", false,
+                        "items", List.of(Map.of("id", itemId, "count", count))));
+                FileLog.info("[起号] 已用加速道具 {} x{} 秒完队列 {}",
+                        String.valueOf(itemId), String.valueOf(count), String.valueOf(queueId));
+                return true;
+            } catch (ProtocolException e) {
+                if (e.code() == QUEUE_ALREADY_FINISHED) return true;
+            } catch (Exception e) {
+                FileLog.info("[起号] 加速道具 {} 秒队列失败：{}",
+                        String.valueOf(itemId), String.valueOf(e.getMessage()));
+            }
+        }
+        // ② 钻石
+        try {
+            request(QUEUE_SPEED, Map.of("qid", queueId, "use_diamond", true));
+            FileLog.info("[起号] 已用钻石秒完队列 {}", String.valueOf(queueId));
+            return true;
+        } catch (ProtocolException e) {
+            if (e.code() == QUEUE_ALREADY_FINISHED) return true;
+            FileLog.info("[起号] 秒完队列 {} 失败（按排队等待）code={}",
+                    String.valueOf(queueId), String.valueOf(e.code()));
+        } catch (Exception e) {
+            FileLog.info("[起号] 秒完队列 {} 失败（按排队等待）：{}",
+                    String.valueOf(queueId), String.valueOf(e.getMessage()));
+        }
+        return false;
+    }
+
+    /** 熔炉首次升级前点火（新版 igniteFurnaceIfNeeded：fromLevel<=0 且 buildingId==301）。 */
+    private void igniteFurnaceIfNeeded(Action action) {
+        if (action.kind() != ActionKind.UPGRADE_BUILDING) return;
+        if (action.buildingId() != FURNACE_ID || action.fromLevel() > 0L) return;
+        try {
+            request(STOVE_COMBUSTION_SWITCH, Map.of("switch", 1L, "overdrive", 0L));
+            FileLog.info("[起号] 已点火大熔炉（switch=1, overdrive=0）");
+        } catch (Exception e) {
+            FileLog.info("[起号] 点火大熔炉失败：{}", String.valueOf(e.getMessage()));
+        }
     }
 
     /**

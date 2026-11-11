@@ -38,6 +38,8 @@ public final class BootstrapState {
     private final Set<Long> knownQueues = new LinkedHashSet<>();
     /** 忙碌队列 id。 */
     private final Set<Long> busyQueues = new LinkedHashSet<>();
+    /** 队列数据里存在条目、但全是非建筑队列（qtype != 1）。此时不能兜底猜队列 id。 */
+    private boolean onlyNonBuildingQueues;
     /** 家具等级表（建筑 id → 家具 id → 等级）。 */
     private final Map<Long, Map<Long, Long>> furniture = new LinkedHashMap<>();
     /** 背包资源/道具数量（id → 数量）。 */
@@ -208,6 +210,31 @@ public final class BootstrapState {
                 : old.furnitureOccupants.entrySet()) {
             furnitureOccupants.putIfAbsent(e.getKey(), new java.util.LinkedHashMap<>(e.getValue()));
         }
+    }
+
+    /** 当前正在施工的队列 id（无则 0）。对齐新版 BootstrapBuildingState.busyQueueId。 */
+    public long busyQueueId() {
+        for (Long qid : busyQueues) {
+            if (qid != null && qid > 0L) return qid;
+        }
+        return 0L;
+    }
+
+    /** 某队列上正在升级的建筑 id（无则 0）。对齐新版 buildingOnQueue。 */
+    public long buildingOnQueue(long queueId) {
+        for (Map.Entry<Long, Long> e : queues.entrySet()) {
+            if (e.getValue() != null && e.getValue() == queueId) return e.getKey();
+        }
+        return 0L;
+    }
+
+    /** 标记建筑已即时升级完成（本地乐观推进，对齐新版 markBuildingInstantUpgrade）。 */
+    public void markBuildingInstantUpgrade(long buildingId, long newLevel) {
+        if (buildingId <= 0L) return;
+        levels.put(buildingId, Math.max(0L, newLevel));
+        statuses.put(buildingId, 0L);
+        Long qid = queues.remove(buildingId);
+        if (qid != null) busyQueues.remove(qid);
     }
 
     /** 背包物品数量（对齐新版 itemCount：物品表优先，回退资源表）。 */
@@ -643,7 +670,9 @@ public final class BootstrapState {
         for (long candidate : knownQueues) {
             if (!busyQueues.contains(candidate)) return candidate;
         }
-        if (knownQueues.isEmpty()) {
+        // 仅在「队列数据尚未同步」时兜底猜 1/2；已同步但无建筑队列 → 0（交由上层 WAITING，
+        // 对齐新版：没有建筑队列就不能建造，否则会误用非建筑队列 qid 被服务端拒绝）
+        if (knownQueues.isEmpty() && !onlyNonBuildingQueues) {
             for (long candidate = 1L; candidate <= 2L; ++candidate) {
                 if (!busyQueues.contains(candidate)) return candidate;
             }
@@ -766,7 +795,10 @@ public final class BootstrapState {
         if (raw == null) return;
         knownQueues.clear();
         busyQueues.clear();
+        onlyNonBuildingQueues = false;
+        int rawEntries = 0;
         for (Map<String, Object> entry : entries(raw)) {
+            rawEntries++;
             Map<String, Object> base = mapOf(entry.get("base"));
             long qid = positive(number(entry.get("qid")), number(base.get("qid")));
             long bid = positive(number(entry.get("bid")), number(base.get("bid")));
@@ -786,6 +818,7 @@ public final class BootstrapState {
                 statuses.put(bid, BUILDING_UPGRADING_STATUS);
             }
         }
+        onlyNonBuildingQueues = rawEntries > 0 && knownQueues.isEmpty();
         queuesReady = true;
     }
 

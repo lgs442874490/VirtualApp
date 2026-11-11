@@ -196,15 +196,17 @@ public class BootstrapServiceTest {
 
     @Test
     public void runNext_noIdleQueue_waiting() throws Exception {
-        // 队列 1、2 全忙 → 无空闲建筑队列（原版顺序：MANUAL 判定在前，instantDiamond=true 才走到这里）
+        // 队列全忙但**没有建筑在施工**（qtype 非建筑队列）→ 秒不了队列 → 等空闲建筑队列。
+        // 注意：若队列上有建筑在施工，新增的 finishBusyQueue 会先秒完并返回 STARTED（新版语义）。
         ScriptedPort port = new ScriptedPort();
         List<Object> busyQueues = List.of(
-                content("qid", 1L, "status", 0L), content("qid", 2L, "status", 0L));
+                content("qid", 1L, "status", 0L, "qtype", 2L),
+                content("qid", 2L, "status", 0L, "qtype", 2L));
         Map<String, Object> load = content("buildings", content("301", content("bid", 301L, "lv", 1L)),
                 "queues", busyQueues);
         BootstrapService svc = service(port, load, enabledConfig());
         Map<String, Object> r = svc.runNext();
-        assertEquals("WAITING", r.get("status"));
+        assertEquals("实际消息=" + r.get("message") + " calls=" + port.calls, "WAITING", r.get("status"));
         assertEquals("当前没有空闲建筑队列", r.get("message"));
         assertEquals(0, port.count("req_upgrade_building"));
     }
