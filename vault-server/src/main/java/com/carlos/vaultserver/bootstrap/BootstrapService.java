@@ -703,6 +703,15 @@ public final class BootstrapService {
             return locked;
         }
         if (code == ITEM_NOT_ENOUGH) {
+            // 51：对该动作做长退避（实测部分家具即使资源看似充足也会被拒，
+            // 属该家具自身前置限制）。不退还每轮重试同一动作，主线会被永久卡住。
+            String holdKey = "hold:" + action.kind() + ":" + action.buildingId()
+                    + ":" + action.furnitureId();
+            markRetry(holdKey, 1_800_000L);
+            if (!retryAllowed(holdKey + ":logged")) {
+                markRetry(holdKey + ":logged", 1_800_000L);
+                FileLog.warn("[起号] 动作暂不可行（51），30 分钟内不再尝试：{}", action.label());
+            }
             if (retryAllowed("res:diag")) {
                 markRetry("res:diag", 60_000L);
                 FileLog.info("[起号] 资源诊断：资源表={} 背包100xxx={}",
