@@ -253,12 +253,14 @@ public final class DeviceProfile {
         if (raw == null || raw == JSONObject.NULL) return poolAndroidVersion(model);
         if (!(raw instanceof Number)) {
             warnFallback(fpid, "android_version", "type_mismatch");
-            return DEFAULT_ANDROID_VERSION;
+            return poolAndroidVersion(model);   // P2-1′：回退机型池版本，保持机型/系统自洽
         }
         int v = ((Number) raw).intValue();
-        int clamped = clampAndroidVersion(v);
-        if (clamped != v) warnFallback(fpid, "android_version", "out_of_range");
-        return clamped;
+        if (v < MIN_ANDROID_VERSION || v > MAX_ANDROID_VERSION) {
+            warnFallback(fpid, "android_version", "out_of_range");
+            return poolAndroidVersion(model);   // P2-1′：越界同样回退池版本
+        }
+        return v;
     }
 
     /** 设备等级解析：缺失回填 3；存在必须是 1–5 的 Number。 */
@@ -318,6 +320,14 @@ public final class DeviceProfile {
                 hex(sha256("device|" + seed)).substring(0, DEVICE_ID_LENGTH),
                 hex(sha256("distinct|" + seed)).substring(0, DEVICE_ID_LENGTH),
                 pickIp(digest));
+    }
+
+    /**
+     * 临时设备（发现式/无角色上下文登录用）：每次调用随机生成一台，供引擎按 Session 缓存。
+     * 不参与确定性派生、不写入持久化（P1-1：同账号多 Session 发现登录不得共用设备）。
+     */
+    public static Device ephemeral() {
+        return randomDevice();
     }
 
     /** 按 seed 确定性选择机型（池为空时返回默认项，不崩溃）。 */

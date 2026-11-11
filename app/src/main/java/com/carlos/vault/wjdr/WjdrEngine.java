@@ -181,6 +181,8 @@ public class WjdrEngine {
     private String lastBrand;
     private int lastAndroidVersion;
     private int lastDeviceLv;
+    /** 发现式登录（无角色 uid）的临时设备：每引擎一台、重试稳定、不落库（P1-1）。 */
+    private DeviceProfile.Device ephemeralDevice;
     /** 游戏服务端推送通知收集（proto → 最近一次内容），任务层用于提取活动 id 等 */
     private final java.util.concurrent.ConcurrentHashMap<String, Map<String, Object>> notifies =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -438,8 +440,7 @@ public class WjdrEngine {
             try {
                 // 角色维度设备 seed（P0）：loginByRole 的 uid 经 extraParams 下传，
                 // 同账号同服多角色在无角色级指纹时也不会撞设备。
-                Object roleUidObj = extraParams == null ? null : extraParams.get("uid");
-                long roleUid = roleUidObj == null ? 0L : toLong(roleUidObj);
+                long roleUid = roleUidFrom(extraParams);
                 Map<String, Object> payload = buildLoginPayload(fpid, sdkToken, serverid, roleUid);
                 if (extraParams != null) payload.putAll(extraParams);
                 long t0 = GameServerClock.monoNow();
@@ -1133,6 +1134,13 @@ public class WjdrEngine {
         }
     }
 
+    /** 从 extraParams 提取角色 uid（loginByRole 放入 "uid"）；缺失/非法返回 0。 */
+    static long roleUidFrom(Map<String, Object> extraParams) {
+        if (extraParams == null) return 0L;
+        Object v = extraParams.get("uid");
+        return v == null ? 0L : toLong(v);
+    }
+
     /** 登录载荷构建（包内可见：供 JVM 单测校验字段集合与指纹一致性）。 */
     Map<String, Object> buildLoginPayload(String fpid, String sdkToken, Long serverid) {
         return buildLoginPayload(fpid, sdkToken, serverid, 0L);
@@ -1148,7 +1156,16 @@ public class WjdrEngine {
         // 固定指纹优先（每账号持久一份）；未注入则按 fpid+serverid 确定性生成——同一角色
         // 登录失败重试得到同一台设备（2026-11-11 修复"每次重试换设备"的漂移）。
         long sid = serverid != null && serverid > 0 ? serverid : 0L;
-        DeviceProfile.Device base = DeviceProfile.generate(fpid, sid, roleUid);
+        DeviceProfile.Device base;
+        if (roleUid > 0) {
+            base = DeviceProfile.generate(fpid, sid, roleUid);
+        } else {
+            // P1-1：发现式/legacy 登录（无角色 uid）用每引擎一台临时设备——旧实现是随机，
+            // 本类改为按 (fpid, serverid) 确定性后，同账号多 Session 发现登录会撞设备互踢。
+            // 临时设备在同一引擎内重试稳定，且不写入持久化（identityJson 不用于发现路径固化）。
+            if (ephemeralDevice == null) ephemeralDevice = DeviceProfile.ephemeral();
+            base = ephemeralDevice;
+        }
         String distinctId = pinnedDistinctId != null ? pinnedDistinctId : base.distinctId;
         String deviceId = pinnedDeviceId != null ? pinnedDeviceId : base.deviceId;
         String loginIp = pinnedLoginIp != null ? pinnedLoginIp : base.ip;

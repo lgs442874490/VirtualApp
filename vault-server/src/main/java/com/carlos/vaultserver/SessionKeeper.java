@@ -1380,7 +1380,8 @@ public final class SessionKeeper implements SessionControl,
                 // 指纹被服务器判为同设备/同账号重复登录而互踢（对齐原版 roleId scoping）。
                 String wantUidText = wantUid > 0 ? String.valueOf(wantUid) : uidArg;
                 String seed = identitySeed(acc, sid, wantUidText);
-                if (seed != null && !seed.isEmpty()) engine.applyIdentity(seed);
+                // 空 seed 也调用 applyIdentity：清空引擎复用可能残留的固定指纹（P2-4′，防串号）
+                engine.applyIdentity(seed == null ? "" : seed);
                 WjdrEngine.LoginResult r = loginBoundRole(acc);
                 FileLog.info("登录成功 {} 角色={}", key,
                         r.gameName == null ? "" : r.gameName);

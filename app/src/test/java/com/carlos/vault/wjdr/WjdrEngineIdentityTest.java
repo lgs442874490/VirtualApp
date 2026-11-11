@@ -73,9 +73,9 @@ public class WjdrEngineIdentityTest {
 
     @Test
     public void buildLoginPayload_isDeterministicBeforePinning() throws Exception {
-        // 两个全新引擎模拟"登录失败后重试"：未注入固定指纹，同 fpid+serverid 必须得到同一台设备
-        Map<String, Object> first = newEngine().buildLoginPayload("fpid-retry", "tok", 888L);
-        Map<String, Object> second = newEngine().buildLoginPayload("fpid-retry", "tok", 888L);
+        // 两个全新引擎模拟"登录失败后重试"：主路径（带角色 uid）同 fpid+serverid+uid 必须得到同一台设备
+        Map<String, Object> first = newEngine().buildLoginPayload("fpid-retry", "tok", 888L, 1001L);
+        Map<String, Object> second = newEngine().buildLoginPayload("fpid-retry", "tok", 888L, 1001L);
         for (String key : new String[]{"device", "device_id", "distinct_id", "ip"}) {
             assertEquals("重试不应换设备字段 " + key, first.get(key), second.get(key));
         }
@@ -84,9 +84,9 @@ public class WjdrEngineIdentityTest {
 
     @Test
     public void buildLoginPayload_differsByServerAndFpid() throws Exception {
-        Map<String, Object> a = newEngine().buildLoginPayload("fpid-a", "tok", 1L);
-        Map<String, Object> b = newEngine().buildLoginPayload("fpid-b", "tok", 1L);
-        Map<String, Object> c = newEngine().buildLoginPayload("fpid-a", "tok", 2L);
+        Map<String, Object> a = newEngine().buildLoginPayload("fpid-a", "tok", 1L, 1001L);
+        Map<String, Object> b = newEngine().buildLoginPayload("fpid-b", "tok", 1L, 1001L);
+        Map<String, Object> c = newEngine().buildLoginPayload("fpid-a", "tok", 2L, 1001L);
         assertNotEquals(a.get("device_id"), b.get("device_id"));
         assertNotEquals(a.get("device_id"), c.get("device_id"));
         assertNotEquals(a.get("distinct_id"), b.get("distinct_id"));
@@ -256,11 +256,34 @@ public class WjdrEngineIdentityTest {
     }
 
     @Test
-    public void buildLoginPayload_uidZeroMatchesAccountLevel() throws Exception {
-        Map<String, Object> legacy = newEngine().buildLoginPayload("fpid-x", "tok", 888L);
-        Map<String, Object> zero = newEngine().buildLoginPayload("fpid-x", "tok", 888L, 0L);
-        assertEquals("uid=0 保持账号级语义（旧 3 参兼容）",
-                legacy.get("device_id"), zero.get("device_id"));
+    public void buildLoginPayload_discoveryLoginIsPerSession() throws Exception {
+        // P1-1：发现式/legacy 登录（无角色 uid，如 engine.login(fpid, token, null)）
+        // 必须每 Session 一台临时设备，否则同账号多 Session 发现登录会撞设备互踢。
+        WjdrEngine one = newEngine();
+        Map<String, Object> first = one.buildLoginPayload("fpid-x", "tok", 888L);
+        Map<String, Object> retry = one.buildLoginPayload("fpid-x", "tok", 888L);
+        assertEquals("同一引擎重试必须复用同一临时设备（不漂移）",
+                first.get("device_id"), retry.get("device_id"));
+        Map<String, Object> other = newEngine().buildLoginPayload("fpid-x", "tok", 888L);
+        assertNotEquals("不同 Session 的发现式登录不得共用设备",
+                first.get("device_id"), other.get("device_id"));
+        assertEquals("uid=0 与 3 参旧签名等价（同一引擎）",
+                first.get("device_id"),
+                one.buildLoginPayload("fpid-x", "tok", 888L, 0L).get("device_id"));
+    }
+
+    @Test
+    public void roleUidFrom_extractsRoleUid() throws Exception {
+        Map<String, Object> extra = new java.util.LinkedHashMap<>();
+        extra.put("uid", 1001L);
+        assertEquals("数字 uid", 1001L, WjdrEngine.roleUidFrom(extra));
+        extra.put("uid", "1002");
+        assertEquals("字符串 uid", 1002L, WjdrEngine.roleUidFrom(extra));
+        assertEquals("无 extra", 0L, WjdrEngine.roleUidFrom(null));
+        assertEquals("无 uid 键", 0L, WjdrEngine.roleUidFrom(new java.util.LinkedHashMap<>()));
+        Map<String, Object> bad = new java.util.LinkedHashMap<>();
+        bad.put("uid", "abc");
+        assertEquals("非法 uid", 0L, WjdrEngine.roleUidFrom(bad));
     }
 
     @Test

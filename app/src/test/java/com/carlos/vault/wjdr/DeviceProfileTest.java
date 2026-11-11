@@ -414,7 +414,7 @@ public class DeviceProfileTest {
                 .toString();
         DeviceProfile.Device d = DeviceProfile.parse(json, "fpid-x");
         assertNotNull(d);
-        assertEquals("字符串系统版本按非法回退 13", 13, d.androidVersion);
+        assertEquals("字符串系统版本按非法回退机型池版本（X200 Pro=14）", 14, d.androidVersion);
         assertEquals("字符串设备等级按非法回退 3", 3, d.deviceLv);
     }
 }
