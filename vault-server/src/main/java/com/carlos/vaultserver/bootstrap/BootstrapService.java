@@ -712,7 +712,9 @@ public final class BootstrapService {
             StringBuilder sb = new StringBuilder();
             for (Cost c : action.costs()) {
                 sb.append("资源").append(c.id()).append("[需").append(c.amount())
-                  .append("/有").append(totalResourceCount(c.id())).append("] ");
+                  .append("/普通").append(state.resourceCount(c.id()))
+                  .append("/安全").append(state.resourceCount(safeResourceId(c.id())))
+                  .append("] ");
             }
             FileLog.info("[起号] 51 缺口明细 {}：{}", action.label(), sb.toString());
         }
