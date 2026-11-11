@@ -206,6 +206,26 @@ public final class BootstrapState {
         else chapterQuestIds.remove(questId);
     }
 
+    /**
+     * 资源增量更新（对齐新版 BehemothAccountState.resourceUpdate）：
+     * {@code notify_resource_update} 给的是**增量 delta**，用 merge 累加，不是覆盖。
+     *
+     * <p>这是开箱/领奖后资源到账的唯一通道 —— 不处理它，本地资源表永远停在登录快照（实测恒为 0）。
+     */
+    private void applyResourceUpdate(Object raw) {
+        if (raw == null) return;
+        for (Map<String, Object> entry : entries(raw)) {
+            long id = positive(number(entry.get("id")), 0L);
+            long delta = number(entry.get("count"));
+            if (id == 0L) continue;
+            if (id >= 100000L) {
+                backpackItems.merge(id, delta, Long::sum);
+            } else {
+                resources.merge(id, delta, Long::sum);
+            }
+        }
+    }
+
     /** 产出资源解析（id/count）。 */
     private void applyProduced(Object raw) {
         if (raw == null) return;

@@ -1267,6 +1267,12 @@ public final class BootstrapService {
             request(PRODUCED_NEED_UPDATE, Map.of());
             lastProducedSignature = signature;
             markRetry("produced", 60_000L);
+            // 本地累加（2026-11-11 实测）：木材/煤/铁**不在** notify_resource_init，也不在
+            // loaddata.res 里，唯一来源就是「产出资源」。领取后游戏不回写资源表，
+            // 若不本地累加，资源恒为 0、建造恒 51（这正是卡 7 级的根因）。
+            for (Map.Entry<Long, Long> e : produced.entrySet()) {
+                state.markedResourceGained(e.getKey(), e.getValue());
+            }
             FileLog.info("[起号] 已领取产出资源 {} 项：{}",
                     String.valueOf(produced.size()), String.valueOf(produced));
             return true;
@@ -1854,9 +1860,9 @@ public final class BootstrapService {
                 FileLog.info("[起号] 已开资源箱 itemId={} x{} → 资源{}（等推送确认到账）",
                         String.valueOf(pack.itemId()), String.valueOf(useCount),
                         String.valueOf(pack.resourceId()));
-                // 只扣物品，不乐观加资源：对齐新版 awaitResourceItemUse ——
-                // 资源必须由游戏推送确认，否则本地误判"资源够"却仍被 51 拒绝。
                 state.markedItemUsed(pack.itemId(), useCount);
+                // 开箱产出的资源同样不回写资源表（实测），必须本地累加，否则 51 永不消失
+                state.markedResourceGained(pack.resourceId(), useCount * pack.amount());
                 deficit -= useCount * pack.amount();
                 LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
                 entry.put("itemId", pack.itemId());

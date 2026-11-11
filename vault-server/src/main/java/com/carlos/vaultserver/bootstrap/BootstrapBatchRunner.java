@@ -550,6 +550,9 @@ public final class BootstrapBatchRunner {
                     notifyField(port, "notify_adventure_pve_info", "adventure_pve_info"));
             // 新手引导（新版 BootstrapTutorialState 数据源）
             putIfPresent(merged, "guide_list", notifyField(port, "notify_guide_init", "data"));
+            // 资源增量更新（开箱/领奖后到账的唯一通道；增量语义）
+            putIfPresent(merged, "res_update",
+                    notifyField(port, "notify_resource_update", "data"));
             // 成长/章节任务（可领奖励 → 起号阶段资源主来源）
             putIfPresent(merged, "growth_list", notifyField(port, "notify_growthquests", "data"));
             putIfPresent(merged, "chapter_list", notifyField(port, "notify_chapterquests", "data"));
@@ -591,6 +594,11 @@ public final class BootstrapBatchRunner {
                     FileLog.info("推送原文 {} keys={} 内容={}", proto,
                             raw == null ? "null" : String.valueOf(raw.keySet()),
                             text.length() > 300 ? text.substring(0, 300) : text);
+                }
+                for (String proto : new String[]{"notify_resource_init", "notify_recover_resource_init"}) {
+                    Map<String, Object> raw = port.notify(proto);
+                    String t = String.valueOf(raw);
+                    FileLog.info("资源推送 {} = {}", proto, t.length() > 350 ? t.substring(0, 350) : t);
                 }
                 FileLog.info("起号首轮背包物品明细(>=100000)：{} 资源(<100000)：{}",
                         String.valueOf(service.state().backpackItemMap()),
