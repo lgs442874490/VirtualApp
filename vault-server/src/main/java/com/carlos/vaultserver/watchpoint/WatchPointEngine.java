@@ -1584,18 +1584,45 @@ public final class WatchPointEngine {
     /** 未匹配地图回包诊断节流（30s）。 */
     private volatile long unmatchedLogAt;
 
+    /**
+     * 2026-11-11：按坐标找联盟建筑（旗子/总部/王城/要塞），容忍 ±2 格。
+     *
+     * <p>A1 敌情的“目标”不一定是城：驻防/增援到联盟旗子、总部时，目标坐标附近没有
+     * map_city 城对象（建筑走 {@code map_alliance_flag/hall/capital}），只查 cityNear 会
+     * 永远显示“（未知）”。这里在城未命中时再按建筑缓存兜底。
+     */
+    private Building nearBuilding(int x, int y) {
+        if (x <= 0 || y <= 0) return null;
+        Building b = buildingByPoint.get(x + "," + y);
+        if (b != null) return b;
+        for (int r = 1; r <= 2; r++) {
+            for (int dx = -r; dx <= r; dx++) {
+                for (int dy = -r; dy <= r; dy++) {
+                    if (Math.abs(dx) != r && Math.abs(dy) != r) continue;
+                    Building n = buildingByPoint.get((x + dx) + "," + (y + dy));
+                    if (n != null) return n;
+                }
+            }
+        }
+        return null;
+    }
+
     private void onComplete(Ctx ctx) {
         if (ctx.kind == Kind.PROBE) {
-            // 2026-11-11：A1 目标补查回包——城已由 parseCity 写入缓存，这里补全目标后发送。
+            // 2026-11-11：A1 目标补查回包——城/建筑已由 parseCity/parseAllianceBuilding 写入缓存。
             PendingA1 p = pendingA1.remove(ctx.session);
             if (p != null) {
                 City target = cityNear(p.ex, p.ey);
+                Building targetBld = target == null ? nearBuilding(p.ex, p.ey) : null;
+                boolean hit = target != null || targetBld != null;
                 FileLog.info("[{}] 敌情目标补查{} ({},{}){}", LOG,
-                        target == null ? "未命中" : "命中",
+                        hit ? "命中" : "未命中",
                         String.valueOf(p.ex), String.valueOf(p.ey),
-                        target == null ? "，按未知发送" : " → uid " + target.uid + " " + nickOf(target));
+                        target != null ? " → 城 uid " + target.uid + " " + nickOf(target)
+                                : targetBld != null ? " → " + targetBld.kind + " aid " + targetBld.aid
+                                : "，按未知发送");
                 sendOutgoing(p.alertKey, p.owner, p.type, p.ex, p.ey, p.endtime, p.troops,
-                        cityByUid.get(p.owner), target);
+                        cityByUid.get(p.owner), target, targetBld);
             }
             return;
         }
@@ -2130,7 +2157,9 @@ public final class WatchPointEngine {
         if (marchKey != null) alerted.put(marchKey, nowMs);   // 标记：另一通道不再重复推
         City ownerCity = cityByUid.get(owner);
         City target = cityNear(ex, ey);
-        if (target == null && ctx != null && ctx.engine != null) {
+        // 2026-11-11：驻防/增援到联盟旗子/总部时目标不是城——先查建筑，避免直接判「未知」。
+        Building targetBld = target == null ? nearBuilding(ex, ey) : null;
+        if (target == null && targetBld == null && ctx != null && ctx.engine != null) {
             // 2026-11-11：目标城暂不在缓存（扫描间隙/迁城/重启重建中）→ 先对该坐标做一次
             // 55×55 局部补查；命中后用真实目标发一条，超时按「未知」发（保证告警不丢）。
             int probeSession = SESSION_PROBE_BASE + (probeSeq.incrementAndGet() & 0x3FFF);
@@ -2145,18 +2174,25 @@ public final class WatchPointEngine {
                 pendingA1.remove(probeSession);
             }
         }
-        sendOutgoing(key, owner, type, ex, ey, endtime, troops, ownerCity, target);
+        sendOutgoing(key, owner, type, ex, ey, endtime, troops, ownerCity, target, targetBld);
     }
 
-    /** 发送一条 A1 敌情（target 为 null 时按「未知」渲染；调用方已做去重/配额）。 */
+    /** 发送一条 A1 敌情（目标为建筑时用建筑兜底；都为 null 才按「未知」渲染）。 */
     private void sendOutgoing(String key, long owner, long type, int ex, int ey,
-                              long endtime, long troops, City ownerCity, City target) {
+                              long endtime, long troops, City ownerCity, City target, Building targetBld) {
         // 2026-11-04：攻击者名优先实时地图昵称（不用配置/目录旧名）
         String nick = nickOf(ownerCity);
         if (nick == null || nick.isEmpty()) nick = liveNick(owner);
         if (nick == null || nick.isEmpty()) nick = "未知名玩家";
+        // 2026-11-11：目标城未命中时用建筑兜底（驻防/增援到联盟旗子/总部时目标不是城）。
+        String targetNick = nickOf(target);
+        long targetAid = target == null ? 0L : target.aid;
+        if ((targetNick == null || targetNick.isEmpty()) && targetBld != null) {
+            targetNick = "联盟" + targetBld.kind;     // 联盟旗子 / 联盟总部 / 联盟王城
+            targetAid = targetBld.aid;
+        }
         String text = outgoingAlertText(nick, ownerCity == null ? 0L : ownerCity.aid, store.aidLabels,
-                type, nickOf(target), target == null ? 0L : target.aid,
+                type, targetNick, targetAid,
                 ex, ey, endtime - System.currentTimeMillis() / 1000L, troops, nowText(),
                 store.feintTroopsBelow);
         alert(key, text);
@@ -2174,15 +2210,16 @@ public final class WatchPointEngine {
             if (now - p.createdAt < A1_PROBE_TIMEOUT_MS) continue;
             if (!pendingA1.remove(en.getKey(), p)) continue;
             City target = cityNear(p.ex, p.ey);
+            Building targetBld = target == null ? nearBuilding(p.ex, p.ey) : null;
             if (now - p.createdAt > A1_PROBE_STALE_MS) {
                 FileLog.warn("[{}] 敌情补查积压 {}ms 才处理 ({},{})", LOG,
                         String.valueOf(now - p.createdAt), String.valueOf(p.ex), String.valueOf(p.ey));
             }
             sendOutgoing(p.alertKey, p.owner, p.type, p.ex, p.ey, p.endtime, p.troops,
-                    cityByUid.get(p.owner), target);
+                    cityByUid.get(p.owner), target, targetBld);
             FileLog.info("[{}] 敌情补查超时 ({},{}) → {}", LOG,
                     String.valueOf(p.ex), String.valueOf(p.ey),
-                    target == null ? "按未知发送" : "回包迟到命中");
+                    (target != null || targetBld != null) ? "回包迟到命中" : "按未知发送");
         }
     }
 
