@@ -85,10 +85,15 @@ public class WatchPointA1ProbeTest {
 
     /** 喂一条监视目标发起的驻防/增援行军（type=5，起点在监视矩形内、终点在目标坐标）。 */
     private static void feedOutgoingMarch(WatchPointEngine engine) {
+        feedMarch(engine, 5L);
+    }
+
+    /** 喂一条指定 type 的监视目标行军。 */
+    private static void feedMarch(WatchPointEngine engine, long type) {
         Map<String, Object> march = new LinkedHashMap<>();
         march.put("id", 123456L);
         march.put("owner", MONITOR_UID);
-        march.put("type", 5L);
+        march.put("type", type);
         march.put("startpoint", xy(MONITOR_X, MONITOR_Y));
         march.put("endpoint", xy(TARGET_X, TARGET_Y));
         march.put("endtime", System.currentTimeMillis() / 1000L + 600L);
@@ -182,17 +187,18 @@ public class WatchPointA1ProbeTest {
         engine.feedResponseForTest(session, "notify_world_mapobjs", content);
     }
 
-    /** 目标建筑已在缓存（驻防到联盟旗子）：立即发送建筑描述，不再补查。 */
+    /**
+     * 目标建筑已在缓存（驻防到非己方联盟旗子）：按统一分类推「资源·破坏」，
+     * 不再走 A1「联盟旗子」文案（2026-11-11 分类口径）。
+     */
     @Test
-    public void buildingTargetSendsImmediately() {
+    public void buildingTargetUsesActivityClassify() {
         WatchPointEngine engine = new WatchPointEngine(null, store(), null, null);
         prepare(engine);
         feedBuilding(engine, MONITOR_SESSION, TARGET_X, TARGET_Y);
         feedOutgoingMarch(engine);
-        assertTrue("建筑目标应立即发送：" + engine.lastAlertTextForTest(),
-                engine.lastAlertTextForTest().contains("联盟旗子"));
-        assertTrue("应带联盟简称：" + engine.lastAlertTextForTest(),
-                engine.lastAlertTextForTest().contains("[818]"));
+        assertTrue("非己方联盟旗子应判破坏：" + engine.lastAlertTextForTest(),
+                engine.lastAlertTextForTest().contains("破坏"));
         assertEquals("建筑命中不补查", 0, engine.pendingA1CountForTest());
     }
 
@@ -206,8 +212,21 @@ public class WatchPointA1ProbeTest {
         int probeSession = ((FakeEngine) es.get(0)).lastProbeSession();
         assertTrue(probeSession > 0);
         feedBuilding(engine, probeSession, TARGET_X, TARGET_Y);
-        assertTrue("补查回包带建筑后应兜底：" + engine.lastAlertTextForTest(),
-                engine.lastAlertTextForTest().contains("联盟旗子"));
+        assertTrue("补查回包带建筑后应与入口同口径（破坏）：" + engine.lastAlertTextForTest(),
+                engine.lastAlertTextForTest().contains("破坏"));
         assertEquals("补查完成后队列归零", 0, engine.pendingA1CountForTest());
+    }
+
+    /** 侦查（type=1）不参与分类：目标为建筑时回落 A1 建筑文案（联盟旗子），不误判驻防/破坏。 */
+    @Test
+    public void scoutBuildingFallsBackToA1() {
+        WatchPointEngine engine = new WatchPointEngine(null, store(), null, null);
+        prepare(engine);
+        feedBuilding(engine, MONITOR_SESSION, TARGET_X, TARGET_Y);
+        feedMarch(engine, 1L);
+        assertTrue("侦查目标建筑应显示联盟旗子：" + engine.lastAlertTextForTest(),
+                engine.lastAlertTextForTest().contains("联盟旗子"));
+        assertTrue("应带联盟简称：" + engine.lastAlertTextForTest(),
+                engine.lastAlertTextForTest().contains("[818]"));
     }
 }

@@ -403,16 +403,64 @@ public final class WatchPointEngine {
             new java.util.concurrent.ConcurrentHashMap<>();
     /** 联盟 aid → 联盟全名（保护更新文案用；来自地图王城/要塞对象的 aname）。 */
     private final Map<Long, String> allianceNames = new java.util.concurrent.ConcurrentHashMap<>();
-    /** 联盟建筑缓存（2026-11-04）：坐标 → 总部/旗子/王城（归属 aid）。用于区分建设 vs 破坏。 */
+    /** 联盟建筑缓存（2026-11-04）：坐标 → 总部/旗子/王城/陷阱（归属 aid + 是否建成）。 */
     static final class Building {
         final String kind;
         final long aid;
+        /** 2026-11-11：是否已建成（map_alliance_flag/hall/trap.build_finish；王城默认已建成）。 */
+        final boolean buildFinish;
+
         Building(String kind, long aid) {
+            this(kind, aid, true);
+        }
+
+        Building(String kind, long aid, boolean buildFinish) {
             this.kind = kind;
             this.aid = aid;
+            this.buildFinish = buildFinish;
         }
     }
     private final Map<String, Building> buildingByPoint = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /** 2026-11-11：行军行为统一分类（驻防/建设/破坏/采集/撞矿）。 */
+    enum MarchActivity {
+        DEFEND("驻防"), BUILD("建设"), DESTROY("破坏"), GATHER("采集"), CLASH("撞矿");
+        final String label;
+        MarchActivity(String label) {
+            this.label = label;
+        }
+    }
+
+    /**
+     * 行军行为唯一分类口径（2026-11-11 用户口径）：
+     * <ol>
+     *   <li>己方联盟旗帜/总部（荒原·雪原）/王城：已建成 → 驻防，未建成 → 建设；</li>
+     *   <li>其他联盟旗帜/总部/王城：一律破坏；</li>
+     *   <li>熊坑陷阱：只能建设（不论建成与否），其他联盟陷阱 → 破坏；</li>
+     *   <li>矿点（仅采集 type=4）：已有采集者、或有更早出发且仍在途的同点行军 → 撞矿；否则 → 采集；</li>
+     *   <li>侦查（type=1）不参与；其他类型/目标返回 null（走既有 A1/A2 通道）。</li>
+     * </ol>
+     */
+    static MarchActivity classifyMarchActivity(long type, long ownerAid, Building bld,
+                                               boolean resourcePoint, boolean occupiedByOther,
+                                               boolean earlierInbound) {
+        if (type == 1L) return null;   // 侦查不算资源/驻防行为
+        if (bld != null && bld.kind != null) {
+            boolean own = ownerAid > 0L && bld.aid > 0L && bld.aid == ownerAid;
+            if ("陷阱".equals(bld.kind)) {
+                // 熊坑陷阱只可以建设，不可以驻防
+                return own ? MarchActivity.BUILD : MarchActivity.DESTROY;
+            }
+            if ("旗子".equals(bld.kind) || "总部".equals(bld.kind) || "王城".equals(bld.kind)) {
+                if (!own) return MarchActivity.DESTROY;
+                return bld.buildFinish ? MarchActivity.DEFEND : MarchActivity.BUILD;
+            }
+        }
+        if (resourcePoint && type == 4L) {
+            return (occupiedByOther || earlierInbound) ? MarchActivity.CLASH : MarchActivity.GATHER;
+        }
+        return null;
+    }
 
     /** 坐标 → 联盟建筑（总部/旗子/王城）；无返回 null。任意线程可调。 */
     public static Building buildingAt(int x, int y) {
@@ -425,6 +473,13 @@ public final class WatchPointEngine {
     static final long GATHER_POINT_TTL_MS = 20L * 60_000L;
     /** 采集点告警跳过诊断去重。 */
     private final Set<String> gatherSkipLogged = ConcurrentHashMap.newKeySet();
+    /** 2026-11-11：矿点坐标集合（含空闲矿点）→ 最后看到时刻；用于区分「矿点」与普通地面。 */
+    private final Map<String, Long> resourcePointAt = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 矿点坐标缓存有效期：超时未在扫描/推送中出现，视为不再作为矿点参与判定。 */
+    static final long RESOURCE_POINT_TTL_MS = 30L * 60_000L;
+    /** 2026-11-11：正在前往矿点的采集行军（point → marchId → [starttime, endtime]），撞矿判定用。 */
+    private final Map<String, Map<Long, long[]>> gatherInbound = new java.util.concurrent.ConcurrentHashMap<>();
+
 
     /** 监视目标跟踪（2026-11-02）：最后出现时刻 / 丢失时刻 / 上次搜索扫描时刻 / 最近被进攻时刻。 */
     private final Map<Long, Long> targetSeenAt = new ConcurrentHashMap<>();
@@ -1034,6 +1089,7 @@ public final class WatchPointEngine {
             lastPruneAt = now;
             com.carlos.vaultserver.alert.AlertRegistry.sweepDeduper(now);
             pruneTokenBuckets(engines, now);
+            sweepGatherInbound(now);   // 2026-11-11：清理过期矿点/在途采集行军缓存
             // 名单里已删除的目标，跟踪状态一并清掉（防 map 无限增长）
             if (targetSeenAt.size() > 32) {
                 targetSeenAt.keySet().removeIf(uid -> !isMonitoredUid(uid));
@@ -1239,6 +1295,8 @@ public final class WatchPointEngine {
         if (x <= 0 || y <= 0) return;
         long uid = asLong(res.get("uid"), 0L);
         long marchId = asLong(res.get("march_id"), 0L);
+        // 2026-11-11：无论是否有人采集，都登记「这里是矿点」，供采集/撞矿判定。
+        resourcePointAt.put(x + "," + y, System.currentTimeMillis());
         if (uid <= 0L && marchId <= 0L) {
             // 2026-11-04：空矿点必须清掉旧采集者，否则过期的「谁在采」会让后续任何经过该点的
             // 行军都被误报成「采集点被攻击」（生产大量盟友互打误报的来源之一）。
@@ -1350,11 +1408,29 @@ public final class WatchPointEngine {
             if (!o.isEmpty()) kind = "旗子";
         }
         if (kind == null) {
+            o = asMap(item.get("map_alliance_trap"));
+            if (!o.isEmpty()) kind = "陷阱";   // 熊坑陷阱（2026-11-11：只建设不驻防）
+        }
+        if (kind == null) {
             o = asMap(item.get("map_capital"));
             if (!o.isEmpty()) kind = "王城";
         }
         if (kind == null) return null;
-        return new Building(kind, asLong(o.get("aid"), 0L));
+        long aid = asLong(o.get("aid"), 0L);
+        if (aid <= 0L) aid = asLong(o.get("occupy_aid"), 0L);   // 旗帜/总部归属兼容 occupy_aid
+        // 2026-11-11：sproto 的 bool 字段解码为 Boolean（PortableSprotoCodec），必须单独判，
+        // 否则 false 经 asLong 会落到默认值 → 未建成旗帜被误判为「已建成」（驻防 vs 建设）。
+        boolean built = true;
+        Object bf = o.get("build_finish");
+        if (bf instanceof Boolean) {
+            built = (Boolean) bf;
+        } else if (bf != null) {
+            built = asLong(bf, 1L) != 0L;
+        } else {
+            long finishTs = asLong(o.get("build_finish_ts"), 0L);
+            if (finishTs > 0L) built = finishTs <= System.currentTimeMillis() / 1000L;
+        }
+        return new Building(kind, aid, built);
     }
 
     /** 解析对象坐标（point）；缺失/非法返回 null。 */
@@ -1402,6 +1478,78 @@ public final class WatchPointEngine {
             long now = System.currentTimeMillis();
             resByPoint.entrySet().removeIf(e -> now - e.getValue().atMs > 30L * 60_000L);
         }
+    }
+
+    // ---------------- 2026-11-11：采集/撞矿判定辅助（按坐标 ±2 容错） ----------------
+
+    /** 目标点附近是否有矿点（含空闲矿点）。 */
+    boolean isResourcePointNear(int x, int y) {
+        long now = System.currentTimeMillis();
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dy = -2; dy <= 2; dy++) {
+                Long at = resourcePointAt.get((x + dx) + "," + (y + dy));
+                if (at != null && now - at <= RESOURCE_POINT_TTL_MS) return true;
+            }
+        }
+        return false;
+    }
+
+    /** 目标矿点是否已被其他行军采集（排除当前行军自己的记录）。 */
+    boolean resourceOccupiedByOther(int x, int y, long marchId) {
+        long now = System.currentTimeMillis();
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dy = -2; dy <= 2; dy++) {
+                ResPoint rp = resByPoint.get((x + dx) + "," + (y + dy));
+                if (rp == null || rp.uid <= 0L) continue;
+                if (now - rp.atMs > GATHER_POINT_TTL_MS) continue;   // 人已走
+                if (rp.marchId > 0L && rp.marchId == marchId) continue;   // 就是本条（重放）
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** 是否有更早出发、仍在途的其他行军前往同一矿点。 */
+    boolean hasEarlierInbound(int x, int y, long marchId, long starttime, long now) {
+        if (starttime <= 0L) return false;
+        // 2026-11-11：与 cityNear/建筑一致按 ±2 容错——同矿点的两条行军 endpoint 可能差 1–2 格。
+        for (int dx = -2; dx <= 2; dx++) {
+            for (int dy = -2; dy <= 2; dy++) {
+                Map<Long, long[]> m = gatherInbound.get((x + dx) + "," + (y + dy));
+                if (m == null) continue;
+                for (Map.Entry<Long, long[]> e : m.entrySet()) {
+                    if (e.getKey() == marchId) continue;
+                    long[] v = e.getValue();
+                    if (v == null || v.length < 2) continue;
+                    if (v[1] <= now) continue;          // 已到达/过期
+                    if (v[0] > 0L && v[0] < starttime) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /** 记录一条正在前往矿点的采集行军（同 marchId 覆盖；过期清理）。 */
+    void rememberGatherInbound(int x, int y, long marchId, long starttime, long endtime) {
+        if (x <= 0 || y <= 0 || marchId <= 0L) return;
+        String key = x + "," + y;
+        Map<Long, long[]> m = gatherInbound.computeIfAbsent(key,
+                k -> new java.util.concurrent.ConcurrentHashMap<>());
+        m.put(marchId, new long[]{starttime, endtime});
+        if (gatherInbound.size() > 20000) {
+            sweepGatherInbound(System.currentTimeMillis());
+        }
+    }
+
+    /** 清理已到达/过期的在途采集行军（主循环 60s prune 调用）。 */
+    void sweepGatherInbound(long now) {
+        long nowSec = now / 1000L;
+        for (Map.Entry<String, Map<Long, long[]>> e : gatherInbound.entrySet()) {
+            e.getValue().entrySet().removeIf(en -> en.getValue() == null
+                    || en.getValue().length < 2 || en.getValue()[1] <= nowSec - 60L);
+            if (e.getValue().isEmpty()) gatherInbound.remove(e.getKey(), e.getValue());
+        }
+        resourcePointAt.entrySet().removeIf(en -> now - en.getValue() > RESOURCE_POINT_TTL_MS);
     }
 
     /**
@@ -1585,11 +1733,11 @@ public final class WatchPointEngine {
     private volatile long unmatchedLogAt;
 
     /**
-     * 2026-11-11：按坐标找联盟建筑（旗子/总部/王城/要塞），容忍 ±2 格。
+     * 2026-11-11：按坐标找联盟建筑（旗子/总部/王城/陷阱），容忍 ±2 格。
      *
      * <p>A1 敌情的“目标”不一定是城：驻防/增援到联盟旗子、总部时，目标坐标附近没有
-     * map_city 城对象（建筑走 {@code map_alliance_flag/hall/capital}），只查 cityNear 会
-     * 永远显示“（未知）”。这里在城未命中时再按建筑缓存兜底。
+     * map_city 城对象（建筑走 {@code map_alliance_flag/hall/capital/trap}），只查 cityNear 会
+     * 永远显示“（未知）”。这里在城未命中时再按建筑缓存兜底；行军行为分类也复用它。
      */
     private Building nearBuilding(int x, int y) {
         if (x <= 0 || y <= 0) return null;
@@ -1621,8 +1769,14 @@ public final class WatchPointEngine {
                         target != null ? " → 城 uid " + target.uid + " " + nickOf(target)
                                 : targetBld != null ? " → " + targetBld.kind + " aid " + targetBld.aid
                                 : "，按未知发送");
-                sendOutgoing(p.alertKey, p.owner, p.type, p.ex, p.ey, p.endtime, p.troops,
-                        cityByUid.get(p.owner), target, targetBld);
+                if (target == null && targetBld != null) {
+                    // 建筑目标：与 onMarch 入口走同一分类，避免「缓存命中推资源·破坏、
+                    // 补查命中推 A1 联盟旗子」的不一致；分类不适用时回落 A1 建筑文案。
+                    marchActivityAlertForProbe(p, targetBld);
+                } else {
+                    sendOutgoing(p.alertKey, p.owner, p.type, p.ex, p.ey, p.endtime, p.troops,
+                            cityByUid.get(p.owner), target, targetBld);
+                }
             }
             return;
         }
@@ -1706,11 +1860,22 @@ public final class WatchPointEngine {
         // 2026-11-02：采集行军（type=4）本身就是「这个点在采」的证据 → 记录采集人，供采集点被攻击告警用
         // 2026-11-04 用户口径：监视目标资源类行为（采集/建设/破坏），每人 5 分钟前 3 条。
         if (type == 4L && marchState == 2L) {
-            recordResource(ex, ey, owner,
-                    asLong(asMap(m.get("collect")).get("target_aid"), asLong(m.get("aid"), 0L)), id);
+            // 2026-11-11：采集/撞矿统一判定——先看目标矿点是否已被占用、或有更早出发仍在途的行军；
+            // 判定完再记录本条（顺序不能反，否则会把自己算成「已占用」）。
+            long starttime = asLong(m.get("starttime"), 0L);
+            long nowMs = System.currentTimeMillis();
+            long collectAid = asLong(asMap(m.get("collect")).get("target_aid"), asLong(m.get("aid"), 0L));
+            // 采集行军抵达的坐标本身就是矿点证据（即使扫描缓存还没收录该点）
+            resourcePointAt.put(ex + "," + ey, nowMs);
+            MarchActivity act = classifyMarchActivity(type, 0L, null, true,
+                    resourceOccupiedByOther(ex, ey, id),
+                    hasEarlierInbound(ex, ey, id, starttime, nowMs / 1000L));
+            recordResource(ex, ey, owner, collectAid, id);
+            rememberGatherInbound(ex, ey, id, starttime, endtime);
             if (ctx.kind == Kind.MONITOR && isMonitoredUid(owner) && ctx.rect.contains(sx, sy)
                     && !(sx == ex && sy == ey)) {
-                maybeResourceAlert(owner, id, "采集", ex, ey, endtime, troopsOf(m));
+                maybeResourceAlert(owner, id,
+                        act == null ? MarchActivity.GATHER.label : act.label, ex, ey, endtime, troopsOf(m));
             }
             return;
         }
@@ -1744,9 +1909,17 @@ public final class WatchPointEngine {
                 return;
             }
             // 资源类：按目标归属区分「建设(自己/同阵营)」与「破坏(敌对/中立)」；采集已在上方处理
-            String resBeh = resourceBehavior(m, type, ownerAid, ex, ey);
-            if (resBeh != null) {
-                maybeResourceAlert(owner, id, resBeh, ex, ey, endtime, troopsOf(m));
+            // 2026-11-11：旗帜/总部（荒原·雪原）/王城/陷阱统一分类（己方建成驻防、未建成建设；
+            // 其他联盟一律破坏；熊坑陷阱只建设不驻防）。矿点采集/撞矿在上方 type=4 分支处理。
+            Building tb = nearBuilding(ex, ey);
+            MarchActivity marchAct = classifyMarchActivity(type, ownerAid, tb,
+                    isResourcePointNear(ex, ey), false, false);
+            if (marchAct == null && isAllianceBuildingAttack(m)) {
+                // 帧内明确标记「攻击联盟建筑」但目标建筑暂不在缓存 → 仍判破坏（不丢告警）
+                marchAct = MarchActivity.DESTROY;
+            }
+            if (marchAct != null) {
+                maybeResourceAlert(owner, id, marchAct.label, ex, ey, endtime, troopsOf(m));
                 return;
             }
             // A1 情报：侦查 / 驻防·增援(含援助 type6) / 发起集结（统一 5 分钟前 3 条）
@@ -2215,12 +2388,32 @@ public final class WatchPointEngine {
                 FileLog.warn("[{}] 敌情补查积压 {}ms 才处理 ({},{})", LOG,
                         String.valueOf(now - p.createdAt), String.valueOf(p.ex), String.valueOf(p.ey));
             }
-            sendOutgoing(p.alertKey, p.owner, p.type, p.ex, p.ey, p.endtime, p.troops,
-                    cityByUid.get(p.owner), target, targetBld);
+            if (target == null && targetBld != null) {
+                marchActivityAlertForProbe(p, targetBld);
+            } else {
+                sendOutgoing(p.alertKey, p.owner, p.type, p.ex, p.ey, p.endtime, p.troops,
+                        cityByUid.get(p.owner), target, targetBld);
+            }
             FileLog.info("[{}] 敌情补查超时 ({},{}) → {}", LOG,
                     String.valueOf(p.ex), String.valueOf(p.ey),
                     (target != null || targetBld != null) ? "回包迟到命中" : "按未知发送");
         }
+    }
+
+    /**
+     * 2026-11-11：补查命中建筑后按入口同一口径分类（驻防/建设/破坏）；
+     * 分类不适用（如侦查 type=1）时回落到 A1 建筑文案（[简称]联盟旗子/总部/王城）。
+     */
+    private void marchActivityAlertForProbe(PendingA1 p, Building bld) {
+        City ownerCity = cityByUid.get(p.owner);
+        long ownerAid = ownerCity == null ? 0L : ownerCity.aid;
+        MarchActivity act = classifyMarchActivity(p.type, ownerAid, bld, false, false, false);
+        if (act != null) {
+            maybeResourceAlert(p.owner, p.marchId, act.label, p.ex, p.ey, p.endtime, p.troops);
+            return;
+        }
+        sendOutgoing(p.alertKey, p.owner, p.type, p.ex, p.ey, p.endtime, p.troops,
+                ownerCity, null, bld);
     }
 
     /**
