@@ -470,7 +470,9 @@ public final class BootstrapBatchRunner {
         // 注意：不含「等待完成」——MANUAL 文案「需要等待完成，请开启钻石即时升级」属于需要
         // 人工改配置才能推进的状态，必须立即失败暴露出来，不能当等待类空等。
         for (String kw : new String[]{"资源或道具不足", "正在建造", "正在升级",
-                "等待建筑与队列", "等待同步", "没有空闲建筑队列", "等待资源"}) {
+                "等待建筑与队列", "等待同步", "没有空闲建筑队列", "等待资源",
+                // 家具达建筑等级上限/队列未解锁：升级建筑后自愈，属正常等待（2026-11-11 实测）
+                "已达当前建筑等级上限", "队列尚未解锁"}) {
             if (reason.contains(kw)) return true;
         }
         return false;
@@ -496,6 +498,7 @@ public final class BootstrapBatchRunner {
         long deadline = System.currentTimeMillis() + timeoutMillis();
         int round = 0;
         int idleRounds = 0;
+        int lastBuildingRound = 0;
         while (true) {
             if (cancelled.get()) {
                 entry.state = AccountState.FAILED;
@@ -551,6 +554,12 @@ public final class BootstrapBatchRunner {
                         String.valueOf(service.state().busyBuildings()),
                         String.valueOf(service.state().queueMapForTest()),
                         String.valueOf(service.state().buildingLevels().size()));
+                Map<String, Object> view = service.status();
+                FileLog.warn("起号轮{} blocked={} 剩余动作={} 消息={}", String.valueOf(round),
+                        String.valueOf(view.get("blockedReason")),
+                        String.valueOf(view.get("remainingSteps") instanceof java.util.List
+                                ? ((java.util.List<?>) view.get("remainingSteps")).size() : -1),
+                        String.valueOf(view.get("message")));
             }
             if (round == 0) {
                 // 诊断：确认各类推送是否到齐（缺哪类就补哪类合成）
@@ -592,6 +601,27 @@ public final class BootstrapBatchRunner {
             long furnace = service.state().furnaceLevel();
             int started = (int) com.carlos.vault.wjdr.protocol.ProtocolValueSupport
                     .number(summary.get("started"));
+            if (round < 5) {
+                // 逐动作诊断：看清 runUntil 内部每个动作的 status/message
+                StringBuilder sb = new StringBuilder();
+                Object results = summary.get("results");
+                if (results instanceof java.util.List) {
+                    int i = 0;
+                    for (Object r : (java.util.List<?>) results) {
+                        if (i++ >= 3) break;
+                        if (r instanceof Map) {
+                            Map<?, ?> m = (Map<?, ?>) r;
+                            sb.append("[status=").append(m.get("status"))
+                              .append(" msg=").append(String.valueOf(m.get("message")).length() > 60
+                                      ? String.valueOf(m.get("message")).substring(0, 60)
+                                      : m.get("message"))
+                              .append("] ");
+                        }
+                    }
+                }
+                FileLog.warn("起号轮{} 动作明细 started={} {}", String.valueOf(round),
+                        String.valueOf(started), sb.toString());
+            }
             if (furnace >= target) {
                 entry.state = AccountState.SUCCESS;
                 return;
@@ -625,6 +655,19 @@ public final class BootstrapBatchRunner {
                 return;
             }
             idleRounds = 0;
+            // 假进展防护（2026-11-11 真实轮）：辅佐动作（领资源/领奖/委任）成功也会让 runUntil
+            // 返回 started>0，但熔炉可能原地不动。只有带 step 的才是建筑/家具动作；
+            // 连续 24 轮（约 2 分钟）无建筑动作 → 视为停滞，避免 120 分钟空转。
+            if (summary.containsKey("step")) {
+                lastBuildingRound = round;
+            } else if (round - lastBuildingRound > 24) {
+                entry.state = AccountState.FAILED;
+                entry.error = "起号停滞：连续 " + (round - lastBuildingRound)
+                        + " 轮只有辅助动作，建筑无推进（熔炉 " + furnace + " 级）";
+                entry.steps.add("失败：" + entry.error);
+                failCount++;
+                return;
+            }
             entry.steps.add("第 " + round + " 轮升级 " + started + " 步（熔炉 " + furnace + " 级）");
             try {
                 roundSleeper.sleep(ROUND_INTERVAL_MILLIS);

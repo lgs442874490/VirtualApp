@@ -292,6 +292,12 @@ public final class BootstrapService {
         return state;
     }
     private BootstrapConfig config = BootstrapConfig.defaults();
+    /** 本地家具等级覆盖（跨轮保留：154「已存在」/153「已达上限」标记，避免重复规划）。 */
+    private final java.util.Map<String, Long> furnitureOverrides = new java.util.concurrent.ConcurrentHashMap<>();
+    /** 英雄动作连发计数（对齐新版 yieldTurn：每 10 次让出一次，避免招募占满执行槽）。 */
+    private int heroBurst;
+    /** 上次已领取的产出资源签名（避免同一批资源反复领取造成假进展）。 */
+    private String lastProducedSignature = "";
     /** 已尝试过的兑换码（永久失败或已兑换，避免重复请求）。 */
     private final Set<String> attemptedCdkeys = java.util.concurrent.ConcurrentHashMap.newKeySet();
     /** 改名成功缓存（对齐原版 renamedRoles：205 视为成功，避免重复请求）。 */
@@ -332,6 +338,14 @@ public final class BootstrapService {
     /** 注入 loaddata 全量内容（对齐原版注册表自动同步；单号版由会话层手动喂）。 */
     public void syncLoadData(Map<String, Object> loadContent) {
         this.state = BootstrapState.fromLoadData(loadContent);
+        // 重放本地乐观覆盖（2026-11-11 真实轮）：游戏侧对「家具已存在(154)」「家具已达建筑等级上限(153)」
+        // 的响应不会改变推送里的家具数据，若每轮重建后不重放，planner 会反复规划同一动作形成死循环。
+        for (Map.Entry<String, Long> e : furnitureOverrides.entrySet()) {
+            long[] key = parseFurnitureKey(e.getKey());
+            if (key != null) {
+                state.markedFurniture(key[0], key[1], e.getValue());
+            }
+        }
     }
 
     /** 当前状态快照。 */
@@ -622,12 +636,33 @@ public final class BootstrapService {
         // 154：家具服务端已存在（本地未同步）→ 标记 1 级继续，不算失败（新版同语义）
         if (code == 154 && action.kind() == ActionKind.CREATE_FURNITURE) {
             state.markedFurniture(action.buildingId(), action.furnitureId(), 1L);
+            furnitureOverrides.put(furnitureKey(action.buildingId(), action.furnitureId()), 1L);
             // 154 时服务端没有可用实例 id：本地不记录实例（furnitureInstanceId 会按公式兜底）
             Map<String, Object> exists = actionResult("STARTED",
                     action.buildingName() + " 的家具 " + action.furnitureId() + " 服务端已存在，按 1 级继续");
             exists.put("step", stepView(action));
             exists.put("responseCode", 154);
             return exists;
+        }
+        // 153：家具已达当前建筑等级上限（新版 FURNITURE_MAX_LEVEL）→ 标记"已达上限"后等待建筑升级，
+        // 否则 planner 会每轮重复规划同一家具升级，形成死循环（实测熔炉卡 3 级 600+ 轮）。
+        if (code == 153) {
+            long cap = Math.max(0L, state.level(action.buildingId()));
+            for (Cost req : catalog.furnitureRequirement(action.buildingId(), cap)) {
+                if (req.id() == action.furnitureId()) {
+                    cap = Math.max(cap, req.amount());
+                }
+            }
+            if (cap > 0L) {
+                state.markedFurniture(action.buildingId(), action.furnitureId(), cap);
+                furnitureOverrides.put(furnitureKey(action.buildingId(), action.furnitureId()), cap);
+            }
+            Map<String, Object> capped = actionResult("WAITING",
+                    action.buildingName() + " 的家具 " + action.furnitureId()
+                            + " 已达当前建筑等级上限，等待升级 " + action.buildingName());
+            capped.put("step", stepView(action));
+            capped.put("errorCode", code);
+            return capped;
         }
         // 77：建造队列尚未解锁 → 等待，换其它空闲队列
         if (code == 77) {
@@ -893,9 +928,18 @@ public final class BootstrapService {
             return false;
         }
         if (!retryAllowed("produced")) return false;
+        // 去重（2026-11-11 真实轮教训）：游戏对「产出资源」的成功响应不会清零该计数，
+        // 若每轮都领就会反复成功（实测 104 次/120 分钟），被 runUntil 当成"有进展"而永不判停滞，
+        // 其余建筑动作被挤掉、熔炉卡在 3 级。故：同一批产出资源只领一次（按 id:count 签名去重）。
+        String signature = produced.toString();
+        if (signature.equals(lastProducedSignature)) {
+            markRetry("produced", 600_000L);
+            return false;
+        }
         try {
             request(PRODUCED_NEED_UPDATE, Map.of());
-            markRetry("produced", 60_000L);
+            lastProducedSignature = signature;
+            markRetry("produced", 600_000L);
             FileLog.info("[起号] 已领取产出资源 {} 项：{}",
                     String.valueOf(produced.size()), String.valueOf(produced));
             return true;
@@ -1033,6 +1077,13 @@ public final class BootstrapService {
         if (!state.heroReady()) {
             return null;
         }
+        // yieldTurn（对齐新版 BootstrapHeroService.yieldTurn）：英雄招募/升星/升级每轮都能成功，
+        // 若不定期让出，runUntil 会被英雄动作占满、建筑永远排不上（实测熔炉卡 3 级）。
+        if (heroBurst >= 10) {
+            heroBurst = 0;
+            return null;
+        }
+        heroBurst++;
         // 1) 新手引导的首次史诗招募（免费 1 次）
         if (!state.epicSearched()) {
             try {
@@ -1320,6 +1371,21 @@ public final class BootstrapService {
                 result.put("reason", "领取异常：" + String.valueOf(e.getMessage()));
             }
             return result;
+        }
+    }
+
+    private static String furnitureKey(long buildingId, long furnitureId) {
+        return buildingId + ":" + furnitureId;
+    }
+
+    private static long[] parseFurnitureKey(String key) {
+        if (key == null) return null;
+        int idx = key.indexOf(':');
+        if (idx <= 0 || idx + 1 >= key.length()) return null;
+        try {
+            return new long[]{Long.parseLong(key.substring(0, idx)), Long.parseLong(key.substring(idx + 1))};
+        } catch (NumberFormatException e) {
+            return null;
         }
     }
 
