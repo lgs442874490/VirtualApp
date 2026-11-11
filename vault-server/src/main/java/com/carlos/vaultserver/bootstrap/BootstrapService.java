@@ -786,8 +786,9 @@ public final class BootstrapService {
         long diamonds = Math.max(0L, requestLong("diamond"));
         if (retryAllowed("shop:diag")) {
             markRetry("shop:diag", 120_000L);
-            FileLog.info("[起号] 商店诊断：goods={} 钻石={} 缺口(肉/木/煤/铁)={}/{}/{}/{}",
+            FileLog.info("[起号] 商店诊断：goods={} 钻石(res101)={} 背包钻石道具={} 缺口(肉/木/煤/铁)={}/{}/{}/{}",
                     String.valueOf(goodsByItem), String.valueOf(diamonds),
+                    String.valueOf(diamondItemsInBag()),
                     String.valueOf(needMeat), String.valueOf(needWood),
                     String.valueOf(needCoal), String.valueOf(needIron));
         }
@@ -939,17 +940,32 @@ public final class BootstrapService {
      *
      * @return 打开的道具种类数
      */
+    /** 背包里现存的钻石道具（id → count），诊断用。 */
+    Map<Long, Long> diamondItemsInBag() {
+        LinkedHashMap<Long, Long> out = new LinkedHashMap<>();
+        for (long id : DIAMOND_ITEM_IDS) {
+            long c = Math.max(0L, state.itemCount(id));             // 对齐新版 itemCount
+            if (c > 0L) out.put(id, c);
+        }
+        return out;
+    }
+
     int claimBackpackDiamonds() {
         int used = 0;
         for (long itemId : DIAMOND_ITEM_IDS) {
-            long count = Math.max(0L, state.resourceCount(itemId));
+            long count = Math.max(0L, state.itemCount(itemId));     // 对齐新版 itemCount
             if (count <= 0L) continue;
             try {
-                request("req_use_item", Map.of("id", itemId,
+                GameMessage rsp = request("req_use_item", Map.of("id", itemId,
                         "count", (int) Math.min(count, 9999L), "extra", Map.of()));
+                Map<String, Object> content = rsp == null || rsp.getContent() == null
+                        ? Map.of() : rsp.getContent();
                 used++;
-                FileLog.info("[起号] 已打开背包钻石道具 itemId={} count={}",
-                        String.valueOf(itemId), String.valueOf(count));
+                // 诊断：确认 use_item 真实返回（新版按成功处理；实测需核对是否给出钻石增量）
+                FileLog.info("[起号] 已打开背包钻石道具 itemId={} count={} 响应={}",
+                        String.valueOf(itemId), String.valueOf(count),
+                        String.valueOf(content).length() > 200
+                                ? String.valueOf(content).substring(0, 200) : String.valueOf(content));
             } catch (Exception e) {
                 FileLog.info("[起号] 打开钻石道具失败 itemId={}：{}",
                         String.valueOf(itemId), String.valueOf(e.getMessage()));

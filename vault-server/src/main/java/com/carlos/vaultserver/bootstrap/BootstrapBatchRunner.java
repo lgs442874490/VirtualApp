@@ -573,6 +573,9 @@ public final class BootstrapBatchRunner {
                             raw == null ? "null" : String.valueOf(raw.keySet()),
                             text.length() > 300 ? text.substring(0, 300) : text);
                 }
+                FileLog.info("起号首轮背包物品明细(>=100000)：{} 资源(<100000)：{}",
+                        String.valueOf(service.state().backpackItemMap()),
+                        String.valueOf(service.state().resourceMap()));
                 FileLog.info("起号首轮推送：survivors={} heroes={} guides={} adventure={} 背包物品={}",
                         String.valueOf(service.state().survivors().size()),
                         String.valueOf(service.state().heroLevels().size()),

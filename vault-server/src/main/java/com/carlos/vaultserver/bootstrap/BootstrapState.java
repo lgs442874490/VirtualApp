@@ -42,6 +42,8 @@ public final class BootstrapState {
     private final Map<Long, Map<Long, Long>> furniture = new LinkedHashMap<>();
     /** 背包资源/道具数量（id → 数量）。 */
     private final Map<Long, Long> resources = new LinkedHashMap<>();
+    /** 背包物品（id >= 100000，对齐新版 BehemothAccountState.backpackItems）。 */
+    private final Map<Long, Long> backpackItems = new LinkedHashMap<>();
     /** 角色 uid（loaddata 顶层深找；缺失 0）。 */
     private long roleUid;
     /** 角色名称（loaddata 顶层深找；缺失空串）。 */
@@ -161,6 +163,19 @@ public final class BootstrapState {
             long count = Math.max(0L, number(entry.get("count")));
             if (id > 0L && count > 0L) producedResources.put(id, count);
         }
+    }
+
+    /** 背包物品数量（对齐新版 itemCount：物品表优先，回退资源表）。 */
+    public long itemCount(long itemId) {
+        Long v = backpackItems.get(itemId);
+        if (v != null && v > 0L) return v;
+        Long r = resources.get(itemId);
+        return r == null ? 0L : Math.max(0L, r);
+    }
+
+    /** 背包物品全量（只读）。 */
+    public Map<Long, Long> backpackItemMap() {
+        return Map.copyOf(backpackItems);
     }
 
     /** 待领取产出资源（只读）。 */
@@ -550,11 +565,6 @@ public final class BootstrapState {
         return resources.getOrDefault(id, 0L);
     }
 
-    /** 背包物品数量（与资源同表：loaddata 背包条目 id → 数量，语义同 {@link #resourceCount}）。 */
-    public long itemCount(long itemId) {
-        return resourceCount(itemId);
-    }
-
     /** 背包物品是否已同步（原版 backpackInitialized 语义：资源包使用的前置门）。 */
     public boolean backpackInitialized() {
         return backpackReady;
@@ -639,6 +649,11 @@ public final class BootstrapState {
      */
     public void markedItemUsed(long itemId, long count) {
         if (itemId <= 0L || count <= 0L) return;
+        // 物品与资源分表后（对齐新版 BehemothAccountState），背包物品要从 backpackItems 扣减
+        if (backpackItems.containsKey(itemId)) {
+            backpackItems.computeIfPresent(itemId, (ignored, have) -> Math.max(0L, have - count));
+            return;
+        }
         resources.computeIfPresent(itemId, (ignored, have) -> Math.max(0L, have - count));
     }
 
@@ -740,7 +755,10 @@ public final class BootstrapState {
                         ? number(e.getValue())
                         : positive(number(nested.get("count")),
                                 positive(number(nested.get("num")), number(nested.get("amount"))));
-                if (amount > 0L) resources.merge(id, amount, Long::sum);
+                if (amount > 0L) {
+                    if (id >= 100000L) backpackItems.merge(id, amount, Long::sum);
+                    else resources.merge(id, amount, Long::sum);
+                }
             }
             return;
         }
@@ -748,7 +766,14 @@ public final class BootstrapState {
             long id = positive(number(entry.get("id")), number(entry.get("res_id")));
             long amount = positive(number(entry.get("count")),
                     positive(number(entry.get("num")), number(entry.get("amount"))));
-            if (id > 0L && amount > 0L) resources.merge(id, amount, Long::sum);
+            if (id <= 0L || amount <= 0L) continue;
+            // 对齐新版 BehemothAccountState：id >= 100000 是背包物品（backpackItems），
+            // 否则是资源（resources）。混在一起会让「钻石道具数量」读到 12 万这种错值。
+            if (id >= 100000L) {
+                backpackItems.merge(id, amount, Long::sum);
+            } else {
+                resources.merge(id, amount, Long::sum);
+            }
         }
     }
 
