@@ -791,6 +791,11 @@ public final class BootstrapService {
             }
         }
         result.put("backpack", useBackpackResourcePacks(costs));
+        // 对齐新版：资源紧时把固定资源箱全开（背包里常有囤积的兑换码/任务奖励箱）
+        int allOpened = useAllFixedPacks();
+        if (allOpened > 0) {
+            result.put("allPacksOpened", allOpened);
+        }
         // 真实轮（2026-11-10）：背包无资源包时，若开启 buyShopResources 则用钻石从统帅商店补缺资源
         if (cfg.buyShopResources()) {
             try {
@@ -1061,6 +1066,64 @@ public final class BootstrapService {
             }
         }
         return used;
+    }
+
+    /**
+     * 开光背包里所有固定资源箱（对齐新版 DailyBackpackResourceSupport.useAllFixedPacks）。
+     *
+     * <p>51 补偿时只按「当前动作缺口」开箱不够——登号后背包里往往囤着大量资源箱
+     * （兑换码/任务/活动奖励），它们不会因为某一次升级的缺口被全部开掉。
+     * 新版在资源紧张时会一次性开光固定箱，本方法照此实现。
+     *
+     * @return 本轮开箱次数
+     */
+    int useAllFixedPacks() {
+        if (!state.backpackInitialized()) return 0;
+        int opened = 0;
+        for (Map.Entry<Long, Long> e : state.backpackItemMap().entrySet()) {
+            long itemId = e.getKey();
+            long stock = e.getValue() == null ? 0L : e.getValue();
+            if (stock <= 0L) continue;
+            ResourcePack pack = fixedPackOf(itemId);
+            if (pack == null) continue;
+            long useCount = Math.min(stock, 999_999L);
+            try {
+                request(USE_ITEM_PROTOCOL, Map.of("id", itemId, "count", useCount));
+                state.markedItemUsed(itemId, useCount);
+                opened++;
+                FileLog.info("[起号] 已开固定资源箱 itemId={} x{} → 资源{}（等推送确认）",
+                        String.valueOf(itemId), String.valueOf(useCount),
+                        String.valueOf(pack.resourceId()));
+            } catch (ProtocolException ex) {
+                FileLog.warn("[起号] 开固定资源箱被拒绝 itemId={} code={}",
+                        String.valueOf(itemId), String.valueOf(ex.code()));
+            } catch (Exception ex) {
+                FileLog.warn("[起号] 开固定资源箱失败 itemId={}：{}",
+                        String.valueOf(itemId), String.valueOf(ex.getMessage()));
+            }
+        }
+        return opened;
+    }
+
+    /** 固定资源箱 id → ResourcePack（100011-100045 / 100111-100145 段），非固定箱返回 null。 */
+    private static ResourcePack fixedPackOf(long itemId) {
+        long[] normalFirst = {100011L, 100021L, 100031L, 100041L};
+        long[] safeFirst = {100111L, 100121L, 100131L, 100141L};
+        long[] resourceIds = {102L, 103L, 104L, 105L};
+        long[] amounts = {100L, 1000L, 10000L, 100000L, 1000000L};
+        for (int r = 0; r < resourceIds.length; r++) {
+            for (int tier = 0; tier < amounts.length; tier++) {
+                if (itemId == normalFirst[r] + tier) {
+                    return new ResourcePack(itemId, resourceLabel(resourceIds[r]) + amounts[tier],
+                            resourceIds[r], amounts[tier], 1, false);
+                }
+                if (itemId == safeFirst[r] + tier) {
+                    return new ResourcePack(itemId, resourceLabel(resourceIds[r]) + "安全" + amounts[tier],
+                            safeResourceId(resourceIds[r]), amounts[tier], 1, false);
+                }
+            }
+        }
+        return null;
     }
 
     /**
@@ -1788,9 +1851,12 @@ public final class BootstrapService {
                             pack.itemId(), exception.code());
                     continue;
                 }
-                FileLog.info("[起号] 已开资源箱 itemId={} x{} → 资源{}", String.valueOf(pack.itemId()), String.valueOf(useCount), String.valueOf(pack.resourceId()));
+                FileLog.info("[起号] 已开资源箱 itemId={} x{} → 资源{}（等推送确认到账）",
+                        String.valueOf(pack.itemId()), String.valueOf(useCount),
+                        String.valueOf(pack.resourceId()));
+                // 只扣物品，不乐观加资源：对齐新版 awaitResourceItemUse ——
+                // 资源必须由游戏推送确认，否则本地误判"资源够"却仍被 51 拒绝。
                 state.markedItemUsed(pack.itemId(), useCount);
-                state.markedResourceGained(pack.resourceId(), useCount * pack.amount());
                 deficit -= useCount * pack.amount();
                 LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
                 entry.put("itemId", pack.itemId());
