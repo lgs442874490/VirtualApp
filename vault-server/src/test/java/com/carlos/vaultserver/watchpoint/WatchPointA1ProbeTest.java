@@ -72,6 +72,7 @@ public class WatchPointA1ProbeTest {
         s.monitorTargets = new ArrayList<>();
         s.monitorTargets.add(new WatchPointStore.Target(MONITOR_UID, "监视目标", MONITOR_X, MONITOR_Y));
         s.protectRects = new ArrayList<>();
+        s.aidLabels.put(TARGET_AID, "818");
         return s;
     }
 
@@ -164,5 +165,49 @@ public class WatchPointA1ProbeTest {
         assertTrue("超时仍应发送（目标未知）：" + engine.lastAlertTextForTest(),
                 engine.lastAlertTextForTest().contains("（未知）"));
         assertEquals("超时后队列归零", 0, engine.pendingA1CountForTest());
+    }
+
+    /** 喂一座联盟旗子建筑到指定 session 的 mapobjs 回包（写入 buildingByPoint）。 */
+    private static void feedBuilding(WatchPointEngine engine, int session, int x, int y) {
+        Map<String, Object> flag = new LinkedHashMap<>();
+        flag.put("aid", TARGET_AID);
+        Map<String, Object> obj = new LinkedHashMap<>();
+        obj.put("point", xy(x, y));
+        obj.put("map_alliance_flag", flag);
+        List<Object> datalist = new ArrayList<>();
+        datalist.add(obj);
+        Map<String, Object> content = new LinkedHashMap<>();
+        content.put("datalist", datalist);
+        content.put("end_flag", true);
+        engine.feedResponseForTest(session, "notify_world_mapobjs", content);
+    }
+
+    /** 目标建筑已在缓存（驻防到联盟旗子）：立即发送建筑描述，不再补查。 */
+    @Test
+    public void buildingTargetSendsImmediately() {
+        WatchPointEngine engine = new WatchPointEngine(null, store(), null, null);
+        prepare(engine);
+        feedBuilding(engine, MONITOR_SESSION, TARGET_X, TARGET_Y);
+        feedOutgoingMarch(engine);
+        assertTrue("建筑目标应立即发送：" + engine.lastAlertTextForTest(),
+                engine.lastAlertTextForTest().contains("联盟旗子"));
+        assertTrue("应带联盟简称：" + engine.lastAlertTextForTest(),
+                engine.lastAlertTextForTest().contains("[818]"));
+        assertEquals("建筑命中不补查", 0, engine.pendingA1CountForTest());
+    }
+
+    /** 目标不在缓存 → 补查回包只有建筑（不是城）：用建筑兜底，不显示「未知」。 */
+    @Test
+    public void probeBuildingFallback() {
+        WatchPointEngine engine = new WatchPointEngine(null, store(), null, null);
+        List<WjdrEngine> es = prepare(engine);
+        feedOutgoingMarch(engine);
+        assertEquals("先挂起等补查", 1, engine.pendingA1CountForTest());
+        int probeSession = ((FakeEngine) es.get(0)).lastProbeSession();
+        assertTrue(probeSession > 0);
+        feedBuilding(engine, probeSession, TARGET_X, TARGET_Y);
+        assertTrue("补查回包带建筑后应兜底：" + engine.lastAlertTextForTest(),
+                engine.lastAlertTextForTest().contains("联盟旗子"));
+        assertEquals("补查完成后队列归零", 0, engine.pendingA1CountForTest());
     }
 }
