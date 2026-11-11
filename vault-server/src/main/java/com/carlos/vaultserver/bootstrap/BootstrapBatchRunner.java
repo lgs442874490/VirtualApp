@@ -601,7 +601,7 @@ public final class BootstrapBatchRunner {
             long furnace = service.state().furnaceLevel();
             int started = (int) com.carlos.vault.wjdr.protocol.ProtocolValueSupport
                     .number(summary.get("started"));
-            if (round < 5) {
+            if (round < 5 || round % 12 == 0) {
                 // 逐动作诊断：看清 runUntil 内部每个动作的 status/message
                 StringBuilder sb = new StringBuilder();
                 Object results = summary.get("results");
@@ -657,10 +657,10 @@ public final class BootstrapBatchRunner {
             idleRounds = 0;
             // 假进展防护（2026-11-11 真实轮）：辅佐动作（领资源/领奖/委任）成功也会让 runUntil
             // 返回 started>0，但熔炉可能原地不动。只有带 step 的才是建筑/家具动作；
-            // 连续 24 轮（约 2 分钟）无建筑动作 → 视为停滞，避免 120 分钟空转。
+            // 连续 60 轮（约 5 分钟）无建筑动作 → 视为停滞，避免 120 分钟空转。
             if (summary.containsKey("step")) {
                 lastBuildingRound = round;
-            } else if (round - lastBuildingRound > 24) {
+            } else if (round - lastBuildingRound > 60) {
                 entry.state = AccountState.FAILED;
                 entry.error = "起号停滞：连续 " + (round - lastBuildingRound)
                         + " 轮只有辅助动作，建筑无推进（熔炉 " + furnace + " 级）";

@@ -933,13 +933,13 @@ public final class BootstrapService {
         // 其余建筑动作被挤掉、熔炉卡在 3 级。故：同一批产出资源只领一次（按 id:count 签名去重）。
         String signature = produced.toString();
         if (signature.equals(lastProducedSignature)) {
-            markRetry("produced", 600_000L);
+            markRetry("produced", 60_000L);
             return false;
         }
         try {
             request(PRODUCED_NEED_UPDATE, Map.of());
             lastProducedSignature = signature;
-            markRetry("produced", 600_000L);
+            markRetry("produced", 60_000L);
             FileLog.info("[起号] 已领取产出资源 {} 项：{}",
                     String.valueOf(produced.size()), String.valueOf(produced));
             return true;
