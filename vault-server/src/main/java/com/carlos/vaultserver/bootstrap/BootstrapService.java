@@ -703,6 +703,12 @@ public final class BootstrapService {
             return locked;
         }
         if (code == ITEM_NOT_ENOUGH) {
+            if (retryAllowed("res:diag")) {
+                markRetry("res:diag", 60_000L);
+                FileLog.info("[起号] 资源诊断：资源表={} 背包100xxx={}",
+                        String.valueOf(state.resourceMap()),
+                        String.valueOf(backpack100xxx()));
+            }
             StringBuilder sb = new StringBuilder();
             for (Cost c : action.costs()) {
                 sb.append("资源").append(c.id()).append("[需").append(c.amount())
@@ -1651,6 +1657,16 @@ public final class BootstrapService {
         }
     }
 
+    /** 背包里 100000-100999 段的物品（资源箱在这里，诊断用）。 */
+    private Map<Long, Long> backpack100xxx() {
+        LinkedHashMap<Long, Long> out = new LinkedHashMap<>();
+        for (Map.Entry<Long, Long> e : state.backpackItemMap().entrySet()) {
+            long id = e.getKey();
+            if (id >= 100000L && id < 101000L) out.put(id, e.getValue());
+        }
+        return out;
+    }
+
     private static String furnitureKey(long buildingId, long furnitureId) {
         return buildingId + ":" + furnitureId;
     }
@@ -1747,8 +1763,12 @@ public final class BootstrapService {
         if (!state.backpackInitialized()) {
             result.put("ready", false);
             result.put("message", "背包尚未同步，暂不使用资源包");
+            FileLog.info("[起号] 资源包跳过：背包尚未同步");
             return result;
         }
+        FileLog.info("[起号] 开箱诊断：costs={} 背包100xxx={}",
+                String.valueOf(costs.stream().map(c -> c.id() + "=" + c.amount()).toList()),
+                String.valueOf(backpack100xxx()));
         ArrayList<Map<String, Object>> used = new ArrayList<>();
         for (Cost cost : costs) {
             long deficit = cost.amount() - totalResourceCount(cost.id());
@@ -1766,6 +1786,7 @@ public final class BootstrapService {
                             pack.itemId(), exception.code());
                     continue;
                 }
+                FileLog.info("[起号] 已开资源箱 itemId={} x{} → 资源{}", String.valueOf(pack.itemId()), String.valueOf(useCount), String.valueOf(pack.resourceId()));
                 state.markedItemUsed(pack.itemId(), useCount);
                 state.markedResourceGained(pack.resourceId(), useCount * pack.amount());
                 deficit -= useCount * pack.amount();
@@ -2246,8 +2267,38 @@ public final class BootstrapService {
      */
     public LoginOutcome loginExisting(WjdrEngine engine, String fpid, String sdkToken,
                                       long serverId) throws Exception {
+        return loginExisting(engine, fpid, sdkToken, serverId, 0L);
+    }
+
+    /**
+     * 登录既有角色（可指定 uid 精确选择）。
+     *
+     * <p>真实轮（2026-11-11）：同一账号在同一区可以有 2 个角色，
+     * 不带 uid 时游戏会返回默认角色，导致起号跑到别的角色上（实测登录到 16 级老号而非新建角色）。
+     *
+     * @param targetUid 目标角色 uid；0 表示由服务端选默认角色
+     */
+    public LoginOutcome loginExisting(WjdrEngine engine, String fpid, String sdkToken,
+                                      long serverId, long targetUid) throws Exception {
         if (serverId <= 0L) {
             throw new IllegalArgumentException("请选择目标区服");
+        }
+        // 指定 uid 时优先：一次 loginauth 带 uid 直接定位该角色
+        if (targetUid > 0L) {
+            Map<String, Object> extra = new LinkedHashMap<>();
+            extra.put("uid", targetUid);
+            WjdrEngine.LoginResult pinned = engine.login(fpid, sdkToken, serverId, extra);
+            if (pinned.uid == targetUid) {
+                engine.close();
+                engine.applyIdentity(DeviceFingerprint.forRole(fpid, serverId, targetUid));
+                engine.initialize();
+                WjdrEngine.LoginResult relogin = engine.login(fpid, sdkToken, serverId, extra);
+                return new LoginOutcome(relogin.uid, relogin.serverId,
+                        relogin.authContent == null ? Map.of() : relogin.authContent, false,
+                        "已登录指定角色 uid=" + relogin.uid + describeServer(relogin.serverId));
+            }
+            throw new IllegalStateException("未能登录指定角色 uid=" + targetUid
+                    + "（服务端返回 uid=" + pinned.uid + "）" + describeServer(pinned.serverId));
         }
         // 既有角色：用 (fpid, 区服, uid) 派生的稳定指纹，同一角色每次登录都是"同一台设备"。
         // 注意：换指纹必须关连接 → 注入 → 重新 initialize+login，否则引擎处于未初始化态。

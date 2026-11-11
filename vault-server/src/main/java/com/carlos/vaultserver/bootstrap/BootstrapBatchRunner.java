@@ -145,6 +145,8 @@ public final class BootstrapBatchRunner {
         /** 关键步骤摘要（建号/轮次/入盟/成功文案；COW：批次线程 add 与 toView 迭代并发安全）。 */
         public final List<String> steps = new CopyOnWriteArrayList<>();
         public volatile long uid;
+        /** 指定要登录的角色 uid（同账号同区多角色时精确定位；0=由服务端选默认角色）。 */
+        public volatile long targetUid;
         public volatile long furnaceLevel;
 
         public AccountEntry(String fpid, String sdkToken, String encrypted, String label) {
@@ -206,11 +208,22 @@ public final class BootstrapBatchRunner {
             String fpid;
             String sdkToken;
             String encrypted = null;
+            long targetUid = 0L;
             if (line.indexOf('|') > 0) {
-                // 两段式 fpid|sdkToken（三段以上按第一段 fpid、其余拼接回 token）
+                // 两段式 fpid|sdkToken；可选 `#uid` 后缀精确指定角色（同账号同区多角色时用）
                 int sep = line.indexOf('|');
                 fpid = line.substring(0, sep).trim();
                 sdkToken = line.substring(sep + 1).trim();
+                int hash = sdkToken.indexOf('#');
+                if (hash > 0) {
+                    String tail = sdkToken.substring(hash + 1).trim();
+                    sdkToken = sdkToken.substring(0, hash).trim();
+                    try {
+                        targetUid = Long.parseLong(tail);
+                    } catch (NumberFormatException ignored) {
+                        targetUid = 0L;
+                    }
+                }
             } else {
                 try {
                     String[] parts = RegistrationService.parseEncrypted(line);
@@ -231,7 +244,9 @@ public final class BootstrapBatchRunner {
                 result.errors.add("第 " + lineNo + " 行：fpid " + fpid + " 重复已跳过");
                 continue;
             }
-            result.accounts.add(new AccountEntry(fpid, sdkToken, encrypted, ""));
+            AccountEntry entry = new AccountEntry(fpid, sdkToken, encrypted, "");
+            entry.targetUid = targetUid;
+            result.accounts.add(entry);
         }
         return result;
     }
@@ -398,7 +413,8 @@ public final class BootstrapBatchRunner {
             BootstrapService.LoginOutcome outcome;
             try {
                 outcome = service.createRole(session.engine,
-                        entry.fpid, entry.sdkToken, config.targetServerId(), config.roleName());
+                        entry.fpid, entry.sdkToken, config.targetServerId(),
+                        entry.targetUid, config.roleName());
                 entry.steps.add("建号成功 uid=" + outcome.uid());
             } catch (Exception createError) {
                 // 角色已存在时 is_create=true 会被游戏拒绝（真实轮 code=9）：回退普通登录进既有角色
@@ -406,7 +422,7 @@ public final class BootstrapBatchRunner {
                         String.valueOf(createError.getMessage()));
                 session.engine.initialize();   // 二次 loginauth 必须走全新连接
                 outcome = service.loginExisting(session.engine,
-                        entry.fpid, entry.sdkToken, config.targetServerId());
+                        entry.fpid, entry.sdkToken, config.targetServerId(), entry.targetUid);
                 entry.steps.add("已存在角色，直接登录 uid=" + outcome.uid());
             }
             entry.state = AccountState.RUNNING;
