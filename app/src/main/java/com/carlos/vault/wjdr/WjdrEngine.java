@@ -1141,14 +1141,17 @@ public class WjdrEngine {
         return v == null ? 0L : toLong(v);
     }
 
-    /** 登录载荷构建（包内可见：供 JVM 单测校验字段集合与指纹一致性）。 */
+    /**
+     * 登录载荷构建（旧 3 参重载，等价 roleUid=0）：即发现式/legacy 路径，
+     * 设备取每引擎临时设备（见 4 参重载），不进入角色维度确定性派生。
+     */
     Map<String, Object> buildLoginPayload(String fpid, String sdkToken, Long serverid) {
         return buildLoginPayload(fpid, sdkToken, serverid, 0L);
     }
 
     /**
      * 登录载荷构建（角色维度）：roleUid&gt;0 时设备 seed 含角色 uid，保证同账号同服多角色
-     * 在无角色级指纹时也不会撞设备（P0 修复）。
+     * 在无角色级指纹时也不会撞设备（P0 修复）；roleUid&lt;=0 时使用每引擎临时设备（P1-1）。
      */
     Map<String, Object> buildLoginPayload(String fpid, String sdkToken, Long serverid,
                                           long roleUid) {
