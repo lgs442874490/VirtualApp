@@ -80,6 +80,8 @@ public final class BootstrapService {
             "JC666", "JC888", "666WJDR2024");
     /** 兑换码前置：熔炉达到该等级才兑换（新版 CDKEY_MIN_FURNACE_LEVEL）。 */
     static final long CDKEY_MIN_FURNACE_LEVEL = 3L;
+    /** 背包钻石道具 id（新版 BootstrapRewardService.DIAMOND_ITEM_IDS）：兑换码奖励的钻石以道具形式发放。 */
+    static final List<Long> DIAMOND_ITEM_IDS = List.of(100001L, 100002L, 100003L, 100004L, 100005L);
     /** 兑换码错误码：稍后重试（新版 7208，5 分钟）。 */
     static final int CDKEY_RETRY_LATER = 7208;
     /** 兑换码错误码：永久失败（已兑换过/无效码），不再重试。 */
@@ -116,6 +118,7 @@ public final class BootstrapService {
     static final int INTEL_EVENT_NOT_FOUND = 2501;
     /** 统帅商店补资源（原版 BootstrapShopService 同值）：商店 id 701、资源包 itemId 与每包资源量。 */
     static final long COMMANDER_SHOP_ID = 701L;
+    static final long MEAT_PACK_ITEM_ID = 100113L;
     static final long WOOD_PACK_ITEM_ID = 100123L;
     static final long COAL_PACK_ITEM_ID = 100133L;
     static final long IRON_PACK_ITEM_ID = 100143L;
@@ -294,7 +297,7 @@ public final class BootstrapService {
     private BootstrapConfig config = BootstrapConfig.defaults();
     /** 本地家具等级覆盖（跨轮保留：154「已存在」/153「已达上限」标记，避免重复规划）。 */
     private final java.util.Map<String, Long> furnitureOverrides = new java.util.concurrent.ConcurrentHashMap<>();
-    /** 英雄动作连发计数（对齐新版 yieldTurn：每 10 次让出一次，避免招募占满执行槽）。 */
+    /** 英雄动作连发计数（对齐新版 yieldTurn；阈值必须小于每轮步数 STEPS_PER_ROUND=8）。 */
     private int heroBurst;
     /** 上次已领取的产出资源签名（避免同一批资源反复领取造成假进展）。 */
     private String lastProducedSignature = "";
@@ -428,9 +431,10 @@ public final class BootstrapService {
         // 兑换码（新版 BootstrapService：熔炉 ≥3 才兑换，一次性拿大量资源/钻石）
         if (state.furnaceLevel() >= CDKEY_MIN_FURNACE_LEVEL) {
             int cdkeyClaimed = claimCdkeys();
-            if (cdkeyClaimed > 0) {
+            int diamonds = claimBackpackDiamonds();   // 兑换码奖励的钻石需打开才可用
+            if (cdkeyClaimed > 0 || diamonds > 0) {
                 Map<String, Object> result = actionResult("STARTED",
-                        "已兑换 " + cdkeyClaimed + " 条兑换码并打开背包钻石");
+                        "已兑换 " + cdkeyClaimed + " 条兑换码，打开背包钻石道具 " + diamonds + " 种");
                 result.put("rewardClaimed", true);
                 return result;
             }
@@ -767,19 +771,30 @@ public final class BootstrapService {
             result.put("message", "当前没有需要补充的资源");
             return result;
         }
-        // 缺口（普通 + 安全资源一起算）
+        // 缺口（普通 + 安全资源一起算）。顺序对齐新版 BootstrapShopService：
+        // 生肉(100113) → 木材(100123) → 煤矿(100133) → 铁矿(100143)，各限 200 份。
+        long needMeat = Math.max(0L, missingOf(costs, 102L));
         long needWood = Math.max(0L, missingOf(costs, 103L));
         long needCoal = Math.max(0L, missingOf(costs, 104L));
         long needIron = Math.max(0L, missingOf(costs, 105L));
-        if (needWood <= 0L && needCoal <= 0L && needIron <= 0L) {
+        if (needMeat <= 0L && needWood <= 0L && needCoal <= 0L && needIron <= 0L) {
             result.put("purchases", List.of());
             result.put("message", "当前没有需要补充的资源");
             return result;
         }
         Map<Long, Long> goodsByItem = shopGoods();
         long diamonds = Math.max(0L, requestLong("diamond"));
+        if (retryAllowed("shop:diag")) {
+            markRetry("shop:diag", 120_000L);
+            FileLog.info("[起号] 商店诊断：goods={} 钻石={} 缺口(肉/木/煤/铁)={}/{}/{}/{}",
+                    String.valueOf(goodsByItem), String.valueOf(diamonds),
+                    String.valueOf(needMeat), String.valueOf(needWood),
+                    String.valueOf(needCoal), String.valueOf(needIron));
+        }
         ArrayList<Map<String, Object>> purchases = new ArrayList<>();
-        buyForMissing(goodsByItem, WOOD_PACK_ITEM_ID, needWood, diamonds, purchases);
+        buyForMissing(goodsByItem, MEAT_PACK_ITEM_ID, needMeat, diamonds, purchases);
+        buyForMissing(goodsByItem, WOOD_PACK_ITEM_ID, needWood,
+                Math.max(0L, diamonds - spentDiamonds(purchases)), purchases);
         buyForMissing(goodsByItem, COAL_PACK_ITEM_ID, needCoal,
                 Math.max(0L, diamonds - spentDiamonds(purchases)), purchases);
         buyForMissing(goodsByItem, IRON_PACK_ITEM_ID, needIron,
@@ -834,6 +849,9 @@ public final class BootstrapService {
         affordable = Math.min(affordable, 200L);
         request(SHOP_BUY, Map.of("shop_id", COMMANDER_SHOP_ID, "goods_id", goodsId,
                 "count", (int) affordable));
+        FileLog.info("[起号] 统帅商店购买 itemId={} 数量={} 花费={}钻",
+                String.valueOf(packItemId), String.valueOf(affordable),
+                String.valueOf(affordable * price));
         LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
         entry.put("itemId", packItemId);
         entry.put("packs", affordable);
@@ -910,6 +928,34 @@ public final class BootstrapService {
         result.put("message", claimed.isEmpty()
                 ? "当前没有可领取的任务奖励" : "已领取 " + claimed.size() + " 项奖励");
         return result;
+    }
+
+    /**
+     * 打开背包里的钻石道具（对齐新版 BootstrapRewardService.claimBackpackDiamonds）。
+     *
+     * <p>兑换码奖励的钻石不是直接进资源 101，而是以道具 100001-100005 形式落在背包；
+     * 必须 {@code req_use_item} 打开才变成可用钻石。实测：不打开时钻石=0，
+     * 统帅商店买不了肉/木材（用户要求的两条主资源）。
+     *
+     * @return 打开的道具种类数
+     */
+    int claimBackpackDiamonds() {
+        int used = 0;
+        for (long itemId : DIAMOND_ITEM_IDS) {
+            long count = Math.max(0L, state.resourceCount(itemId));
+            if (count <= 0L) continue;
+            try {
+                request("req_use_item", Map.of("id", itemId,
+                        "count", (int) Math.min(count, 9999L), "extra", Map.of()));
+                used++;
+                FileLog.info("[起号] 已打开背包钻石道具 itemId={} count={}",
+                        String.valueOf(itemId), String.valueOf(count));
+            } catch (Exception e) {
+                FileLog.info("[起号] 打开钻石道具失败 itemId={}：{}",
+                        String.valueOf(itemId), String.valueOf(e.getMessage()));
+            }
+        }
+        return used;
     }
 
     /**
@@ -1079,7 +1125,7 @@ public final class BootstrapService {
         }
         // yieldTurn（对齐新版 BootstrapHeroService.yieldTurn）：英雄招募/升星/升级每轮都能成功，
         // 若不定期让出，runUntil 会被英雄动作占满、建筑永远排不上（实测熔炉卡 3 级）。
-        if (heroBurst >= 10) {
+        if (heroBurst >= 3) {
             heroBurst = 0;
             return null;
         }
@@ -1103,7 +1149,7 @@ public final class BootstrapService {
             try {
                 request(HERO_SEARCH, Map.of("search_type", ladder[i][0],
                         "cost_type", ladder[i][1], "times", 1L));
-                markRetry(key, 1000L);
+                markRetry(key, 5000L);
                 return actionResult("STARTED", "已请求" + labels[i] + " 1 次");
             } catch (Exception e) {
                 markRetry(key, 1_800_000L);
@@ -1121,18 +1167,18 @@ public final class BootstrapService {
                 markRetry(key, 1_800_000L);
             }
         }
-        // 4) 最高级英雄升级（材料不足由游戏拒绝，退避 5 分钟）
-        long best = state.highestLevelHero();
-        if (best > 0L) {
-            String key = "hero:upgrade:" + best;
-            if (retryAllowed(key)) {
-                try {
-                    request(HERO_UPGRADE, Map.of("id", best));
-                    clearRetry(key);
-                    return actionResult("STARTED", "请求英雄 " + best + " 升级");
-                } catch (Exception ex) {
-                    markRetry(key, 300_000L);
-                }
+        // 4) 升级「探险队伍」英雄（用户 2026-11-11 策略：优先升前五个英雄的等级/星级，
+        //    战力越高探险能推到更深关卡，探险又是重要资源来源）。
+        for (long heroId : state.topFiveHeroes()) {
+            if (heroId <= 0L) continue;
+            String key = "hero:upgrade:" + heroId;
+            if (!retryAllowed(key)) continue;
+            try {
+                request(HERO_UPGRADE, Map.of("id", heroId));
+                clearRetry(key);
+                return actionResult("STARTED", "请求探险队英雄 " + heroId + " 升级");
+            } catch (Exception ex) {
+                markRetry(key, 300_000L);
             }
         }
         return null;
@@ -1148,6 +1194,11 @@ public final class BootstrapService {
      */
     Map<String, Object> adventureBattle(long targetCheckpoint) {
         if (!state.hasAnyHero()) {
+            if (retryAllowed("adventure:nolog")) {
+                markRetry("adventure:nolog", 300_000L);
+                FileLog.info("[起号] 探险跳过：还没有英雄（heroes={}）",
+                        String.valueOf(state.heroLevels().size()));
+            }
             return null;   // 没有英雄打不了探险
         }
         long checkpoint = state.adventurePassed() + 1L;
@@ -1156,6 +1207,13 @@ public final class BootstrapService {
         }
         String retryKey = "adventure:checkpoint:" + checkpoint;
         if (!retryAllowed(retryKey)) {
+            if (retryAllowed("adventure:waitlog")) {
+                markRetry("adventure:waitlog", 120_000L);
+                FileLog.info("[起号] 探险第 {} 关仍在失败退避中，{} 秒后重试",
+                        String.valueOf(checkpoint),
+                        String.valueOf(Math.max(0L, (retryUntil.getOrDefault(retryKey, 0L)
+                                - System.currentTimeMillis()) / 1000L)));
+            }
             return null;
         }
         try {
@@ -1182,9 +1240,12 @@ public final class BootstrapService {
             if (isTrue(endContent.get("is_win"))) {
                 state.markAdventurePassed(checkpoint);
                 clearRetry(retryKey);
+                FileLog.info("[起号] 探险通关第 {} 关", String.valueOf(checkpoint));
                 return actionResult("STARTED", "通关探险第 " + checkpoint + " 关");
             }
             markRetry(retryKey, 1_800_000L);
+            FileLog.info("[起号] 探险第 {} 关战力不足，30 分钟后再试（等英雄升级）",
+                    String.valueOf(checkpoint));
             return actionResult("WAITING", "探险第 " + checkpoint + " 关战力不足，等英雄升级后再试");
         } catch (Exception e) {
             markRetry(retryKey, 1_800_000L);
