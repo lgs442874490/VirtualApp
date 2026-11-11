@@ -22,9 +22,6 @@ public class WjdrEngine {
     public static final String GAME_HOST = "43.144.130.216";
     public static final int GAME_PORT = 30101;
 
-    private static final String[] LOGIN_IP_PREFIXES = {
-            "36.128", "39.144", "111.0", "112.17", "117.188", "120.204", "183.192", "223.104"};
-
     private final AssetSource assets;
     private GameProtocolClient client;
     private final SecureRandom random = new SecureRandom();
@@ -87,36 +84,64 @@ public class WjdrEngine {
         return bytes != null ? bytes : new byte[0];
     }
 
-    /** 注入账号固定设备指纹（来自 AccountStore.getSettings；缺字段保持随机/轮换）。 */
+    /**
+     * 注入账号固定设备指纹（AccountStore.settings / roleIdentitySeed）。
+     *
+     * <p>空串/null/非 JSON 视为"无固定指纹"并清空旧 pinned（P2-4：引擎复用时不得串号）。
+     * 只固化 JSON 中真实存在且合法的字段；非法/缺失字段不 pin，交给 {@link #buildLoginPayload}
+     * 按 (fpid, serverid, roleUid) 确定性生成，避免登录前拿不到 fpid 时把随机值固化（P2-1）。
+     */
     public void applyIdentity(String settingsJson) {
-        if (settingsJson == null || settingsJson.isEmpty()) return;
-        try {
-            org.json.JSONObject o = new org.json.JSONObject(settingsJson);
-            String d = o.optString("distinct_id", "");
-            String dev = o.optString("device_id", "");
-            String ip = o.optString("ip", "");
-            String model = o.optString("device", "");
-            if (!d.isEmpty()) pinnedDistinctId = d;
-            if (!dev.isEmpty()) pinnedDeviceId = dev;
-            if (!ip.isEmpty()) pinnedLoginIp = ip;
-            if (!model.isEmpty()) pinnedDeviceModel = model;
-        } catch (Exception ignored) {
+        if (settingsJson == null || settingsJson.isEmpty()) {
+            clearPinnedIdentity();
+            return;
         }
+        String fpid = savedFpid != null ? savedFpid : (lastFpid != null ? lastFpid : "");
+        org.json.JSONObject o;
+        try {
+            o = new org.json.JSONObject(settingsJson);
+        } catch (Throwable t) {
+            clearPinnedIdentity();
+            return;
+        }
+        DeviceProfile.Device d = DeviceProfile.parse(settingsJson, fpid);
+        if (d == null) {
+            clearPinnedIdentity();
+            return;
+        }
+        boolean modelFromJson = o.has("device")
+                && DeviceProfile.normalizeModel(o.optString("device", "")) != null;
+        pinnedDeviceModel = modelFromJson ? d.model : null;
+        pinnedManufacturer = modelFromJson ? d.manufacturer : null;
+        pinnedBrand = modelFromJson ? d.brand : null;
+        pinnedAndroidVersion = modelFromJson ? d.androidVersion : 0;
+        pinnedDeviceLv = d.deviceLv;
+        pinnedDistinctId = o.has("distinct_id")
+                ? DeviceProfile.normalizeDeviceId(o.optString("distinct_id", "")) : null;
+        pinnedDeviceId = o.has("device_id")
+                ? DeviceProfile.normalizeDeviceId(o.optString("device_id", "")) : null;
+        pinnedLoginIp = o.has("ip") ? DeviceProfile.normalizeIp(o.optString("ip", "")) : null;
     }
 
-    /** 导出本次登录实际使用的设备指纹（回写 AccountStore，下次登录复用同一"设备"）。 */
+    /** 清空固定指纹（空注入/非 JSON 时调用，保证引擎复用不同账号不串号）。 */
+    private void clearPinnedIdentity() {
+        pinnedDistinctId = null;
+        pinnedDeviceId = null;
+        pinnedLoginIp = null;
+        pinnedDeviceModel = null;
+        pinnedManufacturer = null;
+        pinnedBrand = null;
+        pinnedAndroidVersion = 0;
+        pinnedDeviceLv = 0;
+    }
+
+    /** 导出本次登录实际使用的设备指纹（v2 JSON，回写 AccountStore；下次登录复用同一"设备"）。 */
     public String identityJson() {
         if (lastDistinctId == null || lastDeviceId == null || lastLoginIp == null) return "";
-        try {
-            org.json.JSONObject o = new org.json.JSONObject();
-            o.put("distinct_id", lastDistinctId);
-            o.put("device_id", lastDeviceId);
-            o.put("ip", lastLoginIp);
-            if (lastDeviceModel != null) o.put("device", lastDeviceModel);
-            return o.toString();
-        } catch (Exception e) {
-            return "";
-        }
+        DeviceProfile.Device d = new DeviceProfile.Device(
+                lastDeviceModel, lastManufacturer, lastBrand, lastAndroidVersion,
+                lastDeviceLv, lastDeviceId, lastDistinctId, lastLoginIp);
+        return DeviceProfile.toJson(d);
     }
 
     /** 登录结果 */
@@ -138,18 +163,26 @@ public class WjdrEngine {
     private long lastServerId;
     /** 游戏服务器时钟（P0）：登录/心跳响应校准，单调外推；waitUntil 供行军类毫秒到点用。 */
     private final GameServerClock serverClock = new GameServerClock();
-    /** 账号固定设备指纹（AccountStore.settings 注入；未注入时每次随机并经 identityJson 导出固化）。 */
+    /** 账号固定设备指纹（AccountStore.settings 注入；未注入时按 fpid+serverid 确定性生成并经 identityJson 固化）。 */
     private String pinnedDistinctId;
     private String pinnedDeviceId;
     private String pinnedLoginIp;
-    /** 机型轮换池（每账号固定一款，避免全号池同机型被风控侧聚簇识别）。 */
-    private static final String[] DEVICE_MODELS = {
-            "vivo X200 Pro", "Xiaomi 14", "HUAWEI Mate 60", "OPPO Find X7", "Honor Magic6"};
+    /** 机型池/厂商/系统版本元数据统一由 {@link DeviceProfile} 维护（2026-11-11 从本类迁出）。 */
     private String pinnedDeviceModel;
+    private String pinnedManufacturer;
+    private String pinnedBrand;
+    private int pinnedAndroidVersion;
+    private int pinnedDeviceLv;
     private String lastDistinctId;
     private String lastDeviceId;
     private String lastLoginIp;
     private String lastDeviceModel;
+    private String lastManufacturer;
+    private String lastBrand;
+    private int lastAndroidVersion;
+    private int lastDeviceLv;
+    /** 发现式登录（无角色 uid）的临时设备：每引擎一台、重试稳定、不落库（P1-1）。 */
+    private DeviceProfile.Device ephemeralDevice;
     /** 游戏服务端推送通知收集（proto → 最近一次内容），任务层用于提取活动 id 等 */
     private final java.util.concurrent.ConcurrentHashMap<String, Map<String, Object>> notifies =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -240,20 +273,47 @@ public class WjdrEngine {
      */
     static java.util.List<String> buildDeviceParams(String deviceOs, String deviceModel,
                                                     Object deviceLv) {
+        return buildDeviceParams(deviceOs, deviceModel, null, deviceLv);
+    }
+
+    /**
+     * 同上，新增 {@code androidVersion} 入参（供调用方校验与未来切换）；
+     * 协议第 3 参数按需求 A2 仍固定 {@code "13"}，不随 androidVersion 变化。
+     */
+    static java.util.List<String> buildDeviceParams(String deviceOs, String deviceModel,
+                                                    Object androidVersion, Object deviceLv) {
         String os = deviceOs == null ? "" : deviceOs.trim();
         String platform = "android".equalsIgnoreCase(os) || "2".equals(os) ? "2" : "1";
         String model = deviceModel == null ? "" : deviceModel.trim();
         if (model.isEmpty()) model = "meizu MEIZU 18 Pro";
-        String quality = deviceLv == null ? "" : String.valueOf(deviceLv).trim();
-        if (quality.isEmpty()) quality = "3";
+        // A2：第 3 参数（系统版本）语义未确认，固定 "13"；androidVersion 仅由调用方保证合法，
+        // 不改变协议格式（若后续确认该参数就是系统版本，再切换为 androidVersion）。
+        String quality = String.valueOf(normalizeDeviceLv(deviceLv));
         // Java 8 兼容（List.of 为 Java 9+，App 源级不可用）
         return java.util.Arrays.asList(platform, model, "13", quality);
+    }
+
+    /** device_lv 合法区间 1–5，缺失/越界回退 3（需求 FR-3）。 */
+    private static int normalizeDeviceLv(Object deviceLv) {
+        if (deviceLv == null) return 3;
+        int v;
+        if (deviceLv instanceof Number) {
+            v = ((Number) deviceLv).intValue();
+        } else {
+            try {
+                v = Integer.parseInt(String.valueOf(deviceLv).trim());
+            } catch (Throwable t) {
+                return 3;
+            }
+        }
+        return v >= 1 && v <= 5 ? v : 3;
     }
 
     /** 登录流程内调用（req_loaddata 成功后、online 前）：上报设备环境；失败只记日志不阻断。 */
     private void sendSettingsSetDevice(long uid) {
         try {
-            java.util.List<String> params = buildDeviceParams("android", lastDeviceModel, "3");
+            java.util.List<String> params = buildDeviceParams("android", lastDeviceModel,
+                    lastAndroidVersion, lastDeviceLv);
             GameMessage resp = lockedRequest("req_settings_set_device",
                     mapOf("params", (Object) params), seconds(15));
             long code = resp == null || resp.getContent() == null
@@ -378,7 +438,10 @@ public class WjdrEngine {
         try {
             requestLock.lock();
             try {
-                Map<String, Object> payload = buildLoginPayload(fpid, sdkToken, serverid);
+                // 角色维度设备 seed（P0）：loginByRole 的 uid 经 extraParams 下传，
+                // 同账号同服多角色在无角色级指纹时也不会撞设备。
+                long roleUid = roleUidFrom(extraParams);
+                Map<String, Object> payload = buildLoginPayload(fpid, sdkToken, serverid, roleUid);
                 if (extraParams != null) payload.putAll(extraParams);
                 long t0 = GameServerClock.monoNow();
                 GameMessage auth = lockedRequest("loginauth", payload, seconds(15));
@@ -1071,18 +1134,65 @@ public class WjdrEngine {
         }
     }
 
-    private Map<String, Object> buildLoginPayload(String fpid, String sdkToken, Long serverid) {
+    /** 从 extraParams 提取角色 uid（loginByRole 放入 "uid"）；缺失/非法返回 0。 */
+    static long roleUidFrom(Map<String, Object> extraParams) {
+        if (extraParams == null) return 0L;
+        Object v = extraParams.get("uid");
+        return v == null ? 0L : toLong(v);
+    }
+
+    /**
+     * 登录载荷构建（旧 3 参重载，等价 roleUid=0）：即发现式/legacy 路径，
+     * 设备取每引擎临时设备（见 4 参重载），不进入角色维度确定性派生。
+     */
+    Map<String, Object> buildLoginPayload(String fpid, String sdkToken, Long serverid) {
+        return buildLoginPayload(fpid, sdkToken, serverid, 0L);
+    }
+
+    /**
+     * 登录载荷构建（角色维度）：roleUid&gt;0 时设备 seed 含角色 uid，保证同账号同服多角色
+     * 在无角色级指纹时也不会撞设备（P0 修复）；roleUid&lt;=0 时使用每引擎临时设备（P1-1）。
+     */
+    Map<String, Object> buildLoginPayload(String fpid, String sdkToken, Long serverid,
+                                          long roleUid) {
         LinkedHashMap<String, Object> p = new LinkedHashMap<>();
-        // 固定指纹优先（每账号持久一份）；未注入则随机/轮换，值经 identityJson 导出供上层固化。
-        String distinctId = pinnedDistinctId != null ? pinnedDistinctId : randomHex32();
-        String deviceId = pinnedDeviceId != null ? pinnedDeviceId : randomHex32();
-        String loginIp = pinnedLoginIp != null ? pinnedLoginIp : randomLoginIp();
-        String deviceModel = pinnedDeviceModel != null ? pinnedDeviceModel
-                : DEVICE_MODELS[random.nextInt(DEVICE_MODELS.length)];
+        // 固定指纹优先（每账号持久一份）；未注入则按 fpid+serverid 确定性生成——同一角色
+        // 登录失败重试得到同一台设备（2026-11-11 修复"每次重试换设备"的漂移）。
+        long sid = serverid != null && serverid > 0 ? serverid : 0L;
+        DeviceProfile.Device base;
+        if (roleUid > 0) {
+            base = DeviceProfile.generate(fpid, sid, roleUid);
+        } else {
+            // P1-1：发现式/legacy 登录（无角色 uid）用每引擎一台临时设备——旧实现是随机，
+            // 本类改为按 (fpid, serverid) 确定性后，同账号多 Session 发现登录会撞设备互踢。
+            // 临时设备在同一引擎内重试稳定，且不写入持久化（identityJson 不用于发现路径固化）。
+            if (ephemeralDevice == null) ephemeralDevice = DeviceProfile.ephemeral();
+            base = ephemeralDevice;
+        }
+        String distinctId = pinnedDistinctId != null ? pinnedDistinctId : base.distinctId;
+        String deviceId = pinnedDeviceId != null ? pinnedDeviceId : base.deviceId;
+        String loginIp = pinnedLoginIp != null ? pinnedLoginIp : base.ip;
+        String deviceModel = pinnedDeviceModel != null ? pinnedDeviceModel : base.model;
+        // 机型已固化但厂商/版本缺失时，从机型推导（保证 v2 输出自洽），推导失败再用确定性基线
+        String manufacturer = pinnedManufacturer;
+        if (manufacturer == null) {
+            manufacturer = DeviceProfile.manufacturerOf(deviceModel);
+            if (manufacturer == null) manufacturer = base.manufacturer;
+        }
+        int androidVersion = pinnedAndroidVersion;
+        if (androidVersion <= 0) {
+            androidVersion = DeviceProfile.androidVersionOf(deviceModel);
+            if (androidVersion <= 0) androidVersion = base.androidVersion;
+        }
+        int deviceLv = pinnedDeviceLv > 0 ? pinnedDeviceLv : base.deviceLv;
         lastDistinctId = distinctId;
         lastDeviceId = deviceId;
         lastLoginIp = loginIp;
         lastDeviceModel = deviceModel;
+        lastManufacturer = manufacturer;
+        lastBrand = pinnedBrand != null ? pinnedBrand : manufacturer;
+        lastAndroidVersion = androidVersion;
+        lastDeviceLv = deviceLv;
         p.put("account", fpid);
         p.put("sdkToken", sdkToken);
         if (serverid != null && serverid > 0) {
@@ -1097,7 +1207,7 @@ public class WjdrEngine {
         p.put("package_tag", "App_android_8_funplus");
         p.put("ad_source", "funplus");
         p.put("device_id", deviceId);
-        p.put("device_lv", 3);
+        p.put("device_lv", deviceLv);
         p.put("is_create", false);
         p.put("group", 1);
         p.put("is_simulator", false);
@@ -1229,18 +1339,5 @@ public class WjdrEngine {
 
     private static java.time.Duration seconds(int s) {
         return java.time.Duration.of(s, TimeUnit.SECONDS.toChronoUnit());
-    }
-
-    private String randomHex32() {
-        byte[] bytes = new byte[16];
-        random.nextBytes(bytes);
-        StringBuilder sb = new StringBuilder(32);
-        for (byte b : bytes) sb.append(String.format("%02x", b));
-        return sb.toString();
-    }
-
-    private String randomLoginIp() {
-        String prefix = LOGIN_IP_PREFIXES[random.nextInt(LOGIN_IP_PREFIXES.length)];
-        return prefix + "." + random.nextInt(256) + "." + (random.nextInt(254) + 1);
     }
 }
