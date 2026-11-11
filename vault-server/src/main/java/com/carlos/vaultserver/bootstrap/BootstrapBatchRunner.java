@@ -534,6 +534,9 @@ public final class BootstrapBatchRunner {
                     notifyField(port, "notify_adventure_pve_info", "adventure_pve_info"));
             // 新手引导（新版 BootstrapTutorialState 数据源）
             putIfPresent(merged, "guide_list", notifyField(port, "notify_guide_init", "data"));
+            // 成长/章节任务（可领奖励 → 起号阶段资源主来源）
+            putIfPresent(merged, "growth_list", notifyField(port, "notify_growthquests", "data"));
+            putIfPresent(merged, "chapter_list", notifyField(port, "notify_chapterquests", "data"));
             // 产出资源（新号初始资源来源，必须领取才会进背包）
             putIfPresent(merged, "produced_list",
                     notifyField(port, "notify_produced_resource_init", "data"));
@@ -582,6 +585,12 @@ public final class BootstrapBatchRunner {
                         FileLog.info("loaddata 字段 {} = {}", k, v.length() > 300 ? v.substring(0, 300) : v);
                     }
                 }
+                for (String proto : new String[]{"notify_growthquests", "notify_chapterquests"}) {
+                    Map<String, Object> raw = port.notify(proto);
+                    String text = String.valueOf(raw);
+                    FileLog.info("任务推送 {} 内容={}", proto, text.length() > 400 ? text.substring(0, 400) : text);
+                }
+                FileLog.info("任务统计：成长={} 章节={}", String.valueOf(service.state().growthQuestIds()), String.valueOf(service.state().chapterQuestIds()));
                 FileLog.info("起号首轮幸存者明细：{}", String.valueOf(service.state().survivors()));
                 for (long bid : new long[]{302L, 303L, 304L, 305L, 306L}) {
                     FileLog.info("工位诊断 建筑{} 等级={} 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}",

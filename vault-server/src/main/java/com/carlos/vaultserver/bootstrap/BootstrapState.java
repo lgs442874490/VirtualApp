@@ -67,6 +67,12 @@ public final class BootstrapState {
     /** 工位占用：buildingId → (confFid → [sid])（新版 furnitureOccupants 同构）。 */
     private final java.util.LinkedHashMap<Long, java.util.LinkedHashMap<Long, java.util.List<Long>>> furnitureOccupants =
             new java.util.LinkedHashMap<>();
+    /** 可领成长任务 id（notify_growthquests.quests 里 progress>0 且未领）。 */
+    private final java.util.LinkedHashSet<Long> growthQuestIds = new java.util.LinkedHashSet<>();
+    /** 可领章节任务 id（notify_chapterquests.quests 里 progress>0 且未领）。 */
+    private final java.util.LinkedHashSet<Long> chapterQuestIds = new java.util.LinkedHashSet<>();
+    /** 已领取过的任务 id（finishs 或本地标记），避免重复请求。 */
+    private final java.util.LinkedHashSet<Long> claimedQuestIds = new java.util.LinkedHashSet<>();
     /** 待领取的产出资源（notify_produced_resource_init.data）：id → count。 */
     private final java.util.LinkedHashMap<Long, Long> producedResources = new java.util.LinkedHashMap<>();
     /** 引导进度：guideId → 当前步骤（notify_guide_init.data）。 */
@@ -128,6 +134,8 @@ public final class BootstrapState {
         s.applyAdventure(firstOf(loadContent, "adventure_pve_info", "adventure"));
         s.applyGuides(firstOf(loadContent, "guide_list", "guides"));
         s.applyProduced(firstOf(loadContent, "produced_list", "produced"));
+        s.applyQuests(firstOf(loadContent, "growth_list", "growthquests"), true);
+        s.applyQuests(firstOf(loadContent, "chapter_list", "chapterquests"), false);
         s.roleUid = deepPositiveNumber(loadContent, "uid", "fid", "role_uid");
         s.roleName = deepText(loadContent, "name", "game_name", "display_name");
         // 排障用（真实轮 2026-11-10）：解析不到建筑/队列时打印实际顶层键，便于校准键名。
@@ -154,6 +162,48 @@ public final class BootstrapState {
             boolean sick = booleanValue(entry.get("is_sick")) || booleanValue(entry.get("isSick"));
             survivors.add(new Survivor(sid, fidWork, sick));
         }
+    }
+
+    /**
+     * 任务列表解析（对齐新版 BootstrapRewardState.applyGrowthQuests/applyChapterQuests）：
+     * {@code {quests:[{id, progress}], finishs:[{id}]}} —— quests 里 progress>0 的未领任务就是可领项。
+     * 这是起号阶段资源的主要来源（章节任务奖励 + 章节宝箱）。
+     */
+    private void applyQuests(Object raw, boolean growth) {
+        if (raw == null) return;
+        java.util.Set<Long> target = growth ? growthQuestIds : chapterQuestIds;
+        target.clear();
+        Map<String, Object> data = mapOf(raw);
+        Object nested = data.get("data");
+        if (nested instanceof Map) data = mapOf(nested);
+        for (Map<String, Object> entry : entries(data.get("finishs"))) {
+            long qid = number(entry.get("id"));
+            if (qid > 0L) claimedQuestIds.add(qid);
+        }
+        for (Map<String, Object> entry : entries(data.get("quests"))) {
+            long qid = number(entry.get("id"));
+            if (qid <= 0L || claimedQuestIds.contains(qid)) continue;
+            long progress = entry.containsKey("progress") ? number(entry.get("progress")) : 1L;
+            if (progress > 0L) target.add(qid);
+        }
+    }
+
+    /** 可领成长任务 id（只读）。 */
+    public List<Long> growthQuestIds() {
+        return List.copyOf(growthQuestIds);
+    }
+
+    /** 可领章节任务 id（只读）。 */
+    public List<Long> chapterQuestIds() {
+        return List.copyOf(chapterQuestIds);
+    }
+
+    /** 标记任务已领（本地去重）。 */
+    public void markQuestClaimed(long questId, boolean growth) {
+        if (questId <= 0L) return;
+        claimedQuestIds.add(questId);
+        if (growth) growthQuestIds.remove(questId);
+        else chapterQuestIds.remove(questId);
     }
 
     /** 产出资源解析（id/count）。 */

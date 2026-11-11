@@ -458,6 +458,13 @@ public final class BootstrapService {
                 return result;
             }
         }
+        // 成长/章节任务奖励（新版第 10 步，起号阶段资源主来源）：完成建造/委任后立刻可领
+        int quests = claimPendingQuests();
+        if (quests > 0) {
+            Map<String, Object> result = actionResult("STARTED", "已领取 " + quests + " 项任务奖励");
+            result.put("questClaimed", quests);
+            return result;
+        }
         // 幸存者委任（必须在建造之前）：网页版实证——不委任则资源恒为 0、建造恒 51 被拒。
         // 每轮检查一次，有新闲置者就上岗；本轮若有委任则直通返回，下一轮再建造。
         if (!state.idleSurvivors().isEmpty()) {
@@ -1046,6 +1053,46 @@ public final class BootstrapService {
             }
         }
         return used;
+    }
+
+    /**
+     * 领取成长任务 + 章节任务奖励（对齐新版 BootstrapRewardService.claimPendingQuests）。
+     *
+     * <p><b>这是起号阶段资源的主要来源</b>（网页版 2 分钟 0→9 级靠的就是它）：
+     * 每完成一个建造/委任，游戏就把对应章节任务标为可领，
+     * {@code req_get_chapterquest_award{questid}} 会直接给大量木材/煤/铁与章节宝箱。
+     * 我们此前完全没解析 notify_growthquests / notify_chapterquests → 一次都没领过。
+     *
+     * @return 本轮领取的任务数
+     */
+    int claimPendingQuests() {
+        int claimed = 0;
+        for (long questId : state.growthQuestIds()) {
+            try {
+                request(GROWTH_AWARD, Map.of("questid", questId));
+                state.markQuestClaimed(questId, true);
+                claimed++;
+                FileLog.info("[起号] 已领取成长任务奖励 questid={}", String.valueOf(questId));
+            } catch (ProtocolException e) {
+                // 900 = 已经领过（对齐新版：视为已处理）
+                if (e.code() == 900) state.markQuestClaimed(questId, true);
+            } catch (Exception ignored) {
+                // 单项失败不影响其它
+            }
+        }
+        for (long questId : state.chapterQuestIds()) {
+            try {
+                request(CHAPTER_QUEST_AWARD, Map.of("questid", questId));
+                state.markQuestClaimed(questId, false);
+                claimed++;
+                FileLog.info("[起号] 已领取章节任务奖励 questid={}", String.valueOf(questId));
+            } catch (ProtocolException e) {
+                if (e.code() == 900) state.markQuestClaimed(questId, false);
+            } catch (Exception ignored) {
+                // 单项失败不影响其它
+            }
+        }
+        return claimed;
     }
 
     /**
