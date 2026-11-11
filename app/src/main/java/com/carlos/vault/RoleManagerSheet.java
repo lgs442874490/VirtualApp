@@ -14,7 +14,6 @@ import com.carlos.vault.daily.HotConfig;
 import com.carlos.vault.daily.RoleDisplay;
 import com.carlos.vault.daily.RoleIdentity;
 import com.carlos.vault.daily.RoleLogin;
-import com.carlos.vault.daily.RoleSessionKeeper;
 import com.carlos.vault.daily.RoleStore;
 import com.carlos.vault.daily.WjdrAndroid;
 import com.carlos.vault.wjdr.WjdrEngine;
@@ -32,10 +31,9 @@ import java.util.List;
  * → 角色列表（全部角色：名称 + {@link RoleDisplay#roleMetaLine} 标准元数据行 +
  * 统一状态行 + 开关；开关按 (sid,uid) 独立）→ 底部「+ 添加角色（发现）/ 完成」。
  *
- * <p>行内状态口径（需求3 统一）：服务器模式读 {@link VaultSync#cachedStatusOf}
- * （按 sid+activeUid 匹配角色行，{@link RoleDisplay#roleMatchesServerStatus}）；
- * 本地模式读 {@link RoleSessionKeeper} 会话快照（fpid+sid）。文案一律走
- * {@link RoleDisplay#serverStateLabel}，与账号页/今日页同源。
+ * <p>行内状态口径（需求3 统一）：读 {@link VaultSync#cachedStatusOf}
+ * （按 sid+activeUid 匹配角色行，{@link RoleDisplay#roleMatchesServerStatus}）。
+ * 文案一律走 {@link RoleDisplay#serverStateLabel}，与账号页/今日页同源。
  *
  * <p>实现说明：不用 BottomSheetDialog（那要 material 依赖），直接往宿主窗口 DecorView
  * 盖一层半透明遮罩 + 白色圆角面板（MATCH_PARENT 盖全窗，压住底部导航/悬浮按钮），
@@ -198,24 +196,19 @@ public final class RoleManagerSheet {
                 int found = 0, added = 0;
                 try {
                     List<WjdrEngine.RoleInfo> roles0 = null;
-                    // 优先借常驻会话（免登录不顶号）；无会话且容器游戏没挂本账号时才临时登录
-                    RoleSessionKeeper.LiveSession live = RoleSessionKeeper.liveOf(act, a.fpid, 0);
-                    if (live != null) {
-                        roles0 = live.engine.discoverRoles();
+                    // App 无本地常驻会话：容器游戏没挂本账号时临时登录发现（登录后即释放）
+                    String liveFpid = new VaultEngine(act).readLiveSessionFpid();
+                    if (a.fpid != null && a.fpid.equals(liveFpid)) {
+                        err = "该账号正在容器游戏里运行，退出游戏后再发现";
                     } else {
-                        String liveFpid = new VaultEngine(act).readLiveSessionFpid();
-                        if (a.fpid != null && a.fpid.equals(liveFpid)) {
-                            err = "该账号正在容器游戏里运行，退出游戏后再发现";
-                        } else {
-                            WjdrEngine eng = WjdrAndroid.newEngine(act);
-                            try {
-                                HotConfig.init(act);
-                                eng.initialize();
-                                RoleLogin.loginPinned(act, eng, a.fpid, a.token, 0);
-                                roles0 = eng.discoverRoles();
-                            } finally {
-                                eng.close();
-                            }
+                        WjdrEngine eng = WjdrAndroid.newEngine(act);
+                        try {
+                            HotConfig.init(act);
+                            eng.initialize();
+                            RoleLogin.loginPinned(act, eng, a.fpid, a.token, 0);
+                            roles0 = eng.discoverRoles();
+                        } finally {
+                            eng.close();
                         }
                     }
                     if (roles0 != null) {
@@ -347,7 +340,7 @@ public final class RoleManagerSheet {
 
         // （统一角色标签已含服务器/联盟/昵称，不再追加 fid/城堡/战力元数据行）
 
-        // 统一状态行（服务器模式 cachedStatusOf / 本地模式会话快照；口径同账号页）
+        // 统一状态行（服务器 cachedStatusOf；口径同账号页）
         TextView stv = new TextView(act);
         String[] st = roleStatusLabel(act, a, r);
         stv.setText(st[0]);
@@ -374,9 +367,9 @@ public final class RoleManagerSheet {
         row.addView(swRef[0]);
 
         // P1 角色管理增强（长按 = 动作菜单）：重命名 / 移除角色（不删游戏内角色）/
-        // 启用·收纳（op enabled）。仅服务器模式且服务端有池接口时挂接；
+        // 启用·收纳（op enabled）。仅服务端有池接口时挂接；
         // 收纳/启用状态以服务端池数据为准（缺池数据回落本地开关）。
-        if (VaultSync.isServerMode(act) && !VaultSync.isPoolUnsupported(act)) {
+        if (!VaultSync.isPoolUnsupported(act)) {
             JSONObject poolAccByFpid = a.fpid == null
                     ? null : com.carlos.vault.AccountPoolCache.accountsByFpid(
                             VaultSync.cachedAccountPool(act)).get(a.fpid);
@@ -410,36 +403,24 @@ public final class RoleManagerSheet {
     /**
      * 角色行状态文案（返回 [文案, "on"/"off"]），与账号页角色行、今日页常驻状态同源
      * （账号详情页角色盒复用本方法，保证三处口径一致）：
-     * <ul>
-     *   <li>服务器模式：{@link VaultSync#cachedStatusOf} 的账号态按 sid+activeUid
-     *       匹配本行（{@link RoleDisplay#roleMatchesServerStatus}）；命中则显示该态
-     *       （在线/重连中/被顶号暂停/需重导token），未命中（服务器会话在别的角色上）
-     *       显示离线；无缓存显示「同步中」；</li>
-     *   <li>本地模式：{@link RoleSessionKeeper} 协议常驻会话（fpid+sid，LiveSession
-     *       无 uid——同服第二角色本地无法细分，已知限制）；</li>
-     * </ul>
+     * {@link VaultSync#cachedStatusOf} 的账号态按 sid+activeUid 匹配本行
+     * （{@link RoleDisplay#roleMatchesServerStatus}）；命中则显示该态
+     * （在线/重连中/被顶号暂停/需重导token），未命中（服务器会话在别的角色上）
+     * 显示离线；无缓存显示「同步中」。
      */
     public static String[] roleStatusLabel(Activity act, AccountStore.Account a, RoleStore.Role r) {
         try {
-            if (VaultSync.isServerMode(act)) {
-                JSONObject o = a.fpid == null ? null : VaultSync.cachedStatusOf(act, a.fpid);
-                if (o == null) return new String[]{"● 同步中", "off"};
-                String state = o.optString("state", "");
-                long statusSid = parseLong(o.optString("sid", ""));
-                long statusUid = parseLong(o.optString("activeUid", ""));
-                RoleStore.ActiveRole active = RoleStore.activeRoleEx(act, a.fpid);
-                boolean match = RoleDisplay.roleMatchesServerStatus(
-                        r.serverid, r.uid, statusSid, statusUid, active.sid, active.uid);
-                if (!match) return new String[]{"● 离线", "off"};
-                boolean on = RoleDisplay.isServerOnline(state);
-                return new String[]{"● " + RoleDisplay.serverStateLabel(state), on ? "on" : "off"};
-            }
-            for (RoleSessionKeeper.LiveSession ls : RoleSessionKeeper.get(act).sessionsSnapshot()) {
-                if (a.fpid != null && a.fpid.equals(ls.fpid) && ls.sid == r.serverid
-                        && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
-                    return new String[]{"● 日常在线", "on"};
-                }
-            }
+            JSONObject o = a.fpid == null ? null : VaultSync.cachedStatusOf(act, a.fpid);
+            if (o == null) return new String[]{"● 同步中", "off"};
+            String state = o.optString("state", "");
+            long statusSid = parseLong(o.optString("sid", ""));
+            long statusUid = parseLong(o.optString("activeUid", ""));
+            RoleStore.ActiveRole active = RoleStore.activeRoleEx(act, a.fpid);
+            boolean match = RoleDisplay.roleMatchesServerStatus(
+                    r.serverid, r.uid, statusSid, statusUid, active.sid, active.uid);
+            if (!match) return new String[]{"● 离线", "off"};
+            boolean on = RoleDisplay.isServerOnline(state);
+            return new String[]{"● " + RoleDisplay.serverStateLabel(state), on ? "on" : "off"};
         } catch (Throwable ignored) {
         }
         return new String[]{"● 离线", "off"};

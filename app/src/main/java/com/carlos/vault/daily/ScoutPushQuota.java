@@ -7,7 +7,7 @@ import java.util.concurrent.ConcurrentLinkedDeque;
 /**
  * 侦查类推送配额（用户 2026-11-01 硬规则）：滑动 5 分钟窗口内，同一个敌人只推送前 3 次侦查。
  *
- * <p>本类是 App 本地模式（{@link EnemyWatch}）与 vault-server（{@code WarNotify}）<b>同源共用</b>
+ * <p>本类是 App 告警中枢与 vault-server（{@code WarNotify}）<b>同源共用</b>
  * 的唯一口径实现（vault-server 的 sourceSets 直接编译本文件，与 RewardText/WarState 同例），
  * 改口径只改这里：
  * <ul>

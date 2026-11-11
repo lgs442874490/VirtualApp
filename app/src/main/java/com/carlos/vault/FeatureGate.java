@@ -78,7 +78,7 @@ public final class FeatureGate {
         AID_ALLIANCE("aid_alliance", TIER_MEMBER, true, false, "一键帮助全盟"),
 
         // ===== T3 高级会员：高阶已实现（有真实实现/入口） =====
-        // 敌情监控 = T3 六项中唯一已完整实现（App EnemyWatch/EnemyWatchStore + 服务端 WarNotify/WeComNotifier）
+        // 敌情监控 = 服务端 WarNotify/WeComNotifier + App 告警中枢 UI（本地 EnemyWatch 已移除）
         ENEMY_WATCH("enemy_watch", TIER_PREMIUM, true, false, "敌情监控"),
         // 真机监控（2026-10-25）：服务端任务级协议监控 /v1/vault/monitor + App daily/MonitorActivity。
         // T3 正式包可见（非 debugOnly）：用户当前即 T3，需要在真机上观察领取/任务链路与会话顶号。
@@ -121,10 +121,7 @@ public final class FeatureGate {
         // 编队管理（2026-11-06 决策6）：FormationManagerActivity 已实现并多入口上线
         //（今日页快捷卡/功能页编队卡/采集设置页），属日常脚本能力 → T2；入口统一走
         // FeatureGate.visible(FORMATION_MANAGE) 防深链越权。
-        FORMATION_MANAGE("formation_manage", TIER_MEMBER, true, false, "编队管理"),
-
-        // ===== 调试/实测项（仅调试包可见，正式包一律不渲染） =====
-        PROTOCOL_LOGGER("protocol_logger", TIER_BASIC, true, true, "协议监听");
+        FORMATION_MANAGE("formation_manage", TIER_MEMBER, true, false, "编队管理");
 
         // 2026-11-06 决策6：删除零引用死枚举（RANKING/RALLY_ATTACK/ACCOUNT_FARM/ACTIVITY_RANK/
         // MATCH3/TROOP_RUSH/PET_RESET/RECON_REPORT 及 PROTOCOL_PROBE）——
@@ -361,8 +358,8 @@ public final class FeatureGate {
     }
 
     /**
-     * 工具箱当前角色/构建/矩阵下的可用工具数（release 下 T3 敌情监控 + 真机监控 + 观察点 +
-     * 真机抓包 + 迁城；debug 包额外协议监听）。用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
+     * 工具箱当前角色/构建/矩阵下的可用工具数（T3 敌情监控 + 真机监控 + 观察点 +
+     * 真机抓包 + 迁城）。用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
      */
     public static int visibleToolCount(Context ctx) {
         int n = 0;
@@ -371,7 +368,6 @@ public final class FeatureGate {
         if (visible(ctx, Feature.WATCHPOINT)) n++;
         if (visible(ctx, Feature.PROTO_CAPTURE)) n++;
         if (visible(ctx, Feature.MOVE_CITY)) n++;
-        if (visible(ctx, Feature.PROTOCOL_LOGGER)) n++;
         // 2026-11-07 审查 P1-1：生产走本 Context 版，此前只有 deprecated 纯函数版计入移民，
         // 导致「工具箱可用工具数」与实际渲染不一致（移民卡在、计数却不算它）。
         if (visible(ctx, Feature.IMMIGRATION)) n++;
@@ -390,7 +386,6 @@ public final class FeatureGate {
                 || visible(ctx, Feature.DEV_MONITOR)
                 || visible(ctx, Feature.WATCHPOINT)
                 || visible(ctx, Feature.PROTO_CAPTURE)
-                || visible(ctx, Feature.PROTOCOL_LOGGER)
                 || visible(ctx, Feature.IMMIGRATION)
                 || visible(ctx, Feature.MOVE_CITY);
     }
@@ -404,7 +399,6 @@ public final class FeatureGate {
         if (visible(Feature.WATCHPOINT, tier, false, null, debugBuild)) n++;
         if (visible(Feature.PROTO_CAPTURE, tier, false, null, debugBuild)) n++;
         if (visible(Feature.MOVE_CITY, tier, false, null, debugBuild)) n++;
-        if (visible(Feature.PROTOCOL_LOGGER, tier, false, null, debugBuild)) n++;
         if (visible(Feature.IMMIGRATION, tier, false, null, debugBuild)) n++;   // 2026-11-06 移民
         return n;
     }

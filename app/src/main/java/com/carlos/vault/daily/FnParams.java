@@ -79,13 +79,13 @@ public final class FnParams {
      * 这类「设置」此前只写本地，最长要等 10 分钟全量同步才到服务器，用户感知「设置了也
      * 无效」。
      *
-     * <p>服务器模式下调用 {@link VaultSync#onAccountsChanged(Context)} 把上行窗口压到约 3 秒
-     * （该方法内部自带 3s 去抖，连续调用不会放大请求量）；非服务器模式或无 Context 时
+     * <p>调用 {@link VaultSync#onAccountsChanged(Context)} 把上行窗口压到约 3 秒
+     * （该方法内部自带 3s 去抖，连续调用不会放大请求量）；无 Context 时
      * no-op；任何异常一律吞掉，绝不因同步失败影响本地保存/页面交互。
      */
     public static void notifySettingsChanged(Context ctx) {
         try {
-            if (ctx != null && VaultSync.isServerMode(ctx)) VaultSync.onAccountsChanged(ctx);
+            if (ctx != null) VaultSync.onAccountsChanged(ctx);
         } catch (Throwable ignored) {
         }
     }
@@ -563,7 +563,7 @@ public final class FnParams {
             out.remove("target_point");
             out.remove("d_sec");
             // 2026-11-05 修复（重放审查）：守护旧执行参数 UI 已下线（FnDetail 不再渲染这些子项），
-            // 但 GuardianEngine/GuardianHold/GuardianCalib 仍会读取；保存时一并清掉，
+            // 但服务器 Guardian 引擎仍会读取存量旧键；保存时一并清掉，
             // 否则存量设备会继续按"预驻防/常驻戒备/攻方阈值/ETA 窗口/卡秒标定"的旧值执行且无法关闭。
             out.remove("hold_garrison_min");
             out.remove("pre_garrison");
@@ -599,7 +599,7 @@ public final class FnParams {
                 if (oldSt != null) oldSt.remove("diamond_speedup_enabled");
             }
             // 旧 intercept 开关由 enabled/dry_run 接管（服务器 enabled||intercept，故顶层移除）。
-            // 同时镜像到 App 本地模式读取的 sub 开关（GuardianEngine：watch=监测、intercept=自动驻防）：
+            // 同时镜像到 sub 开关（服务器 parseConfig 兼容旧键）：
             //   演练模式 → 只监测不驻防（watch=true, intercept=false）；
             //   实发模式 → 监测+自动驻防（watch=true, intercept=true）。
             out.remove("intercept");

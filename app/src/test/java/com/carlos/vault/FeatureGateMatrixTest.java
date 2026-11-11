@@ -89,17 +89,6 @@ public class FeatureGateMatrixTest {
     }
 
     @Test
-    public void debugOnly_followsBuildType() {
-        List<String> withProto = Arrays.asList(FeatureGate.Feature.PROTOCOL_LOGGER.key);
-        assertFalse("release 包不得渲染调试项",
-                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER,
-                        FeatureGate.TIER_GM, true, withProto, RELEASE));
-        assertTrue("debug 包可见",
-                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER,
-                        FeatureGate.TIER_BASIC, true, withProto, DEBUG));
-    }
-
-    @Test
     public void unknownKeysIgnored() {
         List<String> withUnknown = Arrays.asList("not_a_real_key", "account_pool");
         assertTrue(FeatureGate.visible(FeatureGate.Feature.ACCOUNT_POOL,

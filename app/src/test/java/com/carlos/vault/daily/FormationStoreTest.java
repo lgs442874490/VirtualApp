@@ -479,7 +479,7 @@ public class FormationStoreTest {
         assertFalse("坐标旧键清掉", out.has("target_point"));
         assertFalse("d_sec 旧键清掉", out.has("d_sec"));
         assertFalse("顶层旧 intercept 清掉（避免 OR 残留）", out.has("intercept"));
-        // 批次11：本地模式镜像开关（演练=dry_run → 只监测不驻防）
+        // 批次11：守护配置镜像开关（演练=dry_run → 只监测不驻防）
         JSONObject sub = out.getJSONObject("sub");
         assertTrue("监测开", sub.getBoolean("watch"));
         assertFalse("演练模式不自动驻防", sub.getBoolean("intercept"));

@@ -103,7 +103,7 @@ implements SprotoCodec {
 
     // ---------- 进程级 schema 缓存 ----------
     //
-    // 多角色常驻会话（RoleSessionKeeper）会创建多个 codec 实例，但全进程只读同一对 asset
+    // 多角色常驻会话会创建多个 codec 实例，但全进程只读同一对 asset
     // schema；各自解析会各持 ~1MB 重复对象。这里按 byte[] 引用缓存解析结果（解析一次、
     // overrides 应用一次，之后所有 codec 共享只读）。schema 对象加载完成后不再被写，共享安全。
 

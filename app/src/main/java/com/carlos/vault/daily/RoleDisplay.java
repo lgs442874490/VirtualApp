@@ -119,7 +119,7 @@ public final class RoleDisplay {
 
     /**
      * 服务器账号态（{@code sid}/{@code activeUid}）是否描述该角色行（纯函数，供
-     * 服务器模式下角色行/角色管理行渲染在线徽标）。
+     * 角色行/角色管理行渲染在线徽标）。
      *
      * <p>规则：
      * <ul>

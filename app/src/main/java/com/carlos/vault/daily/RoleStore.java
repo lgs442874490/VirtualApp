@@ -648,7 +648,7 @@ public class RoleStore {
 
     // ---------- 常驻在线（24h 会话开关，独立于每日自动日常；灰度期仅主力号开启） ----------
 
-    /** 该账号是否 24h 常驻在线（RoleSessionKeeper.syncOnline 依据；默认 false）。 */
+    /** 该账号是否 24h 常驻在线（服务器常驻会话 keep 开关依据；默认 false）。 */
     public static boolean keepOnline(Context ctx, String fpid) {
         return ctx.getSharedPreferences("daily_sched", Context.MODE_PRIVATE)
                 .getBoolean("keep:" + fpid, false);

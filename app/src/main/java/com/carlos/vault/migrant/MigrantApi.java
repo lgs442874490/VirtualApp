@@ -37,8 +37,6 @@ public final class MigrantApi {
     private static final String PATH = "/v1/vault/migrant";
     private static final String OP = "vaultMigrant";
 
-    /** 本地失败码：未开启服务器模式（与 VaultSync 的 server_mode_off 口径一致）。 */
-    public static final int CODE_SERVER_MODE_OFF = -1;
 
     /** action 常量（契约 §3，逐字照抄）。 */
     public static final String ACT_ACCOUNTS = "accounts";
@@ -257,10 +255,6 @@ public final class MigrantApi {
         }
         if (who == null || !who.valid()) {
             if (cb != null) cb.onResult(-1, "缺少账号或角色信息，请重新选择角色", null);
-            return;
-        }
-        if (!VaultSync.isServerMode(app)) {
-            if (cb != null) cb.onResult(CODE_SERVER_MODE_OFF, "未开启服务器模式", null);
             return;
         }
         Map<String, Object> f = VaultSync.signedCommonFields(app);

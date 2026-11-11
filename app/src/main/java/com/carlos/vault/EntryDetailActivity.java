@@ -419,7 +419,7 @@ public class EntryDetailActivity extends Activity {
             nm.setEllipsize(android.text.TextUtils.TruncateAt.END);
             mid.addView(nm);
             // 统一角色标签已含服务器/联盟/昵称，不再追加元数据行
-            // 统一状态行（服务器模式 cachedStatusOf / 本地模式会话快照；与账号页同源）
+            // 统一状态行（服务器 cachedStatusOf；与账号页同源）
             TextView stv = new TextView(this);
             String[] st = RoleManagerSheet.roleStatusLabel(this, acc, r);
             stv.setText(st[0]);
@@ -1601,16 +1601,12 @@ public class EntryDetailActivity extends Activity {
      * <p>背景：宿主重装/清数据会带走本地 token，而服务器 `/v1/vault/status` 只回
      * {@code hasToken} 布尔、历史上没有读取通道，用户只能重贴 token 或手动登录一次
      * （见 2026-10-25 分身登录闪退排查）。新接口 {@code POST /v1/vault/token/get}
-     * （OP=vaultTokenGet，ApiSign 验签）提供读取；本入口仅在服务器模式下可用。
+     * （OP=vaultTokenGet，ApiSign 验签）提供读取。
      *
      * <p>错误码：1005=服务器没有该账号 token（应重贴/原生登录）；1004=服务器没有该号ID；
      * 其余网络/验签错误按 message 提示。日志纪律：接口层不打印 token 明文。
      */
     private void restoreTokenFromServer() {
-        if (!VaultSync.isServerMode(this)) {
-            toast("当前未开启服务器模式，无法从服务器恢复");
-            return;
-        }
         final String fpid = acc.fpid == null ? "" : acc.fpid.trim();
         if (fpid.isEmpty()) {
             toast("入口没有号 ID：请先「设置 token」或原生登录一次");

@@ -10,7 +10,7 @@ import org.json.JSONObject;
  * 网页版为每个角色（accountRoleId）稳定派生独立的 {@code device_id}/{@code distinct_id}，
  * 因此同账号同服多角色可长期同时在线。
  *
- * <p><b>共用同一份实现</b>：App（本地/降级模式）与 vault-server（服务器模式）都调用本类，
+ * <p><b>共用同一份实现</b>：App（容器登录）与 vault-server 都调用本类，
  * 避免两端各写一份导致规则漂移——同一角色在两种模式下必须得到同一台"设备"。
  *
  * <p>只改 {@code device_id}/{@code distinct_id}；{@code ip}/机型保持账号级（原版 scoping

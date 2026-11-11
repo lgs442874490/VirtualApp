@@ -313,8 +313,7 @@ public class HomeActivity extends AccountVaultActivity {
     }
 
     void onEngineReady() {
-        // 统一自动化：客户端不再本地执行任务，启动即锁定服务器模式。
-        VaultSync.ensureServerMode(this);
+        // 统一自动化：客户端不再本地执行任务，自动化固定由 vault-server 执行。
         refreshAllPages();
         // 打开即上传身份库并拉回服务器状态；本地不再补跑日常。
         new Thread(this::kickFullSync, "fullsync-kick").start();
@@ -371,7 +370,6 @@ public class HomeActivity extends AccountVaultActivity {
         if (System.currentTimeMillis() - lastFull < 10 * 60_000L) return;   // 10分钟防抖
         fullSyncing = true;
         try {
-            VaultSync.ensureServerMode(this);
             VaultSync.syncAll(this);
             VaultSync.fetchState(this, (code, message, data) -> {
                 getSharedPreferences("home", MODE_PRIVATE).edit()
@@ -474,11 +472,10 @@ public class HomeActivity extends AccountVaultActivity {
     // ================= 账号池轮询（M2 契约 §3.2） =================
 
     /**
-     * 启动 5s 轮询：仅服务器模式；首拍立即请求（进入账号页/操作后状态 ≤2s 可见）。
+     * 启动 5s 轮询；首拍立即请求（进入账号页/操作后状态 ≤2s 可见）。
      * 重复调用幂等（onResume 与 switchTab 都会触发）。
      */
     private void startPoolPolling() {
-        if (!VaultSync.isServerMode(this)) return;
         // 批次7：账号池在线状态/批量登录属 T2 会员能力，普通版不做轮询（也不显示状态说明）
         if (!gate(FeatureGate.Feature.AUTOMATION_STATUS)) return;
         if (poolPolling) return;
@@ -720,10 +717,8 @@ public class HomeActivity extends AccountVaultActivity {
             }
             boolean on = todayAutoSwitch.isOn();
             RoleStore.saveAutomation(this, cra.fpid, on);
-            VaultSync.ensureServerMode(this);
             VaultSync.onAccountsChanged(this);
-            com.carlos.vault.daily.RoleSessionKeeper.get(this).start();
-            com.carlos.vault.daily.RoleSessionKeeper.get(this).syncOnline();
+            VaultSync.fetchState(this);
             toast(on ? "自动化任务已开启 · 服务器执行" : "自动化任务已关闭");
             refreshToday();
             refreshTasks();
@@ -1294,7 +1289,7 @@ public class HomeActivity extends AccountVaultActivity {
         ed.apply();
         // 关键：同步账号激活角色（RoleStore.activeRole）。activeRole 是功能开关读写
         // （fnOn/setFnOn 经 activeSid）、功能详情页 sid 兜底、多角色竞速会话的主角色指纹
-        // 源（RoleSessionKeeper 竞速登录时 roleIdentitySeed 以 activeRole 判主角色）的
+        // 源（服务器常驻会话建立时 roleIdentitySeed 以 activeRole 判主角色）的
         // 事实源——若只改 currentRoleKey，切换后会出现"页面徽章跟新角色、配置/指纹跟旧角色"
         // 的分裂（真机事故：k888→k913 后兵营训练档位仍显示 k888 的 t3）。
         try {
@@ -1585,24 +1580,11 @@ public class HomeActivity extends AccountVaultActivity {
             new Thread(() -> {
                 String text;
                 int color;
-                com.carlos.vault.daily.RoleSessionKeeper.LiveSession cur = null;
-                try {
-                    for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
-                            : com.carlos.vault.daily.RoleSessionKeeper.get(HomeActivity.this)
-                            .sessionsSnapshot()) {
-                        if (onlineAcc.fpid != null && onlineAcc.fpid.equals(ls.fpid)
-                                && ls.sid == curSidF) {
-                            cur = ls;
-                            break;
-                        }
-                    }
-                } catch (Throwable ignored) {
-                }
-                // 服务器模式（2026-11-08 修复）：优先按 (fpid,sid,uid) 取账号池 per-role 运行态，
+                // 服务器（2026-11-08 修复）：优先按 (fpid,sid,uid) 取账号池 per-role 运行态，
                 // 与账号页/服务端 /accounts 同一数据源。今日页此前只拿账号级单会话 status，
                 // 同服双角色（sid 相同）会把另一个角色/账号级状态显示成本角色，两页对不上。
                 String[] poolLabel = null;
-                if (VaultSync.isServerMode(HomeActivity.this) && onlineAcc.fpid != null) {
+                if (onlineAcc.fpid != null) {
                     try {
                         java.util.Map<String, org.json.JSONObject> byFpid =
                                 com.carlos.vault.AccountPoolCache.accountsByFpid(
@@ -1613,9 +1595,8 @@ public class HomeActivity extends AccountVaultActivity {
                     } catch (Throwable ignored) {
                     }
                 }
-                // 服务器模式回落：账号级状态缓存（本地无会话）；sid+uid 都要对得上
-                org.json.JSONObject srv = VaultSync.isServerMode(HomeActivity.this)
-                        && onlineAcc.fpid != null
+                // 账号级状态缓存回落（无 per-role 池数据时）；sid+uid 都要对得上
+                org.json.JSONObject srv = onlineAcc.fpid != null
                         ? VaultSync.cachedStatusOf(HomeActivity.this, onlineAcc.fpid) : null;
                 String srvSid = srv == null ? "" : srv.optString("sid", "");
                 long srvUid = srv == null ? 0L : parseLongSafe(srv.optString("activeUid", ""));
@@ -1632,24 +1613,6 @@ public class HomeActivity extends AccountVaultActivity {
                             : UiStyle.ON_BRAND_IDLE;
                 } else if (srv != null && srvRoleMatch) {
                     String st = srv.optString("state", "offline");
-                    if (com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(st)) {
-                        text = "● 日常在线";
-                        color = UiStyle.ON_BRAND_OK;
-                    } else if (com.carlos.vault.wjdr.WjdrEngine.STATE_RECOVERING.equals(st)) {
-                        text = "◌ 重连中";
-                        color = UiStyle.ON_BRAND_WARN;
-                    } else if (com.carlos.vault.wjdr.WjdrEngine.STATE_TAKEOVER.equals(st)) {
-                        text = "△ 被顶号暂停";
-                        color = UiStyle.ON_BRAND_WARN;
-                    } else if (com.carlos.vault.wjdr.WjdrEngine.STATE_NEED_TOKEN.equals(st)) {
-                        text = "⚠ 需重导token";
-                        color = UiStyle.ON_BRAND_ERR;
-                    } else {
-                        text = "○ 离线";
-                        color = UiStyle.ON_BRAND_IDLE;
-                    }
-                } else if (cur != null) {
-                    String st = cur.engine.sessionState();
                     if (com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(st)) {
                         text = "● 日常在线";
                         color = UiStyle.ON_BRAND_OK;
@@ -3258,52 +3221,36 @@ public class HomeActivity extends AccountVaultActivity {
 
     /**
      * 角色行在线<b>文案与口径</b>（返回 [文案, "on"/"off"]）：
-     * <ul>
-     *   <li><b>服务器模式</b>（第二轮 UI 统一的主口径）：账号态取
-     *       {@link VaultSync#cachedStatusOf}，按 sid+activeUid 匹配本行
-     *       （{@link RoleDisplay#roleMatchesServerStatus}）；文案走
-     *       {@link RoleDisplay#serverStateLabel}（在线/重连中/被顶号暂停/需重导token/
-     *       离线）——与今日页常驻状态、角色管理行同一状态源；</li>
-     *   <li><b>本地模式</b>（ legacy 兜底）：
-     *       <b>日常在线</b>（RoleSessionKeeper 协议常驻会话 online，fpid:sid 粒度）/
-     *       <b>游戏在线</b>（容器 live playerprefs uid 反查）/
-     *       <b>在线</b>（快照有效登录态 + 激活角色推断）/<b>离线</b>。</li>
-     * </ul>
+     * 账号态取 {@link VaultSync#cachedStatusOf}，按 sid+activeUid 匹配本行
+     * （{@link RoleDisplay#roleMatchesServerStatus}）；文案走
+     * {@link RoleDisplay#serverStateLabel}（在线/重连中/被顶号暂停/需重导token/离线）
+     * ——与今日页常驻状态、角色管理行同一状态源；未命中时回落到容器游玩/快照在线判断。
      */
     private String[] roleOnlineLabel(AccountStore.Account a, RoleStore.Role r, boolean accOn,
                                      long actSid, long actUid, boolean isLiveAcc, long liveUid) {
         try {
-            // 服务器模式（2026-11-08）：优先账号池 per-role 运行态（与今日页/服务端 /accounts 同源），
+            // 2026-11-08：优先账号池 per-role 运行态（与今日页/服务端 /accounts 同源），
             // 避免账号级单会话 status 在同服双角色时把另一个角色的状态套到本行。
-            if (VaultSync.isServerMode(this)) {
-                try {
-                    java.util.Map<String, org.json.JSONObject> byFpid =
-                            com.carlos.vault.AccountPoolCache.accountsByFpid(
-                                    VaultSync.cachedAccountPool(this));
-                    org.json.JSONObject poolAcc = byFpid == null ? null : byFpid.get(a.fpid);
-                    String[] lb = poolOnlineLabel(com.carlos.vault.AccountPoolCache.findRole(
-                            poolAcc, r.serverid, r.uid));
-                    if (lb != null) return lb;
-                } catch (Throwable ignored) {
-                }
-                org.json.JSONObject o = a.fpid == null ? null : VaultSync.cachedStatusOf(this, a.fpid);
-                if (o == null) return new String[]{"● 同步中", "off"};
-                String state = o.optString("state", "");
-                long statusSid = parseLongSafe(o.optString("sid", ""));
-                long statusUid = parseLongSafe(o.optString("activeUid", ""));
-                boolean match = RoleDisplay.roleMatchesServerStatus(
-                        r.serverid, r.uid, statusSid, statusUid, actSid, actUid);
-                if (!match) return new String[]{"● 离线", "off"};
-                boolean on = RoleDisplay.isServerOnline(state);
-                return new String[]{"● " + RoleDisplay.serverStateLabel(state), on ? "on" : "off"};
+            try {
+                java.util.Map<String, org.json.JSONObject> byFpid =
+                        com.carlos.vault.AccountPoolCache.accountsByFpid(
+                                VaultSync.cachedAccountPool(this));
+                org.json.JSONObject poolAcc = byFpid == null ? null : byFpid.get(a.fpid);
+                String[] lb = poolOnlineLabel(com.carlos.vault.AccountPoolCache.findRole(
+                        poolAcc, r.serverid, r.uid));
+                if (lb != null) return lb;
+            } catch (Throwable ignored) {
             }
-            for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
-                    : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
-                if (a.fpid != null && a.fpid.equals(ls.fpid) && ls.sid == r.serverid
-                        && com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
-                    return new String[]{"● 日常在线", "on"};
-                }
-            }
+            org.json.JSONObject o = a.fpid == null ? null : VaultSync.cachedStatusOf(this, a.fpid);
+            if (o == null) return new String[]{"● 同步中", "off"};
+            String state = o.optString("state", "");
+            long statusSid = parseLongSafe(o.optString("sid", ""));
+            long statusUid = parseLongSafe(o.optString("activeUid", ""));
+            boolean match = RoleDisplay.roleMatchesServerStatus(
+                    r.serverid, r.uid, statusSid, statusUid, actSid, actUid);
+            if (!match) return new String[]{"● 离线", "off"};
+            boolean on = RoleDisplay.isServerOnline(state);
+            return new String[]{"● " + RoleDisplay.serverStateLabel(state), on ? "on" : "off"};
         } catch (Throwable ignored) {
         }
         if (isLiveAcc && liveUid > 0 && r.uid > 0 && r.uid == liveUid) {
@@ -3507,19 +3454,6 @@ public class HomeActivity extends AccountVaultActivity {
         if (roles != null) for (RoleStore.Role r0 : roles) if (r0.enabled) enN++;
         int poolOn = poolAcc == null ? -1 : poolAcc.optInt("onlineCount", -1);
         boolean headOn = poolOn > 0 || accOn;
-        if (poolOn < 0 && !headOn) {
-            try {
-                for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
-                        : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
-                    if (a.fpid != null && a.fpid.equals(ls.fpid)
-                            && com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
-                        headOn = true;
-                        break;
-                    }
-                }
-            } catch (Throwable ignored) {
-            }
-        }
         final boolean accErr = st != null && st.length > 0 && "err".equals(st[0]);
         final String summary = "工作区 " + enN + " · 在线 "
                 + (poolOn >= 0 ? poolOn : (headOn ? 1 : 0)) + (accErr ? " · 异常" : "");
@@ -4576,10 +4510,8 @@ public class HomeActivity extends AccountVaultActivity {
             }
             boolean on = autoSwitch.isOn();
             RoleStore.saveAutomation(this, cur.fpid, on);
-            VaultSync.ensureServerMode(this);
             VaultSync.onAccountsChanged(this);
-            com.carlos.vault.daily.RoleSessionKeeper.get(this).start();
-            com.carlos.vault.daily.RoleSessionKeeper.get(this).syncOnline();
+            VaultSync.fetchState(this);
             toast(on ? "自动化任务已开启 · 服务器执行" : "自动化任务已关闭");
             refreshTasks();
         });
@@ -4625,58 +4557,29 @@ public class HomeActivity extends AccountVaultActivity {
         box.addView(taskRows);
     }
 
-    /** 今日页常驻徽标 + 互助卡状态（数据源：RoleSessionKeeper 快照 + alliance_help modState；后台线程调用）。 */
+    /** 今日页常驻徽标 + 互助卡状态（数据源：服务器状态 + alliance_help modState；后台线程调用）。 */
     private void refreshKeepIndicators(AccountStore.Account a) {
         try {
             if (a == null || a.fpid == null) return;
-            // 服务器模式：互助响应在 vault-server 上执行，状态经 fetchState 回写 mod:alliance_help，
-            // 这里按本地同款格式渲染（文案 + 今日已助 + 荣耀）
-            if (VaultSync.isServerMode(this)) {
-                org.json.JSONObject o = VaultSync.cachedStatusOf(this, a.fpid);
-                String st = o == null ? "" : o.optString("state", "");
-                org.json.JSONObject mod = com.carlos.vault.daily.FnParams
-                        .modState(this, a.fpid, currentRoleSid(), "alliance_help");
-                String helpText = mod.optString("help_all", "");
-                final String help;
-                if (!com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(st)) {
-                    help = RoleStore.keepOnline(this, a.fpid)
-                            ? "服务器会话建立中…" : "开启「24h 常驻在线」后由服务器自动响应盟友互助";
-                } else if (!helpText.isEmpty()) {
-                    int helpNum = mod.optInt("help_num", 0);
-                    long glory = mod.optLong("day_glory", 0);
-                    help = helpText
-                            + (helpNum > 0 ? " · 今日已助 " + helpNum : "")
-                            + (glory > 0 ? " · 荣耀 " + glory : "");
-                } else {
-                    help = "服务器常驻在线 · 互助自动响应中";
-                }
-                runOnUiThread(() -> {
-                    if (helpStatusText != null) helpStatusText.setText(help);
-                });
-                return;
-            }
+            // 互助响应在 vault-server 上执行，状态经 fetchState 回写 mod:alliance_help，
+            // 这里按服务器同款格式渲染（文案 + 今日已助 + 荣耀）
+            org.json.JSONObject o = VaultSync.cachedStatusOf(this, a.fpid);
+            String st = o == null ? "" : o.optString("state", "");
+            org.json.JSONObject mod = com.carlos.vault.daily.FnParams
+                    .modState(this, a.fpid, currentRoleSid(), "alliance_help");
+            String helpText = mod.optString("help_all", "");
             final String help;
-            long curSid = currentRoleSid();
-            com.carlos.vault.daily.RoleSessionKeeper.LiveSession hit = null;
-            for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession x
-                    : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
-                if (!a.fpid.equals(x.fpid)) continue;
-                if (!com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(x.engine.sessionState())) continue;
-                if (hit == null || x.sid == curSid) hit = x;
-                if (x.sid == curSid) break;
-            }
-            if (hit != null) {
-                org.json.JSONObject mod = com.carlos.vault.daily.FnParams
-                        .modState(this, a.fpid, hit.sid, "alliance_help");
-                String st = mod.optString("help_all", "");
+            if (!com.carlos.vault.wjdr.WjdrEngine.STATE_ONLINE.equals(st)) {
+                help = RoleStore.keepOnline(this, a.fpid)
+                        ? "服务器会话建立中…" : "开启「24h 常驻在线」后由服务器自动响应盟友互助";
+            } else if (!helpText.isEmpty()) {
                 int helpNum = mod.optInt("help_num", 0);
                 long glory = mod.optLong("day_glory", 0);
-                help = (st.isEmpty() ? "等待互助请求…" : st)
+                help = helpText
                         + (helpNum > 0 ? " · 今日已助 " + helpNum : "")
                         + (glory > 0 ? " · 荣耀 " + glory : "");
             } else {
-                help = RoleStore.keepOnline(this, a.fpid)
-                        ? "常驻连接建立中…" : "开启「24h 常驻在线」后自动响应盟友互助";
+                help = "服务器常驻在线 · 互助自动响应中";
             }
             runOnUiThread(() -> {
                 if (helpStatusText != null) helpStatusText.setText(help);
@@ -4696,7 +4599,6 @@ public class HomeActivity extends AccountVaultActivity {
         if (helpActionBtn != null) helpActionBtn.setEnabled(false);
         final AccountStore.Account facc = cur;
         // 统一自动化：互助也提交服务器执行（服务器常驻会话已有联盟互助推送响应）。
-        VaultSync.ensureServerMode(this);
         VaultSync.triggerAutomation(this, facc.fpid, "alliance_help", (code, message, data) -> {
             boolean ok = code == 0 && data != null && data.optBoolean("accepted", false);
             runOnUiThread(() -> {
@@ -4734,26 +4636,6 @@ public class HomeActivity extends AccountVaultActivity {
                     }
                 })
                 .setNegativeButton("取消", null)
-                .show();
-    }
-
-    /**
-     * 自动化执行位置（固定服务器）：2026-10 起客户端不再本地跑任务，
-     * 本页只提供状态说明与“立即同步”，不提供关闭服务器模式的入口。
-     */
-    private void showServerModePicker() {
-        VaultSync.ensureServerMode(this);
-        new android.app.AlertDialog.Builder(this, android.app.AlertDialog.THEME_DEVICE_DEFAULT_LIGHT)
-                .setTitle("自动化执行位置")
-                .setMessage("统一自动化任务固定由 vault-server 执行。\n\n"
-                        + "本机只负责：账号/token/配置上传、服务器状态展示、分身游玩。\n\n"
-                        + "如需立即对齐配置，点“立即同步”。")
-                .setPositiveButton("立即同步", (d, w) -> {
-                    VaultSync.syncAll(this);
-                    VaultSync.refreshStatus(this);
-                    toast("已触发同步（见运行日志/状态行）");
-                })
-                .setNegativeButton("关闭", null)
                 .show();
     }
 
@@ -4799,32 +4681,18 @@ public class HomeActivity extends AccountVaultActivity {
         }
     }
 
-    /** 常驻在线状态文案：当前账号各角色会话态（在线/重连中/被顶号暂停/需重导token）。 */
+    /** 常驻在线状态文案：当前账号的服务器会话态（在线/重连中/被顶号暂停/需重导token）。 */
     private String keepStatusText() {
         try {
             AccountStore.Account cur = taskAccount == null ? firstWorkspace() : taskAccount;
             if (cur == null || !RoleStore.keepOnline(this, cur.fpid)) return "未开启";
-            // 服务器模式：渲染 vault-server 回传的会话态
-            if (VaultSync.isServerMode(this)) {
-                org.json.JSONObject o = cur.fpid == null ? null : VaultSync.cachedStatusOf(this, cur.fpid);
-                if (o == null) return "服务器状态同步中…";
-                String st = o.optString("state", "offline");
-                String sid = o.optString("sid", "");
-                String head = sid.isEmpty() ? "" : sid + "区·";
-                // 文案映射统一走 RoleDisplay.serverStateLabel（账号页角色行/角色管理行同源）
-                return head + RoleDisplay.serverStateLabel(st) + " · 服务器";
-            }
-            StringBuilder sb = new StringBuilder();
-            for (com.carlos.vault.daily.RoleSessionKeeper.LiveSession ls
-                    : com.carlos.vault.daily.RoleSessionKeeper.get(this).sessionsSnapshot()) {
-                if (!cur.fpid.equals(ls.fpid)) continue;
-                // 状态字面量与 WjdrEngine.STATE_* 常量一致（online/recovering/takeover/need_token）；
-                // 文案同样走 RoleDisplay.serverStateLabel（本地口径去掉「· 服务器」后缀）
-                if (sb.length() > 0) sb.append("  ");
-                sb.append(ls.sid).append("区·")
-                        .append(RoleDisplay.serverStateLabel(ls.engine.sessionState()));
-            }
-            return sb.length() == 0 ? "连接建立中…" : sb.toString();
+            org.json.JSONObject o = cur.fpid == null ? null : VaultSync.cachedStatusOf(this, cur.fpid);
+            if (o == null) return "服务器状态同步中…";
+            String st = o.optString("state", "offline");
+            String sid = o.optString("sid", "");
+            String head = sid.isEmpty() ? "" : sid + "区·";
+            // 文案映射统一走 RoleDisplay.serverStateLabel（账号页角色行/角色管理行同源）
+            return head + RoleDisplay.serverStateLabel(st) + " · 服务器";
         } catch (Throwable t) {
             return "—";
         }
@@ -4913,7 +4781,7 @@ public class HomeActivity extends AccountVaultActivity {
             chip.setTypeface(Typeface.DEFAULT_BOLD);
         }
         int wsCnt = workspaceAccounts().size();
-        // 工作区口径 = 启用角色数（与执行端 runAccountRoles / RoleSessionKeeper 一致）。
+        // 工作区口径 = 启用角色数（与服务器执行端 runAccountRoles 一致）。
         // 旧文案把账号数冒充角色数（2 账号 4 启用角色时显示"仅对工作区的 2 个角色执行"）。
         int wsRoleCnt = 0;
         for (AccountStore.Account a : workspaceAccounts()) {
@@ -5478,13 +5346,10 @@ public class HomeActivity extends AccountVaultActivity {
                 () -> onWizardStep(0)));
         box.addView(mineRowIcon(UiStyle.Icon.CLOUD, "微信支付", "容器微信登录 / 充值",
                 this::doWechatPay));
-        // 批次7：顶号策略/服务器模式依赖服务端会话保活 = T2 会员能力，普通版不渲染
+        // 批次7：顶号策略依赖服务端会话保活 = T2 会员能力，普通版不渲染
         if (gate(FeatureGate.Feature.AUTOMATION_STATUS)) {
             box.addView(mineRowIcon(UiStyle.Icon.SHIELD, "顶号策略",
                     "协议会话被游戏客户端顶下线时怎么办", this::showTakeoverPolicyPicker));
-            box.addView(mineRowIcon(UiStyle.Icon.CLOUD, "服务器模式",
-                    (VaultSync.isServerMode(this) ? "已开启 · " : "未开启 · ")
-                            + "自动化跑在服务器", this::showServerModePicker));
         }
         box.addView(buildHotUpdateRow());
         if (gate(FeatureGate.Feature.KEEP_ALIVE)) {
@@ -6141,7 +6006,6 @@ public class HomeActivity extends AccountVaultActivity {
         runStartedAt = System.currentTimeMillis();
         runEndedAt = 0;
         showRunPanel(ws);
-        VaultSync.ensureServerMode(this);
         final java.util.concurrent.atomic.AtomicInteger left =
                 new java.util.concurrent.atomic.AtomicInteger(ws.size());
         for (final AccountStore.Account a : ws) {
