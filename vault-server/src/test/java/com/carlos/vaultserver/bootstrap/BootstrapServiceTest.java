@@ -694,7 +694,12 @@ public class BootstrapServiceTest {
 
     /** 情报事件条目（event_id=3001 英雄之旅区间，形状对齐 notify_intelligence_info）。 */
     private static Map<String, Object> intelEvent(long id, long status) {
-        return content("id", id, "status", status, "event_id", 3001L, "expire_ts", 0L);
+        return intelEvent(id, status, 0L);
+    }
+
+    /** 情报事件（type 字段决定是否支持快速战斗：新版只支持 type==3）。 */
+    private static Map<String, Object> intelEvent(long id, long status, long type) {
+        return content("id", id, "status", status, "type", type, "event_id", 3001L, "expire_ts", 0L);
     }
 
     /** 熔炉 7（情报门槛）+ 318 英雄大厅 + 空闲队列；目标等级 7（情报直通优先于完成态）。 */
@@ -758,14 +763,17 @@ public class BootstrapServiceTest {
     public void intel_fightIdle_hallReady() throws Exception {
         IntelPort port = new IntelPort();
         port.notifies.put(BootstrapService.NOTIFY_INTEL_INFO,
-                content("events", content("13", intelEvent(13L, 1L))));
-        BootstrapService svc = service(port, intelReadyLoad(1L), intelConfig());
+                content("events", content("13", intelEvent(13L, 1L, 3L))));
+        // 新版：只有 type==3 支持快速战斗，且需要真实队伍（topFiveHeroes）
+        java.util.Map<String, Object> load = new java.util.LinkedHashMap<>(intelReadyLoad(1L));
+        load.put("hero_list", List.of(content("id", 50006L, "lev", 10L)));
+        BootstrapService svc = service(port, load, intelConfig());
         Map<String, Object> r = svc.runNext();
         assertEquals("STARTED", r.get("status"));
         assertEquals("已快速完成 1 个英雄之旅情报（客户端默认小队）", r.get("message"));
         assertEquals(13L, r.get("intelligenceFought"));
         assertEquals(Map.of("id", 13L, "fight_heros_data",
-                        Map.of("source", 1L, "fight_heros", List.of(0L, 0L, 0L, 0L, 0L))),
+                        Map.of("source", 1L, "fight_heros", List.of(50006L, 0L, 0L, 0L, 0L))),
                 port.argsOf("req_intelligence_start_battle", 0));
         assertEquals(Map.of("id", 13L), port.argsOf("req_intelligence_end_battle", 0));
         assertEquals(0, port.count("req_upgrade_building"));
@@ -966,9 +974,10 @@ public class BootstrapServiceTest {
         ScriptedPort port = new ScriptedPort();
         // 钻石 100，木材缺口 25000（需 3 包，2 钻/包）
         port.when("req_loaddata", content("uid", 9001L, "res", content("101", 100L)));
-        port.when("req_shop_info", content("goods", List.of(
-                content("itemId", 100123L, "goodsId", 555L),
-                content("itemId", 100133L, "goodsId", 556L))));
+        // 新版结构：{info:{goods:{"id":{id, conf_id, grid_id}}}}，conf_id 经目录 configId 映射 itemId
+        // 木材包 configId=70110102 → itemId=100123
+        port.when("req_shop_info", content("info", content("id", 701L,
+                "goods", content("1", content("id", 555L, "conf_id", 70110102L, "grid_id", 1L)))));
         port.when("req_shop_buy", content("code", 0L));
 
         BootstrapService svc = new BootstrapService(port);

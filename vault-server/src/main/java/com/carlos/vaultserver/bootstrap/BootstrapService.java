@@ -299,6 +299,8 @@ public final class BootstrapService {
     private final java.util.Map<String, Long> furnitureOverrides = new java.util.concurrent.ConcurrentHashMap<>();
     /** 英雄动作连发计数（对齐新版 yieldTurn；阈值必须小于每轮步数 STEPS_PER_ROUND=8）。 */
     private int heroBurst;
+    /** 已见过的钻石最大值（资源 101 不一定每轮都推送，跨轮取最大值避免读到 0）。 */
+    private long knownDiamonds;
     /** 上次已领取的产出资源签名（避免同一批资源反复领取造成假进展）。 */
     private String lastProducedSignature = "";
     /** 已尝试过的兑换码（永久失败或已兑换，避免重复请求）。 */
@@ -340,7 +342,11 @@ public final class BootstrapService {
 
     /** 注入 loaddata 全量内容（对齐原版注册表自动同步；单号版由会话层手动喂）。 */
     public void syncLoadData(Map<String, Object> loadContent) {
+        BootstrapState previous = this.state;
         this.state = BootstrapState.fromLoadData(loadContent);
+        // 补齐本轮推送里缺失的字段（资源 101 钻石等只在登录时推一次）
+        this.state.mergeLegacyFrom(previous);
+        knownDiamonds = Math.max(knownDiamonds, Math.max(0L, this.state.resourceCount(101L)));
         // 重放本地乐观覆盖（2026-11-11 真实轮）：游戏侧对「家具已存在(154)」「家具已达建筑等级上限(153)」
         // 的响应不会改变推送里的家具数据，若每轮重建后不重放，planner 会反复规划同一动作形成死循环。
         for (Map.Entry<String, Long> e : furnitureOverrides.entrySet()) {
@@ -783,12 +789,13 @@ public final class BootstrapService {
             return result;
         }
         Map<Long, Long> goodsByItem = shopGoods();
-        long diamonds = Math.max(0L, requestLong("diamond"));
+        // 钻石余额：以当前 state 资源 101 为准（101=钻石，与新版 resourceCount(101L) 一致）
+        long diamonds = Math.max(knownDiamonds, Math.max(0L, state.resourceCount(101L)));
         if (retryAllowed("shop:diag")) {
             markRetry("shop:diag", 120_000L);
-            FileLog.info("[起号] 商店诊断：goods={} 钻石(res101)={} 背包钻石道具={} 缺口(肉/木/煤/铁)={}/{}/{}/{}",
-                    String.valueOf(goodsByItem), String.valueOf(diamonds),
-                    String.valueOf(diamondItemsInBag()),
+            FileLog.info("[起号] 商店诊断：商品数={} 钻石={} 背包钻石道具种类={} 缺口肉={} 木={} 煤={} 铁={}",
+                    String.valueOf(goodsByItem.size()), String.valueOf(diamonds),
+                    String.valueOf(diamondItemsInBag().size()),
                     String.valueOf(needMeat), String.valueOf(needWood),
                     String.valueOf(needCoal), String.valueOf(needIron));
         }
@@ -818,24 +825,58 @@ public final class BootstrapService {
     }
 
     /** 商店商品：itemId → goodsId（从 req_shop_info 的推送/响应里取）。 */
+    /**
+     * 商店商品（对齐新版 BootstrapShopService.currentGoods）：
+     * {@code req_shop_info{shop_id:701}} → {@code info.goods}（Map，key=槽位）→
+     * 每项 {@code {id, conf_id, grid_id, buy_count}}；{@code conf_id} 经目录
+     * {@code configId→itemId} 反查得到 itemId，goodsId 取条目 {@code id}。
+     */
     private Map<Long, Long> shopGoods() throws Exception {
         LinkedHashMap<Long, Long> out = new LinkedHashMap<>();
-        Map<String, Object> content = request(SHOP_INFO, Map.of("shop_id", COMMANDER_SHOP_ID)).getContent();
+        Map<String, Object> content = request(SHOP_INFO,
+                Map.of("shop_id", COMMANDER_SHOP_ID)).getContent();
         if (content == null) return out;
-        Object goods = firstNonEmpty(content.get("goods"), content.get("list"), content.get("data"));
-        if (goods instanceof Iterable) {
-            for (Object v : (Iterable<?>) goods) {
-                if (!(v instanceof Map)) continue;
-                Map<?, ?> m = (Map<?, ?>) v;
-                long itemId = number(m.get("itemId"));
-                long goodsId = number(m.get("goodsId"));
-                if (itemId <= 0L) itemId = number(m.get("item_id"));
-                if (goodsId <= 0L) goodsId = number(m.get("goods_id"));
-                if (itemId > 0L && goodsId > 0L) out.put(itemId, goodsId);
-            }
+        if (retryAllowed("shop:raw")) {
+            markRetry("shop:raw", 300_000L);
+            FileLog.info("[起号] req_shop_info keys={}", String.valueOf(content.keySet()));
         }
+        Map<String, Object> info = mapOf(content.get("info"));
+        Object goods = info.get("goods") != null ? info.get("goods") : content.get("goods");
+        collectShopGoods(goods, out);
         return out;
     }
+
+    /** 遍历 goods（Map/List 均可）：conf_id → itemId，goodsId = 条目 id。 */
+    private void collectShopGoods(Object raw, Map<Long, Long> out) {
+        if (raw == null) return;
+        if (raw instanceof Map) {
+            Map<?, ?> m = (Map<?, ?>) raw;
+            long goodsId = number(m.get("id"));
+            long confId = number(m.get("conf_id"));
+            long gridId = number(m.get("grid_id"));
+            long itemId = resolveShopItemId(confId, goodsId, gridId);
+            if (goodsId > 0L && itemId > 0L) {
+                out.put(itemId, goodsId);
+                return;
+            }
+            for (Object v : m.values()) collectShopGoods(v, out);
+            return;
+        }
+        if (raw instanceof Iterable) {
+            for (Object v : (Iterable<?>) raw) collectShopGoods(v, out);
+        }
+    }
+
+    /** conf_id → itemId（对齐新版 resolveItemId：configId 映射优先，回退直接匹配目录 itemId）。 */
+    private static long resolveShopItemId(long confId, long goodsId, long gridId) {
+        long byConfig = BootstrapShopCatalog.itemIdByConfigId(confId);
+        if (byConfig > 0L) return byConfig;
+        for (long candidate : new long[]{confId, goodsId, gridId}) {
+            if (candidate > 0L && BootstrapShopCatalog.priceOf(candidate) > 0L) return candidate;
+        }
+        return 0L;
+    }
+
 
     /** 按缺口购买某资源包（受钻石余额约束，单次最多 200 包）。 */
     private void buyForMissing(Map<Long, Long> goodsByItem, long packItemId, long missing,
@@ -1629,11 +1670,20 @@ public final class BootstrapService {
      * 失败吞掉返回 empty（不阻塞建筑主线）。成功文案对齐原版
      * 「已快速完成 1 个英雄之旅情报（客户端默认小队）」。
      */
+    /**
+     * 快速完成空闲情报（对齐新版 {@code fightIdleIntelligence}）：
+     * 只有 <b>type==3</b> 的事件支持快速战斗（新版 {@code IntelligenceQuestSupport.supportsQuickBattle}），
+     * 队伍用与探险相同的 {@link BootstrapState#topFiveHeroes()}（新版权威 clientSquad）；
+     * 此前未判 type 且传空队伍 [0,0,0,0,0] → 战斗必败。
+     */
     private Optional<Map<String, Object>> fightIdleIntelligence(Map<Long, Map<String, Object>> events) {
         Map<String, Object> target = null;
         for (Map<String, Object> event : events.values()) {
             long status = event.containsKey("status") ? number(event.get("status")) : 1L;
-            if (status == 1L) {
+            long type = number(event.get("type"));
+            // 仅 status==1（空闲）且 type==3（支持快速战斗）且未在退避期
+            if (status == 1L && type == 3L
+                    && retryAllowed("intel:" + number(event.get("id")))) {
                 target = event;
                 break;
             }
@@ -1642,17 +1692,22 @@ public final class BootstrapService {
             return Optional.empty();
         }
         long id = number(target.get("id"));
-        if (id <= 0L || state.level(HERO_HALL_ID) <= 0L) {
+        if (id <= 0L) {
             return Optional.empty();
+        }
+        if (!state.hasAnyHero()) {
+            return Optional.empty();   // 没有英雄打不了情报战
         }
         Map<String, Object> startPayload = Map.of("id", id,
                 "fight_heros_data", Map.of("source", 1L,
-                        "fight_heros", List.of(0L, 0L, 0L, 0L, 0L)));
+                        "fight_heros", state.topFiveHeroes()));
         try {
             request(INTEL_START_BATTLE_PROTOCOL, startPayload);
             request(INTEL_END_BATTLE_PROTOCOL, Map.of("id", id));
         } catch (ProtocolException exception) {
-            FileLog.warn("[起号] 发起情报战斗被拒绝 id={} code={}", id, exception.code());
+            markRetry("intel:" + id, 600_000L);   // 对齐新版：10 分钟后再试
+            FileLog.warn("[起号] 发起情报战斗被拒绝 id={} code={}（10 分钟后再试）",
+                    String.valueOf(id), String.valueOf(exception.code()));
             return Optional.empty();
         } catch (Exception exception) {
             FileLog.warn("[起号] 发起情报战斗失败 id={} error={}", id,

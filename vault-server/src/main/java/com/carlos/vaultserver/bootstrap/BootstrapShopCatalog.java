@@ -4,6 +4,7 @@ import com.carlos.vaultserver.FileLog;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.Map;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -20,8 +21,43 @@ public final class BootstrapShopCatalog {
 
     private static final String RESOURCE = "/bootstrap/daily-town-shop-catalog.json";
     private static volatile Map<Long, Long> priceByItemId;
+    /** configId → itemId（商店响应里给的是 conf_id，需要反查 itemId）。 */
+    private static volatile Map<Long, Long> itemIdByConfigId;
 
     private BootstrapShopCatalog() {
+    }
+
+    /** configId → itemId（对齐新版 BootstrapShopService.itemIdByConfigId）。未知返回 0。 */
+    public static long itemIdByConfigId(long configId) {
+        Map<Long, Long> m = configToItem();
+        Long v = m.get(configId);
+        return v == null ? 0L : v;
+    }
+
+    private static Map<Long, Long> configToItem() {
+        Map<Long, Long> local = itemIdByConfigId;
+        if (local != null) return local;
+        synchronized (BootstrapShopCatalog.class) {
+            if (itemIdByConfigId != null) return itemIdByConfigId;
+            LinkedHashMap<Long, Long> out = new LinkedHashMap<>();
+            try (InputStream in = BootstrapShopCatalog.class.getResourceAsStream(RESOURCE)) {
+                if (in != null) {
+                    String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+                    org.json.JSONArray arr = new org.json.JSONArray(text);
+                    for (int i = 0; i < arr.length(); i++) {
+                        org.json.JSONObject item = arr.optJSONObject(i);
+                        if (item == null) continue;
+                        long configId = item.optLong("configId", 0L);
+                        long itemId = item.optLong("itemId", 0L);
+                        if (configId > 0L && itemId > 0L) out.put(configId, itemId);
+                    }
+                }
+            } catch (Throwable t) {
+                FileLog.warn("商店目录 configId 映射解析失败：{}", String.valueOf(t.getMessage()));
+            }
+            itemIdByConfigId = out;
+            return itemIdByConfigId;
+        }
     }
 
     /** 商品钻石价格；未知 itemId 返回 0（调用方据此跳过购买）。 */

@@ -165,6 +165,51 @@ public final class BootstrapState {
         }
     }
 
+    /**
+     * 用上一轮状态补齐本轮缺失字段（对齐新版 BehemothAccountState 的「长期持有 + 增量更新」语义）。
+     *
+     * <p>真实轮（2026-11-11）：资源 101（钻石）等字段只在登录时推送一次，若每轮
+     * {@code fromLoadData} 完全重建就会丢失 → 商店读到钻石 0 而无法购买。
+     * 规则：本轮有值的以本轮为准，本轮缺的用旧值补。
+     */
+    void mergeLegacyFrom(BootstrapState old) {
+        if (old == null) return;
+        for (Map.Entry<Long, Long> e : old.resources.entrySet()) {
+            resources.putIfAbsent(e.getKey(), e.getValue());
+        }
+        for (Map.Entry<Long, Long> e : old.backpackItems.entrySet()) {
+            backpackItems.putIfAbsent(e.getKey(), e.getValue());
+        }
+        for (Map.Entry<Long, Long> e : old.heroLevels.entrySet()) {
+            heroLevels.putIfAbsent(e.getKey(), e.getValue());
+        }
+        for (Map.Entry<Long, Long> e : old.heroFragments.entrySet()) {
+            heroFragments.putIfAbsent(e.getKey(), e.getValue());
+        }
+        for (Map.Entry<Long, Long> e : old.guideSteps.entrySet()) {
+            guideSteps.putIfAbsent(e.getKey(), e.getValue());
+        }
+        adventurePassed = Math.max(adventurePassed, old.adventurePassed);
+        heroReady = heroReady || old.heroReady;
+        guideReady = guideReady || old.guideReady;
+        adventureReady = adventureReady || old.adventureReady;
+        epicSearched = epicSearched || old.epicSearched;
+        // 家具/实例/类型/占用：本轮没有的建筑用旧的补齐（按建筑维度整体补）
+        for (Map.Entry<Long, ? extends Map<Long, Long>> e : old.furniture.entrySet()) {
+            furniture.putIfAbsent(e.getKey(), new java.util.LinkedHashMap<>(e.getValue()));
+        }
+        for (Map.Entry<Long, ? extends Map<Long, Long>> e : old.furnitureInstances.entrySet()) {
+            furnitureInstances.putIfAbsent(e.getKey(), new java.util.LinkedHashMap<>(e.getValue()));
+        }
+        for (Map.Entry<Long, ? extends Map<Long, Long>> e : old.furnitureTypes.entrySet()) {
+            furnitureTypes.putIfAbsent(e.getKey(), new java.util.LinkedHashMap<>(e.getValue()));
+        }
+        for (Map.Entry<Long, ? extends Map<Long, java.util.List<Long>>> e
+                : old.furnitureOccupants.entrySet()) {
+            furnitureOccupants.putIfAbsent(e.getKey(), new java.util.LinkedHashMap<>(e.getValue()));
+        }
+    }
+
     /** 背包物品数量（对齐新版 itemCount：物品表优先，回退资源表）。 */
     public long itemCount(long itemId) {
         Long v = backpackItems.get(itemId);
