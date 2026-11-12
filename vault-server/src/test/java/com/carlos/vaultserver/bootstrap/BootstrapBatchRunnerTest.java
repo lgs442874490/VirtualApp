@@ -130,6 +130,17 @@ public class BootstrapBatchRunnerTest {
                 "res", content("103", 100000, "101", 500));
     }
 
+    /** 熔炉 9 + 301→10 前置满足、资源为 0：51 三次后应 ENDED（R-06/R-07）。 */
+    private static Map<String, Object> loadFurnace9Ended() {
+        Map<String, Object> buildings = new LinkedHashMap<>();
+        buildings.put("301", content("bid", 301L, "lv", 9L, "status", 0L));
+        buildings.put("323", content("bid", 323L, "lv", 9L, "status", 0L));
+        buildings.put("329", content("bid", 329L, "lv", 1L, "status", 0L));
+        return content("uid", 8001L, "name", "起号号",
+                "buildings", buildings, "queues", new java.util.ArrayList<>(),
+                "res", content("101", 0));
+    }
+
     /** 合法加密串（RegistrationService.parseEncrypted 可解析：fpid\ntoken\nbase64(device)）。 */
     private static String encryptedOf(String fpid, String token) {
         String device = Base64.getEncoder().encodeToString(
@@ -236,6 +247,46 @@ public class BootstrapBatchRunnerTest {
         // 会话已关闭
         assertEquals(1, engines.size());
         assertTrue(engines.get(0).closed);
+    }
+
+    /**
+     * R-06 回归：runNext 返回 ENDED（资源耗尽）时，批次必须立即结束该号并置 ENDED 终态，
+     * 不再按「停滞」空转 10 分钟或误判 FAILED。
+     */
+    @Test
+    public void run_endedAccount_marksEndedImmediately() {
+        BootstrapBatchStore store = new BootstrapBatchStore(dataDir());
+        BootstrapReferral referral = new BootstrapReferral(dataDir());
+        EngineFactory factory = (fpid, sdkToken, serverId) -> {
+            FakeEngine engine = new FakeEngine(8001L, serverId);
+            engines.add(engine);
+            ScriptedPort port = new ScriptedPort();
+            // 每轮 runLeveling 都会重新拉 loaddata：队列里备足多轮
+            for (int i = 0; i < 400; i++) {
+                port.when("req_loaddata", loadFurnace9Ended());
+            }
+            for (int i = 0; i < 600; i++) {
+                port.when("req_upgrade_building", content("code", 51L));
+            }
+            port.when("req_shop_info", content("info", content("id", 701L,
+                    "goods", content("1", content("id", 555L, "conf_id", 70110102L,
+                            "grid_id", 1L)))));
+            return new Session(engine, port);
+        };
+        // buyShopResources=true：51 时按商店购买结果判定 coverable（钻石 0 → 买不到 → 不可覆盖）
+        BootstrapConfig endedConfig = new BootstrapConfig(true, 1L, 10, true, false, true,
+                "", false, "");
+        BootstrapBatchRunner runner = runner(endedConfig, accounts("fp-ended"),
+                store, referral, factory, new ConcurrentHashMap<>());
+
+        runner.run();
+
+        assertEquals("ENDED 必须是该号终态（error=" + runner.entry(0).error + "）",
+                AccountState.ENDED, runner.entry(0).state);
+        assertEquals("ENDED 不计入 FAILED 统计", 0, runner.failCount());
+        assertTrue("ENDED 计入终态集合", BootstrapBatchRunner.isTerminal("ENDED"));
+        assertTrue("ENDED 文案应说明资源耗尽：" + runner.entry(0).error,
+                runner.entry(0).error.contains("资源"));
     }
 
     /** SUCCESS → 写回流清单（含 encrypted/batchId/uid/furnaceLevel/pulled=false 完整结构）。 */

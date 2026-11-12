@@ -340,8 +340,9 @@ public class BootstrapApiTest {
     @Test
     public void singleRunNext_holdVisibleAcrossRequests_doesNotRetryHeldAction() {
         ScriptedPort port = new ScriptedPort();
+        // 熔炉 2 <5：51 首发 + 补偿重试 + 一次钻石（R-07）→ 三次 51 后才命中 hold 分支
         port.when("req_upgrade_building", Map.of("code", 51L), Map.of("code", 51L),
-                Map.of("code", 0L));
+                Map.of("code", 51L), Map.of("code", 0L));
         String fpid = "fp-hold-" + System.nanoTime();
         BootstrapApi.ACTIVE.put(fpid, new Session(new FakeEngine(), port));
         try {
@@ -363,8 +364,8 @@ public class BootstrapApiTest {
                     retriedHeld++;
                 }
             }
-            assertEquals("被 hold 的民居1 动作只应出现在首次请求（51 首发 + 补偿重试）",
-                    2, retriedHeld);
+            assertEquals("被 hold 的民居1 动作只应出现在首次请求（51 首发 + 补偿重试 + 一次钻石）",
+                    3, retriedHeld);
         } finally {
             BootstrapApi.ACTIVE.remove(fpid);
             BootstrapHoldStore.shared().clearScope(fpid);

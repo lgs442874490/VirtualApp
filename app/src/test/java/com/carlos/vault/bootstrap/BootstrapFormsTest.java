@@ -175,6 +175,15 @@ public class BootstrapFormsTest {
         assertFalse(BootstrapForms.isTerminalBatch(null));
     }
 
+    /** R-06（P2-3）：ENDED 展示为「已结束（资源不足）」+ warn 色，四处映射一致。 */
+    @Test
+    public void endedState_mappedEverywhere() {
+        assertEquals("已结束（资源不足）", BootstrapForms.stateText("ENDED"));
+        assertEquals("warn", BootstrapForms.badgeType("ENDED"));
+        assertEquals("已结束（资源不足）", BootstrapForms.accountStateText("ENDED"));
+        assertEquals("已结束（资源不足）", BootstrapForms.batchStateText("ENDED"));
+    }
+
     // ================= 其它 =================
 
     @Test

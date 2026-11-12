@@ -200,6 +200,8 @@ public final class BootstrapForms {
                 return "成功";
             case "COMPLETED":
                 return "已完成";
+            case "ENDED":
+                return "已结束（资源不足）";
             case "FAILED":
                 return "失败";
             case "CANCELLED":
@@ -214,6 +216,7 @@ public final class BootstrapForms {
         if ("SUCCESS".equals(state) || "COMPLETED".equals(state)) return "ok";
         if ("RUNNING".equals(state)) return "run";
         if ("CREATING".equals(state)) return "wait";
+        if ("ENDED".equals(state)) return "warn";
         if ("FAILED".equals(state)) return "err";
         if ("CANCELLED".equals(state)) return "warn";
         return "idle";
@@ -234,7 +237,7 @@ public final class BootstrapForms {
         }
     }
 
-    /** 起号单号状态：PENDING/CREATING/RUNNING/SUCCESS/FAILED → 等待中/建号中/执行中/成功/失败。 */
+    /** 起号单号状态：PENDING/CREATING/RUNNING/SUCCESS/FAILED/ENDED → 等待中/建号中/执行中/成功/失败/已结束。 */
     public static String accountStateText(String state) {
         if (state == null) return "等待中";
         switch (state) {
@@ -244,6 +247,8 @@ public final class BootstrapForms {
                 return "执行中";
             case "SUCCESS":
                 return "成功";
+            case "ENDED":
+                return "已结束（资源不足）";
             case "FAILED":
                 return "失败";
             default:
@@ -251,7 +256,7 @@ public final class BootstrapForms {
         }
     }
 
-    /** 批次根状态：等待中 / 执行中 / 已完成 / 失败 / 已取消。 */
+    /** 批次根状态：等待中 / 执行中 / 已完成 / 失败 / 已取消 / 已结束（资源不足）。 */
     public static String batchStateText(String state) {
         if (state == null) return "等待中";
         switch (state) {
@@ -259,6 +264,8 @@ public final class BootstrapForms {
                 return "执行中";
             case "COMPLETED":
                 return "已完成";
+            case "ENDED":
+                return "已结束（资源不足）";
             case "FAILED":
                 return "失败";
             case "CANCELLED":

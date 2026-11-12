@@ -49,11 +49,12 @@ public final class BootstrapBatchRunner {
     public enum BatchState { WAITING, RUNNING, COMPLETED, FAILED, CANCELLED }
 
     /** 单号状态（任务书 §2.2；TRANSFERRED 为预留位，M4b 不产生）。 */
-    public enum AccountState { PENDING, CREATING, RUNNING, SUCCESS, FAILED }
+    public enum AccountState { PENDING, CREATING, RUNNING, SUCCESS, FAILED, ENDED }
 
     /** 终态集合（批次不可再推进）。 */
     public static boolean isTerminal(String state) {
-        return "COMPLETED".equals(state) || "FAILED".equals(state) || "CANCELLED".equals(state);
+        return "COMPLETED".equals(state) || "FAILED".equals(state) || "CANCELLED".equals(state)
+                || "ENDED".equals(state);
     }
 
     private static final DateTimeFormatter TS =
@@ -578,9 +579,8 @@ public final class BootstrapBatchRunner {
                     notifyField(port, "notify_adventure_pve_info", "adventure_pve_info"));
             // 新手引导（新版 BootstrapTutorialState 数据源）
             putIfPresent(merged, "guide_list", notifyField(port, "notify_guide_init", "data"));
-            // 资源增量更新（开箱/领奖后到账的唯一通道；增量语义）
-            putIfPresent(merged, "res_update",
-                    notifyField(port, "notify_resource_update", "data"));
+            // 资源增量更新（开箱/领奖后到账的唯一通道；增量语义）由 syncLoadData 经
+            // ProtocolPort.consumeResourceUpdate() 从引擎累积缓冲消费（R-05），此处不再合成。
             // 成长/章节任务（可领奖励 → 起号阶段资源主来源）
             putIfPresent(merged, "growth_list", notifyField(port, "notify_growthquests", "data"));
             putIfPresent(merged, "chapter_list", notifyField(port, "notify_chapterquests", "data"));
@@ -703,6 +703,21 @@ public final class BootstrapBatchRunner {
             }
             if (furnace >= target) {
                 entry.state = AccountState.SUCCESS;
+                return;
+            }
+            // 需求 R-06：资源耗尽 ENDED 为终态——立即结束该号，
+            // 不再按「停滞」空转 MAX_IDLE_ROUNDS（10 分钟）或误判 FAILED。
+            if (stateView != null && "ENDED".equals(String.valueOf(stateView.get("runState")))) {
+                String reason = stateView.get("blockedReason") == null ? ""
+                        : String.valueOf(stateView.get("blockedReason")).trim();
+                if (reason.isEmpty() || "null".equals(reason)) {
+                    reason = String.valueOf(stateView.getOrDefault("message", "资源耗尽，起号结束"));
+                }
+                entry.state = AccountState.ENDED;
+                entry.error = reason;
+                entry.steps.add("已结束：" + reason);
+                FileLog.info("起号批次 {} 账号资源耗尽结束 fpid={} furnace={} reason={}",
+                        id, entry.fpid, String.valueOf(furnace), reason);
                 return;
             }
             if (started == 0) {

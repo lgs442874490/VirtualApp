@@ -217,6 +217,11 @@ public final class BootstrapApi {
             if (protos == null || protos.isEmpty()) return java.util.Set.of();
             return new java.util.LinkedHashSet<>(java.util.Arrays.asList(protos.split(",")));
         }
+
+        @Override
+        public Map<String, Object> consumeResourceUpdate() {
+            return engine.consumeResourceUpdate();
+        }
     }
 
     /**

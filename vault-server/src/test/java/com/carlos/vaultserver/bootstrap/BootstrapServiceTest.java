@@ -19,6 +19,7 @@ import java.util.Map;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
@@ -127,6 +128,35 @@ public class BootstrapServiceTest {
         LinkedHashMap<String, Object> m = new LinkedHashMap<>();
         for (int i = 0; i + 1 < kv.length; i += 2) m.put(String.valueOf(kv[i]), kv[i + 1]);
         return m;
+    }
+
+    private static long numberOf(Object raw) {
+        return com.carlos.vault.wjdr.protocol.ProtocolValueSupport.number(raw);
+    }
+
+    /** 熔炉 4 级（318 英雄大厅 1、310 3 级满足 301→5 前置）：验证熔炉 <5 也尝试钻石。 */
+    private static Map<String, Object> readyLoadFurnace4() {
+        Map<String, Object> buildings = new LinkedHashMap<>();
+        buildings.put("301", content("bid", 301L, "lv", 4L, "status", 0L));
+        buildings.put("318", content("bid", 318L, "lv", 1L, "status", 0L));
+        buildings.put("310", content("bid", 310L, "lv", 3L, "status", 0L));
+        buildings.put("302", content("bid", 302L, "lv", 1L, "status", 0L));
+        return content("uid", 8001L, "name", "旧名字", "buildings", buildings,
+                "queues", new ArrayList<>(), "res", content("103", 100000, "101", 500));
+    }
+
+    /** 熔炉 9 级 + 301→10 前置（323 9 级、329 1 级）：验证耗尽语义与 ENDED。 */
+    private static Map<String, Object> readyLoadFurnace9(long diamonds) {
+        Map<String, Object> buildings = new LinkedHashMap<>();
+        buildings.put("301", content("bid", 301L, "lv", 9L, "status", 0L));
+        buildings.put("323", content("bid", 323L, "lv", 9L, "status", 0L));
+        buildings.put("329", content("bid", 329L, "lv", 1L, "status", 0L));
+        buildings.put("302", content("bid", 302L, "lv", 1L, "status", 0L));
+        return content("uid", 8001L, "name", "旧名字", "buildings", buildings,
+                "furnitures", List.of(
+                        content("bid", 302L, "conf_fid", 401L, "lv", 4L),
+                        content("bid", 302L, "conf_fid", 402L, "lv", 4L)),
+                "queues", new ArrayList<>(), "res", content("103", 100000, "101", diamonds));
     }
 
     /** 就绪样本：熔炉 1 + 伐木场 1（熔炉 2 级前置已满足）+ 空闲队列 + 资源。 */
@@ -269,14 +299,15 @@ public class BootstrapServiceTest {
     @Test
     public void upgradeRejected_51_retryThenWaiting() throws Exception {
         ScriptedPort port = new ScriptedPort();
-        port.when("req_upgrade_building", content("code", 51L), content("code", 51L));
+        port.when("req_upgrade_building", content("code", 51L), content("code", 51L),
+                content("code", 51L));
         BootstrapService svc = service(port, readyLoad(1L, 1L), enabledConfig());
         Map<String, Object> r = svc.runNext();
         assertEquals("WAITING", r.get("status"));
         assertEquals("资源或道具不足，等待补充后重试：升级 大熔炉 到 2 级", r.get("message"));
         assertEquals(51, r.get("errorCode"));
-        // 51 → 补资源后重试一次（M4a 补给占位，背包未同步）
-        assertEquals(2, port.count("req_upgrade_building"));
+        // 51 → 补资源后重试一次 + 熔炉 <5 也尝试一次钻石（R-07）= 3 次
+        assertEquals(3, port.count("req_upgrade_building"));
         Map<String, Object> preparation = (Map<String, Object>) r.get("preparation");
         Map<String, Object> backpack = (Map<String, Object>) preparation.get("backpack");
         assertEquals(false, backpack.get("ready"));
@@ -360,7 +391,7 @@ public class BootstrapServiceTest {
     public void upgradeRejected_51_buildingDiamondFails_below9_waits() throws Exception {
         ScriptedPort port = new ScriptedPort();
         port.when("req_upgrade_building", content("code", 51L), content("code", 51L),
-                content("code", 51L));
+                content("code", 51L), content("code", 51L));
         BootstrapConfig cfg = new BootstrapConfig(true, 0L, 8, true, false, false,
                 "", false, "");
         BootstrapService svc = service(port, readyLoadFurnace7(), cfg);
@@ -368,7 +399,8 @@ public class BootstrapServiceTest {
         Map<String, Object> r = svc.runNext();
         assertEquals("WAITING", r.get("status"));
         assertTrue(String.valueOf(r.get("message")).startsWith("资源或道具不足"));
-        assertEquals(3, port.count("req_upgrade_building"));
+        // 首发 + 补偿重试 + 钻石两次（熔炉 ≥5，R-07）
+        assertEquals(4, port.count("req_upgrade_building"));
     }
 
     /**
@@ -378,7 +410,7 @@ public class BootstrapServiceTest {
     @Test
     public void upgradeRejected_51_buildingMarksHoldAndBuyCooldown() throws Exception {
         ScriptedPort port = new ScriptedPort();
-        for (int i = 0; i < 8; i++) {
+        for (int i = 0; i < 12; i++) {
             port.when("req_upgrade_building", content("code", 51L));
         }
         port.when("req_shop_info", content("info", content("id", 701L,
@@ -451,7 +483,8 @@ public class BootstrapServiceTest {
     @Test
     public void runNext_allActionsHeld_waitingNotCompleted() throws Exception {
         ScriptedPort port = new ScriptedPort();
-        port.when("req_upgrade_building", content("code", 51L), content("code", 51L));
+        port.when("req_upgrade_building", content("code", 51L), content("code", 51L),
+                content("code", 51L));
         MutableClock clock = new MutableClock(1_000_000L);
         BootstrapHoldStore holds = new BootstrapHoldStore(clock);
         BootstrapService svc = service(port, readyLoad(1L, 1L), enabledConfig(),
@@ -466,8 +499,8 @@ public class BootstrapServiceTest {
         assertFalse("全 hold 不得误报 COMPLETED", "COMPLETED".equals(second.get("status")));
         assertEquals("动作退避中，剩余 30 秒", second.get("message"));
         assertEquals(30L, second.get("holdRemainingSeconds"));
-        // 被跳过后不再发升级请求（仍为 51 补偿重试的 2 次）
-        assertEquals(2, port.count("req_upgrade_building"));
+        // 被跳过后不再发升级请求（仍为 51 首发 + 补偿重试 + 一次钻石 = 3 次）
+        assertEquals(3, port.count("req_upgrade_building"));
     }
 
     /** 必测 3：被跳过的动作不得刷新 hold；到期后必须恢复尝试。 */
@@ -504,14 +537,14 @@ public class BootstrapServiceTest {
     @Test
     public void runUntil_twoStartedThenWaitingOn51() throws Exception {
         ScriptedPort port = new ScriptedPort();
-        // 第 1、2 次升级成功，第 3 次（熔炉 1→2）双 51
+        // 第 1、2 次升级成功，第 3 次（熔炉 1→2）51：首发+重试+一次钻石
         port.when("req_upgrade_building", content("code", 0L), content("code", 0L),
-                content("code", 51L), content("code", 51L));
+                content("code", 51L), content("code", 51L), content("code", 51L));
         BootstrapService svc = service(port, readyLoad(0L, 0L), enabledConfig());
         Map<String, Object> summary = svc.runUntil(5);
         assertEquals(2, summary.get("started"));
-        // 前 2 步各 1 次 + 第 3 步 51 首发与重试各 1 次 = 4 次
-        assertEquals(4, port.count("req_upgrade_building"));
+        // 前 2 步各 1 次 + 第 3 步 51 首发/重试/钻石各 1 次 = 5 次
+        assertEquals(5, port.count("req_upgrade_building"));
         assertEquals("已连续执行 2 步；资源或道具不足，等待补充后重试：升级 大熔炉 到 2 级",
                 summary.get("message"));
         List<?> results = (List<?>) summary.get("results");
@@ -806,20 +839,27 @@ public class BootstrapServiceTest {
         assertEquals(true, s3.get("completed"));
     }
 
-    /** 2026-11-12 实跑回归：同一份 res_update 每轮只应用一次（避免资源表漂移）。 */
+    /**
+     * R-05 语义：同一份增量经引擎累积通道只能被消费一次（消费即清空），跨轮不会重复扣减。
+     * 原「字符串签名去重」由累积通道的消费语义替代（审查 P2-2：同内容两次真实增量不再被吞）。
+     */
     @Test
-    public void syncLoadData_resourceUpdateAppliedOnce() {
-        BootstrapService svc = service(new ScriptedPort(), Map.of(), enabledConfig());
-        Map<String, Object> load = new LinkedHashMap<>();
-        load.put("res", content("103", 1000L));
-        load.put("res_update", List.of(content("id", 103L, "count", -900L)));
-        svc.syncLoadData(load);
+    public void syncLoadData_resourceUpdateConsumedOnce() {
+        WjdrEngine engine = new WjdrEngine(null);
+        ScriptedPort port = new ScriptedPort() {
+            @Override
+            public Map<String, Object> consumeResourceUpdate() {
+                return engine.consumeResourceUpdate();
+            }
+        };
+        BootstrapService svc = service(port, content("res", content("103", 1000L)),
+                enabledConfig());
+        engine.accumulateResourceUpdate(content("data",
+                List.of(content("id", 103L, "count", -900L))));
+        svc.syncLoadData(Map.of());
         assertEquals(100L, svc.state().resourceCount(103L));
-        // 同一份增量再次喂入（不含 res 快照，模拟推送只带增量）：不重复扣减
-        Map<String, Object> again = new LinkedHashMap<>();
-        again.put("res_update", load.get("res_update"));
-        svc.syncLoadData(again);
-        assertEquals(100L, svc.state().resourceCount(103L));
+        svc.syncLoadData(Map.of());
+        assertEquals("消费即清空：第二轮不再重复扣减", 100L, svc.state().resourceCount(103L));
     }
 
     /**
@@ -833,6 +873,159 @@ public class BootstrapServiceTest {
         assertEquals(1000L, svc.state().resourceCount(103L));
         svc.syncLoadData(content("res_update", List.of(content("id", 103L, "count", -900L))));
         assertEquals("旧值 1000 + 增量 -900", 100L, svc.state().resourceCount(103L));
+    }
+
+    // ================= C2：R-05 资源增量累积通道 =================
+
+    /** R-05 验收：引擎累积两次相同增量，一次 syncLoadData 后资源减少 1800（而非 900）。 */
+    @Test
+    public void syncLoadData_consumesAccumulatedEngineChannel() {
+        WjdrEngine engine = new WjdrEngine(null);
+        ScriptedPort port = new ScriptedPort() {
+            @Override
+            public Map<String, Object> consumeResourceUpdate() {
+                return engine.consumeResourceUpdate();
+            }
+        };
+        BootstrapService svc = service(port, content("res", content("103", 2000L)),
+                enabledConfig());
+        // 构造（含首次 syncLoadData）之后再模拟两次推送
+        engine.accumulateResourceUpdate(content("data",
+                List.of(content("id", 103L, "count", -900L))));
+        engine.accumulateResourceUpdate(content("data",
+                List.of(content("id", 103L, "count", -900L))));
+        svc.syncLoadData(Map.of());
+        assertEquals("2000 + (-900) + (-900)", 200L, svc.state().resourceCount(103L));
+        // 消费即清空：再次同步不得重复扣减
+        svc.syncLoadData(Map.of());
+        assertEquals(200L, svc.state().resourceCount(103L));
+    }
+
+    /** R-05 边界：无推送（引擎通道返回 null）时回退 loadContent.res_update。 */
+    @Test
+    public void syncLoadData_fallsBackToContentWhenChannelMissing() {
+        BootstrapService svc = service(new ScriptedPort(), content("res", content("103", 1000L)),
+                enabledConfig());
+        svc.syncLoadData(content("res_update", List.of(content("id", 103L, "count", -300L))));
+        assertEquals(700L, svc.state().resourceCount(103L));
+    }
+
+    // ================= C2：R-07 资源耗尽语义 =================
+
+    /** R-07 验收 4：coverable/unsupplied 口径——煤/铁缺口不可覆盖。 */
+    @Test
+    public void buyMissingResources_reportsCoverableAndUnsupplied() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_loaddata", content("uid", 9001L, "res", content("101", 500L)));
+        port.when("req_shop_info", content("info", content("id", 701L,
+                "goods", content("1", content("id", 555L, "conf_id", 70110102L, "grid_id", 1L)))));
+        port.when("req_shop_buy", content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(port.request("req_loaddata", Map.of()).getContent());
+
+        Map<String, Object> woodOnly = svc.buyMissingResources(
+                List.of(new BuildingGateCatalog.Cost(103L, 25000L)));
+        assertEquals("只有木材且钻石够买：可覆盖", Boolean.TRUE, woodOnly.get("coverable"));
+        assertEquals(0, ((List<?>) woodOnly.get("unsupplied")).size());
+
+        Map<String, Object> withCoal = svc.buyMissingResources(List.of(
+                new BuildingGateCatalog.Cost(103L, 25000L),
+                new BuildingGateCatalog.Cost(104L, 100L)));
+        assertEquals("煤不在商店：不可覆盖", Boolean.FALSE, withCoal.get("coverable"));
+        List<?> unsupplied = (List<?>) withCoal.get("unsupplied");
+        assertTrue("unsupplied 应含煤矿缺口", unsupplied.stream().anyMatch(u ->
+                u instanceof Map && numberOf(((Map<?, ?>) u).get("resourceId")) == 104L));
+    }
+
+    /** R-07 验收 3：熔炉 <5 的建筑 51 也先尝试一次钻石升级（不再要求 >=5）。 */
+    @Test
+    public void upgradeRejected_51_furnace4_triesDiamondOnce() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        // 首发 51 → 补资源后重试 51 → 钻石兜底成功
+        port.when("req_upgrade_building", content("code", 51L), content("code", 51L),
+                content("code", 0L));
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 5, true, false, false,
+                "", false, "");
+        BootstrapService svc = service(port, readyLoadFurnace4(), cfg);
+
+        Map<String, Object> r = svc.runNext();
+        assertEquals("STARTED", r.get("status"));
+        assertEquals(true, r.get("diamondFallback"));
+        assertEquals(3, port.count("req_upgrade_building"));
+        assertEquals("钻石升级载荷", Map.of("bid", 301L, "use_diamond", true, "qid", 0L),
+                port.argsOf("req_upgrade_building", 2));
+    }
+
+    /** R-07 验收 2：coverable=true 时耗尽计数不增（三次 51 仍 WAITING，不 ENDED）。 */
+    @Test
+    public void upgradeRejected_51_coverable_trueDoesNotAccumulate() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 12; i++) {
+            port.when("req_upgrade_building", content("code", 51L));
+        }
+        port.when("req_shop_info", content("info", content("id", 701L,
+                "goods", content("1", content("id", 555L, "conf_id", 70110102L, "grid_id", 1L)))));
+        port.when("req_shop_buy", content("code", 0L));
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 9, true, false, true,
+                "", false, "");
+        BootstrapService svc = service(port, readyLoadFurnace9(500L), cfg);
+
+        for (int i = 0; i < 3; i++) {
+            Map<String, Object> r = svc.levelBuilding(302L);
+            assertEquals("第 " + (i + 1) + " 次 51 仍应 WAITING", "WAITING", r.get("status"));
+        }
+        assertNotEquals("可覆盖时不得 ENDED", "ENDED",
+                svc.status().get("runState"));
+    }
+
+    /** R-07/R-06 验收 1：coverable=false（煤/铁缺口）连续 3 次 → ENDED 终态。 */
+    @Test
+    public void upgradeRejected_51_coverableFalse_threeTimes_ended() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 12; i++) {
+            port.when("req_upgrade_building", content("code", 51L));
+        }
+        port.when("req_shop_info", content("info", content("id", 701L,
+                "goods", content("1", content("id", 555L, "conf_id", 70110102L, "grid_id", 1L)))));
+        port.when("req_shop_buy", content("code", 0L));
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 10, true, false, true,
+                "", false, "");
+        BootstrapService svc = service(port, readyLoadFurnace9(0L), cfg);
+
+        Map<String, Object> first = svc.runNext();
+        assertEquals("WAITING", first.get("status"));
+        Map<String, Object> second = svc.runNext();
+        assertEquals("WAITING", second.get("status"));
+        Map<String, Object> third = svc.runNext();
+        assertEquals("ENDED", third.get("status"));
+        assertEquals(true, third.get("resourceEnded"));
+
+        Map<String, Object> status = svc.status();
+        assertEquals("ENDED", status.get("runState"));
+        assertEquals(true, status.get("resourceEnded"));
+        assertTrue("ENDED 文案应说明资源耗尽：" + status.get("message"),
+                String.valueOf(status.get("message")).contains("资源"));
+
+        Map<String, Object> endedAgain = svc.runNext();
+        assertEquals("ENDED 为终态，不可再推进", "ENDED", endedAgain.get("status"));
+    }
+
+    /** R-07 验收 5：resourceExhaustedAttempts 只在钻石直升成功时清零，普通动作成功不清零。 */
+    @Test
+    public void successfulAction_doesNotResetExhaustedAttempts() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        BootstrapSessionState store = new BootstrapSessionState();
+        BootstrapService svc = new BootstrapService(port, new BootstrapPlanner(),
+                BootstrapCatalog.combined(), NO_SLEEP, new BootstrapHoldStore(), "fp-attempts", store);
+        svc.applyConfig(enabledConfig());
+        svc.syncLoadData(readyLoad(1L, 1L));
+        store.holder("fp-attempts").incrementResourceExhaustedAttempts();
+        store.holder("fp-attempts").incrementResourceExhaustedAttempts();
+
+        Map<String, Object> ok = svc.runNext();
+        assertEquals("STARTED", ok.get("status"));
+        assertEquals("普通动作成功不得清零耗尽计数", 2,
+                store.holder("fp-attempts").resourceExhaustedAttempts());
     }
 
     @Test
@@ -1137,7 +1330,8 @@ public class BootstrapServiceTest {
     @Test
     public void usePacks_notEnough_usedAllStillWaiting() throws Exception {
         ScriptedPort port = new ScriptedPort();
-        port.when("req_upgrade_building", content("code", 51L), content("code", 51L));
+        port.when("req_upgrade_building", content("code", 51L), content("code", 51L),
+                content("code", 51L));
         // 1 个 100 包开完仍缺 80 → 重试仍 51 → WAITING（带已开包摘要）
         BootstrapService svc = service(port, packLoad(content("100021", 1L)), enabledConfig());
         Map<String, Object> r = svc.runNext();
@@ -1153,7 +1347,8 @@ public class BootstrapServiceTest {
     @Test
     public void usePacks_backpackSyncedButNoPacks_zeroUsed() throws Exception {
         ScriptedPort port = new ScriptedPort();
-        port.when("req_upgrade_building", content("code", 51L), content("code", 51L));
+        port.when("req_upgrade_building", content("code", 51L), content("code", 51L),
+                content("code", 51L));
         // 背包已同步但无任何资源包 → used 空 → WAITING 文案无开包后缀
         BootstrapService svc = service(port, packLoad(content()), enabledConfig());
         Map<String, Object> r = svc.runNext();

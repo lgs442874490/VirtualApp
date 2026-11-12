@@ -69,8 +69,6 @@ final class BootstrapSessionState {
         private String finishPassDay = "";
         /** 增量应用序号（R-05 累积通道的消费流水，诊断/可观测用）。 */
         private long lastResUpdateSeq;
-        /** C1 过渡期的 res_update 签名去重（R-05 累积通道落地后删除）。 */
-        private String lastResUpdateSignature = "";
         /** 永久失败的钻石道具（R-11：仅 code=51 加入）。 */
         private final Set<Long> failedDiamondItems = ConcurrentHashMap.newKeySet();
         /** 是否已 ENDED（R-06 终态）。 */
@@ -127,14 +125,6 @@ final class BootstrapSessionState {
         /** 消费一次资源增量：返回自增后的流水号（R-05 可观测）。 */
         synchronized long nextResUpdateSeq() {
             return ++lastResUpdateSeq;
-        }
-
-        synchronized String lastResUpdateSignature() {
-            return lastResUpdateSignature;
-        }
-
-        synchronized void setLastResUpdateSignature(String signature) {
-            lastResUpdateSignature = signature == null ? "" : signature;
         }
 
         /** 永久失败的钻石道具（并发 set，调用方直接 contains/add）。 */

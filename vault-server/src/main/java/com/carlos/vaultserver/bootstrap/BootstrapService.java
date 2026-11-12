@@ -188,6 +188,14 @@ public final class BootstrapService {
         default java.util.Set<String> notifyProtos() {
             return java.util.Set.of();
         }
+
+        /**
+         * 取走自上次消费以来的资源增量累积（需求 R-05：同 id 累加），形状
+         * {@code {data:[{id,count}]}}；无推送返回 {@code null}（调用方回退 loadContent）。
+         */
+        default Map<String, Object> consumeResourceUpdate() {
+            return null;
+        }
     }
 
     /** 可注入睡眠（runUntil 步间等待空闲队列）：单测注入空实现跳时。 */
@@ -383,15 +391,15 @@ public final class BootstrapService {
     /** 注入 loaddata 全量内容（对齐原版注册表自动同步；单号版由会话层手动喂）。 */
     public void syncLoadData(Map<String, Object> loadContent) {
         Map<String, Object> content = loadContent == null ? Map.of() : loadContent;
-        Object resUpdate = content.get("res_update");
-        // C1 过渡：同一份增量只应用一次（R-05 的累积通道落地后，本签名去重删除）。
-        if (resUpdate != null) {
-            String signature = String.valueOf(resUpdate);
-            if (signature.equals(session.lastResUpdateSignature())) {
-                resUpdate = null;
-            } else {
-                session.setLastResUpdateSignature(signature);
-            }
+        // 需求 R-05：优先消费引擎累积通道（同 id 多次推送已累加、消费即清空）；
+        // 通道缺失（单测回放/旧路径）时回退本轮 loadContent.res_update。
+        Object resUpdate = port.consumeResourceUpdate();
+        if (resUpdate instanceof Map && ((Map<?, ?>) resUpdate).get("data") != null) {
+            // 引擎通道形状 {data:[{id,count}]}：解包后交给 BootstrapState（与旧路径 list 同形）
+            resUpdate = ((Map<?, ?>) resUpdate).get("data");
+        }
+        if (resUpdate == null) {
+            resUpdate = content.get("res_update");
         }
         // 合并顺序（审查 P1-1 / 需求 R-01）：快照建表 → 补旧值 → 最后应用增量，
         // 否则无 res 快照的轮次会把增量写在 0 基线上，旧库存永远补不回来。
@@ -446,6 +454,7 @@ public final class BootstrapService {
         result.put("remainingSteps", plan.actions().stream().map(this::stepView).toList());
         result.put("blockedReason", plan.blockedReason());
         result.put("completed", state.furnaceLevel() >= config.targetFurnaceLevel());
+        result.put("resourceEnded", session.resourceEnded());
         result.put("runState", runState());
         result.put("message", runMessage());
         return result;
@@ -781,14 +790,14 @@ public final class BootstrapService {
             response = request(protocol(action), payload(cfg, action, queueId));
         } catch (ProtocolException exception) {
             if (exception.code() != ITEM_NOT_ENOUGH) {
-                return upgradeRejected(action, exception, preparation);
+                return upgradeRejected(cfg, action, exception, preparation);
             }
             // 51：背包资源包补资源后重试一次（M4b 实装 usePacks；商店未实现，重试仍失败走 WAITING 文案）
             preparation.putAll(topUpResources(cfg, action));
             try {
                 response = request(protocol(action), payload(cfg, action, queueId));
             } catch (ProtocolException retryException) {
-                return upgradeRejected(action, retryException, preparation);
+                return upgradeRejected(cfg, action, retryException, preparation);
             }
         }
         if (action.kind() == ActionKind.UPGRADE_BUILDING) {
@@ -804,7 +813,7 @@ public final class BootstrapService {
                     appliedLevel > 0L ? appliedLevel : action.toLevel());
         }
         FileLog.info("[起号] 已请求{}（instantDiamond={}）", action.label(), cfg.instantDiamond());
-        session.resetResourceExhaustedAttempts();
+        // 需求 R-07：耗尽计数只在钻石直升成功时清零；普通动作成功不再清零。
         Map<String, Object> result = actionResult("STARTED",
                 "已请求" + action.label() + backpackUseSummary(preparation));
         result.put("step", stepView(action));
@@ -841,7 +850,8 @@ public final class BootstrapService {
     }
 
     /** 升级被服务端拒绝的分支文案（806/119/51/120/其他，逐字对齐原版 upgradeRejected）。 */
-    private Map<String, Object> upgradeRejected(Action action, ProtocolException exception,
+    private Map<String, Object> upgradeRejected(BootstrapConfig cfg, Action action,
+                                                ProtocolException exception,
                                                 Map<String, Object> preparation) {        int code = exception.code();
         // 154：家具服务端已存在（本地未同步）→ 标记 1 级继续，不算失败（新版同语义）
         if (code == 154 && action.kind() == ActionKind.CREATE_FURNITURE) {
@@ -882,41 +892,9 @@ public final class BootstrapService {
             return locked;
         }
         if (code == ITEM_NOT_ENOUGH) {
-            // 网页版对齐（P0）：熔炉 ≥5 时建筑 51 先尝试钻石直升（use_diamond=true,qid=0），
-            // 而不是 30 分钟 hold。0→9 的 6→7、7→8、8→9 都依赖这一步。
-            if (action.kind() == ActionKind.UPGRADE_BUILDING && state.furnaceLevel() >= 5L) {
-                claimBackpackDiamonds();
-                Map<String, Object> byDiamond = upgradeWithDiamond(action);
-                if (byDiamond != null) {
-                    session.resetResourceExhaustedAttempts();
-                    preparation.put("diamondFallback", true);
-                    byDiamond.put("preparation", preparation);
-                    return byDiamond;
-                }
-                // 需求 R-03：钻石兜底失败后写 30s 动作退避 + 30s 购买冷却，
-                // 避免 runner 每 5s 重试、并在冷却内重复按动作全量成本买资源烧钻石。
-                String actionHoldKey = holdKey(action);
-                markRetry(actionHoldKey, ACTION_RETRY_MILLIS);
-                markRetry("buy:" + actionHoldKey, ACTION_RETRY_MILLIS);
-                if (state.furnaceLevel() >= 9L) {
-                    if (session.incrementResourceExhaustedAttempts() >= 3) {
-                        session.markResourceEnded();
-                        Map<String, Object> ended = actionResult("ENDED",
-                                "大熔炉已到 9 级，资源已尽力补充仍不足，起号结束");
-                        ended.put("step", stepView(action));
-                        ended.put("errorCode", code);
-                        ended.put("resourceEnded", true);
-                        FileLog.warn("[起号] 资源耗尽，起号结束：{}", action.label());
-                        return ended;
-                    }
-                }
-                Map<String, Object> waiting = actionResult("WAITING",
-                        "资源或道具不足，等待补充后重试：" + action.label()
-                                + preparationSummary(preparation));
-                waiting.put("step", stepView(action));
-                waiting.put("errorCode", code);
-                waiting.put("preparation", preparation == null ? Map.of() : Map.copyOf(preparation));
-                return waiting;
+            // 需求 R-07：建筑 51 走「耗尽语义」独立分支（对齐网页版 1438-1500）
+            if (action.kind() == ActionKind.UPGRADE_BUILDING) {
+                return upgradeRejected51Building(cfg, action, preparation, code);
             }
             // 家具升级 51 且本地认为家具有等级：可能本地状态滞后（服务端尚未创建/已销毁）。
             // 重置本地等级为 0 并持久化覆盖，下一轮先走 CREATE；服务端已存在时 154 会兜底按 1 级继续。
@@ -986,6 +964,126 @@ public final class BootstrapService {
         result.put("step", stepView(action));
         result.put("errorCode", code);
         return result;
+    }
+
+    /**
+     * 建筑升级 51 的资源耗尽处理（需求 R-07，严格对齐网页版 BootstrapService:1438-1500）：
+     *
+     * <ol>
+     *   <li>先开背包钻石 + 补资源（含商店购买）；executeFirstAction 的 51 重试路径已补过的
+     *       不重复购买（preparation 带 purchase 即视为已补）；</li>
+     *   <li>{@code coverable = purchase.unsupplied.isEmpty()}：生肉/木材按购买后剩余缺口，
+     *       煤炭/铁矿按全部缺口（统帅商店不卖）；</li>
+     *   <li>熔炉 ≥9：可覆盖 → 计数清零；不可覆盖 → 计数，3 次（或已 ENDED）→ ENDED；</li>
+     *   <li>熔炉 &lt;9：先钻石直升一次（不要求 ≥5），熔炉 ≥5 再试一次；失败后
+     *       {@code !coverable && 熔炉 >=7 && stall >=10} → ENDED；</li>
+     *   <li>计数只在钻石直升成功时清零（普通动作成功不清零）。</li>
+     * </ol>
+     */
+    private Map<String, Object> upgradeRejected51Building(BootstrapConfig cfg, Action action,
+                                                          Map<String, Object> preparation,
+                                                          int code) {
+        // 1) 开背包钻石道具 + 补资源（含商店购买）。executeFirstAction 的 51 重试路径已补过，
+        //    不重复开包/购买（preparation 带 backpack 即视为已补，避免覆盖首轮开包摘要）。
+        claimBackpackDiamonds();
+        if (!preparation.containsKey("backpack")) {
+            try {
+                preparation.putAll(topUpResources(cfg, action));
+            } catch (Exception e) {
+                preparation.put("purchase", Map.of("message", "补资源失败：" + e.getMessage()));
+            }
+        }
+        boolean coverable = purchaseCoverable(preparation);
+        List<Map<String, Object>> unsupplied = purchaseUnsupplied(preparation);
+        long furnace = state.furnaceLevel();
+
+        if (furnace >= 9L) {
+            // 可覆盖 → 计数清零；不可覆盖 → 计数，3 次（或已 ENDED）即终态
+            if (coverable) {
+                session.resetResourceExhaustedAttempts();
+            } else if (session.incrementResourceExhaustedAttempts() >= 3 || session.resourceEnded()) {
+                session.markResourceEnded();
+                Map<String, Object> ended = actionResult("ENDED",
+                        "大熔炉已到 9 级，资源已尽力补充仍不足"
+                                + unsuppliedSummary(unsupplied) + "，起号结束");
+                ended.put("step", stepView(action));
+                ended.put("errorCode", code);
+                ended.put("resourceEnded", true);
+                ended.put("preparation", Map.copyOf(preparation));
+                FileLog.warn("[起号] 资源耗尽（fpid={}），起号结束：{}", holdScope, action.label());
+                return ended;
+            }
+            return waitForResources(action, preparation, unsupplied, code);
+        }
+
+        // 2) 熔炉 <9：第一次钻石直升（不再要求 ≥5）；熔炉 ≥5 再试一次
+        Map<String, Object> byDiamond = upgradeWithDiamond(action);
+        if (byDiamond != null) {
+            session.resetResourceExhaustedAttempts();
+            preparation.put("diamondFallback", true);
+            byDiamond.put("preparation", preparation);
+            return byDiamond;
+        }
+        if (furnace >= 5L) {
+            byDiamond = upgradeWithDiamond(action);
+            if (byDiamond != null) {
+                session.resetResourceExhaustedAttempts();
+                preparation.put("diamondFallback", true);
+                byDiamond.put("preparation", preparation);
+                return byDiamond;
+            }
+        }
+        int stall = coverable ? 0 : session.incrementResourceExhaustedAttempts();
+        if (!coverable && furnace >= 7L && stall >= 10) {
+            session.markResourceEnded();
+            Map<String, Object> ended = actionResult("ENDED",
+                    "大熔炉已到 " + furnace + " 级，资源已尽力补充仍不足"
+                            + unsuppliedSummary(unsupplied) + "，起号结束");
+            ended.put("step", stepView(action));
+            ended.put("errorCode", code);
+            ended.put("resourceEnded", true);
+            ended.put("preparation", Map.copyOf(preparation));
+            FileLog.warn("[起号] 资源耗尽（fpid={}），起号结束：{}", holdScope, action.label());
+            return ended;
+        }
+        // 需求 R-03：钻石兜底失败后写 30s 动作退避 + 30s 购买冷却
+        String actionHoldKey = holdKey(action);
+        markRetry(actionHoldKey, ACTION_RETRY_MILLIS);
+        markRetry("buy:" + actionHoldKey, ACTION_RETRY_MILLIS);
+        return waitForResources(action, preparation, unsupplied, code);
+    }
+
+    /** 51 的 WAITING 结果（文案带不可覆盖缺口摘要）。 */
+    private Map<String, Object> waitForResources(Action action, Map<String, Object> preparation,
+                                                 List<Map<String, Object>> unsupplied, int code) {
+        Map<String, Object> waiting = actionResult("WAITING",
+                "资源或道具不足，等待补充后重试：" + action.label()
+                        + preparationSummary(preparation) + unsuppliedSummary(unsupplied));
+        waiting.put("step", stepView(action));
+        waiting.put("errorCode", code);
+        waiting.put("preparation", preparation == null ? Map.of() : Map.copyOf(preparation));
+        return waiting;
+    }
+
+    /** purchase.coverable（缺失视为可覆盖，对齐网页版）。 */
+    private static boolean purchaseCoverable(Map<String, Object> preparation) {
+        Object purchase = preparation == null ? null : preparation.get("purchase");
+        if (!(purchase instanceof Map)) return true;
+        Object flag = ((Map<?, ?>) purchase).get("coverable");
+        return flag == null || Boolean.TRUE.equals(flag);
+    }
+
+    /** purchase.unsupplied（缺失返回空列表）。 */
+    private static List<Map<String, Object>> purchaseUnsupplied(Map<String, Object> preparation) {
+        Object purchase = preparation == null ? null : preparation.get("purchase");
+        if (!(purchase instanceof Map)) return List.of();
+        Object raw = ((Map<?, ?>) purchase).get("unsupplied");
+        if (!(raw instanceof List)) return List.of();
+        List<Map<String, Object>> out = new ArrayList<>();
+        for (Object item : (List<?>) raw) {
+            out.addAll(maps(item));
+        }
+        return out;
     }
 
     /**
@@ -1059,6 +1157,8 @@ public final class BootstrapService {
         LinkedHashMap<String, Object> result = new LinkedHashMap<>();
         if (costs == null || costs.isEmpty()) {
             result.put("purchases", List.of());
+            result.put("unsupplied", List.of());
+            result.put("coverable", true);
             result.put("message", "当前没有需要补充的资源");
             return result;
         }
@@ -1070,6 +1170,8 @@ public final class BootstrapService {
         long needIron = force ? costAmount(costs, 105L) : Math.max(0L, missingOf(costs, 105L));
         if (needMeat <= 0L && needWood <= 0L && needCoal <= 0L && needIron <= 0L) {
             result.put("purchases", List.of());
+            result.put("unsupplied", List.of());
+            result.put("coverable", true);
             result.put("message", "当前没有需要补充的资源");
             return result;
         }
@@ -1095,9 +1197,52 @@ public final class BootstrapService {
                 Math.max(0L, diamonds - spentDiamonds(purchases)), purchases);
         result.put("purchases", List.copyOf(purchases));
         result.put("diamondSpent", spentDiamonds(purchases));
+        // 需求 R-07：coverable = unsupplied.isEmpty()。
+        // 生肉/木材按「购买后剩余缺口」计；煤炭/铁矿按「全部缺口」计（统帅商店不卖，买不到即不可覆盖）。
+        List<Map<String, Object>> unsupplied = new ArrayList<>();
+        addUnsupplied(unsupplied, 102L, Math.max(0L,
+                needMeat - purchasedAmount(purchases, MEAT_PACK_ITEM_ID)));
+        addUnsupplied(unsupplied, 103L, Math.max(0L,
+                needWood - purchasedAmount(purchases, WOOD_PACK_ITEM_ID)));
+        addUnsupplied(unsupplied, 104L, needCoal);
+        addUnsupplied(unsupplied, 105L, needIron);
+        result.put("unsupplied", List.copyOf(unsupplied));
+        result.put("coverable", unsupplied.isEmpty());
         result.put("message", purchases.isEmpty()
                 ? "当前没有需要补充的资源" : "已补充 " + purchases.size() + " 类资源");
         return result;
+    }
+
+    /** 追加一条不可覆盖缺口（remain&gt;0 才记）。 */
+    private static void addUnsupplied(List<Map<String, Object>> out, long resourceId, long remain) {
+        if (remain <= 0L) return;
+        LinkedHashMap<String, Object> entry = new LinkedHashMap<>();
+        entry.put("resourceId", resourceId);
+        entry.put("remain", remain);
+        entry.put("name", resourceLabel(resourceId));
+        out.add(entry);
+    }
+
+    /** 已购买某资源包的覆盖量（packs × 单包资源量）。 */
+    private static long purchasedAmount(List<Map<String, Object>> purchases, long packItemId) {
+        for (Map<String, Object> purchase : purchases) {
+            if (number(purchase.get("itemId")) == packItemId) {
+                return Math.max(0L, number(purchase.get("packs"))) * PACK_SIZE;
+            }
+        }
+        return 0L;
+    }
+
+    /** 不可覆盖缺口的文案摘要（ENDED/WAITING 文案用）。 */
+    private static String unsuppliedSummary(List<Map<String, Object>> unsupplied) {
+        if (unsupplied == null || unsupplied.isEmpty()) return "";
+        StringBuilder builder = new StringBuilder("（缺口：");
+        for (int i = 0; i < unsupplied.size(); i++) {
+            if (i > 0) builder.append("，");
+            Map<String, Object> entry = unsupplied.get(i);
+            builder.append(entry.get("name")).append(" ").append(entry.get("remain"));
+        }
+        return builder.append("）").toString();
     }
 
     /** 某资源 id 的缺口（普通 + 安全资源合计后的缺口）。 */
@@ -2848,6 +2993,10 @@ public final class BootstrapService {
         if (!config.enabled()) {
             return "DISABLED";
         }
+        // 需求 R-06：资源耗尽为终态，优先于 READY/LEVEL_COMPLETED 呈现
+        if (session.resourceEnded()) {
+            return "ENDED";
+        }
         if (!state.buildingsReady() || !state.queuesReady()) {
             return "WAITING_SYNC";
         }
@@ -2860,6 +3009,9 @@ public final class BootstrapService {
     private String runMessage() {
         if (!config.enabled()) {
             return "主开关未开启，起号流程不会执行";
+        }
+        if (session.resourceEnded()) {
+            return "大熔炉资源耗尽，起号结束";
         }
         if (!state.buildingsReady() || !state.queuesReady()) {
             return "等待建筑与队列全量状态同步";
