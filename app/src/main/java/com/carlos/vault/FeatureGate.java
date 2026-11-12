@@ -95,6 +95,10 @@ public final class FeatureGate {
         // 2026-11-01 真机验证通过（分裂路由 43/101 网段，不影响游戏联网）→ release 放开；
         // 入口默认关闭，页面内有“抓包期间游戏可能短暂重连”的提示。
         PROTO_CAPTURE("proto_capture", TIER_PREMIUM, true, false, "真机抓包"),
+        // 起号（M5，2026-11-07 立项恢复）：BootstrapActivity 注册/起号/批次三区 + 账号回流。
+        // 2026-11-06 决策6 曾作为零引用死枚举删除；现服务端 registration/bootstrap API
+        // 已上线（M3/M4b），App 端 UI 落地 → implemented=true 转正，从工具箱入口卡进入。
+        ACCOUNT_FARM("account_farm", TIER_PREMIUM, true, false, "起号"),
         // 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：服务端 vault-server/migrant 包
         // （14 个 action + 准备窗口 + 50ms 抢位 + 重登对账）+ App migrant 工作区。
         // 危险动作（真实退盟/召回道具 800 钻/真实迁移）在页面内均有二次确认；活动窗口由游戏决定。
@@ -129,6 +133,8 @@ public final class FeatureGate {
         // 立项后按需重新登记，不要凭空恢复。
         // 2026-11-07 例外：IMMIGRATION 已按立项实现（服务端 migrant 包 + App migrant 工作区），
         // 故保留在上方「T3 已实现」区（implemented=true），不属于死枚举。
+        // 2026-11-07 例外2：ACCOUNT_FARM 已按立项实现（起号：服务端 registration/bootstrap +
+        // App bootstrap 工作区），同样保留在上方「T3 已实现」区（implemented=true）。
 
         /** 稳定 key（日志/状态/document 用，不随中文名变化）。 */
         public final String key;
@@ -358,11 +364,12 @@ public final class FeatureGate {
     }
 
     /**
-     * 工具箱当前角色/构建/矩阵下的可用工具数（T3 敌情监控 + 真机监控 + 观察点 +
-     * 真机抓包 + 迁城）。用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
+     * 工具箱当前角色/构建/矩阵下的可用工具数（T3 起号 + 敌情监控 + 真机监控 + 观察点 +
+     * 真机抓包 + 移民 + 迁城）。用于 ToolBox「无任何可见工具时整组/说明卡都不渲染」。
      */
     public static int visibleToolCount(Context ctx) {
         int n = 0;
+        if (visible(ctx, Feature.ACCOUNT_FARM)) n++;
         if (visible(ctx, Feature.ENEMY_WATCH)) n++;
         if (visible(ctx, Feature.DEV_MONITOR)) n++;
         if (visible(ctx, Feature.WATCHPOINT)) n++;
@@ -382,7 +389,8 @@ public final class FeatureGate {
      * 抽成一个方法后，onCreate 与 {@link #visibleToolCount(Context)} 共用同一份清单。
      */
     public static boolean anyToolVisible(Context ctx) {
-        return visible(ctx, Feature.ENEMY_WATCH)
+        return visible(ctx, Feature.ACCOUNT_FARM)
+                || visible(ctx, Feature.ENEMY_WATCH)
                 || visible(ctx, Feature.DEV_MONITOR)
                 || visible(ctx, Feature.WATCHPOINT)
                 || visible(ctx, Feature.PROTO_CAPTURE)
@@ -394,6 +402,7 @@ public final class FeatureGate {
     @Deprecated
     public static int visibleToolCount(int tier, boolean debugBuild) {
         int n = 0;
+        if (visible(Feature.ACCOUNT_FARM, tier, false, null, debugBuild)) n++;
         if (visible(Feature.ENEMY_WATCH, tier, false, null, debugBuild)) n++;
         if (visible(Feature.DEV_MONITOR, tier, false, null, debugBuild)) n++;
         if (visible(Feature.WATCHPOINT, tier, false, null, debugBuild)) n++;

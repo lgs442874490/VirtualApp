@@ -46,6 +46,7 @@ public class WjdrEngine {
             }
         }
         sessionEpoch.incrementAndGet();      // 防封：新连接周期，作废旧的风控检测调度
+        clearResourceUpdate();               // 新连接周期：丢弃上一会话未消费的资源增量（R-05）
         dun163RiskCheckPerformed.set(false); // 新的在线周期允许重做风控检测
         GameProtocolClient.Config config = new GameProtocolClient.Config();
         config.gameHost = GAME_HOST;
@@ -185,6 +186,9 @@ public class WjdrEngine {
     private DeviceProfile.Device ephemeralDevice;
     /** 游戏服务端推送通知收集（proto → 最近一次内容），任务层用于提取活动 id 等 */
     private final java.util.concurrent.ConcurrentHashMap<String, Map<String, Object>> notifies =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    /** 资源增量累积缓冲（R-05）：resourceId/itemId → 自上次消费以来的累计 delta。 */
+    private final java.util.concurrent.ConcurrentHashMap<Long, Long> pendingResUpdate =
             new java.util.concurrent.ConcurrentHashMap<>();
     private AutoCloseable notifyHook;
 
@@ -679,6 +683,7 @@ public class WjdrEngine {
 
     public void close() {
         setSessionState(STATE_OFFLINE);
+        clearResourceUpdate();
         try {
             if (notifyHook != null) notifyHook.close();
         } catch (Exception ignored) {
@@ -702,6 +707,13 @@ public class WjdrEngine {
             notifyHook = client.addInboundListener(msg -> {
                 if (msg == null || msg.getProto() == null) return;
                 notifies.put(msg.getProto(), msg.getContent());
+                // 资源增量累积（R-05）：同 id 多次推送累加，供起号 syncLoadData 一次性消费
+                if ("notify_resource_update".equals(msg.getProto())) {
+                    try {
+                        accumulateResourceUpdate(msg.getContent());
+                    } catch (Throwable ignored) {
+                    }
+                }
                 // P0 服务器时钟：推送侧校准（notify_game_init.servertime / notify_schedule_update.server_time，秒域实证）
                 if ("notify_game_init".equals(msg.getProto()) || "notify_schedule_update".equals(msg.getProto())) {
                     try {
@@ -753,6 +765,84 @@ public class WjdrEngine {
             if (v instanceof Map) return (Map<String, Object>) v;
         }
         return c;
+    }
+
+    /**
+     * 入站资源增量累积（R-05 / 审查 P2-2）：{@code notify_resource_update} 的
+     * {@code data:[{id,count}]} 按 id 累加，避免「同内容两次真实增量」被最近一次覆盖。
+     */
+    public void accumulateResourceUpdate(Map<String, Object> content) {
+        if (content == null) return;
+        Object data = content.get("data");
+        if (data == null) data = content.get("info");
+        if (data == null) data = content.get("content");
+        if (data == null) data = content;
+        synchronized (pendingResUpdate) {
+            for (Map<String, Object> entry : resourceUpdateEntries(data)) {
+                long id = longOf(entry.get("id"));
+                if (id <= 0L) continue;
+                long delta = longOf(entry.get("count"));
+                if (delta == 0L) continue;
+                pendingResUpdate.merge(id, delta, Long::sum);
+            }
+        }
+    }
+
+    /**
+     * 原子取走当前累积的资源增量并清空（R-05）：返回 {@code {data:[{id,count}]}}；
+     * 无累积返回 {@code null}（调用方回退 loadContent.res_update）。
+     */
+    public Map<String, Object> consumeResourceUpdate() {
+        synchronized (pendingResUpdate) {
+            if (pendingResUpdate.isEmpty()) return null;
+            java.util.ArrayList<Map<String, Object>> data = new java.util.ArrayList<>();
+            for (Map.Entry<Long, Long> e : pendingResUpdate.entrySet()) {
+                LinkedHashMap<String, Object> item = new LinkedHashMap<>();
+                item.put("id", e.getKey());
+                item.put("count", e.getValue());
+                data.add(item);
+            }
+            pendingResUpdate.clear();
+            LinkedHashMap<String, Object> out = new LinkedHashMap<>();
+            out.put("data", data);
+            return out;
+        }
+    }
+
+    /** 清空未消费的资源增量（起号重跑/重登时调用，避免上一会话残留被下一轮误应用）。 */
+    public void clearResourceUpdate() {
+        synchronized (pendingResUpdate) {
+            pendingResUpdate.clear();
+        }
+    }
+
+    /** 资源增量条目解析：兼容 {@code [{id,count}]}、{@code {data:[...]}} 与单条 map。 */
+    private static java.util.List<Map<String, Object>> resourceUpdateEntries(Object raw) {
+        java.util.ArrayList<Map<String, Object>> out = new java.util.ArrayList<>();
+        if (raw instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) raw;
+            if (map.get("id") != null) {
+                LinkedHashMap<String, Object> single = new LinkedHashMap<>();
+                for (Map.Entry<?, ?> e : map.entrySet()) {
+                    if (e.getKey() != null) single.put(String.valueOf(e.getKey()), e.getValue());
+                }
+                out.add(single);
+                return out;
+            }
+            for (Object value : map.values()) out.addAll(resourceUpdateEntries(value));
+        } else if (raw instanceof Iterable) {
+            for (Object value : (Iterable<?>) raw) out.addAll(resourceUpdateEntries(value));
+        }
+        return out;
+    }
+
+    private static long longOf(Object raw) {
+        if (raw instanceof Number) return ((Number) raw).longValue();
+        try {
+            return raw == null ? 0L : Long.parseLong(String.valueOf(raw).trim());
+        } catch (NumberFormatException ignored) {
+            return 0L;
+        }
     }
 
     /** 从通知内容里向下找一个整型 id 字段（常见形状：id / activity_id / activityId）。 */

@@ -28,6 +28,16 @@ public final class Main {
         FileLog.info("真机监控：{}（dir={}）", monitor.isEnabled() ? "已启用" : "未启用",
                 monitor.dir());
 
+        // 起号注册（M3 2026-11-07）：批次仓读档（RUNNING 批次标记重启中断）+ 编排服务装配；
+        // App 经 POST /v1/vault/registration 分发 express/real-name/provider-test/batch-* 动作。
+        // 账号存档（2026-11-11）：fpid ↔ 注册手机号 ↔ 区服角色，掉登录可据此重取码
+        com.carlos.vaultserver.registration.AccountArchive.install(config.dataDir);
+        com.carlos.vaultserver.registration.RegistrationApi.install(config.dataDir);
+
+        // 起号批量（M4b 2026-11-07）：批次仓/回流清单读档 + 生产会话工厂装配；
+        // App 经 POST /v1/vault/bootstrap 分发 import/batch-*/referral-*/single-* 动作。
+        com.carlos.vaultserver.bootstrap.BootstrapApi.install(config.dataDir);
+
         VaultStore store = new VaultStore(config.dataDir);
         boolean fresh = !Files.isRegularFile(config.dataDir.resolve("vault.json"));
         store.load();

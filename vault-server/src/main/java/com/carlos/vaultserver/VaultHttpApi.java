@@ -32,6 +32,7 @@ import java.util.concurrent.Executors;
  * POST /v1/vault/watch   战争通知：监视名单增删改查/通知配置/测试通知（2026-10-22）
  * POST /v1/vault/events  战争通知事件游标同步（cursor 之后的新事件 + ackCursor）
  * POST /v1/vault/monitor 真机监控：任务/协议/会话事件游标拉取 + 用户打点（2026-10-25）
+ * POST /v1/vault/registration 起号注册：express/real-name/provider-test/batch-*（2026-11-07）
  * GET  /v1/vault/hotconfig      热更配置（dataDir/hotconfig.json，{base} 替换为 scheme://Host）
  * GET  /v1/vault/app-latest.apk 整包下载（dataDir/download/app-latest.apk 流式返回）
  * GET  /healthz          探活
@@ -143,6 +144,12 @@ public final class VaultHttpApi {
                 ex -> guard(ex, "POST", "vaultWatchpoint", this::handleWatchpoint));
         // 真机监控（2026-10-25）：后台任务级协议监控事件游标拉取 + 用户打点；默认 off（VAULT_MONITOR=on 才开）
         server.createContext("/v1/vault/monitor", ex -> guard(ex, "POST", "vaultMonitor", this::handleMonitor));
+        // 起号注册（M3 2026-11-07）：express/real-name/provider-test/batch-* 七动作分发
+        server.createContext("/v1/vault/registration",
+                ex -> guard(ex, "POST", "vaultRegistration", this::handleRegistration));
+        // 起号批量（M4b 2026-11-07）：import/batch-*/referral-*/single-* 动作分发
+        server.createContext("/v1/vault/bootstrap",
+                ex -> guard(ex, "POST", "vaultBootstrap", this::handleBootstrap));
         // 迁城 1:1 复刻（2026-11-06）：protocols/execute/schedule/jobs/job/cancel/remove-account
         // （action 分发，语义对齐原版 /api/movecity/move-city/* REST 面）
         server.createContext("/v1/vault/movecity",
@@ -1696,6 +1703,28 @@ public final class VaultHttpApi {
      */
     private JSONObject handleMonitor(Map<String, Object> fields) {
         return com.carlos.vaultserver.monitor.MonitorApi.handle(fields);
+    }
+
+    /**
+     * POST /v1/vault/registration：起号注册（M3 2026-11-07）。
+     *
+     * <p>承载 {@link com.carlos.vaultserver.registration.RegistrationApi} 七动作
+     * （express / real-name / provider-test / batch-start / batch-status / batch-cancel /
+     * batch-list）；错误已由其内部兜成 {@code {error:"中文说明"}}。
+     */
+    private JSONObject handleRegistration(Map<String, Object> fields) {
+        return com.carlos.vaultserver.registration.RegistrationApi.handle(fields);
+    }
+
+    /**
+     * POST /v1/vault/bootstrap：起号批量与 API（M4b 2026-11-07）。
+     *
+     * <p>承载 {@link com.carlos.vaultserver.bootstrap.BootstrapApi} 动作分发
+     * （import / batch-start / batch-status / batch-cancel / batch-list / referral-list /
+     * referral-pull / single-*）；错误已由其内部兜成 {@code {error:"中文说明"}}。
+     */
+    private JSONObject handleBootstrap(Map<String, Object> fields) {
+        return com.carlos.vaultserver.bootstrap.BootstrapApi.handle(fields);
     }
 
     /** 迁城 1:1 复刻（2026-11-06）：action 分发委托 {@code MoveCityApi}；业务校验错 → 3002。 */

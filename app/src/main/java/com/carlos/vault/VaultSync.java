@@ -69,6 +69,10 @@ public final class VaultSync {
     private static final String PATH_WATCHPOINT = "/v1/vault/watchpoint";
     private static final String PATH_EVENTS = "/v1/vault/events";
     private static final String PATH_MONITOR = "/v1/vault/monitor";
+    /** 起号注册（M3/M5 2026-11-07）：action 分发（express/real-name/provider-test/batch-*）。 */
+    private static final String PATH_REGISTRATION = "/v1/vault/registration";
+    /** 起号批量与回流（M4b/M5 2026-11-07）：action 分发（import / batch-* / referral-* / single-*）。 */
+    private static final String PATH_BOOTSTRAP = "/v1/vault/bootstrap";
     /** 迁城（2026-11-06 网页版 1:1 复刻）：服务端 movecity 引擎统一动作端点。 */
     private static final String PATH_MOVECITY = "/v1/vault/movecity";
     private static final String OP_SYNC = "vaultSync";
@@ -88,6 +92,10 @@ public final class VaultSync {
     private static final String OP_WATCHPOINT = "vaultWatchpoint";
     private static final String OP_EVENTS = "vaultEvents";
     private static final String OP_MONITOR = "vaultMonitor";
+    /** 起号注册 op（与 vault-server guard 绑定验签，M3 契约）。 */
+    private static final String OP_REGISTRATION = "vaultRegistration";
+    /** 起号批量 op（与 vault-server guard 绑定验签，M4b 契约）。 */
+    private static final String OP_BOOTSTRAP = "vaultBootstrap";
     private static final String OP_MOVECITY = "vaultMovecity";
 
     /**
@@ -95,6 +103,17 @@ public final class VaultSync {
      * token（服务端契约外异常）。与网络失败 -1 区分，调用方可提示「服务器未返回 token」。
      */
     static final int CODE_TOKEN_NOT_RETURNED = -2;
+
+    /**
+     * 本地回调码（非服务端业务码）：registration/bootstrap 的 action 业务错误。
+     *
+     * <p>这两个接口的 handler 把参数/执行错误兜成 {@code data={error:"中文说明"}} 放在
+     * <b>成功信封</b>里回（HTTP 层 envelope(0,"ok",data)），不占用信封 code；且
+     * {@code provider-test} 成功响应也带空串 {@code error} 键。通道层归一化：仅当
+     * {@code data.error} 为<b>非空</b>字符串时按本码回调（message=data.error 原文），
+     * 调用方统一按 {@code code!=0} 处理。
+     */
+    static final int CODE_ACTION_ERROR = 3100;
 
     /** 与服务端 VAULT_SECRET 同值（base64 + 循环 XOR 混淆，防反编译明文）。 */
     private static final String SECRET_OBF = "ABIMAhdBQkQbRFFHWllZWxcQVAUGSw==";
@@ -1113,6 +1132,199 @@ public final class VaultSync {
         Map<String, Object> f = new TreeMap<>();
         f.put("cursor", cursor);
         new Thread(() -> post(app, PATH_EVENTS, OP_EVENTS, f, done), "vault-events").start();
+    }
+
+    // ---------- M5 起号注册/起号批量（2026-11-07：POST /v1/vault/registration + /v1/vault/bootstrap） ----------
+
+    /**
+     * 起号注册通道（action 分发）：action ∈ express / real-name / provider-test /
+     * batch-start / batch-status / batch-cancel / batch-list（M3 契约）。
+     *
+     * <p>请求字段扁平（调用方用本类 {@code registration*Fields} 纯函数拼装，providerConfig/
+     * realName 用 JSON 对象字符串承载——HMAC 扁平标量约定）。服务端业务错误兜在
+     * {@code data.error}，通道层已归一化成 {@link #CODE_ACTION_ERROR}；旧服务端无此路由时
+     * 走非 JSON 404 文案（与 monitor 同口径）。回调在 OkHttp 线程。
+     */
+    public static void registrationCall(Context ctx, Map<String, Object> fields, Callback cb) {
+        actionPost(ctx, PATH_REGISTRATION, OP_REGISTRATION, fields, cb, "vault-registration");
+    }
+
+    /**
+     * 起号批量通道：action ∈ import / batch-start / batch-status / batch-cancel /
+     * batch-list / referral-list / referral-pull / single-*（M4b 契约）。
+     * 字段拼装与错误归一化同 {@link #registrationCall}。回调在 OkHttp 线程。
+     */
+    public static void bootstrapCall(Context ctx, Map<String, Object> fields, Callback cb) {
+        actionPost(ctx, PATH_BOOTSTRAP, OP_BOOTSTRAP, fields, cb, "vault-bootstrap");
+    }
+
+    /**
+     * 两通道公共骨架：复制字段防调用方复用 Map 被污染。
+     * 2026-11-12 合并：master 已删除旧本地模式开关（isServerMode），统一走服务器通道。
+     */
+    private static void actionPost(Context ctx, String path, String op,
+                                   Map<String, Object> fields, Callback cb, String threadName) {
+        final Context app = ctx.getApplicationContext();
+        Map<String, Object> f = fields == null
+                ? new TreeMap<String, Object>() : new TreeMap<>(fields);
+        new Thread(() -> post(app, path, op, f, (code, message, data) -> {
+            if (cb != null) cb.onResult(actionResultCode(code, data),
+                    actionResultMessage(code, message, data), data);
+        }), threadName).start();
+    }
+
+    /**
+     * 归一化（纯函数，JVM 单测直跑）：信封 code 非 0 原样透传；code=0 且 data.error 为
+     * 非空字符串（服务端 action handler 兜底错误形态）→ {@link #CODE_ACTION_ERROR}。
+     * 空串 error（provider-test 成功响应固定带）不算错误。
+     */
+    static int actionResultCode(int envelopeCode, JSONObject data) {
+        if (envelopeCode != 0) return envelopeCode;
+        return actionErrorText(data) == null ? 0 : CODE_ACTION_ERROR;
+    }
+
+    /** 归一化（纯函数）：业务错误时 message 用 data.error 原文，否则信封 message 原样。 */
+    static String actionResultMessage(int envelopeCode, String envelopeMessage, JSONObject data) {
+        if (envelopeCode != 0) return envelopeMessage;
+        String err = actionErrorText(data);
+        return err != null ? err : envelopeMessage;
+    }
+
+    /** data.error 非空文本（null=无业务错误）；"null" 字符串（JSONObject.NULL 序列化）防御。 */
+    private static String actionErrorText(JSONObject data) {
+        if (data == null) return null;
+        String err = data.optString("error", "").trim();
+        return err.isEmpty() || "null".equals(err) ? null : err;
+    }
+
+    // ----- 请求字段纯函数（JVM 单测直跑；TreeMap 键序无关签名，仅锁字段名/口径） -----
+
+    /** registration express：游客注册（无附加字段）。 */
+    public static Map<String, Object> registrationExpressFields() {
+        return fieldsWithAction("express");
+    }
+
+    /** registration real-name：fpid + 姓名 + 身份证（服务端从内存凭据表取 sdkToken）。 */
+    public static Map<String, Object> registrationRealNameFields(String fpid, String name, String idCard) {
+        Map<String, Object> f = fieldsWithAction("real-name");
+        f.put("fpid", safe(fpid));
+        f.put("name", safe(name));
+        f.put("id_card", safe(idCard));
+        return f;
+    }
+
+    /** registration provider-test：接码平台连接自检（providerConfig 为 JSON 对象字符串）。 */
+    public static Map<String, Object> registrationProviderTestFields(String providerType,
+                                                              String providerConfigJson) {
+        Map<String, Object> f = fieldsWithAction("provider-test");
+        f.put("providerType", safe(providerType));
+        f.put("providerConfig", safe(providerConfigJson));
+        return f;
+    }
+
+    /**
+     * registration batch-start：接码注册批次。realNameJson（{@code {name,idCard}}）与
+     * gamePassword 可空=不带；smsWaitSeconds null/非正数=不带（服务端用默认值）。
+     */
+    public static Map<String, Object> registrationBatchStartFields(String providerType,
+            String providerConfigJson, String keyword, int goalCount, int maxNumbers,
+            Integer smsWaitSeconds, String realNameJson, String gamePassword) {
+        Map<String, Object> f = fieldsWithAction("batch-start");
+        f.put("providerType", safe(providerType));
+        f.put("providerConfig", safe(providerConfigJson));
+        f.put("keyword", safe(keyword));
+        f.put("goalCount", goalCount);
+        f.put("maxNumbers", maxNumbers);
+        if (smsWaitSeconds != null && smsWaitSeconds > 0) f.put("smsWaitSeconds", smsWaitSeconds);
+        if (realNameJson != null && !realNameJson.trim().isEmpty()) f.put("realName", realNameJson);
+        if (gamePassword != null && !gamePassword.isEmpty()) f.put("gamePassword", gamePassword);
+        return f;
+    }
+
+    /** registration batch-status / batch-cancel（同一 {@code action+batchId} 形态）。 */
+    public static Map<String, Object> registrationBatchStatusFields(String batchId) {
+        return fieldsWithBatchId("batch-status", batchId);
+    }
+
+    public static Map<String, Object> registrationBatchCancelFields(String batchId) {
+        return fieldsWithBatchId("batch-cancel", batchId);
+    }
+
+    /** registration/bootstrap batch-list（limit 不带=服务端默认 30）。 */
+    public static Map<String, Object> batchListFields() {
+        return fieldsWithAction("batch-list");
+    }
+
+    /** bootstrap import：行清单解析预检（lines 为 JSON 数组字符串，HMAC 扁平标量约定）。 */
+    public static Map<String, Object> bootstrapImportFields(java.util.List<String> lines) {
+        Map<String, Object> f = fieldsWithAction("import");
+        f.put("lines", jsonStringArray(lines));
+        return f;
+    }
+
+    /**
+     * bootstrap batch-start：批量起号。accountsJson 为 JSON 数组字符串——元素是
+     * 加密串行、{@code {fpid,sdkToken,label?,encrypted?}} 对象或其混合（服务端统一解析）。
+     */
+    public static Map<String, Object> bootstrapBatchStartFields(long serverId, int targetFurnaceLevel,
+            String allianceName, String roleName, boolean instantDiamond,
+            boolean claimRewards, boolean buyShopResources, String accountsJson) {
+        Map<String, Object> f = fieldsWithAction("batch-start");
+        f.put("serverId", serverId);
+        f.put("targetFurnaceLevel", targetFurnaceLevel);
+        f.put("allianceName", safe(allianceName));
+        f.put("roleName", safe(roleName));
+        f.put("instantDiamond", instantDiamond);
+        f.put("claimRewards", claimRewards);
+        f.put("buyShopResources", buyShopResources);
+        f.put("accounts", safe(accountsJson));
+        return f;
+    }
+
+    /** bootstrap batch-status / batch-cancel。 */
+    public static Map<String, Object> bootstrapBatchStatusFields(String batchId) {
+        return fieldsWithBatchId("batch-status", batchId);
+    }
+
+    public static Map<String, Object> bootstrapBatchCancelFields(String batchId) {
+        return fieldsWithBatchId("batch-cancel", batchId);
+    }
+
+    /** bootstrap referral-list：待回流清单（无附加字段）。 */
+    public static Map<String, Object> bootstrapReferralListFields() {
+        return fieldsWithAction("referral-list");
+    }
+
+    /** bootstrap referral-pull：标记已拉取（fpids 为 JSON 数组字符串）。 */
+    public static Map<String, Object> bootstrapReferralPullFields(java.util.List<String> fpids) {
+        Map<String, Object> f = fieldsWithAction("referral-pull");
+        f.put("fpids", jsonStringArray(fpids));
+        return f;
+    }
+
+    private static Map<String, Object> fieldsWithAction(String action) {
+        Map<String, Object> f = new TreeMap<>();
+        f.put("action", action);
+        return f;
+    }
+
+    private static Map<String, Object> fieldsWithBatchId(String action, String batchId) {
+        Map<String, Object> f = fieldsWithAction(action);
+        f.put("batchId", safe(batchId));
+        return f;
+    }
+
+    private static String safe(String v) {
+        return v == null ? "" : v;
+    }
+
+    /** 字符串列表 → JSON 数组字符串（null 元素兜空串；HMAC 扁平标量约定）。 */
+    private static String jsonStringArray(java.util.List<String> items) {
+        JSONArray arr = new JSONArray();
+        if (items != null) {
+            for (String s : items) arr.put(s == null ? "" : s);
+        }
+        return arr.toString();
     }
 
     /** 上次成功的账号池响应（UI 渲染读；无缓存/失败保留旧值，配合 {@link AccountPoolCache#isStale}）。 */

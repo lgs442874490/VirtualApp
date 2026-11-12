@@ -79,6 +79,7 @@ public class ToolBoxActivity extends Activity {
         // ③ 工具箱内调试/实测项仅调试包可见。
         // 注意：统一走 FeatureGate.visible(this, feature)（服务端矩阵优先），不要再传 tier 纯函数。
         final boolean canMoveCity = FeatureGate.visible(this, FeatureGate.Feature.MOVE_CITY);     // T3 高阶（迁城）
+        final boolean canFarm = FeatureGate.visible(this, FeatureGate.Feature.ACCOUNT_FARM);     // T3 起号（M5）
         final boolean canWatchpoint = FeatureGate.visible(this, FeatureGate.Feature.WATCHPOINT);   // T3 高阶
         final boolean canCapture = FeatureGate.visible(this, FeatureGate.Feature.PROTO_CAPTURE)
                 && android.os.Build.VERSION.SDK_INT >= 21;   // 真机抓包：T3 + API21+
@@ -91,7 +92,8 @@ public class ToolBoxActivity extends Activity {
         final int toolCount = (canMoveCity ? 1 : 0)
                 + (canWatchpoint ? 1 : 0)
                 + ((FeatureGate.currentTier(this) == FeatureGate.TIER_GM) ? 1 : 0)
-                + (canMigrant ? 1 : 0);
+                + (canMigrant ? 1 : 0)
+                + (canFarm ? 1 : 0);
         if (toolCount > 0) {
             box.addView(sectionRow("可用工具 · " + toolCount, "诊断与监控"));
             // 迁城（T3 高级会员，2026-11-06）：网页版迁城 1:1 复刻——12 种协议/立即批量/
@@ -104,6 +106,16 @@ public class ToolBoxActivity extends Activity {
                 moveCard.setOnClickListener(v -> startActivity(
                         new Intent(this, com.carlos.vault.daily.movecity.MoveCityActivity.class)));
                 box.addView(moveCard);
+            }
+            // 起号（M5，2026-11-07）：BootstrapActivity 注册接码/批量起号/账号回流三区页。
+            if (canFarm) {
+                LinearLayout farmCard = toolCard(UiStyle.Icon.USERS, "起号",
+                        "注册接码 · 批量起号 · 账号回流", UiStyle.BRAND_50);
+                farmCard.addView(new UiStyle.Icon(this, UiStyle.Icon.CHEVRON,
+                        UiStyle.INK3, 18));
+                farmCard.setOnClickListener(v -> startActivity(
+                        new Intent(this, com.carlos.vault.bootstrap.BootstrapActivity.class)));
+                box.addView(farmCard);
             }
             // 移民（藏宝阁-自由移民，2026-11-06 1:1 复刻）：服务端 14 action + 准备窗口
             // （开放前 15 分钟上号/退盟/召回）+ 50ms 抢位 + 重登对账；页面内危险动作均二次确认。

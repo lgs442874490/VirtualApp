@@ -115,9 +115,9 @@ public class FeatureGateTest {
     public void visibleToolCount_includesMoveCity() {
         int t3 = FeatureGate.visibleToolCount(3, RELEASE);
         int t2 = FeatureGate.visibleToolCount(2, RELEASE);
-        // 迁城计入 T3 工具数（T3 相对 T2 多：敌情监控/真机监控/观察点/真机抓包/移民/迁城 = 6）
+        // 迁城计入 T3 工具数（T3 相对 T2 多：敌情监控/真机监控/观察点/真机抓包/移民/迁城/起号 = 7）
         assertTrue("T3 工具数应大于 T2", t3 > t2);
-        assertEquals(t2 + 6, t3);
+        assertEquals(t2 + 7, t3);
     }
 
     @Test
@@ -154,14 +154,14 @@ public class FeatureGateTest {
     @Test
     public void releaseBuild_showsOnlyImplementedTools() {
         boolean debug = FeatureGate.isDebugBuildType("release");
-        assertEquals("release(T3) 工具箱=敌情监控+真机监控+观察点+真机抓包+移民+迁城", 6,
+        assertEquals("release(T3) 工具箱=敌情监控+真机监控+观察点+真机抓包+移民+迁城+起号", 7,
                 FeatureGate.visibleToolCount(3, debug));
     }
 
     @Test
     public void debugBuild_hasSameToolSetAsRelease() {
         boolean debug = FeatureGate.isDebugBuildType("debug");
-        assertEquals("debug(T3) 工具数与正式包一致（本地调试工具已移除）", 6,
+        assertEquals("debug(T3) 工具数与正式包一致（本地调试工具已移除）", 7,
                 FeatureGate.visibleToolCount(3, debug));
         assertEquals("T1 无可用工具（工具均需 T3）", 0, FeatureGate.visibleToolCount(1, debug));
     }
@@ -221,9 +221,9 @@ public class FeatureGateTest {
 
     @Test
     public void visibleToolCount_includesDevMonitorForT3() {
-        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 共 6 个工具（含移民/迁城），debug 与 release 一致
-        assertEquals(6, FeatureGate.visibleToolCount(3, false));
-        assertEquals(6, FeatureGate.visibleToolCount(3, true));
+        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 共 7 个工具（含移民/迁城/起号），debug 与 release 一致
+        assertEquals(7, FeatureGate.visibleToolCount(3, false));
+        assertEquals(7, FeatureGate.visibleToolCount(3, true));
         assertEquals("T2 仍无任何可用工具", 0, FeatureGate.visibleToolCount(2, false));
     }
 

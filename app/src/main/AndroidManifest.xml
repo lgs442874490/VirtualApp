@@ -286,6 +286,11 @@
             android:name="com.carlos.vault.NotifySettingsActivity"
             android:exported="false"
             android:theme="@style/AppTheme" />
+        <!-- 起号（M5，2026-11-07）：注册接码/批量起号/账号回流三区页；工具箱「起号」进入 -->
+        <activity
+            android:name="com.carlos.vault.bootstrap.BootstrapActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
 
         <!-- 游戏保活前台服务。目的：切到微信等后台时，游戏进程不被系统 LMK 回收。
              必须留在宿主主进程，不能指定 android:process=":p0"。
