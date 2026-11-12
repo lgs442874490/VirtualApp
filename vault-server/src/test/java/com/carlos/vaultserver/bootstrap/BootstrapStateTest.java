@@ -258,6 +258,20 @@ public class BootstrapStateTest {
         assertEquals(42L, s.resourceCount(103L));
     }
 
+    /** 2026-11-12 实跑回归：notify_resource_update 的增量（正/负）必须应用到资源表。 */
+    @Test
+    public void resourceUpdateDelta_applied() {
+        Map<String, Object> load = new LinkedHashMap<>();
+        load.put("res", java.util.Map.of("103", 1000L, "101", 500L));
+        load.put("res_update", java.util.List.of(
+                java.util.Map.of("id", 103L, "count", -900L),
+                java.util.Map.of("id", 104L, "count", 50L)));
+        BootstrapState s = BootstrapState.fromLoadData(load);
+        assertEquals(100L, s.resourceCount(103L));
+        assertEquals(50L, s.resourceCount(104L));
+        assertEquals(500L, s.resourceCount(101L));
+    }
+
     /** 真实轮回归（2026-11-11）：幸存者列表解析与「闲置」判定（委任上岗的前提）。 */
     @Test
     public void survivors_parsedAndIdleDetected() {

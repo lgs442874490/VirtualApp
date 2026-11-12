@@ -321,6 +321,56 @@ public class BootstrapServiceTest {
 
     // ================= 卡点 A：51 hold 联动 planner（审查 P1-1/P1-3） =================
 
+    /** 熔炉 7 级 + 盾兵营 7 级（8 级前置已满足）：用于验证 51→钻石兜底。 */
+    private static Map<String, Object> readyLoadFurnace7() {
+        Map<String, Object> buildings = new LinkedHashMap<>();
+        buildings.put("301", content("bid", 301L, "lv", 7L, "status", 0L));
+        buildings.put("321", content("bid", 321L, "lv", 7L, "status", 0L));
+        buildings.put("302", content("bid", 302L, "lv", 1L, "status", 0L));
+        return content("uid", 8001L, "name", "旧名字", "buildings", buildings,
+                "queues", new ArrayList<>(), "res", content("103", 100000, "101", 500));
+    }
+
+    /**
+     * 网页版对齐 P0：熔炉 ≥5 时建筑 51 应改用钻石直升
+     * （`req_upgrade_building{bid,use_diamond:true,qid:0}`），而不是 30 分钟 hold。
+     */
+    @Test
+    public void upgradeRejected_51_buildingAtFurnace7_usesDiamondFallback() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        // 首发 51 + 补资源后重试 51 → 钻石兜底成功
+        port.when("req_upgrade_building", content("code", 51L), content("code", 51L),
+                content("code", 0L));
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 8, true, false, false,
+                "", false, "");
+        BootstrapService svc = service(port, readyLoadFurnace7(), cfg);
+
+        Map<String, Object> r = svc.runNext();
+        assertEquals("STARTED", r.get("status"));
+        assertEquals("资源不足，已改用钻石完成 升级 大熔炉 到 8 级", r.get("message"));
+        assertEquals(true, r.get("diamondFallback"));
+        assertEquals(3, port.count("req_upgrade_building"));
+        assertEquals(Map.of("bid", 301L, "use_diamond", true, "qid", 0L),
+                port.argsOf("req_upgrade_building", 2));
+        assertEquals(8L, svc.state().level(301L));
+    }
+
+    /** 钻石兜底也失败且熔炉 <9：WAITING，不进入 ENDED。 */
+    @Test
+    public void upgradeRejected_51_buildingDiamondFails_below9_waits() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_upgrade_building", content("code", 51L), content("code", 51L),
+                content("code", 51L));
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 8, true, false, false,
+                "", false, "");
+        BootstrapService svc = service(port, readyLoadFurnace7(), cfg);
+
+        Map<String, Object> r = svc.runNext();
+        assertEquals("WAITING", r.get("status"));
+        assertTrue(String.valueOf(r.get("message")).startsWith("资源或道具不足"));
+        assertEquals(3, port.count("req_upgrade_building"));
+    }
+
     /** 熔炉 2 级 + 民居1 1 级：目标熔炉 3 的首个动作是「民居1 家具 101 建造」。 */
     private static Map<String, Object> readyLoadFurnace3() {
         Map<String, Object> buildings = new LinkedHashMap<>();
@@ -375,8 +425,8 @@ public class BootstrapServiceTest {
         // plan.complete() 的历史语义是「无阻塞」，不能拿它判完成
         assertEquals("WAITING", second.get("status"));
         assertFalse("全 hold 不得误报 COMPLETED", "COMPLETED".equals(second.get("status")));
-        assertEquals("动作退避中，剩余 1800 秒", second.get("message"));
-        assertEquals(1800L, second.get("holdRemainingSeconds"));
+        assertEquals("动作退避中，剩余 30 秒", second.get("message"));
+        assertEquals(30L, second.get("holdRemainingSeconds"));
         // 被跳过后不再发升级请求（仍为 51 补偿重试的 2 次）
         assertEquals(2, port.count("req_upgrade_building"));
     }
@@ -397,7 +447,7 @@ public class BootstrapServiceTest {
                 101L, 0L, 1L, List.of());
         String key = BootstrapService.holdKey(held);
         long deadline = holds.deadlineMillis(scope, key);
-        assertEquals(2_000_000L + BootstrapService.ACTION_HOLD_MILLIS, deadline);
+        assertEquals(2_000_000L + BootstrapService.ACTION_RETRY_MILLIS, deadline);
 
         clock.advance(10_000L);
         Map<String, Object> skipped = svc.runNext();
@@ -717,6 +767,22 @@ public class BootstrapServiceTest {
         assertEquals(true, s3.get("completed"));
     }
 
+    /** 2026-11-12 实跑回归：同一份 res_update 每轮只应用一次（避免资源表漂移）。 */
+    @Test
+    public void syncLoadData_resourceUpdateAppliedOnce() {
+        BootstrapService svc = service(new ScriptedPort(), Map.of(), enabledConfig());
+        Map<String, Object> load = new LinkedHashMap<>();
+        load.put("res", content("103", 1000L));
+        load.put("res_update", List.of(content("id", 103L, "count", -900L)));
+        svc.syncLoadData(load);
+        assertEquals(100L, svc.state().resourceCount(103L));
+        // 同一份增量再次喂入（不含 res 快照，模拟推送只带增量）：不重复扣减
+        Map<String, Object> again = new LinkedHashMap<>();
+        again.put("res_update", load.get("res_update"));
+        svc.syncLoadData(again);
+        assertEquals(100L, svc.state().resourceCount(103L));
+    }
+
     @Test
     public void config_fromMap_clampAndNormalize() {
         BootstrapService svc = service(new ScriptedPort(), Map.of(), BootstrapConfig.defaults());
@@ -839,12 +905,41 @@ public class BootstrapServiceTest {
         return new BootstrapConfig(true, 0L, 7, true, false, false, "", false, "");
     }
 
+    /** 熔炉 ≥7 时世界地图先于情报：测试先消费一次 world kingdom info 动作。 */
+    private static void advanceWorldFirst(BootstrapService svc) throws Exception {
+        Map<String, Object> r = svc.runNext();
+        assertEquals("STARTED", r.get("status"));
+        assertTrue("应先推进世界地图：" + r.get("message"),
+                String.valueOf(r.get("message")).contains("世界地图"));
+    }
+
+    /** 熔炉 ≥7 的 finishPass：背包钻石收尾一次，之后不再重复。 */
+    @Test
+    public void finishPass_atFurnace7_runsOnce() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        Map<String, Object> load = new LinkedHashMap<>(readyLoad(7L, 1L));
+        load.put("bag", content("100001", 2L));   // 钻石道具
+        BootstrapService svc = service(port, load,
+                new BootstrapConfig(true, 0L, 7, true, false, false, "", false, ""));
+
+        Map<String, Object> first = svc.runNext();
+        assertEquals("STARTED", first.get("status"));
+        assertTrue("应执行 ≥7 收尾：" + first.get("message"),
+                String.valueOf(first.get("message")).contains("收尾完成"));
+        assertEquals(1, first.get("backpackDiamonds"));
+
+        Map<String, Object> second = svc.runNext();
+        assertFalse("收尾只做一次，不重复：" + second,
+                String.valueOf(second.get("message")).contains("收尾完成"));
+    }
+
     @Test
     public void intel_claimRewards_atFurnace7() throws Exception {
         IntelPort port = new IntelPort();
         port.notifies.put(BootstrapService.NOTIFY_INTEL_INFO,
                 content("events", content("11", intelEvent(11L, 2L), "12", intelEvent(12L, 2L))));
         BootstrapService svc = service(port, intelReadyLoad(1L), intelConfig());
+        advanceWorldFirst(svc);
         Map<String, Object> r = svc.runNext();
         assertEquals("STARTED", r.get("status"));
         assertEquals("已领取 2 个情报任务奖励", r.get("message"));
@@ -862,6 +957,7 @@ public class BootstrapServiceTest {
                 content("events", content("12", intelEvent(12L, 2L))));
         port.when("req_intelligence_receive", content("code", 2501L));
         BootstrapService svc = service(port, intelReadyLoad(1L), intelConfig());
+        advanceWorldFirst(svc);
         Map<String, Object> r = svc.runNext();
         // 2501 = 已领过：跳过不计数 → claimed 空 → 无 status=1 → 情报模块放行 → 主线完成态
         assertEquals(1, port.count("req_intelligence_receive"));
@@ -876,6 +972,7 @@ public class BootstrapServiceTest {
                 content("events", content("21", intelEvent(21L, 2L), "22", intelEvent(22L, 2L))));
         port.when("req_intelligence_receive", content("code", 500L));
         BootstrapService svc = service(port, intelReadyLoad(1L), intelConfig());
+        advanceWorldFirst(svc);
         Map<String, Object> r = svc.runNext();
         // 第一个领取被拒（非 2501）→ 终止本轮领取 → 无 status=1 → 放行主线
         assertEquals(1, port.count("req_intelligence_receive"));
@@ -891,6 +988,7 @@ public class BootstrapServiceTest {
         java.util.Map<String, Object> load = new java.util.LinkedHashMap<>(intelReadyLoad(1L));
         load.put("hero_list", List.of(content("id", 50006L, "lev", 10L)));
         BootstrapService svc = service(port, load, intelConfig());
+        advanceWorldFirst(svc);
         Map<String, Object> r = svc.runNext();
         assertEquals("STARTED", r.get("status"));
         assertEquals("已快速完成 1 个英雄之旅情报（客户端默认小队）", r.get("message"));
@@ -909,6 +1007,7 @@ public class BootstrapServiceTest {
                 content("events", content("13", intelEvent(13L, 1L))));
         // 英雄大厅 318 未建（lv=0）→ 小队未就绪 → 不开战，放行主线
         BootstrapService svc = service(port, intelReadyLoad(0L), intelConfig());
+        advanceWorldFirst(svc);
         Map<String, Object> r = svc.runNext();
         assertEquals(0, port.count("req_intelligence_start_battle"));
         assertEquals("COMPLETED", r.get("status"));
@@ -949,6 +1048,7 @@ public class BootstrapServiceTest {
         port.notifies.put(BootstrapService.NOTIFY_INTEL_DEL,
                 content("ids", List.of(11L)));
         BootstrapService svc = service(port, intelReadyLoad(1L), intelConfig());
+        advanceWorldFirst(svc);
         Map<String, Object> r = svc.runNext();
         assertEquals(0, port.count("req_intelligence_receive"));
         assertEquals("COMPLETED", r.get("status"));

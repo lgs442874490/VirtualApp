@@ -127,6 +127,9 @@ public final class BootstrapState {
         s.applyResources(firstOf(loadContent, "res", "resources"));
         s.applyResources(firstOf(loadContent, "bag", "backpack"));
         s.applyResources(firstOf(loadContent, "items", "item"));
+        // 服务端资源增量（notify_resource_update.data）：建造/家具消耗与领奖到账都靠它校准，
+        // 不接会导致本地资源只增不减，51 缺口明细与实际不符（2026-11-12 实跑 601 卡点）。
+        s.applyResourceUpdate(firstOf(loadContent, "res_update"));
         s.backpackReady = loadContent.containsKey("bag") || loadContent.containsKey("backpack")
                 || loadContent.containsKey("items") || loadContent.containsKey("item");
         s.applySurvivors(firstOf(loadContent, "survivor_list", "survivors"));

@@ -314,11 +314,11 @@ public final class BootstrapApi {
             }
         }
         // claimRewards/buyShopResources 可由请求覆盖：真实轮证实新号资源为 0 且背包无资源包，
-        // 必须领任务奖励（claimRewards=true）才能推进建设；默认沿用原版 false。
+        // 必须领任务奖励；buyShopResources 默认 true，与网页版 51 时用钻石从统帅商店补木材一致。
         BootstrapConfig cfg = new BootstrapConfig(true, serverId, target,
                 booleanField(f, "instantDiamond", true),
                 booleanField(f, "claimRewards", false),
-                booleanField(f, "buyShopResources", false),
+                booleanField(f, "buyShopResources", true),
                 str(f, "allianceName") == null ? "" : str(f, "allianceName").trim(),
                 booleanField(f, "autoApplyWhenPrivate", false),
                 str(f, "roleName") == null ? "" : str(f, "roleName").trim());
@@ -491,7 +491,7 @@ public final class BootstrapApi {
                 BootstrapCatalog.combined(), BATCH_SLEEPER,
                 BootstrapHoldStore.shared(), fpid);
         service.applyConfig(new BootstrapConfig(true, 0L, BootstrapConfig.DEFAULT_TARGET_FURNACE_LEVEL,
-                true, false, false, "", false, ""));
+                true, false, true, "", false, ""));
         service.syncLoadData(contentOf(session.port.request("req_loaddata", Map.of())));
         return service;
     }

@@ -29,7 +29,7 @@ import static org.junit.Assert.assertTrue;
  */
 public class BootstrapPlannerTest {
 
-    /** 51 hold 时长（与 BootstrapService.ACTION_HOLD_MILLIS 一致；此处固定 30 分钟文案 1800 秒）。 */
+    /** 51 hold 时长（规划器 HoldPolicy 测试用；固定 30 分钟文案 1800 秒）。 */
     private static final long ACTION_HOLD_MILLIS = 1_800_000L;
 
     private final BootstrapPlanner planner = new BootstrapPlanner();

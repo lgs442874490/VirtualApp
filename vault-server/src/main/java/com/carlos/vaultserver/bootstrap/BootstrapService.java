@@ -159,6 +159,9 @@ public final class BootstrapService {
     private static final int MAX_RUN_UNTIL_STEPS = 300;
     /** 世界地图解锁熔炉等级（原版 WORLD_MAP_UNLOCK_FURNACE_LEVEL，情报模块启用门槛）。 */
     static final long WORLD_MAP_UNLOCK_FURNACE_LEVEL = 7L;
+    /** 世界地图协议（网页版 BootstrapWorldService 同值）。 */
+    static final String WORLD_KINGDOM_INFO = "req_world_kingdom_info";
+    static final String WORLD_MAP_FOG = "req_world_map_fog";
 
     /**
      * 协议端口：生产包 WjdrEngine.request，单测脚本回放。
@@ -322,6 +325,20 @@ public final class BootstrapService {
     private String renamedName = "";
     /** 最近一次改名失败文案（status 侧透出）。 */
     private String renameError = "";
+    /** 资源耗尽（熔炉 ≥9 且补不齐）标记：后续 runNext 直接 ENDED，不再重试。 */
+    private boolean resourceEnded;
+    /** 熔炉 ≥9 时连续补资源失败次数（对齐网页版 ≥3 次 ENDED）。 */
+    private int resourceExhaustedAttempts;
+    /** ≥7 收尾（邮箱/签到/里程碑/背包钻石）当日是否已完成。 */
+    private String finishPassDay = "";
+    /** 世界地图一次性请求标记（对齐网页版 worldKingdomInfoSent/worldFogSent）。 */
+    private boolean worldKingdomInfoSent;
+    private boolean worldFogSent;
+    private long worldKingdomId;
+    /** 上一次已应用的 res_update 签名：避免每轮重复应用同一增量（推送是「最近一次」而非队列）。 */
+    private String lastResUpdateSignature = "";
+    /** 已确认不在背包/不可用的钻石道具：本会话不再重试（避免 51 刷请求）。 */
+    private final Set<Long> failedDiamondItems = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     /** 生产装配：组合目录 + 默认规划器 + 真实睡眠。 */
     public BootstrapService(ProtocolPort port) {
@@ -366,8 +383,20 @@ public final class BootstrapService {
 
     /** 注入 loaddata 全量内容（对齐原版注册表自动同步；单号版由会话层手动喂）。 */
     public void syncLoadData(Map<String, Object> loadContent) {
+        Map<String, Object> content = loadContent == null ? Map.of() : loadContent;
+        Object resUpdate = content.get("res_update");
+        if (resUpdate != null) {
+            String signature = String.valueOf(resUpdate);
+            if (signature.equals(lastResUpdateSignature)) {
+                // 同一份增量已应用过：本轮只保留 res 快照，避免重复加/减
+                content = new LinkedHashMap<>(content);
+                content.remove("res_update");
+            } else {
+                lastResUpdateSignature = signature;
+            }
+        }
         BootstrapState previous = this.state;
-        this.state = BootstrapState.fromLoadData(loadContent);
+        this.state = BootstrapState.fromLoadData(content);
         // 补齐本轮推送里缺失的字段（资源 101 钻石等只在登录时推一次）
         this.state.mergeLegacyFrom(previous);
         knownDiamonds = Math.max(knownDiamonds, Math.max(0L, this.state.resourceCount(101L)));
@@ -421,24 +450,42 @@ public final class BootstrapService {
      */
     public Map<String, Object> runNext() throws Exception {
         BootstrapConfig cfg = requireEnabled();
+        if (resourceEnded) {
+            return actionResult("ENDED", "大熔炉已到 9 级，资源已尽力补充仍不足，起号结束");
+        }
         Optional<Map<String, Object>> rename = renameIfNeeded(cfg);
         if (rename.isPresent()) {
             return rename.get();
         }
-        // 领取产出资源（最高优先级：新号初始资源只在这里，不领则资源恒 0）
-        if (claimProducedResources()) {
-            return actionResult("STARTED", "已领取产出资源");
+        // 网页版对齐 P0（runNextStepInternal 803-915）：熔炉 ≥7 时
+        // world.advance → 情报 → finishPass（邮箱/签到/里程碑/背包钻石）先于常规流程。
+        if (state.furnaceLevel() >= WORLD_MAP_UNLOCK_FURNACE_LEVEL) {
+            Optional<Map<String, Object>> world = worldAdvance();
+            if (world.isPresent()) {
+                return world.get();
+            }
+            Optional<Map<String, Object>> intelligence = claimIntelligenceRewards();
+            if (intelligence.isPresent()) {
+                return intelligence.get();
+            }
+            Optional<Map<String, Object>> finish = finishPassIfDue();
+            if (finish.isPresent()) {
+                return finish.get();
+            }
+        }
+        if (!state.buildingsReady() || !state.queuesReady()) {
+            return actionResult("WAITING", "等待建筑与队列全量状态同步");
         }
         // 秒完正在施工的队列（2 分钟 0→9 的关键：建造→秒完→立刻下一轮）
         if (finishBusyQueue()) {
             return actionResult("STARTED", "已秒完施工队列，继续升级");
         }
-        // 新手引导（新版 runNextStepInternal 第一步）：逐级上报引导步骤
+        // 新手引导：逐级上报引导步骤
         Map<String, Object> tutorial = tutorialAdvance(null);
         if (tutorial != null) {
             return tutorial;
         }
-        // 邮件领奖（新版顺序：情报 → 邮件 → 里程碑 → 英雄）
+        // 邮件领奖
         int mails = claimMails();
         if (mails > 0) {
             Map<String, Object> result = actionResult("STARTED", "已领取 " + mails + " 封邮件附件");
@@ -452,17 +499,7 @@ public final class BootstrapService {
             result.put("achievementCount", achievements);
             return result;
         }
-        // 英雄推进（新版顺序：招募/升星/升级；有英雄才有队伍打探险）
-        Map<String, Object> hero = heroAdvance();
-        if (hero != null) {
-            return hero;
-        }
-        // 探险战斗（新版 BootstrapAdventureService：有队伍才打；失败 30 分钟退避）
-        Map<String, Object> adventure = adventureBattle(0L);
-        if (adventure != null && "STARTED".equals(adventure.get("status"))) {
-            return adventure;
-        }
-        // 兑换码（新版 BootstrapService：熔炉 ≥3 才兑换，一次性拿大量资源/钻石）
+        // 兑换码（网页版：熔炉 ≥3 才兑换，一次性拿大量资源/钻石）
         if (state.furnaceLevel() >= CDKEY_MIN_FURNACE_LEVEL) {
             int cdkeyClaimed = claimCdkeys();
             int diamonds = claimBackpackDiamonds();   // 兑换码奖励的钻石需打开才可用
@@ -473,15 +510,19 @@ public final class BootstrapService {
                 return result;
             }
         }
-        // 成长/章节任务奖励（新版第 10 步，起号阶段资源主来源）：完成建造/委任后立刻可领
+        // 成长/章节任务奖励（起号阶段资源主来源）
         int quests = claimPendingQuests();
         if (quests > 0) {
             Map<String, Object> result = actionResult("STARTED", "已领取 " + quests + " 项任务奖励");
             result.put("questClaimed", quests);
             return result;
         }
-        // 幸存者委任（必须在建造之前）：网页版实证——不委任则资源恒为 0、建造恒 51 被拒。
-        // 每轮检查一次，有新闲置者就上岗；本轮若有委任则直通返回，下一轮再建造。
+        // 英雄推进（网页版顺序：章节之后、上岗之前）
+        Map<String, Object> hero = heroAdvance();
+        if (hero != null) {
+            return hero;
+        }
+        // 幸存者委任（不上岗则资源恒 0、建造恒 51 被拒）
         if (!state.idleSurvivors().isEmpty()) {
             Map<String, Object> assigned = assignIdleSurvivors();
             if (number(assigned.get("assignedCount")) > 0L) {
@@ -491,18 +532,16 @@ public final class BootstrapService {
                 return result;
             }
         }
-        // 情报挂点（对齐原版：熔炉 ≥ WORLD_MAP_UNLOCK_FURNACE_LEVEL 才启用；领取/快打
-        // 结果非空则本轮直通返回，不阻塞建筑主线；推送不可得自动降级跳过）。
-        if (state.furnaceLevel() >= WORLD_MAP_UNLOCK_FURNACE_LEVEL) {
-            Optional<Map<String, Object>> intelligence = claimIntelligenceRewards();
-            if (intelligence.isPresent()) {
-                return intelligence.get();
-            }
-        }
-        if (!state.buildingsReady() || !state.queuesReady()) {
-            return actionResult("WAITING", "等待建筑与队列全量状态同步");
+        // 领取产出资源（网页版由教程/世界链路刷新；本地放在建筑动作前）
+        if (claimProducedResources()) {
+            return actionResult("STARTED", "已领取产出资源");
         }
         Plan plan = planNext(cfg, BootstrapPlanner.DEFAULT_MAX_ACTIONS);
+        // 网页版在 plan 之后、章节家具之前推进探险
+        Map<String, Object> adventure = adventureBattle(0L);
+        if (adventure != null && "STARTED".equals(adventure.get("status"))) {
+            return adventure;
+        }
         // 卡点 A（方案 B）：规划器已把 51 退避动作及其依赖动作排除，只留独立可执行动作；
         // 被排除的动作不会再被请求，因此不会把自己的 hold 续期（审查 P1-1）。
         if (plan.actions().isEmpty()) {
@@ -528,6 +567,82 @@ public final class BootstrapService {
             return result;
         }
         return executeFirstAction(cfg, plan.actions().get(0));
+    }
+
+    /**
+     * 世界地图推进（对齐网页版 BootstrapWorldService.advance 的最小实现）：
+     * 熔炉 ≥7 且情报快照已初始化时，依次发送 {@code req_world_kingdom_info}、
+     * {@code req_world_map_fog{kid}}。营救/怪物行军属 P1，暂不实现。
+     */
+    private Optional<Map<String, Object>> worldAdvance() {
+        if (state.furnaceLevel() < WORLD_MAP_UNLOCK_FURNACE_LEVEL || intelEvents() == null) {
+            return Optional.empty();
+        }
+        if (!worldKingdomInfoSent) {
+            try {
+                GameMessage response = request(WORLD_KINGDOM_INFO, Map.of());
+                worldKingdomInfoSent = true;
+                Map<String, Object> c = content(response);
+                long kid = number(c.get("kid"));
+                if (kid <= 0L) kid = number(c.get("kingdom_id"));
+                if (kid <= 0L) kid = number(mapOf(c.get("kingdom")).get("id"));
+                if (kid > 0L) worldKingdomId = kid;
+                Map<String, Object> result = actionResult("STARTED",
+                        "起号世界地图已推进：已发送 " + WORLD_KINGDOM_INFO);
+                result.put("worldAction", "worldKingdomInfo");
+                return Optional.of(result);
+            } catch (Exception e) {
+                worldKingdomInfoSent = true;
+                FileLog.info("[起号] {} 失败：{}", WORLD_KINGDOM_INFO, String.valueOf(e.getMessage()));
+                return Optional.empty();
+            }
+        }
+        if (!worldFogSent && worldKingdomId > 0L) {
+            try {
+                request(WORLD_MAP_FOG, Map.of("kid", worldKingdomId));
+                worldFogSent = true;
+                Map<String, Object> result = actionResult("STARTED",
+                        "起号世界地图已推进：已发送 " + WORLD_MAP_FOG);
+                result.put("worldAction", "worldFog");
+                return Optional.of(result);
+            } catch (Exception e) {
+                worldFogSent = true;
+                FileLog.info("[起号] {} 失败：{}", WORLD_MAP_FOG, String.valueOf(e.getMessage()));
+            }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * 熔炉 ≥7 的每日收尾（对齐网页版 runFinishPass）：邮箱多轮、签到/里程碑、
+     * 背包钻石道具，一天只做一次；本日全部为空时不占用动作轮次。
+     */
+    private Optional<Map<String, Object>> finishPassIfDue() {
+        if (state.furnaceLevel() < WORLD_MAP_UNLOCK_FURNACE_LEVEL) {
+            return Optional.empty();
+        }
+        String today = java.time.LocalDate.now().toString();
+        if (today.equals(finishPassDay)) {
+            return Optional.empty();
+        }
+        int mailCount = 0;
+        for (int round = 0; round < 4; ++round) {
+            int got = claimMails();
+            if (got <= 0) break;
+            mailCount += got;
+        }
+        int achievements = claimAchievements();
+        int diamonds = claimBackpackDiamonds();
+        finishPassDay = today;
+        if (mailCount <= 0 && achievements <= 0 && diamonds <= 0) {
+            return Optional.empty();
+        }
+        Map<String, Object> result = actionResult("STARTED",
+                "收尾完成：邮箱、签到、里程碑与背包奖励已处理");
+        result.put("mailCount", mailCount);
+        result.put("achievementCount", achievements);
+        result.put("backpackDiamonds", diamonds);
+        return Optional.of(result);
     }
 
     /**
@@ -680,6 +795,7 @@ public final class BootstrapService {
                     appliedLevel > 0L ? appliedLevel : action.toLevel());
         }
         FileLog.info("[起号] 已请求{}（instantDiamond={}）", action.label(), cfg.instantDiamond());
+        resourceExhaustedAttempts = 0;
         Map<String, Object> result = actionResult("STARTED",
                 "已请求" + action.label() + backpackUseSummary(preparation));
         result.put("step", stepView(action));
@@ -688,10 +804,36 @@ public final class BootstrapService {
         return result;
     }
 
+    /**
+     * 建筑升级的资源不足钻石兜底（对齐网页版 {@code upgradeWithDiamond}）：
+     * {@code req_upgrade_building{bid, use_diamond:true, qid:0}}，成功后本地乐观推进。
+     *
+     * @return 成功返回 STARTED 结果；失败返回 null（由调用方走 WAITING/ENDED）
+     */
+    private Map<String, Object> upgradeWithDiamond(Action action) {
+        if (action.kind() != ActionKind.UPGRADE_BUILDING) {
+            return null;
+        }
+        try {
+            request(UPGRADE_BUILDING, Map.of("bid", action.buildingId(),
+                    "use_diamond", true, "qid", 0L));
+            state.markedUpgraded(action.buildingId(), action.toLevel());
+            FileLog.info("[起号] 资源不足，已改用钻石完成 {} 的升级", action.label());
+            Map<String, Object> result = actionResult("STARTED",
+                    "资源不足，已改用钻石完成 " + action.label());
+            result.put("step", stepView(action));
+            result.put("diamondFallback", true);
+            return result;
+        } catch (Exception e) {
+            FileLog.info("[起号] 改用钻石升级 {} 失败：{}", action.label(),
+                    String.valueOf(e.getMessage()));
+            return null;
+        }
+    }
+
     /** 升级被服务端拒绝的分支文案（806/119/51/120/其他，逐字对齐原版 upgradeRejected）。 */
     private Map<String, Object> upgradeRejected(Action action, ProtocolException exception,
-                                                Map<String, Object> preparation) {
-        int code = exception.code();
+                                                Map<String, Object> preparation) {        int code = exception.code();
         // 154：家具服务端已存在（本地未同步）→ 标记 1 级继续，不算失败（新版同语义）
         if (code == 154 && action.kind() == ActionKind.CREATE_FURNITURE) {
             state.markedFurniture(action.buildingId(), action.furnitureId(), 1L);
@@ -731,15 +873,53 @@ public final class BootstrapService {
             return locked;
         }
         if (code == ITEM_NOT_ENOUGH) {
-            // 51：对该动作做长退避（实测部分家具即使资源看似充足也会被拒，
-            // 属该家具自身前置限制）。不退还每轮重试同一动作，主线会被永久卡住。
+            // 网页版对齐（P0）：熔炉 ≥5 时建筑 51 先尝试钻石直升（use_diamond=true,qid=0），
+            // 而不是 30 分钟 hold。0→9 的 6→7、7→8、8→9 都依赖这一步。
+            if (action.kind() == ActionKind.UPGRADE_BUILDING && state.furnaceLevel() >= 5L) {
+                claimBackpackDiamonds();
+                Map<String, Object> byDiamond = upgradeWithDiamond(action);
+                if (byDiamond != null) {
+                    resourceExhaustedAttempts = 0;
+                    preparation.put("diamondFallback", true);
+                    byDiamond.put("preparation", preparation);
+                    return byDiamond;
+                }
+                if (state.furnaceLevel() >= 9L) {
+                    ++resourceExhaustedAttempts;
+                    if (resourceExhaustedAttempts >= 3) {
+                        resourceEnded = true;
+                        Map<String, Object> ended = actionResult("ENDED",
+                                "大熔炉已到 9 级，资源已尽力补充仍不足，起号结束");
+                        ended.put("step", stepView(action));
+                        ended.put("errorCode", code);
+                        ended.put("resourceEnded", true);
+                        FileLog.warn("[起号] 资源耗尽，起号结束：{}", action.label());
+                        return ended;
+                    }
+                }
+                Map<String, Object> waiting = actionResult("WAITING",
+                        "资源或道具不足，等待补充后重试：" + action.label()
+                                + preparationSummary(preparation));
+                waiting.put("step", stepView(action));
+                waiting.put("errorCode", code);
+                waiting.put("preparation", preparation == null ? Map.of() : Map.copyOf(preparation));
+                return waiting;
+            }
+            // 家具升级 51 且本地认为家具有等级：可能本地状态滞后（服务端尚未创建/已销毁）。
+            // 重置本地等级为 0 并持久化覆盖，下一轮先走 CREATE；服务端已存在时 154 会兜底按 1 级继续。
+            if (action.kind() == ActionKind.UPGRADE_FURNITURE) {
+                String fkey = furnitureKey(action.buildingId(), action.furnitureId());
+                state.markedFurniture(action.buildingId(), action.furnitureId(), 0L);
+                furnitureOverrides.put(fkey, 0L);
+            }
+            // 51：对该动作做短退避（家具 51 多为建筑/家具状态未同步，30 秒后重试通常可恢复）。
             // 键与 runNext 过滤侧共用 holdKey(action)，避免字符串静默失配。
             String actionHoldKey = holdKey(action);
-            markRetry(actionHoldKey, ACTION_HOLD_MILLIS);
-            // 每 30 分钟只宣告一次（方向修正：首次 51 也要打印，否则实跑误以为没进分支）
+            markRetry(actionHoldKey, ACTION_RETRY_MILLIS);
+            // 每 30 秒只宣告一次（首次 51 也要打印，否则实跑误以为没进分支）
             if (retryAllowed(actionHoldKey + ":logged")) {
-                markRetry(actionHoldKey + ":logged", ACTION_HOLD_MILLIS);
-                FileLog.warn("[起号] 动作暂不可行（51），30 分钟内不再尝试：{}", action.label());
+                markRetry(actionHoldKey + ":logged", ACTION_RETRY_MILLIS);
+                FileLog.warn("[起号] 动作暂不可行（51），30 秒内不再尝试：{}", action.label());
             }
             if (retryAllowed("res:diag")) {
                 markRetry("res:diag", 60_000L);
@@ -837,7 +1017,8 @@ public final class BootstrapService {
         // 真实轮（2026-11-10）：背包无资源包时，若开启 buyShopResources 则用钻石从统帅商店补缺资源
         if (cfg.buyShopResources()) {
             try {
-                result.put("purchase", buyMissingResources(costs));
+                // 51 时本地资源表可能滞后：强制按动作成本买足（网页版按服务端真实资源买）
+                result.put("purchase", buyMissingResources(costs, true));
             } catch (RuntimeException e) {
                 result.put("purchase", Map.of("message", "补资源失败：" + e.getMessage()));
             }
@@ -851,6 +1032,16 @@ public final class BootstrapService {
      * 受钻石余额与单次 200 包上限约束。价格取 {@code bootstrap/daily-town-shop-catalog.json}。
      */
     Map<String, Object> buyMissingResources(List<Cost> costs) throws Exception {
+        return buyMissingResources(costs, false);
+    }
+
+    /**
+     * 商店补资源（可强制按动作成本购买）。
+     *
+     * <p>51 时本地资源表可能滞后（服务端已不足而本地仍显示有余），按本地缺口会算出 0；
+     * 网页版按服务端真实资源买包，本地用 {@code force=true} 直接按动作成本买足。
+     */
+    Map<String, Object> buyMissingResources(List<Cost> costs, boolean force) throws Exception {
         LinkedHashMap<String, Object> result = new LinkedHashMap<>();
         if (costs == null || costs.isEmpty()) {
             result.put("purchases", List.of());
@@ -859,10 +1050,10 @@ public final class BootstrapService {
         }
         // 缺口（普通 + 安全资源一起算）。顺序对齐新版 BootstrapShopService：
         // 生肉(100113) → 木材(100123) → 煤矿(100133) → 铁矿(100143)，各限 200 份。
-        long needMeat = Math.max(0L, missingOf(costs, 102L));
-        long needWood = Math.max(0L, missingOf(costs, 103L));
-        long needCoal = Math.max(0L, missingOf(costs, 104L));
-        long needIron = Math.max(0L, missingOf(costs, 105L));
+        long needMeat = force ? costAmount(costs, 102L) : Math.max(0L, missingOf(costs, 102L));
+        long needWood = force ? costAmount(costs, 103L) : Math.max(0L, missingOf(costs, 103L));
+        long needCoal = force ? costAmount(costs, 104L) : Math.max(0L, missingOf(costs, 104L));
+        long needIron = force ? costAmount(costs, 105L) : Math.max(0L, missingOf(costs, 105L));
         if (needMeat <= 0L && needWood <= 0L && needCoal <= 0L && needIron <= 0L) {
             result.put("purchases", List.of());
             result.put("message", "当前没有需要补充的资源");
@@ -900,6 +1091,16 @@ public final class BootstrapService {
         for (Cost cost : costs) {
             if (cost.id() == resourceId || cost.id() == safeResourceId(resourceId)) {
                 return Math.max(0L, cost.amount() - totalResourceCount(resourceId));
+            }
+        }
+        return 0L;
+    }
+
+    /** 动作成本里某资源的总量（force 补资源用，忽略本地库存）。 */
+    private static long costAmount(List<Cost> costs, long resourceId) {
+        for (Cost cost : costs) {
+            if (cost.id() == resourceId || cost.id() == safeResourceId(resourceId)) {
+                return Math.max(0L, cost.amount());
             }
         }
         return 0L;
@@ -1085,6 +1286,7 @@ public final class BootstrapService {
     int claimBackpackDiamonds() {
         int used = 0;
         for (long itemId : DIAMOND_ITEM_IDS) {
+            if (failedDiamondItems.contains(itemId)) continue;
             long count = Math.max(0L, state.itemCount(itemId));     // 对齐新版 itemCount
             if (count <= 0L) continue;
             try {
@@ -1099,7 +1301,9 @@ public final class BootstrapService {
                         String.valueOf(content).length() > 200
                                 ? String.valueOf(content).substring(0, 200) : String.valueOf(content));
             } catch (Exception e) {
-                FileLog.info("[起号] 打开钻石道具失败 itemId={}：{}",
+                // 物品实际不在背包（服务端 51）时本地计数可能滞后：本会话不再重试，避免每轮刷请求
+                failedDiamondItems.add(itemId);
+                FileLog.info("[起号] 打开钻石道具失败 itemId={}（本会话不再重试）：{}",
                         String.valueOf(itemId), String.valueOf(e.getMessage()));
             }
         }
@@ -1378,19 +1582,35 @@ public final class BootstrapService {
             GameMessage info = request(ACHIEVEMENT_INFO, Map.of());
             Map<String, Object> content = info == null || info.getContent() == null
                     ? Map.of() : info.getContent();
-            Object raw = content.get("list");
+            // 网页版 BootstrapMilestoneState.applyInfos 的字段形状：{infos:[{id,complete,received}]}
+            Object raw = content.get("infos");
+            boolean milestoneShape = raw != null;
+            if (raw == null) raw = content.get("list");
             if (raw == null) raw = content.get("achievements");
             if (raw == null) raw = content.get("data");
             for (Map<String, Object> item : maps(raw)) {
                 long id = number(item.get("id"));
                 if (id <= 0L) continue;
-                long state = number(item.get("state"));
-                boolean claimable = state == 2L || number(item.get("can_get")) > 0L
-                        || number(item.get("status")) == 2L;
+                boolean claimable;
+                if (milestoneShape) {
+                    // complete=true 且未 received
+                    claimable = booleanValue(item.get("complete")) && !booleanValue(item.get("received"));
+                } else {
+                    long state = number(item.get("state"));
+                    claimable = state == 2L || number(item.get("can_get")) > 0L
+                            || number(item.get("status")) == 2L;
+                }
                 if (!claimable) continue;
                 try {
                     request(ACHIEVEMENT_REWARD, Map.of("id", id));
                     claimed++;
+                    FileLog.info("[起号] 已领取里程碑奖励 id={}", String.valueOf(id));
+                } catch (ProtocolException e) {
+                    // 7902=已领取：视为处理完毕，不重复请求
+                    if (e.code() != 7902) {
+                        FileLog.info("[起号] 领取里程碑 {} 被拒绝 code={}",
+                                String.valueOf(id), String.valueOf(e.code()));
+                    }
                 } catch (Exception ignored) {
                     // 单项失败不影响其它
                 }
@@ -1602,8 +1822,8 @@ public final class BootstrapService {
         holds.clear(holdScope, key);
     }
 
-    /** 51 动作长退避时长（30 分钟）：该动作本身前置不满足，重试无意义。 */
-    static final long ACTION_HOLD_MILLIS = 1_800_000L;
+    /** 非钻石 51（家具等）的短重试：实测家具 51 多为建筑刚开工未完成，30 秒后通常可成功。 */
+    static final long ACTION_RETRY_MILLIS = 30_000L;
 
     /**
      * 动作退避键：写入侧（{@link #upgradeRejected}）与读取侧（{@link #runNext} 过滤）
