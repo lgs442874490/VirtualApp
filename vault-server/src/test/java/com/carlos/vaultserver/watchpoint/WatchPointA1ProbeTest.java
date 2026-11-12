@@ -190,10 +190,14 @@ public class WatchPointA1ProbeTest {
     /**
      * 目标建筑已在缓存（驻防到非己方联盟旗子）：按统一分类推「资源·破坏」，
      * 不再走 A1「联盟旗子」文案（2026-11-11 分类口径）。
+     *
+     * <p>2026-11-12：发起人联盟必须已知（否则按「归属未知不判破坏」静默），
+     * 故这里显式 seed 监视目标城（aid 与目标联盟不同）。
      */
     @Test
     public void buildingTargetUsesActivityClassify() {
         WatchPointEngine engine = new WatchPointEngine(null, store(), null, null);
+        engine.seedCityForTest(MONITOR_UID, 89700732L, MONITOR_X, MONITOR_Y, "监视目标");
         prepare(engine);
         feedBuilding(engine, MONITOR_SESSION, TARGET_X, TARGET_Y);
         feedOutgoingMarch(engine);
@@ -206,6 +210,7 @@ public class WatchPointA1ProbeTest {
     @Test
     public void probeBuildingFallback() {
         WatchPointEngine engine = new WatchPointEngine(null, store(), null, null);
+        engine.seedCityForTest(MONITOR_UID, 89700732L, MONITOR_X, MONITOR_Y, "监视目标");
         List<WjdrEngine> es = prepare(engine);
         feedOutgoingMarch(engine);
         assertEquals("先挂起等补查", 1, engine.pendingA1CountForTest());

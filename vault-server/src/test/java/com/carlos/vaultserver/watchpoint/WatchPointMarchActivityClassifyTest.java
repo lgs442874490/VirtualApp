@@ -19,7 +19,8 @@ import static org.junit.Assert.assertTrue;
  * <ul>
  *   <li>己方联盟旗帜/总部（荒原·雪原）/王城：已建成 → 驻防，未建成 → 建设；</li>
  *   <li>其他联盟旗帜/总部/王城：一律破坏；</li>
- *   <li>熊坑陷阱：只能建设（不论建成与否），不能驻防；其他联盟陷阱 → 破坏；</li>
+ *   <li>熊坑陷阱：只能建设（不论建成与否），不能驻防；其他联盟/归属未知陷阱 → 不判定；</li>
+ *   <li>归属未知（发起人联盟或建筑归属未解析）→ 不判定（不推「破坏」，2026-11-12 用户口径）；</li>
  *   <li>矿点：已有采集者、或有更早出发且仍在途的同点行军 → 撞矿；否则 → 采集；</li>
  *   <li>侦查（type=1）不参与上述分类。</li>
  * </ul>
@@ -102,9 +103,20 @@ public class WatchPointMarchActivityClassifyTest {
     }
 
     @Test
-    public void otherTrap_isDestroy() {
-        assertEquals(MarchActivity.DESTROY, classify(TYPE_DEFEND, OWN_AID, bld("陷阱", OTHER_AID, true),
+    public void otherTrap_notClassified() {
+        // 2026-11-12 用户口径：打熊是活动行为，任何联盟的熊坑陷阱都不推「破坏」。
+        assertNull(classify(TYPE_DEFEND, OWN_AID, bld("陷阱", OTHER_AID, true),
                 false, false, false));
+        assertNull(classify(2L, OWN_AID, bld("陷阱", OTHER_AID, true),
+                false, false, false));
+    }
+
+    @Test
+    public void unknownOwnership_notClassified() {
+        // 发起人联盟/建筑归属未解析 → 不能凭猜测判破坏。
+        assertNull(classify(TYPE_DEFEND, 0L, bld("旗子", OTHER_AID, true), false, false, false));
+        assertNull(classify(2L, OWN_AID, bld("旗子", 0L, true), false, false, false));
+        assertNull(classify(TYPE_DEFEND, 0L, bld("陷阱", 0L, true), false, false, false));
     }
 
     // ---------------- 矿点：采集 vs 撞矿 ----------------
