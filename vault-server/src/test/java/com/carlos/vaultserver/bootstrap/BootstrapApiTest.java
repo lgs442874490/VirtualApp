@@ -500,6 +500,28 @@ public class BootstrapApiTest {
         assertTrue(out.optString("error").contains("批次不存在"));
     }
 
+    /** R-09：EnginePort.serverNowMs 转发已校准的引擎服务器时钟。 */
+    @Test
+    public void enginePort_serverNowMs_forwardsCalibratedClock() {
+        FakeEngine engine = new FakeEngine();
+        long now = System.currentTimeMillis();
+        engine.serverClock().calibratePush(Map.of("servertime", now / 1000L),
+                com.carlos.vault.wjdr.GameServerClock.monoNow());
+        long got = new BootstrapApi.EnginePort(engine).serverNowMs();
+        assertTrue("应接近校准时刻（got=" + got + " now=" + now + "）",
+                Math.abs(got - now) < 10_000L);
+    }
+
+    /** R-09：未校准时回退本机毫秒，不抛异常。 */
+    @Test
+    public void enginePort_serverNowMs_fallsBackBeforeCalibration() {
+        FakeEngine engine = new FakeEngine();
+        long before = System.currentTimeMillis();
+        long got = new BootstrapApi.EnginePort(engine).serverNowMs();
+        long after = System.currentTimeMillis();
+        assertTrue("未校准应回退本机时间（got=" + got + "）", got >= before && got <= after);
+    }
+
     @Test
     public void engineCloseIdempotentOnFakeSession() {
         // Session.close 走 WjdrEngine.close（fake 覆写空转）——断言不抛即语义正常

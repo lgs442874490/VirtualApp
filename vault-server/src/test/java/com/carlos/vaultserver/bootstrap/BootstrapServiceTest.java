@@ -1114,6 +1114,23 @@ public class BootstrapServiceTest {
     /** 情报推送端口：notify 键可编程（collectNotifies 跳时，notify 返回脚本表）。 */
     private static final class IntelPort extends ScriptedPort {
         final Map<String, Map<String, Object>> notifies = new LinkedHashMap<>();
+        /** collectNotifies 调用次数（R-04：world 完成后必须为 0 增量）。 */
+        int collectCalls;
+
+        IntelPort() {
+            this(true);
+        }
+
+        /**
+         * @param seedWorld 是否预置 world 成功响应（kingdom info 带 kid + fog）。
+         *                  R-08 失败路径用 {@code false} 自行脚本化失败响应。
+         */
+        IntelPort(boolean seedWorld) {
+            if (seedWorld) {
+                when("req_world_kingdom_info", content("code", 0L, "kid", 77L));
+                when("req_world_map_fog", content("code", 0L));
+            }
+        }
 
         @Override
         public Map<String, Object> notify(String proto) {
@@ -1122,7 +1139,8 @@ public class BootstrapServiceTest {
 
         @Override
         public void collectNotifies(long millis) {
-            // 跳时：测试不等待推送窗口
+            // 跳时：测试不等待推送窗口（只计数）
+            collectCalls++;
         }
     }
 
@@ -1150,12 +1168,16 @@ public class BootstrapServiceTest {
         return new BootstrapConfig(true, 0L, 7, true, false, false, "", false, "");
     }
 
-    /** 熔炉 ≥7 时世界地图先于情报：测试先消费一次 world kingdom info 动作。 */
+    /** 熔炉 ≥7 时世界地图先于情报：测试先推进 world 两件套（kingdom info + fog）。 */
     private static void advanceWorldFirst(BootstrapService svc) throws Exception {
-        Map<String, Object> r = svc.runNext();
-        assertEquals("STARTED", r.get("status"));
-        assertTrue("应先推进世界地图：" + r.get("message"),
-                String.valueOf(r.get("message")).contains("世界地图"));
+        Map<String, Object> info = svc.runNext();
+        assertEquals("STARTED", info.get("status"));
+        assertTrue("应先推进世界地图：" + info.get("message"),
+                String.valueOf(info.get("message")).contains("世界地图"));
+        Map<String, Object> fog = svc.runNext();
+        assertEquals("STARTED", fog.get("status"));
+        assertTrue("第二步应发送 fog：" + fog.get("message"),
+                String.valueOf(fog.get("message")).contains("世界地图"));
     }
 
     /** 熔炉 ≥7 的 finishPass：背包钻石收尾一次，之后不再重复。 */
@@ -1851,4 +1873,181 @@ public class BootstrapServiceTest {
         assertEquals("11(state=2) 与 13(can_get=1) 可领", 2, svc.claimAchievements());
     }
 
+    // ================= C3：R-04 world 完成后不再探测情报 =================
+
+    /** world 两件套（kingdom info + fog）完成后，runNext 不得再 collectNotifies（P2-1 去阻塞）。 */
+    @Test
+    public void worldCompleted_stopsIntelProbeAndCollect() throws Exception {
+        IntelPort port = new IntelPort();
+        port.notifies.put(BootstrapService.NOTIFY_INTEL_INFO, content("events", content()));
+        BootstrapService svc = service(port, intelReadyLoad(1L), intelConfig());
+        advanceWorldFirst(svc);                  // kingdom info（world 未完成 → 探测）
+        svc.runNext();                           // fog
+        int probesAfterWorld = port.collectCalls;
+        svc.runNext();                           // world 已完成 → 不得再探测
+        svc.runNext();
+        assertEquals("world 完成后不得再 collectNotifies：" + port.calls,
+                probesAfterWorld, port.collectCalls);
+    }
+
+    // ================= C3：R-08 world 推进失败重试 =================
+
+    /** world kingdom info 连续失败 3 次后放弃（不再每轮刷），成功即清零。 */
+    @Test
+    public void worldInfoFailures_retryThenGiveUpAfterThree() throws Exception {
+        IntelPort port = new IntelPort(false);
+        port.notifies.put(BootstrapService.NOTIFY_INTEL_INFO, content("events", content()));
+        port.when("req_world_kingdom_info", content("code", 500L), content("code", 500L),
+                content("code", 500L));
+        BootstrapService svc = service(port, intelReadyLoad(1L), intelConfig());
+
+        svc.runNext();   // 第 1 次失败：下轮仍重试
+        assertEquals(1, port.count("req_world_kingdom_info"));
+        svc.runNext();
+        assertEquals(2, port.count("req_world_kingdom_info"));
+        svc.runNext();   // 第 3 次失败 → 放弃
+        assertEquals(3, port.count("req_world_kingdom_info"));
+        svc.runNext();   // 放弃后不再请求
+        assertEquals("3 次失败后放弃 world，不再每轮刷", 3, port.count("req_world_kingdom_info"));
+    }
+
+    /** kid 三种字段都取不到：不发送 fog，按失败计数；3 次后放弃。 */
+    @Test
+    public void worldKidMissing_doesNotSendFog_countsFailure() throws Exception {
+        IntelPort port = new IntelPort(false);
+        port.notifies.put(BootstrapService.NOTIFY_INTEL_INFO, content("events", content()));
+        port.when("req_world_kingdom_info", content("code", 0L), content("code", 0L),
+                content("code", 0L), content("code", 0L));
+        BootstrapService svc = service(port, intelReadyLoad(1L), intelConfig());
+
+        svc.runNext();
+        svc.runNext();
+        svc.runNext();
+        assertEquals("kid 取不到不得发送 fog", 0, port.count("req_world_map_fog"));
+        assertEquals(3, port.count("req_world_kingdom_info"));
+        svc.runNext();
+        assertEquals("kid 持续缺失 3 次后放弃", 3, port.count("req_world_kingdom_info"));
+    }
+
+    // ================= C3：R-09 finishPass 当日语义 =================
+
+    /** 三项全空时不占「今天已收尾」；当天后续新增邮件仍会收尾。 */
+    @Test
+    public void finishPass_emptyRewards_doesNotMarkDay() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        // 12 个空响应：finishPass 6 个大类 + 主线条带（489 行）6 个大类，
+        // 避免主线取到默认 9003 而把 mail 大类打入 5 分钟退避
+        for (int i = 0; i < 12; i++) {
+            port.when(BootstrapService.MAIL_COVER_LIST,
+                    content("code", 0L, "coverlist", List.of()));
+        }
+        BootstrapService svc = service(port, readyLoad(7L, 1L),
+                new BootstrapConfig(true, 0L, 7, true, false, false, "", false, ""));
+
+        Map<String, Object> first = svc.runNext();
+        assertFalse("三项全空不算收尾：" + first,
+                String.valueOf(first.get("message")).contains("收尾完成"));
+
+        port.when(BootstrapService.MAIL_COVER_LIST, content("code", 0L, "coverlist", List.of(
+                content("mailid_new", "m1", "isread", 0L, "attach_statue", 1L))));
+        for (int i = 0; i < 5; i++) {
+            port.when(BootstrapService.MAIL_COVER_LIST,
+                    content("code", 0L, "coverlist", List.of()));
+        }
+        port.when(BootstrapService.MAIL_BATCH_READ, content("code", 0L));
+        Map<String, Object> second = svc.runNext();
+        assertTrue("全空未置位 → 新增邮件仍应触发收尾：" + second,
+                String.valueOf(second.get("message")).contains("收尾完成"));
+    }
+
+    /** 收尾日期取 ProtocolPort.serverNowMs()，固定 Asia/Shanghai 时区。 */
+    @Test
+    public void finishPass_usesServerClockShanghaiDate() throws Exception {
+        long utcMs = java.time.ZonedDateTime.of(2026, 11, 12, 16, 30, 0, 0,
+                java.time.ZoneOffset.UTC).toInstant().toEpochMilli();   // 上海 2026-11-13 00:30
+        ScriptedPort port = new ScriptedPort() {
+            @Override
+            public long serverNowMs() {
+                return utcMs;
+            }
+        };
+        port.when(BootstrapService.MAIL_COVER_LIST, content("code", 0L, "coverlist", List.of(
+                content("mailid_new", "m1", "isread", 0L, "attach_statue", 1L))));
+        for (int i = 0; i < 5; i++) {
+            port.when(BootstrapService.MAIL_COVER_LIST,
+                    content("code", 0L, "coverlist", List.of()));
+        }
+        port.when(BootstrapService.MAIL_BATCH_READ, content("code", 0L));
+        BootstrapSessionState store = new BootstrapSessionState();
+        BootstrapService svc = new BootstrapService(port, new BootstrapPlanner(),
+                BootstrapCatalog.combined(), NO_SLEEP, new BootstrapHoldStore(), "fp-date", store);
+        svc.applyConfig(new BootstrapConfig(true, 0L, 7, true, false, false, "", false, ""));
+        svc.syncLoadData(readyLoad(7L, 1L));
+
+        Map<String, Object> result = svc.runNext();
+        assertTrue("应执行收尾：" + result,
+                String.valueOf(result.get("message")).contains("收尾完成"));
+        assertEquals("服务端毫秒按 Asia/Shanghai 折算日期", "2026-11-13",
+                store.holder("fp-date").finishPassDay());
+    }
+
+    // ================= C3：R-10 里程碑形状回退 =================
+
+    /** infos 为空数组时必须回退 list/achievements/data 的 state/can_get 形状。 */
+    @Test
+    public void claimAchievements_emptyInfos_fallsBackToListShape() {
+        ScriptedPort port = new ScriptedPort();
+        port.when(BootstrapService.ACHIEVEMENT_INFO, content("code", 0L,
+                "infos", List.of(),
+                "list", List.of(content("id", 7L, "state", 2L))));
+        port.when(BootstrapService.ACHIEVEMENT_REWARD, content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+
+        assertEquals(1, svc.claimAchievements());
+        assertEquals(Map.of("id", 7L), port.argsOf(BootstrapService.ACHIEVEMENT_REWARD, 0));
+    }
+
+    /** infos 非空数组时只按里程碑形状（complete && !received）领，不误领 list 项。 */
+    @Test
+    public void claimAchievements_nonEmptyInfos_usesMilestoneShapeOnly() {
+        ScriptedPort port = new ScriptedPort();
+        port.when(BootstrapService.ACHIEVEMENT_INFO, content("code", 0L,
+                "infos", List.of(content("id", 9L, "complete", true, "received", false)),
+                "list", List.of(content("id", 7L, "state", 2L))));
+        port.when(BootstrapService.ACHIEVEMENT_REWARD, content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+
+        assertEquals(1, svc.claimAchievements());
+        assertEquals(Map.of("id", 9L), port.argsOf(BootstrapService.ACHIEVEMENT_REWARD, 0));
+        assertEquals(1, port.count(BootstrapService.ACHIEVEMENT_REWARD));
+    }
+
+    // ================= C3：R-11 失败钻石道具区分错误类型 =================
+
+    /** 51（道具不存在/不可用）→ 本会话永久跳过，第二次不再请求。 */
+    @Test
+    public void claimBackpackDiamonds_51_permanentSkip() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_use_item", content("code", 51L));
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(content("bag", content("100001", 1L)));
+
+        assertEquals(0, svc.claimBackpackDiamonds());
+        assertEquals(1, port.count("req_use_item"));
+        svc.claimBackpackDiamonds();
+        assertEquals("51 后本会话不再重试", 1, port.count("req_use_item"));
+    }
+
+    /** 非 51（限流/其它码）→ 不永久跳过，下一轮可重试。 */
+    @Test
+    public void claimBackpackDiamonds_otherCode_retryable() {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_use_item", content("code", 500L), content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(content("bag", content("100001", 1L)));
+
+        assertEquals(0, svc.claimBackpackDiamonds());
+        assertEquals("非 51 不永久跳过，第二次仍请求并成功", 1, svc.claimBackpackDiamonds());
+        assertEquals(2, port.count("req_use_item"));
+    }
 }

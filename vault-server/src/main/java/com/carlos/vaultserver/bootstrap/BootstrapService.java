@@ -159,6 +159,8 @@ public final class BootstrapService {
     private static final int MAX_RUN_UNTIL_STEPS = 300;
     /** 世界地图解锁熔炉等级（原版 WORLD_MAP_UNLOCK_FURNACE_LEVEL，情报模块启用门槛）。 */
     static final long WORLD_MAP_UNLOCK_FURNACE_LEVEL = 7L;
+    /** 收尾日期时区（需求 R-09：固定 Asia/Shanghai，与游戏日重置对齐）。 */
+    private static final java.time.ZoneId FINISH_PASS_ZONE = java.time.ZoneId.of("Asia/Shanghai");
     /** 世界地图协议（网页版 BootstrapWorldService 同值）。 */
     static final String WORLD_KINGDOM_INFO = "req_world_kingdom_info";
     static final String WORLD_MAP_FOG = "req_world_map_fog";
@@ -195,6 +197,11 @@ public final class BootstrapService {
          */
         default Map<String, Object> consumeResourceUpdate() {
             return null;
+        }
+
+        /** 服务器当前毫秒（需求 R-09 收尾日期口径）；未校准时回退本机。 */
+        default long serverNowMs() {
+            return System.currentTimeMillis();
         }
     }
 
@@ -588,45 +595,87 @@ public final class BootstrapService {
     }
 
     /**
+     * 收尾日期（需求 R-09）：取 {@link ProtocolPort#serverNowMs()} 的服务器毫秒，
+     * 按固定 {@code Asia/Shanghai} 折算日期（与游戏日重置对齐，避免 JVM 时区漂移）。
+     */
+    private String finishPassToday() {
+        long nowMs = port.serverNowMs();
+        return java.time.Instant.ofEpochMilli(nowMs)
+                .atZone(FINISH_PASS_ZONE).toLocalDate().toString();
+    }
+
+    /**
      * 世界地图推进（对齐网页版 BootstrapWorldService.advance 的最小实现）：
-     * 熔炉 ≥7 且情报快照已初始化时，依次发送 {@code req_world_kingdom_info}、
-     * {@code req_world_map_fog{kid}}。营救/怪物行军属 P1，暂不实现。
+     * 熔炉 ≥7 且世界地图两件套（kingdom info + fog）未完成时，先探测情报快照，
+     * 再依次发送 {@code req_world_kingdom_info}、{@code req_world_map_fog{kid}}。
+     *
+     * <p>审查 P2-1 / 需求 R-04：world 完成后不再调用 {@code intelEvents()}/{@code collectNotifies}，
+     * 消除每轮固定 2.5s 阻塞。审查 P2-5 / 需求 R-08：失败不置「已发送」，累计 3 次才放弃。
      */
     private Optional<Map<String, Object>> worldAdvance() {
-        if (state.furnaceLevel() < WORLD_MAP_UNLOCK_FURNACE_LEVEL || intelEvents() == null) {
+        if (state.furnaceLevel() < WORLD_MAP_UNLOCK_FURNACE_LEVEL) {
+            return Optional.empty();
+        }
+        // world 两件套已完成：直接放行，不再探测情报（R-04 去阻塞的关键）
+        if (session.worldKingdomInfoSent() && session.worldFogSent()) {
+            return Optional.empty();
+        }
+        if (intelEvents() == null) {
             return Optional.empty();
         }
         if (!session.worldKingdomInfoSent()) {
             try {
                 GameMessage response = request(WORLD_KINGDOM_INFO, Map.of());
-                session.markWorldKingdomInfoSent();
                 Map<String, Object> c = content(response);
                 long kid = number(c.get("kid"));
                 if (kid <= 0L) kid = number(c.get("kingdom_id"));
                 if (kid <= 0L) kid = number(mapOf(c.get("kingdom")).get("id"));
+                if (kid <= 0L) {
+                    // kid 取不到：不置已发送、不发送 fog，按一次失败计数（R-08）
+                    return worldAttemptFailed("未取到 kingdom id");
+                }
                 session.setWorldKingdomId(kid);
+                session.markWorldKingdomInfoSent();
+                session.resetWorldAttempts();
                 Map<String, Object> result = actionResult("STARTED",
                         "起号世界地图已推进：已发送 " + WORLD_KINGDOM_INFO);
                 result.put("worldAction", "worldKingdomInfo");
                 return Optional.of(result);
             } catch (Exception e) {
-                session.markWorldKingdomInfoSent();
-                FileLog.info("[起号] {} 失败：{}", WORLD_KINGDOM_INFO, String.valueOf(e.getMessage()));
-                return Optional.empty();
+                return worldAttemptFailed("请求 " + WORLD_KINGDOM_INFO + " 异常：" + e.getMessage());
             }
         }
-        if (!session.worldFogSent() && session.worldKingdomId() > 0L) {
+        if (!session.worldFogSent()) {
+            if (session.worldKingdomId() <= 0L) {
+                return worldAttemptFailed("未取到 kingdom id，fog 未发送");
+            }
             try {
                 request(WORLD_MAP_FOG, Map.of("kid", session.worldKingdomId()));
                 session.markWorldFogSent();
+                session.resetWorldAttempts();
                 Map<String, Object> result = actionResult("STARTED",
                         "起号世界地图已推进：已发送 " + WORLD_MAP_FOG);
                 result.put("worldAction", "worldFog");
                 return Optional.of(result);
             } catch (Exception e) {
-                session.markWorldFogSent();
-                FileLog.info("[起号] {} 失败：{}", WORLD_MAP_FOG, String.valueOf(e.getMessage()));
+                return worldAttemptFailed("请求 " + WORLD_MAP_FOG + " 异常：" + e.getMessage());
             }
+        }
+        return Optional.empty();
+    }
+
+    /**
+     * world 推进失败：不置「已发送」，累计失败次数；连续 3 次才放弃（置已发送避免每轮刷）。
+     * 成功路径会 {@link BootstrapSessionState.Holder#resetWorldAttempts()}。
+     */
+    private Optional<Map<String, Object>> worldAttemptFailed(String reason) {
+        int attempts = session.incrementWorldAttempts();
+        FileLog.info("[起号] world 推进失败（第 {} 次，fpid={}）：{}", attempts, holdScope, reason);
+        if (attempts >= 3) {
+            session.markWorldKingdomInfoSent();
+            session.markWorldFogSent();
+            FileLog.warn("[起号] world 推进连续失败 {} 次，本会话放弃（fpid={}）：{}",
+                    attempts, holdScope, reason);
         }
         return Optional.empty();
     }
@@ -639,7 +688,7 @@ public final class BootstrapService {
         if (state.furnaceLevel() < WORLD_MAP_UNLOCK_FURNACE_LEVEL) {
             return Optional.empty();
         }
-        String today = java.time.LocalDate.now().toString();
+        String today = finishPassToday();
         if (today.equals(session.finishPassDay())) {
             return Optional.empty();
         }
@@ -651,10 +700,12 @@ public final class BootstrapService {
         }
         int achievements = claimAchievements();
         int diamonds = claimBackpackDiamonds();
-        session.setFinishPassDay(today);
+        // 需求 R-09：三项全空（含里程碑处于 5 分钟退避）时不占「当日已收尾」，
+        // 当天后续新增邮件/里程碑仍会触发收尾。
         if (mailCount <= 0 && achievements <= 0 && diamonds <= 0) {
             return Optional.empty();
         }
+        session.setFinishPassDay(today);
         Map<String, Object> result = actionResult("STARTED",
                 "收尾完成：邮箱、签到、里程碑与背包奖励已处理");
         result.put("mailCount", mailCount);
@@ -1459,10 +1510,19 @@ public final class BootstrapService {
                         String.valueOf(itemId), String.valueOf(count),
                         String.valueOf(content).length() > 200
                                 ? String.valueOf(content).substring(0, 200) : String.valueOf(content));
+            } catch (ProtocolException e) {
+                // 需求 R-11：仅 51（道具不存在/不可用）永久跳过；限流/其它码下一轮仍可重试
+                if (e.code() == ITEM_NOT_ENOUGH) {
+                    session.failedDiamondItems().add(itemId);
+                    FileLog.info("[起号] 打开钻石道具失败 itemId={} code=51（本会话不再重试）",
+                            String.valueOf(itemId));
+                } else {
+                    FileLog.info("[起号] 打开钻石道具失败 itemId={} code={}（下一轮可重试）",
+                            String.valueOf(itemId), String.valueOf(e.code()));
+                }
             } catch (Exception e) {
-                // 物品实际不在背包（服务端 51）时本地计数可能滞后：本会话不再重试，避免每轮刷请求
-                session.failedDiamondItems().add(itemId);
-                FileLog.info("[起号] 打开钻石道具失败 itemId={}（本会话不再重试）：{}",
+                // 网络/解析等临时异常：不永久跳过，避免一次抖动削弱 8→9 钻石兜底
+                FileLog.info("[起号] 打开钻石道具失败 itemId={}（临时错误，下一轮可重试）：{}",
                         String.valueOf(itemId), String.valueOf(e.getMessage()));
             }
         }
@@ -1742,11 +1802,14 @@ public final class BootstrapService {
             Map<String, Object> content = info == null || info.getContent() == null
                     ? Map.of() : info.getContent();
             // 网页版 BootstrapMilestoneState.applyInfos 的字段形状：{infos:[{id,complete,received}]}
+            // 需求 R-10：仅 infos 为非空数组时按里程碑形状解析；缺失/空数组回退 list/achievements/data。
             Object raw = content.get("infos");
-            boolean milestoneShape = raw != null;
-            if (raw == null) raw = content.get("list");
-            if (raw == null) raw = content.get("achievements");
-            if (raw == null) raw = content.get("data");
+            boolean milestoneShape = raw instanceof List && !((List<?>) raw).isEmpty();
+            if (!milestoneShape) {
+                raw = content.get("list");
+                if (raw == null) raw = content.get("achievements");
+                if (raw == null) raw = content.get("data");
+            }
             for (Map<String, Object> item : maps(raw)) {
                 long id = number(item.get("id"));
                 if (id <= 0L) continue;
@@ -2317,7 +2380,9 @@ public final class BootstrapService {
      * {@code notify_intelligence_info/events/del} 实际形状校准）。
      */
     private Optional<Map<String, Object>> claimIntelligenceRewards() throws Exception {
-        Map<Long, Map<String, Object>> events = intelEvents();
+        // 需求 R-04：情报领取不再阻塞等待推送（collectNotifies 只在 world 未完成的 worldAdvance
+        // 中每轮至多一次），直接读最近一次推送快照。
+        Map<Long, Map<String, Object>> events = intelEvents(false);
         if (events == null) {
             return Optional.empty();
         }
@@ -2404,12 +2469,22 @@ public final class BootstrapService {
     }
 
     /**
-     * 情报事件表构建：{@code collectNotifies} 收推送 → notify_intelligence_info 全量 +
+     * 情报事件表构建（等待推送版）：{@code collectNotifies} 收推送 → notify_intelligence_info 全量 +
      * notify_intelligence_events 增量合并（同 id 后到字段覆盖）→ events_del 删除。
      * 全部键都无推送返回 null（= 快照未初始化，调用方降级跳过）。
+     *
+     * <p>需求 R-04：{@code collectNotifies(2500)} 只保留给 world 未完成期间每轮至多一次；
+     * 其它调用方（情报领取）用 {@link #intelEvents(boolean)} 不阻塞读取。
      */
     private Map<Long, Map<String, Object>> intelEvents() {
-        port.collectNotifies(2500);
+        return intelEvents(true);
+    }
+
+    /** 情报事件表构建；{@code waitForPush=false} 时不阻塞等待推送（R-04 去阻塞）。 */
+    private Map<Long, Map<String, Object>> intelEvents(boolean waitForPush) {
+        if (waitForPush) {
+            port.collectNotifies(2500);
+        }
         Map<String, Object> info = port.notify(NOTIFY_INTEL_INFO);
         Map<String, Object> delta = port.notify(NOTIFY_INTEL_EVENTS);
         if (info == null && delta == null) {

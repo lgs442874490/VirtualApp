@@ -222,6 +222,16 @@ public final class BootstrapApi {
         public Map<String, Object> consumeResourceUpdate() {
             return engine.consumeResourceUpdate();
         }
+
+        @Override
+        public long serverNowMs() {
+            com.carlos.vault.wjdr.GameServerClock clock = engine.serverClock();
+            // 未校准（locked=false）时回退本机毫秒，避免把单调钟当服务器时间（需求 R-09）
+            if (clock != null && clock.locked()) {
+                return clock.nowServerMs();
+            }
+            return System.currentTimeMillis();
+        }
     }
 
     /**
