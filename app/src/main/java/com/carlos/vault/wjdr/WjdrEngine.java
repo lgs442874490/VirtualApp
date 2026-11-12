@@ -197,7 +197,7 @@ public class WjdrEngine {
     public static final String STATE_TAKEOVER = "takeover";     // 被顶号（code=5），人玩优先暂停
     public static final String STATE_NEED_TOKEN = "need_token"; // 凭证失效（code=26），待人工重导 token
 
-    /** 心跳参数照抄原版 heartbeatDue：空闲≥3s 或 距上次心跳≥60s 才发；1 秒扫描由 RoleSessionKeeper 驱动。 */
+    /** 心跳参数照抄原版 heartbeatDue：空闲≥3s 或 距上次心跳≥60s 才发；1 秒扫描由会话保活方驱动。 */
     static final long HEARTBEAT_IDLE_MILLIS = 3000L;
     static final long HEARTBEAT_MAX_INTERVAL_MILLIS = 60000L;
     /** 恢复退避照抄原版：8s×2^n 封顶 300s，±10% 抖动。 */
@@ -985,7 +985,7 @@ public class WjdrEngine {
     }
 
     /**
-     * 心跳扫描（由 RoleSessionKeeper 每秒调用）。语义照抄原版 heartbeatDue：
+     * 心跳扫描（由会话保活方每秒调用）。语义照抄原版 heartbeatDue：
      * 空闲≥3s 或 距上次心跳≥60s 才发；有在途请求（锁被占）跳过本轮。
      */
     public void heartbeatTick() {
@@ -1022,7 +1022,7 @@ public class WjdrEngine {
         }
     }
 
-    // ---------- 常驻会话状态 API（RoleSessionKeeper / UI 使用） ----------
+    // ---------- 常驻会话状态 API（会话保活方 / UI 使用） ----------
 
     public String sessionState() {
         return sessionState;

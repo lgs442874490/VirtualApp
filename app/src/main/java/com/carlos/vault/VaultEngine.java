@@ -1680,7 +1680,7 @@ public class VaultEngine {
             }
             if (fresh != null) acc = fresh;
 
-            // 服务器模式：进游戏前通知 vault-server 让位（30 分钟探测回连，期间不抢号）
+            // 进游戏前通知 vault-server 让位（30 分钟探测回连，期间不抢号）
             if (acc.fpid != null && !acc.fpid.isEmpty()) {
                 try {
                     VaultSync.yieldForGame(ctx, acc.fpid, 30);

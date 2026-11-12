@@ -46,7 +46,7 @@ import java.util.Set;
  *
  * <p>页面结构（UiStyle/UiComponents，纯代码构建）：
  * <ul>
- *   <li>顶部提示条：服务端未升级 / 未开服务器模式时显示，禁止提交但可浏览；</li>
+ *   <li>顶部提示条：服务端未升级/不可用时显示，禁止提交但可浏览；</li>
  *   <li>模式分段：立即迁城（多账号批量）/ 定时迁城（单账号，精确到秒 + 提前量 0-100ms）；</li>
  *   <li>迁城类型：12 种协议下拉单选（与服务端注册表同表，客户端硬编码兜底）；</li>
  *   <li>迁城坐标：按选中账号逐行 x/y 输入（needs_point 协议）；目标王国单输入（needs_kid）；</li>
@@ -596,10 +596,6 @@ public class MoveCityActivity extends Activity {
 
     /** protocols 探测：成功即放行提交；失败显示顶部提示条（可浏览不可提交）。 */
     private void detectServer() {
-        if (!VaultSync.isServerMode(this)) {
-            showWarn("未启用服务器模式：迁城由服务器执行，请先在设置中连接服务器");
-            return;
-        }
         VaultSync.movecityProtocols(this, (code, msg, data) -> runOnUiThread(() -> {
             if (code == 0 && data != null) {
                 JSONArray arr = data.optJSONArray("protocols");
@@ -659,7 +655,6 @@ public class MoveCityActivity extends Activity {
      */
     private static String describeFail(int code, String msg) {
         String m = msg == null ? "" : msg.trim();
-        if ("server_mode_off".equals(m)) return "未启用服务器模式";
         if (!m.isEmpty() && !"null".equals(m)) {
             if (code == -1 && (m.contains("404") || m.contains("405"))) {
                 return "服务端未升级，缺少该接口";
@@ -828,10 +823,6 @@ public class MoveCityActivity extends Activity {
     // ================= 任务列表 =================
 
     private void loadJobs() {
-        if (!VaultSync.isServerMode(this)) {
-            jobsHint.setText("未启用服务器模式：任务列表不可用");
-            return;
-        }
         VaultSync.movecityJobs(this, (code, msg, data) -> runOnUiThread(() -> {
             if (code != 0 || data == null) {
                 jobsHint.setText("任务列表获取失败：" + describeFail(code, msg));

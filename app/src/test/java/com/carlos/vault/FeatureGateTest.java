@@ -135,19 +135,6 @@ public class FeatureGateTest {
         }
     }
 
-    // ================= 调试/实测项：仅调试包 =================
-
-    @Test
-    public void debugOnlyFeatures_visibleInDebugBuildOnly() {
-        assertFalse("正式包不渲染协议监听",
-                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, RELEASE));
-        assertTrue("调试包 T3 可见协议监听",
-                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, DEBUG));
-        assertTrue("调试包 T1 也可用（调试工具不受业务等级限制）",
-                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 1, DEBUG));
-        assertEquals("仅调试版可用", FeatureGate.reasonText(FeatureGate.Feature.PROTOCOL_LOGGER));
-    }
-
     // ========== 批次8（P0-1）：release 包调试功能泄漏回归 ==========
     //
     // 根因：release 构建为 run-as 调试容器数据恒开 debuggable true（app/build.gradle:83），
@@ -165,21 +152,18 @@ public class FeatureGateTest {
     }
 
     @Test
-    public void releaseBuild_hidesDebugTools_evenAtTier3() {
+    public void releaseBuild_showsOnlyImplementedTools() {
         boolean debug = FeatureGate.isDebugBuildType("release");
-        assertFalse("release(T3) 不显示协议监听",
-                FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
         assertEquals("release(T3) 工具箱=敌情监控+真机监控+观察点+真机抓包+移民+迁城", 6,
                 FeatureGate.visibleToolCount(3, debug));
     }
 
     @Test
-    public void debugBuild_showsDebugTools() {
+    public void debugBuild_hasSameToolSetAsRelease() {
         boolean debug = FeatureGate.isDebugBuildType("debug");
-        assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
-        assertEquals("debug(T3) 工具数=敌情监控+真机监控+观察点+真机抓包+移民+迁城+协议监听", 7,
+        assertEquals("debug(T3) 工具数与正式包一致（本地调试工具已移除）", 6,
                 FeatureGate.visibleToolCount(3, debug));
-        assertEquals("debug(T1) 仅协议监听（敌情监控需 T3）", 1, FeatureGate.visibleToolCount(1, debug));
+        assertEquals("T1 无可用工具（工具均需 T3）", 0, FeatureGate.visibleToolCount(1, debug));
     }
 
     @Test
@@ -192,7 +176,6 @@ public class FeatureGateTest {
                         || FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, tier, debug)
                         || FeatureGate.visible(FeatureGate.Feature.WATCHPOINT, tier, debug)
                         || FeatureGate.visible(FeatureGate.Feature.PROTO_CAPTURE, tier, debug)
-                        || FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, tier, debug)
                         || FeatureGate.visible(FeatureGate.Feature.IMMIGRATION, tier, debug);
                 boolean hasCount = FeatureGate.visibleToolCount(tier, debug) > 0;
                 assertEquals("tier=" + tier + " debug=" + debug + " 防旁路与计数必须一致",
@@ -225,7 +208,7 @@ public class FeatureGateTest {
 
     @Test
     public void devMonitor_isT3ReleaseVisible_notDebugOnly() {
-        // T3 正式包可见（用户当前即 T3）；非 debugOnly，与协议监听区分
+        // T3 正式包可见（用户当前即 T3）；非 debugOnly
         assertTrue(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 3, RELEASE));
         assertTrue(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 3, DEBUG));
         assertFalse(FeatureGate.visible(FeatureGate.Feature.DEV_MONITOR, 2, RELEASE));
@@ -238,9 +221,9 @@ public class FeatureGateTest {
 
     @Test
     public void visibleToolCount_includesDevMonitorForT3() {
-        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 release 有 6 个工具（含移民/迁城）；debug 额外协议监听=7
+        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 共 6 个工具（含移民/迁城），debug 与 release 一致
         assertEquals(6, FeatureGate.visibleToolCount(3, false));
-        assertEquals(7, FeatureGate.visibleToolCount(3, true));
+        assertEquals(6, FeatureGate.visibleToolCount(3, true));
         assertEquals("T2 仍无任何可用工具", 0, FeatureGate.visibleToolCount(2, false));
     }
 

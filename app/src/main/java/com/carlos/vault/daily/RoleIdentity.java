@@ -166,7 +166,7 @@ public final class RoleIdentity {
      *
      * <p><b>背景</b>：切角色只写本地（{@code active2:<fpid>} / {@code current_role}），
      * 不等于已上传；上传完成前服务端状态仍是旧角色。若无条件采纳，{@code fetchState} /
-     * {@code refreshStatus} 的旧回传会把刚切的角色回滚（UI 表现为切完又跳回；同服多角色
+     * 状态接口的旧回传会把刚切的角色回滚（UI 表现为切完又跳回；同服多角色
      * 时旧 {@code activeUid} 还会落到同服另一个角色上）。
      *
      * <p><b>判定规则</b>（全部满足才采纳，任一不满足即跳过）：

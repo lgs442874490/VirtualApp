@@ -11,8 +11,6 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 
 import com.carlos.vault.UiStyle;
-import com.carlos.vault.wjdr.WjdrEngine;
-import com.carlos.vault.wjdr.protocol.GameMessage;
 
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -299,70 +297,17 @@ public final class SubCardUi {
         });
     }
 
-    /** 商店/联盟商店勾选：按店铺分组浏览（在线拉实时货架：已购/折扣；缓存取币种余额），存 buys {configId:1}。 */
+    /** 商店/联盟商店勾选：按店铺分组浏览目录价（实时货架由服务器执行时刷新），存 buys {configId:1}。 */
     private static View shopPickRow(final Context ctx, final String fpid, final long sid, final String fnId) {
         long[] shopIds = "shop".equals(fnId) ? ShopTasks.SHOP_IDS_TOWN : ShopTasks.SHOP_IDS_ALLIANCE;
         final long[] shopIdsF = shopIds;
         final int preCount = buysCount(FnParams.params(ctx, fpid, sid, fnId).optJSONObject("buys"));
         return pickRow(ctx, "勾选商品",
-                preCount == 0 ? "按店铺浏览并勾选（点开加载货架）" : "已勾选 " + preCount + " 件（点开修改）",
+                preCount == 0 ? "按店铺浏览并勾选（目录价）" : "已勾选 " + preCount + " 件（点开修改）",
                 () -> {
-                    UiStyle.toast(ctx, "正在拉取货架…");
                     final java.util.List<Long> idsF = new ArrayList<>();
                     for (long id : shopIdsF) idsF.add(id);
-                    new Thread(() -> {
-                        // 后台线程：只认【精确 fpid:sid】的在线会话拉实时货架。
-                        // 严禁跨角色兜底：同账号另一区的会话数据会串区显示（913/888 事故），宁可用目录价。
-                        java.util.Map<Long, java.util.Map<String, Object>> live = new java.util.LinkedHashMap<>();
-                        java.util.Map<Long, Long> bag = new java.util.LinkedHashMap<>();
-                        java.util.Map<Long, Long> res = new java.util.LinkedHashMap<>();
-                        boolean online = false;
-                        String sessionTag = "";
-                        try {
-                            RoleSessionKeeper.LiveSession ls =
-                                    RoleSessionKeeper.get(ctx).borrowOnline(fpid, sid);
-                            if (ls != null && WjdrEngine.STATE_ONLINE.equals(ls.engine.sessionState())) {
-                                online = true;
-                                sessionTag = "本角色";
-                                java.util.List<Object> arr = new ArrayList<>();
-                                for (long id : idsF) arr.add(id);
-                                GameMessage info = ls.engine.request("req_shop_info_array",
-                                        ExecUtil.args("arr_id", arr));
-                                if (ExecUtil.ok(info)) {
-                                    java.util.Map<String, Object> mapInfo =
-                                            ExecUtil.mapOf(info.getContent().get("map_info"));
-                                    for (java.util.Map.Entry<String, Object> e : mapInfo.entrySet()) {
-                                        try {
-                                            live.put(Long.parseLong(e.getKey()),
-                                                    ExecUtil.mapOf(e.getValue()));
-                                        } catch (Exception ignored) {
-                                        }
-                                    }
-                                }
-                                java.util.Map<String, Object> bi = ls.engine.notifyContent("notify_backpack_init");
-                                java.util.Map<Long, Long> kv = ExecUtil.kvPairs(bi == null ? null : bi.get("data"));
-                                if (kv == null || kv.isEmpty()) kv = ExecUtil.kvPairs(bi == null ? null : bi.get("items"));
-                                if (kv != null) bag = kv;
-                                // 资源余额（肉木煤铁/钻石等 101-105 在 notify_resource_init，不在背包里）
-                                java.util.Map<String, Object> ri = ls.engine.notifyContent("notify_resource_init");
-                                java.util.Map<Long, Long> rk = ExecUtil.kvPairs(ri == null ? null
-                                        : (ri.get("data") != null ? ri.get("data") : ri.get("items")));
-                                if ((rk == null || rk.isEmpty()) && ri != null) rk = ExecUtil.kvPairs(ri);
-                                if (rk != null) res = rk;
-                            } else if (ls != null) {
-                                // 会话存在但非在线（重连中/被顶号暂停）
-                                sessionTag = "本角色会话重连中";
-                            }
-                        } catch (Throwable ignored) {
-                        }
-                        final java.util.Map<Long, java.util.Map<String, Object>> liveF = live;
-                        final java.util.Map<Long, Long> bagF = bag;
-                        final java.util.Map<Long, Long> resF = res;
-                        final boolean onlineF = online;
-                        final String tagF = online ? ("实时货架 · " + sessionTag) : "目录价（无在线会话）";
-                        new android.os.Handler(android.os.Looper.getMainLooper()).post(() ->
-                                showShopDialog(ctx, fpid, sid, fnId, idsF, liveF, bagF, resF, onlineF, tagF));
-                    }, "shop-pick-load").start();
+                    showShopDialog(ctx, fpid, sid, fnId, idsF, "目录价（服务器执行时刷新货架）");
                 });
     }
 
@@ -370,14 +315,10 @@ public final class SubCardUi {
         return buys == null ? 0 : buys.length();
     }
 
-    /** 店铺分页对话框（对标游戏内商店分类）：顶部店铺 tab 一次看一家；店头含币种+余额；
-     *  在线时先展示"当前货架"（可立即购买），下方为自动采购清单；勾选状态跨页保持。 */
+    /** 店铺分页对话框（对标游戏内商店分类）：顶部店铺 tab 一次看一家；
+     *  展示目录价与自动采购清单，勾选状态跨页保持。 */
     private static void showShopDialog(final Context ctx, final String fpid, final long sid, final String fnId,
-                                       java.util.List<Long> shopIds,
-                                       java.util.Map<Long, java.util.Map<String, Object>> live,
-                                       java.util.Map<Long, Long> bag,
-                                       java.util.Map<Long, Long> res,
-                                       boolean online, String sessionTag) {
+                                       java.util.List<Long> shopIds, String sessionTag) {
         java.util.Map<Long, java.util.List<ShopTasks.Good>> catalog = ShopTasks.shops(ctx);
         JSONObject curBuys = FnParams.params(ctx, fpid, sid, fnId).optJSONObject("buys");
 
@@ -401,6 +342,11 @@ public final class SubCardUi {
             }
             perShop.put(shopId, merged);
         }
+        // P2-1：目录为空/商店 id 不匹配时不能对空数组取 [0]（AIOOBE 崩溃）。
+        if (perShop.isEmpty()) {
+            UiStyle.toast(ctx, "商店目录为空或与商店 id 不匹配，请稍后重试");
+            return;
+        }
         // 勾选状态（plainName → bool），跨分页保持；初始来自已保存的 buys。
         // 2026-11-08：改用 LinkedHashMap 保留勾选顺序，保存为 buy_list（按顺序购买）。
         final java.util.LinkedHashMap<String, Boolean> sel = new java.util.LinkedHashMap<>();
@@ -411,12 +357,6 @@ public final class SubCardUi {
                 }
             }
         }
-        // confId → Good 索引（实时货架行反查名字/币种/限购用）
-        final java.util.Map<Long, ShopTasks.Good> byConf = new java.util.HashMap<>();
-        for (java.util.List<ShopTasks.Good> gl : catalog.values()) {
-            for (ShopTasks.Good g : gl) byConf.put(g.configId, g);
-        }
-
         final android.widget.LinearLayout root = new android.widget.LinearLayout(ctx);
         root.setOrientation(android.widget.LinearLayout.VERTICAL);
         final android.widget.HorizontalScrollView chipScroll = new android.widget.HorizontalScrollView(ctx);
@@ -486,72 +426,17 @@ public final class SubCardUi {
             }
             StringBuilder curText = new StringBuilder();
             for (java.util.Map.Entry<Long, String> c : curs.entrySet()) {
-                Long bal = res.get(c.getKey());
-                if (bal == null) bal = bag.get(c.getKey());
                 if (curText.length() > 0) curText.append(" / ");
-                curText.append(c.getValue().isEmpty() ? ("币" + c.getKey()) : c.getValue())
-                        .append(" ").append(bal == null ? "?" : humanize(bal));
+                curText.append(c.getValue().isEmpty() ? ("币" + c.getKey()) : c.getValue());
             }
-            java.util.Map<String, Object> shopLive = live.get(shopId);
-            String liveTag = shopLive != null ? "·实时货架" : (online ? "·本店无货架" : "·目录价（未在线）");
             TextView head = new TextView(ctx);
-            head.setText(shopName + liveTag + " · " + merged.size() + " 种"
+            head.setText(shopName + " · " + merged.size() + " 种"
                     + (curText.length() > 0 ? "\n" + curText : ""));
             head.setTextSize(12.5f);
             head.setTypeface(Typeface.DEFAULT_BOLD);
             head.setTextColor(UiStyle.BRAND_TEXT);
             head.setPadding(0, dp(ctx, 6), 0, dp(ctx, 4));
             content.addView(head);
-
-            // 当前货架（在线时）：现在就能买的商品与价格/已购
-            if (shopLive != null) {
-                TextView shelfCap = new TextView(ctx);
-                shelfCap.setText("当前货架（可立即购买）");
-                shelfCap.setTextSize(11.5f);
-                shelfCap.setTypeface(Typeface.DEFAULT_BOLD);
-                shelfCap.setTextColor(UiStyle.INK);
-                shelfCap.setPadding(0, dp(ctx, 6), 0, dp(ctx, 2));
-                content.addView(shelfCap);
-                boolean any = false;
-                for (java.util.Map<String, Object> g : ExecUtil.mapsOf(shopLive.get("goods"))) {
-                    long confId = ExecUtil.longOf(g.get("conf_id"));
-                    ShopTasks.Good meta = byConf.get(confId);
-                    long price = livePriceOfUi(g, meta == null ? 0 : meta.price);
-                    if (price <= 0) continue;
-                    long boughtN = ExecUtil.longOf(g.get("buy_count"));
-                    StringBuilder sbl = new StringBuilder("· ");
-                    sbl.append(meta == null || meta.name == null || meta.name.isEmpty()
-                            ? String.valueOf(confId) : meta.name);
-                    if (meta != null && meta.count > 1) sbl.append("×").append(meta.count);
-                    sbl.append("  ").append(price)
-                            .append(meta == null || meta.currencyName == null ? "" : meta.currencyName);
-                    if (meta != null && meta.limit > 0) {
-                        sbl.append(" · 限").append(meta.limit);
-                        if (boughtN > 0) sbl.append("（已购").append(boughtN).append("）");
-                    }
-                    TextView row = new TextView(ctx);
-                    row.setText(sbl.toString());
-                    row.setTextSize(11.5f);
-                    row.setTextColor(UiStyle.INK2);
-                    row.setPadding(dp(ctx, 8), dp(ctx, 1), 0, dp(ctx, 1));
-                    content.addView(row);
-                    any = true;
-                }
-                if (!any) {
-                    TextView empty = new TextView(ctx);
-                    empty.setText("· 货架数据为空");
-                    empty.setTextSize(11.5f);
-                    empty.setTextColor(UiStyle.INK2);
-                    content.addView(empty);
-                }
-                TextView wantCap = new TextView(ctx);
-                wantCap.setText("自动采购清单（勾选想要的名字，运行时自动刷新+购买）");
-                wantCap.setTextSize(11.5f);
-                wantCap.setTypeface(Typeface.DEFAULT_BOLD);
-                wantCap.setTextColor(UiStyle.INK);
-                wantCap.setPadding(0, dp(ctx, 8), 0, dp(ctx, 2));
-                content.addView(wantCap);
-            }
 
             for (java.util.Map.Entry<String, java.util.List<ShopTasks.Good>> me : merged.entrySet()) {
                 java.util.List<ShopTasks.Good> variants = me.getValue();
@@ -564,8 +449,6 @@ public final class SubCardUi {
                     count = Math.max(count, g.count);
                 }
                 long buyCount = 0;
-                java.util.Map<String, Object> lg = shopLive == null ? null : findLiveGood(shopLive, first.configId);
-                if (lg != null) buyCount = ExecUtil.longOf(lg.get("buy_count"));
                 final String plainName = plainNameOf(first);
                 String priceText = (minP == maxP ? String.valueOf(minP)
                         : minP + "~" + maxP + (maxP > 0 && minP * 2 >= maxP
@@ -690,30 +573,6 @@ public final class SubCardUi {
             if (curBuys.has(String.valueOf(g.configId))) return true;
         }
         return false;
-    }
-
-    /** 在实时货架 map_info[shopId].goods 里按 conf_id 找条目。 */
-    private static java.util.Map<String, Object> findLiveGood(java.util.Map<String, Object> shopLive,
-                                                              long confId) {
-        for (java.util.Map<String, Object> g : ExecUtil.mapsOf(shopLive.get("goods"))) {
-            if (ExecUtil.longOf(g.get("conf_id")) == confId) return g;
-        }
-        return null;
-    }
-
-    private static String humanize(long v) {
-        if (v >= 100_000_000L) return String.format(java.util.Locale.CHINA, "%.1f亿", v / 1e8);
-        if (v >= 10_000L) return String.format(java.util.Locale.CHINA, "%.1f万", v / 1e4);
-        return String.valueOf(v);
-    }
-
-    /** 实时货架价防御式提取（与 ShopTasks.livePriceOf 同款字段候选）。 */
-    private static long livePriceOfUi(java.util.Map<String, Object> g, long fallback) {
-        for (String k : new String[]{"price", "cur_price", "now_price", "discount_price"}) {
-            long v = ExecUtil.longOf(g.get(k));
-            if (v > 0) return v;
-        }
-        return fallback;
     }
 
     /** 烈焰与獠牙兑换档位勾选：按表分组，存 buys {index:1}。 */

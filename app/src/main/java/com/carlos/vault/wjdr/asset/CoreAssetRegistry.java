@@ -12,7 +12,7 @@ import java.util.Map;
  * <p>接线点：
  * <ul>
  *   <li>vault-server：{@code SessionKeeper.LiveSession} 建会话后 {@link #attach}；断开时 {@link #detach}；</li>
- *   <li>App 原生模式：{@code RoleSessionKeeper} 建会话后 {@link #attach}。</li>
+ *   <li>App 容器游戏登录会话建立后 {@link #attach}。</li>
  * </ul>
  *
  * <p>重连/换会话代次：{@link #attach} 发现同角色已有旧库时关闭旧库并新建（init 会重放，

@@ -55,7 +55,6 @@ public final class VaultSync {
     private static final String PATH_TOKEN = "/v1/vault/token";
     /** 重装后 token 恢复读通道（2026-10-25 服务端新增；写通道 /token 的对称只读接口）。 */
     private static final String PATH_TOKEN_GET = "/v1/vault/token/get";
-    private static final String PATH_STATUS = "/v1/vault/status";
     private static final String PATH_STATE = "/v1/vault/state";
     private static final String PATH_POLICY = "/v1/vault/policy";
     private static final String PATH_AUTOMATION = "/v1/vault/automation";
@@ -76,7 +75,6 @@ public final class VaultSync {
     private static final String OP_TOKEN = "vaultToken";
     /** 恢复读通道 OP：与写通道 vaultToken 分开，服务端按 op 绑定验签，互不串用。 */
     private static final String OP_TOKEN_GET = "vaultTokenGet";
-    private static final String OP_STATUS = "vaultStatus";
     private static final String OP_STATE = "vaultState";
     private static final String OP_POLICY = "vaultPolicy";
     private static final String OP_AUTOMATION = "vaultAutomation";
@@ -192,35 +190,6 @@ public final class VaultSync {
     private VaultSync() {
     }
 
-    // ---------- 服务器模式开关 ----------
-
-    public static boolean isServerMode(Context ctx) {
-        try {
-            return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean("server_mode", false);
-        } catch (Throwable t) {
-            return false;
-        }
-    }
-
-    public static void setServerMode(Context ctx, boolean on) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
-                .putBoolean("server_mode", on).apply();
-        if (on) {
-            syncAll(ctx);
-        }
-    }
-
-    /**
-     * 统一自动化只允许服务器执行：App 启动时强制打开服务器模式。
-     * 返回 true 表示本次发生了模式切换（已触发一次全量同步）。
-     */
-    public static boolean ensureServerMode(Context ctx) {
-        if (isServerMode(ctx)) return false;
-        setServerMode(ctx, true);
-        Log.i(TAG, "已强制启用服务器模式（自动化任务仅服务器执行）");
-        return true;
-    }
-
     // ---------- 业务接口 ----------
 
     /** 全量同步身份库（账号/token/指纹/keep/active 角色）。异步、失败静默。 */
@@ -255,7 +224,6 @@ public final class VaultSync {
 
     /** 账号数据变更钩子（token 更新/导入/keep 切换）：去抖后全量同步。 */
     public static void onAccountsChanged(Context ctx) {
-        if (!isServerMode(ctx)) return;
         final Context app = ctx.getApplicationContext();
         PENDING_SYNC_AT.set(System.currentTimeMillis());
         synchronized (VaultSync.class) {
@@ -283,11 +251,10 @@ public final class VaultSync {
      * <ul>
      *   <li>{@code markRoleDirty}：上传完成前服务端 {@code /state}、{@code /status} 回传仍是
      *       旧角色，期间一律不回写当前角色——只靠时间戳挡不住「切换后才发起、同步前到达」
-     *       的请求（如 RoleSessionKeeper 巡检、autoSyncAccount 打开页面即拉状态）；</li>
+     *       的请求（如服务器状态轮询、autoSyncAccount 打开页面即拉状态）；</li>
      *   <li>{@link #onAccountsChanged}：把原本最长 10 分钟（kickFullSync 防抖）的上行窗口
      *       压缩到约 3 秒，服务端尽快跟上本地选择。</li>
      * </ul>
-     * 本地模式（无服务器）时 {@link #onAccountsChanged} 自动 no-op，待上传标记不会被读取。
      */
     public static void notifyRoleSwitched(Context ctx, String fpid) {
         if (fpid == null || fpid.isEmpty()) return;
@@ -297,7 +264,7 @@ public final class VaultSync {
 
     /** 单账号 token 立即补给（NEED_TOKEN 等场景，绕过去抖）。 */
     public static void pushToken(Context ctx, String fpid, String token) {
-        if (!isServerMode(ctx) || fpid == null || fpid.isEmpty()) return;
+        if (fpid == null || fpid.isEmpty()) return;
         final Context app = ctx.getApplicationContext();
         Map<String, Object> f = commonFields(app);
         f.put("fpid", fpid);
@@ -361,20 +328,6 @@ public final class VaultSync {
         String token = data.optString("token", "");
         token = token.trim();
         return token.isEmpty() ? null : token;
-    }
-
-    /** 拉取服务器会话状态并缓存（UI 从 cachedStateOf 读）。 */
-    public static void refreshStatus(Context ctx) {
-        final Context app = ctx.getApplicationContext();
-        // 请求发起时刻：回传角色是否比本地激活更新，按它判定（防回滚，见 learnServerRole）
-        final long requestTs = System.currentTimeMillis();
-        Map<String, Object> f = commonFields(app);
-        new Thread(() -> post(app, PATH_STATUS, OP_STATUS, f,
-                (code, message, data) -> {
-                    if (code == 0 && data != null) {
-                        cacheAccounts(app, data.optJSONArray("accounts"), requestTs);
-                    }
-                }), "vault-status").start();
     }
 
     /**
@@ -441,7 +394,7 @@ public final class VaultSync {
      * <ol>
      *   <li><b>待上传标记</b>（{@link RoleStore#isRoleDirty}）：本地刚切过角色且全量
      *       同步尚未成功。只靠时间戳挡不住「切换后才发起、同步前到达」的请求
-     *       （RoleSessionKeeper 巡检、autoSyncAccount 等打开页面即拉状态的路径）；</li>
+     *       （autoSyncAccount 等打开页面即拉状态的路径）；</li>
      *   <li><b>时间戳</b>（{@link RoleIdentity#shouldLearnActiveRole}）：本地激活身份
      *       与回传不同、且本地激活不早于请求发起（切换发生在请求发出之后 ⇒ 回传是
      *       切换前旧快照）；同时本地已知 uid 时拒绝服务端 uid 缺失的降级回写。</li>
@@ -664,7 +617,7 @@ public final class VaultSync {
 
     /** 进游戏前让服务器让位（默认 30 分钟后探测回连）。 */
     public static void yieldForGame(Context ctx, String fpid, int minutes) {
-        if (!isServerMode(ctx) || fpid == null || fpid.isEmpty()) return;
+        if (fpid == null || fpid.isEmpty()) return;
         final Context app = ctx.getApplicationContext();
         Map<String, Object> f = commonFields(app);
         f.put("action", "yield");
@@ -674,7 +627,7 @@ public final class VaultSync {
         Log.i(TAG, "已通知服务器让位 fpid=" + fpid + " " + minutes + "min");
     }
 
-    /** 服务器模式：提交整轮（fn=null）或单任务到服务器执行。 */
+    /** 提交整轮（fn=null）或单任务到服务器执行。 */
     public static void runTask(Context ctx, String fpid, String fn) {
         final Context app = ctx.getApplicationContext();
         Map<String, Object> f = commonFields(app);
@@ -716,7 +669,7 @@ public final class VaultSync {
      * <p>语义链（调用方先完成角色钉扎 {@code setCurrentRole(fpid, sid, uid)}）：
      * <ol>
      *   <li>开统一自动化（keep=auto，服务器常驻会话与整轮调度同开关）；</li>
-     *   <li>强制服务器模式（自动化只允许服务器执行）；</li>
+     *   <li>自动化只允许服务器执行；</li>
      *   <li>全量上传身份库（含复合激活角色 activeSid/activeUid）；</li>
      *   <li>服务器确保会话并排队整轮（fn=null）。</li>
      * </ol>
@@ -727,7 +680,6 @@ public final class VaultSync {
     public static void loginRoleOnline(Context ctx, String fpid, Callback done) {
         final Context app = ctx.getApplicationContext();
         RoleStore.saveAutomation(app, fpid, true);
-        ensureServerMode(app);
         syncAll(app, (code, message, data) -> {
             if (code != 0) {
                 if (done != null) done.onResult(code, message, data);
@@ -761,10 +713,6 @@ public final class VaultSync {
      */
     public static void fetchAccountPool(Context ctx, Callback done) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app)) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
-            return;
-        }
         Map<String, Object> f = commonFields(app);
         new Thread(() -> post(app, PATH_ACCOUNTS, OP_ACCOUNTS, f, (code, message, data) -> {
             if (code == 0 && data != null) {
@@ -787,8 +735,8 @@ public final class VaultSync {
     public static void roleAction(Context ctx, String fpid, String sid, String uid,
                                   String action, Callback done) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app) || fpid == null || fpid.isEmpty()) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
+        if (fpid == null || fpid.isEmpty()) {
+            if (done != null) done.onResult(-1, "fpid 为空", null);
             return;
         }
         Map<String, Object> f = commonFields(app);
@@ -803,8 +751,8 @@ public final class VaultSync {
     /** 账号级批量（M1 §3.3）：action ∈ login-all/stop-all，出参 results[] 每角色结果。 */
     public static void accountAction(Context ctx, String fpid, String action, Callback done) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app) || fpid == null || fpid.isEmpty()) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
+        if (fpid == null || fpid.isEmpty()) {
+            if (done != null) done.onResult(-1, "fpid 为空", null);
             return;
         }
         Map<String, Object> f = commonFields(app);
@@ -817,10 +765,6 @@ public final class VaultSync {
     /** 全局批量（M1 §3.4）：action ∈ login-all/stop-all，原子批量，出参 accounts[] 每账号结果。 */
     public static void globalAction(Context ctx, String action, Callback done) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app)) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
-            return;
-        }
         Map<String, Object> f = commonFields(app);
         f.put("action", action);
         new Thread(() -> post(app, PATH_GLOBAL_ACTION, OP_GLOBAL_ACTION, f, done),
@@ -919,8 +863,8 @@ public final class VaultSync {
     public static void updateRecoverySettings(Context ctx, String fpid, RecoverySettings s,
                                               Callback done) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app) || fpid == null || fpid.isEmpty()) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
+        if (fpid == null || fpid.isEmpty()) {
+            if (done != null) done.onResult(-1, "fpid 为空", null);
             return;
         }
         Map<String, Object> f = commonFields(app);
@@ -944,8 +888,8 @@ public final class VaultSync {
                                               String action, PayloadFiller payload,
                                               Callback done, String threadName) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app) || fpid == null || fpid.isEmpty()) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
+        if (fpid == null || fpid.isEmpty()) {
+            if (done != null) done.onResult(-1, "fpid 为空", null);
             return;
         }
         Map<String, Object> f = commonFields(app);
@@ -960,14 +904,10 @@ public final class VaultSync {
 
     // ---------- 战争通知（2026-10-22：监视名单 / 通知配置 / 事件游标） ----------
 
-    /** 战争通知 op 通道（action 与字段平铺进签名表；非服务器模式回调 server_mode_off）。 */
+    /** 战争通知 op 通道（action 与字段平铺进签名表）。 */
     private static void watchPost(Context ctx, Map<String, Object> fields, Callback done,
                                   String threadName) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app)) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
-            return;
-        }
         new Thread(() -> post(app, PATH_WATCH, OP_WATCH, fields, done), threadName).start();
     }
 
@@ -1090,14 +1030,10 @@ public final class VaultSync {
 
     // ---------- 观察点配置（批次 B 2026-10-30：App 可视化编辑服务器 watchpoint.json） ----------
 
-    /** 观察点 op 通道（非服务器模式回调 server_mode_off）。 */
+    /** 观察点 op 通道。 */
     private static void watchpointPost(Context ctx, Map<String, Object> fields, Callback done,
                                        String threadName) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app)) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
-            return;
-        }
         new Thread(() -> post(app, PATH_WATCHPOINT, OP_WATCHPOINT, fields, done), threadName).start();
     }
 
@@ -1174,10 +1110,6 @@ public final class VaultSync {
     /** 事件游标同步：cursor 之后的新事件 + ackCursor。回调在 OkHttp 线程。 */
     public static void fetchEvents(Context ctx, long cursor, Callback done) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app)) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
-            return;
-        }
         Map<String, Object> f = new TreeMap<>();
         f.put("cursor", cursor);
         new Thread(() -> post(app, PATH_EVENTS, OP_EVENTS, f, done), "vault-events").start();
@@ -1198,9 +1130,8 @@ public final class VaultSync {
      * "1"/"0"（服务端按扁平字符串字段读取，避免布尔序列化差异）。响应 data：
      * {@code {enabled,events[],count,lastSeq,minSeq,mem,dropped,serverTime}}。
      *
-     * <p>复用类内 {@link #post} 的签名/信封通道，不另建网络栈。未开服务器模式回调
-     * {@code code=-1,message=server_mode_off}（与 watch/events 通道同口径）；旧服务端无此路由
-     * 时返回非 JSON 404 → post 回调 {@code code=-1} 且 message 含 "HTTP 404"，页面据此提示
+     * <p>复用类内 {@link #post} 的签名/信封通道，不另建网络栈。旧服务端无此路由
+     * 时返回非 JSON 404 → {@code code=-1} 且 message 含 "HTTP 404"，页面据此提示
      * 「服务端未升级」而不是崩溃。回调在 OkHttp 线程。
      *
      * @param fields 服务端扁平请求字段（调用方负责 action 与业务字段）
@@ -1208,10 +1139,6 @@ public final class VaultSync {
      */
     public static void fetchMonitor(Context ctx, Map<String, Object> fields, Callback cb) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app)) {
-            if (cb != null) cb.onResult(-1, "server_mode_off", null);
-            return;
-        }
         // 复制一份（TreeMap）：签名通道会补 ts/nonce/sign，避免调用方复用同一 Map 被污染
         Map<String, Object> f = fields == null
                 ? new TreeMap<String, Object>() : new TreeMap<>(fields);
@@ -1277,16 +1204,11 @@ public final class VaultSync {
      *
      * <p>服务端旧版本无此端点时：业务码 3002「服务端未启用迁城功能」或 HTTP 404 非 JSON
      * → {@code code=-1} 且 message 含 "HTTP 404"，页面据此显示「服务端未升级」提示条。
-     * 未开服务器模式回调 {@code code=-1,message=server_mode_off}（与 watch/monitor 同口径）。
      * 回调在 OkHttp 线程。
      */
     private static void movecityPost(Context ctx, Map<String, Object> fields, Callback done,
                                      String threadName) {
         final Context app = ctx.getApplicationContext();
-        if (!isServerMode(app)) {
-            if (done != null) done.onResult(-1, "server_mode_off", null);
-            return;
-        }
         new Thread(() -> post(app, PATH_MOVECITY, OP_MOVECITY, fields, done), threadName).start();
     }
 

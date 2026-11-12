@@ -228,9 +228,6 @@ public final class MonitorPanel {
 
     private static String describeError(int code, String message) {
         String m = message == null ? "" : message.trim();
-        if ("server_mode_off".equals(m)) {
-            return "未启用服务器模式（App 未连接服务端）";
-        }
         if (code == -1) {
             if (m.contains("404") || m.contains("405")) {
                 return "服务端未升级：监控接口不可用（" + m + "）";

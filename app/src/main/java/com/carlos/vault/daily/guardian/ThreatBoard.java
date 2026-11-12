@@ -146,7 +146,7 @@ public final class ThreatBoard {
         return true;
     }
 
-    /** 归档快照（X4：退出时交 ProtoLogger/guardian 日志；重入战争态前整板重建）。 */
+    /** 归档快照（X4：退出时交 guardian 日志；重入战争态前整板重建）。 */
     public String archiveText(long now, long quietMs) {
         StringBuilder sb = new StringBuilder("敌情板归档×").append(enemies.size());
         for (Enemy e : enemies.values()) {

@@ -581,7 +581,7 @@ public final class AssetSnapshot {
         }
     }
 
-    /** 战争事实（只做事实表，判定仍归 WarState/GuardianEngine）。 */
+    /** 战争事实（只做事实表，判定仍归 WarState/服务器 Guardian 引擎）。 */
     public static final class War {
         /** 联盟域态势行军（盟友/敌方，含 power）。 */
         public final Map<Long, QueueMarch> allianceMarches;

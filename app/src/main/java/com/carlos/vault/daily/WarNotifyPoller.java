@@ -64,12 +64,13 @@ public final class WarNotifyPoller {
         Log.i(TAG, "事件轮询已启动（" + POLL_MS / 1000 + "s）");
     }
 
-    /** 单轮：服务器模式 + 短信开启才拉取；回调内推进游标并分发。 */
+    /** 单轮：短信开启才拉取；回调内推进游标并分发。 */
     static void pollOnce(final Context app) {
+        // 开关检查必须在占位之前：CAS 后的裸 return 不会复位 IN_FLIGHT，
+        // 短信默认关闭时会让轮询永久停摆（代码审查 P1-1）。
+        if (!WarNotifyStore.smsEnabled(app)) return;
         if (!IN_FLIGHT.compareAndSet(false, true)) return;
         try {
-            if (!VaultSync.isServerMode(app)) return;
-            if (!WarNotifyStore.smsEnabled(app)) return;
             final long cursor = WarNotifyStore.cursor(app);
             VaultSync.fetchEvents(app, cursor, (code, message, data) -> {
                 try {

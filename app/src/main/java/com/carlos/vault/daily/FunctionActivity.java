@@ -122,9 +122,8 @@ public class FunctionActivity extends Activity {
         } catch (Throwable ignored) {
         }
         setContentView(buildUi());
-        // 服务器模式：进页先拉一次服务器最新状态，回写后重渲染（否则看到的是上次快照）
-        if (com.carlos.vault.VaultSync.isServerMode(this)
-                && account.fpid != null && !account.fpid.isEmpty()) {
+        // 进页先拉一次服务器最新状态，回写后重渲染（否则看到的是上次快照）
+        if (account.fpid != null && !account.fpid.isEmpty()) {
             com.carlos.vault.VaultSync.fetchState(this, (code, message, data) ->
                     runOnUiThread(() -> {
                         try {
@@ -246,14 +245,8 @@ private View buildUi() {
         stRow.addView(UiStyle.badge(this, stType, "● " + stText));
         long nextAt = com.carlos.vault.daily.RoleStore.schedule(this, account.fpid).nextRunAt;
         TextView next = new TextView(this);
-        // 服务器模式下明确区分“服务器自动执行 / 仅手动”：未加入自动化时不再笼统写“服务器调度”
-        if (com.carlos.vault.VaultSync.isServerMode(this)) {
-            next.setText(autoOn ? "执行：服务器调度" : "执行：仅手动（未加入自动化）");
-        } else {
-            next.setText(nextAt > 0 ? "下次自动："
-                    + new java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.CHINA)
-                    .format(new java.util.Date(nextAt)) : "下次自动：未开启");
-        }
+        // 明确区分“服务器自动执行 / 仅手动”：未加入自动化时不再笼统写“服务器调度”
+        next.setText(autoOn ? "执行：服务器调度" : "执行：仅手动（未加入自动化）");
         next.setTextSize(11);
         next.setTextColor(UiStyle.INK2);
         next.setPadding(dp(8), 0, 0, 0);
