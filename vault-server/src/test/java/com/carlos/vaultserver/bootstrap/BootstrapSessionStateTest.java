@@ -29,7 +29,7 @@ public class BootstrapSessionStateTest {
         assertFalse("不同 scope 不得共享状态", a1 == b);
 
         a1.markWorldKingdomInfoSent();
-        a1.setFinishPassDay("2026-11-12");
+        a1.claimFinishPass("2026-11-12");
         assertTrue(a1.worldKingdomInfoSent());
         assertFalse("b 的作用域未被污染", b.worldKingdomInfoSent());
         assertEquals("", b.finishPassDay());
@@ -144,5 +144,29 @@ public class BootstrapSessionStateTest {
         holder.releaseFinishPass("2026-11-12");
         assertEquals("回滚后当日未置位", "", holder.finishPassDay());
         assertTrue("回滚后可再次认领", holder.claimFinishPass("2026-11-12"));
+    }
+
+    /** P2-8：claimWorldFog 需 kid 且只发一次（独立用例）。 */
+    @Test
+    public void claimWorldFog_requiresKidAndOnlyOnce() {
+        BootstrapSessionState store = new BootstrapSessionState();
+        BootstrapSessionState.Holder holder = store.holder("fp-fog");
+        assertFalse("kid 未取到不得认领", holder.claimWorldFog());
+        holder.setWorldKingdomId(77L);
+        assertTrue("kid 就绪后认领成功", holder.claimWorldFog());
+        assertFalse("已发不得重复认领", holder.claimWorldFog());
+    }
+
+    /** P2-8：world 放弃后 release 不得把 sent 重置（避免状态回摆、fog 永不发送）。 */
+    @Test
+    public void worldAbandoned_releaseDoesNotRewind() {
+        BootstrapSessionState store = new BootstrapSessionState();
+        BootstrapSessionState.Holder holder = store.holder("fp-abandon");
+        holder.claimWorldKingdomInfo();
+        holder.markWorldAbandoned();
+        holder.releaseWorldKingdomInfo();
+        holder.releaseWorldFog();
+        assertTrue("放弃后 release 不得回摆 info", holder.worldKingdomInfoSent());
+        assertTrue("放弃后 fog 视为已处理", holder.worldFogSent());
     }
 }

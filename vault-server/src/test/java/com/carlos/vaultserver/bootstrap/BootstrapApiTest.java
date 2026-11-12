@@ -556,6 +556,19 @@ public class BootstrapApiTest {
         }
     }
 
+    /** P2-10：single-reset 为生产重置入口（清理 ENDED 等会话状态，允许人工重跑）。 */
+    @Test
+    public void singleReset_clearsEndedState() {
+        String fpid = "fp-reset";
+        BootstrapSessionState.shared().holder(fpid).markResourceEnded();
+        JSONObject out = BootstrapApi.handle(fields("action", "single-reset", "fpid", fpid));
+        assertFalse(out.optString("error", ""), out.has("error"));
+        assertEquals(true, out.optBoolean("reset"));
+        assertFalse("重置后 ENDED 标记消失",
+                BootstrapSessionState.shared().holder(fpid).resourceEnded());
+        BootstrapSessionState.shared().clearScope(fpid);
+    }
+
     /** P2-7：单号重跑/账号删除入口可通过包内方法清理该 fpid 的会话状态。 */
     @Test
     public void clearSessionState_clearsScope() {

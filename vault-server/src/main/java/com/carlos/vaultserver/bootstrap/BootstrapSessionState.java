@@ -65,6 +65,8 @@ final class BootstrapSessionState {
         private long worldKingdomId;
         /** world 连续失败次数（R-08；成功即清零）。 */
         private int worldAttempts;
+        /** world 是否已放弃（连续失败 3 次后置位；P2-8：防止 release 回摆）。 */
+        private boolean worldAbandoned;
         /** 收尾当日标记（yyyy-MM-dd；R-09：仅真完成时置位）。 */
         private String finishPassDay = "";
         /** 增量应用序号（R-05 累积通道的消费流水，诊断/可观测用）。 */
@@ -118,10 +120,6 @@ final class BootstrapSessionState {
             return finishPassDay;
         }
 
-        synchronized void setFinishPassDay(String day) {
-            finishPassDay = day == null ? "" : day;
-        }
-
         /**
          * world kingdom info 的「检查 + 置位」原子化（二次审查 P2-4）：
          * 返回 false 表示已被其它并发请求认领，避免重复发送。
@@ -136,7 +134,21 @@ final class BootstrapSessionState {
 
         /** world kingdom info 认领回滚（请求失败/kid 缺失时，下一轮可重试；P2-4）。 */
         synchronized void releaseWorldKingdomInfo() {
-            worldKingdomInfoSent = false;
+            if (!worldAbandoned) {
+                worldKingdomInfoSent = false;
+            }
+        }
+
+        /** world 放弃（连续失败 3 次）：置两件套已处理，且此后 release 不得回摆（P2-8）。 */
+        synchronized void markWorldAbandoned() {
+            worldAbandoned = true;
+            worldKingdomInfoSent = true;
+            worldFogSent = true;
+        }
+
+        /** world 是否已放弃。 */
+        synchronized boolean worldAbandoned() {
+            return worldAbandoned;
         }
 
         /** fog 的「检查 + 置位」原子化（P2-4）：kid 未取到或已发返回 false。 */
@@ -148,9 +160,11 @@ final class BootstrapSessionState {
             return true;
         }
 
-        /** fog 认领回滚（请求失败时；P2-4）。 */
+        /** fog 认领回滚（请求失败时；P2-4 / 放弃后不回摆 P2-8）。 */
         synchronized void releaseWorldFog() {
-            worldFogSent = false;
+            if (!worldAbandoned) {
+                worldFogSent = false;
+            }
         }
 
         /**

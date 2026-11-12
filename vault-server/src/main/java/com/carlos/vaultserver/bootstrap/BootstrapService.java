@@ -669,11 +669,13 @@ public final class BootstrapService {
             }
         }
         if (!session.worldFogSent()) {
-            // P2-4：fog 同样原子认领（kid 未取到不认领）
+            if (session.worldKingdomId() <= 0L) {
+                // 二次审查 P2-8：info 已被认领但 kid 尚未回填 = 另一个请求正在请求中，
+                // 这不是真实失败，不能计数（否则 3 次后误放弃 world 且 fog 永不发送）。
+                return Optional.empty();
+            }
+            // P2-4：fog 同样原子认领（已被他人认领则直接放行）
             if (!session.claimWorldFog()) {
-                if (session.worldKingdomId() <= 0L) {
-                    return worldAttemptFailed("未取到 kingdom id，fog 未发送");
-                }
                 return Optional.empty();
             }
             try {
@@ -699,8 +701,7 @@ public final class BootstrapService {
         int attempts = session.incrementWorldAttempts();
         FileLog.info("[起号] world 推进失败（第 {} 次，fpid={}）：{}", attempts, holdScope, reason);
         if (attempts >= 3) {
-            session.markWorldKingdomInfoSent();
-            session.markWorldFogSent();
+            session.markWorldAbandoned();
             FileLog.warn("[起号] world 推进连续失败 {} 次，本会话放弃（fpid={}）：{}",
                     attempts, holdScope, reason);
         }
@@ -720,27 +721,35 @@ public final class BootstrapService {
         if (!session.claimFinishPass(today)) {
             return Optional.empty();
         }
-        int mailCount = 0;
-        for (int round = 0; round < 4; ++round) {
-            int got = claimMails();
-            if (got <= 0) break;
-            mailCount += got;
-        }
-        int achievements = claimAchievements();
-        int diamonds = claimBackpackDiamonds();
-        // 需求 R-09：三项全空（含里程碑处于 5 分钟退避）时不占「当日已收尾」，
-        // 当天后续新增邮件/里程碑仍会触发收尾。
-        if (mailCount <= 0 && achievements <= 0 && diamonds <= 0) {
-            // R-09 / P2-4：三项全空时回滚占位，当天后续仍可收尾
+        try {
+            int mailCount = 0;
+            for (int round = 0; round < 4; ++round) {
+                int got = claimMails();
+                if (got <= 0) break;
+                mailCount += got;
+            }
+            int achievements = claimAchievements();
+            int diamonds = claimBackpackDiamonds();
+            // 需求 R-09：三项全空（含里程碑处于 5 分钟退避）时不占「当日已收尾」，
+            // 当天后续新增邮件/里程碑仍会触发收尾。
+            if (mailCount <= 0 && achievements <= 0 && diamonds <= 0) {
+                // R-09 / P2-4：三项全空时回滚占位，当天后续仍可收尾
+                session.releaseFinishPass(today);
+                return Optional.empty();
+            }
+            Map<String, Object> result = actionResult("STARTED",
+                    "收尾完成：邮箱、签到、里程碑与背包奖励已处理");
+            result.put("mailCount", mailCount);
+            result.put("achievementCount", achievements);
+            result.put("backpackDiamonds", diamonds);
+            return Optional.of(result);
+        } catch (RuntimeException e) {
+            // 二次审查 P2-9：占位后异常必须回滚，否则当天不再收尾（R-09 被削弱）
             session.releaseFinishPass(today);
+            FileLog.warn("[起号] 收尾异常，已回滚当日占位（fpid={}）：{}",
+                    holdScope, String.valueOf(e.getMessage()));
             return Optional.empty();
         }
-        Map<String, Object> result = actionResult("STARTED",
-                "收尾完成：邮箱、签到、里程碑与背包奖励已处理");
-        result.put("mailCount", mailCount);
-        result.put("achievementCount", achievements);
-        result.put("backpackDiamonds", diamonds);
-        return Optional.of(result);
     }
 
     /**
@@ -1327,15 +1336,20 @@ public final class BootstrapService {
         // 不买煤/铁（煤/铁缺口直接计入 unsupplied 并让 coverable=false，不做无意义购买）。
         result.put("purchases", List.copyOf(purchases));
         result.put("diamondSpent", spentDiamonds(purchases));
-        // 需求 R-07：coverable = unsupplied.isEmpty()。
-        // 生肉/木材按「购买后剩余缺口」计；煤炭/铁矿按「全部缺口」计（统帅商店不卖，买不到即不可覆盖）。
+        // 需求 R-07 / 二次审查 P1-3：unsupplied 按「成本 − 库存」缺口（对齐网页版
+        // BootstrapService.java:1632-1647），购买数量仍用 force 全量成本（本地资源表可能滞后）；
+        // 煤/铁不扣已购买量（商店不卖）。库存足够时 coverable=true，避免误终态。
+        long gapMeat = Math.max(0L, missingOf(costs, 102L));
+        long gapWood = Math.max(0L, missingOf(costs, 103L));
+        long gapCoal = Math.max(0L, missingOf(costs, 104L));
+        long gapIron = Math.max(0L, missingOf(costs, 105L));
         List<Map<String, Object>> unsupplied = new ArrayList<>();
         addUnsupplied(unsupplied, 102L, Math.max(0L,
-                needMeat - purchasedAmount(purchases, MEAT_PACK_ITEM_ID)));
+                gapMeat - purchasedAmount(purchases, MEAT_PACK_ITEM_ID)));
         addUnsupplied(unsupplied, 103L, Math.max(0L,
-                needWood - purchasedAmount(purchases, WOOD_PACK_ITEM_ID)));
-        addUnsupplied(unsupplied, 104L, needCoal);
-        addUnsupplied(unsupplied, 105L, needIron);
+                gapWood - purchasedAmount(purchases, WOOD_PACK_ITEM_ID)));
+        addUnsupplied(unsupplied, 104L, gapCoal);
+        addUnsupplied(unsupplied, 105L, gapIron);
         result.put("unsupplied", List.copyOf(unsupplied));
         result.put("coverable", unsupplied.isEmpty());
         result.put("message", purchases.isEmpty()

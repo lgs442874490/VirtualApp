@@ -2240,8 +2240,9 @@ public class BootstrapServiceTest {
         svc.syncLoadData(readyLoad(7L, 1L));
 
         svc.runNext();
-        assertEquals("非法服务器时钟回退本机日期",
-                java.time.LocalDate.now().toString(),
+        assertEquals("非法服务器时钟回退本机（按 Asia/Shanghai 折算，跨时区稳定）",
+                java.time.Instant.ofEpochMilli(System.currentTimeMillis())
+                        .atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate().toString(),
                 store.holder("fp-clock0").finishPassDay());
     }
 
@@ -2257,5 +2258,45 @@ public class BootstrapServiceTest {
 
         assertEquals(1, svc.claimAchievements());
         assertEquals(Map.of("id", 7L), port.argsOf(BootstrapService.ACHIEVEMENT_REWARD, 0));
+    }
+
+    // ================= 二次审查 P1-3 / P2-8 =================
+
+    /** P1-3：unsupplied 按「库存后缺口」，库存足够时 coverable=true（动作含煤/铁也一样）。 */
+    @Test
+    public void buyMissingResources_stockCoversCost_coverableTrue() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_loaddata", content("uid", 9005L, "res",
+                content("103", 500000L, "104", 100000L, "105", 30000L)));
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(port.request("req_loaddata", Map.of()).getContent());
+
+        Map<String, Object> r = svc.buyMissingResources(List.of(
+                new BuildingGateCatalog.Cost(103L, 460000L),
+                new BuildingGateCatalog.Cost(104L, 92000L),
+                new BuildingGateCatalog.Cost(105L, 23000L)), true);
+
+        assertEquals("库存足够 → 可覆盖（不误终态）", Boolean.TRUE, r.get("coverable"));
+        assertEquals(0, ((List<?>) r.get("unsupplied")).size());
+    }
+
+    /** P2-8：他人正在发 world info（已认领但 kid 未回填）时，fog 分支不得计失败。 */
+    @Test
+    public void worldAdvance_inFlightClaim_doesNotCountFailure() throws Exception {
+        IntelPort port = new IntelPort();
+        port.notifies.put(BootstrapService.NOTIFY_INTEL_INFO, content("events", content()));
+        BootstrapSessionState store = new BootstrapSessionState();
+        String scope = "fp-inflight";
+        BootstrapService svc = new BootstrapService(port, new BootstrapPlanner(),
+                BootstrapCatalog.combined(), NO_SLEEP, new BootstrapHoldStore(), scope, store);
+        svc.applyConfig(intelConfig());
+        svc.syncLoadData(intelReadyLoad(1L));
+        // 模拟另一个请求已认领 info，但 kid 尚未写回
+        store.holder(scope).claimWorldKingdomInfo();
+
+        svc.runNext();
+        assertEquals("in-flight 不得计 world 失败", 0,
+                store.holder(scope).worldAttempts());
+        assertEquals("in-flight 不得发 fog", 0, port.count("req_world_map_fog"));
     }
 }

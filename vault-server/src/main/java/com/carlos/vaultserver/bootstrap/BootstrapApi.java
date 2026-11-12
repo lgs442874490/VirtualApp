@@ -266,6 +266,9 @@ public final class BootstrapApi {
                 case "single-level-building":
                 case "single-alliance":
                     return singleAction(action.trim().toLowerCase(Locale.ROOT), f);
+                case "single-reset":
+                    // 二次审查 P2-10：人工重置该号会话状态（ENDED 等终态），允许重跑
+                    return singleReset(f);
                 default:
                     return error("未知 action: " + action + "（支持 import / batch-start / batch-status"
                             + " / batch-cancel / batch-list / referral-list / referral-pull / single-*）");
@@ -457,6 +460,25 @@ public final class BootstrapApi {
         out.put("marked", marked);
         out.put("requested", fpids.size());
         out.put("message", "已标记 " + marked + " 个账号为已拉取");
+        return out;
+    }
+
+    /**
+     * single-reset：清理该 fpid 的会话状态与退避表（人工重置入口；二次审查 P2-10）。
+     * 不要求在线——账号删除后也可清理。
+     */
+    private static JSONObject singleReset(Map<String, Object> f) {
+        String fpid = str(f, "fpid");
+        if (fpid == null || fpid.trim().isEmpty()) {
+            throw new IllegalArgumentException("缺少 fpid");
+        }
+        String key = fpid.trim();
+        clearSessionState(key);
+        BootstrapHoldStore.shared().clearScope(key);
+        JSONObject out = new JSONObject();
+        out.put("fpid", key);
+        out.put("reset", true);
+        out.put("message", "已清理该号会话状态，可重新起号");
         return out;
     }
 
