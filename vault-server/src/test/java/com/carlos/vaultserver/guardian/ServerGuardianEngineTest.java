@@ -2226,6 +2226,29 @@ public class ServerGuardianEngineTest {
     }
 
     @Test
+    public void pickSpeedupStep_burstKeepsSweepingUntilAheadReserve() {
+        long margin = 2_000L;
+        // 2026-11-13 实测（05:40 隆科多）：敌方剩余 27.5s、我方 23.5s（领先 5.7s）→ 旧逻辑
+        // burst_done 停手，敌方下一发直接反超（最终晚 24s）。新逻辑要求领先 ≥ 20s 才停 → 继续梭哈。
+        GuardianSpeedupPlanner.Step s1 = ServerGuardianEngine.pickSpeedupStep(
+                23_500L, 27_500L, 10, 10, 4, 5, 0, 0, 0, false, margin);
+        assertEquals("领先不足 20s 应继续梭哈", GuardianSpeedupPlanner.Action.USE_25, s1.action);
+        assertEquals("burst_25", s1.reasonCode);
+
+        // 领先 ≥ 20s（我方 5s vs 敌方 27.5s）→ 停手
+        GuardianSpeedupPlanner.Step done = ServerGuardianEngine.pickSpeedupStep(
+                5_000L, 27_500L, 10, 10, 4, 5, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NONE, done.action);
+        assertEquals("burst_done", done.reasonCode);
+
+        // 敌方剩余 ≤5s（临近落地）→ 退回原 margin：领先 2.5s 即停（不再无效梭哈）
+        GuardianSpeedupPlanner.Step last = ServerGuardianEngine.pickSpeedupStep(
+                2_000L, 4_500L, 10, 10, 4, 5, 0, 0, 0, false, margin);
+        assertEquals(GuardianSpeedupPlanner.Action.NONE, last.action);
+        assertEquals("burst_done", last.reasonCode);
+    }
+
+    @Test
     public void pickSpeedupStep_25PreferredAndStacked() {
         long margin = 2_000L;
         // 130s vs 120s：一发 25% 后 ≈97.5s，先到 → 25% 优先
