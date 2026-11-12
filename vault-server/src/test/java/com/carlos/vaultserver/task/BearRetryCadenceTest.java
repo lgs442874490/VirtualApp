@@ -3,6 +3,7 @@ package com.carlos.vaultserver.task;
 import static org.junit.Assert.assertEquals;
 
 import com.carlos.vaultserver.Beijing;
+import com.carlos.vaultserver.VaultStore;
 import org.junit.After;
 import org.junit.Before;
 import org.junit.Test;
@@ -48,7 +49,7 @@ public class BearRetryCadenceTest {
 
     @Test
     public void bearInWindow_skipped_doesNotBackOff() {
-        BearGate.enter(role, System.currentTimeMillis() + 60_000L);
+        BearGate.enter(role, System.currentTimeMillis() + 600_000L);
         long next = TaskCadenceScheduler.nextIntervalForResult(
                 null, role, "bear", BASE_MS, snapshotWith("bear", 4));
         assertEquals("窗口内 SKIPPED 应保持基础间隔（60s），实际=" + next, BASE_MS, next);
@@ -56,7 +57,7 @@ public class BearRetryCadenceTest {
 
     @Test
     public void bearInWindow_error_doesNotBackOff() {
-        BearGate.enter(role, System.currentTimeMillis() + 60_000L);
+        BearGate.enter(role, System.currentTimeMillis() + 600_000L);
         long next = TaskCadenceScheduler.nextIntervalForResult(
                 null, role, "bear", BASE_MS, snapshotWith("bear", 3));
         assertEquals("窗口内 ERROR 应保持基础间隔（60s），实际=" + next, BASE_MS, next);
@@ -71,7 +72,7 @@ public class BearRetryCadenceTest {
 
     @Test
     public void nonBearInWindow_skipped_keepsBackoff() {
-        BearGate.enter(role, System.currentTimeMillis() + 60_000L);
+        BearGate.enter(role, System.currentTimeMillis() + 600_000L);
         long next = TaskCadenceScheduler.nextIntervalForResult(
                 null, role, "gather", BASE_MS, snapshotWith("gather", 4));
         assertEquals("窗口内其它任务不得被豁免退避，实际=" + next, 180_000L, next);
@@ -79,9 +80,28 @@ public class BearRetryCadenceTest {
 
     @Test
     public void bearInWindow_freshResult_keepsBase() {
-        BearGate.enter(role, System.currentTimeMillis() + 60_000L);
+        BearGate.enter(role, System.currentTimeMillis() + 600_000L);
         long next = TaskCadenceScheduler.nextIntervalForResult(
                 null, role, "bear", BASE_MS, snapshotWith("bear", 2));
         assertEquals(BASE_MS, next);
+    }
+
+    @Test
+    public void bearOutOfWindow_error_keepsBackoff() {
+        long next = TaskCadenceScheduler.nextIntervalForResult(
+                null, role, "bear", BASE_MS, snapshotWith("bear", 3));
+        assertEquals("窗口外 ERROR 仍应 ≥120s，实际=" + next, 120_000L, next);
+    }
+
+    @Test
+    public void legacyOverloadWithUid_doesNotApplyWindowShortCircuit() {
+        // P2-7：旧重载构造 uid=0 的 RoleKey，与 BearGate 角色键不匹配；此处锁定现状并提示调用方改走角色重载
+        VaultStore.Account acc = new VaultStore.Account(FPID);
+        acc.fpid = FPID;
+        acc.activeUid = String.valueOf(UID);
+        BearGate.enter(role, System.currentTimeMillis() + 600_000L);
+        long next = TaskCadenceScheduler.nextIntervalForResult(
+                acc, SID, "bear", BASE_MS, snapshotWith("bear", 4));
+        assertEquals("旧重载不保证 F2 生效（现状退避 180s）", 180_000L, next);
     }
 }

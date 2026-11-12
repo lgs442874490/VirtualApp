@@ -249,24 +249,37 @@ public final class ServerBearTasks {
             windowText = phaseText(window);
             // 批次5：新场次归一重试/预热台账（同场次保留预算，避免无限重试）
             resetRetryIfNewWindow(state, window.startSec, nowSec);
+            resetPendingJoinsIfNewWindow(state, window.startSec);
             saveState(tc, state);
 
             // 未读取到预约 + 走到配置周窗口：默认 SKIP（预约是游戏端行为，没有客户端预约协议，
             // 不臆造“本场会开”而空发车；确实要按配置窗口执行需显式 launch_without_reserve=true）。
             if (shouldSkipFallbackWindow(window, cfg)) {
-                m.skip("未预约巨熊场次（无客户端预约协议，需游戏内手动预约），配置窗口内不发车");
+                String text = "未预约巨熊场次（无客户端预约协议，需游戏内手动预约），配置窗口内不发车";
+                m.skip(text);
                 launchText = "未预约";
                 writeMod(tc, trapText, windowText, launchText);
+                logOnceInfo(tc.fpid, tc.sid, state, logWindowKey(state, window.startSec),
+                        "skip-no-reserve", text);
+                saveState(tc, state);
                 return Exec.result(m, TASK_ID, TASK_NAME);
             }
 
             boolean launchedForWindowNow = false;
             if (window.phase == Window.ENDED) {
                 BearGate.release(roleKeyOf(tc));
-                m.skip("本场巨熊已结束" + syncNote);
+                String text = "本场巨熊已结束" + syncNote;
+                m.skip(text);
+                logOnceInfo(tc.fpid, tc.sid, state, logWindowKey(state, window.startSec),
+                        "window-ended", text);
+                saveState(tc, state);
                 launchText = "本场已结束";
             } else if (window.phase == Window.WAITING) {
-                m.skip("未在巨熊窗口 · " + trapText + syncNote);
+                String text = "未在巨熊窗口 · " + trapText + syncNote;
+                m.skip(text);
+                logOnceInfo(tc.fpid, tc.sid, state, logWindowKey(state, window.startSec),
+                        "window-waiting", text);
+                saveState(tc, state);
                 launchText = "未在窗口";
             } else if (window.phase == Window.PREPARING) {
                 launchText = "准备窗口中";
@@ -288,6 +301,9 @@ public final class ServerBearTasks {
                     m.skip(waitText);
                     state.lastLaunchText = waitText;
                     writeLaunchMod(tc, state, waitText);
+                    logOnceInfo(tc.fpid, tc.sid, state, logWindowKey(state, window.startSec),
+                            "recall-wait", waitText);
+                    saveState(tc, state);
                     nextWakeAt = (nowSec + 15L) * 1000L;
                 } else {
                     state.recallMarchIds = "";   // 已全部回城/无需等待
@@ -344,13 +360,14 @@ public final class ServerBearTasks {
                                        BearState state, long nowSec, Window window) throws Exception {
         String key = launchedKeyOf(tc);
         String day = dayKey(nowSec);
+        long logWindow = logWindowKey(state, window.startSec);
         String record = tc.store.getString(key);
         if (launchedForWindow(record, day, window.startSec)) {
             String prefix = record.contains("#code:") ? "本场已封板" : "本场已发起";
             String text = prefix + "（" + describeLaunched(record) + "），不重复发车";
             m.skip(text);
             writeLaunchMod(tc, state, text);
-            logOnceInfo(tc.fpid, tc.sid, state, window.startSec, "launch-done", text);
+            logOnceInfo(tc.fpid, tc.sid, state, logWindow, "launch-done", text);
             saveState(tc, state);
             return false;
         }
@@ -358,6 +375,8 @@ public final class ServerBearTasks {
             String text = "发起开关 launch_enabled=false，本场不发车";
             m.skip(text);
             writeLaunchMod(tc, state, text);
+            logOnceWarn(tc.fpid, tc.sid, state, logWindow, "launch-disabled", text);
+            saveState(tc, state);
             return false;
         }
         // 延时重试等待闸（401/2878 计划 60s 后重试一次；其余时间不重复请求）
@@ -366,7 +385,7 @@ public final class ServerBearTasks {
             String text = launchWaitText(wait, state.lastLaunchCode);
             m.skip(text);
             writeLaunchMod(tc, state, text);
-            logOnceInfo(tc.fpid, tc.sid, state, window.startSec,
+            logOnceInfo(tc.fpid, tc.sid, state, logWindow,
                     "launch-wait:" + state.lastLaunchCode, text);
             saveState(tc, state);
             return false;
@@ -377,7 +396,7 @@ public final class ServerBearTasks {
             String text = launchTooLateText(secondsToEnd0, prepareIndex);
             m.skip(text);
             writeLaunchMod(tc, state, text);
-            logOnceWarn(tc.fpid, tc.sid, state, window.startSec,
+            logOnceWarn(tc.fpid, tc.sid, state, logWindow,
                     "launch-too-late:" + prepareIndex, text);
             saveState(tc, state);
             return false;
@@ -391,7 +410,7 @@ public final class ServerBearTasks {
                 String text = launchNoTargetText(why.toString());
                 m.skip(text);
                 writeLaunchMod(tc, state, text);
-                logOnceWarn(tc.fpid, tc.sid, state, window.startSec, "launch-no-target", text);
+                logOnceWarn(tc.fpid, tc.sid, state, logWindow, "launch-no-target", text);
                 saveState(tc, state);
                 return false;
             }
@@ -404,7 +423,7 @@ public final class ServerBearTasks {
             String text = launchNoFormationText(formationSource, initial.reason);
             m.skip(text);
             writeLaunchMod(tc, state, text);
-            logOnceWarn(tc.fpid, tc.sid, state, window.startSec, "launch-no-formation", text);
+            logOnceWarn(tc.fpid, tc.sid, state, logWindow, "launch-no-formation", text);
             saveState(tc, state);
             return false;
         }
@@ -425,7 +444,7 @@ public final class ServerBearTasks {
                 tc.store.putString(key, launchedFailedRecord(day, window.startSec, CODE_RETRY_WINDOW_SHORT));
                 String text = launchFailureText(CODE_RETRY_WINDOW_SHORT, null);
                 state.lastLaunchCode = CODE_RETRY_WINDOW_SHORT;
-                logOnceWarn(tc.fpid, tc.sid, state, window.startSec,
+                logOnceWarn(tc.fpid, tc.sid, state, logWindow,
                         "launch-inner-too-late:" + prepareIndex, text);
                 saveState(tc, state);
                 m.skip(text);
@@ -437,6 +456,8 @@ public final class ServerBearTasks {
                 String text = "发起参数不完整（熊坑坐标/monsterid/编队缺失），未发起";
                 m.skip(text);
                 writeLaunchMod(tc, state, text);
+                logOnceWarn(tc.fpid, tc.sid, state, logWindow, "launch-payload", text);
+                saveState(tc, state);
                 return false;
             }
             // 先落幂等标记（marchId=0=已尝试）再发请求：结果未知/异常时保留标记，绝不发第二辆车
@@ -632,9 +653,13 @@ public final class ServerBearTasks {
      */
     private static void joinRallies(TaskContext tc, Exec.Multi m, BearConfig cfg, BearState state,
                                     long nowSec, Window window) throws Exception {
+        long logWindow = logWindowKey(state, window.startSec);
         if (!cfg.joinEnabled) {
-            m.skip("上车开关 join_enabled=false");
+            String text = "上车开关 join_enabled=false";
+            m.skip(text);
             writeJoinMod(tc, "未上车 · 开关关闭");
+            logOnceWarn(tc.fpid, tc.sid, state, logWindow, "join-disabled", text);
+            saveState(tc, state);
             return;
         }
         String key = joinsKeyOf(tc);
@@ -673,6 +698,9 @@ public final class ServerBearTasks {
                 m.skip("本场上车已达配置上限 " + joinLimit + " 队");
                 writeJoinMod(tc, "本场已上车 " + joined.size() + "/" + joinLimit + " 队（上限）");
             }
+            logOnceInfo(tc.fpid, tc.sid, state, logWindow, "join-limit",
+                    "本场上车已达上限 " + joined.size() + "/" + joinLimit + " 队");
+            saveState(tc, state);
             return;
         }
         long allianceId = state.targetAllianceId;
@@ -682,7 +710,7 @@ public final class ServerBearTasks {
             String text = joinNoCandidateText();
             m.skip(text);
             writeJoinMod(tc, "未上车 · 未发现可加入的巨熊集结（等待车头）");
-            logOnceInfo(tc.fpid, tc.sid, state, window.startSec, "join-no-candidate", text);
+            logOnceInfo(tc.fpid, tc.sid, state, logWindow, "join-no-candidate", text);
             saveState(tc, state);
             return;
         }
@@ -691,7 +719,7 @@ public final class ServerBearTasks {
         if (!preferredSelection.waitMessage.isEmpty()) {
             m.skip(preferredSelection.waitMessage);
             writeJoinMod(tc, "未上车 · " + preferredSelection.waitMessage);
-            logOnceInfo(tc.fpid, tc.sid, state, window.startSec,
+            logOnceInfo(tc.fpid, tc.sid, state, logWindow,
                     "join-preferred-wait", preferredSelection.waitMessage);
             saveState(tc, state);
             return;
@@ -721,7 +749,7 @@ public final class ServerBearTasks {
                 JoinFormationConfig slot = selection.skippedSlots.get(i);
                 String note = selection.skippedNotes.get(i);
                 m.skip(note);
-                if (recordJoinSkipLogOnce(state, window.startSec, slot.id)) {
+                if (recordJoinSkipLogOnce(state, logWindow, slot.id)) {
                     FileLog.info("巨熊上车槽跳过 fpid={} sid={} {}", tc.fpid,
                             String.valueOf(tc.sid), note);
                 }
@@ -730,9 +758,9 @@ public final class ServerBearTasks {
             configuredAttempts = planJoinAttempts(selection, candidates, usedHeroes, remaining, conflictNotes);
             for (String note : conflictNotes) {
                 m.skip(note);
-                if (bearLogOnce(state, window.startSec, "join-conflict:" + conflictTypeOf(note))) {
-                    FileLog.info("巨熊上车槽冲突跳过 fpid={} sid={} {}", tc.fpid,
-                            String.valueOf(tc.sid), note);
+                if (bearLogOnce(state, logWindow, "join-conflict:" + conflictTypeOf(note))) {
+                    FileLog.info("巨熊上车槽冲突跳过 fpid={} sid={} 场次={} {}", tc.fpid,
+                            String.valueOf(tc.sid), fmtWindow(logWindow), note);
                 }
             }
             if (configuredAttempts.isEmpty()) {
@@ -740,9 +768,9 @@ public final class ServerBearTasks {
                 // 不再整场放弃上车；自动编队会按空闲英雄/客户端布阵尝试。
                 String summary = compactFallbackSummary(selection.skippedNotes);
                 m.skip(summary);
-                if (bearLogOnce(state, window.startSec, "join-fallback")) {
-                    FileLog.info("巨熊上车回退自动 fpid={} sid={} {}", tc.fpid,
-                            String.valueOf(tc.sid), summary);
+                if (bearLogOnce(state, logWindow, "join-fallback")) {
+                    FileLog.info("巨熊上车回退自动 fpid={} sid={} 场次={} {}", tc.fpid,
+                            String.valueOf(tc.sid), fmtWindow(logWindow), summary);
                 }
                 configuredAttempts = null;
             }
@@ -784,7 +812,7 @@ public final class ServerBearTasks {
                     String text = joinNoFreeHeroText();
                     m.skip(text);
                     writeJoinMod(tc, "未上车 · 无空闲英雄编队（发起队/已上车队占用）");
-                    logOnceWarn(tc.fpid, tc.sid, state, window.startSec, "join-no-heroes", text);
+                    logOnceWarn(tc.fpid, tc.sid, state, logWindow, "join-no-heroes", text);
                     joinTextWritten = true;
                     break;
                 }
@@ -793,7 +821,7 @@ public final class ServerBearTasks {
                     String text = joinNoSoldierText();
                     m.skip(text);
                     writeJoinMod(tc, "未上车 · 上车编队无可用兵力");
-                    logOnceWarn(tc.fpid, tc.sid, state, window.startSec, "join-no-soldiers", text);
+                    logOnceWarn(tc.fpid, tc.sid, state, logWindow, "join-no-soldiers", text);
                     joinTextWritten = true;
                     break;
                 }
@@ -805,7 +833,7 @@ public final class ServerBearTasks {
                 String text = joinPayloadMissingText();
                 m.skip(text);
                 writeJoinMod(tc, "未上车 · 参数不完整（车头坐标/编队缺失）");
-                logOnceWarn(tc.fpid, tc.sid, state, window.startSec, "join-payload", text);
+                logOnceWarn(tc.fpid, tc.sid, state, logWindow, "join-payload", text);
                 joinTextWritten = true;
                 break;
             }
@@ -817,11 +845,11 @@ public final class ServerBearTasks {
                 rsp = tc.engine.request("req_world_march", payload);
             } catch (Exception e) {
                 // 2026-11-11：请求结果未知 → 记 pending，等待成员详情/通知对账，避免漏记/重复撞车。
-                pendingJoinAppend(state, window.startSec, 0, candidate, heroes, nowSec);
+                pendingJoinAppend(state, logWindow, 0, candidate, heroes, nowSec);
                 String text = joinRequestExceptionText(candidate.masterMarchId);
                 m.skip(text);
                 writeJoinMod(tc, "上车请求异常(车头=" + candidate.masterMarchId + ")，待对账");
-                logOnceWarn(tc.fpid, tc.sid, state, window.startSec,
+                logOnceWarn(tc.fpid, tc.sid, state, logWindow,
                         "join-req-ex:" + candidate.masterMarchId, text);
                 joinTextWritten = true;
                 continue;
@@ -858,23 +886,23 @@ public final class ServerBearTasks {
                             String.valueOf(candidate.startX), String.valueOf(candidate.startY),
                             joinSource);
                 } else {
-                    pendingJoinAppend(state, window.startSec, 0, candidate, heroes, nowSec);
+                    pendingJoinAppend(state, logWindow, 0, candidate, heroes, nowSec);
                     String text = joinPendingText(candidate.masterMarchId);
                     m.skip(text);
                     writeJoinMod(tc, "上车已请求(车头=" + candidate.masterMarchId + ")，待对账"
                             + (detailText.isEmpty() ? "" : " · " + detailText));
-                    logOnceInfo(tc.fpid, tc.sid, state, window.startSec,
+                    logOnceInfo(tc.fpid, tc.sid, state, logWindow,
                             "join-pending:" + candidate.masterMarchId, text);
                     joinTextWritten = true;
                 }
                 continue;
             }
             if (code == CODE_ALREADY_JOINED) {
-                pendingJoinAppend(state, window.startSec, 0, candidate, heroes, nowSec);
+                pendingJoinAppend(state, logWindow, 0, candidate, heroes, nowSec);
                 String text = "当前账号已在目标集结或通知滞后（码2844），进入待对账";
                 m.skip(text);
                 writeJoinMod(tc, "上车跳过(码2844) · 已在该集结，待对账");
-                logOnceInfo(tc.fpid, tc.sid, state, window.startSec, "join-code:2844", text);
+                logOnceInfo(tc.fpid, tc.sid, state, logWindow, "join-code:2844", text);
                 joinTextWritten = true;
                 usedHeroes.addAll(heroes);
                 continue;
@@ -882,16 +910,16 @@ public final class ServerBearTasks {
                 String text = "行军队列已满（码2878），停止上车";
                 m.skip(text);
                 writeJoinMod(tc, "上车失败(码2878) · 行军队列已满");
-                logOnceWarn(tc.fpid, tc.sid, state, window.startSec, "join-code:2878", text);
+                logOnceWarn(tc.fpid, tc.sid, state, logWindow, "join-code:2878", text);
                 joinTextWritten = true;
                 break;
             } else if (code == CODE_HERO_OCCUPIED) {
                 // 2026-11-11：对齐网页版——403 记 pending 并继续下一车/下一槽，不整场放弃。
-                pendingJoinAppend(state, window.startSec, 0, candidate, heroes, nowSec);
+                pendingJoinAppend(state, logWindow, 0, candidate, heroes, nowSec);
                 String text = "上车英雄被占用（码403），已记录待对账并换下一车";
                 m.skip(text);
                 writeJoinMod(tc, "上车失败(码403) · 英雄被占用，待对账");
-                logOnceWarn(tc.fpid, tc.sid, state, window.startSec, "join-code:403", text);
+                logOnceWarn(tc.fpid, tc.sid, state, logWindow, "join-code:403", text);
                 joinTextWritten = true;
                 usedHeroes.addAll(heroes);
                 continue;
@@ -899,14 +927,14 @@ public final class ServerBearTasks {
                 String text = "巨熊集结已关闭（码5204）";
                 m.skip(text);
                 writeJoinMod(tc, "上车失败(码5204) · 集结已关闭");
-                logOnceWarn(tc.fpid, tc.sid, state, window.startSec, "join-code:5204", text);
+                logOnceWarn(tc.fpid, tc.sid, state, logWindow, "join-code:5204", text);
                 joinTextWritten = true;
                 break;
             } else {
                 String text = joinFailureText(code);
                 m.skip(text);
                 writeJoinMod(tc, "上车失败(码" + code + ")");
-                logOnceWarn(tc.fpid, tc.sid, state, window.startSec, "join-code:" + code, text);
+                logOnceWarn(tc.fpid, tc.sid, state, logWindow, "join-code:" + code, text);
                 joinTextWritten = true;
             }
         }
@@ -923,7 +951,7 @@ public final class ServerBearTasks {
             } catch (Throwable ignored) {
             }
         }
-        int pendingNow = pendingJoinCount(state, window.startSec);
+        int pendingNow = pendingJoinCount(state, logWindow);
         if (pendingNow > 0) {
             m.skip("本场上车待对账 " + pendingNow + " 支");
             if (!joinTextWritten) {
@@ -1079,12 +1107,10 @@ public final class ServerBearTasks {
 
     // ==================== 2026-11-11：待对账上车（对齐网页版 pendingJoins） ====================
 
-    /** 当前场次待对账数组（跨场次自动清空）。 */
+    /** 当前场次待对账数组（只读；新场次清空由 {@link #resetPendingJoinsIfNewWindow} 显式完成）。 */
     static JSONArray pendingJoinArray(BearState state, long windowStartSec) {
         if (state == null) return new JSONArray();
         if (state.pendingJoinWindowStart != windowStartSec) {
-            state.pendingJoins = "";
-            state.pendingJoinWindowStart = windowStartSec;
             return new JSONArray();
         }
         try {
@@ -1092,6 +1118,15 @@ public final class ServerBearTasks {
                     ? "[]" : state.pendingJoins);
         } catch (Throwable t) {
             return new JSONArray();
+        }
+    }
+
+    /** 新场次显式清空 pending 台账（替代 pendingJoinArray 的查询副作用）。 */
+    static void resetPendingJoinsIfNewWindow(BearState state, long windowStartSec) {
+        if (state == null) return;
+        if (state.pendingJoinWindowStart != windowStartSec) {
+            state.pendingJoins = "";
+            state.pendingJoinWindowStart = windowStartSec;
         }
     }
 
@@ -1142,7 +1177,8 @@ public final class ServerBearTasks {
      */
     static int[] reconcilePendingJoins(TaskContext tc, BearState state, Exec.Multi m,
                                        Window window, long ownUid) {
-        JSONArray arr = pendingJoinArray(state, window.startSec);
+        long logWindow = logWindowKey(state, window.startSec);
+        JSONArray arr = pendingJoinArray(state, logWindow);
         if (arr.length() == 0) return new int[]{0, 0};
         long now = nowSec(tc);
         JSONArray keep = new JSONArray();
@@ -1169,10 +1205,10 @@ public final class ServerBearTasks {
                     o.put("tries", tries + 1);
                 } catch (Throwable ignored) {
                 }
-                if (bearLogOnce(state, window.startSec, "reconcile-fail:" + mid)) {
+                if (bearLogOnce(state, logWindow, "reconcile-fail:" + mid)) {
                     FileLog.warn("巨熊上车对账查询失败 fpid={} sid={} masterMarchId={} tries={} 场次={}",
                             tc.fpid, String.valueOf(tc.sid), String.valueOf(mid),
-                            String.valueOf(tries + 1), fmtWindow(window.startSec));
+                            String.valueOf(tries + 1), fmtWindow(logWindow));
                 }
                 keep.put(o);
                 continue;
@@ -1194,7 +1230,7 @@ public final class ServerBearTasks {
             }
         }
         state.pendingJoins = keep.toString();
-        state.pendingJoinWindowStart = window.startSec;
+        state.pendingJoinWindowStart = logWindow;
         saveState(tc, state);
         return new int[]{ok, fail};
     }
@@ -2659,6 +2695,18 @@ public final class ServerBearTasks {
 
     // ==================== 2026-11-12 审查修复：F1/F3/F4/F5 辅助（纯函数/日志节流） ====================
 
+    /**
+     * 逻辑场次键：本场重试期间固定用 retryWindowStart。
+     *
+     * <p>2026-11-12 二次审查 P1-1：发车侧用本场（重试强制），上车侧用 refreshed 重新计算的窗口；
+     * 服务端把 reserve/start 翻到下一场后，两侧窗口秒值交替，bearLogOnce 会反复清空 logKeys，
+     * 导致 F1/F4 的“每场一次”失效。统一取 retryWindowStart 可让两侧键稳定一致。
+     */
+    static long logWindowKey(BearState state, long windowStartSec) {
+        if (state != null && state.retryWindowStart > 0L) return state.retryWindowStart;
+        return windowStartSec;
+    }
+
     /** 同场次同原因只记一次 FileLog；返回 true=首次（key 内不含逗号）。 */
     static boolean bearLogOnce(BearState state, long windowStartSec, String key) {
         if (state == null) return true;
@@ -2667,11 +2715,13 @@ public final class ServerBearTasks {
             state.logKeys = "";
         }
         if (key == null || key.isEmpty()) return true;
+        // 键内可能含动态文本（如冲突原因），逗号是存储分隔符，统一替换避免破坏键表
+        String safeKey = key.replace(',', ';');
         String all = state.logKeys == null ? "" : state.logKeys;
         for (String part : all.split(",")) {
-            if (key.equals(part.trim())) return false;
+            if (safeKey.equals(part.trim())) return false;
         }
-        state.logKeys = all.isEmpty() ? key : all + "," + key;
+        state.logKeys = all.isEmpty() ? safeKey : all + "," + safeKey;
         return true;
     }
 
@@ -2679,7 +2729,8 @@ public final class ServerBearTasks {
     static boolean logOnceInfo(String fpid, long sid, BearState state, long windowStartSec,
                                String key, String reason) {
         if (!bearLogOnce(state, windowStartSec, key)) return false;
-        FileLog.info("巨熊{} fpid={} sid={} 场次={}", reason == null ? "" : reason,
+        String safe = reason == null ? "" : reason.replace("{}", "{ }");
+        FileLog.info("巨熊{} fpid={} sid={} 场次={}", safe,
                 fpid == null ? "" : fpid, String.valueOf(sid), fmtWindow(windowStartSec));
         return true;
     }
@@ -2688,7 +2739,8 @@ public final class ServerBearTasks {
     static boolean logOnceWarn(String fpid, long sid, BearState state, long windowStartSec,
                                String key, String reason) {
         if (!bearLogOnce(state, windowStartSec, key)) return false;
-        FileLog.warn("巨熊{} fpid={} sid={} 场次={}", reason == null ? "" : reason,
+        String safe = reason == null ? "" : reason.replace("{}", "{ }");
+        FileLog.warn("巨熊{} fpid={} sid={} 场次={}", safe,
                 fpid == null ? "" : fpid, String.valueOf(sid), fmtWindow(windowStartSec));
         return true;
     }
@@ -3065,7 +3117,8 @@ public final class ServerBearTasks {
         String known = bearCodeText(code);
         if (!known.isEmpty()) {
             sb.append("：").append(known);
-        } else {
+        } else if (retry == null || !retry.retry) {
+            // 2026-11-12 二次审查 P2-2：只有确定不重试时才写“不再重试”，避免与重试计划自相矛盾
             sb.append("：未知码，本场不再重试（除非命中重试表）");
         }
         if (code == CODE_HERO_OCCUPIED) {

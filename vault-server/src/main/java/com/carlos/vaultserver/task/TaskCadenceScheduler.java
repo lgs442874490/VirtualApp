@@ -1045,6 +1045,10 @@ public final class TaskCadenceScheduler {
      *   <li>2=已领取 / 未知 → 正常间隔。</li>
      * </ul>
      */
+    /**
+     * 旧重载（仅按 sid）：构造 {@code RoleKey.uid=0}，与 {@link BearGate} 的角色键可能不一致，
+     * 因此不保证 F2 的“窗口内不退避”生效；生产派单请使用带 {@link RoleKey} 的重载。
+     */
     static long nextIntervalForResult(VaultStore.Account acc, long sid, String fn,
                                       long intervalMillis, Map<String, Object> snapshot) {
         return nextIntervalForResult(acc, new RoleKey(acc == null ? "" : acc.fpid, sid, 0L),

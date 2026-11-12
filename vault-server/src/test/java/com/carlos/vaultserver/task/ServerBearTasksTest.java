@@ -798,9 +798,13 @@ public class ServerBearTasksTest {
         ServerBearTasks.pendingJoinAppend(state, 100L, 1, c, Arrays.asList(50036L, 50005L), 1000L);
         assertEquals(1, ServerBearTasks.pendingJoinCount(state, 100L));
 
-        // 新场次自动清空旧 pending
+        // 新场次：查询只读（不产生清空副作用），清空由显式 reset 完成
+        // （2026-11-12 二次审查 P2-1：避免 reconcile 查询因场次键不同而静默丢 pending）
         assertEquals(0, ServerBearTasks.pendingJoinCount(state, 200L));
+        assertEquals(100L, state.pendingJoinWindowStart);
+        ServerBearTasks.resetPendingJoinsIfNewWindow(state, 200L);
         assertEquals(200L, state.pendingJoinWindowStart);
+        assertEquals(0, ServerBearTasks.pendingJoinCount(state, 200L));
     }
 
     // ==================== 2026-11-11：指定车头 ====================

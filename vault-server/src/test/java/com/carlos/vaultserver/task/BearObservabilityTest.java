@@ -271,4 +271,118 @@ public class BearObservabilityTest {
         assertEquals("查询失败不得释放 pending", 1, kept.length());
         assertEquals(2, kept.getJSONObject(0).optInt("tries"));
     }
+
+
+    // ======================= 2026-11-12 二次审查回归 =======================
+
+    @Test
+    public void logWindowKey_retryWindowStableWhenRefreshedFlips() {
+        ServerBearTasks.BearState state = freshState();
+        assertEquals(1000L, ServerBearTasks.logWindowKey(state, 1000L));
+        state.retryWindowStart = 1000L;
+        long launchKey = ServerBearTasks.logWindowKey(state, 1000L);
+        long joinKey = ServerBearTasks.logWindowKey(state, 2000L);
+        assertEquals("launch/join 必须使用同一逻辑场次键", launchKey, joinKey);
+        assertTrue(ServerBearTasks.bearLogOnce(state, launchKey, "launch-wait:403"));
+        assertFalse("翻场后同一逻辑场次不得重复输出",
+                ServerBearTasks.bearLogOnce(state, joinKey, "launch-wait:403"));
+    }
+
+    @Test
+    public void throttleState_survivesJsonRoundTrip() {
+        ServerBearTasks.BearState state = freshState();
+        state.retryWindowStart = 1000L;
+        assertTrue(ServerBearTasks.bearLogOnce(state, 1000L, "k"));
+        ServerBearTasks.BearState back = ServerBearTasks.parseState(ServerBearTasks.stateJson(state));
+        assertEquals(1000L, back.retryWindowStart);
+        assertEquals(1000L, back.logWindowStart);
+        assertEquals("k", back.logKeys);
+        assertFalse("跨轮持久化后节流仍生效", ServerBearTasks.bearLogOnce(back, 1000L, "k"));
+    }
+
+    @Test
+    public void launchRetryDecision_5203_doesNotRetry() {
+        long start = 1792760400L;
+        long now = start + 600L;
+        ServerBearTasks.Window window = ServerBearTasks.windowOf(
+                now, start, 0L, ServerBearTasks.BearConfig.defaults());
+        ServerBearTasks.LaunchRetry retry = ServerBearTasks.launchRetryDecision(
+                5203, now, window, ServerBearTasks.BearConfig.defaults(), freshState());
+        assertFalse("5203 文案“按不重试处理”必须与决策一致", retry.retry);
+    }
+
+    @Test
+    public void logOnceInfo_reasonWithBraces_keepsFields() {
+        ServerBearTasks.BearState state = freshState();
+        String out = captureStdout(() -> ServerBearTasks.logOnceInfo(
+                "1", 2L, state, 1794488400L, "k", "原因{}占位"));
+        assertTrue("fpid 必须仍在正确位置，实际=" + out, out.contains("fpid=1"));
+        assertTrue(out.contains("sid=2"));
+        assertTrue(out.contains("场次="));
+        assertTrue("动态 reason 中的 {} 必须转义", out.contains("{ }"));
+    }
+
+    @Test
+    public void reconcilePendingJoins_refreshedNextWindow_keepsPendingAndWarns() {
+        StateStore store;
+        try {
+            store = new StateStore(tmp.getRoot().toPath());
+        } catch (Exception e) {
+            throw new AssertionError("临时目录初始化失败", e);
+        }
+        TaskContext tc = new TaskContext(null, "48460403", 888L, store, null, "test");
+        long current = 1794488400L;
+        ServerBearTasks.BearState state = freshState();
+        state.retryWindowStart = current;
+        state.pendingJoinWindowStart = current;
+        JSONArray arr = new JSONArray();
+        JSONObject o = new JSONObject();
+        o.put("mid", 116L);
+        o.put("owner", 1L);
+        o.put("kid", 2L);
+        o.put("heroes", "");
+        o.put("tries", 0);
+        arr.put(o);
+        state.pendingJoins = arr.toString();
+        // refreshed 已翻到下一场（start=current+1800），但处于本场重试
+        ServerBearTasks.Window window = new ServerBearTasks.Window(
+                ServerBearTasks.Window.ACTIVE, ServerBearTasks.Window.SRC_RESERVE,
+                current + 1200L, current + 1800L, current + 3600L);
+
+        String out = captureStdout(() -> {
+            int[] r = ServerBearTasks.reconcilePendingJoins(tc, state, null, window, 999L);
+            assertEquals(0, r[0]);
+            assertEquals(0, r[1]);
+        });
+
+        assertTrue("翻场重试时 pending 不得被静默清空", out.contains("巨熊上车对账查询失败"));
+        JSONArray kept = new JSONArray(state.pendingJoins);
+        assertEquals(1, kept.length());
+        assertEquals("pending 台账必须留在本场逻辑场次", current, state.pendingJoinWindowStart);
+    }
+
+    @Test
+    public void resetPendingJoinsIfNewWindow_onlyClearsOnDifferentWindow() {
+        ServerBearTasks.BearState state = freshState();
+        state.pendingJoinWindowStart = 1000L;
+        state.pendingJoins = "[{\"mid\":1}]";
+        ServerBearTasks.resetPendingJoinsIfNewWindow(state, 1000L);
+        assertEquals(1, new JSONArray(state.pendingJoins).length());
+        ServerBearTasks.resetPendingJoinsIfNewWindow(state, 2000L);
+        assertEquals("", state.pendingJoins);
+        assertEquals(2000L, state.pendingJoinWindowStart);
+    }
+
+    @Test
+    public void conflictTypeOf_withoutHeroList_keepsNote() {
+        String note = "上车编队#1 跳过：编队不可用";
+        assertEquals(note, ServerBearTasks.conflictTypeOf(note));
+    }
+
+    @Test
+    public void bearLogOnce_commaInKey_doesNotBreakKeyTable() {
+        ServerBearTasks.BearState state = freshState();
+        assertTrue(ServerBearTasks.bearLogOnce(state, 1000L, "a,b"));
+        assertFalse(ServerBearTasks.bearLogOnce(state, 1000L, "a,b"));
+    }
 }
