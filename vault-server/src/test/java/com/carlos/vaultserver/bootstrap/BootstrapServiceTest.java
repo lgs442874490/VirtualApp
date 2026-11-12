@@ -2050,4 +2050,19 @@ public class BootstrapServiceTest {
         assertEquals("非 51 不永久跳过，第二次仍请求并成功", 1, svc.claimBackpackDiamonds());
         assertEquals(2, port.count("req_use_item"));
     }
+
+    // ================= C4：R-12 默认值统一 =================
+
+    /** 需求 R-12：defaults()/fromMap 的 buyShopResources 默认 true；显式 false 仍可关闭。 */
+    @Test
+    public void config_buyShopResourcesDefaultsTrue() {
+        assertEquals(true, BootstrapConfig.defaults().buyShopResources());
+        assertEquals("fromMap 空 map 同样默认 true",
+                true, BootstrapConfig.fromMap(Map.of()).buyShopResources());
+        assertEquals("未传该键时默认 true",
+                true, BootstrapConfig.fromMap(Map.of("enabled", true)).buyShopResources());
+        assertEquals("显式 false 必须尊重",
+                false, BootstrapConfig.fromMap(Map.of("buyShopResources", "false"))
+                        .buyShopResources());
+    }
 }

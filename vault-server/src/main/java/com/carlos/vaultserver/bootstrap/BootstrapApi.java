@@ -330,13 +330,7 @@ public final class BootstrapApi {
         }
         // claimRewards/buyShopResources 可由请求覆盖：真实轮证实新号资源为 0 且背包无资源包，
         // 必须领任务奖励；buyShopResources 默认 true，与网页版 51 时用钻石从统帅商店补木材一致。
-        BootstrapConfig cfg = new BootstrapConfig(true, serverId, target,
-                booleanField(f, "instantDiamond", true),
-                booleanField(f, "claimRewards", false),
-                booleanField(f, "buyShopResources", true),
-                str(f, "allianceName") == null ? "" : str(f, "allianceName").trim(),
-                booleanField(f, "autoApplyWhenPrivate", false),
-                str(f, "roleName") == null ? "" : str(f, "roleName").trim());
+        BootstrapConfig cfg = batchConfigOf(f);
         BootstrapBatchRunner runner = new BootstrapBatchRunner(cfg, accounts, storeOf(),
                 referralOf(), fac, BATCH_SLEEPER, timeoutMinutes, ACTIVE);
         RUNNERS.put(runner.id, runner);
@@ -350,6 +344,22 @@ public final class BootstrapApi {
         FileLog.info("起号批次已启动 id={} server={} target={} accounts={} alliance={}",
                 runner.id, serverId, target, accounts.size(), cfg.allianceName());
         return batchSummary(runner);
+    }
+
+    /**
+     * batch-start 的配置构造（抽方法便于单测默认值；需求 R-12：
+     * buyShopResources 缺省值必须与 {@link BootstrapConfig#fromMap} 一致）。
+     */
+    static BootstrapConfig batchConfigOf(Map<String, Object> f) {
+        return new BootstrapConfig(true,
+                longField(f, "serverId", 0L),
+                intField(f, "targetFurnaceLevel", BootstrapConfig.DEFAULT_TARGET_FURNACE_LEVEL),
+                booleanField(f, "instantDiamond", true),
+                booleanField(f, "claimRewards", false),
+                booleanField(f, "buyShopResources", true),
+                str(f, "allianceName") == null ? "" : str(f, "allianceName").trim(),
+                booleanField(f, "autoApplyWhenPrivate", false),
+                str(f, "roleName") == null ? "" : str(f, "roleName").trim());
     }
 
     /** batch-status：优先内存 runner 实时视图，批次已移除则回查 store 历史。 */

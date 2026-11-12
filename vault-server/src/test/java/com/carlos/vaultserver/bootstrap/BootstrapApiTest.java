@@ -4,6 +4,7 @@ import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import com.carlos.vaultserver.bootstrap.BootstrapBatchRunner.EngineFactory;
 import com.carlos.vaultserver.bootstrap.BootstrapBatchRunner.Session;
+import com.carlos.vaultserver.bootstrap.BootstrapService.BootstrapConfig;
 import com.carlos.vaultserver.bootstrap.BootstrapService.ProtocolPort;
 
 import org.json.JSONArray;
@@ -520,6 +521,17 @@ public class BootstrapApiTest {
         long got = new BootstrapApi.EnginePort(engine).serverNowMs();
         long after = System.currentTimeMillis();
         assertTrue("未校准应回退本机时间（got=" + got + "）", got >= before && got <= after);
+    }
+
+    /** 需求 R-12：batch-start 缺省 buyShopResources 必须为 true（与 BootstrapConfig 统一）。 */
+    @Test
+    public void batchStart_defaultBuyShopResourcesIsTrue() {
+        BootstrapConfig cfg = BootstrapApi.batchConfigOf(fields("serverId", 1L));
+        assertTrue("batch-start 缺参默认 true", cfg.buyShopResources());
+        assertEquals(9, cfg.targetFurnaceLevel());
+        assertFalse("显式 false 必须尊重",
+                BootstrapApi.batchConfigOf(fields("serverId", 1L, "buyShopResources", "false"))
+                        .buyShopResources());
     }
 
     @Test

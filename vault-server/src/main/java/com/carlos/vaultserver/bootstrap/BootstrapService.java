@@ -244,7 +244,8 @@ public final class BootstrapService {
         public static final int MAX_TARGET_FURNACE_LEVEL = 9;
 
         public static BootstrapConfig defaults() {
-            return new BootstrapConfig(false, 0L, 9, true, false, false, "", false, "");
+            // 需求 R-12：buyShopResources 默认 true（与 BootstrapApi 统一，51 时可自动用钻石补资源）
+            return new BootstrapConfig(false, 0L, 9, true, false, true, "", false, "");
         }
 
         public static BootstrapConfig fromMap(Map<String, Object> raw) {
@@ -257,7 +258,7 @@ public final class BootstrapService {
                     clampFurnaceLevel((int) ProtocolValueSupport.number(raw.get("targetFurnaceLevel"))),
                     booleanValue(raw.get("instantDiamond"), true),
                     booleanValue(raw.get("claimRewards"), false),
-                    booleanValue(raw.get("buyShopResources"), false),
+                    booleanValue(raw.get("buyShopResources"), true),
                     text(raw.get("allianceName")),
                     booleanValue(raw.get("autoApplyWhenPrivate"), false),
                     normalizeRoleName(raw.get("roleName")));
@@ -903,7 +904,8 @@ public final class BootstrapService {
     /** 升级被服务端拒绝的分支文案（806/119/51/120/其他，逐字对齐原版 upgradeRejected）。 */
     private Map<String, Object> upgradeRejected(BootstrapConfig cfg, Action action,
                                                 ProtocolException exception,
-                                                Map<String, Object> preparation) {        int code = exception.code();
+                                                Map<String, Object> preparation) {
+        int code = exception.code();
         // 154：家具服务端已存在（本地未同步）→ 标记 1 级继续，不算失败（新版同语义）
         if (code == 154 && action.kind() == ActionKind.CREATE_FURNITURE) {
             state.markedFurniture(action.buildingId(), action.furnitureId(), 1L);

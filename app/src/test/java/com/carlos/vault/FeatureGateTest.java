@@ -115,9 +115,9 @@ public class FeatureGateTest {
     public void visibleToolCount_includesMoveCity() {
         int t3 = FeatureGate.visibleToolCount(3, RELEASE);
         int t2 = FeatureGate.visibleToolCount(2, RELEASE);
-        // 迁城计入 T3 工具数（T3 相对 T2 多：敌情监控/真机监控/观察点/真机抓包/移民/迁城 = 6）
+        // 迁城计入 T3 工具数（T3 相对 T2 多：敌情监控/真机监控/观察点/真机抓包/移民/迁城/起号 = 7）
         assertTrue("T3 工具数应大于 T2", t3 > t2);
-        assertEquals(t2 + 6, t3);
+        assertEquals(t2 + 7, t3);
     }
 
     @Test
@@ -169,7 +169,7 @@ public class FeatureGateTest {
         boolean debug = FeatureGate.isDebugBuildType("release");
         assertFalse("release(T3) 不显示协议监听",
                 FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
-        assertEquals("release(T3) 工具箱=敌情监控+真机监控+观察点+真机抓包+移民+迁城", 6,
+        assertEquals("release(T3) 工具箱=敌情监控+真机监控+观察点+真机抓包+移民+迁城+起号", 7,
                 FeatureGate.visibleToolCount(3, debug));
     }
 
@@ -177,7 +177,7 @@ public class FeatureGateTest {
     public void debugBuild_showsDebugTools() {
         boolean debug = FeatureGate.isDebugBuildType("debug");
         assertTrue(FeatureGate.visible(FeatureGate.Feature.PROTOCOL_LOGGER, 3, debug));
-        assertEquals("debug(T3) 工具数=敌情监控+真机监控+观察点+真机抓包+移民+迁城+协议监听", 7,
+        assertEquals("debug(T3) 工具数=敌情监控+真机监控+观察点+真机抓包+移民+迁城+起号+协议监听", 8,
                 FeatureGate.visibleToolCount(3, debug));
         assertEquals("debug(T1) 仅协议监听（敌情监控需 T3）", 1, FeatureGate.visibleToolCount(1, debug));
     }
@@ -238,9 +238,9 @@ public class FeatureGateTest {
 
     @Test
     public void visibleToolCount_includesDevMonitorForT3() {
-        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 release 有 6 个工具（含移民/迁城）；debug 额外协议监听=7
-        assertEquals(6, FeatureGate.visibleToolCount(3, false));
-        assertEquals(7, FeatureGate.visibleToolCount(3, true));
+        // ToolBox 卡片与 onCreate 防旁路判断同步：T3 release 有 7 个工具（含移民/迁城/起号）；debug 额外协议监听=8
+        assertEquals(7, FeatureGate.visibleToolCount(3, false));
+        assertEquals(8, FeatureGate.visibleToolCount(3, true));
         assertEquals("T2 仍无任何可用工具", 0, FeatureGate.visibleToolCount(2, false));
     }
 
