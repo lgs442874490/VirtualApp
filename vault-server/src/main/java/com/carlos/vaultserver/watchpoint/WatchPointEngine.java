@@ -90,6 +90,16 @@ public final class WatchPointEngine {
     private volatile long resDedupeMs = Math.max(0L, Long.getLong("VAULT_RES_DEDUPE_MIN", 30L)) * 60_000L;
     /** 资源类窗口去重记录：uid:行为:x,y → 最近推送时刻。 */
     private final Map<String, Long> resDeduped = new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * 2026-11-12 用户口径：破坏告警前置校验——双方联盟建筑必须接触（游戏内不接触无法破坏）。
+     * {@code VAULT_DESTROY_CONTACT=0} 关闭校验（回退旧行为）。
+     */
+    private volatile boolean destroyContactCheck =
+            !("0".equals(System.getenv("VAULT_DESTROY_CONTACT"))
+                    || "off".equalsIgnoreCase(System.getenv("VAULT_DESTROY_CONTACT")));
+    /** 破坏接触半径（格）：默认 2；{@code -DVAULT_DESTROY_TOUCH_RADIUS} 可调（0–10）。 */
+    private volatile int destroyTouchRadius =
+            (int) Math.max(0L, Math.min(10L, Long.getLong("VAULT_DESTROY_TOUCH_RADIUS", 2L)));
     /** 单会话每 tick 扫描块数（主循环 80ms 一批）；N 个在线会话时预算 = 该值 × N。 */
     private static final int SCAN_SEND_PER_TICK = 4;
     /** 单 tick 扫描块总预算上限（会话数很大时防请求突发）。 */
@@ -2795,14 +2805,59 @@ public final class WatchPointEngine {
     }
 
     /**
+     * 2026-11-12 用户口径：破坏前置校验——双方联盟建筑必须接触，否则游戏内无法破坏。
+     *
+     * <p>判定：发起人联盟（{@link #aidOf}）任一联盟建筑（旗子/总部/王城/陷阱）与目标坐标的
+     * 切比雪夫距离 ≤ {@link #destroyTouchRadius}（默认 2 格）。以下例外不要求接壤：目标为
+     * <b>王城</b>（争夺规则）、目标为<b>荒原中立总部</b>（aid=0）。发起人联盟未知、或建筑缓存里
+     * 没有其任何建筑 → 视为无法确认接触，<b>不推送</b>（用户口径：宁可少报，不误报）。
+     */
+    private boolean destroyContactAllowed(long ownerUid, int ex, int ey) {
+        if (!destroyContactCheck) return true;
+        Building target = nearBuilding(ex, ey);
+        if (target != null) {
+            if ("王城".equals(target.kind)) return true;
+            if ("总部".equals(target.kind) && target.aid <= 0L) return true;
+        }
+        long ownerAid = aidOf(ownerUid);
+        if (ownerAid <= 0L) return false;
+        int r = Math.max(0, destroyTouchRadius);
+        for (Map.Entry<String, Building> en : buildingByPoint.entrySet()) {
+            Building b = en.getValue();
+            if (b == null || b.kind == null || b.aid != ownerAid) continue;
+            if (!"旗子".equals(b.kind) && !"总部".equals(b.kind)
+                    && !"王城".equals(b.kind) && !"陷阱".equals(b.kind)) continue;
+            String key = en.getKey();
+            int comma = key.indexOf(',');
+            if (comma <= 0) continue;
+            int bx;
+            int by;
+            try {
+                bx = Integer.parseInt(key.substring(0, comma));
+                by = Integer.parseInt(key.substring(comma + 1));
+            } catch (NumberFormatException ignored) {
+                continue;
+            }
+            if (Math.abs(bx - ex) <= r && Math.abs(by - ey) <= r) return true;
+        }
+        return false;
+    }
+
+    /**
      * 资源类推送（📍 资源·{采集|建设|破坏}），每人 5 分钟前 3 条。
      * 2026-11-12 用户口径：同一个人 + 同一行为 + 同一目标 30 分钟内只推一条（打熊/采集重复波次不刷屏）；
-     * 破坏告警不受该窗口压制（真实威胁每次都报）。
+     * 破坏告警不受该窗口压制（真实威胁每次都报），但必须先通过「双方联盟建筑接触」校验。
      */
     private void maybeResourceAlert(long owner, long marchId, String beh,
                                     int ex, int ey, long endtime, long troops) {
         String key = "res:" + owner + ":" + marchId;
         if (recentlyAlerted(key)) return;
+        // 2026-11-12：破坏前置校验（不接触 = 游戏内无法破坏 = 误报），不占配额也不占窗口。
+        if ("破坏".equals(beh) && !destroyContactAllowed(owner, ex, ey)) {
+            FileLog.info("[{}] 破坏告警过滤（双方联盟建筑未接触/发起人联盟建筑未知）：uid={} 目标=({},{})",
+                    LOG, String.valueOf(owner), String.valueOf(ex), String.valueOf(ey));
+            return;
+        }
         long now = System.currentTimeMillis();
         String winKey = "reswin:" + owner + ":" + beh + ":" + ex + "," + ey;
         if (!"破坏".equals(beh) && resWindowHit(winKey, now)) {
@@ -3434,6 +3489,16 @@ public final class WatchPointEngine {
     /** 单测：注入联盟建筑（x,y → 总部/旗子，归属 aid）。 */
     void seedBuildingForTest(int x, int y, String kind, long aid) {
         buildingByPoint.put(x + "," + y, new Building(kind, aid));
+    }
+
+    /** 单测：破坏接触校验开关（默认 on）。 */
+    void setDestroyContactCheckForTest(boolean on) {
+        this.destroyContactCheck = on;
+    }
+
+    /** 单测：破坏接触半径（默认 2 格）。 */
+    void setDestroyTouchRadiusForTest(int radius) {
+        this.destroyTouchRadius = Math.max(0, Math.min(10, radius));
     }
 
     /** 单测：改聚合窗口（默认 60s；0=立即到期）。 */

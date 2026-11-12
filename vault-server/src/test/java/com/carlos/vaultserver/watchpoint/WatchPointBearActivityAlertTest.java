@@ -205,6 +205,8 @@ public class WatchPointBearActivityAlertTest {
         WatchPointEngine e = engine();
         e.seedCityForTest(WATCHED, OWN_AID, MX, MY, "[818]监视目标");
         e.seedBuildingForTest(TX, TY, "旗子", OTHER_AID);
+        // 2026-11-12 新前置：双方联盟建筑必须接触（发起人旗子在目标相邻格）。
+        e.seedBuildingForTest(TX - 1, TY, "旗子", OWN_AID);
         feedMarch(e, 1007L, 2L, null);
         assertEquals("明确敌对仍要报破坏", 1, e.alertCountForTest());
         assertTrue("应含破坏文案：" + e.lastAlertTextForTest(),
@@ -232,6 +234,8 @@ public class WatchPointBearActivityAlertTest {
         WatchPointEngine e = engine();
         e.seedCityForTest(WATCHED, OWN_AID, MX, MY, "[818]监视目标");
         e.seedBuildingForTest(TX, TY, "旗子", OTHER_AID);
+        // 2026-11-12 新前置：双方联盟建筑接触才判破坏（发起人旗子在目标相邻格）。
+        e.seedBuildingForTest(TX - 1, TY, "旗子", OWN_AID);
         feedMarch(e, 2003L, 2L, null);
         feedMarch(e, 2004L, 2L, null);
         assertEquals("破坏告警不能被 30 分钟窗口压掉（真实威胁）", 2, e.alertCountForTest());

@@ -174,30 +174,50 @@ public class WatchPointA1ProbeTest {
 
     /** 喂一座联盟旗子建筑到指定 session 的 mapobjs 回包（写入 buildingByPoint）。 */
     private static void feedBuilding(WatchPointEngine engine, int session, int x, int y) {
-        Map<String, Object> flag = new LinkedHashMap<>();
-        flag.put("aid", TARGET_AID);
-        Map<String, Object> obj = new LinkedHashMap<>();
-        obj.put("point", xy(x, y));
-        obj.put("map_alliance_flag", flag);
+        feedBuildings(engine, session,
+                new int[]{x, y}, TARGET_AID,
+                new int[]{-1, -1}, 0L);
+    }
+
+    /**
+     * 喂目标旗子 + 发起人联盟相邻旗子（2026-11-12 接触校验所需，两项同帧写入）。
+     * allyX/allyY 传负数表示不写发起人建筑。
+     */
+    private static void feedBuildings(WatchPointEngine engine, int session,
+                                      int[] target, long targetAid,
+                                      int[] ally, long allyAid) {
         List<Object> datalist = new ArrayList<>();
-        datalist.add(obj);
+        datalist.add(buildingObj(target[0], target[1], targetAid));
+        if (ally != null && ally[0] >= 0 && ally[1] >= 0) {
+            datalist.add(buildingObj(ally[0], ally[1], allyAid));
+        }
         Map<String, Object> content = new LinkedHashMap<>();
         content.put("datalist", datalist);
         content.put("end_flag", true);
         engine.feedResponseForTest(session, "notify_world_mapobjs", content);
     }
 
+    private static Map<String, Object> buildingObj(int x, int y, long aid) {
+        Map<String, Object> flag = new LinkedHashMap<>();
+        flag.put("aid", aid);
+        Map<String, Object> obj = new LinkedHashMap<>();
+        obj.put("point", xy(x, y));
+        obj.put("map_alliance_flag", flag);
+        return obj;
+    }
+
     /**
      * 目标建筑已在缓存（驻防到非己方联盟旗子）：按统一分类推「资源·破坏」，
      * 不再走 A1「联盟旗子」文案（2026-11-11 分类口径）。
      *
-     * <p>2026-11-12：发起人联盟必须已知（否则按「归属未知不判破坏」静默），
-     * 故这里显式 seed 监视目标城（aid 与目标联盟不同）。
+     * <p>2026-11-12：发起人联盟必须已知、且双方联盟建筑必须接触
+     * （否则按「归属未知/未接触不判破坏」静默），故显式 seed 发起人城与相邻旗子。
      */
     @Test
     public void buildingTargetUsesActivityClassify() {
         WatchPointEngine engine = new WatchPointEngine(null, store(), null, null);
         engine.seedCityForTest(MONITOR_UID, 89700732L, MONITOR_X, MONITOR_Y, "监视目标");
+        engine.seedBuildingForTest(TARGET_X - 1, TARGET_Y, "旗子", 89700732L);
         prepare(engine);
         feedBuilding(engine, MONITOR_SESSION, TARGET_X, TARGET_Y);
         feedOutgoingMarch(engine);
@@ -216,7 +236,10 @@ public class WatchPointA1ProbeTest {
         assertEquals("先挂起等补查", 1, engine.pendingA1CountForTest());
         int probeSession = ((FakeEngine) es.get(0)).lastProbeSession();
         assertTrue(probeSession > 0);
-        feedBuilding(engine, probeSession, TARGET_X, TARGET_Y);
+        // 补查回包必须同时带来证据：目标旗子 + 发起人联盟相邻旗子（新接触校验）。
+        feedBuildings(engine, probeSession,
+                new int[]{TARGET_X, TARGET_Y}, TARGET_AID,
+                new int[]{TARGET_X - 2, TARGET_Y}, 89700732L);
         assertTrue("补查回包带建筑后应与入口同口径（破坏）：" + engine.lastAlertTextForTest(),
                 engine.lastAlertTextForTest().contains("破坏"));
         assertEquals("补查完成后队列归零", 0, engine.pendingA1CountForTest());
