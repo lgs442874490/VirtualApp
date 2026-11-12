@@ -2065,4 +2065,34 @@ public class BootstrapServiceTest {
                 false, BootstrapConfig.fromMap(Map.of("buyShopResources", "false"))
                         .buyShopResources());
     }
+
+    // ================= 二次审查 P1-2：商店不买煤/铁 =================
+
+    /** P1-2 回归：统帅商店即使返回煤/铁商品也不购买（R-07：只买生肉/木材）。 */
+    @Test
+    public void buyMissingResources_neverBuysCoalOrIron() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        port.when("req_loaddata", content("uid", 9004L, "res", content("101", 1000L)));
+        port.when("req_shop_info", content("info", content("id", 701L, "goods", content(
+                "1", content("id", 555L, "conf_id", 70110102L, "grid_id", 1L),
+                "2", content("id", 556L, "conf_id", 70110103L, "grid_id", 2L),
+                "3", content("id", 557L, "conf_id", 70110104L, "grid_id", 3L)))));
+        port.when("req_shop_buy", content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+        svc.syncLoadData(port.request("req_loaddata", Map.of()).getContent());
+
+        Map<String, Object> r = svc.buyMissingResources(List.of(
+                new BuildingGateCatalog.Cost(103L, 25000L),
+                new BuildingGateCatalog.Cost(104L, 100L),
+                new BuildingGateCatalog.Cost(105L, 100L)));
+
+        assertEquals(Boolean.FALSE, r.get("coverable"));
+        for (Map.Entry<String, Map<String, Object>> call : port.calls) {
+            if ("req_shop_buy".equals(call.getKey())) {
+                assertEquals("只允许购买木材包 goodsId=555：" + call.getValue(),
+                        555L, numberOf(call.getValue().get("goods_id")));
+            }
+        }
+        assertTrue("煤/铁缺口计入 unsupplied", ((List<?>) r.get("unsupplied")).size() >= 2);
+    }
 }

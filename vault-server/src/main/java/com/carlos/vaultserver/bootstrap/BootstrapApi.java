@@ -519,7 +519,9 @@ public final class BootstrapApi {
                 BootstrapHoldStore.shared(), fpid, BootstrapSessionState.shared());
         service.applyConfig(new BootstrapConfig(true, 0L, BootstrapConfig.DEFAULT_TARGET_FURNACE_LEVEL,
                 true, false, true, "", false, ""));
-        service.syncLoadData(contentOf(session.port.request("req_loaddata", Map.of())));
+        // 二次审查 P1-1：单号临时实例不消费共享增量通道（消费权归批次驱动者），
+        // 否则 single-status 等只读请求会把批次依赖的增量吞掉。
+        service.syncLoadData(contentOf(session.port.request("req_loaddata", Map.of())), false);
         return service;
     }
 

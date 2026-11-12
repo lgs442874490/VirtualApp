@@ -398,10 +398,23 @@ public final class BootstrapService {
 
     /** 注入 loaddata 全量内容（对齐原版注册表自动同步；单号版由会话层手动喂）。 */
     public void syncLoadData(Map<String, Object> loadContent) {
+        syncLoadData(loadContent, true);
+    }
+
+    /**
+     * 注入 loaddata，并指定是否消费引擎资源增量累积通道。
+     *
+     * <p>消费权归属（二次审查 P1-1）：批次驱动者每号只有一个长期存活实例，是唯一消费者；
+     * 单号挂点的 {@code serviceOf} 每请求新建临时实例，若也消费，则增量会随实例丢弃、
+     * 导致批次资源表偏小。故单号路径传 {@code false}（只读本轮 loadContent）。
+     *
+     * @param consumeChannel true = 消费引擎累积增量（批次）；false = 不消费（单号临时实例）
+     */
+    void syncLoadData(Map<String, Object> loadContent, boolean consumeChannel) {
         Map<String, Object> content = loadContent == null ? Map.of() : loadContent;
         // 需求 R-05：优先消费引擎累积通道（同 id 多次推送已累加、消费即清空）；
         // 通道缺失（单测回放/旧路径）时回退本轮 loadContent.res_update。
-        Object resUpdate = port.consumeResourceUpdate();
+        Object resUpdate = consumeChannel ? port.consumeResourceUpdate() : null;
         if (resUpdate instanceof Map && ((Map<?, ?>) resUpdate).get("data") != null) {
             // 引擎通道形状 {data:[{id,count}]}：解包后交给 BootstrapState（与旧路径 list 同形）
             resUpdate = ((Map<?, ?>) resUpdate).get("data");
@@ -1244,10 +1257,8 @@ public final class BootstrapService {
         buyForMissing(goodsByItem, MEAT_PACK_ITEM_ID, needMeat, diamonds, purchases);
         buyForMissing(goodsByItem, WOOD_PACK_ITEM_ID, needWood,
                 Math.max(0L, diamonds - spentDiamonds(purchases)), purchases);
-        buyForMissing(goodsByItem, COAL_PACK_ITEM_ID, needCoal,
-                Math.max(0L, diamonds - spentDiamonds(purchases)), purchases);
-        buyForMissing(goodsByItem, IRON_PACK_ITEM_ID, needIron,
-                Math.max(0L, diamonds - spentDiamonds(purchases)), purchases);
+        // 二次审查 P1-2 / 网页版 BootstrapShopService:132-133：统帅商店只买生肉/木材，
+        // 不买煤/铁（煤/铁缺口直接计入 unsupplied 并让 coverable=false，不做无意义购买）。
         result.put("purchases", List.copyOf(purchases));
         result.put("diamondSpent", spentDiamonds(purchases));
         // 需求 R-07：coverable = unsupplied.isEmpty()。

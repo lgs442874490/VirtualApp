@@ -60,7 +60,7 @@ public class BootstrapApiTest {
     }
 
     /** 脚本回放端口：req_loaddata 回熔炉达标 loaddata（批次同步跑完即 SUCCESS）。 */
-    private static final class ScriptedPort implements ProtocolPort {
+    private static class ScriptedPort implements ProtocolPort {
         final List<Map.Entry<String, Map<String, Object>>> calls = new ArrayList<>();
         /** 推送内容（proto → 已解包内容）：单号挂点 world/情报链路用（P1-2 回归）。 */
         final Map<String, Map<String, Object>> notifies = new LinkedHashMap<>();
@@ -137,6 +137,12 @@ public class BootstrapApiTest {
         BootstrapApi.resetForTest();
         BootstrapHoldStore.shared().clearAll();
         BootstrapSessionState.shared().clearAll();
+    }
+
+    private static Map<String, Object> content(Object... kv) {
+        LinkedHashMap<String, Object> m = new LinkedHashMap<>();
+        for (int i = 0; i + 1 < kv.length; i += 2) m.put(String.valueOf(kv[i]), kv[i + 1]);
+        return m;
     }
 
     private static Map<String, Object> fields(Object... kv) {
@@ -521,6 +527,33 @@ public class BootstrapApiTest {
         long got = new BootstrapApi.EnginePort(engine).serverNowMs();
         long after = System.currentTimeMillis();
         assertTrue("未校准应回退本机时间（got=" + got + "）", got >= before && got <= after);
+    }
+
+    /**
+     * P1-1 回归（二次审查）：single-status 等只读请求不得消费引擎共享的增量通道，
+     * 否则批次依赖的资源增量会被临时 service 消费后丢弃。
+     */
+    @Test
+    public void singleStatus_doesNotConsumeResourceUpdateChannel() {
+        WjdrEngine engine = new WjdrEngine(null);
+        engine.accumulateResourceUpdate(content("data",
+                List.of(content("id", 103L, "count", -900L))));
+        ScriptedPort port = new ScriptedPort() {
+            @Override
+            public Map<String, Object> consumeResourceUpdate() {
+                return engine.consumeResourceUpdate();
+            }
+        };
+        String fpid = "fp-consume-" + System.nanoTime();
+        BootstrapApi.ACTIVE.put(fpid, new Session(new FakeEngine(), port));
+        try {
+            JSONObject status = BootstrapApi.handle(fields("action", "single-status", "fpid", fpid));
+            assertFalse(status.optString("error", ""), status.has("error"));
+            assertNotNull("single-status 不得消费共享增量通道（消费权归批次）",
+                    engine.consumeResourceUpdate());
+        } finally {
+            BootstrapApi.ACTIVE.remove(fpid);
+        }
     }
 
     /** 需求 R-12：batch-start 缺省 buyShopResources 必须为 true（与 BootstrapConfig 统一）。 */
