@@ -81,6 +81,33 @@ public final class WatchPointEngine {
     // 跨区角色（crossKidRoleUids）只是借用其它区服会话去查 store.kid 的地图；
     // 不支持多个区服同时监听（需多实例/多配置，另立需求）。
     private static final long ALERT_DEDUPE_MS = 15L * 60_000L;
+    /** 2026-11-12：巨熊集结（打熊活动）行军类型，与 ServerBearTasks.MARCH_TYPE_BEAR_RALLY 一致。 */
+    static final long TYPE_BEAR_RALLY = 411L;
+    /**
+     * 2026-11-12 用户口径：资源类告警「同人 + 同行为 + 同目标」去重窗口（默认 30 分钟）。
+     * {@code VAULT_RES_DEDUPE_MIN=0} 关闭窗口；破坏告警不受该窗口压制（真实威胁必须每次都报）。
+     */
+    private volatile long resDedupeMs = Math.max(0L, Long.getLong("VAULT_RES_DEDUPE_MIN", 30L)) * 60_000L;
+    /** 资源类窗口去重记录：uid:行为:x,y → 最近推送时刻。 */
+    private final Map<String, Long> resDeduped = new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * 2026-11-12 用户口径：破坏告警前置校验——双方联盟建筑必须接触（游戏内不接触无法破坏）。
+     * {@code VAULT_DESTROY_CONTACT=0} 关闭校验（回退旧行为）。
+     */
+    private volatile boolean destroyContactCheck =
+            !("0".equals(System.getenv("VAULT_DESTROY_CONTACT"))
+                    || "off".equalsIgnoreCase(System.getenv("VAULT_DESTROY_CONTACT")));
+    /**
+     * 破坏接触半径：按建筑领地范围（用户确认：旗子 7×7，半径 3；联盟总部 9×9，半径 4）。
+     * 荒原/雪原总部目前无法从协议区分，先统一按 9×9 处理（雪原总部实际 11×11，
+     * 待解析等级后启用半径 5）。可用 {@code -DVAULT_DESTROY_TOUCH_RADIUS_FLAG/_HALL} 覆盖，
+     * 兼容旧参数 {@code -DVAULT_DESTROY_TOUCH_RADIUS}（作为旗子默认值）。
+     */
+    private volatile int destroyRadiusFlag =
+            (int) Math.max(0L, Math.min(10L, Long.getLong("VAULT_DESTROY_TOUCH_RADIUS_FLAG",
+                    Long.getLong("VAULT_DESTROY_TOUCH_RADIUS", 3L))));
+    private volatile int destroyRadiusHall =
+            (int) Math.max(0L, Math.min(10L, Long.getLong("VAULT_DESTROY_TOUCH_RADIUS_HALL", 4L)));
     /** 单会话每 tick 扫描块数（主循环 80ms 一批）；N 个在线会话时预算 = 该值 × N。 */
     private static final int SCAN_SEND_PER_TICK = 4;
     /** 单 tick 扫描块总预算上限（会话数很大时防请求突发）。 */
@@ -432,11 +459,11 @@ public final class WatchPointEngine {
     }
 
     /**
-     * 行军行为唯一分类口径（2026-11-11 用户口径）：
+     * 行军行为唯一分类口径（2026-11-11 用户口径，2026-11-12 修正）：
      * <ol>
      *   <li>己方联盟旗帜/总部（荒原·雪原）/王城：已建成 → 驻防，未建成 → 建设；</li>
-     *   <li>其他联盟旗帜/总部/王城：一律破坏；</li>
-     *   <li>熊坑陷阱：只能建设（不论建成与否），其他联盟陷阱 → 破坏；</li>
+     *   <li>其他联盟旗帜/总部/王城：一律破坏（仅归属<b>双方都已知</b>时；未知不判破坏）；</li>
+     *   <li>熊坑陷阱：己方 → 建设；其他联盟/归属未知 → 不判定（打熊是活动行为，不推破坏）；</li>
      *   <li>矿点（仅采集 type=4）：已有采集者、或有更早出发且仍在途的同点行军 → 撞矿；否则 → 采集；</li>
      *   <li>侦查（type=1）不参与；其他类型/目标返回 null（走既有 A1/A2 通道）。</li>
      * </ol>
@@ -448,10 +475,18 @@ public final class WatchPointEngine {
         if (bld != null && bld.kind != null) {
             boolean own = ownerAid > 0L && bld.aid > 0L && bld.aid == ownerAid;
             if ("陷阱".equals(bld.kind)) {
-                // 熊坑陷阱只可以建设，不可以驻防
-                return own ? MarchActivity.BUILD : MarchActivity.DESTROY;
+                // 2026-11-12 用户口径：任何联盟的熊坑陷阱都不推「破坏」（打熊是活动行为）；
+                // 只保留己方陷阱的「建设」，归属未知同样不判定（不能凭猜测判破坏）。
+                return own ? MarchActivity.BUILD : null;
             }
             if ("旗子".equals(bld.kind) || "总部".equals(bld.kind) || "王城".equals(bld.kind)) {
+                // 2026-11-12：发起人联盟未知 → 不判破坏（避免「归属未知」误报）。
+                if (ownerAid <= 0L) return null;
+                // 总部 aid=0 = 荒原中立总部（旧口径：打掉就是破坏）；旗帜/王城 aid=0 视为
+                // 归属解析失败（未知），同样不判破坏。
+                if (bld.aid <= 0L) {
+                    return "总部".equals(bld.kind) ? MarchActivity.DESTROY : null;
+                }
                 if (!own) return MarchActivity.DESTROY;
                 return bld.buildFinish ? MarchActivity.DEFEND : MarchActivity.BUILD;
             }
@@ -460,6 +495,19 @@ public final class WatchPointEngine {
             return (occupiedByOther || earlierInbound) ? MarchActivity.CLASH : MarchActivity.GATHER;
         }
         return null;
+    }
+
+    /**
+     * 2026-11-12：打熊活动行军（用户实测误报「📍 资源·破坏」）——巨熊集结 {@code type=411}，
+     * 或帧内带 {@code mass_alliance_trap}/{@code build_trap}，或 mass 的 {@code master_type=411}。
+     * 该类行军是联盟活动（拿资源），不参与「建设/破坏」分类，也不推资源告警。
+     */
+    static boolean isBearActivityMarch(long type, Map<?, ?> m) {
+        if (type == TYPE_BEAR_RALLY) return true;
+        if (m == null) return false;
+        if (m.containsKey("mass_alliance_trap") || m.containsKey("build_trap")) return true;
+        Map<?, ?> mass = asMap(m.get("mass_master"));
+        return asLong(mass.get("master_type"), 0L) == TYPE_BEAR_RALLY;
     }
 
     /** 坐标 → 联盟建筑（总部/旗子/王城）；无返回 null。任意线程可调。 */
@@ -1894,7 +1942,8 @@ public final class WatchPointEngine {
         long targetUid = targetCity == null ? 0L : targetCity.uid;
         long targetAid = targetCity == null ? 0L : targetCity.aid;
         City ownerCity = cityByUid.get(owner);
-        long ownerAid = ownerCity == null ? 0L : ownerCity.aid;
+        // 2026-11-12：城缓存缺失时用玩家目录兜底，减少「发起人联盟未知 → 误判破坏」。
+        long ownerAid = aidOf(owner);
         // 被打飞判定：敌军（非自己）进攻监视目标的城时记一笔，用于「迁城 vs 破城随机飞走」文案
         if (targetCity != null && isMonitoredUid(targetCity.uid) && owner != targetCity.uid
                 && (type == 2L || type == 100L || type == 102L)) {
@@ -1908,19 +1957,38 @@ public final class WatchPointEngine {
                 statSelfIgnored.incrementAndGet();
                 return;
             }
+            // 2026-11-12 用户实测修复：打熊活动（巨熊集结 type=411 / 帧内活动键）不是破坏，
+            // 属活动行为，直接静默（原逻辑命中熊坑陷阱后推「资源·破坏/建设」）。
+            if (isBearActivityMarch(type, m)) {
+                statPveIgnored.incrementAndGet();
+                FileLog.info("[{}] 打熊活动行军静默（非破坏）：uid={} type={} 目标=({},{})",
+                        LOG, String.valueOf(owner), String.valueOf(type),
+                        String.valueOf(ex), String.valueOf(ey));
+                return;
+            }
             // 资源类：按目标归属区分「建设(自己/同阵营)」与「破坏(敌对/中立)」；采集已在上方处理
             // 2026-11-11：旗帜/总部（荒原·雪原）/王城/陷阱统一分类（己方建成驻防、未建成建设；
-            // 其他联盟一律破坏；熊坑陷阱只建设不驻防）。矿点采集/撞矿在上方 type=4 分支处理。
+            // 熊坑陷阱只建设不驻防）。矿点采集/撞矿在上方 type=4 分支处理。
+            // 2026-11-12：建筑目标分类不适用时一律静默（不再按「攻击联盟建筑」字段兜底判破坏）；
+            // 归属未知不判破坏，任何联盟的熊坑陷阱都不判破坏。
             Building tb = nearBuilding(ex, ey);
-            MarchActivity marchAct = classifyMarchActivity(type, ownerAid, tb,
-                    isResourcePointNear(ex, ey), false, false);
-            if (marchAct == null && isAllianceBuildingAttack(m)) {
-                // 帧内明确标记「攻击联盟建筑」但目标建筑暂不在缓存 → 仍判破坏（不丢告警）
-                marchAct = MarchActivity.DESTROY;
-            }
-            if (marchAct != null) {
-                maybeResourceAlert(owner, id, marchAct.label, ex, ey, endtime, troopsOf(m));
-                return;
+            if (tb != null && type != 1L) {
+                MarchActivity marchAct = classifyMarchActivity(type, ownerAid, tb,
+                        isResourcePointNear(ex, ey), false, false);
+                if (marchAct != null) {
+                    maybeResourceAlert(owner, id, marchAct.label, ex, ey, endtime, troopsOf(m));
+                    return;
+                }
+                // 分类不适用（归属未知/陷阱非己方）：进攻类静默，不再凭「攻击联盟建筑」字段判破坏；
+                // 驻防/增援/发起集结继续走 A1，保留原有情报口径（A1 文案不含「破坏」）。
+                if (type != 5L && type != 6L && type != 100L) {
+                    FileLog.info("[{}] 建筑目标行为未判定（归属未知/陷阱非己方/不适用），静默："
+                                    + "uid={} type={} 目标={} aid={} 发起人aid={} 坐标=({},{})",
+                            LOG, String.valueOf(owner), String.valueOf(type), tb.kind,
+                            String.valueOf(tb.aid), String.valueOf(ownerAid),
+                            String.valueOf(ex), String.valueOf(ey));
+                    return;
+                }
             }
             // A1 情报：侦查 / 驻防·增援(含援助 type6) / 发起集结（统一 5 分钟前 3 条）
             // 注意：驻防/援助的目标本来就是同联盟城，不能套用「同联盟不推」的进攻过滤。
@@ -2406,7 +2474,8 @@ public final class WatchPointEngine {
      */
     private void marchActivityAlertForProbe(PendingA1 p, Building bld) {
         City ownerCity = cityByUid.get(p.owner);
-        long ownerAid = ownerCity == null ? 0L : ownerCity.aid;
+        // 2026-11-12：与入口同口径，城缓存缺失时用玩家目录兜底（减少归属未知误判）。
+        long ownerAid = aidOf(p.owner);
         MarchActivity act = classifyMarchActivity(p.type, ownerAid, bld, false, false, false);
         if (act != null) {
             maybeResourceAlert(p.owner, p.marchId, act.label, p.ex, p.ey, p.endtime, p.troops);
@@ -2716,6 +2785,10 @@ public final class WatchPointEngine {
         Building b = buildingByPoint.get(ex + "," + ey);
         if (b != null) {
             if (type == 4L) return "采集";
+            // 2026-11-12：熊坑陷阱（打熊活动建筑）不判破坏；发起人联盟未知不判破坏。
+            if ("陷阱".equals(b.kind)) return null;
+            if (ownerAid <= 0L) return null;
+            if (b.aid <= 0L && !"总部".equals(b.kind)) return null;
             boolean own = ownerAid > 0L && b.aid > 0L
                     && (b.aid == ownerAid
                         || (store.friendAids.contains(ownerAid) && store.friendAids.contains(b.aid)));
@@ -2725,6 +2798,7 @@ public final class WatchPointEngine {
             // 敌对/中立联盟建筑：打掉就是破坏（进攻/集结类仍走 A1/A2）
             return (type == 2L || type == 6L || type == 8L) ? "破坏" : null;
         }
+        // 无建筑缓存：保持原有静态兜底口径（type4 采集 / type8 建设 / 联盟建筑攻击字段）。
         return resourceBehavior(m, type);
     }
 
@@ -2738,23 +2812,107 @@ public final class WatchPointEngine {
         return false;
     }
 
-    /** 资源类推送（📍 资源·{采集|建设|破坏}），每人 5 分钟前 3 条。 */
+    /**
+     * 2026-11-12 用户口径：破坏前置校验——双方联盟建筑必须接触，否则游戏内无法破坏。
+     *
+     * <p>判定：发起人联盟（{@link #aidOf}）任一联盟建筑与目标坐标的领地范围「边缘相邻」——
+     * 两建筑领地半径分别为 r1/r2 时，切比雪夫距离 ≤ r1 + r2 + 1 即接触。
+     * 半径按建筑类型取（{@link #territoryRadius}：旗子 7×7=3、总部 9×9=4）。
+     * 以下例外不要求接壤：目标为<b>王城</b>（争夺规则）、目标为<b>荒原中立总部</b>（aid=0）。
+     * 发起人联盟未知、或建筑缓存里没有其任何建筑 → 视为无法确认接触，<b>不推送</b>
+     * （用户口径：宁可少报，不误报）。
+     */
+    private boolean destroyContactAllowed(long ownerUid, int ex, int ey) {
+        if (!destroyContactCheck) return true;
+        Building target = nearBuilding(ex, ey);
+        if (target != null) {
+            if ("王城".equals(target.kind)) return true;
+            if ("总部".equals(target.kind) && target.aid <= 0L) return true;
+        }
+        long ownerAid = aidOf(ownerUid);
+        if (ownerAid <= 0L) return false;
+        int rTarget = territoryRadius(target);
+        for (Map.Entry<String, Building> en : buildingByPoint.entrySet()) {
+            Building b = en.getValue();
+            if (b == null || b.kind == null || b.aid != ownerAid) continue;
+            if (!"旗子".equals(b.kind) && !"总部".equals(b.kind)
+                    && !"王城".equals(b.kind) && !"陷阱".equals(b.kind)) continue;
+            String key = en.getKey();
+            int comma = key.indexOf(',');
+            if (comma <= 0) continue;
+            int bx;
+            int by;
+            try {
+                bx = Integer.parseInt(key.substring(0, comma));
+                by = Integer.parseInt(key.substring(comma + 1));
+            } catch (NumberFormatException ignored) {
+                continue;
+            }
+            int reach = territoryRadius(b) + rTarget + 1;   // 两方领地边缘相邻
+            if (Math.abs(bx - ex) <= reach && Math.abs(by - ey) <= reach) return true;
+        }
+        return false;
+    }
+
+    /** 建筑领地半径（格）：总部 9×9=4（荒原/雪原暂统一），其余旗子/陷阱 7×7=3。 */
+    private int territoryRadius(Building b) {
+        if (b != null && "总部".equals(b.kind)) return destroyRadiusHall;
+        return destroyRadiusFlag;
+    }
+
+    /**
+     * 资源类推送（📍 资源·{采集|建设|破坏}），每人 5 分钟前 3 条。
+     * 2026-11-12 用户口径：同一个人 + 同一行为 + 同一目标 30 分钟内只推一条（打熊/采集重复波次不刷屏）；
+     * 破坏告警不受该窗口压制（真实威胁每次都报），但必须先通过「双方联盟建筑接触」校验。
+     */
     private void maybeResourceAlert(long owner, long marchId, String beh,
                                     int ex, int ey, long endtime, long troops) {
         String key = "res:" + owner + ":" + marchId;
         if (recentlyAlerted(key)) return;
+        // 2026-11-12：破坏前置校验（不接触 = 游戏内无法破坏 = 误报），不占配额也不占窗口。
+        if ("破坏".equals(beh) && !destroyContactAllowed(owner, ex, ey)) {
+            FileLog.info("[{}] 破坏告警过滤（双方联盟建筑未接触/发起人联盟建筑未知）：uid={} 目标=({},{})",
+                    LOG, String.valueOf(owner), String.valueOf(ex), String.valueOf(ey));
+            return;
+        }
         long now = System.currentTimeMillis();
+        String winKey = "reswin:" + owner + ":" + beh + ":" + ex + "," + ey;
+        if (!"破坏".equals(beh) && resWindowHit(winKey, now)) {
+            FileLog.info("[{}] 资源告警窗口内重复（{} 分钟，同人+同行为+同目标），静默：uid{} {} ({},{})",
+                    LOG, String.valueOf(resDedupeMs / 60_000L), String.valueOf(owner), beh,
+                    String.valueOf(ex), String.valueOf(ey));
+            return;
+        }
         if (!scoutQuotaAllow(resAlertTimes, owner, now, SCOUT_WINDOW_MS, SCOUT_MAX_PER_WINDOW)) {
             FileLog.info("[{}] 资源告警限流（5 分钟内已发 {} 条）：uid{}", LOG,
                     String.valueOf(SCOUT_MAX_PER_WINDOW), String.valueOf(owner));
             return;
         }
+        if (!"破坏".equals(beh)) resWindowMark(winKey, now);
         City c = cityByUid.get(owner);
         String nick = nickOf(c);
         if (nick == null || nick.isEmpty()) nick = liveNick(owner);
         if (nick == null || nick.isEmpty()) nick = "未知名玩家";
-        alert(key, resourceAlertText(nick, c == null ? 0L : c.aid, beh, ex, ey,
+        alert(key, resourceAlertText(nick, aidOf(owner), beh, ex, ey,
                 endtime - now / 1000L, troops, nowText(), store.aidLabels));
+    }
+
+    /** 资源类 30 分钟窗口：窗口内已推过返回 true（只读，不记录）。 */
+    private boolean resWindowHit(String key, long now) {
+        long win = resDedupeMs;
+        if (win <= 0L) return false;
+        Long prev = resDeduped.get(key);
+        return prev != null && now - prev < win;
+    }
+
+    /** 资源类 30 分钟窗口：记录本次推送时刻（配额放行后才调用，被限流的告警不占窗口）。 */
+    private void resWindowMark(String key, long now) {
+        long win = resDedupeMs;
+        if (win <= 0L) return;
+        resDeduped.put(key, now);
+        if (resDeduped.size() > 4096) {
+            resDeduped.entrySet().removeIf(e -> now - e.getValue() > win);
+        }
     }
 
     /** 资源类文案（2026-11-04 用户口径）。 */
@@ -3348,6 +3506,18 @@ public final class WatchPointEngine {
     /** 单测：注入联盟建筑（x,y → 总部/旗子，归属 aid）。 */
     void seedBuildingForTest(int x, int y, String kind, long aid) {
         buildingByPoint.put(x + "," + y, new Building(kind, aid));
+    }
+
+    /** 单测：破坏接触校验开关（默认 on）。 */
+    void setDestroyContactCheckForTest(boolean on) {
+        this.destroyContactCheck = on;
+    }
+
+    /** 单测：破坏接触半径（同时设置旗子/总部，默认 3/4 格）。 */
+    void setDestroyTouchRadiusForTest(int radius) {
+        int r = Math.max(0, Math.min(10, radius));
+        this.destroyRadiusFlag = r;
+        this.destroyRadiusHall = r;
     }
 
     /** 单测：改聚合窗口（默认 60s；0=立即到期）。 */
