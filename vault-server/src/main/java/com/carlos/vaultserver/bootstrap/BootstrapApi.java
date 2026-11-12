@@ -39,6 +39,7 @@ import java.util.concurrent.Executors;
  * action=referral-list     → 待回流清单（pulled=false）
  * action=referral-pull     → 标记已拉取（M5 App 并入 AccountStore 后再 sync）
  * action=single-*          → 单号挂点（fpid → 在线起号会话表；无在线 engine 报错）
+ * action=single-reset      → 清理该号会话状态与退避（离线可调；在线时拒绝，P2-12）
  * </pre>
  *
  * <p>校验（batch-start）：serverId 正整数；targetFurnaceLevel 1–9；accounts 1–100。
@@ -473,8 +474,13 @@ public final class BootstrapApi {
             throw new IllegalArgumentException("缺少 fpid");
         }
         String key = fpid.trim();
+        // 二次审查 P2-12：在线重置会分裂会话状态（批次持有的旧 Holder 与新 Holder 并存），直接拒绝
+        if (ACTIVE.containsKey(key)) {
+            throw new IllegalStateException("该号在线，请先停止批次或使用批次取消后再重置");
+        }
         clearSessionState(key);
         BootstrapHoldStore.shared().clearScope(key);
+        FileLog.info("[起号] 单号会话已重置 fpid={}", key);
         JSONObject out = new JSONObject();
         out.put("fpid", key);
         out.put("reset", true);

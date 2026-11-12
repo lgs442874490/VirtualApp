@@ -146,10 +146,6 @@ final class BootstrapSessionState {
             worldFogSent = true;
         }
 
-        /** world 是否已放弃。 */
-        synchronized boolean worldAbandoned() {
-            return worldAbandoned;
-        }
 
         /** fog 的「检查 + 置位」原子化（P2-4）：kid 未取到或已发返回 false。 */
         synchronized boolean claimWorldFog() {

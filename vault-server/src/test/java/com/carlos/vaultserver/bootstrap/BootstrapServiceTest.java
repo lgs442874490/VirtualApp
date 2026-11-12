@@ -2240,10 +2240,11 @@ public class BootstrapServiceTest {
         svc.syncLoadData(readyLoad(7L, 1L));
 
         svc.runNext();
-        assertEquals("非法服务器时钟回退本机（按 Asia/Shanghai 折算，跨时区稳定）",
-                java.time.Instant.ofEpochMilli(System.currentTimeMillis())
-                        .atZone(java.time.ZoneId.of("Asia/Shanghai")).toLocalDate().toString(),
-                store.holder("fp-clock0").finishPassDay());
+        java.time.LocalDate got = java.time.LocalDate.parse(store.holder("fp-clock0").finishPassDay());
+        long diffDays = Math.abs(got.toEpochDay()
+                - java.time.Instant.now().atZone(java.time.ZoneId.of("Asia/Shanghai"))
+                        .toLocalDate().toEpochDay());
+        assertTrue("非法时钟应回退本机日期（容忍跨午夜）：" + got, diffDays <= 1);
     }
 
     /** R-10：infos 为 Map（非数组）时按需求回退 list 形状，不误判里程碑。 */
@@ -2278,6 +2279,8 @@ public class BootstrapServiceTest {
 
         assertEquals("库存足够 → 可覆盖（不误终态）", Boolean.TRUE, r.get("coverable"));
         assertEquals(0, ((List<?>) r.get("unsupplied")).size());
+        assertEquals("库存足够时不得查商店/购买（P2-13）", 0, port.count("req_shop_info"));
+        assertEquals(0, port.count("req_shop_buy"));
     }
 
     /** P2-8：他人正在发 world info（已认领但 kid 未回填）时，fog 分支不得计失败。 */

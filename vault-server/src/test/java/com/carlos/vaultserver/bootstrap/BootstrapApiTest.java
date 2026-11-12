@@ -556,6 +556,20 @@ public class BootstrapApiTest {
         }
     }
 
+    /** P2-12：在线（批次运行中）reset 必须拒绝，避免会话状态分裂（旧 Holder 被批次持有）。 */
+    @Test
+    public void singleReset_onlineRejected() {
+        String fpid = "fp-reset-online";
+        BootstrapApi.ACTIVE.put(fpid, new Session(new FakeEngine(), new ScriptedPort()));
+        try {
+            JSONObject out = BootstrapApi.handle(fields("action", "single-reset", "fpid", fpid));
+            assertTrue("在线重置应被拒绝：" + out, out.optString("error").contains("在线"));
+        } finally {
+            BootstrapApi.ACTIVE.remove(fpid);
+            BootstrapSessionState.shared().clearScope(fpid);
+        }
+    }
+
     /** P2-10：single-reset 为生产重置入口（清理 ENDED 等会话状态，允许人工重跑）。 */
     @Test
     public void singleReset_clearsEndedState() {

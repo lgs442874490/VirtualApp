@@ -1316,6 +1316,18 @@ public final class BootstrapService {
             result.put("message", "当前没有需要补充的资源");
             return result;
         }
+        // 二次审查 P2-13 / 网页版 BootstrapService.java:1649-1651：库存足够（缺口全 0）时直接返回，
+        // 不按 force 全量成本购买，避免「51 但本地库存足够」场景白花钻石。
+        if (Math.max(0L, missingOf(costs, 102L)) <= 0L
+                && Math.max(0L, missingOf(costs, 103L)) <= 0L
+                && Math.max(0L, missingOf(costs, 104L)) <= 0L
+                && Math.max(0L, missingOf(costs, 105L)) <= 0L) {
+            result.put("purchases", List.of());
+            result.put("unsupplied", List.of());
+            result.put("coverable", true);
+            result.put("message", "库存已足够，无需补资源");
+            return result;
+        }
         Map<Long, Long> goodsByItem = shopGoods();
         // 钻石余额：以当前 state 资源 101 为准（101=钻石，与新版 resourceCount(101L) 一致）
         long diamonds = Math.max(knownDiamonds, Math.max(0L, state.resourceCount(101L)));
