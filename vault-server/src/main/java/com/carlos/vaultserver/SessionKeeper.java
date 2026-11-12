@@ -305,6 +305,8 @@ public final class SessionKeeper implements SessionControl,
         volatile long moveCityHoldUntil;
         final WjdrEngine engine;
         final ScheduledExecutorService exec;
+        /** 紧急开盾执行器（惰性创建；与 1Hz 会话拍并行，引擎 requestLock 串行化请求）。 */
+        private ScheduledExecutorService shieldExec;
         /** 互助自动响应（登录成功后按真实 sid 惰性挂载）。 */
         volatile ServerHelpResponder help;
         /** 反应式开盾（WAR/RECON 推送驱动；登录成功后按真实 sid 惰性挂载）。 */
@@ -1021,12 +1023,38 @@ public final class SessionKeeper implements SessionControl,
                     shield = new ServerShieldResponder(fpid, resolveSid(), uidForRole,
                             stateStore, store, this::isActiveRoleWriter);
                     shield.attach(engine);
+                    final ServerShieldResponder s0 = shield;
+                    // 加速紧急（连续加速/剩余 ≤20s）：推送线程唤醒独立执行器立即决策，
+                    // 不再等下一拍 1Hz 会话 tick（2026-11-13 事故里这段延迟约 4 秒）。
+                    s0.setUrgentWakeup(() -> shieldExec().execute(() -> {
+                        try {
+                            s0.tick(engine);
+                        } catch (Throwable t) {
+                            FileLog.warn("开盾紧急单拍异常 {}：{}", key, String.valueOf(t));
+                        }
+                    }));
                 }
                 ServerShieldResponder s = shield;
                 if (s != null) s.tick(engine);
             } catch (Throwable t) {
                 FileLog.warn("开盾响应器单拍异常 {}：{}", key, String.valueOf(t));
             }
+        }
+
+        /**
+         * 紧急开盾执行器：单线程、daemon、按会话隔离。与 1Hz 会话拍并行，但请求仍走
+         * {@link WjdrEngine#request} 的 requestLock 串行化，不与任务/心跳交叉发送。
+         * 惰性创建；会话关闭时 shutdownNow。
+         */
+        private synchronized ScheduledExecutorService shieldExec() {
+            if (shieldExec == null) {
+                shieldExec = Executors.newSingleThreadScheduledExecutor(r -> {
+                    Thread t = new Thread(r, "shield-" + key);
+                    t.setDaemon(true);
+                    return t;
+                });
+            }
+            return shieldExec;
         }
 
         /**
@@ -1466,6 +1494,7 @@ public final class SessionKeeper implements SessionControl,
                 engine.close();
             } catch (Throwable ignored) {
             }
+            if (shieldExec != null) shieldExec.shutdownNow();
             exec.shutdownNow();
         }
     }

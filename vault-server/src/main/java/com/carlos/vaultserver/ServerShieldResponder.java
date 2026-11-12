@@ -147,6 +147,20 @@ public final class ServerShieldResponder {
     /** 事件保鲜期（秒，卡秒路径判断"威胁早已到达"用）。 */
     static final long EVENT_TTL_SEC = EVENT_TTL_MILLIS / 1000L;
 
+    /**
+     * 加速场景安全余量（秒）：敌方用加速道具把 ETA 骤降时，"剩余 ≤ etaSec 才开盾"的卡秒点
+     * 往往落在会话 tick 的下一拍 + 请求往返之后（2026-11-13 实战：03:35:47 到达、03:35:50 才开盾）。
+     * 观测到 ETA 提前后，触发阈值提高到 {@code max(etaSec, 本值)}，覆盖 1Hz 会话节拍与请求抖动。
+     */
+    static final long SHIELD_ACCEL_SAFETY_SEC = 8L;
+
+    /**
+     * 紧急加速判定：连续加速 ≥ N 次且累计提前 ≥ 初始剩余的一半（2026-11-13 事故为 6 次 50% 加速），
+     * 或加速后剩余 ≤ 20 秒——满足任一即当拍开盾，并唤醒独立执行器（不再等 1Hz 会话 tick）。
+     */
+    static final long SHIELD_ACCEL_URGENT_COUNT = 3L;
+    static final long SHIELD_ACCEL_URGENT_SEC = 20L;
+
     // ---------------- 风险状态 ----------------
 
     /** 一条推送命中"自己城被侦查/进攻"后的决策输入（兵力/到达时刻用于阈值与卡秒）。 */
@@ -157,11 +171,25 @@ public final class ServerShieldResponder {
         final long endtimeSec;
         /** squad_list.soldier 求和；-1=未知。 */
         final long troops;
+        /** 本风险链是否观测到敌方 ETA 提前（加速）；加速场景需要更大的安全余量。 */
+        final boolean accelerated;
+        /** 首个推送的 endtime（不随加速缩短），用于计算累计提前幅度；0=未知。 */
+        final long initialEndtimeSec;
+        /** 本风险链观测到的加速事件次数（endtime 每次缩短 >1 秒计 1 次）。 */
+        final long accelCount;
 
         Risk(String kind, long endtimeSec, long troops) {
+            this(kind, endtimeSec, troops, false, endtimeSec, 0L);
+        }
+
+        Risk(String kind, long endtimeSec, long troops, boolean accelerated,
+             long initialEndtimeSec, long accelCount) {
             this.kind = kind;
             this.endtimeSec = endtimeSec;
             this.troops = troops;
+            this.accelerated = accelerated;
+            this.initialEndtimeSec = initialEndtimeSec;
+            this.accelCount = accelCount;
         }
     }
 
@@ -287,6 +315,11 @@ public final class ServerShieldResponder {
     private volatile MarchSource marchSource = this::ownGatheringFromAssetLibrary;
     /** 最近一次命中的新鲜风险（未处理/挂起中）；null=无风险。 */
     private volatile Risk risk;
+    /**
+     * 紧急加速唤醒回调（由宿主注入：推送线程只通知，不直接发请求）。
+     * 非空时，onPush 命中"连续加速/剩余 ≤20 秒"会触发一次立即决策，不再等 1Hz 会话 tick。
+     */
+    private volatile Runnable urgentWakeup;
     /** 最近一次采集点遭袭告警（钩子线程写入，tick 消费）。 */
     private volatile GatherAlert gatherAlert;
     /** 采集告警脏标记（与 city risk 的 dirty 分离：采集撤矿与开盾是两条独立反应链）。 */
@@ -324,6 +357,8 @@ public final class ServerShieldResponder {
 
     private final AtomicBoolean dirty = new AtomicBoolean(false);
     private final AtomicBoolean busy = new AtomicBoolean(false);
+    /** tick 单飞：1Hz 会话拍与紧急唤醒拍可能并发，同一实例同时只允许一拍在跑。 */
+    private final AtomicBoolean ticking = new AtomicBoolean(false);
     /** 冷却截止时刻（包可见：单测断言幂等窗/重试窗）。 */
     final AtomicLong nextAttemptAt = new AtomicLong(0);
     /** 最近一次 WAR/RECON 推送时刻（包可见：单测模拟陈旧事件）。 */
@@ -374,6 +409,14 @@ public final class ServerShieldResponder {
 
     // ---------------- 挂载与 tick ----------------
 
+    /**
+     * 注入紧急唤醒回调（宿主提供：通常把 {@link #tick(WjdrEngine)} 提交到独立单线程执行器）。
+     * 回调在推送线程触发，必须非阻塞；本类保证只在"加速紧急"时调用，且不持 riskLock。
+     */
+    void setUrgentWakeup(Runnable wakeup) {
+        this.urgentWakeup = wakeup;
+    }
+
     /** 挂到引擎消息钩子（推送线程调用：只解析+置脏，不发请求）。 */
     void attach(WjdrEngine engine) {
         engineRef = engine;
@@ -406,6 +449,7 @@ public final class ServerShieldResponder {
         trackEnemyMarches(content, ownUid);
         Risk r = riskOf(content, ownUid);
         if (r != null) {
+            boolean urgent;
             synchronized (riskLock) {
                 // 合并而非覆盖：后到的推送（可能是更晚的波次/另一支部队）不得推迟
                 // 已记录的更早到达时间，否则第一波到达时无盾（"被打了才开盾"）。
@@ -422,13 +466,43 @@ public final class ServerShieldResponder {
                 lastEventAt = nowMs.getAsLong();
                 etaCheckAtMs = 0;
                 dirty.set(true);
+                urgent = accelUrgent(merged, serverNowSec(engine));
             }
+            // 加速紧急：唤醒宿主的独立执行器立即决策（推送线程只通知，不持锁、不发请求）。
+            if (urgent) wakeUrgent();
         }
         GatherAlert g = gatherAlertOf(content, ownUid, engine);
         if (g != null) {
             gatherAlert = g;
             gatherDirty.set(true);
         }
+    }
+
+    /** 唤醒宿主执行器；回调异常只留痕，绝不影响推送线程。 */
+    private void wakeUrgent() {
+        Runnable w = urgentWakeup;
+        if (w == null) return;
+        try {
+            w.run();
+        } catch (Throwable t) {
+            FileLog.warn("反应式开盾紧急唤醒失败 fpid={}：{}", fpid, brief(String.valueOf(t)));
+        }
+    }
+
+    /**
+     * 紧急加速判定（只读，无副作用）：
+     * 加速后剩余 ≤20 秒，或「连续加速 ≥3 次且累计提前 ≥ 初始剩余的一半」。
+     * 满足时跳过卡秒挂起、当拍开盾，并触发宿主紧急唤醒（见 {@link #setUrgentWakeup}）。
+     */
+    private static boolean accelUrgent(Risk r, long nowSec) {
+        if (r == null || !r.accelerated || r.endtimeSec <= 0L) return false;
+        long remain = r.endtimeSec - nowSec;
+        if (remain <= SHIELD_ACCEL_URGENT_SEC) return true;
+        if (r.accelCount < SHIELD_ACCEL_URGENT_COUNT) return false;
+        long initialRemain = r.initialEndtimeSec - nowSec;
+        if (initialRemain <= 0L) return false;
+        long advance = r.initialEndtimeSec - r.endtimeSec;
+        return advance * 2L >= initialRemain;
     }
 
     /**
@@ -446,7 +520,14 @@ public final class ServerShieldResponder {
         long troops;
         if (old.troops < 0L || fresh.troops < 0L) troops = -1L;
         else troops = old.troops + fresh.troops;
-        return new Risk(kind, end, troops);
+        // 加速识别：新推送 endtime 明显早于已记录的最早到达（加速道具/提速），
+        // 标记后 decide 用更大的安全余量，避免卡秒点落在"tick 延迟 + 请求往返"之后。
+        boolean accel = old.endtimeSec > 0L && fresh.endtimeSec > 0L
+                && fresh.endtimeSec < old.endtimeSec - 1L;
+        boolean accelerated = old.accelerated || fresh.accelerated || accel;
+        long initial = old.initialEndtimeSec > 0L ? old.initialEndtimeSec : fresh.initialEndtimeSec;
+        long accelCount = old.accelCount + fresh.accelCount + (accel ? 1L : 0L);
+        return new Risk(kind, end, troops, accelerated, initial, accelCount);
     }
 
     /**
@@ -740,11 +821,24 @@ public final class ServerShieldResponder {
     }
 
     /**
+     * 会话线程 / 紧急唤醒线程的 tick 入口：单飞（同一实例同时只允许一拍），
+     * 避免 1Hz 会话拍与推送触发的紧急拍并发推进 watch 状态机。
+     */
+    boolean tick(WjdrEngine engine) {
+        if (!ticking.compareAndSet(false, true)) return false;
+        try {
+            return tickInner(engine);
+        } finally {
+            ticking.set(false);
+        }
+    }
+
+    /**
      * 会话线程 tick 驱动：先处理采集点遭袭提醒（撤矿统一由 gatherWatchTick 执行），
      * 再处理开盾风险。
      * 返回 true 表示本轮有动作（发请求/跳过留痕），false=无动作/挂起/冷却/陈旧。
      */
-    boolean tick(WjdrEngine engine) {
+    private boolean tickInner(WjdrEngine engine) {
         // 让位/恢复/登录中：不发请求（人玩优先，防互踢）；风险保留，回连如仍新鲜才补
         if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) return false;
         long now = nowMs.getAsLong();
@@ -809,17 +903,25 @@ public final class ServerShieldResponder {
         long etaSec = shieldEtaSec(tc);
         if (!immediate) {
             if (r.endtimeSec > 0) {
-                long remain = r.endtimeSec - serverNowSec(engine);
-                if (remain > etaSec) {
-                    // 挂起：保持 pending，本拍不发请求；到点由 tick 的 etaCheckAtMs 继续推进
-                    // （与 onPush/clearRisk 的写入同一把锁，避免旧值覆盖新推送的清零）
+                long nowSec = serverNowSec(engine);
+                long remain = r.endtimeSec - nowSec;
+                // 紧急加速（连续 ≥3 次且累计提前过半，或剩余 ≤20s）：不再等卡秒，当拍开盾。
+                boolean urgent = accelUrgent(r, nowSec);
+                // 非紧急加速仍放宽触发阈值：卡秒点必须早于"会话 tick 延迟 + 请求往返"。
+                long gateSec = r.accelerated ? Math.max(etaSec, SHIELD_ACCEL_SAFETY_SEC) : etaSec;
+                if (!urgent && remain > gateSec) {
+                    // 挂起：保持 pending，本拍不发请求；到点由 tick 的 etaCheckAtMs 继续推进。
+                    // 写前校验 risk 仍是本拍快照：推送线程可能已用更早的 ETA 替换（并发加速），
+                    // 旧快照不得把 etaCheckAtMs 改回"旧到达时刻"而吞掉新风险。
                     synchronized (riskLock) {
-                        etaCheckAtMs = now + Math.max(200L, (remain - etaSec) * 1000L);
+                        if (risk != r) return false;
+                        etaCheckAtMs = now + Math.max(200L, (remain - gateSec) * 1000L);
                     }
                     saveState(tc, prefix + " → 等待卡秒：约" + remain + "秒后到达，到达前"
-                            + etaSec + "秒开盾");
-                    FileLog.info("反应式开盾挂起 fpid={} 事件={}：约{}秒后到达（卡秒{}秒）",
-                            fpid, r.kind, String.valueOf(remain), String.valueOf(etaSec));
+                            + gateSec + "秒开盾" + (r.accelerated ? "（敌方加速）" : ""));
+                    FileLog.info("反应式开盾挂起 fpid={} 事件={}：约{}秒后到达（卡秒{}秒{}）",
+                            fpid, r.kind, String.valueOf(remain), String.valueOf(gateSec),
+                            r.accelerated ? "，已加速" : "");
                     return false;
                 }
                 if (remain < -EVENT_TTL_SEC) {
@@ -867,10 +969,13 @@ public final class ServerShieldResponder {
             clearRisk(r);
             return false;
         }
+        // 敌方已到达（剩余<0）仍走补盾：成功后文案必须标注，避免用户误以为本次防住了。
+        boolean lateArrival = r.endtimeSec > 0L
+                && r.endtimeSec - serverNowSec(engine) < 0L;
         if (!busy.compareAndSet(false, true)) return false;
         boolean opened;
         try {
-            opened = openShield(tc, now);
+            opened = openShield(tc, now, lateArrival);
         } finally {
             busy.set(false);
         }
@@ -890,12 +995,18 @@ public final class ServerShieldResponder {
      * 真正下发开盾请求：已有护盾 → 免费盾 → 背包盾 → 钻石购盾（默认关）。
      * 顺序遵循需求：免费优先、其次背包、最后才花钻石。
      *
+     * @param lateArrival 敌方到达时刻已过（补盾，本次攻击可能已接战）；成功文案追加提示
      * @return true=已有盾/本次已开盾（风险已被覆盖）；false=未开盾（保留风险待重试）
      */
-    private boolean openShield(TaskContext tc, long now) {
+    private boolean openShield(TaskContext tc, long now, boolean lateArrival) {
         if (!shieldLedgerReady) initLedgerFromEngine(tc.engine);
         long nowSec = serverNowSec(tc.engine);
         String prefix = ("WAR".equals(lastEventKind) ? "被进攻" : "被侦查");
+        String late = lateArrival ? "（敌方已到达，可能已接战）" : "";
+        if (lateArrival) {
+            FileLog.info("反应式开盾 fpid={} 事件={} 敌方已到达，按保护优先补盾（可能已接战）",
+                    fpid, lastEventKind);
+        }
         if (shieldActive(tc.engine)) {
             nextAttemptAt.set(now + Math.max(60_000L,
                     (shieldActiveEnd - nowSec) * 1000L));
@@ -915,10 +1026,10 @@ public final class ServerShieldResponder {
             shieldActiveItem = SHIELD_ITEM_8H;
             shieldActiveEnd = nowSec + 8 * 3600L;
             nextAttemptAt.set(now + OPEN_SUCCESS_COOLDOWN_MILLIS);
-            saveState(tc, prefix + " → " + free.message);
+            saveState(tc, prefix + " → " + free.message + late);
             writeShieldLedgerState(tc, true);
-            FileLog.info("反应式开盾 fpid={} 事件={} 结果=CLAIMED(免费)：{}",
-                    fpid, lastEventKind, free.message);
+            FileLog.info("反应式开盾 fpid={} 事件={} 结果=CLAIMED(免费)：{}{}",
+                    fpid, lastEventKind, free.message, late);
             return true;
         }
         // 2) 背包盾（2h → 8h → 12h，优先最短可用，避免浪费长盾）
@@ -934,10 +1045,10 @@ public final class ServerShieldResponder {
                 shieldActiveItem = item;
                 shieldActiveEnd = nowSec + hours * 3600L;
                 nextAttemptAt.set(now + OPEN_SUCCESS_COOLDOWN_MILLIS);
-                saveState(tc, prefix + " → 已使用背包 " + shieldName(item) + "（code=0）");
+                saveState(tc, prefix + " → 已使用背包 " + shieldName(item) + "（code=0）" + late);
                 writeShieldLedgerState(tc, true);
-                FileLog.info("反应式开盾 fpid={} 事件={} 来源=背包 item={} code=0",
-                        fpid, lastEventKind, String.valueOf(item));
+                FileLog.info("反应式开盾 fpid={} 事件={} 来源=背包 item={} code=0{}",
+                        fpid, lastEventKind, String.valueOf(item), late);
                 return true;
             }
             FileLog.warn("反应式开盾 fpid={} 背包盾 item={} 使用失败 code={}",
@@ -952,11 +1063,11 @@ public final class ServerShieldResponder {
                 shieldActiveEnd = nowSec + 2 * 3600L;
                 nextAttemptAt.set(now + OPEN_SUCCESS_COOLDOWN_MILLIS);
                 saveState(tc, prefix + " → 背包无盾，已用 " + DIAMOND_SHIELD_PRICE
-                        + " 钻石购买并开启 2 小时护盾（code=0）");
+                        + " 钻石购买并开启 2 小时护盾（code=0）" + late);
                 writeShieldLedgerState(tc, true);
-                FileLog.info("反应式开盾 fpid={} 事件={} 来源=钻石 item={} price={} code=0",
+                FileLog.info("反应式开盾 fpid={} 事件={} 来源=钻石 item={} price={} code=0{}",
                         fpid, lastEventKind, String.valueOf(SHIELD_ITEM_2H),
-                        String.valueOf(DIAMOND_SHIELD_PRICE));
+                        String.valueOf(DIAMOND_SHIELD_PRICE), late);
                 return true;
             }
             String reason = code == -2

@@ -1033,6 +1033,130 @@ public class ServerShieldResponderTest {
     }
 
     @Test
+    public void acceleratedEta_opensImmediately_notWaitForEta() {
+        // 2026-11-13 实战事故：挂起后敌方连续加速把 ETA 从 167 秒压到 1 秒内，
+        // 旧逻辑仍等到「剩余 ≤2 秒」才开盾，结果 03:35:47 到达、03:35:50 才开盾（被打之后）。
+        // 加速场景必须放大安全余量并当拍开盾。
+        account(true, "{\"sub\":{\"reactive\":true}}");   // before_arrival 默认 2 秒
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 300L), OWN_UID);
+        assertFalse("首推 300 秒应挂起", r.tick(e));
+        assertTrue(e.requested.isEmpty());
+
+        // 敌方加速：ETA 从 +300 骤降到 +6（真实事故里 6 次 50% 加速的等价形态）
+        sec.addAndGet(100L);
+        nowMs.addAndGet(100_000L);
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 6L), OWN_UID);
+        assertTrue("加速后剩余 6 秒必须当拍开盾（加速安全余量 8 秒），不能等到剩余 2 秒",
+                r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+    }
+
+    @Test
+    public void threeAccels_wakesUrgentAndOpens() {
+        // 2026-11-13 事故形态：连续 3 次 50% 加速（剩余 300→150），应立即唤醒并当拍开盾。
+        account(true, "{\"sub\":{\"reactive\":true}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        AtomicLong wakes = new AtomicLong();
+        r.setUrgentWakeup(wakes::incrementAndGet);
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+        assertEquals("未加速不应唤醒", 0L, wakes.get());
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 250L), OWN_UID);
+        assertEquals("加速 1 次不紧急", 0L, wakes.get());
+        assertFalse(r.tick(e));
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 200L), OWN_UID);
+        assertEquals("加速 2 次不紧急", 0L, wakes.get());
+        assertFalse(r.tick(e));
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 150L), OWN_UID);
+        assertTrue("加速 3 次且累计提前过半应唤醒", wakes.get() >= 1L);
+        assertTrue("紧急加速应跳过卡秒当拍开盾", r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+    }
+
+    @Test
+    public void threeSmallAccels_notUrgent() {
+        // 小幅加速（3 次共提前 60 秒 / 初始 300 秒 = 20%）不算紧急，继续挂起。
+        account(true, "{\"sub\":{\"reactive\":true}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        AtomicLong wakes = new AtomicLong();
+        r.setUrgentWakeup(wakes::incrementAndGet);
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 280L), OWN_UID);
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 260L), OWN_UID);
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 240L), OWN_UID);
+
+        assertEquals("累计提前不足一半不应唤醒", 0L, wakes.get());
+        assertFalse("剩余 240 秒应继续挂起", r.tick(e));
+        assertTrue(e.requested.isEmpty());
+    }
+
+    @Test
+    public void acceleratedButStillFar_stillSuspends() {
+        // 加速但剩余仍远（120 秒）：不提前浪费盾，继续挂起。
+        account(true, "{\"sub\":{\"reactive\":true}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+
+        sec.addAndGet(100L);
+        nowMs.addAndGet(100_000L);
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 120L), OWN_UID);
+        assertFalse("剩余 120 秒应继续挂起", r.tick(e));
+        assertTrue(e.requested.isEmpty());
+    }
+
+    @Test
+    public void arrivedAfterSuspension_stateMentionsAlreadyArrived() {
+        // 到达后补盾（真实事故的兜底路径）：must 留痕「已到达」，不能让用户以为防住了。
+        account(true, "{\"sub\":{\"reactive\":true}}");
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+
+        r.onPush(withEndtime(alliancePush(13080L, 2, OWN_UID, 1), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+
+        nowMs.addAndGet(305_000L);
+        sec.addAndGet(305L);   // 已到达 5 秒（仍在新保鲜期内，允许补盾）
+        assertTrue(r.tick(e));
+        assertEquals(List.of("req_city_item_free_use"), e.requested);
+        String st = modText();
+        assertTrue("到达后补盾的状态必须标注已到达：" + st, st.contains("已到达"));
+    }
+
+    @Test
     public void rallyMainType102_triggersShield() {
         // 实证 A-1：102=集结主体（此前只认 100，集结主体打城不开盾）。
         account(true, null);
