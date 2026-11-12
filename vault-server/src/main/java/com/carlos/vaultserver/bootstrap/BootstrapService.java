@@ -325,27 +325,15 @@ public final class BootstrapService {
     private String renamedName = "";
     /** 最近一次改名失败文案（status 侧透出）。 */
     private String renameError = "";
-    /** 资源耗尽（熔炉 ≥9 且补不齐）标记：后续 runNext 直接 ENDED，不再重试。 */
-    private boolean resourceEnded;
-    /** 熔炉 ≥9 时连续补资源失败次数（对齐网页版 ≥3 次 ENDED）。 */
-    private int resourceExhaustedAttempts;
-    /** ≥7 收尾（邮箱/签到/里程碑/背包钻石）当日是否已完成。 */
-    private String finishPassDay = "";
-    /** 世界地图一次性请求标记（对齐网页版 worldKingdomInfoSent/worldFogSent）。 */
-    private boolean worldKingdomInfoSent;
-    private boolean worldFogSent;
-    private long worldKingdomId;
-    /** 上一次已应用的 res_update 签名：避免每轮重复应用同一增量（推送是「最近一次」而非队列）。 */
-    private String lastResUpdateSignature = "";
-    /** 已确认不在背包/不可用的钻石道具：本会话不再重试（避免 51 刷请求）。 */
-    private final Set<Long> failedDiamondItems = java.util.concurrent.ConcurrentHashMap.newKeySet();
+    /** 本实例绑定的会话状态（scope = fpid）：world/finishPass/ENDED 等跨请求可见。 */
+    private final BootstrapSessionState.Holder session;
 
     /** 生产装配：组合目录 + 默认规划器 + 真实睡眠。 */
     public BootstrapService(ProtocolPort port) {
         this(port, new BootstrapPlanner(), BootstrapCatalog.combined(), REAL_SLEEPER);
     }
 
-    /** 全量注入装配（单测用；退避表随实例隔离）。 */
+    /** 全量注入装配（单测用；退避表与会话状态随实例隔离）。 */
     public BootstrapService(ProtocolPort port, BootstrapPlanner planner, Catalog catalog, Sleeper sleeper) {
         this(port, planner, catalog, sleeper, new BootstrapHoldStore(), "");
     }
@@ -356,12 +344,23 @@ public final class BootstrapService {
      */
     BootstrapService(ProtocolPort port, BootstrapPlanner planner, Catalog catalog, Sleeper sleeper,
                      BootstrapHoldStore holds, String holdScope) {
+        this(port, planner, catalog, sleeper, holds, holdScope, new BootstrapSessionState());
+    }
+
+    /**
+     * 会话状态注入装配（生产装配点用）：{@link BootstrapSessionState#shared()} + 账号 fpid，
+     * 使 world/finishPass/res_update/ENDED 等会话级状态跨请求保留（审查 P1-2 / 需求 R-02）。
+     */
+    BootstrapService(ProtocolPort port, BootstrapPlanner planner, Catalog catalog, Sleeper sleeper,
+                     BootstrapHoldStore holds, String holdScope, BootstrapSessionState sessions) {
         this.port = port;
         this.planner = planner;
         this.catalog = catalog;
         this.sleeper = sleeper == null ? REAL_SLEEPER : sleeper;
         this.holds = holds == null ? new BootstrapHoldStore() : holds;
         this.holdScope = holdScope == null ? "" : holdScope;
+        BootstrapSessionState store = sessions == null ? new BootstrapSessionState() : sessions;
+        this.session = store.holder(this.holdScope);
     }
 
     // ================= 配置与状态注入 =================
@@ -385,20 +384,30 @@ public final class BootstrapService {
     public void syncLoadData(Map<String, Object> loadContent) {
         Map<String, Object> content = loadContent == null ? Map.of() : loadContent;
         Object resUpdate = content.get("res_update");
+        // C1 过渡：同一份增量只应用一次（R-05 的累积通道落地后，本签名去重删除）。
         if (resUpdate != null) {
             String signature = String.valueOf(resUpdate);
-            if (signature.equals(lastResUpdateSignature)) {
-                // 同一份增量已应用过：本轮只保留 res 快照，避免重复加/减
-                content = new LinkedHashMap<>(content);
-                content.remove("res_update");
+            if (signature.equals(session.lastResUpdateSignature())) {
+                resUpdate = null;
             } else {
-                lastResUpdateSignature = signature;
+                session.setLastResUpdateSignature(signature);
             }
         }
+        // 合并顺序（审查 P1-1 / 需求 R-01）：快照建表 → 补旧值 → 最后应用增量，
+        // 否则无 res 快照的轮次会把增量写在 0 基线上，旧库存永远补不回来。
+        // 增量统一由本方法在合并后应用：快照必须先剔除 res_update 键，避免 fromLoadData 提前应用。
+        Map<String, Object> snapshot = content;
+        if (content.containsKey("res_update")) {
+            snapshot = new LinkedHashMap<>(content);
+            snapshot.remove("res_update");
+        }
         BootstrapState previous = this.state;
-        this.state = BootstrapState.fromLoadData(content);
-        // 补齐本轮推送里缺失的字段（资源 101 钻石等只在登录时推一次）
+        this.state = BootstrapState.fromLoadData(snapshot);
         this.state.mergeLegacyFrom(previous);
+        if (resUpdate != null) {
+            this.state.applyResourceUpdate(resUpdate);
+            session.nextResUpdateSeq();
+        }
         knownDiamonds = Math.max(knownDiamonds, Math.max(0L, this.state.resourceCount(101L)));
         // 重放本地乐观覆盖（2026-11-11 真实轮）：游戏侧对「家具已存在(154)」「家具已达建筑等级上限(153)」
         // 的响应不会改变推送里的家具数据，若每轮重建后不重放，planner 会反复规划同一动作形成死循环。
@@ -450,7 +459,7 @@ public final class BootstrapService {
      */
     public Map<String, Object> runNext() throws Exception {
         BootstrapConfig cfg = requireEnabled();
-        if (resourceEnded) {
+        if (session.resourceEnded()) {
             return actionResult("ENDED", "大熔炉已到 9 级，资源已尽力补充仍不足，起号结束");
         }
         Optional<Map<String, Object>> rename = renameIfNeeded(cfg);
@@ -578,35 +587,35 @@ public final class BootstrapService {
         if (state.furnaceLevel() < WORLD_MAP_UNLOCK_FURNACE_LEVEL || intelEvents() == null) {
             return Optional.empty();
         }
-        if (!worldKingdomInfoSent) {
+        if (!session.worldKingdomInfoSent()) {
             try {
                 GameMessage response = request(WORLD_KINGDOM_INFO, Map.of());
-                worldKingdomInfoSent = true;
+                session.markWorldKingdomInfoSent();
                 Map<String, Object> c = content(response);
                 long kid = number(c.get("kid"));
                 if (kid <= 0L) kid = number(c.get("kingdom_id"));
                 if (kid <= 0L) kid = number(mapOf(c.get("kingdom")).get("id"));
-                if (kid > 0L) worldKingdomId = kid;
+                session.setWorldKingdomId(kid);
                 Map<String, Object> result = actionResult("STARTED",
                         "起号世界地图已推进：已发送 " + WORLD_KINGDOM_INFO);
                 result.put("worldAction", "worldKingdomInfo");
                 return Optional.of(result);
             } catch (Exception e) {
-                worldKingdomInfoSent = true;
+                session.markWorldKingdomInfoSent();
                 FileLog.info("[起号] {} 失败：{}", WORLD_KINGDOM_INFO, String.valueOf(e.getMessage()));
                 return Optional.empty();
             }
         }
-        if (!worldFogSent && worldKingdomId > 0L) {
+        if (!session.worldFogSent() && session.worldKingdomId() > 0L) {
             try {
-                request(WORLD_MAP_FOG, Map.of("kid", worldKingdomId));
-                worldFogSent = true;
+                request(WORLD_MAP_FOG, Map.of("kid", session.worldKingdomId()));
+                session.markWorldFogSent();
                 Map<String, Object> result = actionResult("STARTED",
                         "起号世界地图已推进：已发送 " + WORLD_MAP_FOG);
                 result.put("worldAction", "worldFog");
                 return Optional.of(result);
             } catch (Exception e) {
-                worldFogSent = true;
+                session.markWorldFogSent();
                 FileLog.info("[起号] {} 失败：{}", WORLD_MAP_FOG, String.valueOf(e.getMessage()));
             }
         }
@@ -622,7 +631,7 @@ public final class BootstrapService {
             return Optional.empty();
         }
         String today = java.time.LocalDate.now().toString();
-        if (today.equals(finishPassDay)) {
+        if (today.equals(session.finishPassDay())) {
             return Optional.empty();
         }
         int mailCount = 0;
@@ -633,7 +642,7 @@ public final class BootstrapService {
         }
         int achievements = claimAchievements();
         int diamonds = claimBackpackDiamonds();
-        finishPassDay = today;
+        session.setFinishPassDay(today);
         if (mailCount <= 0 && achievements <= 0 && diamonds <= 0) {
             return Optional.empty();
         }
@@ -795,7 +804,7 @@ public final class BootstrapService {
                     appliedLevel > 0L ? appliedLevel : action.toLevel());
         }
         FileLog.info("[起号] 已请求{}（instantDiamond={}）", action.label(), cfg.instantDiamond());
-        resourceExhaustedAttempts = 0;
+        session.resetResourceExhaustedAttempts();
         Map<String, Object> result = actionResult("STARTED",
                 "已请求" + action.label() + backpackUseSummary(preparation));
         result.put("step", stepView(action));
@@ -879,15 +888,19 @@ public final class BootstrapService {
                 claimBackpackDiamonds();
                 Map<String, Object> byDiamond = upgradeWithDiamond(action);
                 if (byDiamond != null) {
-                    resourceExhaustedAttempts = 0;
+                    session.resetResourceExhaustedAttempts();
                     preparation.put("diamondFallback", true);
                     byDiamond.put("preparation", preparation);
                     return byDiamond;
                 }
+                // 需求 R-03：钻石兜底失败后写 30s 动作退避 + 30s 购买冷却，
+                // 避免 runner 每 5s 重试、并在冷却内重复按动作全量成本买资源烧钻石。
+                String actionHoldKey = holdKey(action);
+                markRetry(actionHoldKey, ACTION_RETRY_MILLIS);
+                markRetry("buy:" + actionHoldKey, ACTION_RETRY_MILLIS);
                 if (state.furnaceLevel() >= 9L) {
-                    ++resourceExhaustedAttempts;
-                    if (resourceExhaustedAttempts >= 3) {
-                        resourceEnded = true;
+                    if (session.incrementResourceExhaustedAttempts() >= 3) {
+                        session.markResourceEnded();
                         Map<String, Object> ended = actionResult("ENDED",
                                 "大熔炉已到 9 级，资源已尽力补充仍不足，起号结束");
                         ended.put("step", stepView(action));
@@ -1015,7 +1028,8 @@ public final class BootstrapService {
             result.put("allPacksOpened", allOpened);
         }
         // 真实轮（2026-11-10）：背包无资源包时，若开启 buyShopResources 则用钻石从统帅商店补缺资源
-        if (cfg.buyShopResources()) {
+        // 需求 R-03：51 建筑钻石兜底失败会写 "buy:"+动作键 的 30s 购买冷却，冷却内不得重复购买。
+        if (cfg.buyShopResources() && retryAllowed("buy:" + holdKey(action))) {
             try {
                 // 51 时本地资源表可能滞后：强制按动作成本买足（网页版按服务端真实资源买）
                 result.put("purchase", buyMissingResources(costs, true));
@@ -1286,7 +1300,7 @@ public final class BootstrapService {
     int claimBackpackDiamonds() {
         int used = 0;
         for (long itemId : DIAMOND_ITEM_IDS) {
-            if (failedDiamondItems.contains(itemId)) continue;
+            if (session.failedDiamondItems().contains(itemId)) continue;
             long count = Math.max(0L, state.itemCount(itemId));     // 对齐新版 itemCount
             if (count <= 0L) continue;
             try {
@@ -1302,7 +1316,7 @@ public final class BootstrapService {
                                 ? String.valueOf(content).substring(0, 200) : String.valueOf(content));
             } catch (Exception e) {
                 // 物品实际不在背包（服务端 51）时本地计数可能滞后：本会话不再重试，避免每轮刷请求
-                failedDiamondItems.add(itemId);
+                session.failedDiamondItems().add(itemId);
                 FileLog.info("[起号] 打开钻石道具失败 itemId={}（本会话不再重试）：{}",
                         String.valueOf(itemId), String.valueOf(e.getMessage()));
             }

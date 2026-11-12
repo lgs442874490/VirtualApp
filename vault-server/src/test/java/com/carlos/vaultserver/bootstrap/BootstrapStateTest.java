@@ -272,6 +272,32 @@ public class BootstrapStateTest {
         assertEquals(500L, s.resourceCount(101L));
     }
 
+    /**
+     * P1-1 回归（需求 R-01）：本轮没有 res 快照时，增量必须叠加在旧资源上，
+     * 而不是从 0 起算（旧值 1000 + 增量 -900 = 100，而不是 -900）。
+     */
+    @Test
+    public void resourceUpdateDelta_withoutSnapshot_mergesLegacyBase() {
+        BootstrapState previous = BootstrapState.fromLoadData(
+                java.util.Map.of("res", java.util.Map.of("103", 1000L)));
+        BootstrapState next = BootstrapState.fromLoadData(java.util.Map.of());
+        next.mergeLegacyFrom(previous);
+        next.applyResourceUpdate(java.util.List.of(
+                java.util.Map.of("id", 103L, "count", -900L)));
+        assertEquals("旧值 1000 + 增量 -900", 100L, next.resourceCount(103L));
+    }
+
+    /** R-01 边界：增量符号保留，同一 id 多条增量求和。 */
+    @Test
+    public void resourceUpdateDelta_multipleEntries_summed() {
+        BootstrapState s = BootstrapState.fromLoadData(
+                java.util.Map.of("res", java.util.Map.of("103", 1000L)));
+        s.applyResourceUpdate(java.util.List.of(
+                java.util.Map.of("id", 103L, "count", -300L),
+                java.util.Map.of("id", 103L, "count", -200L)));
+        assertEquals(500L, s.resourceCount(103L));
+    }
+
     /** 真实轮回归（2026-11-11）：幸存者列表解析与「闲置」判定（委任上岗的前提）。 */
     @Test
     public void survivors_parsedAndIdleDetected() {

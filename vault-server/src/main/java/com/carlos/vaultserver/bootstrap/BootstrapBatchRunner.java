@@ -329,6 +329,10 @@ public final class BootstrapBatchRunner {
     /** 请求取消（标志位）：当前号自然结束后停，置 CANCELLED。 */
     public void cancel() {
         cancelled.set(true);
+        // 取消即清理该批次各号的会话状态（需求 R-02：批次取消是 clearScope 的清理点之一）。
+        for (AccountEntry entry : entries) {
+            BootstrapSessionState.shared().clearScope(entry.fpid);
+        }
         FileLog.info("起号批次收到取消请求 id={} state={}", id, state);
     }
 
@@ -398,6 +402,8 @@ public final class BootstrapBatchRunner {
     private void runAccount(AccountEntry entry) {
         entry.state = AccountState.RUNNING;
         entry.error = "";
+        // 重跑该号前清掉上一轮会话状态（world/finishPass/ENDED 等），避免批次重跑继承旧终态。
+        BootstrapSessionState.shared().clearScope(entry.fpid);
         FileLog.info("起号批次 {} 开始处理 fpid={} sdkToken={}", id, entry.fpid,
                 BootstrapReferral.mask(entry.sdkToken));
         Session session = null;
@@ -409,8 +415,8 @@ public final class BootstrapBatchRunner {
             }
             BootstrapService service = new BootstrapService(session.port,
                     new BootstrapPlanner(), BootstrapCatalog.combined(), serviceSleeper,
-                    // hold 表按 fpid 进程级共享：单号挂点与批次看到同一份 51 退避（审查 P1-2）
-                    BootstrapHoldStore.shared(), entry.fpid);
+                    // hold 表与会话状态均按 fpid 进程级共享：单号挂点与批次看到同一份状态（审查 P1-2）
+                    BootstrapHoldStore.shared(), entry.fpid, BootstrapSessionState.shared());
             service.applyConfig(accountConfig());
             BootstrapService.LoginOutcome outcome;
             try {

@@ -61,6 +61,10 @@ public class BootstrapApiTest {
     /** 脚本回放端口：req_loaddata 回熔炉达标 loaddata（批次同步跑完即 SUCCESS）。 */
     private static final class ScriptedPort implements ProtocolPort {
         final List<Map.Entry<String, Map<String, Object>>> calls = new ArrayList<>();
+        /** 推送内容（proto → 已解包内容）：单号挂点 world/情报链路用（P1-2 回归）。 */
+        final Map<String, Map<String, Object>> notifies = new LinkedHashMap<>();
+        /** 可编程 loaddata 覆盖（缺省 301 lv=2 + 空队列）；用于构造熔炉 7 等场景。 */
+        Map<String, Object> loadData = null;
         private final Map<String, java.util.ArrayDeque<Map<String, Object>>> scripted =
                 new LinkedHashMap<>();
 
@@ -69,6 +73,11 @@ public class BootstrapApiTest {
             java.util.ArrayDeque<Map<String, Object>> q =
                     scripted.computeIfAbsent(proto, ignored -> new java.util.ArrayDeque<>());
             q.addAll(Arrays.asList(contents));
+        }
+
+        @Override
+        public Map<String, Object> notify(String proto) {
+            return notifies.get(proto);
         }
 
         @Override
@@ -83,6 +92,7 @@ public class BootstrapApiTest {
                 content.put("uid", 8001L);
                 content.put("buildings", buildings);
                 content.put("queues", new ArrayList<>());
+                if (loadData != null) content.putAll(loadData);
             }
             if ("req_alliance_search_by_key".equals(proto)) {
                 // 入盟闭环（任务书 §2.2：目标达成后 joinAlliance）：唯一公开招募联盟
@@ -100,6 +110,10 @@ public class BootstrapApiTest {
             msg.setContent(content);
             return msg;
         }
+
+        int count(String proto) {
+            return (int) calls.stream().filter(c -> c.getKey().equals(proto)).count();
+        }
     }
 
     private BootstrapBatchStore store;
@@ -108,6 +122,7 @@ public class BootstrapApiTest {
     @Before
     public void setUp() {
         BootstrapHoldStore.shared().clearAll();
+        BootstrapSessionState.shared().clearAll();
         Path dir = tmp.getRoot().toPath();
         store = new BootstrapBatchStore(dir);
         referral = new BootstrapReferral(dir);
@@ -119,6 +134,8 @@ public class BootstrapApiTest {
     @After
     public void tearDown() {
         BootstrapApi.resetForTest();
+        BootstrapHoldStore.shared().clearAll();
+        BootstrapSessionState.shared().clearAll();
     }
 
     private static Map<String, Object> fields(Object... kv) {
@@ -358,6 +375,89 @@ public class BootstrapApiTest {
     public void singleAction_requiresFpid() {
         JSONObject out = BootstrapApi.handle(fields("action", "single-status"));
         assertTrue(out.optString("error").contains("fpid"));
+    }
+
+    // ================= P1-2 回归：单号挂点会话状态跨请求 =================
+
+    /** 熔炉 7 + 情报推送 + fog 可发的 loaddata（单号挂点 world 链路场景）。 */
+    private static Map<String, Object> furnace7Load() {
+        Map<String, Object> load = new LinkedHashMap<>();
+        load.put("uid", 8001L);
+        load.put("buildings", Map.of(
+                "301", Map.of("bid", 301L, "lv", 7L, "status", 0L),
+                "302", Map.of("bid", 302L, "lv", 1L, "status", 0L)));
+        load.put("queues", new ArrayList<>());
+        return load;
+    }
+
+    /**
+     * P1-2 回归（需求 R-02 验收 1）：熔炉 7 + 情报推送存在时，连续两次 single-run-next，
+     * 第二次不得重发 {@code req_world_kingdom_info}（world 标记按 fpid 跨请求存活）。
+     */
+    @Test
+    public void singleRunNext_worldAdvanceStatePersistsAcrossRequests() {
+        ScriptedPort port = new ScriptedPort();
+        port.loadData = furnace7Load();
+        port.notifies.put(BootstrapService.NOTIFY_INTEL_INFO, Map.of(
+                "events", Map.of("11", Map.of("id", 11L, "status", 2L, "type", 0L))));
+        port.when("req_world_kingdom_info", Map.of("code", 0L, "kid", 77L));
+        String fpid = "fp-world-" + System.nanoTime();
+        BootstrapApi.ACTIVE.put(fpid, new Session(new FakeEngine(), port));
+        try {
+            JSONObject first = BootstrapApi.handle(fields("action", "single-run-next", "fpid", fpid));
+            assertFalse(first.optString("error", ""), first.has("error"));
+            assertEquals("STARTED", first.optString("status"));
+            assertEquals("首次应发 req_world_kingdom_info",
+                    1, port.count("req_world_kingdom_info"));
+
+            JSONObject second = BootstrapApi.handle(fields("action", "single-run-next", "fpid", fpid));
+            assertFalse(second.optString("error", ""), second.has("error"));
+            assertEquals("跨请求不得重发 req_world_kingdom_info",
+                    1, port.count("req_world_kingdom_info"));
+            assertEquals("第二次应发 req_world_map_fog（kid 跨请求保留）",
+                    1, port.count("req_world_map_fog"));
+        } finally {
+            BootstrapApi.ACTIVE.remove(fpid);
+            BootstrapSessionState.shared().clearScope(fpid);
+        }
+    }
+
+    /**
+     * P1-2 回归（需求 R-02 验收 2）：连续请求 single-run-next 时，finishPass 的
+     * 邮箱/里程碑/背包钻石收尾当日只执行一轮。
+     */
+    @Test
+    public void singleRunNext_finishPassRunsOnceAcrossRequests() {
+        ScriptedPort port = new ScriptedPort();
+        Map<String, Object> load = furnace7Load();
+        load.put("bag", Map.of("100001", 2L));   // 背包钻石道具
+        port.loadData = load;
+        // 情报快照存在但无可领事件：world 完成后进入 finishPass
+        port.notifies.put(BootstrapService.NOTIFY_INTEL_INFO, Map.of("events", Map.of()));
+        port.when("req_world_kingdom_info", Map.of("code", 0L, "kid", 77L));
+        port.when("req_use_item", Map.of("code", 0L));
+        String fpid = "fp-finish-" + System.nanoTime();
+        BootstrapApi.ACTIVE.put(fpid, new Session(new FakeEngine(), port));
+        try {
+            BootstrapApi.handle(fields("action", "single-run-next", "fpid", fpid));   // kingdom info
+            BootstrapApi.handle(fields("action", "single-run-next", "fpid", fpid));   // fog
+
+            JSONObject finish = BootstrapApi.handle(fields(
+                    "action", "single-run-next", "fpid", fpid));
+            assertFalse(finish.optString("error", ""), finish.has("error"));
+            assertTrue("第 3 次应执行 ≥7 收尾：" + finish,
+                    finish.optString("message").contains("收尾完成"));
+            assertTrue("收尾应打开背包钻石道具", port.count("req_use_item") >= 1);
+
+            JSONObject again = BootstrapApi.handle(fields(
+                    "action", "single-run-next", "fpid", fpid));
+            assertFalse(again.optString("error", ""), again.has("error"));
+            assertFalse("finishPass 当日只执行一轮：" + again,
+                    again.optString("message").contains("收尾完成"));
+        } finally {
+            BootstrapApi.ACTIVE.remove(fpid);
+            BootstrapSessionState.shared().clearScope(fpid);
+        }
     }
 
     // ================= 校验中文错误 =================

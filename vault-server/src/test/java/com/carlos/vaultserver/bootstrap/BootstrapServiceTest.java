@@ -371,6 +371,45 @@ public class BootstrapServiceTest {
         assertEquals(3, port.count("req_upgrade_building"));
     }
 
+    /**
+     * P1-3 回归（需求 R-03）：建筑 51 且钻石兜底失败后，必须写 30s 动作退避 + 30s 购买冷却；
+     * 冷却内同一动作不得再按全量成本强制购买资源（否则每轮 5s 烧一次钻石）。
+     */
+    @Test
+    public void upgradeRejected_51_buildingMarksHoldAndBuyCooldown() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 8; i++) {
+            port.when("req_upgrade_building", content("code", 51L));
+        }
+        port.when("req_shop_info", content("info", content("id", 701L,
+                "goods", content("1", content("id", 555L, "conf_id", 70110102L, "grid_id", 1L)))));
+        port.when("req_shop_buy", content("code", 0L));
+        MutableClock clock = new MutableClock(5_000_000L);
+        BootstrapHoldStore holds = new BootstrapHoldStore(clock);
+        String scope = "fp-51-cool";
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 8, true, false, true,
+                "", false, "");
+        BootstrapService svc = service(port, readyLoadFurnace7(), cfg, holds, scope);
+
+        Map<String, Object> first = svc.runNext();
+        assertEquals("WAITING", first.get("status"));
+        Action held = new Action(ActionKind.UPGRADE_BUILDING, 301L, "大熔炉",
+                0L, 0L, 8L, List.of());
+        String actionKey = BootstrapService.holdKey(held);
+        assertEquals("建筑 51 必须写 30s 动作退避",
+                5_000_000L + BootstrapService.ACTION_RETRY_MILLIS,
+                holds.deadlineMillis(scope, actionKey));
+        assertEquals("建筑 51 必须写 30s 购买冷却",
+                5_000_000L + BootstrapService.ACTION_RETRY_MILLIS,
+                holds.deadlineMillis(scope, "buy:" + actionKey));
+        assertEquals("首轮 51 应补一次资源", 1, port.count("req_shop_buy"));
+
+        // 显式点名升级绕过 planner 的 hold 过滤（HoldPolicy.NONE），专测购买冷却本身
+        svc.levelBuilding(301L);
+        assertEquals("购买冷却内不得再次购买", 1, port.count("req_shop_buy"));
+        assertEquals("购买冷却内不得再次查询商店", 1, port.count("req_shop_info"));
+    }
+
     /** 熔炉 2 级 + 民居1 1 级：目标熔炉 3 的首个动作是「民居1 家具 101 建造」。 */
     private static Map<String, Object> readyLoadFurnace3() {
         Map<String, Object> buildings = new LinkedHashMap<>();
@@ -781,6 +820,19 @@ public class BootstrapServiceTest {
         again.put("res_update", load.get("res_update"));
         svc.syncLoadData(again);
         assertEquals(100L, svc.state().resourceCount(103L));
+    }
+
+    /**
+     * P1-1 回归（需求 R-01）：本轮没有 res 快照时，res_update 必须叠加在旧资源上，
+     * 而不是从 0 起算（当前实现会得到 -900）。
+     */
+    @Test
+    public void syncLoadData_deltaWithoutResSnapshot_mergesLegacy() {
+        BootstrapService svc = service(new ScriptedPort(), Map.of(), enabledConfig());
+        svc.syncLoadData(content("res", content("103", 1000L)));
+        assertEquals(1000L, svc.state().resourceCount(103L));
+        svc.syncLoadData(content("res_update", List.of(content("id", 103L, "count", -900L))));
+        assertEquals("旧值 1000 + 增量 -900", 100L, svc.state().resourceCount(103L));
     }
 
     @Test

@@ -484,12 +484,14 @@ public final class BootstrapApi {
      *
      * <p>退避表例外（审查 P1-2）：{@link BootstrapHoldStore#shared()} 按 fpid 共享，
      * 否则每次请求新建 service 会把上一次请求写入的 51 hold 丢掉，30 分钟长退避在单号
-     * 路径永不生效。
+     * 路径永不生效。会话状态（world/finishPass/ENDED 等）同样经
+     * {@link BootstrapSessionState#shared()} 按 fpid 共享，否则单步模式会重复发 world 请求、
+     * 每次请求重跑收尾/重复应用资源增量（审查 P1-2 / 需求 R-02）。
      */
     private static BootstrapService serviceOf(Session session, String fpid) throws Exception {
         BootstrapService service = new BootstrapService(session.port, new BootstrapPlanner(),
                 BootstrapCatalog.combined(), BATCH_SLEEPER,
-                BootstrapHoldStore.shared(), fpid);
+                BootstrapHoldStore.shared(), fpid, BootstrapSessionState.shared());
         service.applyConfig(new BootstrapConfig(true, 0L, BootstrapConfig.DEFAULT_TARGET_FURNACE_LEVEL,
                 true, false, true, "", false, ""));
         service.syncLoadData(contentOf(session.port.request("req_loaddata", Map.of())));

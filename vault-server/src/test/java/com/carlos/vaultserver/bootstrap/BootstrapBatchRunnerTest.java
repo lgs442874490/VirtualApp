@@ -47,10 +47,11 @@ public class BootstrapBatchRunnerTest {
     @Rule
     public TemporaryFolder tmp = new TemporaryFolder();
 
-    /** 共享 hold 表是进程级：每个用例前清空，避免 fpid 复用时串用例（卡点 A 新增）。 */
+    /** 共享 hold 表与会话状态是进程级：每个用例前清空，避免 fpid 复用时串用例（卡点 A / P1-2 新增）。 */
     @org.junit.Before
     public void resetSharedHolds() {
         BootstrapHoldStore.shared().clearAll();
+        BootstrapSessionState.shared().clearAll();
     }
 
     private static final BootstrapService.Sleeper NO_SLEEP = millis -> {

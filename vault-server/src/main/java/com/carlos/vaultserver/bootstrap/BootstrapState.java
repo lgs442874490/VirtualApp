@@ -215,7 +215,7 @@ public final class BootstrapState {
      *
      * <p>这是开箱/领奖后资源到账的唯一通道 —— 不处理它，本地资源表永远停在登录快照（实测恒为 0）。
      */
-    private void applyResourceUpdate(Object raw) {
+    void applyResourceUpdate(Object raw) {
         if (raw == null) return;
         for (Map<String, Object> entry : entries(raw)) {
             long id = positive(number(entry.get("id")), 0L);
