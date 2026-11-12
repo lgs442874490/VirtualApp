@@ -128,12 +128,31 @@ public class ServerShieldResponderTest {
         if (battleShieldParams == null) {
             battleShieldParams = "{\"strategy\":{\"shield_mode\":\"immediate\"}}";
         }
+        // 2026-11-13：免费盾默认改为关闭（free 缺省 false）。本类旧用例均假设「免费盾可用」，
+        // 未显式声明 sub.free 时补 true 保持用例语义；free 开关专属用例不走本夹具。
+        battleShieldParams = ensureFreeEnabled(battleShieldParams);
         a.roleParams.put(String.valueOf(SID),
                 new LinkedHashMap<>(Map.of("battle_shield", battleShieldParams)));
         List<VaultStore.Account> in = new ArrayList<>();
         in.add(a);
         vault.replaceAll(in);
         return a;
+    }
+
+    /** 夹具：battle_shield 参数 JSON 未显式写 sub.free 时补 true（旧用例假设免费盾可用）。 */
+    private static String ensureFreeEnabled(String json) {
+        try {
+            JSONObject o = new JSONObject(json);
+            JSONObject sub = o.optJSONObject("sub");
+            if (sub == null) {
+                sub = new JSONObject();
+                o.put("sub", sub);
+            }
+            if (!sub.has("free")) sub.put("free", true);
+            return o.toString();
+        } catch (Throwable t) {
+            return json;
+        }
     }
 
     private ServerShieldResponder responder() {
@@ -495,6 +514,24 @@ public class ServerShieldResponderTest {
 
         assertEquals(TaskOutcome.Category.SKIPPED, out.category);
         assertTrue(out.message.contains("总开关"));
+        assertTrue(e.requested.isEmpty());
+    }
+
+    @Test
+    public void freeShield_freeSwitchOff_skipped_noRequest() throws Exception {
+        // 2026-11-13：每日免费护盾独立开关 free=false 时只关定时免费盾（enabled 仍开、
+        // 反应式开盾不受影响）；此前服务端未消费 free，App 关了也照开。
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        Map<String, JSONObject> params = new HashMap<>();
+        params.put("battle_shield", new JSONObject("{\"sub\":{\"enabled\":true,\"free\":false}}"));
+        TaskContext tc = new TaskContext(e, "111", SID, state, params, "测试");
+
+        TaskOutcome out = ServerTasks.freeShield(tc);
+
+        assertEquals(TaskOutcome.Category.SKIPPED, out.category);
+        assertTrue(out.message.contains("每日免费护盾"));
         assertTrue(e.requested.isEmpty());
     }
 

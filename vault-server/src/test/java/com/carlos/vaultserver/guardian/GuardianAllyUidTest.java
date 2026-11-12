@@ -422,6 +422,13 @@ public class GuardianAllyUidTest {
 
         long uid = engine.allyUidByPoint(524, 420);
         assertTrue("同坐标取第一个（2001/2002 之一）: " + uid, uid == 2001L || uid == 2002L);
+
+        // 2026-11-13：默认容差改为 1（吸收 ±1 取整差）。本断言验证「容差 0」语义，
+        // 显式配置 0 后再查；默认容差行为见 config 默认用例。
+        accountWithParams("{\"sub\":{\"enabled\":true,\"dry_run\":false},"
+                + "\"strategy\":{\"require_ally\":true,\"ally_match_tolerance\":0,"
+                + "\"formation\":{\"hero_ids\":[1]}}}");
+        engine.reloadConfig(true);
         assertEquals("坐标容差 0：邻近点不匹配", 0L, engine.allyUidByPoint(525, 420));
 
         // 配置 ally_uid=2002 → 优先返回它

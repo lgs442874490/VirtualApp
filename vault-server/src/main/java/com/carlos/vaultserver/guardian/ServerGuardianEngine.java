@@ -268,8 +268,8 @@ public final class ServerGuardianEngine {
         int maxConcurrent = DEFAULT_MAX_CONCURRENT_MISSIONS;
         // ---- 批次 G：要求目标必须是盟友坐标反查命中的 uid（默认 true；false=旧行为） ----
         boolean requireAlly = true;
-        /** 盟友坐标匹配容差（曼哈顿距离；默认 0=严格相等，clamp 0..3；1 可吸收 ±1 取整差）。 */
-        long allyMatchTolerance = 0L;
+        /** 盟友坐标匹配容差（曼哈顿距离；默认 1=吸收 ±1 取整差，clamp 0..3；0=严格相等）。 */
+        long allyMatchTolerance = 1L;
         /** 2026-10-31：用观察点整图扫描缓存按坐标反查「城 uid + 联盟 aid」判定友方（默认开）。 */
         boolean allyUseWatchpoint = true;
         /**
@@ -4437,7 +4437,7 @@ public final class ServerGuardianEngine {
             // 批次 F：队列无位重试（0=关闭回旧行为；间隔 1..30s）
             c.requireAlly = bool(sub, st, p, "require_ally", true);
             c.allyMatchTolerance = Math.max(0L, Math.min(3L,
-                    num(sub, st, p, "ally_match_tolerance", 0L)));
+                    num(sub, st, p, "ally_match_tolerance", 1L)));
             c.allyUseWatchpoint = bool(sub, st, p, "ally_use_watchpoint", true);
             c.allyUseProtectRect = bool(sub, st, p, "ally_use_protect_rect", false);
             c.allyRectMaxDist = Math.max(0L, Math.min(60L,
