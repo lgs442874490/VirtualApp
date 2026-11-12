@@ -499,6 +499,24 @@ public class ServerShieldResponderTest {
     }
 
     @Test
+    public void freeShield_freeSwitchOff_skipped_noRequest() throws Exception {
+        // 2026-11-13：每日免费护盾独立开关 free=false 时只关定时免费盾（enabled 仍开、
+        // 反应式开盾不受影响）；此前服务端未消费 free，App 关了也照开。
+        TestEngine e = new TestEngine();
+        presetCityItem(e, 42L);
+        e.responses.put("req_city_item_free_use", msg(0));
+        Map<String, JSONObject> params = new HashMap<>();
+        params.put("battle_shield", new JSONObject("{\"sub\":{\"enabled\":true,\"free\":false}}"));
+        TaskContext tc = new TaskContext(e, "111", SID, state, params, "测试");
+
+        TaskOutcome out = ServerTasks.freeShield(tc);
+
+        assertEquals(TaskOutcome.Category.SKIPPED, out.category);
+        assertTrue(out.message.contains("每日免费护盾"));
+        assertTrue(e.requested.isEmpty());
+    }
+
+    @Test
     public void troopsBelowMin_skipped() {
         account(true, "{\"strategy\":{\"shield_troops_min\":\"100000\"}}");
         TestEngine e = new TestEngine();

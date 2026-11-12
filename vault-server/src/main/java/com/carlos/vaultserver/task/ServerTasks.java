@@ -4089,6 +4089,13 @@ public final class ServerTasks {
                 return new TaskOutcome("battle_shield", "战斗护盾", TaskOutcome.Category.SKIPPED,
                         "总开关已关闭（App 设置页可开）");
             }
+            // 2026-11-13：每日免费护盾独立开关（缺省 true=兼容旧行为）。free=false 只关
+            // 定时免费盾，不影响反应式开盾；此前 App 的「每日免费护盾」开关写入 free 但
+            // 服务端未消费，导致关不掉。
+            if (!tc.subOn("battle_shield", "free", true)) {
+                return new TaskOutcome("battle_shield", "战斗护盾", TaskOutcome.Category.SKIPPED,
+                        "每日免费护盾已关闭（App 设置页可开）");
+            }
             // free_id 来自 notify_city_item_init.data[].free_id，不能写死 1。
             long freeId = 0;
             Map<String, Object> ci = tc.engine.notifyData("notify_city_item_init");
