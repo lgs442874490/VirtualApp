@@ -97,9 +97,17 @@ public final class WatchPointEngine {
     private volatile boolean destroyContactCheck =
             !("0".equals(System.getenv("VAULT_DESTROY_CONTACT"))
                     || "off".equalsIgnoreCase(System.getenv("VAULT_DESTROY_CONTACT")));
-    /** 破坏接触半径（格）：默认 2；{@code -DVAULT_DESTROY_TOUCH_RADIUS} 可调（0–10）。 */
-    private volatile int destroyTouchRadius =
-            (int) Math.max(0L, Math.min(10L, Long.getLong("VAULT_DESTROY_TOUCH_RADIUS", 2L)));
+    /**
+     * 破坏接触半径：按建筑领地范围（用户确认：旗子 7×7，半径 3；联盟总部 9×9，半径 4）。
+     * 荒原/雪原总部目前无法从协议区分，先统一按 9×9 处理（雪原总部实际 11×11，
+     * 待解析等级后启用半径 5）。可用 {@code -DVAULT_DESTROY_TOUCH_RADIUS_FLAG/_HALL} 覆盖，
+     * 兼容旧参数 {@code -DVAULT_DESTROY_TOUCH_RADIUS}（作为旗子默认值）。
+     */
+    private volatile int destroyRadiusFlag =
+            (int) Math.max(0L, Math.min(10L, Long.getLong("VAULT_DESTROY_TOUCH_RADIUS_FLAG",
+                    Long.getLong("VAULT_DESTROY_TOUCH_RADIUS", 3L))));
+    private volatile int destroyRadiusHall =
+            (int) Math.max(0L, Math.min(10L, Long.getLong("VAULT_DESTROY_TOUCH_RADIUS_HALL", 4L)));
     /** 单会话每 tick 扫描块数（主循环 80ms 一批）；N 个在线会话时预算 = 该值 × N。 */
     private static final int SCAN_SEND_PER_TICK = 4;
     /** 单 tick 扫描块总预算上限（会话数很大时防请求突发）。 */
@@ -2807,10 +2815,12 @@ public final class WatchPointEngine {
     /**
      * 2026-11-12 用户口径：破坏前置校验——双方联盟建筑必须接触，否则游戏内无法破坏。
      *
-     * <p>判定：发起人联盟（{@link #aidOf}）任一联盟建筑（旗子/总部/王城/陷阱）与目标坐标的
-     * 切比雪夫距离 ≤ {@link #destroyTouchRadius}（默认 2 格）。以下例外不要求接壤：目标为
-     * <b>王城</b>（争夺规则）、目标为<b>荒原中立总部</b>（aid=0）。发起人联盟未知、或建筑缓存里
-     * 没有其任何建筑 → 视为无法确认接触，<b>不推送</b>（用户口径：宁可少报，不误报）。
+     * <p>判定：发起人联盟（{@link #aidOf}）任一联盟建筑与目标坐标的领地范围「边缘相邻」——
+     * 两建筑领地半径分别为 r1/r2 时，切比雪夫距离 ≤ r1 + r2 + 1 即接触。
+     * 半径按建筑类型取（{@link #territoryRadius}：旗子 7×7=3、总部 9×9=4）。
+     * 以下例外不要求接壤：目标为<b>王城</b>（争夺规则）、目标为<b>荒原中立总部</b>（aid=0）。
+     * 发起人联盟未知、或建筑缓存里没有其任何建筑 → 视为无法确认接触，<b>不推送</b>
+     * （用户口径：宁可少报，不误报）。
      */
     private boolean destroyContactAllowed(long ownerUid, int ex, int ey) {
         if (!destroyContactCheck) return true;
@@ -2821,7 +2831,7 @@ public final class WatchPointEngine {
         }
         long ownerAid = aidOf(ownerUid);
         if (ownerAid <= 0L) return false;
-        int r = Math.max(0, destroyTouchRadius);
+        int rTarget = territoryRadius(target);
         for (Map.Entry<String, Building> en : buildingByPoint.entrySet()) {
             Building b = en.getValue();
             if (b == null || b.kind == null || b.aid != ownerAid) continue;
@@ -2838,9 +2848,16 @@ public final class WatchPointEngine {
             } catch (NumberFormatException ignored) {
                 continue;
             }
-            if (Math.abs(bx - ex) <= r && Math.abs(by - ey) <= r) return true;
+            int reach = territoryRadius(b) + rTarget + 1;   // 两方领地边缘相邻
+            if (Math.abs(bx - ex) <= reach && Math.abs(by - ey) <= reach) return true;
         }
         return false;
+    }
+
+    /** 建筑领地半径（格）：总部 9×9=4（荒原/雪原暂统一），其余旗子/陷阱 7×7=3。 */
+    private int territoryRadius(Building b) {
+        if (b != null && "总部".equals(b.kind)) return destroyRadiusHall;
+        return destroyRadiusFlag;
     }
 
     /**
@@ -3496,9 +3513,11 @@ public final class WatchPointEngine {
         this.destroyContactCheck = on;
     }
 
-    /** 单测：破坏接触半径（默认 2 格）。 */
+    /** 单测：破坏接触半径（同时设置旗子/总部，默认 3/4 格）。 */
     void setDestroyTouchRadiusForTest(int radius) {
-        this.destroyTouchRadius = Math.max(0, Math.min(10, radius));
+        int r = Math.max(0, Math.min(10, radius));
+        this.destroyRadiusFlag = r;
+        this.destroyRadiusHall = r;
     }
 
     /** 单测：改聚合窗口（默认 60s；0=立即到期）。 */
