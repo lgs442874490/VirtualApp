@@ -287,6 +287,9 @@ public class BootstrapBatchRunnerTest {
         assertTrue("ENDED 计入终态集合", BootstrapBatchRunner.isTerminal("ENDED"));
         assertTrue("ENDED 文案应说明资源耗尽：" + runner.entry(0).error,
                 runner.entry(0).error.contains("资源"));
+        assertEquals("ENDED 也要回填熔炉等级（UI 展示）", 9L, runner.entry(0).furnaceLevel);
+        assertTrue("批次汇总应体现已结束：" + runner.view().optString("message"),
+                runner.view().optString("message").contains("已结束"));
     }
 
     /** SUCCESS → 写回流清单（含 encrypted/batchId/uid/furnaceLevel/pulled=false 完整结构）。 */

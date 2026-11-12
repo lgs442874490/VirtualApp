@@ -1358,8 +1358,11 @@ public class BootstrapServiceTest {
         BootstrapService svc = service(port, packLoad(content("100021", 1L)), enabledConfig());
         Map<String, Object> r = svc.runNext();
         assertEquals("WAITING", r.get("status"));
-        assertEquals("资源或道具不足，等待补充后重试：升级 大熔炉 到 2 级（已开启背包资源包 1 项）",
-                r.get("message"));
+        assertTrue("主提示应保留：" + r.get("message"),
+                String.valueOf(r.get("message")).startsWith(
+                        "资源或道具不足，等待补充后重试：升级 大熔炉 到 2 级"));
+        assertTrue("应带开包摘要：" + r.get("message"),
+                String.valueOf(r.get("message")).contains("（已开启背包资源包 1 项）"));
         Map<String, Object> preparation = (Map<String, Object>) r.get("preparation");
         Map<String, Object> backpack = (Map<String, Object>) preparation.get("backpack");
         assertEquals(true, backpack.get("ready"));
@@ -1371,12 +1374,14 @@ public class BootstrapServiceTest {
         ScriptedPort port = new ScriptedPort();
         port.when("req_upgrade_building", content("code", 51L), content("code", 51L),
                 content("code", 51L));
-        // 背包已同步但无任何资源包 → used 空 → WAITING 文案无开包后缀
+        // 背包已同步但无任何资源包 → used 空 → WAITING 文案无开包后缀（可能带缺口摘要）
         BootstrapService svc = service(port, packLoad(content()), enabledConfig());
         Map<String, Object> r = svc.runNext();
         assertEquals(0, port.count("req_use_item"));
         assertEquals("WAITING", r.get("status"));
-        assertEquals("资源或道具不足，等待补充后重试：升级 大熔炉 到 2 级", r.get("message"));
+        assertTrue("主提示应保留（P2-2 后可能带缺口摘要）：" + r.get("message"),
+                String.valueOf(r.get("message")).startsWith(
+                        "资源或道具不足，等待补充后重试：升级 大熔炉 到 2 级"));
     }
 
     @Test
@@ -2094,5 +2099,163 @@ public class BootstrapServiceTest {
             }
         }
         assertTrue("煤/铁缺口计入 unsupplied", ((List<?>) r.get("unsupplied")).size() >= 2);
+    }
+
+    // ================= 二次审查 P2 回归 =================
+
+    /** P2-1：ENDED 文案必须带不可覆盖缺口摘要（unsupplied 不再恒空）。 */
+    @Test
+    public void upgradeRejected_51_endedMessageContainsGap() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 12; i++) {
+            port.when("req_upgrade_building", content("code", 51L));
+        }
+        port.when("req_shop_info", content("info", content("id", 701L,
+                "goods", content("1", content("id", 555L, "conf_id", 70110102L, "grid_id", 1L)))));
+        port.when("req_shop_buy", content("code", 0L));
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 10, true, false, true,
+                "", false, "");
+        BootstrapService svc = service(port, readyLoadFurnace9(0L), cfg);
+
+        svc.runNext();
+        svc.runNext();
+        Map<String, Object> third = svc.runNext();
+        assertEquals("ENDED", third.get("status"));
+        String message = String.valueOf(third.get("message"));
+        assertTrue("ENDED 文案应带缺口摘要：" + message,
+                message.contains("缺口") && message.contains("煤矿"));
+    }
+
+    /**
+     * P2-2 + R-07：purchase 缺失（buyShopResources=false）时按本地缺口判定；
+     * 熔炉 7 连续 10 次不可覆盖 → ENDED（<9 的 stall>=10 分支）。
+     */
+    @Test
+    public void upgradeRejected_51_noPurchase_furnace7_stallTen_ended() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 80; i++) {
+            port.when("req_upgrade_building", content("code", 51L));
+        }
+        MutableClock clock = new MutableClock(9_000_000L);
+        BootstrapHoldStore holds = new BootstrapHoldStore(clock);
+        String scope = "fp-stall10";
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 8, true, false, false,
+                "", false, "");
+        BootstrapService svc = service(port, readyLoadFurnace7(), cfg, holds, scope);
+
+        for (int i = 0; i < 9; i++) {
+            Map<String, Object> r = svc.runNext();
+            assertEquals("第 " + (i + 1) + " 次 51 仍应 WAITING：" + r,
+                    "WAITING", r.get("status"));
+            clock.advance(BootstrapService.ACTION_RETRY_MILLIS + 1_000L);
+        }
+        Map<String, Object> ended = svc.runNext();   // stall = 10
+        assertEquals("stall>=10 → ENDED：" + ended, "ENDED", ended.get("status"));
+        assertTrue("ENDED 文案带缺口：" + ended.get("message"),
+                String.valueOf(ended.get("message")).contains("缺口"));
+    }
+
+    /** P2-3：熔炉 9 的 51 分支同样写购买冷却，第二次不再全量购买。 */
+    @Test
+    public void upgradeRejected_51_furnace9_buyCooldown() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 12; i++) {
+            port.when("req_upgrade_building", content("code", 51L));
+        }
+        for (int i = 0; i < 6; i++) {
+            port.when("req_shop_info", content("info", content("id", 701L,
+                    "goods", content("1", content("id", 555L, "conf_id", 70110102L, "grid_id", 1L)))));
+        }
+        port.when("req_shop_buy", content("code", 0L));
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 10, true, false, true,
+                "", false, "");
+        BootstrapService svc = service(port, readyLoadFurnace9(500L), cfg);
+
+        svc.runNext();
+        int buys = port.count("req_shop_buy");
+        int shopCalls = port.count("req_shop_info");
+        assertTrue("首轮应尝试购买：" + buys, buys >= 1);
+        svc.runNext();
+        assertEquals("≥9 分支购买冷却生效：第二次不再查商店", shopCalls, port.count("req_shop_info"));
+        assertEquals("≥9 分支购买冷却生效：第二次不再购买", buys, port.count("req_shop_buy"));
+        Map<String, Object> third = svc.runNext();
+        assertEquals("三次不可覆盖 → ENDED", "ENDED", third.get("status"));
+    }
+
+    /** P2-5：ENDED 后 levelBuilding 必须被终态拦截。 */
+    @Test
+    public void levelBuilding_afterEnded_returnsEnded() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        BootstrapSessionState store = new BootstrapSessionState();
+        BootstrapService svc = new BootstrapService(port, new BootstrapPlanner(),
+                BootstrapCatalog.combined(), NO_SLEEP, new BootstrapHoldStore(),
+                "fp-lb-ended", store);
+        svc.applyConfig(enabledConfig());
+        svc.syncLoadData(readyLoad(1L, 1L));
+        store.holder("fp-lb-ended").markResourceEnded();
+
+        Map<String, Object> r = svc.levelBuilding(301L);
+        assertEquals("ENDED", r.get("status"));
+        assertEquals("终态不可再推进：不得发升级请求", 0, port.count("req_upgrade_building"));
+    }
+
+    /** P2-6：目标已达成但 ENDED 已置位时，status 必须 ENDED 优先（与批次层一致）。 */
+    @Test
+    public void resourceEnded_statusEndedEvenWhenTargetReached() throws Exception {
+        BootstrapSessionState store = new BootstrapSessionState();
+        BootstrapService svc = new BootstrapService(new ScriptedPort(), new BootstrapPlanner(),
+                BootstrapCatalog.combined(), NO_SLEEP, new BootstrapHoldStore(),
+                "fp-ended-priority", store);
+        svc.applyConfig(new BootstrapConfig(true, 0L, 9, true, false, false, "", false, ""));
+        svc.syncLoadData(readyLoad(9L, 1L));
+        store.holder("fp-ended-priority").markResourceEnded();
+
+        Map<String, Object> status = svc.status();
+        assertEquals("ENDED 优先于 LEVEL_COMPLETED", "ENDED", status.get("runState"));
+        assertEquals("目标达成仍记录 completed", true, status.get("completed"));
+        assertEquals("ENDED 文案", "大熔炉资源耗尽，起号结束", status.get("message"));
+    }
+
+    /** R-09 边界：serverNowMs 返回 0/负值时必须回退本机日期，不写 1970。 */
+    @Test
+    public void finishPass_serverClockInvalid_fallsBackLocalDate() throws Exception {
+        ScriptedPort port = new ScriptedPort() {
+            @Override
+            public long serverNowMs() {
+                return 0L;
+            }
+        };
+        port.when(BootstrapService.MAIL_COVER_LIST, content("code", 0L, "coverlist", List.of(
+                content("mailid_new", "m1", "isread", 0L, "attach_statue", 1L))));
+        for (int i = 0; i < 5; i++) {
+            port.when(BootstrapService.MAIL_COVER_LIST,
+                    content("code", 0L, "coverlist", List.of()));
+        }
+        port.when(BootstrapService.MAIL_BATCH_READ, content("code", 0L));
+        BootstrapSessionState store = new BootstrapSessionState();
+        BootstrapService svc = new BootstrapService(port, new BootstrapPlanner(),
+                BootstrapCatalog.combined(), NO_SLEEP, new BootstrapHoldStore(),
+                "fp-clock0", store);
+        svc.applyConfig(new BootstrapConfig(true, 0L, 7, true, false, false, "", false, ""));
+        svc.syncLoadData(readyLoad(7L, 1L));
+
+        svc.runNext();
+        assertEquals("非法服务器时钟回退本机日期",
+                java.time.LocalDate.now().toString(),
+                store.holder("fp-clock0").finishPassDay());
+    }
+
+    /** R-10：infos 为 Map（非数组）时按需求回退 list 形状，不误判里程碑。 */
+    @Test
+    public void claimAchievements_infosMapShape_fallsBackToList() {
+        ScriptedPort port = new ScriptedPort();
+        port.when(BootstrapService.ACHIEVEMENT_INFO, content("code", 0L,
+                "infos", content("1", content("id", 9L, "complete", true, "received", false)),
+                "list", List.of(content("id", 7L, "state", 2L))));
+        port.when(BootstrapService.ACHIEVEMENT_REWARD, content("code", 0L));
+        BootstrapService svc = new BootstrapService(port);
+
+        assertEquals(1, svc.claimAchievements());
+        assertEquals(Map.of("id", 7L), port.argsOf(BootstrapService.ACHIEVEMENT_REWARD, 0));
     }
 }

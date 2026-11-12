@@ -347,6 +347,14 @@ public final class BootstrapApi {
     }
 
     /**
+     * 清理某账号的会话状态（单号重跑/账号删除入口调用；二次审查 P2-7）。
+     * 清理后 ENDED 等终态标记消失，允许人工重跑。
+     */
+    static void clearSessionState(String fpid) {
+        BootstrapSessionState.shared().clearScope(fpid);
+    }
+
+    /**
      * batch-start 的配置构造（抽方法便于单测默认值；需求 R-12：
      * buyShopResources 缺省值必须与 {@link BootstrapConfig#fromMap} 一致）。
      */

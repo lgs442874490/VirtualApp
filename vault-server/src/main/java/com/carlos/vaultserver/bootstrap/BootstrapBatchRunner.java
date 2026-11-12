@@ -389,8 +389,19 @@ public final class BootstrapBatchRunner {
         state = terminal;
         finishedAt = System.currentTimeMillis();
         summaryMessage = "批量处理结束：成功 " + successCount + " 个，失败 " + failCount + " 个";
+        int endedCount = 0;
+        for (AccountEntry entry : entries) {
+            if (entry.state == AccountState.ENDED) endedCount++;
+        }
+        if (endedCount > 0) {
+            summaryMessage += "，已结束（资源不足）" + endedCount + " 个";
+        }
         if (terminal == BatchState.CANCELLED) {
             summaryMessage += "（已取消）";
+        }
+        // 二次审查 P2-7：批次终态后清理本批各号会话状态，避免 holders 随批次累积
+        for (AccountEntry entry : entries) {
+            BootstrapSessionState.shared().clearScope(entry.fpid);
         }
         store.update(view());
         FileLog.info("起号批次结束 id={} state={} success={} fail={}",
@@ -448,13 +459,14 @@ public final class BootstrapBatchRunner {
             }
 
             runLeveling(session.port, service, entry);
+            // 二次审查低优先级：ENDED/FAILED 也回填熔炉等级（UI 不再显示 0）
+            entry.furnaceLevel = service.state().furnaceLevel();
 
             if (entry.state != AccountState.SUCCESS) {
-                return; // 升级阶段已标记 FAILED（停滞/超时/取消路径）
+                return; // 升级阶段已标记 FAILED/ENDED（停滞/超时/取消/资源耗尽路径）
             }
             joinAllianceIfConfigured(service, entry);
 
-            entry.furnaceLevel = service.state().furnaceLevel();
             writeReferral(entry);
             entry.steps.add("起号完成：大熔炉 " + entry.furnaceLevel + " 级，已写入回流清单");
             successCount++;
@@ -701,12 +713,7 @@ public final class BootstrapBatchRunner {
                 FileLog.warn("起号轮{} 动作明细 started={} {}", String.valueOf(round),
                         String.valueOf(started), sb.toString());
             }
-            if (furnace >= target) {
-                entry.state = AccountState.SUCCESS;
-                return;
-            }
-            // 需求 R-06：资源耗尽 ENDED 为终态——立即结束该号，
-            // 不再按「停滞」空转 MAX_IDLE_ROUNDS（10 分钟）或误判 FAILED。
+            // 需求 R-06 / 二次审查 P2-6：ENDED 优先于 SUCCESS，与 status.runState 两层一致。
             if (stateView != null && "ENDED".equals(String.valueOf(stateView.get("runState")))) {
                 String reason = stateView.get("blockedReason") == null ? ""
                         : String.valueOf(stateView.get("blockedReason")).trim();
@@ -718,6 +725,10 @@ public final class BootstrapBatchRunner {
                 entry.steps.add("已结束：" + reason);
                 FileLog.info("起号批次 {} 账号资源耗尽结束 fpid={} furnace={} reason={}",
                         id, entry.fpid, String.valueOf(furnace), reason);
+                return;
+            }
+            if (furnace >= target) {
+                entry.state = AccountState.SUCCESS;
                 return;
             }
             if (started == 0) {

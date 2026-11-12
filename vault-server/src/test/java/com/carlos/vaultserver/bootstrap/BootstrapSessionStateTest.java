@@ -5,6 +5,7 @@ import org.junit.Test;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
@@ -101,5 +102,47 @@ public class BootstrapSessionStateTest {
         BootstrapSessionState.Holder second = store.holder("fpid-shared");
         assertEquals(88L, second.worldKingdomId());
         assertTrue(second.worldKingdomInfoSent());
+    }
+
+    /** P2-4：world kingdom info 的“检查→置位”必须原子（并发只有一个赢家）。 */
+    @Test
+    public void claimWorldKingdomInfo_onlyOneWinnerConcurrently() throws Exception {
+        BootstrapSessionState store = new BootstrapSessionState();
+        BootstrapSessionState.Holder holder = store.holder("fp-claim");
+        int threads = 16;
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger winners = new AtomicInteger();
+        List<Thread> workers = new ArrayList<>();
+        for (int i = 0; i < threads; i++) {
+            Thread worker = new Thread(() -> {
+                try {
+                    start.await();
+                } catch (InterruptedException ignored) {
+                }
+                if (holder.claimWorldKingdomInfo()) {
+                    winners.incrementAndGet();
+                }
+            });
+            worker.start();
+            workers.add(worker);
+        }
+        start.countDown();
+        for (Thread worker : workers) {
+            worker.join(10_000L);
+        }
+        assertEquals("并发下只允许一个请求认领 world kingdom info", 1, winners.get());
+        assertTrue(holder.worldKingdomInfoSent());
+    }
+
+    /** P2-4：收尾占位同样原子；全空回滚后可再次认领（R-09）。 */
+    @Test
+    public void claimFinishPass_onlyOneWinnerAndRelease() {
+        BootstrapSessionState store = new BootstrapSessionState();
+        BootstrapSessionState.Holder holder = store.holder("fp-finish-claim");
+        assertTrue(holder.claimFinishPass("2026-11-12"));
+        assertFalse("同日第二次认领失败", holder.claimFinishPass("2026-11-12"));
+        holder.releaseFinishPass("2026-11-12");
+        assertEquals("回滚后当日未置位", "", holder.finishPassDay());
+        assertTrue("回滚后可再次认领", holder.claimFinishPass("2026-11-12"));
     }
 }

@@ -556,6 +556,16 @@ public class BootstrapApiTest {
         }
     }
 
+    /** P2-7：单号重跑/账号删除入口可通过包内方法清理该 fpid 的会话状态。 */
+    @Test
+    public void clearSessionState_clearsScope() {
+        BootstrapSessionState.shared().holder("fp-clear").markResourceEnded();
+        assertTrue(BootstrapSessionState.shared().holder("fp-clear").resourceEnded());
+        BootstrapApi.clearSessionState("fp-clear");
+        assertFalse("清理后 ENDED 标记消失（可人工重跑）",
+                BootstrapSessionState.shared().holder("fp-clear").resourceEnded());
+    }
+
     /** 需求 R-12：batch-start 缺省 buyShopResources 必须为 true（与 BootstrapConfig 统一）。 */
     @Test
     public void batchStart_defaultBuyShopResourcesIsTrue() {

@@ -490,7 +490,7 @@ public final class BootstrapService {
     public Map<String, Object> runNext() throws Exception {
         BootstrapConfig cfg = requireEnabled();
         if (session.resourceEnded()) {
-            return actionResult("ENDED", "大熔炉已到 9 级，资源已尽力补充仍不足，起号结束");
+            return actionResult("ENDED", "大熔炉资源耗尽，起号结束");
         }
         Optional<Map<String, Object>> rename = renameIfNeeded(cfg);
         if (rename.isPresent()) {
@@ -614,6 +614,10 @@ public final class BootstrapService {
      */
     private String finishPassToday() {
         long nowMs = port.serverNowMs();
+        if (nowMs <= 0L) {
+            // 未校准/非法时钟回退本机（避免写成 1970-01-01）
+            nowMs = System.currentTimeMillis();
+        }
         return java.time.Instant.ofEpochMilli(nowMs)
                 .atZone(FINISH_PASS_ZONE).toLocalDate().toString();
     }
@@ -638,6 +642,10 @@ public final class BootstrapService {
             return Optional.empty();
         }
         if (!session.worldKingdomInfoSent()) {
+            // 二次审查 P2-4：检查+置位原子化，并发单号请求只有一个真正发送
+            if (!session.claimWorldKingdomInfo()) {
+                return Optional.empty();
+            }
             try {
                 GameMessage response = request(WORLD_KINGDOM_INFO, Map.of());
                 Map<String, Object> c = content(response);
@@ -645,33 +653,38 @@ public final class BootstrapService {
                 if (kid <= 0L) kid = number(c.get("kingdom_id"));
                 if (kid <= 0L) kid = number(mapOf(c.get("kingdom")).get("id"));
                 if (kid <= 0L) {
-                    // kid 取不到：不置已发送、不发送 fog，按一次失败计数（R-08）
+                    // kid 取不到：回滚认领、不发送 fog，按一次失败计数（R-08）
+                    session.releaseWorldKingdomInfo();
                     return worldAttemptFailed("未取到 kingdom id");
                 }
                 session.setWorldKingdomId(kid);
-                session.markWorldKingdomInfoSent();
                 session.resetWorldAttempts();
                 Map<String, Object> result = actionResult("STARTED",
                         "起号世界地图已推进：已发送 " + WORLD_KINGDOM_INFO);
                 result.put("worldAction", "worldKingdomInfo");
                 return Optional.of(result);
             } catch (Exception e) {
+                session.releaseWorldKingdomInfo();
                 return worldAttemptFailed("请求 " + WORLD_KINGDOM_INFO + " 异常：" + e.getMessage());
             }
         }
         if (!session.worldFogSent()) {
-            if (session.worldKingdomId() <= 0L) {
-                return worldAttemptFailed("未取到 kingdom id，fog 未发送");
+            // P2-4：fog 同样原子认领（kid 未取到不认领）
+            if (!session.claimWorldFog()) {
+                if (session.worldKingdomId() <= 0L) {
+                    return worldAttemptFailed("未取到 kingdom id，fog 未发送");
+                }
+                return Optional.empty();
             }
             try {
                 request(WORLD_MAP_FOG, Map.of("kid", session.worldKingdomId()));
-                session.markWorldFogSent();
                 session.resetWorldAttempts();
                 Map<String, Object> result = actionResult("STARTED",
                         "起号世界地图已推进：已发送 " + WORLD_MAP_FOG);
                 result.put("worldAction", "worldFog");
                 return Optional.of(result);
             } catch (Exception e) {
+                session.releaseWorldFog();
                 return worldAttemptFailed("请求 " + WORLD_MAP_FOG + " 异常：" + e.getMessage());
             }
         }
@@ -703,7 +716,8 @@ public final class BootstrapService {
             return Optional.empty();
         }
         String today = finishPassToday();
-        if (today.equals(session.finishPassDay())) {
+        // 二次审查 P2-4：收尾占位原子化，并发请求只有一个人真正执行收尾
+        if (!session.claimFinishPass(today)) {
             return Optional.empty();
         }
         int mailCount = 0;
@@ -717,9 +731,10 @@ public final class BootstrapService {
         // 需求 R-09：三项全空（含里程碑处于 5 分钟退避）时不占「当日已收尾」，
         // 当天后续新增邮件/里程碑仍会触发收尾。
         if (mailCount <= 0 && achievements <= 0 && diamonds <= 0) {
+            // R-09 / P2-4：三项全空时回滚占位，当天后续仍可收尾
+            session.releaseFinishPass(today);
             return Optional.empty();
         }
-        session.setFinishPassDay(today);
         Map<String, Object> result = actionResult("STARTED",
                 "收尾完成：邮箱、签到、里程碑与背包奖励已处理");
         result.put("mailCount", mailCount);
@@ -764,6 +779,10 @@ public final class BootstrapService {
     /** 单建筑直升一级（对齐原版 levelBuilding：current+1 目标规划执行）。 */
     public Map<String, Object> levelBuilding(long buildingId) throws Exception {
         BootstrapConfig cfg = requireEnabled();
+        // 二次审查 P2-5：ENDED 为终态，手动点名升级也不可再推进
+        if (session.resourceEnded()) {
+            return actionResult("ENDED", "大熔炉资源耗尽，起号结束");
+        }
         if (!state.buildingsReady() || !state.queuesReady()) {
             return actionResult("WAITING", "等待建筑与队列全量状态同步");
         }
@@ -1037,7 +1056,7 @@ public final class BootstrapService {
      *
      * <ol>
      *   <li>先开背包钻石 + 补资源（含商店购买）；executeFirstAction 的 51 重试路径已补过的
-     *       不重复购买（preparation 带 purchase 即视为已补）；</li>
+     *       不重复开包/购买（preparation 带 backpack 即视为已补）；</li>
      *   <li>{@code coverable = purchase.unsupplied.isEmpty()}：生肉/木材按购买后剩余缺口，
      *       煤炭/铁矿按全部缺口（统帅商店不卖）；</li>
      *   <li>熔炉 ≥9：可覆盖 → 计数清零；不可覆盖 → 计数，3 次（或已 ENDED）→ ENDED；</li>
@@ -1061,6 +1080,12 @@ public final class BootstrapService {
         }
         boolean coverable = purchaseCoverable(preparation);
         List<Map<String, Object>> unsupplied = purchaseUnsupplied(preparation);
+        if (!(preparation.get("purchase") instanceof Map)) {
+            // 二次审查 P2-2：未走购买路径（buyShopResources=false / 购买冷却命中）时，
+            // 不能默认视为可覆盖，否则 attempts/stall 恒 0、永不 ENDED；改按本地库存算缺口。
+            unsupplied = localUnsupplied(action);
+            coverable = unsupplied.isEmpty();
+        }
         long furnace = state.furnaceLevel();
 
         if (furnace >= 9L) {
@@ -1079,6 +1104,9 @@ public final class BootstrapService {
                 FileLog.warn("[起号] 资源耗尽（fpid={}），起号结束：{}", holdScope, action.label());
                 return ended;
             }
+            // 二次审查 P2-3：≥9 分支同样写 30s 购买冷却，避免每轮按全量成本购买；
+            // 不写动作 hold（否则 3 次耗尽计数无法累积）。
+            markRetry("buy:" + holdKey(action), ACTION_RETRY_MILLIS);
             return waitForResources(action, preparation, unsupplied, code);
         }
 
@@ -1122,6 +1150,17 @@ public final class BootstrapService {
     /** 51 的 WAITING 结果（文案带不可覆盖缺口摘要）。 */
     private Map<String, Object> waitForResources(Action action, Map<String, Object> preparation,
                                                  List<Map<String, Object>> unsupplied, int code) {
+        // 低优先级回归：建筑 51 统一恢复「动作暂不可行」节流日志（含熔炉 <5）
+        String logKey = holdKey(action) + ":logged";
+        if (retryAllowed(logKey)) {
+            markRetry(logKey, ACTION_RETRY_MILLIS);
+            FileLog.warn("[起号] 动作暂不可行（51），30 秒内不再尝试：{}", action.label());
+            if (retryAllowed("res:diag")) {
+                markRetry("res:diag", 60_000L);
+                FileLog.info("[起号] 资源诊断：资源表={} 背包100xxx={}",
+                        String.valueOf(state.resourceMap()), String.valueOf(backpack100xxx()));
+            }
+        }
         Map<String, Object> waiting = actionResult("WAITING",
                 "资源或道具不足，等待补充后重试：" + action.label()
                         + preparationSummary(preparation) + unsuppliedSummary(unsupplied));
@@ -1129,6 +1168,29 @@ public final class BootstrapService {
         waiting.put("errorCode", code);
         waiting.put("preparation", preparation == null ? Map.of() : Map.copyOf(preparation));
         return waiting;
+    }
+
+    /**
+     * 未购买时的本地缺口（二次审查 P2-2）：生肉/木材按库存差、煤/铁按全量
+     * （统帅商店不卖煤/铁），用于 purchase 缺失时的 coverable 判定。
+     */
+    private List<Map<String, Object>> localUnsupplied(Action action) {
+        List<Cost> costs = action.costs();
+        List<Map<String, Object>> out = new ArrayList<>();
+        addLocalUnsupplied(out, costs, 102L, true);
+        addLocalUnsupplied(out, costs, 103L, true);
+        addLocalUnsupplied(out, costs, 104L, false);
+        addLocalUnsupplied(out, costs, 105L, false);
+        return out;
+    }
+
+    /** 单资源本地缺口：{@code useStock} 时扣除普通+安全库存，否则全量计入。 */
+    private void addLocalUnsupplied(List<Map<String, Object>> out, List<Cost> costs,
+                                    long resourceId, boolean useStock) {
+        long need = costAmount(costs, resourceId);
+        if (need <= 0L) return;
+        long have = useStock ? totalResourceCount(resourceId) : 0L;
+        addUnsupplied(out, resourceId, Math.max(0L, need - have));
     }
 
     /** purchase.coverable（缺失视为可覆盖，对齐网页版）。 */
@@ -1147,7 +1209,11 @@ public final class BootstrapService {
         if (!(raw instanceof List)) return List.of();
         List<Map<String, Object>> out = new ArrayList<>();
         for (Object item : (List<?>) raw) {
-            out.addAll(maps(item));
+            // 二次审查 P2-1：元素本身就是 {resourceId,remain,name} map，直接收；不能走 maps()（会解析 value）
+            Map<String, Object> entry = mapOf(item);
+            if (!entry.isEmpty()) {
+                out.add(entry);
+            }
         }
         return out;
     }

@@ -50,7 +50,7 @@ final class BootstrapSessionState {
     }
 
     /**
-     * 单账号会话状态（需求 R-02 表格的 9 项 + C1 过渡期的 res_update 签名）。
+     * 单账号会话状态（需求 R-02 表格的 9 项 + R-05 资源增量消费流水）。
      *
      * <p>方法均为 {@code synchronized}：同一 fpid 的并发 HTTP 请求共享同一 Holder，
      * 「读-改-写」必须在同一临界区内完成。
@@ -120,6 +120,58 @@ final class BootstrapSessionState {
 
         synchronized void setFinishPassDay(String day) {
             finishPassDay = day == null ? "" : day;
+        }
+
+        /**
+         * world kingdom info 的「检查 + 置位」原子化（二次审查 P2-4）：
+         * 返回 false 表示已被其它并发请求认领，避免重复发送。
+         */
+        synchronized boolean claimWorldKingdomInfo() {
+            if (worldKingdomInfoSent) {
+                return false;
+            }
+            worldKingdomInfoSent = true;
+            return true;
+        }
+
+        /** world kingdom info 认领回滚（请求失败/kid 缺失时，下一轮可重试；P2-4）。 */
+        synchronized void releaseWorldKingdomInfo() {
+            worldKingdomInfoSent = false;
+        }
+
+        /** fog 的「检查 + 置位」原子化（P2-4）：kid 未取到或已发返回 false。 */
+        synchronized boolean claimWorldFog() {
+            if (worldFogSent || worldKingdomId <= 0L) {
+                return false;
+            }
+            worldFogSent = true;
+            return true;
+        }
+
+        /** fog 认领回滚（请求失败时；P2-4）。 */
+        synchronized void releaseWorldFog() {
+            worldFogSent = false;
+        }
+
+        /**
+         * 收尾占位（P2-4 / R-09）：同一日期只允许一个请求执行；
+         * 三项全空时由 {@link #releaseFinishPass(String)} 回滚。
+         */
+        synchronized boolean claimFinishPass(String day) {
+            String target = day == null ? "" : day;
+            if (!finishPassDay.isEmpty() && finishPassDay.equals(target)) {
+                return false;
+            }
+            finishPassDay = target;
+            return true;
+        }
+
+        /** 收尾回滚（三项全空时不占当日；R-09）。 */
+        synchronized void releaseFinishPass(String day) {
+            String target = day == null ? "" : day;
+            if (finishPassDay.equals(target)) {
+                finishPassDay = "";
+            }
         }
 
         /** 消费一次资源增量：返回自增后的流水号（R-05 可观测）。 */
