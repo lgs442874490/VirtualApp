@@ -128,12 +128,31 @@ public class ServerShieldResponderTest {
         if (battleShieldParams == null) {
             battleShieldParams = "{\"strategy\":{\"shield_mode\":\"immediate\"}}";
         }
+        // 2026-11-13：免费盾默认改为关闭（free 缺省 false）。本类旧用例均假设「免费盾可用」，
+        // 未显式声明 sub.free 时补 true 保持用例语义；free 开关专属用例不走本夹具。
+        battleShieldParams = ensureFreeEnabled(battleShieldParams);
         a.roleParams.put(String.valueOf(SID),
                 new LinkedHashMap<>(Map.of("battle_shield", battleShieldParams)));
         List<VaultStore.Account> in = new ArrayList<>();
         in.add(a);
         vault.replaceAll(in);
         return a;
+    }
+
+    /** 夹具：battle_shield 参数 JSON 未显式写 sub.free 时补 true（旧用例假设免费盾可用）。 */
+    private static String ensureFreeEnabled(String json) {
+        try {
+            JSONObject o = new JSONObject(json);
+            JSONObject sub = o.optJSONObject("sub");
+            if (sub == null) {
+                sub = new JSONObject();
+                o.put("sub", sub);
+            }
+            if (!sub.has("free")) sub.put("free", true);
+            return o.toString();
+        } catch (Throwable t) {
+            return json;
+        }
     }
 
     private ServerShieldResponder responder() {
