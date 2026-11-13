@@ -50,6 +50,18 @@ public final class GameServerClock {
     private volatile long lastServerSec = 0L;
     private volatile boolean everCalibrated = false;
 
+    // ---- R0-3 观测（只读，不参与 offset/errBound 计算） ----
+    /** 最近一次样本来源：PUSH / REQ / NONE（未校准）。 */
+    private volatile String lastSampleSource = "NONE";
+    /** 最近一次样本的加权 RTT（毫秒，-1=无样本）。 */
+    private volatile long lastSampleRttMs = -1L;
+    /** 最近一次样本相对上一最优样本的 offset 增量（毫秒；首个样本为 0）。 */
+    private volatile long lastOffsetDeltaMs = 0L;
+    /** 健康日志周期（R0-3：首次之后每 ≥24h 一条）。 */
+    private static final long HEALTH_LOG_INTERVAL_MS = 24L * 3600_000L;
+    /** 上次健康日志的单调毫秒（首次校准时刻为起点；进程重启重置）。 */
+    private long lastHealthLogMonoMs = 0L;
+
     // 窗口内最优样本（最小 RTT）与最大偏差
     private long bestRttMs = Long.MAX_VALUE;
     private long bestOffsetMs = 0L;
@@ -65,7 +77,7 @@ public final class GameServerClock {
     public void calibratePush(Map<String, Object> content, long recvMonoMs) {
         long serverSec = deepFindServerSec(content, 0);
         if (serverSec < SEC_MIN || serverSec > SEC_MAX) return;
-        calibrateRaw(serverSec * 1000L, recvMonoMs, 300L);
+        calibrateRaw(serverSec * 1000L, recvMonoMs, 300L, "PUSH");
     }
 
     /** 以一次"请求-响应"往返为样本校准。t0Mono/t1Mono 为请求前后单调毫秒；
@@ -82,14 +94,21 @@ public final class GameServerClock {
 
         long serverMs = serverSec >= SEC_MAX / 10 ? serverSec : serverSec * 1000L;
         // 服务器打时间戳发生在 RTT 中段的期望位置
-        calibrateRaw(serverMs, t0Mono + rtt / 2, rtt);
+        calibrateRaw(serverMs, t0Mono + rtt / 2, rtt, "REQ");
     }
 
-    /** 样本入窗：RTT 最小者胜出为当前 offset，其余进偏差与误差界。 */
-    private void calibrateRaw(long serverMs, long monoMs, long rtt) {
+    /**
+     * 样本入窗：RTT 最小者胜出为当前 offset，其余进偏差与误差界。
+     *
+     * <p>R0-3 观测：{@code source} 只用于记录最近样本来源，不参与 offset/errBound 计算；
+     * 首次校准日志追加 wall/delta，此后每 ≥24h 追加一条健康日志（见需求 R0-3）。
+     */
+    private void calibrateRaw(long serverMs, long monoMs, long rtt, String source) {
         long offset = serverMs - monoMs;
         long nowMono = mono.millis();
         synchronized (lock) {
+            boolean first = !everCalibrated;
+            long prevBestOffsetMs = bestOffsetMs;
             if (!everCalibrated || nowMono - windowStartMonoMs > SAMPLE_WINDOW_MS) {
                 bestRttMs = Long.MAX_VALUE;
                 windowStartMonoMs = nowMono;
@@ -110,11 +129,27 @@ public final class GameServerClock {
             errBoundMs = (long) Math.ceil(maxDev + drift) + (bestRttMs == Long.MAX_VALUE ? 0 : bestRttMs / 2);
             lastCalibMonoMs = nowMono;
             lastServerSec = serverMs / 1000L;
-            boolean first = !everCalibrated;
             everCalibrated = true;
+
+            // ---- R0-3 观测（只读字段，不影响上面任何校准结果）----
+            lastSampleSource = source;
+            lastSampleRttMs = rtt;
+            lastOffsetDeltaMs = first ? 0L : offset - prevBestOffsetMs;
+            long nowServerMs = nowMono + offsetMs;
+            long wallMs = System.currentTimeMillis();
+            long deltaMs = nowServerMs - wallMs;
             if (first) {
-                WjdrLog.i("GameServerClock 首次校准成功 offset={}ms errBound={}ms rtt={}ms",
-                        String.valueOf(offsetMs), String.valueOf(errBoundMs), String.valueOf(rtt));
+                lastHealthLogMonoMs = nowMono;
+                WjdrLog.i("GameServerClock 首次校准成功 offset={}ms errBound={}ms rtt={}ms wall={}ms delta={}ms",
+                        String.valueOf(offsetMs), String.valueOf(errBoundMs), String.valueOf(rtt),
+                        String.valueOf(wallMs), String.valueOf(deltaMs));
+            } else if (nowMono - lastHealthLogMonoMs >= HEALTH_LOG_INTERVAL_MS) {
+                lastHealthLogMonoMs = nowMono;
+                WjdrLog.i("时钟健康 offset={}ms err={}ms rtt={}ms src={} serverNow={} wall={} delta={}ms sinceCalib={}ms",
+                        String.valueOf(offsetMs), String.valueOf(errBoundMs),
+                        String.valueOf(lastSampleRttMs), source,
+                        String.valueOf(nowServerMs / 1000L), String.valueOf(wallMs),
+                        String.valueOf(deltaMs), String.valueOf(nowMono - lastCalibMonoMs));
             }
         }
     }
@@ -183,6 +218,23 @@ public final class GameServerClock {
 
     public long lastServerSec() {
         return lastServerSec;
+    }
+
+    // ---- R0-3 观测 getter（只读，无副作用） ----
+
+    /** 最近一次校准样本来源（PUSH/REQ；未校准 NONE）。 */
+    public String lastSampleSource() {
+        return lastSampleSource;
+    }
+
+    /** 最近一次校准样本加权 RTT 毫秒（-1=未校准）。 */
+    public long lastSampleRttMs() {
+        return lastSampleRttMs;
+    }
+
+    /** 最近一次样本相对上一最优样本的 offset 增量毫秒（首个样本 0）。 */
+    public long lastOffsetDeltaMs() {
+        return lastOffsetDeltaMs;
     }
 
     // ------------------------------------------------------------------ 对齐等待
