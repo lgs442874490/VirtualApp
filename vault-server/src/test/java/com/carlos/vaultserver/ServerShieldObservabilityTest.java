@@ -5,6 +5,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
+import com.carlos.vault.wjdr.GameServerClock;
 import com.carlos.vault.wjdr.WjdrEngine;
 import com.carlos.vault.wjdr.protocol.GameMessage;
 import org.junit.Before;
@@ -54,6 +55,10 @@ public class ServerShieldObservabilityTest {
         final List<String> requested = new ArrayList<>();
         final List<BiConsumer<String, Map<String, Object>>> hooks = new ArrayList<>();
         long lockWaitMs = 0L;
+        /** 非空时在第一次 request 内回调一次，用于模拟"请求进行中又来紧急推送"。 */
+        Runnable duringRequest;
+        /** 非空时作为引擎时钟（用于已校准 trace 字段用例）。 */
+        GameServerClock clock;
 
         FakeEngine() {
             super(null);
@@ -99,8 +104,18 @@ public class ServerShieldObservabilityTest {
         }
 
         @Override
+        public GameServerClock serverClock() {
+            return clock;
+        }
+
+        @Override
         public GameMessage request(String proto, Map<String, Object> args) {
             requested.add(proto);
+            Runnable cb = duringRequest;
+            if (cb != null) {
+                duringRequest = null;   // 只触发一次，避免递归
+                cb.run();
+            }
             return responses.get(proto);
         }
 
@@ -375,6 +390,124 @@ public class ServerShieldObservabilityTest {
         assertTrue("仍应有 PUSH 时刻：" + line, field(line, "push") > 0L);
         assertTrue("仍应有 LOCK/RESP：" + line,
                 field(line, "lock") > 0L && field(line, "resp") > 0L);
+    }
+
+    // ---------------- R0-1 并发/多推送：trace 上下文一致性 ----------------
+
+    @Test
+    public void urgentPushDuringRequest_keepsSingleCompleteTrace() {
+        account("{\"sub\":{\"reactive\":true}}");
+        FakeEngine e = new FakeEngine();
+        presetBackpack(e, ServerShieldResponder.SHIELD_ITEM_2H, 1L);
+        e.responses.put("req_use_item", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        r.setUrgentWakeup(() -> { });
+
+        r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+
+        nowMs.addAndGet(5_000L);
+        sec.addAndGet(5L);
+        r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 6L), OWN_UID);
+        long pushA = nowMs.get();
+        // 开盾请求进行中又来一条更急的推送：不得改写本次 trace 的 PUSH/LOCK/RESP
+        e.duringRequest = () -> {
+            nowMs.addAndGet(30L);
+            r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 4L), OWN_UID);
+        };
+        String out = capture(() -> r.tick(e));
+
+        assertEquals("一次决策只输出 1 条 trace：" + out, 1, count(out, "盾时延 trace"));
+        String line = lineContaining(out, "盾时延 trace");
+        assertEquals("PUSH 应为触发本次决策的推送时刻：" + line, pushA, field(line, "push"));
+        assertTrue("LOCK 不应为 -1：" + line, field(line, "lock") > 0L);
+        assertTrue("RESP 不应早于 LOCK：" + line, field(line, "resp") >= field(line, "lock"));
+        assertTrue("outcome 应为 opened：" + line, line.contains("outcome=opened"));
+    }
+
+    @Test
+    public void twoUrgentPushesBeforeDecision_keepEarliestPushTime() {
+        account("{\"sub\":{\"reactive\":true}}");
+        FakeEngine e = new FakeEngine();
+        presetBackpack(e, ServerShieldResponder.SHIELD_ITEM_2H, 1L);
+        e.responses.put("req_use_item", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        r.setUrgentWakeup(() -> { });
+
+        r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+
+        nowMs.addAndGet(5_000L);
+        sec.addAndGet(5L);
+        r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 6L), OWN_UID);
+        long pushA = nowMs.get();
+        nowMs.addAndGet(100L);
+        r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 6L), OWN_UID);
+
+        String out = capture(() -> r.tick(e));
+        assertEquals("一次决策只输出 1 条 trace：" + out, 1, count(out, "盾时延 trace"));
+        String line = lineContaining(out, "盾时延 trace");
+        assertEquals("决策前的后续紧急推送不得改写 PUSH：" + line, pushA, field(line, "push"));
+        assertTrue("outcome 应为 opened：" + line, line.contains("outcome=opened"));
+    }
+
+    @Test
+    public void freeShieldPath_recordsLockAndResp() {
+        account("{\"sub\":{\"reactive\":true,\"free\":true}}");
+        FakeEngine e = new FakeEngine();
+        Map<String, Object> city = new LinkedHashMap<>();
+        city.put("data", List.of(new LinkedHashMap<>(Map.of("free_id", 777L))));
+        e.notifies.put("notify_city_item_init", city);
+        e.responses.put("req_city_item_free_use", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        r.setUrgentWakeup(() -> { });
+
+        r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+        nowMs.addAndGet(5_000L);
+        sec.addAndGet(5L);
+        r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 6L), OWN_UID);
+        String out = capture(() -> r.tick(e));
+
+        assertTrue("应走免费盾请求：" + e.requested, e.requested.contains("req_city_item_free_use"));
+        String line = lineContaining(out, "盾时延 trace");
+        assertTrue("免费盾也应记 LOCK：" + line, field(line, "lock") > 0L);
+        assertTrue("免费盾也应记 RESP：" + line, field(line, "resp") > 0L);
+        assertTrue("免费盾成功应记 opened：" + line, line.contains("outcome=opened"));
+    }
+
+    @Test
+    public void calibratedClock_traceFieldsReflectSample() {
+        account("{\"sub\":{\"reactive\":true}}");
+        FakeEngine e = new FakeEngine();
+        GameServerClock ck = new GameServerClock();
+        ck.calibratePush(new LinkedHashMap<>(Map.of("server_time", 1_700_000_000L)),
+                GameServerClock.monoNow());
+        e.clock = ck;
+        presetBackpack(e, ServerShieldResponder.SHIELD_ITEM_2H, 1L);
+        e.responses.put("req_use_item", msg(0));
+        AtomicLong nowMs = new AtomicLong(1_700_000_000_000L);
+        AtomicLong sec = new AtomicLong(1_000_000L);
+        ServerShieldResponder r = responder(nowMs, sec);
+        r.setUrgentWakeup(() -> { });
+
+        r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 300L), OWN_UID);
+        assertFalse(r.tick(e));
+        nowMs.addAndGet(5_000L);
+        sec.addAndGet(5L);
+        r.onPush(withEndtime(alliancePush(13080L, 2), sec.get() + 6L), OWN_UID);
+        String out = capture(() -> r.tick(e));
+
+        String line = lineContaining(out, "盾时延 trace");
+        assertTrue("已校准 err 应为非负：" + line, field(line, "err") >= 0L);
+        assertTrue("已校准 sinceCalib 应为非负：" + line, field(line, "sinceCalib") >= 0L);
+        assertTrue("已校准 src 应为样本来源：" + line, line.contains("src=PUSH"));
     }
 
     // ---------------- R0-4 既有日志追加字段 ----------------

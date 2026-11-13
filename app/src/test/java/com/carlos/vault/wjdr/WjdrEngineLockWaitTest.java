@@ -45,12 +45,15 @@ public class WjdrEngineLockWaitTest {
 
         lock.lock();
         AtomicReference<Throwable> thrown = new AtomicReference<>();
+        AtomicReference<Long> workerWait = new AtomicReference<>(Long.MIN_VALUE);
         Thread worker = new Thread(() -> {
             try {
                 engine.request("req_noop", new LinkedHashMap<String, Object>(), 1);
             } catch (Throwable t) {
                 thrown.set(t);
             }
+            // 等待时长按线程隔离：必须由发起请求的线程自己读才算数
+            workerWait.set(engine.lastRequestLockWaitMs());
         }, "lock-wait-probe");
         try {
             worker.start();
@@ -61,7 +64,8 @@ public class WjdrEngineLockWaitTest {
         worker.join(3_000L);
 
         assertTrue("worker 应已结束", !worker.isAlive());
-        assertTrue("持锁竞争应测到 ≥80ms 等待，实测 " + engine.lastRequestLockWaitMs(),
-                engine.lastRequestLockWaitMs() >= 80L);
+        assertTrue("持锁竞争应测到 ≥80ms 等待，实测 " + workerWait.get(),
+                workerWait.get() >= 80L);
+        assertEquals("未发过请求的线程应读到 -1", -1L, engine.lastRequestLockWaitMs());
     }
 }

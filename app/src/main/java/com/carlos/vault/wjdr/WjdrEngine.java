@@ -214,8 +214,13 @@ public class WjdrEngine {
     /** 会话级请求串行锁（对标原版 requestLock）：互助响应/任务执行/wake 补领共用在线会话时排队，防交叉。 */
     private final java.util.concurrent.locks.ReentrantLock requestLock =
             new java.util.concurrent.locks.ReentrantLock(true);
-    /** 最近一次 request 等待 requestLock 的毫秒数（-1=尚未发过请求；R0-1 观测用）。 */
-    private volatile long lastRequestLockWaitMs = -1L;
+    /**
+     * 最近一次 request 等待 requestLock 的毫秒数（-1=当前线程尚未发过请求；R0-1 观测用）。
+     *
+     * <p>按线程隔离：请求返回后到读取之间可能有其他线程抢到锁并改写等待时长（代码审查 P2-1），
+     * 共享字段会把别人的等待算到本次 trace 上；ThreadLocal 保证读到的就是本线程本次请求的值。
+     */
+    private final ThreadLocal<Long> lastRequestLockWaitMs = ThreadLocal.withInitial(() -> -1L);
     private final java.util.concurrent.atomic.AtomicBoolean heartbeatInFlight =
             new java.util.concurrent.atomic.AtomicBoolean();
     /** 心跳计数（灰度观察：每 20 次打一条存活日志）。 */
@@ -993,7 +998,7 @@ public class WjdrEngine {
     public GameMessage request(String proto, Map<String, Object> args) throws Exception {
         long lockT0Ms = GameServerClock.monoNow();
         requestLock.lock();
-        lastRequestLockWaitMs = Math.max(0L, GameServerClock.monoNow() - lockT0Ms);
+        lastRequestLockWaitMs.set(Math.max(0L, GameServerClock.monoNow() - lockT0Ms));
         try {
             return lockedRequest(proto, args == null ? new LinkedHashMap<String, Object>() : args,
                     java.time.Duration.of(20, java.util.concurrent.TimeUnit.SECONDS.toChronoUnit()));
@@ -1027,7 +1032,7 @@ public class WjdrEngine {
     public GameMessage request(String proto, Map<String, Object> args, int timeoutSec) throws Exception {
         long lockT0Ms = GameServerClock.monoNow();
         requestLock.lock();
-        lastRequestLockWaitMs = Math.max(0L, GameServerClock.monoNow() - lockT0Ms);
+        lastRequestLockWaitMs.set(Math.max(0L, GameServerClock.monoNow() - lockT0Ms));
         try {
             return lockedRequest(proto, args == null ? new LinkedHashMap<String, Object>() : args,
                     java.time.Duration.ofSeconds(Math.max(1, timeoutSec)));
@@ -1129,9 +1134,10 @@ public class WjdrEngine {
         return serverClock;
     }
 
-    /** 最近一次 request 等待 requestLock 的毫秒数（R0-1 阶段③观测；-1=尚未发过请求）。 */
+    /** 最近一次 request 等待 requestLock 的毫秒数（R0-1 阶段③观测；-1=当前线程尚未发过请求）。 */
     public long lastRequestLockWaitMs() {
-        return lastRequestLockWaitMs;
+        Long v = lastRequestLockWaitMs.get();
+        return v == null ? -1L : v;
     }
 
     public String lastFailure() {
