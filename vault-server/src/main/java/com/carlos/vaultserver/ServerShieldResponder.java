@@ -18,6 +18,7 @@ import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -25,6 +26,7 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -355,6 +357,47 @@ public final class ServerShieldResponder {
     /** 服务器时钟未校准告警只打一次（每 responder 实例）。 */
     private final AtomicBoolean clockWarned = new AtomicBoolean(false);
 
+    // ---------------- R0 观测埋点（只读计数器/日志，不参与任何判定） ----------------
+
+    /**
+     * R0-1 单次紧急 trace 上下文（不可变 id + 阶段时刻）。
+     *
+     * <p>并发契约（代码审查 P1-1）：一条 trace 是一个独立对象，不再由多个 volatile 字段拼装；
+     * {@code pushMs/id} 构造即定稿，{@code wakeMs} 只由推送线程写，其余阶段只由决策线程写
+     * （tick 单飞保证同一时刻只有一个决策）。决策期间到达的新紧急推送不会覆盖本对象，
+     * 因此不会出现"push 属于 B、resp 属于 A"的串字段或半条 trace。
+     */
+    private static final class TraceCtx {
+        final long id;
+        final long pushMs;
+        volatile long wakeMs = -1L;
+        long reqStartMs = -1L;
+        long respMs = -1L;
+        long lockWaitMs = -1L;
+        String outcome;
+
+        TraceCtx(long id, long pushMs) {
+            this.id = id;
+            this.pushMs = pushMs;
+        }
+    }
+
+    /** R0-1 待决策消费的 trace（推送线程 CAS 发布；决策入口整体取走）。null=无待处理。 */
+    private final AtomicReference<TraceCtx> pendingTrace = new AtomicReference<>();
+    /** R0-1 本拍决策接管的 trace（仅决策线程访问；tick 单飞保证不并发）。 */
+    private TraceCtx decisionTrace;
+    private final AtomicLong traceSeq = new AtomicLong();
+
+    /** R0-2 分段耗时聚合：由 1Hz 会话 tick 输出，不新增线程。 */
+    private final ShieldLatencyAggregator latency = new ShieldLatencyAggregator();
+
+    /** R0-5 到达观测去重容量（超限清空，仅用于日志，不影响业务）。 */
+    private static final int ARRIVAL_LOG_MAX = 256;
+    /** R0-5 已记到达观测的 marchId（推送线程访问，锁内读写）。 */
+    private final Set<Long> arrivalLogged = new HashSet<>();
+    /** R0-5 已解析过的槽位：重复 del 不得把已映射槽位误标为 unmapped。 */
+    private final Set<Long> arrivalSlotSeen = new HashSet<>();
+
     private final AtomicBoolean dirty = new AtomicBoolean(false);
     private final AtomicBoolean busy = new AtomicBoolean(false);
     /** tick 单飞：1Hz 会话拍与紧急唤醒拍可能并发，同一实例同时只允许一拍在跑。 */
@@ -469,7 +512,15 @@ public final class ServerShieldResponder {
                 urgent = accelUrgent(merged, serverNowSec(engine));
             }
             // 加速紧急：唤醒宿主的独立执行器立即决策（推送线程只通知，不持锁、不发请求）。
-            if (urgent) wakeUrgent();
+            if (urgent) {
+                // 埋点不得影响唤醒：begin 抛异常也不得跳过 wakeUrgent（代码审查 P2-2）
+                TraceCtx ctx = null;
+                try {
+                    ctx = beginUrgentTrace();
+                } catch (Throwable ignored) {
+                }
+                wakeUrgent(ctx);
+            }
         }
         GatherAlert g = gatherAlertOf(content, ownUid, engine);
         if (g != null) {
@@ -479,7 +530,9 @@ public final class ServerShieldResponder {
     }
 
     /** 唤醒宿主执行器；回调异常只留痕，绝不影响推送线程。 */
-    private void wakeUrgent() {
+    private void wakeUrgent(TraceCtx ctx) {
+        // R0-1 阶段②：WAKE = 进入唤醒回调的本机墙钟毫秒（只写本次紧急推送的 ctx）
+        if (ctx != null && ctx.pushMs > 0L) ctx.wakeMs = nowMs.getAsLong();
         Runnable w = urgentWakeup;
         if (w == null) return;
         try {
@@ -592,18 +645,53 @@ public final class ServerShieldResponder {
         if (content == null) return;
         for (Map<String, Object> m : marchesOf(content)) {
             long id = Exec.longOf(m.get("id"));
-            if (id > 0) enemyMarches.remove(id);
+            if (id > 0 && enemyMarches.remove(id) != null) logArrival(id, 0L, false);
         }
         long directId = Exec.longOf(content.get("id"));
-        if (directId > 0L) enemyMarches.remove(directId);
+        if (directId > 0L && enemyMarches.remove(directId) != null) {
+            logArrival(directId, 0L, false);
+        }
         Object idArr = content.get("id_arr");
         if (idArr instanceof List) {
             for (Object o : (List<?>) idArr) {
                 long slot = slotIdOf(o);
                 if (slot <= 0L) continue;
                 Long mid = situationSlotMarch.remove(slot);
-                if (mid != null && mid > 0L) enemyMarches.remove(mid);
+                if (mid != null && mid > 0L) {
+                    if (enemyMarches.remove(mid) != null) logArrival(mid, slot, false);
+                } else {
+                    // 槽位无法映射 marchId：仍留到达时刻的旁证（marchId=0，标注 unmapped）
+                    logArrival(0L, slot, true);
+                }
             }
+        }
+    }
+
+    /**
+     * R0-5 到达观测：敌方行军到达/消失后由 {@code notify_world_situation_info_del} 触发的
+     * 本机墙钟时刻，供 R1-1 时域判定做独立基准。
+     *
+     * <p>同一 marchId（或同一未映射槽位）只记首次；集合上限 {@link #ARRIVAL_LOG_MAX} 防异常
+     * payload 无限增长。{@code notify_world_march_del} <b>不</b>加入监听集合，避免改变分发行为。
+     */
+    private void logArrival(long marchId, long slot, boolean unmapped) {
+        long wallMs = nowMs.getAsLong();
+        synchronized (arrivalLogged) {
+            if (marchId > 0L) {
+                if (slot > 0L) arrivalSlotSeen.add(slot);   // 已映射：后续同槽位 del 不再误标 unmapped
+                if (!arrivalLogged.add(marchId)) return;
+                if (arrivalLogged.size() > ARRIVAL_LOG_MAX) arrivalLogged.clear();
+            } else if (unmapped) {
+                if (!arrivalSlotSeen.add(slot)) return;
+                if (arrivalSlotSeen.size() > ARRIVAL_LOG_MAX) arrivalSlotSeen.clear();
+            }
+        }
+        if (unmapped) {
+            FileLog.info("盾到达观测 wall={}ms marchId=0 slot={} source=SITUATION_DEL unmapped=true",
+                    String.valueOf(wallMs), String.valueOf(slot));
+        } else {
+            FileLog.info("盾到达观测 wall={}ms marchId={} slot={} source=SITUATION_DEL",
+                    String.valueOf(wallMs), String.valueOf(marchId), String.valueOf(slot));
         }
     }
 
@@ -839,9 +927,11 @@ public final class ServerShieldResponder {
      * 返回 true 表示本轮有动作（发请求/跳过留痕），false=无动作/挂起/冷却/陈旧。
      */
     private boolean tickInner(WjdrEngine engine) {
+        long now = nowMs.getAsLong();
+        // R0-2：复用 1Hz 会话 tick 输出分段耗时聚合（不新增线程；n<10 只累计）
+        latency.maybeFlush(now);
         // 让位/恢复/登录中：不发请求（人玩优先，防互踢）；风险保留，回连如仍新鲜才补
         if (!WjdrEngine.STATE_ONLINE.equals(engine.sessionState())) return false;
-        long now = nowMs.getAsLong();
         boolean acted = false;
         GatherAlert g = gatherAlert;
         if (g != null && gatherDirty.compareAndSet(true, false)) {
@@ -870,6 +960,21 @@ public final class ServerShieldResponder {
     // ---------------- 决策（会话线程内执行） ----------------
 
     private boolean decide(WjdrEngine engine, Risk r, long now) {
+        // R0-1：本拍整体接管待处理 trace（取走即与推送线程解耦，决策期间的新推送进下一个 ctx）
+        decisionTrace = pendingTrace.getAndSet(null);
+        try {
+            return decideInner(engine, r, now);
+        } finally {
+            try {
+                // 无 trace 时 emit 立即返回；决策侧补开的 trace（见 decideInner）也在此统一输出
+                emitUrgentTrace(engine, r);
+            } catch (Throwable ignored) {
+                // 埋点不得掩盖决策异常（代码审查 P2-3）
+            }
+        }
+    }
+
+    private boolean decideInner(WjdrEngine engine, Risk r, long now) {
         VaultStore.Account acc = vault.find(fpid);
         if (acc == null) {
             clearRisk(r);
@@ -907,6 +1012,11 @@ public final class ServerShieldResponder {
                 long remain = r.endtimeSec - nowSec;
                 // 紧急加速（连续 ≥3 次且累计提前过半，或剩余 ≤20s）：不再等卡秒，当拍开盾。
                 boolean urgent = accelUrgent(r, nowSec);
+                // R0-1 兜底：紧急阈值可能由时间推进跨过（推送时 remain>20s、tick 时 ≤20s），
+                // 此时没有新的紧急推送触发 WAKE；仍补开一条 trace（wake=-1），保证紧急开盾可回溯。
+                // 直接新建而不占用 pending 槽：本拍已接管过 pending，若期间有新推送占用
+                // pending，兜底 trace 仍需独立输出（否则该次紧急开盾无 trace）。
+                if (urgent && decisionTrace == null) decisionTrace = newTrace();
                 // 非紧急加速仍放宽触发阈值：卡秒点必须早于"会话 tick 延迟 + 请求往返"。
                 long gateSec = r.accelerated ? Math.max(etaSec, SHIELD_ACCEL_SAFETY_SEC) : etaSec;
                 if (!urgent && remain > gateSec) {
@@ -919,13 +1029,18 @@ public final class ServerShieldResponder {
                     }
                     saveState(tc, prefix + " → 等待卡秒：约" + remain + "秒后到达，到达前"
                             + gateSec + "秒开盾" + (r.accelerated ? "（敌方加速）" : ""));
-                    FileLog.info("反应式开盾挂起 fpid={} 事件={}：约{}秒后到达（卡秒{}秒{}）",
+                    FileLog.info("反应式开盾挂起 fpid={} 事件={}：约{}秒后到达（卡秒{}秒{}）"
+                                    + " endtime={} serverNow={} err={}ms sinceCalib={}ms src={}",
                             fpid, r.kind, String.valueOf(remain), String.valueOf(gateSec),
-                            r.accelerated ? "，已加速" : "");
+                            r.accelerated ? "，已加速" : "",
+                            String.valueOf(r.endtimeSec), String.valueOf(nowSec),
+                            String.valueOf(clockErrMs(engine)), String.valueOf(clockSinceCalibMs(engine)),
+                            clockSrc(engine));
                     return false;
                 }
                 if (remain < -EVENT_TTL_SEC) {
                     // 到达已超过保鲜期：为旧攻击补盾无意义（卡秒路径唯一的时间上界）
+                    if (decisionTrace != null) decisionTrace.outcome = "dropped";
                     clearRisk(r);
                     FileLog.info("反应式开盾丢弃 fpid={}：威胁已到达超过{}秒",
                             fpid, String.valueOf(EVENT_TTL_SEC));
@@ -938,6 +1053,7 @@ public final class ServerShieldResponder {
             }
         } else if (now - lastEventAt > EVENT_TTL_MILLIS) {
             // 陈旧事件（让位期积压）：静默丢弃，不为旧攻击补盾（与 master 行为一致）
+            if (decisionTrace != null) decisionTrace.outcome = "dropped";
             clearRisk(r);
             return false;
         }
@@ -975,9 +1091,13 @@ public final class ServerShieldResponder {
         if (!busy.compareAndSet(false, true)) return false;
         boolean opened;
         try {
-            opened = openShield(tc, now, lateArrival);
+            opened = openShield(tc, now, lateArrival, decisionTrace);
         } finally {
             busy.set(false);
+        }
+        if (decisionTrace != null) {
+            decisionTrace.outcome = opened ? "opened"
+                    : (decisionTrace.reqStartMs > 0L ? "failed" : "skip");
         }
         if (opened) {
             clearRisk(r);
@@ -998,7 +1118,7 @@ public final class ServerShieldResponder {
      * @param lateArrival 敌方到达时刻已过（补盾，本次攻击可能已接战）；成功文案追加提示
      * @return true=已有盾/本次已开盾（风险已被覆盖）；false=未开盾（保留风险待重试）
      */
-    private boolean openShield(TaskContext tc, long now, boolean lateArrival) {
+    private boolean openShield(TaskContext tc, long now, boolean lateArrival, TraceCtx ctx) {
         if (!shieldLedgerReady) initLedgerFromEngine(tc.engine);
         long nowSec = serverNowSec(tc.engine);
         String prefix = ("WAR".equals(lastEventKind) ? "被进攻" : "被侦查");
@@ -1017,10 +1137,15 @@ public final class ServerShieldResponder {
         }
         // 1) 免费盾（每日免费 8h；不可用则继续）
         TaskOutcome free;
+        long freeReqStartMs = nowMs.getAsLong();   // R0-1：免费盾请求发在 ServerTasks 内，补打 LOCK/RESP
         try {
             free = ServerTasks.freeShield(tc);
         } catch (Throwable t) {
             free = ServerTasks.classifyException(t, "战斗护盾");
+        }
+        if (ctx != null && free.category == TaskOutcome.Category.CLAIMED) {
+            ctx.reqStartMs = freeReqStartMs;
+            recordTraceResp(tc.engine, ctx);
         }
         if (free.category == TaskOutcome.Category.CLAIMED) {
             shieldActiveItem = SHIELD_ITEM_8H;
@@ -1039,7 +1164,7 @@ public final class ServerShieldResponder {
         else if (shieldCount(SHIELD_ITEM_8H) > 0L) { item = SHIELD_ITEM_8H; hours = 8L; }
         else if (shieldCount(SHIELD_ITEM_12H) > 0L) { item = SHIELD_ITEM_12H; hours = 12L; }
         if (item > 0L) {
-            int code = useItem(tc, item);
+            int code = useItem(tc, item, ctx);
             if (code == 0) {
                 shieldBackpack.put(item, Math.max(0L, shieldCount(item) - 1L));
                 shieldActiveItem = item;
@@ -1047,8 +1172,12 @@ public final class ServerShieldResponder {
                 nextAttemptAt.set(now + OPEN_SUCCESS_COOLDOWN_MILLIS);
                 saveState(tc, prefix + " → 已使用背包 " + shieldName(item) + "（code=0）" + late);
                 writeShieldLedgerState(tc, true);
-                FileLog.info("反应式开盾 fpid={} 事件={} 来源=背包 item={} code=0{}",
-                        fpid, lastEventKind, String.valueOf(item), late);
+                FileLog.info("反应式开盾 fpid={} 事件={} 来源=背包 item={} code=0{}"
+                                + " endtime={} serverNow={} err={}ms sinceCalib={}ms src={}",
+                        fpid, lastEventKind, String.valueOf(item), late,
+                        String.valueOf(currentRiskEndtimeSec()), String.valueOf(nowSec),
+                        String.valueOf(clockErrMs(tc.engine)), String.valueOf(clockSinceCalibMs(tc.engine)),
+                        clockSrc(tc.engine));
                 return true;
             }
             FileLog.warn("反应式开盾 fpid={} 背包盾 item={} 使用失败 code={}",
@@ -1057,7 +1186,7 @@ public final class ServerShieldResponder {
         // 3) 钻石购盾（默认关；用户可在 App 开关 + 配置每日钻石预算）
         boolean buyDiamond = tc.subOn("battle_shield", "shield_buy_diamond", false);
         if (buyDiamond) {
-            int code = buyAndUseShield(tc, nowSec);
+            int code = buyAndUseShield(tc, nowSec, ctx);
             if (code == 0) {
                 shieldActiveItem = SHIELD_ITEM_2H;
                 shieldActiveEnd = nowSec + 2 * 3600L;
@@ -1065,9 +1194,13 @@ public final class ServerShieldResponder {
                 saveState(tc, prefix + " → 背包无盾，已用 " + DIAMOND_SHIELD_PRICE
                         + " 钻石购买并开启 2 小时护盾（code=0）" + late);
                 writeShieldLedgerState(tc, true);
-                FileLog.info("反应式开盾 fpid={} 事件={} 来源=钻石 item={} price={} code=0{}",
+                FileLog.info("反应式开盾 fpid={} 事件={} 来源=钻石 item={} price={} code=0{}"
+                                + " endtime={} serverNow={} err={}ms sinceCalib={}ms src={}",
                         fpid, lastEventKind, String.valueOf(SHIELD_ITEM_2H),
-                        String.valueOf(DIAMOND_SHIELD_PRICE), late);
+                        String.valueOf(DIAMOND_SHIELD_PRICE), late,
+                        String.valueOf(currentRiskEndtimeSec()), String.valueOf(nowSec),
+                        String.valueOf(clockErrMs(tc.engine)), String.valueOf(clockSinceCalibMs(tc.engine)),
+                        clockSrc(tc.engine));
                 return true;
             }
             String reason = code == -2
@@ -1090,14 +1223,22 @@ public final class ServerShieldResponder {
 
     /** 使用背包护盾道具（req_use_item{id,count:1,extra:{}}）；返回业务码。 */
     int useItem(TaskContext tc, long itemId) {
+        return useItem(tc, itemId, null);
+    }
+
+    /** 带 trace 上下文的背包盾使用（ctx=null 时只走业务、不埋点）。 */
+    int useItem(TaskContext tc, long itemId, TraceCtx ctx) {
         try {
             Map<String, Object> args = new LinkedHashMap<>();
             args.put("id", itemId);
             args.put("count", 1);
             args.put("extra", new LinkedHashMap<String, Object>());
+            if (ctx != null) ctx.reqStartMs = nowMs.getAsLong();
             GameMessage rsp = tc.engine.request("req_use_item", args, 8);
+            recordTraceResp(tc.engine, ctx);
             return Exec.codeOf(rsp);
         } catch (Throwable t) {
+            recordTraceResp(tc.engine, ctx);
             FileLog.warn("使用护盾道具异常 fpid={} item={}：{}", fpid, String.valueOf(itemId),
                     brief(String.valueOf(t)));
             return -1;
@@ -1106,6 +1247,11 @@ public final class ServerShieldResponder {
 
     /** 钻石购盾：先买 2 小时盾入背包，再显式使用；返回最终业务码。 */
     int buyAndUseShield(TaskContext tc, long nowSec) {
+        return buyAndUseShield(tc, nowSec, null);
+    }
+
+    /** 带 trace 上下文的钻石购盾（两段请求都归到同一 ctx：LOCK/RESP 记最后一段，total 覆盖两段）。 */
+    int buyAndUseShield(TaskContext tc, long nowSec, TraceCtx ctx) {
         if (!allowDiamondBuy(tc, nowSec)) {
             FileLog.warn("钻石购盾跳过 fpid={}：预算/次数已达上限（预算{}钻，已购{}个/日，个数上限{}）",
                     fpid, String.valueOf(diamondBudget(tc)), String.valueOf(diamondBuysToday),
@@ -1119,16 +1265,19 @@ public final class ServerShieldResponder {
             args.put("count", 1);
             args.put("use", false);
             args.put("extra", new LinkedHashMap<String, Object>());
+            if (ctx != null) ctx.reqStartMs = nowMs.getAsLong();
             GameMessage rsp = tc.engine.request("req_shop_quick_buy", args, 10);
+            recordTraceResp(tc.engine, ctx);
             buyCode = Exec.codeOf(rsp);
         } catch (Throwable t) {
+            recordTraceResp(tc.engine, ctx);
             FileLog.warn("钻石购盾请求异常 fpid={}：{}", fpid, brief(String.valueOf(t)));
             return -1;
         }
         if (buyCode != 0) return buyCode;
         shieldBackpack.put(SHIELD_ITEM_2H, shieldCount(SHIELD_ITEM_2H) + 1L);
         recordDiamondBuy(nowSec);
-        int useCode = useItem(tc, SHIELD_ITEM_2H);
+        int useCode = useItem(tc, SHIELD_ITEM_2H, ctx);
         if (useCode == 0) {
             shieldBackpack.put(SHIELD_ITEM_2H, Math.max(0L, shieldCount(SHIELD_ITEM_2H) - 1L));
         }
@@ -1929,5 +2078,121 @@ public final class ServerShieldResponder {
         if (s == null) return "";
         String t = s.replace('\n', ' ').trim();
         return t.length() > 120 ? t.substring(0, 120) + "…" : t;
+    }
+
+    // ---------------- R0 观测埋点实现（只读，不参与任何判定） ----------------
+
+    /** R0-1 阶段①：PUSH = onPush 算出 urgent 的本机墙钟毫秒。 */
+    private TraceCtx newTrace() {
+        return new TraceCtx(traceSeq.incrementAndGet(), nowMs.getAsLong());
+    }
+
+    /**
+     * 发布一条待决策消费的紧急 trace。
+     *
+     * <p>CAS 语义（代码审查 P1-1）：决策消费前的后续紧急推送**不覆盖**已有 trace ——
+     * 同一次决策只对应一个 PUSH 起点（最早触发的那条），避免"B 的 push 配 A 的 resp"、
+     * 半条 trace 或吞掉 A 的 trace。
+     *
+     * @return 本次发布的 ctx；已有待处理 trace（CAS 失败）时返回 null
+     */
+    private TraceCtx beginUrgentTrace() {
+        TraceCtx ctx = newTrace();
+        return pendingTrace.compareAndSet(null, ctx) ? ctx : null;
+    }
+
+    /** R0-1 阶段④：记录请求返回/异常时刻与本次请求等待锁的时长（LOCK 时刻由此推算）。 */
+    private void recordTraceResp(WjdrEngine engine, TraceCtx ctx) {
+        if (ctx == null) return;
+        ctx.respMs = nowMs.getAsLong();
+        try {
+            // 按线程隔离的值：读到的就是本线程本次请求的等待时长（代码审查 P2-1）
+            ctx.lockWaitMs = engine == null ? -1L : engine.lastRequestLockWaitMs();
+        } catch (Throwable t) {
+            ctx.lockWaitMs = -1L;
+        }
+    }
+
+    /**
+     * 输出并消费本拍接管的紧急 trace（单次紧急路径 ≤1 条）。
+     *
+     * <p>LOCK 时刻 = 请求发起时刻 + 引擎实测的锁等待时长（{@link WjdrEngine#lastRequestLockWaitMs()}）；
+     * 未发请求的阶段记 -1。四段齐全的样本同时进 R0-2 聚合。
+     */
+    private void emitUrgentTrace(WjdrEngine engine, Risk r) {
+        TraceCtx ctx = decisionTrace;
+        decisionTrace = null;   // 先消费再输出，避免重入/重复输出
+        if (ctx == null) return;
+        long push = ctx.pushMs;
+        if (push <= 0L) return;
+        long wake = ctx.wakeMs;
+        long reqStart = ctx.reqStartMs;
+        long resp = ctx.respMs;
+        long lock = -1L;
+        if (reqStart > 0L) {
+            long wait = ctx.lockWaitMs < 0L ? 0L : ctx.lockWaitMs;
+            lock = reqStart + wait;
+        }
+        long nowSec = serverNowSec(engine);
+        long endtime = r == null ? 0L : r.endtimeSec;
+        long remain = endtime > 0L ? endtime - nowSec : -1L;
+        GameServerClock ck = clockOf(engine);
+        boolean locked = ck != null && ck.locked();
+        long errMs = locked ? ck.errBoundMs() : -1L;
+        long sinceCalib = locked ? ck.sinceCalibMs() : -1L;
+        String src = locked ? srcText(ck.lastSampleSource()) : "LOCAL";
+        String outcome = ctx.outcome;
+        if (outcome == null || outcome.isEmpty()) {
+            outcome = reqStart > 0L ? "failed" : "skip";
+        }
+        long wall = nowMs.getAsLong();
+        FileLog.info("盾时延 trace id={} fpid={} sid={} uid={} push={} wake={} lock={} resp={}"
+                        + " remain={} endtime={} serverNow={} wall={} err={}ms sinceCalib={}ms"
+                        + " src={} urgent={} outcome={}",
+                String.valueOf(ctx.id), fpid, String.valueOf(sid), String.valueOf(roleUid),
+                String.valueOf(push), String.valueOf(wake), String.valueOf(lock), String.valueOf(resp),
+                String.valueOf(remain), String.valueOf(endtime), String.valueOf(nowSec),
+                String.valueOf(wall), String.valueOf(errMs), String.valueOf(sinceCalib),
+                src, "true", outcome);
+        if (wake > 0L && lock > 0L && resp > 0L) {
+            latency.add(wake - push, lock - wake, resp - lock, resp - push, wall);
+            latency.maybeFlush(wall);
+        }
+    }
+
+    private static GameServerClock clockOf(WjdrEngine engine) {
+        try {
+            return engine == null ? null : engine.serverClock();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 当前时钟误差上界毫秒（未校准/不可用 = -1，见 R0-1 空值语义）。 */
+    private long clockErrMs(WjdrEngine engine) {
+        GameServerClock ck = clockOf(engine);
+        return ck != null && ck.locked() ? ck.errBoundMs() : -1L;
+    }
+
+    /** 距上次校准毫秒（未校准 = -1）。 */
+    private long clockSinceCalibMs(WjdrEngine engine) {
+        GameServerClock ck = clockOf(engine);
+        return ck != null && ck.locked() ? ck.sinceCalibMs() : -1L;
+    }
+
+    /** 最近样本来源（未校准 = LOCAL）。 */
+    private String clockSrc(WjdrEngine engine) {
+        GameServerClock ck = clockOf(engine);
+        return ck != null && ck.locked() ? srcText(ck.lastSampleSource()) : "LOCAL";
+    }
+
+    private static String srcText(String src) {
+        return src == null || src.isEmpty() ? "NONE" : src;
+    }
+
+    /** 当前风险链的 endtime（秒；无风险 = 0，供 R0-4 成功日志追加）。 */
+    private long currentRiskEndtimeSec() {
+        Risk r = risk;
+        return r == null ? 0L : r.endtimeSec;
     }
 }
