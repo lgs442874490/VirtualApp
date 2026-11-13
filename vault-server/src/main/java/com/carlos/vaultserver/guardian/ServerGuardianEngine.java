@@ -268,8 +268,8 @@ public final class ServerGuardianEngine {
         int maxConcurrent = DEFAULT_MAX_CONCURRENT_MISSIONS;
         // ---- 批次 G：要求目标必须是盟友坐标反查命中的 uid（默认 true；false=旧行为） ----
         boolean requireAlly = true;
-        /** 盟友坐标匹配容差（曼哈顿距离；默认 0=严格相等，clamp 0..3；1 可吸收 ±1 取整差）。 */
-        long allyMatchTolerance = 0L;
+        /** 盟友坐标匹配容差（曼哈顿距离；默认 1=吸收 ±1 取整差，clamp 0..3；0=严格相等）。 */
+        long allyMatchTolerance = 1L;
         /** 2026-10-31：用观察点整图扫描缓存按坐标反查「城 uid + 联盟 aid」判定友方（默认开）。 */
         boolean allyUseWatchpoint = true;
         /**
@@ -3381,6 +3381,17 @@ public final class ServerGuardianEngine {
         return cfg != null && cfg.diamondSpeedupEnabled && !cfg.diamondHardOff;
     }
 
+    /**
+     * 2026-11-13 实测（05:40 隆科多被攻击）：敌方 2~3 秒内 6 连 −50% 加速把剩余 117s 压到 0，
+     * 我方对等加速只发 1 发（领先 5.7s 就按 margin 停手），随后被敌方下一发直接反超。
+     * 因此 burst 模式下「已先到」的停止线提高到本预留值（敌方还会继续压缩）。
+     */
+    static final long BURST_AHEAD_RESERVE_MS = 20_000L;
+    /** burst 停止线按敌方剩余行程的比例（与上限取小，避免敌方剩余很长时过度梭哈）。 */
+    static final double BURST_AHEAD_FRACTION = 0.8d;
+    /** 敌方剩余 ≤ 该值（5s）：临近落地，按原 margin 判定，不再追加梭哈。 */
+    static final long BURST_LAST_MOMENT_MS = 5_000L;
+
     /** 敌方 50% 密集判定（纯函数）：1s 内 ≥4 次 或 累计 >4 次 → 梭哈 25%。 */
     static boolean burstMode(int enemy50BurstCount, int enemy50Total) {
         return enemy50BurstCount >= 4 || enemy50Total > 4;
@@ -3443,10 +3454,18 @@ public final class ServerGuardianEngine {
         }
         long required = Math.max(1L, marginMs);
         long aheadBefore = enemyRemainMs - ourRemainMs;
-        if (ourRemainMs > 0L && enemyRemainMs > 0L && ourRemainMs <= enemyRemainMs - marginMs) {
+        // 2026-11-13：burst 时敌方还会继续压缩，仅「领先 margin 2s」就停会被下一发反超。
+        // 停止线 = min(BURST_AHEAD_RESERVE_MS, 敌方剩余×0.8)；敌方临近落地（≤5s）退回原 margin。
+        long stopAhead = marginMs;
+        if (enemyRemainMs > BURST_LAST_MOMENT_MS) {
+            stopAhead = Math.max(marginMs, Math.min(BURST_AHEAD_RESERVE_MS,
+                    (long) (enemyRemainMs * BURST_AHEAD_FRACTION)));
+        }
+        if (ourRemainMs > 0L && enemyRemainMs > 0L && ourRemainMs <= enemyRemainMs - stopAhead) {
             return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.NONE, 0L,
                     ourRemainMs, enemyRemainMs, marginMs, required, aheadBefore,
-                    ourRemainMs, stock25, stock50, "burst_done", "已先到（梭哈25%模式）");
+                    ourRemainMs, stock25, stock50, "burst_done",
+                    "已先到（梭哈25%模式，领先≥" + stopAhead + "ms）");
         }
         if (ourRemainMs <= GuardianSpeedupPlanner.MIN_REMAIN_MS) {
             return new GuardianSpeedupPlanner.Step(GuardianSpeedupPlanner.Action.NONE, 0L,
@@ -4437,7 +4456,7 @@ public final class ServerGuardianEngine {
             // 批次 F：队列无位重试（0=关闭回旧行为；间隔 1..30s）
             c.requireAlly = bool(sub, st, p, "require_ally", true);
             c.allyMatchTolerance = Math.max(0L, Math.min(3L,
-                    num(sub, st, p, "ally_match_tolerance", 0L)));
+                    num(sub, st, p, "ally_match_tolerance", 1L)));
             c.allyUseWatchpoint = bool(sub, st, p, "ally_use_watchpoint", true);
             c.allyUseProtectRect = bool(sub, st, p, "ally_use_protect_rect", false);
             c.allyRectMaxDist = Math.max(0L, Math.min(60L,
