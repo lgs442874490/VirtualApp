@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.VaultStorePerRoleSwitchTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:36" hostname="lgs.local" time="0.02">
+  <properties/>
+  <testcase name="keepFalse_stillStopsAllRolesRegardlessOfPerRole" classname="com.carlos.vaultserver.VaultStorePerRoleSwitchTest" time="0.005"/>
+  <testcase name="perRoleOn_switchActiveRoleKeepsSiblingOnline" classname="com.carlos.vaultserver.VaultStorePerRoleSwitchTest" time="0.005"/>
+  <testcase name="perRoleOff_switchActiveRoleStopsSibling_legacySemantics" classname="com.carlos.vaultserver.VaultStorePerRoleSwitchTest" time="0.009"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

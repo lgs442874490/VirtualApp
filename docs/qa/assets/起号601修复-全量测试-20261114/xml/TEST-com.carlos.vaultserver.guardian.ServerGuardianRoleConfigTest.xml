@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.guardian.ServerGuardianRoleConfigTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:20" hostname="lgs.local" time="0.005">
+  <properties/>
+  <testcase name="legacyUidZeroStillReadsSidDefault" classname="com.carlos.vaultserver.guardian.ServerGuardianRoleConfigTest" time="0.002"/>
+  <testcase name="siblingFallsBackToSidDefault" classname="com.carlos.vaultserver.guardian.ServerGuardianRoleConfigTest" time="0.002"/>
+  <testcase name="uidParamsTakePrecedenceOverSidDefault" classname="com.carlos.vaultserver.guardian.ServerGuardianRoleConfigTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

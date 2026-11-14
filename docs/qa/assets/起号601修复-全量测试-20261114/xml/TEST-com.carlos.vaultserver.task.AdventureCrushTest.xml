@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.AdventureCrushTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.005">
+  <properties/>
+  <testcase name="crushRequestOmitsIsFastFlag" classname="com.carlos.vaultserver.task.AdventureCrushTest" time="0.004"/>
+  <testcase name="crushesOnceThenStopsAtFailLimit" classname="com.carlos.vaultserver.task.AdventureCrushTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

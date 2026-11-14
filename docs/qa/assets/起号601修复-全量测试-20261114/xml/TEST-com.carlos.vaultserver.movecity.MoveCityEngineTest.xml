@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.movecity.MoveCityEngineTest" tests="25" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:21" hostname="lgs.local" time="9.875">
+  <properties/>
+  <testcase name="roleSwitched_afterCreate_jobFails" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="1.67"/>
+  <testcase name="executeNow_multiAccount_allSuccess" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.041"/>
+  <testcase name="schedule_advanceMillis_clampedTo100" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.004"/>
+  <testcase name="removeAccountEverywhere_cancelsJobsOfDeletedAccount" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.005"/>
+  <testcase name="executeNow_offlineAccount_skippedWithCanonicalMessage" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.024"/>
+  <testcase name="roleUnchanged_executesNormally" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.013"/>
+  <testcase name="randomProtocol_immediate_noCoordinateNeeded" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.012"/>
+  <testcase name="scheduled_retryThenSuccess" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="1.959"/>
+  <testcase name="schedule_success_timelineToCompleted" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="1.952"/>
+  <testcase name="executeNow_unknownProtocol_rejected" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.0"/>
+  <testcase name="scheduled_autoLogin_offlineAccountEnsuredOnline" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="2.063"/>
+  <testcase name="executeNow_duplicatePoint_jobFailsWithCanonicalMessage" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.002"/>
+  <testcase name="executeNow_missingKid_rejected" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.001"/>
+  <testcase name="cancel_afterStart_rejected" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.727"/>
+  <testcase name="persistence_finishedJobsArchivedNotRescheduled" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.054"/>
+  <testcase name="scheduled_itemShortage_shortCircuitsWithoutRetry" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="1.157"/>
+  <testcase name="schedule_conflictSameSecondAndWithin5s_rejected" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.004"/>
+  <testcase name="schedule_pastTime_rejected" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.0"/>
+  <testcase name="cancel_beforeStart_succeeds_withUserCancelMessage" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.003"/>
+  <testcase name="persistence_restoreReschedulesPendingJob" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.004"/>
+  <testcase name="schedule_multiAccount_rejected" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.001"/>
+  <testcase name="executeNow_clearsMoveCityHoldAfterFinish" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.077"/>
+  <testcase name="executeNow_missingPoint_rejected" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.0"/>
+  <testcase name="job_unknownId_rejected" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.001"/>
+  <testcase name="jobs_splitScheduledAndFinished_sortedByExecuteAtDesc" classname="com.carlos.vaultserver.movecity.MoveCityEngineTest" time="0.099"/>
+  <system-out><![CDATA[06:18:28.201 I/VaultSrv: 定时迁城抢占登录受理 jobId=14b54c06-be78-4213-9b5d-8e530d0161f8 fpid=a1 reason=定时迁城保护窗口巡检
+06:18:29.078 W/VaultSrv: 立即迁城任务失败 jobId=6b25f37b-b384-4710-88f9-ff9f0ab52881 message=多个账号不能迁移到同一坐标: 100,200
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

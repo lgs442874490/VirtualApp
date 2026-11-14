@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.automation.services.MedicServiceTest" tests="31" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:15" hostname="lgs.local" time="1.24">
+  <properties/>
+  <testcase name="heal_resourceShort51IsSkipNotError" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.004"/>
+  <testcase name="heal_helpFailureMarkedFailNotOk" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.005"/>
+  <testcase name="heal_requestHelpFalseSkipsHelp" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="heal_loopsBatchesWhenServerAcceptsThem" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.002"/>
+  <testcase name="buildSnapshot_emptyNotifiesHasReadableSource" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="hospitalQid_mapKeyShape" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.0"/>
+  <testcase name="mergeAcrossInitAndPushTakesMaxPerType" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.003"/>
+  <testcase name="helpSubPrefix_classifiesOkSkipFail" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.0"/>
+  <testcase name="hospitalQid_listShape" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="healFromParams_respectsExplicitHealCountAndRequestHelp" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.602"/>
+  <testcase name="healAllAtOnceWhenHealCountZero" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="subtractBatch_removesClearedAndKeepsRemaining" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="buildSnapshot_readsHealingFromInitHealData" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="heal_noWoundedWritesReadableSkip" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="planHealingBatch_skipsUnsupportedSoldierTypes" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="hospitalQid_unwrappedShape" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="parsesListShapeAndKeepsLargeWoundedCount" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.0"/>
+  <testcase name="planHealingBatch_limitZeroMeansAll" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.0"/>
+  <testcase name="hospitalQid_otherQueueTypesOrMissingReturnsZero" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="planHealingBatch_prefersHigherLevelThenTroopOrder" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.0"/>
+  <testcase name="heal_help1526_skipsAndCooldownsNextRound" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.002"/>
+  <testcase name="hospitalQid_singleQueueShape" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.0"/>
+  <testcase name="heal_stopsOn2301HealingInProgress" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.202"/>
+  <testcase name="buildSnapshot_keepsWoundedTotal_regressionForDroppedMaps" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="healFromParams_explicitZeroStillMeansAll" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="parsesNestedSoldiersShape" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="heal_withoutQueueSyncDoesNotBlindFireHelp" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.002"/>
+  <testcase name="buildSnapshot_unwrapsDataWrapperAndMergesPushByMax" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.0"/>
+  <testcase name="heal_honoursMedicSubSwitch" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <testcase name="healFromParams_defaultsTo400PerBatch" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.401"/>
+  <testcase name="heal_regressionForDroppedWounded_healsAndAsksHelpWithQid" classname="com.carlos.vaultserver.automation.services.MedicServiceTest" time="0.001"/>
+  <system-out><![CDATA[06:18:15.031 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.034 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.040 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.041 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.047 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.649 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.653 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.658 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.658 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.659 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.862 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.865 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:15.867 I/VaultSrv: medic notifies fpid=48460403 protos=
+06:18:16.269 I/VaultSrv: medic notifies fpid=48460403 protos=
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

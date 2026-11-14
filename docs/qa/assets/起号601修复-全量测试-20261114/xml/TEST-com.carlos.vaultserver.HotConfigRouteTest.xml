@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.HotConfigRouteTest" tests="10" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:33" hostname="lgs.local" time="0.057">
+  <properties/>
+  <testcase name="baseUrl_hostMissingFallsBackToLocalAddress" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.009"/>
+  <testcase name="hotconfig_missingFileReturns404Envelope" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.006"/>
+  <testcase name="apk_missingFileReturns404Envelope" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.004"/>
+  <testcase name="apk_streamsWithAndroidPackageHeaders" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.012"/>
+  <testcase name="hotconfig_prefersForwardedHostOverHost" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.004"/>
+  <testcase name="baseUrl_forwardedProtoAndHost" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.002"/>
+  <testcase name="renderHotConfig_replacesEveryPlaceholder" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.003"/>
+  <testcase name="nonGetReturns405Envelope" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.007"/>
+  <testcase name="hotconfig_prefersForwardedProtoHttps" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.004"/>
+  <testcase name="hotconfig_replacesBasePlaceholderWithRequestHost" classname="com.carlos.vaultserver.HotConfigRouteTest" time="0.004"/>
+  <system-out><![CDATA[06:15:33.696 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:33.705 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:33.710 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:33.714 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:33.727 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:33.731 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:33.734 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:33.736 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:33.743 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:33.748 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

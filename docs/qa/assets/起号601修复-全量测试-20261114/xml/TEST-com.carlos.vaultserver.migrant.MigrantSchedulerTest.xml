@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.migrant.MigrantSchedulerTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:21" hostname="lgs.local" time="0.015">
+  <properties/>
+  <testcase name="armedJobTurnsFiringAtBoundary_evenIfOffline" classname="com.carlos.vaultserver.migrant.MigrantSchedulerTest" time="0.002"/>
+  <testcase name="startStopIsIdempotent" classname="com.carlos.vaultserver.migrant.MigrantSchedulerTest" time="0.002"/>
+  <testcase name="waitingJobTurnsPreparingWhenOffline_andThrottlesRetry" classname="com.carlos.vaultserver.migrant.MigrantSchedulerTest" time="0.002"/>
+  <testcase name="unknownJobReverifyTickIsSafeWhenOffline" classname="com.carlos.vaultserver.migrant.MigrantSchedulerTest" time="0.002"/>
+  <testcase name="pastFreedomEndMarksUnknown" classname="com.carlos.vaultserver.migrant.MigrantSchedulerTest" time="0.002"/>
+  <testcase name="firingPastReconcileDeadlineFallsUnknown" classname="com.carlos.vaultserver.migrant.MigrantSchedulerTest" time="0.003"/>
+  <testcase name="firingAfterBurstKeepsReconcilingInSchedulerRounds" classname="com.carlos.vaultserver.migrant.MigrantSchedulerTest" time="0.002"/>
+  <system-out><![CDATA[06:18:21.122 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.124 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.124 I/VaultSrv: 移民调度器已启动：1s 扫描（准备分轮/发射/对账分轮/延迟复核）
+06:18:21.124 I/VaultSrv: 移民调度器已停止
+06:18:21.125 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.128 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.128 I/VaultSrv: 移民延迟复核仍无结论，安排下一次 job=s5 at=1794608901128 (+10min)
+06:18:21.129 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.130 I/VaultSrv: 移民任务收口（窗口过期）job=s2 fpid=f1 uid=1001 status=UNKNOWN message=已过自由移民窗口且未取得结果，需人工核验 reverify=false
+06:18:21.131 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.132 I/VaultSrv: 移民任务安排延迟复核 job=s7 at=1794608481132 (+3min)
+06:18:21.132 I/VaultSrv: 移民对账收口 job=s7 fpid=f1 uid=1001 target_kid=1001 reconciled_kid=0 status=UNKNOWN reverify=true
+06:18:21.134 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

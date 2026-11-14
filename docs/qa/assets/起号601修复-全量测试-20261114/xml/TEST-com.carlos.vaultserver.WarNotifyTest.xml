@@ -1,0 +1,119 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.WarNotifyTest" tests="55" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:36" hostname="lgs.local" time="2.473">
+  <properties/>
+  <testcase name="onPush_settleBreachKnownCodes" classname="com.carlos.vaultserver.WarNotifyTest" time="0.06"/>
+  <testcase name="sendTest_requiresWebhook" classname="com.carlos.vaultserver.WarNotifyTest" time="0.011"/>
+  <testcase name="breachOf_mapping" classname="com.carlos.vaultserver.WarNotifyTest" time="0.006"/>
+  <testcase name="soldierLabel_kindsAndTiers" classname="com.carlos.vaultserver.WarNotifyTest" time="0.006"/>
+  <testcase name="behaviorOf_mapping" classname="com.carlos.vaultserver.WarNotifyTest" time="0.008"/>
+  <testcase name="fmtDuration_andDisplayOutcome" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="onPush_massMarchIsRally" classname="com.carlos.vaultserver.WarNotifyTest" time="0.008"/>
+  <testcase name="onPush_returnToOwnCityIsSilent" classname="com.carlos.vaultserver.WarNotifyTest" time="0.007"/>
+  <testcase name="nameResolver_asyncBackfillReachesSettle" classname="com.carlos.vaultserver.WarNotifyTest" time="0.077"/>
+  <testcase name="onPush_wecomDispatchAndQuietHoursGate" classname="com.carlos.vaultserver.WarNotifyTest" time="0.01"/>
+  <testcase name="watchTargets_crudPersistAndSurviveSync" classname="com.carlos.vaultserver.WarNotifyTest" time="0.012"/>
+  <testcase name="marchCandidates_toMarchsListAndDataWrapper" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="eventsStore_bakFileWritten" classname="com.carlos.vaultserver.WarNotifyTest" time="0.009"/>
+  <testcase name="onPush_initialEventCarriesEnrichedFields" classname="com.carlos.vaultserver.WarNotifyTest" time="0.007"/>
+  <testcase name="watchConfig_persistAndClamp" classname="com.carlos.vaultserver.WarNotifyTest" time="0.047"/>
+  <testcase name="onPush_allianceSituationToMarchsMatchesWatchedOwner" classname="com.carlos.vaultserver.WarNotifyTest" time="0.006"/>
+  <testcase name="idCandidates_findsDelIds" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="onPush_cooldownThrottlesSameTargetAndAction" classname="com.carlos.vaultserver.WarNotifyTest" time="0.006"/>
+  <testcase name="onPush_sameAllianceRallyIsSilent" classname="com.carlos.vaultserver.WarNotifyTest" time="0.005"/>
+  <testcase name="onPush_monsterRallyIsSilent" classname="com.carlos.vaultserver.WarNotifyTest" time="0.005"/>
+  <testcase name="startPointOf_parsesStartpoint" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="onPush_settleArrivalWithoutMailIsNotOwnDefense" classname="com.carlos.vaultserver.WarNotifyTest" time="0.007"/>
+  <testcase name="wecomText_targetShowsDefenderNickAndAlliance" classname="com.carlos.vaultserver.WarNotifyTest" time="0.008"/>
+  <testcase name="onPush_watchedOwnerEmitsEvent" classname="com.carlos.vaultserver.WarNotifyTest" time="0.006"/>
+  <testcase name="actionOf_mapping" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="wecomText_containsSixItems" classname="com.carlos.vaultserver.WarNotifyTest" time="0.09"/>
+  <testcase name="onPush_attackMarchStillAlerts" classname="com.carlos.vaultserver.WarNotifyTest" time="0.006"/>
+  <testcase name="onPush_rallyFollowerIsSilent" classname="com.carlos.vaultserver.WarNotifyTest" time="0.006"/>
+  <testcase name="watchConfig_webhookAllowEnv" classname="com.carlos.vaultserver.WarNotifyTest" time="0.047"/>
+  <testcase name="onPush_unwatchedOrDisabledEmitsNothing" classname="com.carlos.vaultserver.WarNotifyTest" time="0.01"/>
+  <testcase name="onPush_settleAndInitCooldownIndependent" classname="com.carlos.vaultserver.WarNotifyTest" time="0.009"/>
+  <testcase name="onPush_wecomDisabledOrNoUrlSkips" classname="com.carlos.vaultserver.WarNotifyTest" time="0.007"/>
+  <testcase name="onPush_giantMonsterTargetObjectIsSilent" classname="com.carlos.vaultserver.WarNotifyTest" time="0.006"/>
+  <testcase name="wecomText_settleAppendsOutcomeLine" classname="com.carlos.vaultserver.WarNotifyTest" time="0.01"/>
+  <testcase name="nameResolver_failureFallsBackAndDoesNotRepeat" classname="com.carlos.vaultserver.WarNotifyTest" time="0.247"/>
+  <testcase name="troopsOf_mapListAndMissingShapes" classname="com.carlos.vaultserver.WarNotifyTest" time="0.007"/>
+  <testcase name="marchCandidates_worldSituationSlotShape" classname="com.carlos.vaultserver.WarNotifyTest" time="0.005"/>
+  <testcase name="onPush_scoutIsNotDuplicatedByWarNotify" classname="com.carlos.vaultserver.WarNotifyTest" time="0.005"/>
+  <testcase name="onPush_watchedOwnerFromOtherAccountOutOfScopeStillEmits" classname="com.carlos.vaultserver.WarNotifyTest" time="0.007"/>
+  <testcase name="onPush_settleBreachUnknownCodesAndNonDefenseFirst" classname="com.carlos.vaultserver.WarNotifyTest" time="0.011"/>
+  <testcase name="marchCandidates_ignoresMapsWithoutOwnerOrId" classname="com.carlos.vaultserver.WarNotifyTest" time="0.005"/>
+  <testcase name="eventStore_fetchLimitCapsPage" classname="com.carlos.vaultserver.WarNotifyTest" time="0.246"/>
+  <testcase name="onPush_garbagePayloadDoesNotThrow" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="isPvpMarch_onlyAttackAndRallyLeader" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="onPush_roleScopeFiltersNotifications" classname="com.carlos.vaultserver.WarNotifyTest" time="0.011"/>
+  <testcase name="onPush_mailPushProducesNoMarchEvents" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="onPush_allianceSituationFrameMatchesWatchedOwner" classname="com.carlos.vaultserver.WarNotifyTest" time="0.007"/>
+  <testcase name="watchConfig_validation" classname="com.carlos.vaultserver.WarNotifyTest" time="0.005"/>
+  <testcase name="onPush_nonPvpMarchIsSilent" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="marchCandidates_playerMarchShape" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="endpointOf_endpointThenTargetFallback" classname="com.carlos.vaultserver.WarNotifyTest" time="0.004"/>
+  <testcase name="onPush_delRecallAndArrive" classname="com.carlos.vaultserver.WarNotifyTest" time="0.019"/>
+  <testcase name="nameResolver_cachedAcrossEvents" classname="com.carlos.vaultserver.WarNotifyTest" time="0.153"/>
+  <testcase name="onPush_settleRecallImmediateWithDuration" classname="com.carlos.vaultserver.WarNotifyTest" time="0.009"/>
+  <testcase name="eventStore_ringCapAndReload" classname="com.carlos.vaultserver.WarNotifyTest" time="1.188"/>
+  <system-out><![CDATA[06:15:36.690 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军261（事件 w1）
+06:15:36.695 I/VaultSrv: 战争结算 48460403 uid=57347368 到达 行军261 耗时300s 破城是（事件 w2）
+06:15:36.698 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军262（事件 w3）
+06:15:36.740 I/VaultSrv: 战争结算 48460403 uid=57347368 到达 行军262 耗时300s 破城否（事件 w4）
+06:15:36.746 I/VaultSrv: 测试通知跳过：未配置 webhook
+06:15:36.784 I/VaultSrv: 战争通知命中 48460403 uid=57347368 集结 type=501 行军131（事件 w1）
+06:15:36.845 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军231（事件 w1）
+06:15:36.868 I/VaultSrv: 战争结算 48460403 uid=57347368 到达 行军231 耗时300s 破城非本账号防守，结果未知（事件 w2）
+06:15:36.876 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军141（事件 w1）
+06:15:36.899 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军161（事件 w1）
+06:15:36.903 I/VaultSrv: 战争通知命中 48460403 uid=57348369 进攻 type=2 行军162（事件 w2）
+06:15:36.910 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军201（事件 w1）
+06:15:36.962 I/VaultSrv: 战争诊断 notify_world_alliance_situation_update contentNull=false contentEmpty=false keys=[marchs, to_marchs]
+06:15:36.962 I/VaultSrv: 战争诊断候选 notify_world_alliance_situation_update candidates=1 owners=[57347368] watched=[57347368]
+06:15:36.963 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军48715（事件 w1）
+06:15:36.973 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军111（事件 w1）
+06:15:36.973 I/VaultSrv: 战争通知节流 48460403 uid=57347368 进攻（冷却中，丢弃）
+06:15:36.974 I/VaultSrv: 战争通知节流 48460403 uid=57347368 进攻（冷却中，丢弃）
+06:15:36.978 I/VaultSrv: 战争通知跳过（非敌情行军）proto=notify_world_marchs owner=57347368 type=100 state=0
+06:15:36.984 I/VaultSrv: 战争通知跳过（集结目标不是城：巨兽/野外集结）proto=notify_mass_march_add owner=57347368 ep=700,700
+06:15:36.993 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军241（事件 w1）
+06:15:36.994 I/VaultSrv: 战争结算 48460403 uid=57347368 到达 行军241 耗时300s 破城非本账号防守，结果未知（事件 w2）
+06:15:37.002 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军321（事件 w1）
+06:15:37.008 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军101（事件 w1）
+06:15:37.102 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军301（事件 w1）
+06:15:37.108 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军905（事件 w1）
+06:15:37.114 I/VaultSrv: 战争通知跳过（加入集结）proto=notify_world_marchs owner=57347368 type=99
+06:15:37.114 I/VaultSrv: 战争通知跳过（加入集结）proto=notify_mass_march_add owner=57347368 type=501
+06:15:37.177 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军281（事件 w1）
+06:15:37.179 I/VaultSrv: 战争结算 48460403 uid=57347368 到达 行军281 耗时300s 破城非本账号防守，结果未知（事件 w2）
+06:15:37.180 I/VaultSrv: 战争通知节流 48460403 uid=57347368 进攻（冷却中，丢弃）
+06:15:37.180 I/VaultSrv: 战争结算节流 48460403 uid=57347368 到达（冷却中，丢弃）
+06:15:37.187 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军151（事件 w1）
+06:15:37.193 I/VaultSrv: 战争通知跳过（非敌情行军）proto=notify_mass_march_add owner=57347368 type=102 state=0
+06:15:37.200 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军311（事件 w1）
+06:15:37.202 I/VaultSrv: 战争结算 48460403 uid=57347368 到达 行军311 耗时300s 破城是（事件 w2）
+06:15:37.208 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军221（事件 w1）
+06:15:37.250 I/VaultSrv: 战争通知命中 48460403 uid=57347368 集结 type=102 行军222（事件 w2）
+06:15:37.468 I/VaultSrv: 战争通知跳过（侦查走观察点告警）proto=notify_world_marchs owner=57347368
+06:15:37.476 I/VaultSrv: 战争通知命中 86885582 uid=57347368 进攻 type=2 行军121（事件 w1）
+06:15:37.481 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军271（事件 w1）
+06:15:37.483 I/VaultSrv: 战争结算 48460403 uid=57347368 到达 行军271 耗时300s 破城未知（事件 w2）
+06:15:37.484 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军272（事件 w3）
+06:15:37.486 I/VaultSrv: 战争结算 48460403 uid=57347368 到达 行军272 耗时300s 破城未知（事件 w4）
+06:15:37.751 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军906（事件 w1）
+06:15:37.756 I/VaultSrv: 战争通知命中 48460403 uid=57356368 进攻 type=2 行军907（事件 w2）
+06:15:37.766 I/VaultSrv: 战争诊断 notify_world_alliance_situation_add contentNull=false contentEmpty=false keys=[marchs, to_marchs]
+06:15:37.766 I/VaultSrv: 战争诊断候选 notify_world_alliance_situation_add candidates=1 owners=[57347368] watched=[57347368]
+06:15:37.767 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军48714（事件 w1）
+06:15:37.776 I/VaultSrv: 战争通知跳过（非敌情行军）proto=notify_world_marchs owner=57347368 type=4 state=0
+06:15:37.790 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军121（事件 w1）
+06:15:37.791 I/VaultSrv: 战争结算 48460403 uid=57347368 撤回 行军121 耗时300s 破城（事件 w2）
+06:15:37.794 I/VaultSrv: 战争通知命中 48460403 uid=57356368 进攻 type=2 行军122（事件 w3）
+06:15:37.801 I/VaultSrv: 战争结算 48460403 uid=57356368 到达 行军122 耗时100s 破城非本账号防守，结果未知（事件 w4）
+06:15:37.892 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军211（事件 w1）
+06:15:37.956 I/VaultSrv: 战争通知命中 48460403 uid=57347368 集结 type=102 行军212（事件 w2）
+06:15:37.963 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军251（事件 w1）
+06:15:37.965 I/VaultSrv: 战争结算 48460403 uid=57347368 撤回 行军251 耗时100s 破城（事件 w2）
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

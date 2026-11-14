@@ -1,0 +1,328 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.SessionKeeperRoleControlTest" tests="19" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:34" hostname="lgs.local" time="0.347">
+  <properties/>
+  <testcase name="sameFpid_twoRolesParallel_loginDoesNotStopSibling" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.027"/>
+  <testcase name="login_idempotentWhenAlreadyOnlineAndResumesPaused" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.011"/>
+  <testcase name="loginLearnsRoleIntoPool" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.007"/>
+  <testcase name="resumeWithoutSession_delegatesToLogin" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.007"/>
+  <testcase name="logout_preservesKeep_stopClearsIt" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.008"/>
+  <testcase name="legacyVaultJson_coldStartRestoresActiveRoleSession" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.008"/>
+  <testcase name="pausedDesired_restoredAsPausedAfterRestart" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.011"/>
+  <testcase name="legacyVaultJson_multiRoleNoDesired_onlyActiveRestored" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.008"/>
+  <testcase name="legacyKeepWithoutUid_stillReconcilesActiveRoleSession" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.007"/>
+  <testcase name="concurrencyLimit_countsRoleSessions_refusedWithCode1429" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.017"/>
+  <testcase name="reconcile_restoresAllDesiredRoles_withoutExplicitLogin" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.017"/>
+  <testcase name="login_thenPause_thenResume_thenStop_transitions" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.017"/>
+  <testcase name="errorCodes_notFound_disabled_tokenMissing_unknownAction" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.005"/>
+  <testcase name="sameFpid_loginIdempotentPerRole_afterSiblingLogin" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.1"/>
+  <testcase name="ensureSession_accountLevelCollapsesToActiveRoleSession" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.02"/>
+  <testcase name="legacySlotSession_replacedByExplicitRoleLogin" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.014"/>
+  <testcase name="crossFpidParallel_bothOnline_onlineCountTwo" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.015"/>
+  <testcase name="desiredEntriesTakePrecedence_fallbackNotApplied" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.007"/>
+  <testcase name="desiredOnline_restoredAfterKeeperRestart" classname="com.carlos.vaultserver.SessionKeeperRoleControlTest" time="0.038"/>
+  <system-out><![CDATA[06:15:34.991 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608134990}
+06:15:34.991 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:34.991 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:34.991 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:34.991 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:34.991 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:34.992 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:34.994 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:34.994 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:34.996 I/VaultSrv: 资产库已挂载 48460403|888|88280792 库=AssetKey{48460403:888/88280792@1794608134996}
+06:15:34.996 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|88280792
+06:15:34.996 I/VaultSrv: 通知历史钩子已挂载 48460403|888|88280792
+06:15:34.996 I/VaultSrv: 编队目录钩子已挂载 48460403|888|88280792
+06:15:34.996 I/VaultSrv: 监控推送钩子已挂载 48460403|888|88280792
+06:15:34.996 I/VaultSrv: 角色上线 48460403|888|88280792（同号其它角色会话保留 1 个）
+06:15:35.002 I/VaultSrv: 登录成功 48460403|888|88280792 角色=小鹿矿工5号
+06:15:35.005 I/VaultSrv: 登录身份 fpid=48460403 uid=88280792 @k 熔炉
+06:15:35.005 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.007 I/VaultSrv: 角色暂停 48460403|888|35371154（30 分钟后自动上线，恢复计划已落库）
+06:15:35.007 I/VaultSrv: 资产库已卸载 48460403|888|88280792：session-closed
+06:15:35.009 I/VaultSrv: 角色停止 48460403|888|88280792（剩余在线兄弟角色 1 个）
+06:15:35.012 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135012}
+06:15:35.012 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.013 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.013 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.013 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.013 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.014 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.016 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.017 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.018 I/VaultSrv: 角色暂停 48460403|888|35371154（30 分钟后自动上线，恢复计划已落库）
+06:15:35.023 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135023}
+06:15:35.024 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.024 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.024 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.024 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.024 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.024 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.027 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.027 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.031 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135030}
+06:15:35.031 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.031 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.031 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.031 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.031 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.032 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.034 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.035 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.039 I/VaultSrv: 角色下线 48460403|888|35371154（剩余在线兄弟角色 0 个）
+06:15:35.040 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135040}
+06:15:35.041 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.041 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.041 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.041 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.041 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.042 I/VaultSrv: 资产库已卸载 48460403|888|35371154：session-closed
+06:15:35.043 I/VaultSrv: 角色停止 48460403|888|35371154（剩余在线兄弟角色 0 个）
+06:15:35.047 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135047}
+06:15:35.047 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.047 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.047 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.047 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.047 I/VaultSrv: 建会话 48460403|888|35371154 runState=STOPPED 代理=null
+06:15:35.048 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.050 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.050 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.055 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135055}
+06:15:35.055 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.055 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.055 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.055 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.055 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.056 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.058 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.058 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.061 I/VaultSrv: 角色暂停 48460403|888|35371154（30 分钟后自动上线，恢复计划已落库）
+06:15:35.062 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135062}
+06:15:35.062 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.062 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.062 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.062 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.062 I/VaultSrv: 建会话 48460403|888|35371154 runState=PAUSED 代理=null
+06:15:35.066 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135066}
+06:15:35.066 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.066 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.066 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.066 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.066 I/VaultSrv: 建会话 48460403|888|35371154 runState=STOPPED 代理=null
+06:15:35.067 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.070 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.070 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.072 I/VaultSrv: 资产库已挂载 48460403|888| 库=AssetKey{48460403:888/0@1794608135072}
+06:15:35.072 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|
+06:15:35.072 I/VaultSrv: 通知历史钩子已挂载 48460403|888|
+06:15:35.072 I/VaultSrv: 编队目录钩子已挂载 48460403|888|
+06:15:35.073 I/VaultSrv: 监控推送钩子已挂载 48460403|888|
+06:15:35.073 I/VaultSrv: 建会话 48460403|888| runState=STOPPED 代理=null
+06:15:35.074 I/VaultSrv: 发现角色映射 fpid=48460403 k888→uid=35371154
+06:15:35.074 I/VaultSrv: 登录成功 48460403|888| 角色=隆科多
+06:15:35.076 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.076 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.083 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135083}
+06:15:35.084 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.084 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.084 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.084 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.084 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.085 I/VaultSrv: 资产库已卸载 48460403|888|35371154：session-closed
+06:15:35.087 I/VaultSrv: 角色停止 48460403|888|35371154（剩余在线兄弟角色 0 个）
+06:15:35.089 I/VaultSrv: 资产库已挂载 80971192|888|35371154 库=AssetKey{80971192:888/35371154@1794608135089}
+06:15:35.089 I/VaultSrv: 推送唤醒钩子已挂载 80971192|888|35371154
+06:15:35.089 I/VaultSrv: 通知历史钩子已挂载 80971192|888|35371154
+06:15:35.089 I/VaultSrv: 编队目录钩子已挂载 80971192|888|35371154
+06:15:35.089 I/VaultSrv: 监控推送钩子已挂载 80971192|888|35371154
+06:15:35.089 I/VaultSrv: 角色上线 80971192|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.092 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135091}
+06:15:35.092 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.092 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.092 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.092 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.092 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.093 I/VaultSrv: 资产库已挂载 48460403|888|88280792 库=AssetKey{48460403:888/88280792@1794608135093}
+06:15:35.093 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|88280792
+06:15:35.094 I/VaultSrv: 通知历史钩子已挂载 48460403|888|88280792
+06:15:35.094 I/VaultSrv: 编队目录钩子已挂载 48460403|888|88280792
+06:15:35.094 I/VaultSrv: 监控推送钩子已挂载 48460403|888|88280792
+06:15:35.094 I/VaultSrv: 角色上线 48460403|888|88280792（同号其它角色会话保留 1 个）
+06:15:35.101 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135101}
+06:15:35.101 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.101 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.101 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.101 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.101 I/VaultSrv: 建会话 48460403|888|35371154 runState=RUNNING 代理=null
+06:15:35.101 I/VaultSrv: 资产库已挂载 48460403|888|88280792 库=AssetKey{48460403:888/88280792@1794608135101}
+06:15:35.102 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|88280792
+06:15:35.102 I/VaultSrv: 通知历史钩子已挂载 48460403|888|88280792
+06:15:35.102 I/VaultSrv: 编队目录钩子已挂载 48460403|888|88280792
+06:15:35.102 I/VaultSrv: 监控推送钩子已挂载 48460403|888|88280792
+06:15:35.102 I/VaultSrv: 建会话 48460403|888|88280792 runState=RUNNING 代理=null
+06:15:35.103 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.106 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.106 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.108 I/VaultSrv: 登录成功 48460403|888|88280792 角色=小鹿矿工5号
+06:15:35.110 I/VaultSrv: 登录身份 fpid=48460403 uid=88280792 @k 熔炉
+06:15:35.110 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.116 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135116}
+06:15:35.116 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.116 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.116 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.116 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.116 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.117 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.120 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.120 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.122 I/VaultSrv: 角色暂停 48460403|888|35371154（30 分钟后自动上线，恢复计划已落库）
+06:15:35.123 I/VaultSrv: 角色恢复 48460403|888|35371154
+06:15:35.125 I/VaultSrv: 资产库已卸载 48460403|888|35371154：session-closed
+06:15:35.125 W/VaultSrv: 整轮跳过 role=48460403|888|35371154（会话不在线）
+06:15:35.127 I/VaultSrv: 角色停止 48460403|888|35371154（剩余在线兄弟角色 0 个）
+06:15:35.128 I/VaultSrv: 角色停止 48460403|888|35371154（剩余在线兄弟角色 0 个）
+06:15:35.140 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135140}
+06:15:35.140 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.140 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.140 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.140 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.140 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.142 I/VaultSrv: 资产库已挂载 48460403|888|88280792 库=AssetKey{48460403:888/88280792@1794608135142}
+06:15:35.142 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|88280792
+06:15:35.142 I/VaultSrv: 通知历史钩子已挂载 48460403|888|88280792
+06:15:35.142 I/VaultSrv: 编队目录钩子已挂载 48460403|888|88280792
+06:15:35.143 I/VaultSrv: 监控推送钩子已挂载 48460403|888|88280792
+06:15:35.143 I/VaultSrv: 角色上线 48460403|888|88280792（同号其它角色会话保留 1 个）
+06:15:35.143 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.146 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.146 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.187 I/VaultSrv: 登录成功 48460403|888|88280792 角色=小鹿矿工5号
+06:15:35.191 I/VaultSrv: 登录身份 fpid=48460403 uid=88280792 @k 熔炉
+06:15:35.191 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.229 I/VaultSrv: 守护盟友 P0 钩子已挂载 48460403:888（enabled=false dry_run=true ally_uid=0 target_uid=0 squad=1 recall=true d=38s force_online=false troops_min=0 speedup=false diamond_speedup=false diamond_hard_off=false diamond_max=3 speedup_margin=2s max_speedups=unlimited timing=false fire_margin=5s max_concurrent=6 reserve_slots=1 queue_retry_max=12 queue_retry_interval_ms=5000 require_ally=true ally_tol=0 ally_watch=true ally_rect=false rally=true rally_wait=300s rally_early_speedup=true rally_full_ratio=1.0 rally_require_join_full=true rally_troops_min=300000 rally_probe=true preempt_gather=true preempt_cooldown=60000ms preempt_max_per_minute=2 attack_types=[2, 100, 102] catch_up=true catchup_margin=2s catchup_rounds=20）
+06:15:35.240 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135240}
+06:15:35.240 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.240 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.240 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.240 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.240 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.241 I/VaultSrv: 资产库已挂载 48460403|888|88280792 库=AssetKey{48460403:888/88280792@1794608135241}
+06:15:35.242 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|88280792
+06:15:35.242 I/VaultSrv: 通知历史钩子已挂载 48460403|888|88280792
+06:15:35.242 I/VaultSrv: 编队目录钩子已挂载 48460403|888|88280792
+06:15:35.242 I/VaultSrv: 监控推送钩子已挂载 48460403|888|88280792
+06:15:35.242 I/VaultSrv: 角色上线 48460403|888|88280792（同号其它角色会话保留 1 个）
+06:15:35.242 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.245 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.245 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.246 I/VaultSrv: 登录成功 48460403|888|88280792 角色=小鹿矿工5号
+06:15:35.249 I/VaultSrv: 登录身份 fpid=48460403 uid=88280792 @k 熔炉
+06:15:35.249 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.252 I/VaultSrv: 账号级登录收敛：停止兄弟会话 48460403|888|35371154
+06:15:35.252 I/VaultSrv: 资产库已卸载 48460403|888|35371154：session-closed
+06:15:35.253 I/VaultSrv: 守护盟友 P0 钩子已挂载 48460403:888（enabled=false dry_run=true ally_uid=0 target_uid=0 squad=1 recall=true d=38s force_online=false troops_min=0 speedup=false diamond_speedup=false diamond_hard_off=false diamond_max=3 speedup_margin=2s max_speedups=unlimited timing=false fire_margin=5s max_concurrent=6 reserve_slots=1 queue_retry_max=12 queue_retry_interval_ms=5000 require_ally=true ally_tol=0 ally_watch=true ally_rect=false rally=true rally_wait=300s rally_early_speedup=true rally_full_ratio=1.0 rally_require_join_full=true rally_troops_min=300000 rally_probe=true preempt_gather=true preempt_cooldown=60000ms preempt_max_per_minute=2 attack_types=[2, 100, 102] catch_up=true catchup_margin=2s catchup_rounds=20）
+06:15:35.259 I/VaultSrv: 资产库已挂载 48460403|888| 库=AssetKey{48460403:888/0@1794608135259}
+06:15:35.259 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|
+06:15:35.259 I/VaultSrv: 通知历史钩子已挂载 48460403|888|
+06:15:35.259 I/VaultSrv: 编队目录钩子已挂载 48460403|888|
+06:15:35.259 I/VaultSrv: 监控推送钩子已挂载 48460403|888|
+06:15:35.259 I/VaultSrv: 建会话 48460403|888| runState=STOPPED 代理=null
+06:15:35.259 I/VaultSrv: 发现角色映射 fpid=48460403 k888→uid=35371154
+06:15:35.259 I/VaultSrv: 登录成功 48460403|888| 角色=隆科多
+06:15:35.262 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.262 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.263 I/VaultSrv: 角色上线接管旧 active 槽会话：停止 48460403|888|
+06:15:35.264 I/VaultSrv: 资产库已卸载 48460403|888|：session-closed
+06:15:35.264 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135264}
+06:15:35.264 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.264 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.264 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.264 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.264 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.266 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.268 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.268 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.274 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135274}
+06:15:35.274 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.274 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.274 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.274 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.274 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.275 I/VaultSrv: 资产库已挂载 80971192|888|35371154 库=AssetKey{80971192:888/35371154@1794608135275}
+06:15:35.276 I/VaultSrv: 推送唤醒钩子已挂载 80971192|888|35371154
+06:15:35.276 I/VaultSrv: 通知历史钩子已挂载 80971192|888|35371154
+06:15:35.276 I/VaultSrv: 编队目录钩子已挂载 80971192|888|35371154
+06:15:35.276 I/VaultSrv: 监控推送钩子已挂载 80971192|888|35371154
+06:15:35.276 I/VaultSrv: 角色上线 80971192|888|35371154（同号其它角色会话保留 1 个）
+06:15:35.277 I/VaultSrv: 登录成功 80971192|888|35371154 角色=隆科多
+06:15:35.279 I/VaultSrv: 登录身份 fpid=80971192 uid=35371154 @k 熔炉
+06:15:35.279 I/VaultSrv: 角色清单 fpid=80971192 空
+06:15:35.281 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.284 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.284 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.288 I/VaultSrv: 资产库已挂载 48460403|888|88280792 库=AssetKey{48460403:888/88280792@1794608135288}
+06:15:35.288 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|88280792
+06:15:35.288 I/VaultSrv: 通知历史钩子已挂载 48460403|888|88280792
+06:15:35.288 I/VaultSrv: 编队目录钩子已挂载 48460403|888|88280792
+06:15:35.288 I/VaultSrv: 监控推送钩子已挂载 48460403|888|88280792
+06:15:35.288 I/VaultSrv: 建会话 48460403|888|88280792 runState=STOPPED 代理=null
+06:15:35.289 I/VaultSrv: 登录成功 48460403|888|88280792 角色=小鹿矿工5号
+06:15:35.291 I/VaultSrv: 登录身份 fpid=48460403 uid=88280792 @k 熔炉
+06:15:35.291 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.297 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135297}
+06:15:35.297 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.297 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.297 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.297 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.297 I/VaultSrv: 角色上线 48460403|888|35371154（同号其它角色会话保留 0 个）
+06:15:35.299 I/VaultSrv: 资产库已挂载 48460403|888|88280792 库=AssetKey{48460403:888/88280792@1794608135299}
+06:15:35.299 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|88280792
+06:15:35.299 I/VaultSrv: 通知历史钩子已挂载 48460403|888|88280792
+06:15:35.299 I/VaultSrv: 编队目录钩子已挂载 48460403|888|88280792
+06:15:35.299 I/VaultSrv: 监控推送钩子已挂载 48460403|888|88280792
+06:15:35.299 I/VaultSrv: 角色上线 48460403|888|88280792（同号其它角色会话保留 1 个）
+06:15:35.301 I/VaultSrv: 资产库已挂载 80971192|888|35371154 库=AssetKey{80971192:888/35371154@1794608135301}
+06:15:35.301 I/VaultSrv: 推送唤醒钩子已挂载 80971192|888|35371154
+06:15:35.301 I/VaultSrv: 通知历史钩子已挂载 80971192|888|35371154
+06:15:35.301 I/VaultSrv: 编队目录钩子已挂载 80971192|888|35371154
+06:15:35.301 I/VaultSrv: 监控推送钩子已挂载 80971192|888|35371154
+06:15:35.301 I/VaultSrv: 角色上线 80971192|888|35371154（同号其它角色会话保留 2 个）
+06:15:35.301 I/VaultSrv: 登录成功 80971192|888|35371154 角色=隆科多
+06:15:35.304 I/VaultSrv: 登录身份 fpid=80971192 uid=35371154 @k 熔炉
+06:15:35.304 I/VaultSrv: 角色清单 fpid=80971192 空
+06:15:35.305 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.307 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.308 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.309 I/VaultSrv: 登录成功 48460403|888|88280792 角色=小鹿矿工5号
+06:15:35.311 I/VaultSrv: 登录身份 fpid=48460403 uid=88280792 @k 熔炉
+06:15:35.311 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.312 I/VaultSrv: 资产库已挂载 48460403|888|35371154 库=AssetKey{48460403:888/35371154@1794608135312}
+06:15:35.312 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|35371154
+06:15:35.312 I/VaultSrv: 通知历史钩子已挂载 48460403|888|35371154
+06:15:35.312 I/VaultSrv: 编队目录钩子已挂载 48460403|888|35371154
+06:15:35.312 I/VaultSrv: 监控推送钩子已挂载 48460403|888|35371154
+06:15:35.312 I/VaultSrv: 建会话 48460403|888|35371154 runState=RUNNING 代理=null
+06:15:35.312 I/VaultSrv: 资产库已挂载 48460403|888|88280792 库=AssetKey{48460403:888/88280792@1794608135312}
+06:15:35.312 I/VaultSrv: 推送唤醒钩子已挂载 48460403|888|88280792
+06:15:35.312 I/VaultSrv: 通知历史钩子已挂载 48460403|888|88280792
+06:15:35.312 I/VaultSrv: 编队目录钩子已挂载 48460403|888|88280792
+06:15:35.312 I/VaultSrv: 监控推送钩子已挂载 48460403|888|88280792
+06:15:35.312 I/VaultSrv: 建会话 48460403|888|88280792 runState=RUNNING 代理=null
+06:15:35.312 I/VaultSrv: 资产库已挂载 80971192|888|35371154 库=AssetKey{80971192:888/35371154@1794608135312}
+06:15:35.312 I/VaultSrv: 推送唤醒钩子已挂载 80971192|888|35371154
+06:15:35.312 I/VaultSrv: 通知历史钩子已挂载 80971192|888|35371154
+06:15:35.312 I/VaultSrv: 编队目录钩子已挂载 80971192|888|35371154
+06:15:35.312 I/VaultSrv: 监控推送钩子已挂载 80971192|888|35371154
+06:15:35.313 I/VaultSrv: 建会话 80971192|888|35371154 runState=RUNNING 代理=null
+06:15:35.314 I/VaultSrv: 登录成功 80971192|888|35371154 角色=隆科多
+06:15:35.317 I/VaultSrv: 登录身份 fpid=80971192 uid=35371154 @k 熔炉
+06:15:35.318 I/VaultSrv: 角色清单 fpid=80971192 空
+06:15:35.321 I/VaultSrv: 登录成功 48460403|888|35371154 角色=隆科多
+06:15:35.324 I/VaultSrv: 登录身份 fpid=48460403 uid=35371154 @k 熔炉
+06:15:35.324 I/VaultSrv: 角色清单 fpid=48460403 空
+06:15:35.325 I/VaultSrv: 登录成功 48460403|888|88280792 角色=小鹿矿工5号
+06:15:35.329 I/VaultSrv: 登录身份 fpid=48460403 uid=88280792 @k 熔炉
+06:15:35.329 I/VaultSrv: 角色清单 fpid=48460403 空
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.TaskContextEnabledTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:28" hostname="lgs.local" time="0.003">
+  <properties/>
+  <testcase name="missingPredicateKeepsLegacyBehavior" classname="com.carlos.vaultserver.task.TaskContextEnabledTest" time="0.001"/>
+  <testcase name="explicitDisableOverridesDefaultTrue" classname="com.carlos.vaultserver.task.TaskContextEnabledTest" time="0.001"/>
+  <testcase name="nullConfigMeansCatalogDefaults" classname="com.carlos.vaultserver.task.TaskContextEnabledTest" time="0.0"/>
+  <testcase name="explicitConfigWinsAndMissingFallsBackToCatalogDefault" classname="com.carlos.vaultserver.task.TaskContextEnabledTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

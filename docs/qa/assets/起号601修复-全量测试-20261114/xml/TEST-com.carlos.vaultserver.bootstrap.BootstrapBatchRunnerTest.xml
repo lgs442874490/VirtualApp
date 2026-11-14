@@ -1,0 +1,358 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" tests="19" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:16" hostname="lgs.local" time="0.394">
+  <properties/>
+  <testcase name="cancelDuringBatch_stopsAfterCurrentAccount" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.009"/>
+  <testcase name="isHoldWait_onlyHoldReason" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.0"/>
+  <testcase name="run_timeoutLimitMarksAccountFailed" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.005"/>
+  <testcase name="run_successWritesReferralAndClearsActive" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.008"/>
+  <testcase name="importAccounts_emptyInput" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.001"/>
+  <testcase name="run_furnitureStallFailed_notSwallowedWhenRoundStarted" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.012"/>
+  <testcase name="run_twoAccounts_firstSuccessSecondCreateFailed" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.009"/>
+  <testcase name="run_endedAccount_marksEndedImmediately" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.022"/>
+  <testcase name="run_archivedUidPinnedMismatch_degradesToDefaultLogin" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.015"/>
+  <testcase name="run_stalledAccount_failsWithReason" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.008"/>
+  <testcase name="importAccounts_threeFormsAndDedup" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.001"/>
+  <testcase name="nextLastBuildingRound_holdWaitResetsAuxiliaryOnlyCounter" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.001"/>
+  <testcase name="isWaitableBlock_classifiesReasons" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.0"/>
+  <testcase name="importAccounts_invalidUtf8LineReportsLineNumber" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.001"/>
+  <testcase name="run_explicitUidPinnedMismatch_failsFast" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.007"/>
+  <testcase name="roundGapInterrupt_cancelsBatchAndKeepsRestPending" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.013"/>
+  <testcase name="runTwice_secondRunIgnored" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.008"/>
+  <testcase name="cancelBeforeRun_finishesCancelled" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.001"/>
+  <testcase name="toView_safeUnderConcurrentStepsAdd" classname="com.carlos.vaultserver.bootstrap.BootstrapBatchRunnerTest" time="0.272"/>
+  <system-out><![CDATA[06:18:16.510 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 2 级：id=2 个账号 timeout=120min
+06:18:16.511 I/VaultSrv: 起号批次 bb2026111406181603 开始处理 fpid=fp1 sdkToken=***
+06:18:16.511 I/VaultSrv: 起号批次收到取消请求 id=bb2026111406181603 state=RUNNING
+06:18:16.513 I/VaultSrv: [起号] 建号成功 uid=8001 server=1
+06:18:16.516 I/VaultSrv: 起号批次结束 id=bb2026111406181603 state=CANCELLED success=0 fail=0
+06:18:16.517 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 9 级：id=1 个账号 timeout=1min
+06:18:16.518 I/VaultSrv: 起号批次 bb2026111406181604 开始处理 fpid=fp1 sdkToken=***
+06:18:16.519 I/VaultSrv: [起号] 建号成功 uid=8001 server=1
+06:18:16.522 I/VaultSrv: 起号批次结束 id=bb2026111406181604 state=FAILED success=0 fail=1
+06:18:16.523 I/VaultSrv: 起号批次 开始批量起号：区服 5，目标大熔炉 2 级：id=1 个账号 timeout=120min
+06:18:16.524 I/VaultSrv: 起号批次 bb2026111406181605 开始处理 fpid=fp1 sdkToken=***
+06:18:16.525 I/VaultSrv: [起号] 建号成功 uid=8001 server=5
+06:18:16.525 W/VaultSrv: 起号轮0 熔炉=2 busy=[] 队列=1 建筑数={}
+06:18:16.526 W/VaultSrv: 起号轮0 blocked= 剩余动作=0 消息=大熔炉已到达目标等级
+06:18:16.526 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.526 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.526 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.526 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.526 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.526 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.526 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.526 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{103=100000, 101=500} 资源(<100000)：{}
+06:18:16.526 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=2, status=0}}
+06:18:16.526 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.526 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.526 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.526 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.526 I/VaultSrv: 工位诊断 建筑302 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.526 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.527 I/VaultSrv: 工位诊断 建筑304 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.527 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.527 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.527 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.527 I/VaultSrv: 起号首轮状态 res={103=100000, 101=500} bagItems=-1 buildings=1 furnace=2
+06:18:16.527 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.527 W/VaultSrv: 起号轮1 动作明细 started=0 [status=COMPLETED msg=大熔炉已到达目标等级 2] 
+06:18:16.528 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026111406181605 furnaceLevel=2
+06:18:16.528 I/VaultSrv: 起号批次 bb2026111406181605 账号成功 fpid=fp1 furnace=2
+06:18:16.530 I/VaultSrv: 起号批次结束 id=bb2026111406181605 state=COMPLETED success=1 fail=0
+06:18:16.533 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 9 级：id=1 个账号 timeout=1min
+06:18:16.533 I/VaultSrv: 起号批次 bb2026111406181606 开始处理 fpid=fp-stall sdkToken=tk-***all
+06:18:16.535 I/VaultSrv: [起号] 建号成功 uid=8001 server=1
+06:18:16.536 W/VaultSrv: 起号轮0 熔炉=5 busy=[302] 队列={302=1} 建筑数=5
+06:18:16.536 W/VaultSrv: 起号轮0 blocked= 剩余动作=8 消息=可以执行下一步
+06:18:16.536 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.536 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.536 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.536 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.537 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.537 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.537 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.537 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{103=100000, 101=500} 资源(<100000)：{}
+06:18:16.537 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=5, status=0}, 304={bid=304, lv=1, status=0}, 318={bid=318, lv=1, status=0}, 310={bid=310, lv=3, status=0}, 302={bid=302, lv=1, status=0}}
+06:18:16.537 I/VaultSrv: loaddata 字段 furnitures = [{bid=304, conf_fid=601, lv=1}]
+06:18:16.537 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.537 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.537 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.537 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.537 I/VaultSrv: 工位诊断 建筑302 等级=1 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.537 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.537 I/VaultSrv: 工位诊断 建筑304 等级=1 类型24工位={601=[]} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.537 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.537 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.537 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.537 I/VaultSrv: 起号首轮状态 res={103=100000, 101=500} bagItems=-1 buildings=5 furnace=5
+06:18:16.537 I/VaultSrv: [起号] 已用钻石秒完队列 1
+06:18:16.537 I/VaultSrv: [起号] 已秒完正在施工的建造队列 1，继续升级
+06:18:16.538 I/VaultSrv: [起号] 兑换码 WJDR666 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 WJDR2025 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 WOAIWJDR 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 TILI520 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 吴嶮888 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 吴嶮666 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 金子888 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 金子666 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 大聪666 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 大聪888 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 JC666 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 JC888 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 兑换码 666WJDR2024 兑换成功
+06:18:16.538 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.539 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:16.539 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:16.539 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=1/1 家具表={304={601=1}} overrides={}
+06:18:16.539 W/VaultSrv: [起号] 铁矿厂 家具 601 升级到 2 级 连续 1 次升级尝试被服务端拒绝（code=51，资源/前置/同步原因待查），请重新发起起号
+06:18:16.540 W/VaultSrv: 起号轮1 动作明细 started=2 [status=STARTED msg=已秒完施工队列，继续升级] [status=STARTED msg=已兑换 13 条兑换码，打开背包钻石道具 0 种] [status=FAILED msg=铁矿厂 家具 601 升级到 2 级 连续 1 次升级尝试被服务端拒绝（code=51，资源/前置/同步原因待查），请重] 
+06:18:16.540 W/VaultSrv: 起号批次 bb2026111406181606 账号显式失败 fpid=fp-stall error=铁矿厂 家具 601 升级到 2 级 连续 1 次升级尝试被服务端拒绝（code=51，资源/前置/同步原因待查），请重新发起起号
+06:18:16.543 I/VaultSrv: 起号批次结束 id=bb2026111406181606 state=FAILED success=0 fail=1
+06:18:16.544 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 2 级：id=2 个账号 timeout=120min
+06:18:16.545 I/VaultSrv: 起号批次 bb2026111406181607 开始处理 fpid=fp1 sdkToken=***
+06:18:16.546 I/VaultSrv: [起号] 建号成功 uid=8001 server=1
+06:18:16.546 W/VaultSrv: 起号轮0 熔炉=2 busy=[] 队列=1 建筑数={}
+06:18:16.546 W/VaultSrv: 起号轮0 blocked= 剩余动作=0 消息=大熔炉已到达目标等级
+06:18:16.546 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.546 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.546 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.546 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.546 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.547 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.547 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.547 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{103=100000, 101=500} 资源(<100000)：{}
+06:18:16.547 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=2, status=0}}
+06:18:16.547 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.547 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.547 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.547 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.547 I/VaultSrv: 工位诊断 建筑302 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.547 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.547 I/VaultSrv: 工位诊断 建筑304 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.547 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.547 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.547 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.547 I/VaultSrv: 起号首轮状态 res={103=100000, 101=500} bagItems=-1 buildings=1 furnace=2
+06:18:16.547 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.547 W/VaultSrv: 起号轮1 动作明细 started=0 [status=COMPLETED msg=大熔炉已到达目标等级 2] 
+06:18:16.548 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026111406181607 furnaceLevel=2
+06:18:16.548 I/VaultSrv: 起号批次 bb2026111406181607 账号成功 fpid=fp1 furnace=2
+06:18:16.549 I/VaultSrv: 起号批次 bb2026111406181607 开始处理 fpid=fp2 sdkToken=***
+06:18:16.549 W/VaultSrv: 起号批次 bb2026111406181607 账号失败 fpid=fp2 error=建号失败：区服排队中
+06:18:16.552 I/VaultSrv: 起号批次结束 id=bb2026111406181607 state=COMPLETED success=1 fail=1
+06:18:16.553 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 10 级：id=1 个账号 timeout=120min
+06:18:16.554 I/VaultSrv: 起号批次 bb2026111406181608 开始处理 fpid=fp-ended sdkToken=tk-***ded
+06:18:16.558 I/VaultSrv: [起号] 建号成功 uid=8001 server=1
+06:18:16.558 W/VaultSrv: 起号轮0 熔炉=9 busy=[] 队列=3 建筑数={}
+06:18:16.558 W/VaultSrv: 起号轮0 blocked= 剩余动作=1 消息=可以执行下一步
+06:18:16.558 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.558 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.558 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.558 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.558 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.558 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.558 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.558 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{} 资源(<100000)：{}
+06:18:16.559 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=9, status=0}, 323={bid=323, lv=9, status=0}, 329={bid=329, lv=1, status=0}}
+06:18:16.559 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.559 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.559 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.559 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.559 I/VaultSrv: 工位诊断 建筑302 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.559 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.559 I/VaultSrv: 工位诊断 建筑304 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.559 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.559 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.559 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.559 I/VaultSrv: 起号首轮状态 res=-1 bagItems=3 buildings=9 furnace={}
+06:18:16.559 I/VaultSrv: [起号] 兑换码 WJDR666 兑换成功
+06:18:16.559 I/VaultSrv: [起号] 兑换码 WJDR2025 兑换成功
+06:18:16.559 I/VaultSrv: [起号] 兑换码 WOAIWJDR 兑换成功
+06:18:16.559 I/VaultSrv: [起号] 兑换码 TILI520 兑换成功
+06:18:16.559 I/VaultSrv: [起号] 兑换码 吴嶮888 兑换成功
+06:18:16.559 I/VaultSrv: [起号] 兑换码 吴嶮666 兑换成功
+06:18:16.559 I/VaultSrv: [起号] 兑换码 金子888 兑换成功
+06:18:16.560 I/VaultSrv: [起号] 兑换码 金子666 兑换成功
+06:18:16.560 I/VaultSrv: [起号] 兑换码 大聪666 兑换成功
+06:18:16.560 I/VaultSrv: [起号] 兑换码 大聪888 兑换成功
+06:18:16.560 I/VaultSrv: [起号] 兑换码 JC666 兑换成功
+06:18:16.560 I/VaultSrv: [起号] 兑换码 JC888 兑换成功
+06:18:16.560 I/VaultSrv: [起号] 兑换码 666WJDR2024 兑换成功
+06:18:16.560 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.560 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:16.560 I/VaultSrv: [起号] req_shop_info keys=[info]
+06:18:16.566 I/VaultSrv: [起号] 商店商品 itemId 清单=[100123] goodsId=[555]
+06:18:16.566 I/VaultSrv: [起号] 商店诊断：商品数=1 钻石=0 背包钻石道具种类=0 缺口肉=0 木=460000 煤=92000 铁=23000
+06:18:16.566 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=460000 goodsId=555 价格=2 钻石=0
+06:18:16.566 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:16.566 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 10 级
+06:18:16.566 I/VaultSrv: [起号] 资源诊断：资源表={} 背包100xxx={}
+06:18:16.567 W/VaultSrv: 起号轮1 动作明细 started=1 [status=STARTED msg=已兑换 13 条兑换码，打开背包钻石道具 0 种] [status=WAITING msg=资源或道具不足，等待补充后重试：升级 大熔炉 到 10 级（已尝试统帅商店补资源）（缺口：木材 460000，煤矿 92] 
+06:18:16.569 W/VaultSrv: 起号轮1 熔炉=9 busy=[] 队列=3 建筑数={}
+06:18:16.569 W/VaultSrv: 起号轮1 blocked= 剩余动作=1 消息=可以执行下一步
+06:18:16.569 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:16.569 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:16.570 W/VaultSrv: 起号轮2 动作明细 started=0 [status=WAITING msg=资源或道具不足，等待补充后重试：升级 大熔炉 到 10 级（缺口：木材 460000，煤矿 92000，铁矿 23000] 
+06:18:16.570 W/VaultSrv: 起号轮2 熔炉=9 busy=[] 队列=3 建筑数={}
+06:18:16.570 W/VaultSrv: 起号轮2 blocked= 剩余动作=1 消息=可以执行下一步
+06:18:16.570 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:16.570 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:16.571 W/VaultSrv: [起号] 资源耗尽（fpid=fp-ended），起号结束：升级 大熔炉 到 10 级
+06:18:16.571 W/VaultSrv: 起号轮3 动作明细 started=0 [status=ENDED msg=大熔炉已到 9 级，资源已尽力补充仍不足（缺口：木材 460000，煤矿 92000，铁矿 23000），起号结束] 
+06:18:16.571 I/VaultSrv: 起号批次 bb2026111406181608 账号资源耗尽结束 fpid=fp-ended furnace=9 reason=大熔炉资源耗尽，起号结束
+06:18:16.574 I/VaultSrv: 起号批次结束 id=bb2026111406181608 state=COMPLETED success=0 fail=0
+06:18:16.576 I/VaultSrv: 账号存档：建号 fpid=fp-arch server=1 uid=9999
+06:18:16.577 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 9 级：id=1 个账号 timeout=120min
+06:18:16.578 I/VaultSrv: 起号批次 bb2026111406181609 开始处理 fpid=fp-arch sdkToken=tk-***rch
+06:18:16.578 W/VaultSrv: 起号建号失败，回退既有角色登录 fpid=fp-arch：loginauth code=9 角色已存在
+06:18:16.578 I/VaultSrv: 起号回退登录按存档定位既有角色 fpid=fp-arch server=1 uid=9999
+06:18:16.581 W/VaultSrv: 起号回退登录存档 uid 未命中，降级按服务端默认角色登录 fpid=fp-arch uid=9999：未能登录指定角色 uid=9999（服务端返回 uid=8001）（区服 1）
+06:18:16.583 I/VaultSrv: 账号存档：建号 fpid=fp-arch server=1 uid=8001
+06:18:16.583 W/VaultSrv: 起号轮0 熔炉=9 busy=[] 队列=1 建筑数={}
+06:18:16.583 W/VaultSrv: 起号轮0 blocked= 剩余动作=0 消息=大熔炉已到达目标等级
+06:18:16.583 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.583 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.583 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.584 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.584 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.584 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.584 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.584 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{103=100000, 101=500} 资源(<100000)：{}
+06:18:16.584 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=9, status=0}}
+06:18:16.584 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.584 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.584 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.584 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.584 I/VaultSrv: 工位诊断 建筑302 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.584 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.584 I/VaultSrv: 工位诊断 建筑304 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.584 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.584 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.584 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.584 I/VaultSrv: 起号首轮状态 res={103=100000, 101=500} bagItems=-1 buildings=1 furnace=9
+06:18:16.584 I/VaultSrv: [起号] 兑换码 WJDR666 兑换成功
+06:18:16.584 I/VaultSrv: [起号] 兑换码 WJDR2025 兑换成功
+06:18:16.584 I/VaultSrv: [起号] 兑换码 WOAIWJDR 兑换成功
+06:18:16.584 I/VaultSrv: [起号] 兑换码 TILI520 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 兑换码 吴嶮888 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 兑换码 吴嶮666 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 兑换码 金子888 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 兑换码 金子666 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 兑换码 大聪666 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 兑换码 大聪888 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 兑换码 JC666 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 兑换码 JC888 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 兑换码 666WJDR2024 兑换成功
+06:18:16.585 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.585 W/VaultSrv: 起号轮1 动作明细 started=1 [status=STARTED msg=已兑换 13 条兑换码，打开背包钻石道具 0 种] [status=COMPLETED msg=大熔炉已到达目标等级 9] 
+06:18:16.586 I/VaultSrv: 回流清单追加 fpid=fp-arch batchId=bb2026111406181609 furnaceLevel=9
+06:18:16.586 I/VaultSrv: 起号批次 bb2026111406181609 账号成功 fpid=fp-arch furnace=9
+06:18:16.589 I/VaultSrv: 起号批次结束 id=bb2026111406181609 state=COMPLETED success=1 fail=0
+06:18:16.591 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 2 级：id=1 个账号 timeout=120min
+06:18:16.592 I/VaultSrv: 起号批次 bb2026111406181610 开始处理 fpid=fp1 sdkToken=***
+06:18:16.593 I/VaultSrv: [起号] 建号成功 uid=8001 server=1
+06:18:16.593 W/VaultSrv: 起号轮0 熔炉=1 busy=[] 队列=1 建筑数={}
+06:18:16.594 W/VaultSrv: 起号轮0 blocked= 剩余动作=2 消息=可以执行下一步
+06:18:16.594 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.594 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.594 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.594 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.594 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.594 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.594 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.594 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{103=100000} 资源(<100000)：{}
+06:18:16.594 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=1, status=0}}
+06:18:16.594 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.594 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.594 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.594 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.594 I/VaultSrv: 工位诊断 建筑302 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.594 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.594 I/VaultSrv: 工位诊断 建筑304 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.594 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.594 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.594 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.595 I/VaultSrv: 起号首轮状态 res={103=100000} bagItems=-1 buildings=1 furnace=1
+06:18:16.595 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.595 W/VaultSrv: 起号轮1 动作明细 started=0 [status=MANUAL msg=下一步 伐木场 1 级需要等待完成，请开启钻石即时升级] 
+06:18:16.598 I/VaultSrv: 起号批次结束 id=bb2026111406181610 state=FAILED success=0 fail=1
+06:18:16.601 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 9 级：id=1 个账号 timeout=120min
+06:18:16.602 I/VaultSrv: 起号批次 bb2026111406181611 开始处理 fpid=fp-uid sdkToken=***
+06:18:16.603 W/VaultSrv: 起号建号失败，回退既有角色登录 fpid=fp-uid：loginauth code=9 角色已存在
+06:18:16.603 I/VaultSrv: 起号回退登录按清单定位既有角色 fpid=fp-uid server=1 uid=9999
+06:18:16.604 W/VaultSrv: 起号批次 bb2026111406181611 账号失败 fpid=fp-uid error=未能登录指定角色 uid=9999（服务端返回 uid=8001）（区服 1）
+06:18:16.607 I/VaultSrv: 起号批次结束 id=bb2026111406181611 state=FAILED success=0 fail=1
+06:18:16.610 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 9 级：id=2 个账号 timeout=120min
+06:18:16.611 I/VaultSrv: 起号批次 bb2026111406181612 开始处理 fpid=fp1 sdkToken=***
+06:18:16.611 I/VaultSrv: [起号] 建号成功 uid=8001 server=1
+06:18:16.612 W/VaultSrv: 起号轮0 熔炉=0 busy=[] 队列=2 建筑数={}
+06:18:16.612 W/VaultSrv: 起号轮0 blocked= 剩余动作=8 消息=可以执行下一步
+06:18:16.612 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.612 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.612 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.612 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.612 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.612 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.612 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.612 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{103=100000, 101=500} 资源(<100000)：{}
+06:18:16.612 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=0, status=0}, 302={bid=302, lv=0, status=0}}
+06:18:16.612 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.613 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.613 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.613 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.613 I/VaultSrv: 工位诊断 建筑302 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.613 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.613 I/VaultSrv: 工位诊断 建筑304 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.613 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.613 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.613 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.613 I/VaultSrv: 起号首轮状态 res={103=100000, 101=500} bagItems=-1 buildings=2 furnace=0
+06:18:16.613 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.613 I/VaultSrv: [起号] 已点火大熔炉（switch=1, overdrive=0）
+06:18:16.614 I/VaultSrv: [起号] 已请求建造 大熔炉 到 1 级（instantDiamond=true）
+06:18:16.614 I/VaultSrv: [起号] 已请求建造 伐木场 到 1 级（instantDiamond=true）
+06:18:16.614 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:16.614 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 2 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:16.615 I/VaultSrv: [起号] 资源不足，已改用钻石完成 升级 大熔炉 到 2 级 的升级
+06:18:16.615 I/VaultSrv: [起号] 已请求建造 民居1 到 1 级（instantDiamond=true）
+06:18:16.615 I/VaultSrv: [起号] 已请求民居1 家具 101 建造（instantDiamond=true）
+06:18:16.616 I/VaultSrv: [起号] 已请求民居1 家具 101 升级到 2 级（instantDiamond=true）
+06:18:16.616 I/VaultSrv: [起号] 已请求民居1 家具 103 建造（instantDiamond=true）
+06:18:16.617 I/VaultSrv: [起号] 已请求民居1 家具 103 升级到 2 级（instantDiamond=true）
+06:18:16.617 W/VaultSrv: 起号轮1 动作明细 started=8 [status=STARTED msg=已请求建造 大熔炉 到 1 级] [status=STARTED msg=已请求建造 伐木场 到 1 级] [status=STARTED msg=资源不足，已改用钻石完成 升级 大熔炉 到 2 级] 
+06:18:16.620 I/VaultSrv: 起号批次结束 id=bb2026111406181612 state=CANCELLED success=0 fail=0
+06:18:16.621 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 2 级：id=1 个账号 timeout=120min
+06:18:16.622 I/VaultSrv: 起号批次 bb2026111406181613 开始处理 fpid=fp1 sdkToken=***
+06:18:16.622 I/VaultSrv: [起号] 建号成功 uid=8001 server=1
+06:18:16.623 W/VaultSrv: 起号轮0 熔炉=2 busy=[] 队列=1 建筑数={}
+06:18:16.623 W/VaultSrv: 起号轮0 blocked= 剩余动作=0 消息=大熔炉已到达目标等级
+06:18:16.623 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.623 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.623 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.623 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.623 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.623 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.623 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.623 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{103=100000, 101=500} 资源(<100000)：{}
+06:18:16.623 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=2, status=0}}
+06:18:16.623 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.623 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.623 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.623 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.623 I/VaultSrv: 工位诊断 建筑302 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.624 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.624 I/VaultSrv: 工位诊断 建筑304 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.624 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.624 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.624 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.624 I/VaultSrv: 起号首轮状态 res={103=100000, 101=500} bagItems=-1 buildings=1 furnace=2
+06:18:16.624 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.624 W/VaultSrv: 起号轮1 动作明细 started=0 [status=COMPLETED msg=大熔炉已到达目标等级 2] 
+06:18:16.625 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026111406181613 furnaceLevel=2
+06:18:16.625 I/VaultSrv: 起号批次 bb2026111406181613 账号成功 fpid=fp1 furnace=2
+06:18:16.628 I/VaultSrv: 起号批次结束 id=bb2026111406181613 state=COMPLETED success=1 fail=0
+06:18:16.629 I/VaultSrv: 起号批次收到取消请求 id=bb2026111406181614 state=WAITING
+06:18:16.629 I/VaultSrv: 起号批次结束 id=bb2026111406181614 state=CANCELLED success=0 fail=0
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

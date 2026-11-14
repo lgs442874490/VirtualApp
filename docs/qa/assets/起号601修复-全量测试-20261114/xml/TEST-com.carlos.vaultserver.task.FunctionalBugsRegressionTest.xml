@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" tests="26" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.015">
+  <properties/>
+  <testcase name="intelGate_rescuePassesWhenNormalQueueFull" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="hospitalQid_parsesHospitalQueueFromQueueMap" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="hospitalPlanBatch_truncatesByHealCount" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="donationFreeCount_serverSnapshotAuthoritative" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="hospitalSnapshot_keepsWoundedAndHealing" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="hospitalConstants_matchUiContract" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="donationNoFreeUntil_usesNextCalcOrIntervalFloor" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="donationState_encodeDecodeRoundTrip" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="donationMergeSciences_keepsHigherLevel" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="arenaRewardWindow_beijing2310to2400" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="intelGate_staminaSemantics" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="donationKey_isPerRole" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="arenaChallengesCompleted_countsFreeAndBought" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="hospitalSnapshot_emptyNotifiesSafe" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="hospitalPlanBatch_skipsUnknownSoldierTypes" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="intelRemainingNormalSlots_clampsByActiveAndWorldIdle" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="donationNormalizeRecovery_advancesNextCalc" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="hospitalQid_missingReturnsZero" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="donationState_persistsAcrossSessionRestart" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.002"/>
+  <testcase name="arenaFightCap_andRewardGate" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="hospitalPlanBatch_capsAtMaxHealCount" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="intelConsumesNormalMarchSlot_onlyHuntingTypes" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="donationState_decodeGarbageSafe" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="hospitalSubtractBatch_doesNotMutateInput" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <testcase name="hospitalLoop_reducesUntilZero" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.0"/>
+  <testcase name="arenaRewardRetryCooldown_fiveMinutes" classname="com.carlos.vaultserver.task.FunctionalBugsRegressionTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

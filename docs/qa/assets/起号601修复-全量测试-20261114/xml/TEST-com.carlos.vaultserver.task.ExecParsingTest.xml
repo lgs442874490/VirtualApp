@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.ExecParsingTest" tests="10" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.003">
+  <properties/>
+  <testcase name="multi_sessionLostBeatsDegraded" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.001"/>
+  <testcase name="multi_resultCarriesSessionClosedCategory" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.0"/>
+  <testcase name="bestSoldierIds_picksHighestTier" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.0"/>
+  <testcase name="heroesFrom_keyedMap" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.0"/>
+  <testcase name="multi_businessFailure_staysError" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.0"/>
+  <testcase name="soldiersFrom_listShape" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.0"/>
+  <testcase name="multi_sessionLost_upgradesToSessionClosed" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.0"/>
+  <testcase name="heroesFrom_dataArray" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.001"/>
+  <testcase name="clampHeroes_marchPayloadAtMostThree" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.0"/>
+  <testcase name="soldiersFrom_keyedObjectMap" classname="com.carlos.vaultserver.task.ExecParsingTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

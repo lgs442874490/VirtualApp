@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" tests="18" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.011">
+  <properties/>
+  <testcase name="donationNoFreeUntil_usesRecoveryOrFallback" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.001"/>
+  <testcase name="sameSnapshotNotDoubleSpent" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.002"/>
+  <testcase name="stalePersistedZero_afterFreshServerSnapshot_donatesBacklog" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.0"/>
+  <testcase name="skipCodes_coverProductionStuckCodes" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.001"/>
+  <testcase name="capSnapshot_recoveryKeepsGrowingAfterBacklogSpent" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.0"/>
+  <testcase name="normalizeRecovery_deductsAndAdvancesNextCalc" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.001"/>
+  <testcase name="projectedRecoveryCount_matchesWeb" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.0"/>
+  <testcase name="persistence_roundTripThroughStateStore" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.001"/>
+  <testcase name="rememberScience_keepsHigherLevel" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.0"/>
+  <testcase name="freshSnapshotResetsSpentAndAdoptsBacklog" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.001"/>
+  <testcase name="decode_defensiveOnEmptyAndGarbage" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.0"/>
+  <testcase name="collectSciences_nullEngineIsEmpty" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.0"/>
+  <testcase name="mergeSciences_freshOverridesButKeepsHigherLv" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.001"/>
+  <testcase name="orderedTargets_recommendedFirstThenAscending" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.0"/>
+  <testcase name="localDeduction_notReAddedByProjection" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.001"/>
+  <testcase name="encodeDecode_roundTrip" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.0"/>
+  <testcase name="persistence_absentKeyIsEmptyState" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.001"/>
+  <testcase name="legacyPersistedShape_adoptsNextSnapshot" classname="com.carlos.vaultserver.task.AllianceDonationPersistenceTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

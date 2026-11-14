@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.AllianceChestBatchTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.002">
+  <properties/>
+  <testcase name="missingNameFallsBackToHashId" classname="com.carlos.vaultserver.task.AllianceChestBatchTest" time="0.001"/>
+  <testcase name="emptyAndNullInputsAreSafe" classname="com.carlos.vaultserver.task.AllianceChestBatchTest" time="0.0"/>
+  <testcase name="batchArgsCarryIdArray" classname="com.carlos.vaultserver.task.AllianceChestBatchTest" time="0.0"/>
+  <testcase name="planSkipsReceivedExpiredInvalidAndZeroId" classname="com.carlos.vaultserver.task.AllianceChestBatchTest" time="0.0"/>
+  <testcase name="zeroBudgetSkipsAllTrophyButKeepsNormal" classname="com.carlos.vaultserver.task.AllianceChestBatchTest" time="0.0"/>
+  <testcase name="trophyBudgetTruncatesAndFlagsLimit" classname="com.carlos.vaultserver.task.AllianceChestBatchTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

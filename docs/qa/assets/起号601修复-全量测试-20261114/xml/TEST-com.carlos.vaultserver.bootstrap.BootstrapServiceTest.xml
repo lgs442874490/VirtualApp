@@ -1,0 +1,987 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" tests="112" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.177">
+  <properties/>
+  <testcase name="intel_claim2501Skipped_fallsThrough" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.004"/>
+  <testcase name="claimAdventureHangUp_success" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="createRole_serverMismatch_throwsWithOriginalMessage" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.005"/>
+  <testcase name="joinAlliance_privateWithoutAutoApply_throws" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="joinAlliance_publicUnique" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="config_buyShopResourcesDefaultsTrue" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="claimAchievements_emptyInfos_fallsBackToListShape" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="runUntil_stepLimitReached" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="createRole_uidZero_throwsWithBlockHint" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="createRole_successWithPositiveUid" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimTaskRewards_upstreamRejectionCountsAsFailed" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimAchievements_infosMapShape_fallsBackToList" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="worldCompleted_stopsIntelProbeAndCollect" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.003"/>
+  <testcase name="tutorialAdvance_alreadyAtMax_returnsNull" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="usePacks_enough_opensPacksThenUpgrades" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.003"/>
+  <testcase name="usePacks_backpackSyncedButNoPacks_zeroUsed" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="upgradeRejected_otherCode_failed" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="upgradeFurniture_51_exceedsLimitFailsWithRerunHint" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.013"/>
+  <testcase name="config_fromMap_clampAndNormalize" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="claimAdventureHangUp_previewFailureDegrades" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="assignIdleSurvivors_startsAllIdleOnes" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="finishPass_atFurnace7_runsOnce" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="joinAlliance_privateWithAutoApply" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="usePacks_notEnough_usedAllStillWaiting" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimTaskRewards_noPush_noQuestClaimed" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="worldInfoFailures_retryThenGiveUpAfterThree" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="buyMissingResources_stockCoversCost_coverableTrue" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="intel_claimRejected_breaksLoop" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="worldKidMissing_doesNotSendFog_countsFailure" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="intel_belowFurnace7_notTriggered" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="intel_fightIdle_hallReady" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="runNext_instantDiamondOff_manual" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="intel_eventsDelRemovesEntry" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="status_runStates_andViews" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="countRolesInServer_countsByServerId" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="syncLoadData_fallsBackToContentWhenChannelMissing" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="levelBuilding_maxedOut_completed" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="rename_51_retryWithDiamond" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimCdkeys_furnace3_exchangesAllAndSkipsPermanentFailures" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimCdkeys_belowFurnace3_doesNothing" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="buyMissingResources_purchasesByGapWithinDiamondBudget" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="usePacks_safeResourceAndSelectBoxPayload" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="assignIdleSurvivors_preciseStationUsesSendOrFired" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="upgradeRejected_51_coverableFalse_threeTimes_ended" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.003"/>
+  <testcase name="runUntil_completedAtTarget" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="upgradeRejected_51_furnace4_triesDiamondOnce" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="levelBuilding_sawmill_thenUpgradeFurniture" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="syncLoadData_resourceUpdateConsumedOnce" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="upgradeRejected_120_missingFurniture" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="upgradeFurniture_51_154DoesNotResetCounter" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.014"/>
+  <testcase name="runUntil_twoStartedThenWaitingOn51" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="finishPass_serverClockInvalid_fallsBackLocalDate" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.004"/>
+  <testcase name="upgradeRejected_51_buildingDiamondFails_below9_waits" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="createRole_requiresTargetServer" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="runUntil_firstStepManual_zeroStarted" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="levelBuilding_afterEnded_returnsEnded" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="rename_51_retryFails_recordsErrorAndContinues" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="buyMissingResources_noDiamonds_buysNothing" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="syncLoadData_consumesAccumulatedEngineChannel" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="upgradeRejected_806_resyncRequired" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimAchievements_nonEmptyInfos_usesMilestoneShapeOnly" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="runNext_assignsSurvivorsBeforeBuilding" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="upgradeRejected_51_coverable_trueDoesNotAccumulate" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="upgradeFurniture_51_counterResetsAfter153" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.012"/>
+  <testcase name="finishPass_emptyRewards_doesNotMarkDay" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="resourceEnded_statusEndedEvenWhenTargetReached" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="rename_205_treatedAsSuccess_noRepeat" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="buyMissingResources_neverBuysCoalOrIron" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="runNext_stateNotReady_waiting" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="levelBuilding_notReady_waiting" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="claimBackpackDiamonds_51_permanentSkip" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimMails_noActionable_returnsZero" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="resolveAlliance_keywordValidation" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="upgradeRejected_51_noPurchase_furnace7_stallTen_ended" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.024"/>
+  <testcase name="upgradeFurniture_51_resetsThenCreates" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.003"/>
+  <testcase name="runNext_fullChain_renameThenUpgradeThenCompleted" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="upgradeRejected_51_furnace9_buyCooldown" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.004"/>
+  <testcase name="runNext_heldAction_notRenewedAndRecoversAfterExpiry" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="createRole_success_passesIsCreateAndName" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="levelBuilding_sawmill_createFurnitureFirst" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="intel_noPushNotify_skippedEntirely" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="intel_fightIdle_hallNotBuilt_skipped" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="tutorialAdvance_reportsNextStep" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="runNext_allActionsHeld_waitingNotCompleted" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimAdventureHangUp_notReadySkipsWithoutError" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="claimBackpackDiamonds_otherCode_retryable" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="heroAdvance_recruitsAndUpgradesHighestHero" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="joinAlliance_notUnique_throws" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="finishPass_usesServerClockShanghaiDate" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="upgradeRejected_51_retryThenWaiting" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="upgradeRejected_51_buildingAtFurnace7_usesDiamondFallback" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.002"/>
+  <testcase name="heroAdvance_noHeroData_returnsNull" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="shopCatalog_hasCommanderPackPrices" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="runNext_noIdleQueue_waiting" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="upgradeFurniture_51_limitFromConfig" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.003"/>
+  <testcase name="upgradeRejected_51_endedMessageContainsGap" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.003"/>
+  <testcase name="runNext_disabled_throws" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="successfulAction_doesNotResetExhaustedAttempts" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="syncLoadData_deltaWithoutResSnapshot_mergesLegacy" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="runNext_heldAction_skipsToNextAction" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimTaskRewards_claimsFromPushLists" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="upgradeRejected_51_buildingMarksHoldAndBuyCooldown" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.003"/>
+  <testcase name="upgradeRejected_119_expBlocked" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="worldAdvance_inFlightClaim_doesNotCountFailure" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="claimMails_readsActionableMailIds" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="joinAlliance_noConfiguredName_throws" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="intel_claimRewards_atFurnace7" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="adventureBattle_withHeroes_beginsAndEnds" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="buyMissingResources_reportsCoverableAndUnsupplied" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.001"/>
+  <testcase name="adventureBattle_noHeroes_skips" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="levelBuilding_unknownBuilding_throws" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <testcase name="claimAchievements_claimsClaimableOnly" classname="com.carlos.vaultserver.bootstrap.BootstrapServiceTest" time="0.0"/>
+  <system-out><![CDATA[06:18:17.031 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.032 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.033 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.040 I/VaultSrv: [起号] 已领取里程碑奖励 id=7
+06:18:17.040 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.040 I/VaultSrv: [起号] 已点火大熔炉（switch=1, overdrive=0）
+06:18:17.040 I/VaultSrv: [起号] 已请求建造 大熔炉 到 1 级（instantDiamond=true）
+06:18:17.040 I/VaultSrv: [起号] 已请求建造 伐木场 到 1 级（instantDiamond=true）
+06:18:17.043 I/VaultSrv: [起号] 建号成功 uid=299459378 server=724
+06:18:17.044 I/VaultSrv: [起号] 已领取里程碑奖励 id=7
+06:18:17.044 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.044 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.045 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.046 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.046 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.047 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[guide_list]
+06:18:17.047 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.048 I/VaultSrv: [起号] 开箱诊断：costs=[103=180] 背包100xxx={100021=2}
+06:18:17.049 I/VaultSrv: [起号] 已开资源箱 itemId=100021 x2 → 资源103（等推送确认到账）
+06:18:17.050 I/VaultSrv: [起号] 已请求升级 大熔炉 到 2 级（instantDiamond=true）
+06:18:17.051 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.051 I/VaultSrv: [起号] 开箱诊断：costs=[103=180] 背包100xxx={}
+06:18:17.051 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 2 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.052 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 2 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.052 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 2 级
+06:18:17.052 I/VaultSrv: [起号] 资源诊断：资源表={101=500} 背包100xxx={}
+06:18:17.052 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.052 I/VaultSrv: [起号][诊断拒绝] code=999 kind=UPGRADE_BUILDING action=升级 大熔炉 到 2 级 上游msg=req_upgrade_building 返回错误码 999
+06:18:17.053 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.053 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.053 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.053 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.054 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.055 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.055 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.055 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=1/10 家具表={304={601=1}} overrides={}
+06:18:17.055 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.055 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.055 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.056 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.056 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.056 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.056 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=2/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.056 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.056 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.056 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.057 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.057 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.057 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.057 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=3/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.057 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.057 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.057 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.058 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.058 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.058 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.058 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=4/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.058 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.059 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.059 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.059 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.059 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.059 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.059 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=5/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.059 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.060 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.060 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.060 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.061 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.061 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.061 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.061 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=6/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.061 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.061 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.061 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.061 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.062 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.062 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.062 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=7/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.062 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.062 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.062 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.062 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.063 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.063 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.063 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=8/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.063 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.063 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.063 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.063 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.064 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.064 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.064 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=9/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.064 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.064 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.064 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.064 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.065 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.065 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.065 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=10/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.065 W/VaultSrv: [起号] 铁矿厂 家具 601 升级到 2 级 连续 10 次升级尝试被服务端拒绝（code=51，资源/前置/同步原因待查），请重新发起起号
+06:18:17.067 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[uid, survivor_list]
+06:18:17.067 I/VaultSrv: [起号] 委任诊断：闲置=2 已上岗=0 工位总数=0
+06:18:17.068 I/VaultSrv: [起号] 已打开背包钻石道具 itemId=100001 count=2 响应={code=0}
+06:18:17.068 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.068 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.068 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.068 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.068 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.068 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.068 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.068 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.068 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.069 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.069 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.069 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.069 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.069 I/VaultSrv: [起号] 已打开背包钻石道具 itemId=100001 count=2 响应={code=0}
+06:18:17.070 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.070 I/VaultSrv: [起号] 开箱诊断：costs=[103=180] 背包100xxx={100021=1}
+06:18:17.070 I/VaultSrv: [起号] 已开资源箱 itemId=100021 x1 → 资源103（等推送确认到账）
+06:18:17.070 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 2 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.070 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 2 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.070 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 2 级
+06:18:17.070 I/VaultSrv: [起号] 资源诊断：资源表={103=100, 101=500} 背包100xxx={100021=0}
+06:18:17.071 I/VaultSrv: [起号] world 推进失败（第 1 次，fpid=）：请求 req_world_kingdom_info 异常：req_world_kingdom_info 返回错误码 500
+06:18:17.071 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.072 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.072 I/VaultSrv: [起号] world 推进失败（第 2 次，fpid=）：请求 req_world_kingdom_info 异常：req_world_kingdom_info 返回错误码 500
+06:18:17.072 I/VaultSrv: [起号] world 推进失败（第 3 次，fpid=）：请求 req_world_kingdom_info 异常：req_world_kingdom_info 返回错误码 500
+06:18:17.072 W/VaultSrv: [起号] world 推进连续失败 3 次，本会话放弃（fpid=）：请求 req_world_kingdom_info 异常：req_world_kingdom_info 返回错误码 500
+06:18:17.073 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[uid, res]
+06:18:17.074 W/VaultSrv: [起号] 领取情报奖励被拒绝 id=21 code=500
+06:18:17.074 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.074 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.074 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.074 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.074 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.075 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.075 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.075 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.075 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.075 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.075 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.075 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.075 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.075 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.076 I/VaultSrv: [起号] world 推进失败（第 1 次，fpid=）：未取到 kingdom id
+06:18:17.076 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.076 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.076 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.076 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.076 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.076 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.076 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.076 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.076 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.077 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.077 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.077 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.077 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.077 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.077 I/VaultSrv: [起号] world 推进失败（第 2 次，fpid=）：未取到 kingdom id
+06:18:17.077 I/VaultSrv: [起号] world 推进失败（第 3 次，fpid=）：未取到 kingdom id
+06:18:17.077 W/VaultSrv: [起号] world 推进连续失败 3 次，本会话放弃（fpid=）：未取到 kingdom id
+06:18:17.078 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.078 I/VaultSrv: [起号] 已请求建造 民居1 到 1 级（instantDiamond=true）
+06:18:17.080 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.081 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.081 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.082 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.083 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[res]
+06:18:17.084 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.085 I/VaultSrv: [起号] 已请求升级 大熔炉 到 2 级（instantDiamond=true）
+06:18:17.085 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=true queuesReady=false 顶层键=[uid, buildings]
+06:18:17.085 I/VaultSrv: [起号] 兑换码 WJDR666 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 WJDR2025 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 WOAIWJDR 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 TILI520 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 吴嶮888 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 吴嶮666 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 金子888 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 金子666 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 大聪666 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 大聪888 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 JC666 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 JC888 兑换成功
+06:18:17.085 I/VaultSrv: [起号] 兑换码 666WJDR2024 兑换成功
+06:18:17.086 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=true queuesReady=false 顶层键=[uid, buildings]
+06:18:17.086 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[uid, res]
+06:18:17.086 I/VaultSrv: [起号] req_shop_info keys=[info]
+06:18:17.086 I/VaultSrv: [起号] 商店商品 itemId 清单=[100123] goodsId=[555]
+06:18:17.086 I/VaultSrv: [起号] 商店诊断：商品数=1 钻石=100 背包钻石道具种类=0 缺口肉=0 木=25000 煤=0 铁=0
+06:18:17.087 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=25000 goodsId=555 价格=2 钻石=100
+06:18:17.087 I/VaultSrv: [起号] 统帅商店购买 itemId=100123 数量=3 花费=6钻
+06:18:17.087 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.087 I/VaultSrv: [起号] 开箱诊断：costs=[103=180] 背包100xxx={100101=3}
+06:18:17.088 I/VaultSrv: [起号] 已请求升级 大熔炉 到 2 级（instantDiamond=true）
+06:18:17.088 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=true queuesReady=false 顶层键=[buildings, furnitures, survivor_list]
+06:18:17.088 I/VaultSrv: [起号] 委任诊断：闲置=1 已上岗=0 工位总数=1
+06:18:17.088 I/VaultSrv: [起号] 已把幸存者 5001 派到 302 的工位 4010001
+06:18:17.089 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.089 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.089 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.089 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.089 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.089 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.089 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.089 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.090 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.090 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.090 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.090 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.090 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.090 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.090 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.090 I/VaultSrv: [起号] req_shop_info keys=[info]
+06:18:17.090 I/VaultSrv: [起号] 商店商品 itemId 清单=[100123] goodsId=[555]
+06:18:17.090 I/VaultSrv: [起号] 商店诊断：商品数=1 钻石=0 背包钻石道具种类=0 缺口肉=0 木=460000 煤=92000 铁=23000
+06:18:17.090 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=460000 goodsId=555 价格=2 钻石=0
+06:18:17.090 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.090 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 10 级
+06:18:17.090 I/VaultSrv: [起号] 资源诊断：资源表={103=100000} 背包100xxx={}
+06:18:17.091 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.091 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.091 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.091 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.092 W/VaultSrv: [起号] 资源耗尽（fpid=），起号结束：升级 大熔炉 到 10 级
+06:18:17.093 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.093 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.094 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.094 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.094 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 5 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.094 I/VaultSrv: [起号] 资源不足，已改用钻石完成 升级 大熔炉 到 5 级 的升级
+06:18:17.095 I/VaultSrv: [起号] 已请求伐木场 家具 401 建造（instantDiamond=true）
+06:18:17.095 I/VaultSrv: [起号] 已请求伐木场 家具 401 升级到 2 级（instantDiamond=true）
+06:18:17.096 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[res]
+06:18:17.096 I/VaultSrv: [起号][诊断拒绝] code=120 kind=CREATE_FURNITURE action=伐木场 家具 401 建造 上游msg=req_create_furniture 返回错误码 120
+06:18:17.097 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.097 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.097 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.097 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.097 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.098 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.098 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.098 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.098 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.098 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.098 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.098 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.098 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.098 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.099 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.099 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.099 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=1/10 家具表={304={601=1}} overrides={}
+06:18:17.099 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.099 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.099 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.099 I/VaultSrv: [起号][诊断拒绝] code=154 kind=CREATE_FURNITURE action=铁矿厂 家具 601 建造 上游msg=req_create_furniture 返回错误码 154
+06:18:17.100 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.100 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.100 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=2/10 家具表={304={601=1}} overrides={304:601=1}
+06:18:17.100 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.100 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.100 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.100 I/VaultSrv: [起号][诊断拒绝] code=154 kind=CREATE_FURNITURE action=铁矿厂 家具 601 建造 上游msg=req_create_furniture 返回错误码 154
+06:18:17.101 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.101 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.101 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=3/10 家具表={304={601=1}} overrides={304:601=1}
+06:18:17.101 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.101 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.101 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.101 I/VaultSrv: [起号][诊断拒绝] code=154 kind=CREATE_FURNITURE action=铁矿厂 家具 601 建造 上游msg=req_create_furniture 返回错误码 154
+06:18:17.102 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.102 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.102 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=4/10 家具表={304={601=1}} overrides={304:601=1}
+06:18:17.102 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.102 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.102 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.103 I/VaultSrv: [起号][诊断拒绝] code=154 kind=CREATE_FURNITURE action=铁矿厂 家具 601 建造 上游msg=req_create_furniture 返回错误码 154
+06:18:17.103 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.103 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.104 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=5/10 家具表={304={601=1}} overrides={304:601=1}
+06:18:17.104 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.104 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.104 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.105 I/VaultSrv: [起号][诊断拒绝] code=154 kind=CREATE_FURNITURE action=铁矿厂 家具 601 建造 上游msg=req_create_furniture 返回错误码 154
+06:18:17.105 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.105 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.105 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.105 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=6/10 家具表={304={601=1}} overrides={304:601=1}
+06:18:17.105 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.105 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.105 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.106 I/VaultSrv: [起号][诊断拒绝] code=154 kind=CREATE_FURNITURE action=铁矿厂 家具 601 建造 上游msg=req_create_furniture 返回错误码 154
+06:18:17.106 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.106 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.106 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=7/10 家具表={304={601=1}} overrides={304:601=1}
+06:18:17.106 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.107 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.107 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.107 I/VaultSrv: [起号][诊断拒绝] code=154 kind=CREATE_FURNITURE action=铁矿厂 家具 601 建造 上游msg=req_create_furniture 返回错误码 154
+06:18:17.108 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.108 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.108 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=8/10 家具表={304={601=1}} overrides={304:601=1}
+06:18:17.108 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.108 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.108 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.109 I/VaultSrv: [起号][诊断拒绝] code=154 kind=CREATE_FURNITURE action=铁矿厂 家具 601 建造 上游msg=req_create_furniture 返回错误码 154
+06:18:17.109 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.109 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.109 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=9/10 家具表={304={601=1}} overrides={304:601=1}
+06:18:17.110 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.110 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.110 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.110 I/VaultSrv: [起号][诊断拒绝] code=154 kind=CREATE_FURNITURE action=铁矿厂 家具 601 建造 上游msg=req_create_furniture 返回错误码 154
+06:18:17.110 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.110 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.111 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=10/10 家具表={304={601=1}} overrides={304:601=1}
+06:18:17.111 W/VaultSrv: [起号] 铁矿厂 家具 601 升级到 2 级 连续 10 次升级尝试被服务端拒绝（code=51，资源/前置/同步原因待查），请重新发起起号
+06:18:17.111 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.111 I/VaultSrv: [起号] 已点火大熔炉（switch=1, overdrive=0）
+06:18:17.111 I/VaultSrv: [起号] 已请求建造 大熔炉 到 1 级（instantDiamond=true）
+06:18:17.112 I/VaultSrv: [起号] 已请求建造 伐木场 到 1 级（instantDiamond=true）
+06:18:17.112 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.112 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 2 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.112 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 2 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.112 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 2 级
+06:18:17.112 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.113 I/VaultSrv: [起号] 已批量已读并领取 1 封邮件附件（大类 1）
+06:18:17.117 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.117 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.117 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.118 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.118 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.119 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.119 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.119 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.119 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.119 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.120 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.121 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.121 I/VaultSrv: [起号] 已请求升级 大熔炉 到 2 级（instantDiamond=true）
+06:18:17.121 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[uid, res]
+06:18:17.121 I/VaultSrv: [起号] req_shop_info keys=[goods]
+06:18:17.121 I/VaultSrv: [起号] 商店商品 itemId 清单=[] goodsId=[]
+06:18:17.121 I/VaultSrv: [起号] 商店诊断：商品数=0 钻石=0 背包钻石道具种类=0 缺口肉=0 木=25000 煤=0 铁=0
+06:18:17.121 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=25000 goodsId=null 价格=2 钻石=0
+06:18:17.122 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[res]
+06:18:17.123 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.123 I/VaultSrv: [起号][诊断拒绝] code=806 kind=UPGRADE_BUILDING action=升级 大熔炉 到 2 级 上游msg=req_upgrade_building 返回错误码 806
+06:18:17.123 I/VaultSrv: [起号] 已领取里程碑奖励 id=9
+06:18:17.123 I/VaultSrv: [起号] 委任诊断：闲置=1 已上岗=0 工位总数=0
+06:18:17.124 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.124 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 伐木场 到 2 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.124 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 伐木场 到 2 级
+06:18:17.124 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.125 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.125 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 伐木场 到 2 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.125 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.125 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 伐木场 到 2 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.126 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.126 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.126 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.126 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.127 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.128 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.128 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.128 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=1/10 家具表={304={601=1}} overrides={}
+06:18:17.128 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.128 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.128 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.128 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.129 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.129 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.129 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=2/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.129 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.129 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.129 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.129 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.130 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.130 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.130 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=3/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.130 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.130 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.130 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.130 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.131 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.131 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.131 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=4/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.131 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.131 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.131 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.132 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.132 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.132 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.132 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=5/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.132 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.132 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.132 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.133 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.133 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.133 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.133 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.133 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=6/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.133 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.133 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.133 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.134 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.134 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.134 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.134 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=7/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.134 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.134 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.134 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.134 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.135 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.135 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.135 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=8/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.135 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.135 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.135 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.135 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.136 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.136 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.136 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=9/10 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.136 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.136 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.136 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.136 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.137 I/VaultSrv: [起号][诊断拒绝] code=153 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 153
+06:18:17.137 I/VaultSrv: [起号] 已请求升级 铁矿厂 到 2 级（instantDiamond=true）
+06:18:17.138 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.138 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.138 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 4 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.138 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 4 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=1/10 家具表={304={601=2}} overrides={304:601=2}
+06:18:17.138 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 4 级
+06:18:17.138 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.138 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 4 级：资源103[需65/普通100000/安全0] 
+06:18:17.139 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.139 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.140 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.140 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.140 I/VaultSrv: [起号] 已批量已读并领取 1 封邮件附件（大类 1）
+06:18:17.141 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.141 I/VaultSrv: [起号] 已请求升级 大熔炉 到 2 级（instantDiamond=true）
+06:18:17.142 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[uid, res]
+06:18:17.142 I/VaultSrv: [起号] req_shop_info keys=[info]
+06:18:17.142 I/VaultSrv: [起号] 商店商品 itemId 清单=[100123, 100133, 100143] goodsId=[555, 556, 557]
+06:18:17.142 I/VaultSrv: [起号] 商店诊断：商品数=3 钻石=1000 背包钻石道具种类=0 缺口肉=0 木=25000 煤=100 铁=100
+06:18:17.142 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=25000 goodsId=555 价格=2 钻石=1000
+06:18:17.142 I/VaultSrv: [起号] 统帅商店购买 itemId=100123 数量=3 花费=6钻
+06:18:17.143 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[bag]
+06:18:17.143 I/VaultSrv: [起号] 打开钻石道具失败 itemId=100001 code=51（本会话不再重试）
+06:18:17.158 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.159 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.159 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.159 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.159 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.159 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.159 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.159 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.159 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.160 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.160 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.160 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.160 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.160 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.160 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.160 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.160 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.161 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.161 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.161 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.161 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.161 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.161 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.161 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.162 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.162 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.162 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.162 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.162 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.162 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.162 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.163 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.163 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.163 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.163 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.163 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.163 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.163 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.163 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.164 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.164 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.164 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.164 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.164 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.164 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.164 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.164 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.165 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.165 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.165 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.165 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.165 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.165 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.165 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.166 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.166 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.166 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.166 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.166 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.166 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.166 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.167 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.167 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.167 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.167 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.167 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.167 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.167 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.168 W/VaultSrv: [起号] 资源耗尽（fpid=fp-stall10），起号结束：升级 大熔炉 到 8 级
+06:18:17.168 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.168 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.168 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.168 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.169 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.170 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.170 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.170 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=1/10 家具表={304={601=1}} overrides={}
+06:18:17.170 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.170 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.170 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.170 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.172 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.172 I/VaultSrv: [起号] 已请求升级 大熔炉 到 2 级（instantDiamond=true）
+06:18:17.172 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.172 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.173 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.174 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.174 I/VaultSrv: [起号] req_shop_info keys=[info]
+06:18:17.174 I/VaultSrv: [起号] 商店商品 itemId 清单=[100123] goodsId=[555]
+06:18:17.174 I/VaultSrv: [起号] 商店诊断：商品数=1 钻石=500 背包钻石道具种类=0 缺口肉=0 木=460000 煤=92000 铁=23000
+06:18:17.174 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=460000 goodsId=555 价格=2 钻石=500
+06:18:17.174 I/VaultSrv: [起号] 统帅商店购买 itemId=100123 数量=46 花费=92钻
+06:18:17.174 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.174 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 10 级
+06:18:17.174 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.174 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.175 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.175 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.175 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.175 W/VaultSrv: [起号] 资源耗尽（fpid=），起号结束：升级 大熔炉 到 10 级
+06:18:17.176 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.176 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.176 I/VaultSrv: [起号][诊断拒绝] code=51 kind=CREATE_FURNITURE action=民居1 家具 101 建造 上游msg=req_create_furniture 返回错误码 51
+06:18:17.176 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：民居1 家具 101 建造
+06:18:17.176 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.176 I/VaultSrv: [起号] 51 缺口明细 民居1 家具 101 建造：资源103[需10/普通100000/安全0] 
+06:18:17.177 I/VaultSrv: [起号] 已请求民居1 家具 103 建造（instantDiamond=true）
+06:18:17.177 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.177 I/VaultSrv: [起号] 已请求民居1 家具 101 建造（instantDiamond=true）
+06:18:17.178 I/VaultSrv: [起号] 建号成功 uid=777 server=9
+06:18:17.179 I/VaultSrv: [起号] 已请求伐木场 家具 401 建造（instantDiamond=true）
+06:18:17.179 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.179 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.179 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.179 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.179 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.180 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.180 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.181 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.182 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[guide_list]
+06:18:17.182 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.182 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.182 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 2 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.182 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 2 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.182 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 2 级
+06:18:17.182 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.183 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[bag]
+06:18:17.183 I/VaultSrv: [起号] 打开钻石道具失败 itemId=100001 code=500（下一轮可重试）
+06:18:17.183 I/VaultSrv: [起号] 已打开背包钻石道具 itemId=100001 count=1 响应={code=0}
+06:18:17.184 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[hero_list]
+06:18:17.185 I/VaultSrv: [起号] 已批量已读并领取 1 封邮件附件（大类 1）
+06:18:17.186 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.186 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.186 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 2 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.186 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 2 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.186 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 2 级
+06:18:17.186 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.187 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.187 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.187 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.187 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.187 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.187 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.187 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.188 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.188 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.188 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.188 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.188 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.188 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.188 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.188 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.188 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.188 I/VaultSrv: [起号] 资源不足，已改用钻石完成 升级 大熔炉 到 8 级 的升级
+06:18:17.189 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.190 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.190 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.190 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.190 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.190 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.191 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.191 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.191 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.191 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.191 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.191 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.191 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.191 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.191 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.191 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.192 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.192 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=1/3 家具表={304={601=1}} overrides={}
+06:18:17.192 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.192 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.192 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.192 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.192 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.192 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.192 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=2/3 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.192 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：铁矿厂 家具 601 升级到 2 级
+06:18:17.192 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.192 I/VaultSrv: [起号] 51 缺口明细 铁矿厂 家具 601 升级到 2 级：资源103[需25/普通100000/安全0] 
+06:18:17.193 I/VaultSrv: [起号] 已请求铁矿厂 家具 601 建造（instantDiamond=true）
+06:18:17.193 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.193 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_FURNITURE action=铁矿厂 家具 601 升级到 2 级 上游msg=req_upgrade_furniture 返回错误码 51
+06:18:17.193 I/VaultSrv: [起号][诊断51] 铁矿厂 家具 601 升级到 2 级 kind=UPGRADE_FURNITURE fkey=304:601 stall=3/3 家具表={304={601=1}} overrides={304:601=0}
+06:18:17.193 W/VaultSrv: [起号] 铁矿厂 家具 601 升级到 2 级 连续 3 次升级尝试被服务端拒绝（code=51，资源/前置/同步原因待查），请重新发起起号
+06:18:17.193 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.194 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.195 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.195 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.195 I/VaultSrv: [起号] req_shop_info keys=[info]
+06:18:17.195 I/VaultSrv: [起号] 商店商品 itemId 清单=[100123] goodsId=[555]
+06:18:17.195 I/VaultSrv: [起号] 商店诊断：商品数=1 钻石=0 背包钻石道具种类=0 缺口肉=0 木=460000 煤=92000 铁=23000
+06:18:17.195 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=460000 goodsId=555 价格=2 钻石=0
+06:18:17.195 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.195 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 10 级
+06:18:17.195 I/VaultSrv: [起号] 资源诊断：资源表={103=100000} 背包100xxx={}
+06:18:17.195 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.195 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.196 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.196 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 10 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.196 W/VaultSrv: [起号] 资源耗尽（fpid=），起号结束：升级 大熔炉 到 10 级
+06:18:17.196 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.196 I/VaultSrv: [起号] 已请求升级 大熔炉 到 2 级（instantDiamond=true）
+06:18:17.197 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[res]
+06:18:17.197 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.197 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.197 I/VaultSrv: [起号][诊断拒绝] code=51 kind=CREATE_FURNITURE action=民居1 家具 101 建造 上游msg=req_create_furniture 返回错误码 51
+06:18:17.197 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：民居1 家具 101 建造
+06:18:17.198 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.198 I/VaultSrv: [起号] 51 缺口明细 民居1 家具 101 建造：资源103[需10/普通100000/安全0] 
+06:18:17.198 I/VaultSrv: [起号] 已请求民居1 家具 103 建造（instantDiamond=true）
+06:18:17.199 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.199 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.199 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.199 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.199 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.199 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.199 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.199 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.199 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.199 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.200 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.200 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.200 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.200 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.200 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.200 I/VaultSrv: [起号] req_shop_info keys=[info]
+06:18:17.200 I/VaultSrv: [起号] 商店商品 itemId 清单=[100123] goodsId=[555]
+06:18:17.200 I/VaultSrv: [起号] 商店诊断：商品数=1 钻石=500 背包钻石道具种类=0 缺口肉=0 木=120000 煤=25000 铁=6300
+06:18:17.200 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=120000 goodsId=555 价格=2 钻石=500
+06:18:17.200 I/VaultSrv: [起号] 统帅商店购买 itemId=100123 数量=12 花费=24钻
+06:18:17.201 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.201 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.201 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.201 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：升级 大熔炉 到 8 级
+06:18:17.201 I/VaultSrv: [起号] 资源诊断：资源表={103=100000, 101=500} 背包100xxx={}
+06:18:17.201 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:17.201 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=升级 大熔炉 到 8 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:17.201 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.201 I/VaultSrv: [起号] 改用钻石升级 升级 大熔炉 到 8 级 失败：req_upgrade_building 返回错误码 51
+06:18:17.202 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.202 I/VaultSrv: [起号][诊断拒绝] code=119 kind=UPGRADE_BUILDING action=升级 大熔炉 到 2 级 上游msg=req_upgrade_building 返回错误码 119
+06:18:17.203 I/VaultSrv: [起号] 兑换码 WJDR666 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 WJDR2025 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 WOAIWJDR 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 TILI520 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 吴嶮888 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 吴嶮666 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 金子888 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 金子666 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 大聪666 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 大聪888 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 JC666 永久失败 code=7201，不再尝试
+06:18:17.203 I/VaultSrv: [起号] 兑换码 JC888 永久失败 code=7201，不再尝试
+06:18:17.204 I/VaultSrv: [起号] 兑换码 666WJDR2024 永久失败 code=7201，不再尝试
+06:18:17.204 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.204 I/VaultSrv: [起号] 已批量已读并领取 2 封邮件附件（大类 1）
+06:18:17.205 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[hero_list, adventure_pve_info]
+06:18:17.205 I/VaultSrv: [起号] 探险通关第 1 关
+06:18:17.205 W/VaultSrv: 起号 loaddata 结构未完全命中：buildingsReady=false queuesReady=false 顶层键=[uid, res]
+06:18:17.205 I/VaultSrv: [起号] req_shop_info keys=[info]
+06:18:17.205 I/VaultSrv: [起号] 商店商品 itemId 清单=[100123] goodsId=[555]
+06:18:17.205 I/VaultSrv: [起号] 商店诊断：商品数=1 钻石=500 背包钻石道具种类=0 缺口肉=0 木=25000 煤=0 铁=0
+06:18:17.205 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=25000 goodsId=555 价格=2 钻石=500
+06:18:17.205 I/VaultSrv: [起号] 统帅商店购买 itemId=100123 数量=3 花费=6钻
+06:18:17.206 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=25000 goodsId=null 价格=2 钻石=500
+06:18:17.206 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:17.207 I/VaultSrv: [起号] 已领取里程碑奖励 id=11
+06:18:17.207 I/VaultSrv: [起号] 已领取里程碑奖励 id=13
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

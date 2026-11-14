@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" tests="20" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.066">
+  <properties/>
+  <testcase name="onMode_dayStateKeysIndependentPerRole" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.003"/>
+  <testcase name="onMode_activeRoleMirrorsLegacyKeys_onlyActive" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.004"/>
+  <testcase name="onMode_accountBudgetCapsAndDoesNotWriteCadKeys" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.005"/>
+  <testcase name="offMode_rereadsWakeUidKeyAndDoesNotLoop" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.002"/>
+  <testcase name="stats_roleRetainsLegacyFieldsAndSkipByRole" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.003"/>
+  <testcase name="pickNextRole_pureRoundRobin" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.0"/>
+  <testcase name="onMode_wartimePerRole" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.003"/>
+  <testcase name="onMode_perRoleMinGapAllowsSiblingDispatch" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.003"/>
+  <testcase name="offMode_onlyActiveLegacyRoleAndLegacyKeys" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.003"/>
+  <testcase name="parsePerRoleAndAccountMax" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.002"/>
+  <testcase name="onMode_legacyCadenceFallbackInCandidate" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.002"/>
+  <testcase name="onMode_legacyStFallbackForBackoff" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.002"/>
+  <testcase name="onMode_bothRolesDispatchWithIndependentKeys" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.004"/>
+  <testcase name="onMode_arenaGateBlocksGatedRoleOnly" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.003"/>
+  <testcase name="onMode_roleConfigByUid_precedesSidFallback" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.002"/>
+  <testcase name="onMode_fairness_twoRolesAlternateWithinBudget" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.009"/>
+  <testcase name="onMode_arenaGateDoesNotBlockSafetyWhitelist" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.003"/>
+  <testcase name="onMode_initGracePerRole" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.007"/>
+  <testcase name="onMode_roleBudgetIsIndependentPerRole" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.004"/>
+  <testcase name="onMode_busyPerRole" classname="com.carlos.vaultserver.task.PerRoleCadenceSchedulerTest" time="0.002"/>
+  <system-out><![CDATA[06:18:32.576 I/VaultSrv: 节奏任务开始 role=48460403|888|35371154 fn=login_rewards 间隔=300s
+06:18:32.580 I/VaultSrv: 节奏任务开始 role=48460403|888|35371154 fn=login_rewards 间隔=300s
+06:18:32.584 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.587 I/VaultSrv: 节奏任务开始 role=48460403|888|88280792 fn=login_rewards 间隔=300s
+06:18:32.590 I/VaultSrv: 节奏任务开始 role=48460403|888|88280792 fn=login_rewards 间隔=300s
+06:18:32.592 I/VaultSrv: 节奏任务开始 role=48460403|888|35371154 fn=login_rewards 间隔=300s
+06:18:32.597 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.600 I/VaultSrv: 节奏任务开始 role=48460403|888|35371154 fn=login_rewards 间隔=300s
+06:18:32.605 I/VaultSrv: 节奏任务开始 role=48460403|888|35371154 fn=login_rewards 间隔=300s
+06:18:32.609 I/VaultSrv: 节奏任务开始 role=48460403|888|88280792 fn=login_rewards 间隔=300s
+06:18:32.615 I/VaultSrv: 节奏任务开始 role=48460403|888|35371154 fn=login_rewards 间隔=300s
+06:18:32.618 I/VaultSrv: 节奏任务开始 role=48460403|888|88280792 fn=chapter_quest 间隔=300s
+06:18:32.618 I/VaultSrv: 节奏任务开始 role=48460403|888|35371154 fn=chapter_quest 间隔=300s
+06:18:32.619 I/VaultSrv: 节奏任务开始 role=48460403|888|88280792 fn=adventure 间隔=3600s
+06:18:32.619 I/VaultSrv: 节奏任务开始 role=48460403|888|35371154 fn=adventure 间隔=3600s
+06:18:32.630 I/VaultSrv: 节奏任务开始 role=48460403|888|88280792 fn=login_rewards 间隔=300s
+06:18:32.633 I/VaultSrv: 节奏任务开始 role=48460403|888|35371154 fn=login_rewards 间隔=300s
+06:18:32.636 I/VaultSrv: 节奏任务开始 role=48460403|888|88280792 fn=login_rewards 间隔=300s
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

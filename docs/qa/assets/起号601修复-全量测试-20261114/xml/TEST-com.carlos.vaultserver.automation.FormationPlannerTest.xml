@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.automation.FormationPlannerTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:41" hostname="lgs.local" time="0.008">
+  <properties/>
+  <testcase name="beastFullTroopsUsesWholePoolAndSameHeroes" classname="com.carlos.vaultserver.automation.FormationPlannerTest" time="0.006"/>
+  <testcase name="gatherUsesDynamicTroopsAndRequestedHeroes" classname="com.carlos.vaultserver.automation.FormationPlannerTest" time="0.001"/>
+  <testcase name="behemothRallyUsesShieldFirstAndShieldTroops" classname="com.carlos.vaultserver.automation.FormationPlannerTest" time="0.0"/>
+  <testcase name="missingHeroDirectoryProducesInvalidPlan" classname="com.carlos.vaultserver.automation.FormationPlannerTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

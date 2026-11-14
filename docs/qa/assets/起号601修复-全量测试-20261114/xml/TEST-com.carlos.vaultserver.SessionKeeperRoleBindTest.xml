@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.SessionKeeperRoleBindTest" tests="11" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:34" hostname="lgs.local" time="0.022">
+  <properties/>
+  <testcase name="activeUid_positive_cacheHitSkipsValidation" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.003"/>
+  <testcase name="activeUid_positive_staleUid_bindsOnceWithoutFallback" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.001"/>
+  <testcase name="activeUid_absent_legacyCacheHitBindsDirectly" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.0"/>
+  <testcase name="activeUid_positive_bindsDirectlyWithoutDefaultLogin" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.002"/>
+  <testcase name="activeUid_positive_bindFails_clearsCacheAndReportsActual" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.001"/>
+  <testcase name="activeUid_blankAndGarbage_treatedAsAbsent" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.008"/>
+  <testcase name="legacy_noRoleOnKid_logsInAsDefault" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.001"/>
+  <testcase name="noSid_defaultLogin" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.001"/>
+  <testcase name="activeUid_positive_sameSidSecondRoleDoesNotCollide" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.001"/>
+  <testcase name="parseUid_semantics" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.001"/>
+  <testcase name="activeUid_absent_legacyDiscoveryUnchanged" classname="com.carlos.vaultserver.SessionKeeperRoleBindTest" time="0.001"/>
+  <system-out><![CDATA[06:15:34.962 W/VaultSrv: 角色绑定未生效 fpid=48460403 期望uid=88280792 实际uid=35371154（不自动二次登录，避免顶掉兄弟角色）
+06:15:34.965 I/VaultSrv: 发现角色映射 fpid=48460403 k888→uid=35371154
+06:15:34.966 I/VaultSrv: 发现角色映射 fpid=48460403 k888→uid=35371154
+06:15:34.966 I/VaultSrv: 发现角色映射 fpid=48460403 k888→uid=35371154
+06:15:34.968 I/VaultSrv: 发现角色映射 fpid=48460403 k888→uid=35371154
+06:15:34.969 I/VaultSrv: 发现角色映射 fpid=48460403 k888→uid=35371154
+06:15:34.973 W/VaultSrv: 目标区服 k888 无角色，按默认角色上线 fpid=48460403
+06:15:34.977 I/VaultSrv: 发现角色映射 fpid=48460403 k888→uid=35371154
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

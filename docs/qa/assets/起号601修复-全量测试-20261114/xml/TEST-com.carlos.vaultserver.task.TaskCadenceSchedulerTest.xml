@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" tests="14" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:07" hostname="lgs.local" time="0.032">
+  <properties/>
+  <testcase name="skipsWhenAutoOff" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="skippedResultBacksOffInterval" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.003"/>
+  <testcase name="roleConfigOverridesDefaultsForCadence" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="skipsWhenExecutorBusy" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.003"/>
+  <testcase name="skipsDuringWartimeYield" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="claimedResultUsesNormalInterval" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.003"/>
+  <testcase name="respectsMinimumDispatchGap" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="dispatchesMostOverdueEnabledTask_andSchedulesNext" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="unacceptedRetriesAfterOneMinute" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="windowModeHonoursAccountWindow" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="initGraceBlocksDispatchRightAfterLogin" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="errorResultBacksOffInterval" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="skipsWhenSessionOffline" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <testcase name="newSessionSidStartsFreshCadence" classname="com.carlos.vaultserver.task.TaskCadenceSchedulerTest" time="0.002"/>
+  <system-out><![CDATA[06:23:07.955 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:23:07.965 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:23:07.967 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:23:07.969 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:23:07.971 I/VaultSrv: 节奏任务暂未受理 role=48460403|888|0 fn=login_rewards（会话不可用，60s 后重试）
+06:23:07.974 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:23:07.976 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:23:07.978 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:23:07.982 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:23:07.982 I/VaultSrv: 节奏任务开始 role=48460403|889|0 fn=login_rewards 间隔=300s
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

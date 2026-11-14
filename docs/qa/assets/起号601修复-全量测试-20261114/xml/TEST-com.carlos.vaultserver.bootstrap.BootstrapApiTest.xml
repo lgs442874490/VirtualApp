@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.bootstrap.BootstrapApiTest" tests="26" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:16" hostname="lgs.local" time="0.216">
+  <properties/>
+  <testcase name="singleStatus_withoutActiveSession_reportsOffline" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.028"/>
+  <testcase name="singleRunNext_progressesAfterLoadDataSync" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.1"/>
+  <testcase name="singleRunNext_finishPassRunsOnceAcrossRequests" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.003"/>
+  <testcase name="referralListAndPull" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.004"/>
+  <testcase name="batchStart_furnitureStallLimitWired" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.001"/>
+  <testcase name="importAction_parsesAndReports" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.012"/>
+  <testcase name="singleAction_requiresFpid" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.001"/>
+  <testcase name="engineCloseIdempotentOnFakeSession" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.001"/>
+  <testcase name="singleReset_onlineRejected" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.0"/>
+  <testcase name="clearSessionState_clearsScope" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.001"/>
+  <testcase name="batchCancel_unknownBatchReportsError" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.0"/>
+  <testcase name="singleActions_withActiveSession_dispatch" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.008"/>
+  <testcase name="unknownAction_reportsChineseError" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.0"/>
+  <testcase name="batchCancel_terminalBatchReportsFinished" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.022"/>
+  <testcase name="singleReset_clearsEndedState" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.0"/>
+  <testcase name="importAction_requiresLines" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.002"/>
+  <testcase name="enginePort_serverNowMs_forwardsCalibratedClock" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.005"/>
+  <testcase name="referralPull_requiresFpids" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.001"/>
+  <testcase name="batchStart_validations" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.001"/>
+  <testcase name="batchStartStatusClosedLoop" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.009"/>
+  <testcase name="statusOfUnknownBatch_reportsChineseError" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.0"/>
+  <testcase name="singleRunNext_worldAdvanceStatePersistsAcrossRequests" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.002"/>
+  <testcase name="singleStatus_doesNotConsumeResourceUpdateChannel" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.002"/>
+  <testcase name="singleRunNext_holdVisibleAcrossRequests_doesNotRetryHeldAction" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.011"/>
+  <testcase name="batchStart_defaultBuyShopResourcesIsTrue" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.001"/>
+  <testcase name="enginePort_serverNowMs_fallsBackBeforeCalibration" classname="com.carlos.vaultserver.bootstrap.BootstrapApiTest" time="0.0"/>
+  <system-out><![CDATA[06:18:16.410 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.412 I/VaultSrv: [起号] 已请求建造 民居1 到 1 级（instantDiamond=true）
+06:18:16.416 I/VaultSrv: [起号] 已打开背包钻石道具 itemId=100001 count=2 响应={code=0}
+06:18:16.416 I/VaultSrv: [起号] 兑换码 WJDR666 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 WJDR2025 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 WOAIWJDR 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 TILI520 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 吴嶮888 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 吴嶮666 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 金子888 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 金子666 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 大聪666 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 大聪888 兑换成功
+06:18:16.416 I/VaultSrv: [起号] 兑换码 JC666 兑换成功
+06:18:16.417 I/VaultSrv: [起号] 兑换码 JC888 兑换成功
+06:18:16.417 I/VaultSrv: [起号] 兑换码 666WJDR2024 兑换成功
+06:18:16.417 I/VaultSrv: [起号] 已打开背包钻石道具 itemId=100001 count=2 响应={code=0}
+06:18:16.419 I/VaultSrv: 回流清单追加 fpid=fp9 batchId= furnaceLevel=0
+06:18:16.420 I/VaultSrv: 回流清单标记已拉取 1 条（请求 1 个 fpid）
+06:18:16.434 I/VaultSrv: 起号清单解析：成功 1 行，错误 1 行
+06:18:16.439 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.439 I/VaultSrv: [起号] 已请求建造 民居1 到 1 级（instantDiamond=true）
+06:18:16.440 I/VaultSrv: [起号] 已请求建造 民居1 到 1 级（instantDiamond=true）
+06:18:16.441 I/VaultSrv: [起号] 已请求民居1 家具 101 建造（instantDiamond=true）
+06:18:16.442 I/VaultSrv: [起号] 已请求民居1 家具 101 升级到 2 级（instantDiamond=true）
+06:18:16.444 I/VaultSrv: [起号] 已请求建造 民居1 到 1 级（instantDiamond=true）
+06:18:16.448 I/VaultSrv: 起号批次 开始批量起号：区服 1，目标大熔炉 2 级：id=1 个账号 timeout=120min
+06:18:16.450 I/VaultSrv: 起号批次 bb2026111406181601 开始处理 fpid=fp1 sdkToken=***
+06:18:16.458 I/VaultSrv: [起号] 建号成功 uid=8001 server=1
+06:18:16.461 W/VaultSrv: 起号轮0 熔炉=2 busy=[] 队列=1 建筑数={}
+06:18:16.462 W/VaultSrv: 起号轮0 blocked= 剩余动作=0 消息=大熔炉已到达目标等级
+06:18:16.462 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.462 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.462 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.462 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.462 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.462 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.462 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.462 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{} 资源(<100000)：{}
+06:18:16.462 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=2, status=0}}
+06:18:16.462 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.462 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.462 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.462 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.462 I/VaultSrv: 工位诊断 建筑302 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.462 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.462 I/VaultSrv: 工位诊断 建筑304 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.462 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.463 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.463 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.463 I/VaultSrv: 起号首轮状态 res=-1 bagItems=1 buildings=2 furnace={}
+06:18:16.463 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.463 W/VaultSrv: 起号轮1 动作明细 started=0 [status=COMPLETED msg=大熔炉已到达目标等级 2] 
+06:18:16.464 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026111406181601 furnaceLevel=2
+06:18:16.464 I/VaultSrv: 起号批次 bb2026111406181601 账号成功 fpid=fp1 furnace=2
+06:18:16.467 I/VaultSrv: 起号批次结束 id=bb2026111406181601 state=COMPLETED success=1 fail=0
+06:18:16.467 I/VaultSrv: 起号批次已启动 id=bb2026111406181601 server=1 target=2 accounts=1 alliance=
+06:18:16.468 I/VaultSrv: [起号] 单号会话已重置 fpid=fp-reset
+06:18:16.469 I/VaultSrv: 起号清单解析：成功 0 行，错误 1 行
+WjdrProto/I: GameServerClock 首次校准成功 offset=1793813143319ms errBound=150ms rtt=300ms
+06:18:16.478 I/VaultSrv: 起号批次 开始批量起号：区服 3，目标大熔炉 2 级：id=1 个账号 timeout=120min
+06:18:16.478 I/VaultSrv: 起号批次 bb2026111406181602 开始处理 fpid=fp1 sdkToken=***
+06:18:16.479 I/VaultSrv: [起号] 建号成功 uid=8001 server=3
+06:18:16.480 W/VaultSrv: 起号轮0 熔炉=2 busy=[] 队列=1 建筑数={}
+06:18:16.480 W/VaultSrv: 起号轮0 blocked= 剩余动作=0 消息=大熔炉已到达目标等级
+06:18:16.480 I/VaultSrv: 起号首轮已收推送协议(0个)：[]
+06:18:16.480 I/VaultSrv: 推送原文 notify_hero_init keys=null 内容=null
+06:18:16.480 I/VaultSrv: 推送原文 notify_guide_init keys=null 内容=null
+06:18:16.480 I/VaultSrv: 推送原文 notify_produced_resource_init keys=null 内容=null
+06:18:16.480 I/VaultSrv: 推送原文 notify_adventure_pve_info keys=null 内容=null
+06:18:16.480 I/VaultSrv: 资源推送 notify_resource_init = null
+06:18:16.480 I/VaultSrv: 资源推送 notify_recover_resource_init = null
+06:18:16.480 I/VaultSrv: 起号首轮背包物品明细(>=100000)：{} 资源(<100000)：{}
+06:18:16.480 I/VaultSrv: loaddata 字段 buildings = {301={bid=301, lv=2, status=0}}
+06:18:16.480 I/VaultSrv: 任务推送 notify_growthquests 内容=null
+06:18:16.480 I/VaultSrv: 任务推送 notify_chapterquests 内容=null
+06:18:16.480 I/VaultSrv: 任务统计：成长=[] 章节=[]
+06:18:16.480 I/VaultSrv: 起号首轮幸存者明细：[]
+06:18:16.480 I/VaultSrv: 工位诊断 建筑302 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.480 I/VaultSrv: 工位诊断 建筑303 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.480 I/VaultSrv: 工位诊断 建筑304 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.480 I/VaultSrv: 工位诊断 建筑305 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.480 I/VaultSrv: 工位诊断 建筑306 等级=0 类型24工位={} 类型9工位={} 类型30工位={} 类型42工位={}
+06:18:16.480 I/VaultSrv: 起号首轮推送：survivors=0 heroes=0 guides=0 adventure=0 背包物品=-1
+06:18:16.481 I/VaultSrv: 起号首轮状态 res=-1 bagItems=1 buildings=2 furnace={}
+06:18:16.481 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.481 W/VaultSrv: 起号轮1 动作明细 started=0 [status=COMPLETED msg=大熔炉已到达目标等级 2] 
+06:18:16.482 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026111406181602 furnaceLevel=2
+06:18:16.482 I/VaultSrv: 起号批次 bb2026111406181602 账号成功 fpid=fp1 furnace=2
+06:18:16.484 I/VaultSrv: 起号批次结束 id=bb2026111406181602 state=COMPLETED success=1 fail=0
+06:18:16.484 I/VaultSrv: 起号批次已启动 id=bb2026111406181602 server=3 target=2 accounts=1 alliance=远征军
+06:18:16.490 I/VaultSrv: [起号] 探险跳过：还没有英雄（heroes=0）
+06:18:16.491 I/VaultSrv: [起号] 资源包跳过：背包尚未同步
+06:18:16.491 I/VaultSrv: [起号] req_shop_info keys=[code]
+06:18:16.492 I/VaultSrv: [起号] 商店商品 itemId 清单=[] goodsId=[]
+06:18:16.492 I/VaultSrv: [起号] 商店诊断：商品数=0 钻石=0 背包钻石道具种类=0 缺口肉=0 木=20 煤=0 铁=0
+06:18:16.499 I/VaultSrv: [起号] buyForMissing 入参 itemId=100123 缺口=20 goodsId=null 价格=2 钻石=0
+06:18:16.500 I/VaultSrv: [起号][诊断拒绝] code=51 kind=UPGRADE_BUILDING action=建造 民居1 到 1 级 上游msg=req_upgrade_building 返回错误码 51
+06:18:16.500 I/VaultSrv: [起号] 改用钻石升级 建造 民居1 到 1 级 失败：req_upgrade_building 返回错误码 51
+06:18:16.500 W/VaultSrv: [起号] 动作暂不可行（51），30 秒内不再尝试：建造 民居1 到 1 级
+06:18:16.500 I/VaultSrv: [起号] 资源诊断：资源表={} 背包100xxx={}
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

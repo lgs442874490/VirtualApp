@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.AlliancePerRoleStateTest" tests="11" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.009">
+  <properties/>
+  <testcase name="modState_roleKeyFirstThenLegacyFallbackOnce" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.002"/>
+  <testcase name="roleUidZero_writesOnlyLegacyKeys" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.001"/>
+  <testcase name="legacyMigration_readsOldKeyOnceThenWritesRoleKey" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.001"/>
+  <testcase name="roleUidConstructor_andPredicatePreserved" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.001"/>
+  <testcase name="perRoleScienceState_doNotOverwriteEachOther" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.0"/>
+  <testcase name="scienceKey_roleUidIsolatedAndZeroKeepsLegacyKey" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.001"/>
+  <testcase name="runAllianceDonate_publicStaticEntrySignature" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.0"/>
+  <testcase name="perRoleRecoverySpent_notCrossDeducted" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.0"/>
+  <testcase name="modKey_roleUidIsolatedAndZeroKeepsLegacyKey" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.001"/>
+  <testcase name="claimLedger_roleIsolatedAndNoCrossRoleFallback" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.0"/>
+  <testcase name="roleUidZero_behavesLikeBeforeForScienceState" classname="com.carlos.vaultserver.task.AlliancePerRoleStateTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

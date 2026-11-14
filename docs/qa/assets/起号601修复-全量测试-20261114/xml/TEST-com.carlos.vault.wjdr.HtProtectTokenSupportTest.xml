@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vault.wjdr.HtProtectTokenSupportTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:12" hostname="lgs.local" time="0.02">
+  <properties/>
+  <testcase name="generateToken_equivalentToRewrap" classname="com.carlos.vault.wjdr.HtProtectTokenSupportTest" time="0.008"/>
+  <testcase name="rewrap_randomMask_roundTripsTrustedPayload" classname="com.carlos.vault.wjdr.HtProtectTokenSupportTest" time="0.003"/>
+  <testcase name="lengthValidation_throwsIllegalArgument" classname="com.carlos.vault.wjdr.HtProtectTokenSupportTest" time="0.002"/>
+  <testcase name="rewrap_knownPayloadAndMask_reproducesOracleCapture" classname="com.carlos.vault.wjdr.HtProtectTokenSupportTest" time="0.0"/>
+  <testcase name="token_isUrlSafeBase64_paddedLikeOracle" classname="com.carlos.vault.wjdr.HtProtectTokenSupportTest" time="0.006"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

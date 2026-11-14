@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.StateKeysObservedKeyTest" tests="8" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:07" hostname="lgs.local" time="0.001">
+  <properties/>
+  <testcase name="splitRoleKey_rejectsBadShapes" classname="com.carlos.vaultserver.task.StateKeysObservedKeyTest" time="0.0"/>
+  <testcase name="splitDayKey_legacyAndRoleScoped" classname="com.carlos.vaultserver.task.StateKeysObservedKeyTest" time="0.0"/>
+  <testcase name="splitRoleKey_subTaskWithColonBothShapes" classname="com.carlos.vaultserver.task.StateKeysObservedKeyTest" time="0.0"/>
+  <testcase name="splitRoleKey_legacyLogKey" classname="com.carlos.vaultserver.task.StateKeysObservedKeyTest" time="0.0"/>
+  <testcase name="splitRoleKey_roleScopedLogKey" classname="com.carlos.vaultserver.task.StateKeysObservedKeyTest" time="0.001"/>
+  <testcase name="roleKeyFormats_phase2" classname="com.carlos.vaultserver.task.StateKeysObservedKeyTest" time="0.0"/>
+  <testcase name="splitRoleKey_modAndOtherFamilies" classname="com.carlos.vaultserver.task.StateKeysObservedKeyTest" time="0.0"/>
+  <testcase name="splitDayKey_rejectsBadShapes" classname="com.carlos.vaultserver.task.StateKeysObservedKeyTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

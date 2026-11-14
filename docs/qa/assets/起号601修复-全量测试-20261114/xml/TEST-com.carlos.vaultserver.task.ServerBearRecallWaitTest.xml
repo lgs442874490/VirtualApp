@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.ServerBearRecallWaitTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:07" hostname="lgs.local" time="0.001">
+  <properties/>
+  <testcase name="pendingRecallIds_nullSafe" classname="com.carlos.vaultserver.task.ServerBearRecallWaitTest" time="0.0"/>
+  <testcase name="joinIds_skipsInvalid" classname="com.carlos.vaultserver.task.ServerBearRecallWaitTest" time="0.0"/>
+  <testcase name="parseIds_toleratesCsvAndGarbage" classname="com.carlos.vaultserver.task.ServerBearRecallWaitTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

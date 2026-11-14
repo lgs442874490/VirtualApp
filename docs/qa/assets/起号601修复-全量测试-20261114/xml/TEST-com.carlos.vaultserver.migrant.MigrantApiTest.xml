@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.migrant.MigrantApiTest" tests="18" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:21" hostname="lgs.local" time="0.055">
+  <properties/>
+  <testcase name="missingAction" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.014"/>
+  <testcase name="overviewOfflineReturnsOnlineFalse" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.003"/>
+  <testcase name="missingJobIdAndUnknownJob" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.002"/>
+  <testcase name="marchesOfflineReturnsOnlineFalse" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.005"/>
+  <testcase name="jobsAndJobDetailScopeByFpid" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.003"/>
+  <testcase name="recallOfflineRoleFailsWithChineseMessage" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.003"/>
+  <testcase name="bulkIsolatesPerRoleFailures" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.002"/>
+  <testcase name="recallValidatesMode" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.002"/>
+  <testcase name="bulkValidatesTargetAndRoleIds" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.002"/>
+  <testcase name="precheckOfflineRoleIs1004" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.002"/>
+  <testcase name="cancelOnlyWaiting" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.003"/>
+  <testcase name="unknownAction" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.002"/>
+  <testcase name="precheckRequiresRoleId" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.001"/>
+  <testcase name="accountsListsOnlyRequestedFpidRoles" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.003"/>
+  <testcase name="missingFpid" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.001"/>
+  <testcase name="roleOfOtherAccountIs1004" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.003"/>
+  <testcase name="unknownFpid" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.002"/>
+  <testcase name="loginWithoutKeeperFailsGracefully" classname="com.carlos.vaultserver.migrant.MigrantApiTest" time="0.002"/>
+  <system-out><![CDATA[06:18:21.035 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.038 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.040 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.042 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.047 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.050 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.053 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.053 I/VaultSrv: 移民危险动作 bulk fpid=f1 target_kid=1001 requested=2 created=0 failed=2
+06:18:21.055 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.057 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.059 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.061 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.062 I/VaultSrv: 移民危险动作 cancel fpid=f1 uid=1001 job=job-wait target_kid=1001
+06:18:21.064 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.066 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.067 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.069 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.072 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.074 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+06:18:21.076 I/VaultSrv: 移民任务恢复完成：共 0 个任务，活跃 0 个
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

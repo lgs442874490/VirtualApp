@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.guardian.GuardReportCodesTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.004">
+  <properties/>
+  <testcase name="override_rolesSecondAndByFirst" classname="com.carlos.vaultserver.guardian.GuardReportCodesTest" time="0.0"/>
+  <testcase name="override_invalidJsonFallsBackToDefaults" classname="com.carlos.vaultserver.guardian.GuardReportCodesTest" time="0.001"/>
+  <testcase name="parseMails_ignoresInvalidAndClips" classname="com.carlos.vaultserver.guardian.GuardReportCodesTest" time="0.002"/>
+  <testcase name="defaultMapping_battleFirstAndVerdicts" classname="com.carlos.vaultserver.guardian.GuardReportCodesTest" time="0.001"/>
+  <testcase name="parseMails_supportedShapes" classname="com.carlos.vaultserver.guardian.GuardReportCodesTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

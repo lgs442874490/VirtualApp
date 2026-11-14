@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.migrant.MigrantRulesTest" tests="9" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:21" hostname="lgs.local" time="0.009">
+  <properties/>
+  <testcase name="evaluate_powerLimitUsesWarzoneGear" classname="com.carlos.vaultserver.migrant.MigrantRulesTest" time="0.008"/>
+  <testcase name="evaluate_quotaAndInvitation" classname="com.carlos.vaultserver.migrant.MigrantRulesTest" time="0.0"/>
+  <testcase name="advanceMillisClampedTo0to100" classname="com.carlos.vaultserver.migrant.MigrantRulesTest" time="0.0"/>
+  <testcase name="evaluate_activitySupportedAndPhaseWindows" classname="com.carlos.vaultserver.migrant.MigrantRulesTest" time="0.0"/>
+  <testcase name="evaluate_allianceBlocks_andAutoExitOverride" classname="com.carlos.vaultserver.migrant.MigrantRulesTest" time="0.0"/>
+  <testcase name="requiredPermits_thresholdTable" classname="com.carlos.vaultserver.migrant.MigrantRulesTest" time="0.001"/>
+  <testcase name="evaluate_cooldownAndPermitsAndRoleCount" classname="com.carlos.vaultserver.migrant.MigrantRulesTest" time="0.0"/>
+  <testcase name="evaluate_targetMustDifferFromCurrentKingdom" classname="com.carlos.vaultserver.migrant.MigrantRulesTest" time="0.0"/>
+  <testcase name="evaluate_readyHappyPath" classname="com.carlos.vaultserver.migrant.MigrantRulesTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

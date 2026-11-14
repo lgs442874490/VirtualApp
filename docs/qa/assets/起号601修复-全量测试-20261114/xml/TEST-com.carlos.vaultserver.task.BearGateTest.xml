@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.BearGateTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.001">
+  <properties/>
+  <testcase name="enter_blocksQueueTasksOnly" classname="com.carlos.vaultserver.task.BearGateTest" time="0.001"/>
+  <testcase name="enterKeepsLaterDeadline" classname="com.carlos.vaultserver.task.BearGateTest" time="0.0"/>
+  <testcase name="expiresAfterWindowPlusMargin" classname="com.carlos.vaultserver.task.BearGateTest" time="0.0"/>
+  <testcase name="roleIsolation_andRelease" classname="com.carlos.vaultserver.task.BearGateTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,41 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.CadenceFairnessTest" tests="13" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.051">
+  <properties/>
+  <testcase name="unacceptedDispatchStillRetriesAfter60sAndNotCountedInBudget" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.009"/>
+  <testcase name="stats_writtenAfterDispatchWithStableSchema" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.002"/>
+  <testcase name="parseGlobalMax_defaultsAndOffMeansUnlimited" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.001"/>
+  <testcase name="roundRobin_doesNotStarveEitherAccount" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.01"/>
+  <testcase name="stats_surviveSameDayRestart" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.004"/>
+  <testcase name="roundRobin_twoOnlineAccountsAlternate" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.003"/>
+  <testcase name="globalBudget_capsDispatchAndDoesNotWriteCadKeysWhenExhausted" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.002"/>
+  <testcase name="stats_recordsSkipReasons" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.003"/>
+  <testcase name="existingSafetyGatesStillPreventDispatch" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.003"/>
+  <testcase name="globalBudgetOffMeansUnlimited" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.008"/>
+  <testcase name="pickNextAccount_roundRobinPureFunction" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.0"/>
+  <testcase name="stats_skipReasonsCoverWarBusyAndInitGrace" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.002"/>
+  <testcase name="stats_dayRolloverKeepsOldDayKey" classname="com.carlos.vaultserver.task.CadenceFairnessTest" time="0.002"/>
+  <system-out><![CDATA[06:18:32.027 I/VaultSrv: 节奏任务暂未受理 role=48460403|888|0 fn=login_rewards（会话不可用，60s 后重试）
+06:18:32.031 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.034 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.035 I/VaultSrv: 节奏任务开始 role=57259770|888|0 fn=login_rewards 间隔=300s
+06:18:32.038 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=chapter_quest 间隔=300s
+06:18:32.038 I/VaultSrv: 节奏任务开始 role=57259770|888|0 fn=chapter_quest 间隔=300s
+06:18:32.039 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=adventure 间隔=3600s
+06:18:32.039 I/VaultSrv: 节奏任务开始 role=57259770|888|0 fn=adventure 间隔=3600s
+06:18:32.042 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=achievement_claim 间隔=600s
+06:18:32.042 I/VaultSrv: 节奏任务开始 role=57259770|888|0 fn=achievement_claim 间隔=600s
+06:18:32.045 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.048 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.048 I/VaultSrv: 节奏任务开始 role=57259770|888|0 fn=login_rewards 间隔=300s
+06:18:32.052 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.056 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.058 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.060 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.062 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=chapter_quest 间隔=300s
+06:18:32.062 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=adventure 间隔=3600s
+06:18:32.063 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=achievement_claim 间隔=600s
+06:18:32.065 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+06:18:32.071 I/VaultSrv: 节奏任务开始 role=48460403|888|0 fn=login_rewards 间隔=300s
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

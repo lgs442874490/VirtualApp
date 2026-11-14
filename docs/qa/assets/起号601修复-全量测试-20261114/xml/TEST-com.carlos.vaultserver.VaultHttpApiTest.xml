@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.VaultHttpApiTest" tests="19" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:36" hostname="lgs.local" time="0.18">
+  <properties/>
+  <testcase name="automationSnapshot_carriesActiveUid" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.009"/>
+  <testcase name="watchpoint_legacyConstructorWithoutStore_returns3002" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.006"/>
+  <testcase name="sync_emptyListRejectedUnlessAllowEmpty" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.01"/>
+  <testcase name="watchpoint_setThenGet_andInvalidFailClosed" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.021"/>
+  <testcase name="watchpoint_enableDisable_togglesOnlyEnabled" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.052"/>
+  <testcase name="sync_oldAppWithoutUid_keepsSidDefaultAndInheritance" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.005"/>
+  <testcase name="badSignature_rejected" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.005"/>
+  <testcase name="automation_read_returnsConfigSnapshot" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.008"/>
+  <testcase name="activeUid_roundTrips_syncToStatus" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.007"/>
+  <testcase name="activeUid_absentFromLegacyClient_statusEmptyString" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.007"/>
+  <testcase name="sync_perRoleUidConfig_storedAndEffectivePerRole" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.008"/>
+  <testcase name="sync_then_token_then_status_flow" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.01"/>
+  <testcase name="state_endpoint_returnsStatesAndAccounts" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.004"/>
+  <testcase name="healthz" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.003"/>
+  <testcase name="policy_warReset_clearsStuckWartime" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.004"/>
+  <testcase name="watchpoint_get_returnsSnapshot" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.006"/>
+  <testcase name="watchpoint_unknownAction_3002" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.004"/>
+  <testcase name="policy_yield_delegates" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.004"/>
+  <testcase name="token_unknownAccount_1004" classname="com.carlos.vaultserver.VaultHttpApiTest" time="0.004"/>
+  <system-out><![CDATA[06:15:36.062 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.065 I/VaultSrv: 身份库同步：1 条（keep=0）
+06:15:36.070 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.071 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.076 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.078 I/VaultSrv: 身份库同步：1 条（keep=0）
+06:15:36.080 W/VaultSrv: 身份库空同步已拒绝：服务端 1 个账号，incoming=0（防卸载重装/换机空列表清库；确需清空请带 allowEmpty=true）
+06:15:36.083 I/VaultSrv: 身份库同步：0 条（keep=0）
+06:15:36.087 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.093 I/VaultSrv: [观察点] 配置已更新：目标=1 矩形=1 告警类型=3 友盟=2
+06:15:36.107 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.151 I/VaultSrv: [观察点] 配置开关更新 enabled=false
+06:15:36.156 I/VaultSrv: [观察点] 配置开关更新 enabled=true
+06:15:36.159 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.162 I/VaultSrv: 身份库同步：1 条（keep=0）
+06:15:36.164 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.166 W/VaultSrv: 验签失败 /v1/vault/policy op=vaultPolicy code=2001
+06:15:36.169 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.173 I/VaultSrv: 身份库同步：1 条（keep=0）
+06:15:36.177 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.179 I/VaultSrv: 身份库同步：1 条（keep=1）
+06:15:36.184 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.186 I/VaultSrv: 身份库同步：1 条（keep=1）
+06:15:36.191 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.193 I/VaultSrv: 身份库同步：1 条（keep=1）
+06:15:36.199 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.202 I/VaultSrv: 身份库同步：1 条（keep=1）
+06:15:36.206 I/VaultSrv: token 更新：fpid=80971192
+06:15:36.210 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.213 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.217 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.217 I/VaultSrv: 战争态进入 fpid=80971192 sid=913 uid=0 触发=MANUAL H 触发=人工强制 · 敌情板空
+06:15:36.218 I/VaultSrv: 战争态退出 fpid=80971192 sid=913 uid=0 原因=人工解除（运营解卡（war-reset）） 战时持续 0min · 敌情板归档×0
+06:15:36.218 I/VaultSrv: 战争态解卡 fpid=80971192 清除实例数=1
+06:15:36.222 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.227 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.232 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.236 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.RewardClaimFixTest" tests="32" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.017">
+  <properties/>
+  <testcase name="donationSkipCodes_matchWebSkippableTargets" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="simpleIdArgs" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="valueExchangeVersionIndexTables_matchWeb" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="exchangeValue_readsFloatKeyedMap" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="activityActiveAndSameBeijingDay" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="alreadyClaimedCodes_markLedgerOncePerDay" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="infiniteGroceryFreeOrders" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="wrapperId_oldExtractIdFails_deepSucceeds" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="classifyServerCode_commander4502And4503AreSkipped" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="cardBpAndBattlePassArgs" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="activityProtocolNames_matchWebAuthoritative" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="activityUnavailableText_distinguishesReasons" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="numericKey_handlesFloatKeys" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="notch_flatContentFallsBackAndNullSafe" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="commanderVipActive_matchesWebSnapshot" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="notch_drillsEachWrapperLayer" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="mailConfirmKeys_andImportantFilter" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="mailTypesFor_defaultCoversAllFiveSections" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="commanderGiftArgs_hasRequiredLv" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="mailBatchArgs_carryLegacyMidList" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.002"/>
+  <testcase name="activityUnavailableCodes_areSkippedNotError" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="sciencesMapShape_parsedAndMerged" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="stageFingerprints_persistAcrossRounds" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="cardBp8204_dedupesTodayOnly" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="valueExchangeArgs_useVersionIndexTables" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="activityIdConstants_matchWebKeyTables" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="projectedRecoveryCount_matchesWebProjection" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="mailCandidate_handlesNewAndLegacyIds" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="markedStageIds_parsesFreeRewardMarkMap" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="adventureAccumulatedSeconds_followsWebMinimumAndCap" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <testcase name="orderedScienceTargets_recommendedFirstThenAscending" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.001"/>
+  <testcase name="activityLedger_dedupesPerTargetPerDay" classname="com.carlos.vaultserver.task.RewardClaimFixTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

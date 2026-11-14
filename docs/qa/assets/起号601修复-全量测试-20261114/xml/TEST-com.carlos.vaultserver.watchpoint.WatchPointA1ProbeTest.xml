@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.watchpoint.WatchPointA1ProbeTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:28" hostname="lgs.local" time="0.011">
+  <properties/>
+  <testcase name="buildingTargetUsesActivityClassify" classname="com.carlos.vaultserver.watchpoint.WatchPointA1ProbeTest" time="0.004"/>
+  <testcase name="unknownTargetProbesThenSendsWithTarget" classname="com.carlos.vaultserver.watchpoint.WatchPointA1ProbeTest" time="0.002"/>
+  <testcase name="unknownTargetProbeTimeoutSendsUnknown" classname="com.carlos.vaultserver.watchpoint.WatchPointA1ProbeTest" time="0.002"/>
+  <testcase name="scoutBuildingFallsBackToA1" classname="com.carlos.vaultserver.watchpoint.WatchPointA1ProbeTest" time="0.001"/>
+  <testcase name="knownTargetSendsImmediately" classname="com.carlos.vaultserver.watchpoint.WatchPointA1ProbeTest" time="0.0"/>
+  <testcase name="probeBuildingFallback" classname="com.carlos.vaultserver.watchpoint.WatchPointA1ProbeTest" time="0.002"/>
+  <system-out><![CDATA[06:23:28.183 I/VaultSrv: [观察点] 监视目标 监视目标 (uid7000) 本轮未出现（连续 1 轮，最后坐标 100,100)
+06:23:28.186 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 资源·破坏 发起人：监视目标 目标点：(900,900) 兵力：未知 ETA：10分0秒 时间：06:23:28
+06:23:28.187 I/VaultSrv: [观察点] 敌情目标未知，局部补查 (900,900) session=100600001
+06:23:28.188 I/VaultSrv: [观察点] 敌情目标补查命中 (900,900) → 城 uid 8001 [818]测试目标
+06:23:28.188 I/VaultSrv: [观察点] ]]>&#x1f6a8;<![CDATA[ 敌情·驻防/增援 发起人：未知名玩家 目标：[818]测试目标 坐标：(900,900) 时间：06:23:28
+06:23:28.189 I/VaultSrv: [观察点] 敌情目标未知，局部补查 (900,900) session=100600001
+06:23:28.189 I/VaultSrv: [观察点] ]]>&#x1f6a8;<![CDATA[ 敌情·驻防/增援 发起人：未知名玩家 目标：（未知） 坐标：(900,900) 时间：06:23:28
+06:23:28.189 I/VaultSrv: [观察点] 敌情补查超时 (900,900) → 按未知发送
+06:23:28.190 I/VaultSrv: [观察点] 监视目标 监视目标 (uid7000) 本轮未出现（连续 1 轮，最后坐标 100,100)
+06:23:28.190 I/VaultSrv: [观察点] ]]>&#x1f6a8;<![CDATA[ 敌情·侦查 发起人：未知名玩家 目标：[818]联盟旗子 坐标：(900,900) 时间：06:23:28
+06:23:28.191 I/VaultSrv: [观察点] ]]>&#x1f6a8;<![CDATA[ 敌情·驻防/增援 发起人：未知名玩家 目标：[818]已知目标 坐标：(900,900) 时间：06:23:28
+06:23:28.192 I/VaultSrv: [观察点] 敌情目标未知，局部补查 (900,900) session=100600001
+06:23:28.192 I/VaultSrv: [观察点] 敌情目标补查命中 (900,900) → 旗子 aid 89700731
+06:23:28.192 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 资源·破坏 发起人：监视目标 目标点：(900,900) 兵力：未知 ETA：10分0秒 时间：06:23:28
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

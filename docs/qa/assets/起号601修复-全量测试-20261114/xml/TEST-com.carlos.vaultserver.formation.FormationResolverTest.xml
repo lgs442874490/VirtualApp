@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.formation.FormationResolverTest" tests="18" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.034">
+  <properties/>
+  <testcase name="role_resolvesSavedFormationToPayload" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.011"/>
+  <testcase name="role_functionSoldiersOverridePerLine" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.002"/>
+  <testcase name="role_noSoldiersNoTotal_skipsWithReadableReason" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="role_skipSemantics_neverSilentlyFallback" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="role_librarySoldiersOverStock_scalesToStock" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="role_explicitParamsRatio_allocatesWithoutTotal" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.002"/>
+  <testcase name="libraryFor_readsTaskParamsThenGlobalFormationScope" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="role_noSoldiers_totalAllocatesByRatio" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="isConfigured_onlyNewFormationKeysTriggerNewPath" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="strongestHeroes_cappedAtFive" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="role_usesLibrarySoldiers_whenNoFunctionOverride" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.002"/>
+  <testcase name="fallback_noParamsKeepsLegacyBehavior" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="allocate_ratioAndStockCaps" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="configuredButInvalid_returnsNullNotFallback" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.0"/>
+  <testcase name="modeAndParamParsing_webParity" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="role_totalZero_allocatesByRatioWithinStock" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="auto_missingHeroOrStock_returnsNullWithReason" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.001"/>
+  <testcase name="auto_selectsStrongestHeroesAndAllocatesByRatio" classname="com.carlos.vaultserver.formation.FormationResolverTest" time="0.005"/>
+  <system-out><![CDATA[06:18:17.307 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.312 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=50000（不夹取，仅告警）
+06:18:17.316 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.317 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=4400（不夹取，仅告警）
+06:18:17.317 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=4500（不夹取，仅告警）
+06:18:17.318 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.319 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.320 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=1029999（不夹取，仅告警）
+06:18:17.320 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.321 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=150000（不夹取，仅告警）
+06:18:17.322 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.322 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=0（不夹取，仅告警）
+06:18:17.324 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.325 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=900（不夹取，仅告警）
+06:18:17.327 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.328 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.328 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=2200（不夹取，仅告警）
+06:18:17.331 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.333 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.333 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=900（不夹取，仅告警）
+06:18:17.334 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.335 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.335 W/VaultSrv: 编队容量未知/夹取 [AUTO] capacity=0 欲下发=1000（不夹取，仅告警）
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

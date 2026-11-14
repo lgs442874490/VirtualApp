@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.BarrackTierFixTest" tests="13" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.019">
+  <properties/>
+  <testcase name="threeBarracksDifferentLevels_deriveIndependently" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.001"/>
+  <testcase name="computeUnlockTiers_usesEachBarracksOwnLevel" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.0"/>
+  <testcase name="barracks_nextRoundStartsFromCap_noRepeated2106" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.006"/>
+  <testcase name="barracks_allAttemptsLocked_lowersProbeForNextRound" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.001"/>
+  <testcase name="missingBarrackLevels_fallBackToFurnace" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.0"/>
+  <testcase name="tierAttempts_downgradeSequence" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.001"/>
+  <testcase name="trainResponseQueue_refreshesStatusRow_notOverwrittenByStaleNotify" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.002"/>
+  <testcase name="parseBuildingLevels_shapesCompatible" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.001"/>
+  <testcase name="barracks_2106downgradesAndPersistsCap" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.001"/>
+  <testcase name="noBuildingData_returnsNullSoCallerFallsBackToOwnedSoldiers" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.001"/>
+  <testcase name="effectiveTrainTier_honoursCapUntilBarrackUpgraded" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.0"/>
+  <testcase name="furnace13Barrack11_derivesT4_notT5" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.001"/>
+  <testcase name="barracks_upgradeClearsCapAndReprobes" classname="com.carlos.vaultserver.task.BarrackTierFixTest" time="0.003"/>
+  <system-out><![CDATA[06:18:31.954 I/VaultSrv: 兵营T级 熔炉lv13 兵营[13,13,13] 口径=barrack → 盾T5 矛T5 弓T5 spar科技0条 refine科技0条
+06:18:31.958 I/VaultSrv: 兵营T级 熔炉lv13 兵营[13,13,13] 口径=barrack → 盾T5 矛T5 弓T5 spar科技0条 refine科技0条
+06:18:31.960 I/VaultSrv: 兵营T级 熔炉lv13 兵营[13,13,13] 口径=barrack → 盾T5 矛T5 弓T5 spar科技0条 refine科技0条
+06:18:31.963 I/VaultSrv: 兵营T级 熔炉lv13 兵营[13,13,13] 口径=barrack → 盾T5 矛T5 弓T5 spar科技0条 refine科技0条
+06:18:31.965 I/VaultSrv: 兵营T级 熔炉lv13 兵营[13,13,13] 口径=barrack → 盾T5 矛T5 弓T5 spar科技0条 refine科技0条
+06:18:31.968 I/VaultSrv: 兵营T级 熔炉lv13 兵营[13,13,13] 口径=barrack → 盾T5 矛T5 弓T5 spar科技0条 refine科技0条
+06:18:31.970 I/VaultSrv: 兵营T级 熔炉lv16 兵营[16,16,16] 口径=barrack → 盾T6 矛T6 弓T6 spar科技0条 refine科技0条
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

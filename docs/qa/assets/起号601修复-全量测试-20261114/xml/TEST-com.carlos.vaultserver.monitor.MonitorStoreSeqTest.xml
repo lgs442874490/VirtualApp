@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.monitor.MonitorStoreSeqTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:21" hostname="lgs.local" time="0.009">
+  <properties/>
+  <testcase name="seqContinuesAcrossReinstall" classname="com.carlos.vaultserver.monitor.MonitorStoreSeqTest" time="0.005"/>
+  <testcase name="scanMaxSeqReadsRotatedFileToo" classname="com.carlos.vaultserver.monitor.MonitorStoreSeqTest" time="0.003"/>
+  <testcase name="disabledStoreRecordsNothing" classname="com.carlos.vaultserver.monitor.MonitorStoreSeqTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/junit6705291955762524054/monitor mem=5000 maxBytes=67108864 content=500 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/junit6705291955762524054/monitor mem=5000 maxBytes=67108864 content=500 seq=2
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/junit17230663905089315811/monitor mem=5000 maxBytes=67108864 content=500 seq=88
+]]></system-err>
+</testsuite>

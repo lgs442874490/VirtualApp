@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.DailyDigestTest" tests="15" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.029">
+  <properties/>
+  <testcase name="nextDigestAt_sameDayThenNextDay" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.001"/>
+  <testcase name="catchUpDue_onlyWithinTwelveHoursAfterTrigger" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.001"/>
+  <testcase name="runOnce_wecomDisabled_fallsBackToStateOnly" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.003"/>
+  <testcase name="format_containsSummaryAndTopLists" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.002"/>
+  <testcase name="collect_emptyStore_isSafe" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.001"/>
+  <testcase name="digestStateKeyShape" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.001"/>
+  <testcase name="runOnce_sendsViaWatchWebhookOncePerDay" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.005"/>
+  <testcase name="runOnce_webhookFailure_stillWritesState" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.006"/>
+  <testcase name="collect_aggregatesLast24hByRole" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.001"/>
+  <testcase name="runOnce_writesStateAndIsIdempotentPerDay" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.001"/>
+  <testcase name="format_truncatesToWeComSafeLength" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.002"/>
+  <testcase name="collect_roleScopedLogKeysAggregatePerAccountRole" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.0"/>
+  <testcase name="runOnce_offByEnv_noStateWritten" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.001"/>
+  <testcase name="envDigestTimeAndSwitch" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.0"/>
+  <testcase name="trySend_noVaultOrWebhook_returnsFalseWithoutThrowing" classname="com.carlos.vaultserver.task.DailyDigestTest" time="0.002"/>
+  <system-out><![CDATA[06:18:32.258 I/VaultSrv: 自动化日报：2026-11-14 自动派单统计缺失（srv:cad:stats:2026-11-13 未落盘），该段省略
+06:18:32.258 I/VaultSrv: 自动化日报仅落日志/state（无可用 webhook）； day=2026-11-14 在线账号=0 角色=0 任务=0 领取=0 跳过=0 异常=0 节奏键=0 清理=0
+06:18:32.264 I/VaultSrv: 自动化日报：2026-11-14 自动派单统计缺失（srv:cad:stats:2026-11-13 未落盘），该段省略
+06:18:32.267 I/VaultSrv: 自动化日报已推送企微； day=2026-11-14 在线账号=2 角色=0 任务=0 领取=0 跳过=0 异常=0 节奏键=0 清理=0
+06:18:32.267 I/VaultSrv: 自动化日报 2026-11-14 今日已生成过，跳过（幂等）
+06:18:32.270 I/VaultSrv: 自动化日报：2026-11-14 自动派单统计缺失（srv:cad:stats:2026-11-13 未落盘），该段省略
+06:18:32.272 W/VaultSrv: 企微推送 HTTP 400 url=127.0.0.1
+06:18:32.273 W/VaultSrv: 企微推送 HTTP 400 url=127.0.0.1
+06:18:32.273 I/VaultSrv: 自动化日报仅落日志/state（无可用 webhook）； day=2026-11-14 在线账号=0 角色=0 任务=0 领取=0 跳过=0 异常=0 节奏键=0 清理=0
+06:18:32.276 I/VaultSrv: 自动化日报：2026-11-14 自动派单统计缺失（srv:cad:stats:2026-11-13 未落盘），该段省略
+06:18:32.277 I/VaultSrv: 自动化日报仅落日志/state（无可用 webhook）； day=2026-11-14 在线账号=1 角色=0 任务=0 领取=0 跳过=0 异常=0 节奏键=0 清理=0
+06:18:32.277 I/VaultSrv: 自动化日报 2026-11-14 今日已生成过，跳过（幂等）
+06:18:32.280 I/VaultSrv: 自动化日报已关闭（缺省关闭，仅 VAULT_DIGEST=on/1/true 开启；企微只发告警）
+06:18:32.281 I/VaultSrv: 自动化日报：2026-11-14 自动派单统计缺失（srv:cad:stats:2026-11-13 未落盘），该段省略
+06:18:32.282 I/VaultSrv: 自动化日报仅落日志/state（无可用 webhook）； day=2026-11-14 在线账号=0 角色=0 任务=0 领取=0 跳过=0 异常=0 节奏键=0 清理=0
+06:18:32.282 I/VaultSrv: 自动化日报：2026-11-14 自动派单统计缺失（srv:cad:stats:2026-11-13 未落盘），该段省略
+06:18:32.282 I/VaultSrv: 自动化日报仅落日志/state（无可用 webhook）； day=2026-11-14 在线账号=0 角色=0 任务=0 领取=0 跳过=0 异常=0 节奏键=0 清理=0
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

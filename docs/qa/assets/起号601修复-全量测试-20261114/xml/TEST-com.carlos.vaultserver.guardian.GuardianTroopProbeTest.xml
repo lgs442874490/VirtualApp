@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.guardian.GuardianTroopProbeTest" tests="4" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:18" hostname="lgs.local" time="0.001">
+  <properties/>
+  <testcase name="ignoresOtherSessionsAndOwnMarches" classname="com.carlos.vaultserver.guardian.GuardianTroopProbeTest" time="0.0"/>
+  <testcase name="aggregatesEnemyMarchTroopsAtTargetPoint" classname="com.carlos.vaultserver.guardian.GuardianTroopProbeTest" time="0.001"/>
+  <testcase name="mapobjsQueueEntries_countTroopsAtPoint" classname="com.carlos.vaultserver.guardian.GuardianTroopProbeTest" time="0.0"/>
+  <testcase name="endFlagCompletesProbe" classname="com.carlos.vaultserver.guardian.GuardianTroopProbeTest" time="0.0"/>
+  <system-out><![CDATA[06:18:18.332 I/VaultSrv: 守护盟友[probe] 收到 proto=notify_world_march_add keys=[session, datalist] (session=600123456)
+06:18:18.333 I/VaultSrv: 守护盟友[probe] 收到 proto=notify_world_mapobjs keys=[session, datalist, end_flag] (session=600123456)
+06:18:18.333 I/VaultSrv: 守护盟友[probe] 收到 proto=notify_world_marchs keys=[session, datalist, end_flag] (session=600123456)
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

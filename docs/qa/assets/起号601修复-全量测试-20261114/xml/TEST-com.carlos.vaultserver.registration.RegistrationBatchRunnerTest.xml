@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.registration.RegistrationBatchRunnerTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.049">
+  <properties/>
+  <testcase name="numbersExhaustedWithPartialSuccess_completes" classname="com.carlos.vaultserver.registration.RegistrationBatchRunnerTest" time="0.01"/>
+  <testcase name="allFail_fails" classname="com.carlos.vaultserver.registration.RegistrationBatchRunnerTest" time="0.006"/>
+  <testcase name="goalReachedStopsEarly" classname="com.carlos.vaultserver.registration.RegistrationBatchRunnerTest" time="0.008"/>
+  <testcase name="persistentView_containsNoPlaintext" classname="com.carlos.vaultserver.registration.RegistrationBatchRunnerTest" time="0.006"/>
+  <testcase name="cancel_stopsAfterCurrentPhone" classname="com.carlos.vaultserver.registration.RegistrationBatchRunnerTest" time="0.012"/>
+  <testcase name="runIsIdempotentAfterTerminal" classname="com.carlos.vaultserver.registration.RegistrationBatchRunnerTest" time="0.006"/>
+  <testcase name="cancelBeforeRun_cancelledWithoutAttempt" classname="com.carlos.vaultserver.registration.RegistrationBatchRunnerTest" time="0.0"/>
+  <system-out><![CDATA[06:18:31.405 I/VaultSrv: 注册批次开始 id=b2026111406183103 goal=2 max=2 provider=d1
+06:18:31.407 I/VaultSrv: 手机号注册成功 phone=138****0001 fpid=FP03
+06:18:31.407 I/VaultSrv: 注册批次进度 id=b2026111406183103 i=0 state=SUCCESS success=1 fail=0
+06:18:31.410 W/VaultSrv: 手机号注册失败 phone=138****0002 step=SMS_LOGIN error=登录失败: 上游未返回凭据
+06:18:31.410 I/VaultSrv: 注册批次进度 id=b2026111406183103 i=1 state=FAILED success=1 fail=1
+06:18:31.414 I/VaultSrv: 注册批次结束 id=b2026111406183103 state=COMPLETED success=1 fail=1 attempt=2
+06:18:31.415 I/VaultSrv: 注册批次开始 id=b2026111406183104 goal=1 max=2 provider=d1
+06:18:31.416 W/VaultSrv: 手机号注册失败 phone= step=ACQUIRE error=取号失败: 号码池已空
+06:18:31.416 I/VaultSrv: 注册批次进度 id=b2026111406183104 i=0 state=FAILED success=0 fail=1
+06:18:31.417 W/VaultSrv: 手机号注册失败 phone= step=ACQUIRE error=取号失败: 号码池已空
+06:18:31.417 I/VaultSrv: 注册批次进度 id=b2026111406183104 i=1 state=FAILED success=0 fail=2
+06:18:31.419 I/VaultSrv: 注册批次结束 id=b2026111406183104 state=FAILED success=0 fail=2 attempt=2
+06:18:31.420 I/VaultSrv: 注册批次开始 id=b2026111406183105 goal=2 max=3 provider=d1
+06:18:31.422 I/VaultSrv: 手机号注册成功 phone=138****0001 fpid=FP01
+06:18:31.422 I/VaultSrv: 注册批次进度 id=b2026111406183105 i=0 state=SUCCESS success=1 fail=0
+06:18:31.425 I/VaultSrv: 手机号注册成功 phone=138****0002 fpid=FP02
+06:18:31.425 I/VaultSrv: 注册批次进度 id=b2026111406183105 i=1 state=SUCCESS success=2 fail=0
+06:18:31.427 I/VaultSrv: 注册批次结束 id=b2026111406183105 state=COMPLETED success=2 fail=0 attempt=2
+06:18:31.430 I/VaultSrv: 注册批次开始 id=b2026111406183106 goal=1 max=2 provider=d1
+06:18:31.431 I/VaultSrv: 实名认证 fpid=FP055000123 status=-1 code=-1 verified=true msg=实名认证已提交
+06:18:31.432 I/VaultSrv: 手机号注册成功 phone=138****0001 fpid=FP055000123
+06:18:31.432 I/VaultSrv: 注册批次进度 id=b2026111406183106 i=0 state=SUCCESS success=1 fail=0
+06:18:31.434 I/VaultSrv: 注册批次结束 id=b2026111406183106 state=COMPLETED success=1 fail=0 attempt=1
+06:18:31.441 I/VaultSrv: 注册批次开始 id=b2026111406183107 goal=2 max=3 provider=d1
+06:18:31.443 I/VaultSrv: 注册批次收到取消请求 id=b2026111406183107 state=RUNNING
+06:18:31.444 I/VaultSrv: 手机号注册成功 phone=138****0001 fpid=FP04
+06:18:31.444 I/VaultSrv: 注册批次进度 id=b2026111406183107 i=0 state=SUCCESS success=1 fail=0
+06:18:31.447 I/VaultSrv: 注册批次结束 id=b2026111406183107 state=CANCELLED success=1 fail=0 attempt=1
+06:18:31.448 I/VaultSrv: 注册批次开始 id=b2026111406183108 goal=1 max=1 provider=d1
+06:18:31.449 I/VaultSrv: 手机号注册成功 phone=138****0001 fpid=FP07
+06:18:31.449 I/VaultSrv: 注册批次进度 id=b2026111406183108 i=0 state=SUCCESS success=1 fail=0
+06:18:31.452 I/VaultSrv: 注册批次结束 id=b2026111406183108 state=COMPLETED success=1 fail=0 attempt=1
+06:18:31.453 I/VaultSrv: 注册批次收到取消请求 id=b2026111406183109 state=WAITING
+06:18:31.453 I/VaultSrv: 注册批次结束 id=b2026111406183109 state=CANCELLED success=0 fail=0 attempt=0
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

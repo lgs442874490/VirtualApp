@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.DailyDigestDayWindowTest" tests="15" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.137">
+  <properties/>
+  <testcase name="naturalDayWindow_0910_isYesterdayFullDay" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.002"/>
+  <testcase name="sampleOnlineAccounts_zeroThenPositive_retriesOnceWith30s" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.035"/>
+  <testcase name="stateStore_removeAndRemovePrefix" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.001"/>
+  <testcase name="runOnce_zeroOnline_retriesAndWritesSampleNote" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.045"/>
+  <testcase name="collectNaturalDay_includesOnlyYesterday" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.001"/>
+  <testcase name="collect_rollingWindowStillCompatible" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.001"/>
+  <testcase name="naturalDayWindow_sameWindowAllDayAndAcrossMidnight" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.001"/>
+  <testcase name="format_textCapHoldsWithWindowLine" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.002"/>
+  <testcase name="sampleOnlineAccounts_positiveFirst_noRetry" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.0"/>
+  <testcase name="sampleOnlineAccounts_unknownSupplierAndNoWaiter" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.001"/>
+  <testcase name="stateStore_removePrefix_emptyResultAndDirtyFlushSafe" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.041"/>
+  <testcase name="format_showsNaturalDayWindowAndZeroOnlineSampleNote" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.001"/>
+  <testcase name="purgeOldDigests_keepsLast30Entries" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.003"/>
+  <testcase name="runOnce_publicEntry_doesNotBlockOnZeroOnline" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.001"/>
+  <testcase name="expiredDigestKeys_keepsRecent30Days_andIgnoresInvalidKeys" classname="com.carlos.vaultserver.task.DailyDigestDayWindowTest" time="0.002"/>
+  <system-out><![CDATA[06:18:32.150 I/VaultSrv: 自动化日报首次采样在线账号=0，等待 30s 重采后=3
+06:18:32.151 I/VaultSrv: 自动化日报首次采样在线账号=0，等待 30s 重采后=2
+06:18:32.194 I/VaultSrv: 自动化日报：2026-10-23 自动派单统计缺失（srv:cad:stats:2026-10-22 未落盘），该段省略
+06:18:32.195 I/VaultSrv: 自动化日报仅落日志/state（无可用 webhook）； day=2026-10-23 在线账号=2 角色=0 任务=0 领取=0 跳过=0 异常=0 节奏键=0 清理=0
+06:18:32.245 I/VaultSrv: 自动化日报历史清理：删除 6 个 30 天前 srv:digest 键
+06:18:32.247 I/VaultSrv: 自动化日报：2026-10-23 自动派单统计缺失（srv:cad:stats:2026-10-22 未落盘），该段省略
+06:18:32.247 I/VaultSrv: 自动化日报仅落日志/state（无可用 webhook）； day=2026-10-23 在线账号=0 角色=0 任务=0 领取=0 跳过=0 异常=0 节奏键=0 清理=0
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

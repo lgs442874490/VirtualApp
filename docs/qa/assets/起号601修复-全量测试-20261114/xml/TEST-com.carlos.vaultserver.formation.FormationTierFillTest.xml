@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.formation.FormationTierFillTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.0">
+  <properties/>
+  <testcase name="baseStock_sumsAllTiers" classname="com.carlos.vaultserver.formation.FormationTierFillTest" time="0.0"/>
+  <testcase name="soldierPairs_fillFromHighTierThenLower" classname="com.carlos.vaultserver.formation.FormationTierFillTest" time="0.0"/>
+  <testcase name="soldierPairs_partialWhenStockShort" classname="com.carlos.vaultserver.formation.FormationTierFillTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
