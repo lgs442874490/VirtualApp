@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vault.wjdr.WjdrEngineAntibanTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:13" hostname="lgs.local" time="0.018">
+  <properties/>
+  <testcase name="deviceParams_platformMapping" classname="com.carlos.vault.wjdr.WjdrEngineAntibanTest" time="0.018"/>
+  <testcase name="deviceParams_defaultsForMissingModelAndQuality" classname="com.carlos.vault.wjdr.WjdrEngineAntibanTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

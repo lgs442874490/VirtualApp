@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.automation.SessionClosedTruncationTest" tests="15" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:14" hostname="lgs.local" time="0.024">
+  <properties/>
+  <testcase name="classifyException_deepCauseChain_fiveHops" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.002"/>
+  <testcase name="thrownSessionExceptionKeepsSessionClosedCategory" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.002"/>
+  <testcase name="isSessionClosedString_rejectsBusinessTexts" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.0"/>
+  <testcase name="classifyException_topLevelMark_messageUnchanged" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.001"/>
+  <testcase name="classifyException_connectRefusedChain_isSessionClosed" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.0"/>
+  <testcase name="runActionAlsoKeepsSessionClosedCategory" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.001"/>
+  <testcase name="classifyExceptionMarkerConsistency" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.001"/>
+  <testcase name="sessionClosedStopsRemainingActionsInSameModule" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.001"/>
+  <testcase name="sessionClosedStopsSubsequentModules" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.004"/>
+  <testcase name="classifyException_networkCauseTypes_isSessionClosed" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.005"/>
+  <testcase name="classifyException_beyondCauseCap_fallsBackToError" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.001"/>
+  <testcase name="classifyException_wrappedConnectionClosed_isSessionClosed" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.0"/>
+  <testcase name="classifyException_nonSessionCause_stillError_withChainShown" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.0"/>
+  <testcase name="classifyException_wrappedTimeout_isSessionClosed" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.001"/>
+  <testcase name="classifyException_mutualCauseCycle_terminates" classname="com.carlos.vaultserver.automation.SessionClosedTruncationTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

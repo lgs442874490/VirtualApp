@@ -361,6 +361,9 @@ public final class BootstrapApi {
     /**
      * batch-start 的配置构造（抽方法便于单测默认值；需求 R-12：
      * buyShopResources 缺省值必须与 {@link BootstrapConfig#fromMap} 一致）。
+     *
+     * <p>二次审查 P1-1：{@code furnitureStallLimit} 必须在本装配链生效，否则运营「配了不生效」；
+     * 缺省/非法值取默认 10，超出 1..100 按边界夹取。
      */
     static BootstrapConfig batchConfigOf(Map<String, Object> f) {
         return new BootstrapConfig(true,
@@ -371,7 +374,9 @@ public final class BootstrapApi {
                 booleanField(f, "buyShopResources", true),
                 str(f, "allianceName") == null ? "" : str(f, "allianceName").trim(),
                 booleanField(f, "autoApplyWhenPrivate", false),
-                str(f, "roleName") == null ? "" : str(f, "roleName").trim());
+                str(f, "roleName") == null ? "" : str(f, "roleName").trim(),
+                BootstrapConfig.clampFurnitureStallLimit(intField(f, "furnitureStallLimit",
+                        BootstrapConfig.DEFAULT_FURNITURE_STALL_LIMIT)));
     }
 
     /** batch-status：优先内存 runner 实时视图，批次已移除则回查 store 历史。 */
@@ -555,6 +560,8 @@ public final class BootstrapApi {
                 BootstrapHoldStore.shared(), fpid, BootstrapSessionState.shared());
         service.applyConfig(new BootstrapConfig(true, 0L, BootstrapConfig.DEFAULT_TARGET_FURNACE_LEVEL,
                 true, false, true, "", false, ""));
+        // 二次审查 P2-2：单号挂点每个请求 new 实例，furnitureStall 计数与 terminalFailure 都不跨请求，
+        // 因此单号路径的「连续 51 达上限 → FAILED」检测不生效（与修复前同）。601 必须以批次模式运行/验证。
         // 二次审查 P1-1：单号临时实例不消费共享增量通道（消费权归批次驱动者），
         // 否则 single-status 等只读请求会把批次依赖的增量吞掉。
         service.syncLoadData(contentOf(session.port.request("req_loaddata", Map.of())), false);

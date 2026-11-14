@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.automation.ArenaGateRunnerTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:41" hostname="lgs.local" time="0.005">
+  <properties/>
+  <testcase name="singleTaskRunAction_blockedForGatedRole" classname="com.carlos.vaultserver.automation.ArenaGateRunnerTest" time="0.003"/>
+  <testcase name="siblingRole_notBlocked" classname="com.carlos.vaultserver.automation.ArenaGateRunnerTest" time="0.001"/>
+  <testcase name="fullRound_blocksNonAllowlist_butAllowlistExecutes" classname="com.carlos.vaultserver.automation.ArenaGateRunnerTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

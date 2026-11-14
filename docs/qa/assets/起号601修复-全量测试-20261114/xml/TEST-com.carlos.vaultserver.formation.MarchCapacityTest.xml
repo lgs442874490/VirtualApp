@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.formation.MarchCapacityTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.002">
+  <properties/>
+  <testcase name="avalanche_expiredOrNotOwned_hasNoBonus" classname="com.carlos.vaultserver.formation.MarchCapacityTest" time="0.001"/>
+  <testcase name="missingPush_isNotInitialized_andCapacityZero" classname="com.carlos.vaultserver.formation.MarchCapacityTest" time="0.0"/>
+  <testcase name="toMap_hasFrozenFieldNames" classname="com.carlos.vaultserver.formation.MarchCapacityTest" time="0.0"/>
+  <testcase name="capacityForHeroes_sumsRequestedHeroCapacity" classname="com.carlos.vaultserver.formation.MarchCapacityTest" time="0.001"/>
+  <testcase name="avalanche_ownedSkillLevelAndActiveWindow" classname="com.carlos.vaultserver.formation.MarchCapacityTest" time="0.0"/>
+  <testcase name="trainingLevRaisesEffectiveCapacity" classname="com.carlos.vaultserver.formation.MarchCapacityTest" time="0.0"/>
+  <testcase name="capacity_isNonZeroAndTieredByHeroCount" classname="com.carlos.vaultserver.formation.MarchCapacityTest" time="0.0"/>
+  <system-out><![CDATA[06:18:17.458 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

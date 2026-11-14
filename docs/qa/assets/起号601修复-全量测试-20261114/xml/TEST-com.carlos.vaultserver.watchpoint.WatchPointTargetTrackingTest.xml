@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.watchpoint.WatchPointTargetTrackingTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:28" hostname="lgs.local" time="0.026">
+  <properties/>
+  <testcase name="fiveRelocationsInOneWindowPushOnlyTheLast" classname="com.carlos.vaultserver.watchpoint.WatchPointTargetTrackingTest" time="0.009"/>
+  <testcase name="scanOrderPutsAreaAroundTargetFirst" classname="com.carlos.vaultserver.watchpoint.WatchPointTargetTrackingTest" time="0.003"/>
+  <testcase name="moveAlertHasNoReasonAndUsesLiveNickname" classname="com.carlos.vaultserver.watchpoint.WatchPointTargetTrackingTest" time="0.004"/>
+  <testcase name="rapidCoordinateJitterProducesAtMostOneAlert" classname="com.carlos.vaultserver.watchpoint.WatchPointTargetTrackingTest" time="0.006"/>
+  <testcase name="lostWithoutKnownCoordinateDoesNotPushLostMessage" classname="com.carlos.vaultserver.watchpoint.WatchPointTargetTrackingTest" time="0.001"/>
+  <testcase name="lostTargetFoundInKnownViewNotifiesImmediately" classname="com.carlos.vaultserver.watchpoint.WatchPointTargetTrackingTest" time="0.003"/>
+  <system-out><![CDATA[06:23:28.309 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (200,200)
+06:23:28.310 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (300,300)
+06:23:28.312 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (400,400)
+06:23:28.313 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (500,500)
+06:23:28.315 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (600,600)
+06:23:28.315 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 观察点·坐标更新 游戏昵称：[818]鲶鱼 原坐标 (100,100) → 新坐标 (600,600) 时间：06:23:28
+06:23:28.315 I/VaultSrv: [观察点] 监视目标坐标更新：uid=31374667 (100,100) → (600,600) 游戏昵称=[818]鲶鱼 原因=原因：主动迁城 / 被盟友传送 / 未知
+06:23:28.321 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (600,700)
+06:23:28.321 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 观察点·坐标更新 游戏昵称：时装小尓 原坐标 (100,100) → 新坐标 (600,700) 时间：06:23:28
+06:23:28.321 I/VaultSrv: [观察点] 监视目标坐标更新：uid=31374667 (100,100) → (600,700) 游戏昵称=时装小尓 原因=原因：主动迁城 / 被盟友传送 / 未知
+06:23:28.324 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (289,578)
+06:23:28.326 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (267,605)
+06:23:28.328 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (253,608)
+06:23:28.328 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 观察点·坐标更新 游戏昵称：x 原坐标 (100,100) → 新坐标 (253,608) 时间：06:23:28
+06:23:28.328 I/VaultSrv: [观察点] 监视目标坐标更新：uid=31374667 (100,100) → (253,608) 游戏昵称=x 原因=原因：主动迁城 / 被盟友传送 / 未知
+06:23:28.328 I/VaultSrv: [观察点] 监视目标丢失视野：818 80级 (uid31374667) 最后坐标 (100,100)，静默搜索
+06:23:28.329 I/VaultSrv: [观察点] 触发整图扫描：目标丢失搜索：818 80级 (uid31374667)（484 格，预计 15–20s，优先周边 (100,100)）
+06:23:28.332 I/VaultSrv: [观察点] 坐标已更新（30 秒聚合窗口内只推最后一次）：uid=31374667 窗口起点 (100,100) → 最新 (720,880)
+06:23:28.332 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 观察点·坐标更新 游戏昵称：[818]鲶鱼 原坐标 (100,100) → 新坐标 (720,880) 时间：06:23:28
+06:23:28.332 I/VaultSrv: [观察点] 监视目标坐标更新：uid=31374667 (100,100) → (720,880) 游戏昵称=[818]鲶鱼 原因=原因：主动迁城 / 被盟友传送 / 未知
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

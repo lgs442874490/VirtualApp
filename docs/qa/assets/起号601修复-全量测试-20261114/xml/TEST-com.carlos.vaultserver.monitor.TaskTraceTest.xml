@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.monitor.TaskTraceTest" tests="18" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:21" hostname="lgs.local" time="0.057">
+  <properties/>
+  <testcase name="io_heartbeatIsSkipped" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.01"/>
+  <testcase name="notify_whitelistFiltersByDefault" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.004"/>
+  <testcase name="beginEnd_writesTaskStartAndEndWithOutcome" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.003"/>
+  <testcase name="disabled_writesNothingAndBeginReturnsNoop" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <testcase name="beginWithUid_writesUidOnTaskStartAndEnd" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <testcase name="io_contentIsTruncatedByContentLimit" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.003"/>
+  <testcase name="install_isIdempotentAndRemovedByReset" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <testcase name="listenerException_neverPropagates" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <testcase name="onIo_neverThrowsEvenOnBadInput" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.003"/>
+  <testcase name="attachNotify_registersHookWithoutThrowing" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <testcase name="io_codeSemantics_emptyResponseMinusOne_missingCodeZero" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.003"/>
+  <testcase name="io_withContext_attributedToInnermostTask" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <testcase name="beginWithoutUid_writesEmptyUidKeepingLegacyShape" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <testcase name="close_withoutOutcome_writesEmptyCategory" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <testcase name="sessionAndMark_events" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.005"/>
+  <testcase name="io_withoutContext_isSessionChannelWithEmptyFn" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.004"/>
+  <testcase name="io_errDirection_isRecordedAsIoRspWithError" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <testcase name="notify_modeAllAndOffOverrideWhitelist" classname="com.carlos.vaultserver.monitor.TaskTraceTest" time="0.002"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test2596550769909866300/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test4795512286709319210/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test10789516779916592800/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test9313898111658534231/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test8097648056639477268/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test5253025140971030019/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test5253025140971030019/monitor mem=5000 maxBytes=67108864 content=200 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test10357690032810463819/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test15121072271542011492/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test2009004635771901433/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test9268125575885287021/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test6818822114249959386/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test12503661499986907859/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test7365455565205183811/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test5767209123763362290/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test14584832838145458510/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test17764159379105695963/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test2839502913715036365/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+11月 14, 2026 6:18:21 上午 com.carlos.vaultserver.monitor.MonitorStore <init>
+信息: 真机监控已启用 dir=/var/folders/cg/g57szxtx1553nqsgn16zw93m0000gn/T/tasktrace-test13236216087776425194/monitor mem=5000 maxBytes=67108864 content=2000 seq=0
+]]></system-err>
+</testsuite>

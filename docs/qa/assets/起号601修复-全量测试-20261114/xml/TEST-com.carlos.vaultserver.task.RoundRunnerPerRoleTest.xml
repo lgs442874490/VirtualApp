@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.RoundRunnerPerRoleTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="30.157">
+  <properties/>
+  <testcase name="fullRound_twoRoles_isolatedAndNoLegacyWrites" classname="com.carlos.vaultserver.task.RoundRunnerPerRoleTest" time="10.063"/>
+  <testcase name="legacySignature_uid0_writesLegacyKeysOnly" classname="com.carlos.vaultserver.task.RoundRunnerPerRoleTest" time="5.007"/>
+  <testcase name="fullRound_activeRoleMirrorsLegacyKeys" classname="com.carlos.vaultserver.task.RoundRunnerPerRoleTest" time="5.071"/>
+  <testcase name="modularRunner_singleTask_roleScopedKeys" classname="com.carlos.vaultserver.task.RoundRunnerPerRoleTest" time="5.004"/>
+  <testcase name="modularRunner_fullRound_activeMirrorsSummaryAndLastRun" classname="com.carlos.vaultserver.task.RoundRunnerPerRoleTest" time="5.012"/>
+  <system-out><![CDATA[06:18:37.827 I/VaultSrv: 整轮完成 role=111|913|1001：服务器整轮 · 11-14 06:18 · 成功59(领取1 跳过58)
+06:18:42.875 I/VaultSrv: 整轮完成 role=111|913|1002：服务器整轮 · 11-14 06:18 · 成功59(领取0 跳过59)
+06:18:47.883 I/VaultSrv: 整轮完成 role=111|913|0：服务器整轮 · 11-14 06:18 · 成功59(领取1 跳过58)
+06:18:52.953 I/VaultSrv: 整轮完成 role=111|913|1003：服务器整轮 · 11-14 06:18 · 成功59(领取1 跳过58)
+06:18:57.957 I/VaultSrv: 模块化整轮完成 role=111|913|1001：服务器整轮 · 11-14 06:18 · 成功1(领取1 跳过0)
+06:19:02.969 I/VaultSrv: 模块化整轮完成 role=111|913|1004：服务器整轮 · 11-14 06:19 · 成功59(领取1 跳过58)
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

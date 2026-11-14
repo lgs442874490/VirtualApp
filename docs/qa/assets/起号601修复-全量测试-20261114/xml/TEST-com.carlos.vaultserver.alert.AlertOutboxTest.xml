@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.alert.AlertOutboxTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:39" hostname="lgs.local" time="1.923">
+  <properties/>
+  <testcase name="capKeepsLatestFiveHundred" classname="com.carlos.vaultserver.alert.AlertOutboxTest" time="1.918"/>
+  <testcase name="sameAlertKeyIsIdempotent" classname="com.carlos.vaultserver.alert.AlertOutboxTest" time="0.001"/>
+  <testcase name="withCountAppendsWaveCountAndRefreshesTime" classname="com.carlos.vaultserver.alert.AlertOutboxTest" time="0.001"/>
+  <testcase name="emitWritesEventWithRouteAndText" classname="com.carlos.vaultserver.alert.AlertOutboxTest" time="0.002"/>
+  <testcase name="routeOfTextMapsPrefixes" classname="com.carlos.vaultserver.alert.AlertOutboxTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

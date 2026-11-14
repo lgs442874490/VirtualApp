@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.CrossCapitalReviveTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.006">
+  <properties/>
+  <testcase name="skipsHelpReviveWhenNoCouponsLeft" classname="com.carlos.vaultserver.task.CrossCapitalReviveTest" time="0.003"/>
+  <testcase name="skipsWhenActivityClosed" classname="com.carlos.vaultserver.task.CrossCapitalReviveTest" time="0.0"/>
+  <testcase name="buysDiamondMedkitsWhenEnabled" classname="com.carlos.vaultserver.task.CrossCapitalReviveTest" time="0.001"/>
+  <testcase name="revivesWhenActivityOpenAndDeadSoldiers" classname="com.carlos.vaultserver.task.CrossCapitalReviveTest" time="0.0"/>
+  <testcase name="helpsAllianceMembersReviveByDeadSoldiers" classname="com.carlos.vaultserver.task.CrossCapitalReviveTest" time="0.002"/>
+  <testcase name="skipsWhenNoDeadSoldiers" classname="com.carlos.vaultserver.task.CrossCapitalReviveTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

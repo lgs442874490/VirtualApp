@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.ArenaGateTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.001">
+  <properties/>
+  <testcase name="arenaGateRemaining_rules" classname="com.carlos.vaultserver.task.ArenaGateTest" time="0.001"/>
+  <testcase name="blocksByRole_whitelistNeverBlocked" classname="com.carlos.vaultserver.task.ArenaGateTest" time="0.0"/>
+  <testcase name="reEnterRefreshesTtl" classname="com.carlos.vaultserver.task.ArenaGateTest" time="0.0"/>
+  <testcase name="arenaTaskDisabled_releasesStaleGate" classname="com.carlos.vaultserver.task.ArenaGateTest" time="0.0"/>
+  <testcase name="nullAndInvalidInputsAreSafe" classname="com.carlos.vaultserver.task.ArenaGateTest" time="0.0"/>
+  <testcase name="ttl_expiresAutomatically_activeAndPreparing" classname="com.carlos.vaultserver.task.ArenaGateTest" time="0.0"/>
+  <testcase name="releaseAndClear_perRole" classname="com.carlos.vaultserver.task.ArenaGateTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

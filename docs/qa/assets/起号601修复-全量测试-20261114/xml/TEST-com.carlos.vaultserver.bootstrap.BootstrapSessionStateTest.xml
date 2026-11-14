@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.bootstrap.BootstrapSessionStateTest" tests="8" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.015">
+  <properties/>
+  <testcase name="worldAbandoned_releaseDoesNotRewind" classname="com.carlos.vaultserver.bootstrap.BootstrapSessionStateTest" time="0.0"/>
+  <testcase name="sharedStore_visibleToMultipleHolders" classname="com.carlos.vaultserver.bootstrap.BootstrapSessionStateTest" time="0.001"/>
+  <testcase name="claimFinishPass_onlyOneWinnerAndRelease" classname="com.carlos.vaultserver.bootstrap.BootstrapSessionStateTest" time="0.0"/>
+  <testcase name="claimWorldFog_requiresKidAndOnlyOnce" classname="com.carlos.vaultserver.bootstrap.BootstrapSessionStateTest" time="0.0"/>
+  <testcase name="holder_sameScopeReused_differentScopeIsolated" classname="com.carlos.vaultserver.bootstrap.BootstrapSessionStateTest" time="0.0"/>
+  <testcase name="claimWorldKingdomInfo_onlyOneWinnerConcurrently" classname="com.carlos.vaultserver.bootstrap.BootstrapSessionStateTest" time="0.003"/>
+  <testcase name="concurrentIncrement_neverLosesUpdate" classname="com.carlos.vaultserver.bootstrap.BootstrapSessionStateTest" time="0.01"/>
+  <testcase name="clearScope_resetsState" classname="com.carlos.vaultserver.bootstrap.BootstrapSessionStateTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

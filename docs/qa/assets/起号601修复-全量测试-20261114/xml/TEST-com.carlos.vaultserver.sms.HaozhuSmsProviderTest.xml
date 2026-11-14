@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" tests="18" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.006">
+  <properties/>
+  <testcase name="getMessage_andRelease_andBlock_params" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.001"/>
+  <testcase name="yzm_regexFallback_fromSmsText" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.001"/>
+  <testcase name="login_params_userAndPass" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="sms_noStandaloneDigits_returnsWaiting" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="exceptionMessages_containNoCredentials" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.001"/>
+  <testcase name="getPhone_params_sidAndAuthor_blankDropped" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="tokenInvalid_relogsOnce_andRetriesSucceeds" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="bothYzmAndSmsEmpty_returnsWaiting" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="testConnection_noMaxNumberField_returnsMinusOne" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="testConnection_failure_returnsFailStatusWithoutThrowing" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="tokenInvalid_retryStillFails_throwsWithoutThirdLogin" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="testConnection_summaryFields" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="constructor_missingParams_throws" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="waiting_whenCodeMinusOneAndWaitingMsg" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="throws_whenCodeMinusOneOtherMsg_noRelogin" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="tokenInvalid_minusOneMsgContainsToken_relogsOnce" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.001"/>
+  <testcase name="transport_ioException_wrappedAsSmsException" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <testcase name="loginOnce_beforeFirstCall_thenTokenReused" classname="com.carlos.vaultserver.sms.HaozhuSmsProviderTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

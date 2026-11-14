@@ -229,9 +229,12 @@ public final class PassportClient {
     public static final class PassportResult {
         public final String raw;
         public final JSONObject data;
+        /** 外层响应（root），保留以支持 status/code 的双层口径（P1-1）。 */
+        private final JSONObject root;
 
-        private PassportResult(String raw, JSONObject data) {
+        private PassportResult(String raw, JSONObject root, JSONObject data) {
             this.raw = raw == null ? "" : raw;
+            this.root = root;
             this.data = data;
         }
 
@@ -245,7 +248,7 @@ public final class PassportClient {
                 throw new PassportException("passport 响应非 JSON: " + preview, t);
             }
             JSONObject data = root.optJSONObject("data");
-            return new PassportResult(text, data != null ? data : root);
+            return new PassportResult(text, root, data != null ? data : root);
         }
 
         /** fpid：data 或 data.login_profile 层按序取 fpid|account|fp_id 第一个非空。 */
@@ -271,7 +274,11 @@ public final class PassportClient {
         /**
          * 上游业务状态：实测成功响应为 {@code {"status":1,...}}，失败为 {@code {"status":0,"error":N}}。
          * 缺失 status（如被 gate 拦下的非 JSON 包装）时返回 -1，由调用方按 fpid/sessionKey 是否为空判定。
+         *
+         * @deprecated 只看 data 层，等价于 {@link #outerStatus()} 在无 data 层时的退化；
+         *             实名判定请用 {@link #outerStatus()} + {@link #dataCode()}（P1-1）。
          */
+        @Deprecated
         public int status() {
             if (data == null) return -1;
             return data.optInt("status", -1);
@@ -281,6 +288,23 @@ public final class PassportClient {
         public int errorCode() {
             if (data == null) return -1;
             return data.optInt("error", -1);
+        }
+
+        /**
+         * 外层业务状态（root.status，P1-1：实测实名响应为 {@code {"status":1,"data":{"code":2,...}}}）。
+         * 缺失返回 -1。
+         */
+        public int outerStatus() {
+            return root == null ? -1 : root.optInt("status", -1);
+        }
+
+        /**
+         * data 层业务码（data.code，P1-1）。网页版 PhoneRegistrationPassportGateway 读同一位置；
+         * 无 data 层时退化为 root.code；缺失返回 -1。
+         */
+        public int dataCode() {
+            if (data == null) return -1;
+            return data.optInt("code", -1);
         }
 
         /** 原文摘要（≤300 字符），用于日志。 */

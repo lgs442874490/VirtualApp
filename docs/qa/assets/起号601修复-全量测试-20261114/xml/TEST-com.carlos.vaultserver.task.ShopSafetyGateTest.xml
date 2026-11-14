@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.ShopSafetyGateTest" tests="15" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:07" hostname="lgs.local" time="0.002">
+  <properties/>
+  <testcase name="nameMode_emptyBuyNames_notConfigured" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="showdown_skipWhenSeasonMissing" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="nameMode_nullOrEmpty_notConfigured" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="showdown_proceedWhenStateUnknown" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="refreshableShops_otherFixedShops_neverRefresh" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="mobilizationBuy_allowPaidCountFlagStillBlocked" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="refreshableShops_onlyVendorAndMysterious" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="showdown_failureNote_timeoutNotDisguisedAsClosed" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="mobilizationBuy_neverAllowedWithoutStateMachine" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="refreshableShops_allianceShops_neverRefresh" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="refreshableShops_nullSafe" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.001"/>
+  <testcase name="nameMode_nonEmptyBuyNames_configured" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="showdown_skipWhenAlreadySigned" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="legacyConfigIdBuys_notTreatedAsNameMode" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <testcase name="showdown_skipWhenNoActivityData" classname="com.carlos.vaultserver.task.ShopSafetyGateTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

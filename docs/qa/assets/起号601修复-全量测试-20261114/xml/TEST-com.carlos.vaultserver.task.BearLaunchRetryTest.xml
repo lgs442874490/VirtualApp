@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.BearLaunchRetryTest" tests="32" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.007">
+  <properties/>
+  <testcase name="preheatRefreshDue_60sThrottle" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="bearWakeAtMillis_unreserved_noWake" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry401_scheduled60sLater" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.001"/>
+  <testcase name="preheatSummary_readyAndNotReady" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry406_scheduled60sLater" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="launchFailureText_retryPlansReadable" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry2878_scheduled60sLater" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry415_scheduled60sLater" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="bearWakeAtMillis_stagedIntoPreheatWindow" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="bearWakeAtMillis_retryAndRecheck" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry401_windowTooShort_noRetry" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="activeWindow_notNull" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry401_alreadyUsed_noRetry" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.001"/>
+  <testcase name="retryUnknownCode_noRetry" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="resetRetryIfNewWindow_scopedPerWindow" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="joinDetailSummary_countsAndSelf" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry5204_downgrades620to320_immediately" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.001"/>
+  <testcase name="launchAttemptText_hasAllObservabilityFields" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.001"/>
+  <testcase name="retry403_scheduled60sLater" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.001"/>
+  <testcase name="stateJson_roundTripRetryFields" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="formationSourceLabel_effectiveFallback" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="bearCodeText_401Readable" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry5204_lowestPrepare_noRetry" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="effectivePrepareIndex_defaultAndDowngraded" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry5204_alreadyDowngraded_noRetry" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="launchRetry_noneToStringReadable" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="formationSourceLabel_readable" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.001"/>
+  <testcase name="retry5204_windowTooShort_noRetry" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="parseConfiguredHeroIds_jsonArrayStringList" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="retry5204_downgrades1820to620" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="bearConfig_parsesFormationAndClamps" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <testcase name="bearWakeAtMillis_preheatEvery60s" classname="com.carlos.vaultserver.task.BearLaunchRetryTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

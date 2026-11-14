@@ -114,11 +114,62 @@ public final class RegistrationService {
             out.realNameMessage = "实名认证请求失败: " + e.getMessage();
             return out;
         }
-        String err = r.errorText();
-        out.realNameVerified = err.isEmpty();
-        out.realNameMessage = err.isEmpty() ? "实名认证已提交" : err;
-        FileLog.info("实名认证 fpid={} verified={}", out.fpid, out.realNameVerified);
+        evaluateRealName(r, out);
+        FileLog.info("实名认证 fpid={} status={} code={} verified={} msg={}", out.fpid,
+                r.outerStatus(), r.dataCode(), out.realNameVerified, out.realNameMessage);
         return out;
+    }
+
+    /**
+     * 实名判定（P1-1，逐条对齐网页版
+     * {@code PhoneRegistrationPassportGateway.realNameOutcome}）：上游口径是
+     * <b>外层 {@code status} + {@code data.code}</b>，不是 data.status / data.error。
+     *
+     * <ul>
+     *   <li>{@code status=1 && code=1} → 通过（VERIFIED）</li>
+     *   <li>{@code status=1 && code=2} / {@code code=2406} / msg 含「已实名/无需实名/已认证」→
+     *       按已实名通过（ALREADY_VERIFIED）——同一身份第二次使用不能判整号失败</li>
+     *   <li>两者都缺失（旧形状，如 {@code {"data":{"result":1}}}）→ 退回「errorText 为空即通过」</li>
+     *   <li>其余 → 失败（透出上游 msg）</li>
+     * </ul>
+     */
+    private static void evaluateRealName(PassportClient.PassportResult r, RegistrationOutcome out) {
+        String msg = r.errorText();
+        int status = r.outerStatus();
+        int code = r.dataCode();
+        if (status == 1 && code == 1) {
+            out.realNameVerified = true;
+            out.realNameMessage = msg.isEmpty() ? "实名认证成功" : msg;
+            return;
+        }
+        if ((status == 1 && code == 2) || code == 2406 || containsAlreadyVerified(msg)) {
+            out.realNameVerified = true;
+            out.realNameMessage = msg.isEmpty() ? "该账号已经实名，无需重复认证" : msg;
+            return;
+        }
+        if (status == -1 && code == -1) {
+            // 旧形状兼容：无 status/code 时沿用原文案（errorText 为空即通过）
+            out.realNameVerified = msg.isEmpty();
+            out.realNameMessage = msg.isEmpty() ? "实名认证已提交" : msg;
+            return;
+        }
+        out.realNameVerified = false;
+        out.realNameMessage = msg.isEmpty() ? "实名认证失败" : msg;
+    }
+
+    /**
+     * msg 已实名关键词（网页版 containsAlreadyVerified 同口径，另补「已通过实名」与「不能重复认证」：
+     * 实跑上游确有此文案，网页版关键词表漏判，属 P1-1 同一误判）。
+     */
+    private static boolean containsAlreadyVerified(String msg) {
+        String normalized = msg == null ? "" : msg.trim().toLowerCase();
+        return normalized.contains("无需实名")
+                || normalized.contains("已实名")
+                || normalized.contains("已经实名")
+                || normalized.contains("已通过实名")
+                || normalized.contains("已认证")
+                || normalized.contains("不能重复认证")
+                || normalized.contains("already verified");
     }
 
     // ---------------- 自包含凭据包（encrypted） ----------------

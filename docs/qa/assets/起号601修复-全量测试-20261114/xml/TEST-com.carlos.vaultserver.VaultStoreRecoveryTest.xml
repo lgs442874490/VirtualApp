@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.VaultStoreRecoveryTest" tests="9" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:36" hostname="lgs.local" time="0.058">
+  <properties/>
+  <testcase name="updateRecoverySettings_persists" classname="com.carlos.vaultserver.VaultStoreRecoveryTest" time="0.005"/>
+  <testcase name="roleMutators_name_enabled_persist" classname="com.carlos.vaultserver.VaultStoreRecoveryTest" time="0.01"/>
+  <testcase name="legacyVaultJson_missingRecoveryFields_defaultsApplied" classname="com.carlos.vaultserver.VaultStoreRecoveryTest" time="0.01"/>
+  <testcase name="recoveryDefaults_onNewAccount" classname="com.carlos.vaultserver.VaultStoreRecoveryTest" time="0.001"/>
+  <testcase name="recoveryAndRoleFields_persistAcrossReload" classname="com.carlos.vaultserver.VaultStoreRecoveryTest" time="0.008"/>
+  <testcase name="validateRecovery_contractMessages" classname="com.carlos.vaultserver.VaultStoreRecoveryTest" time="0.002"/>
+  <testcase name="pauseSchedule_lifecycle_setClearStopLogin" classname="com.carlos.vaultserver.VaultStoreRecoveryTest" time="0.011"/>
+  <testcase name="removeRole_clearsEntryAndActivePointersWhenActive" classname="com.carlos.vaultserver.VaultStoreRecoveryTest" time="0.007"/>
+  <testcase name="sync_preservesServerRecoverySettings" classname="com.carlos.vaultserver.VaultStoreRecoveryTest" time="0.004"/>
+  <system-out><![CDATA[06:15:36.309 W/VaultSrv: 库文件解析失败 vault.json：Duplicate key "takeoverCooldownMinutes" at 895 [character 896 line 1]，尝试下一份
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.guardian.GuardianAlliesHydrateTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.008">
+  <properties/>
+  <testcase name="notifyHookPathStillWorks" classname="com.carlos.vaultserver.guardian.GuardianAlliesHydrateTest" time="0.003"/>
+  <testcase name="hydratesAlliesFromLoginNotifyCache" classname="com.carlos.vaultserver.guardian.GuardianAlliesHydrateTest" time="0.002"/>
+  <testcase name="emptyCacheKeepsAlliesEmpty_andSecondCallThrottled" classname="com.carlos.vaultserver.guardian.GuardianAlliesHydrateTest" time="0.003"/>
+  <system-out><![CDATA[06:18:17.506 I/VaultSrv: 守护盟友[allies] 从登录推送补齐 2 人（共 2，proto=notify_alliance_member_pos_info）
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

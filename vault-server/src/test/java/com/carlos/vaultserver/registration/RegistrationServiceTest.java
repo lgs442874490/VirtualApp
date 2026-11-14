@@ -114,12 +114,78 @@ public class RegistrationServiceTest {
         assertTrue(good.realNameVerified);
 
         RegistrationService bad = new RegistrationService(
-                Fakes.scriptedPassport("{\"error\":\"已被实名\"}"),
+                Fakes.scriptedPassport("{\"status\":1,\"data\":{\"code\":3,\"msg\":\"身份证号与姓名不匹配\"}}"),
                 Fakes.factory(Fakes.FakeSms.single("1", "2")), Fakes.NO_SLEEP);
         RegistrationOutcome reject = bad.realName("FP", "SK", "张三",
                 "110101199001011230");
         assertFalse(reject.realNameVerified);
-        assertEquals("已被实名", reject.realNameMessage);
+        assertEquals("身份证号与姓名不匹配", reject.realNameMessage);
+    }
+
+    // P1-1（2026-11-13 实跑）：上游口径是「外层 status + data.code」，不是 data.status / data.error。
+    // 网页版 PhoneRegistrationPassportGateway.realNameOutcome：status=1&code=1 通过；
+    // status=1&code=2 / code=2406 / msg 含「已实名…」按已实名通过；其余失败。
+
+    @Test
+    public void realName_status1Code1_verified() {
+        RegistrationService svc = new RegistrationService(
+                Fakes.scriptedPassport("{\"status\":1,\"data\":{\"code\":1,\"msg\":\"实名认证成功\"}}"),
+                Fakes.factory(Fakes.FakeSms.single("1", "2")), Fakes.NO_SLEEP);
+        RegistrationOutcome o = svc.realName("FP", "SK", "张三", "110101199001011230");
+        assertTrue(o.realNameVerified);
+        assertEquals("实名认证成功", o.realNameMessage);
+    }
+
+    /** 实跑原样响应：认证中（code=2）必须视为通过，否则同一身份第二次使用整号被判失败。 */
+    @Test
+    public void realName_status1Code2_authenticating_passes() {
+        RegistrationService svc = new RegistrationService(
+                Fakes.scriptedPassport("{\"status\":1,\"data\":{\"code\":2,"
+                        + "\"msg\":\"实名认证中，您可继续体验游戏!\"}}"),
+                Fakes.factory(Fakes.FakeSms.single("1", "2")), Fakes.NO_SLEEP);
+        RegistrationOutcome o = svc.realName("FP", "SK", "张三", "110101199001011230");
+        assertTrue("code=2 认证中必须通过: " + o.realNameMessage, o.realNameVerified);
+        assertEquals("实名认证中，您可继续体验游戏!", o.realNameMessage);
+    }
+
+    @Test
+    public void realName_code2406_alreadyVerified_passes() {
+        RegistrationService svc = new RegistrationService(
+                Fakes.scriptedPassport("{\"status\":1,\"data\":{\"code\":2406}}"),
+                Fakes.factory(Fakes.FakeSms.single("1", "2")), Fakes.NO_SLEEP);
+        RegistrationOutcome o = svc.realName("FP", "SK", "张三", "110101199001011230");
+        assertTrue("code=2406 已实名必须通过", o.realNameVerified);
+    }
+
+    @Test
+    public void realName_msgAlreadyVerified_passes() {
+        RegistrationService svc = new RegistrationService(
+                Fakes.scriptedPassport("{\"status\":1,\"data\":{\"code\":9,"
+                        + "\"msg\":\"该账号已通过实名认证，不能重复认证\"}}"),
+                Fakes.factory(Fakes.FakeSms.single("1", "2")), Fakes.NO_SLEEP);
+        RegistrationOutcome o = svc.realName("FP", "SK", "张三", "110101199001011230");
+        assertTrue("msg 含已实名必须通过: " + o.realNameMessage, o.realNameVerified);
+    }
+
+    @Test
+    public void realName_status1Code3_realFailure_fails() {
+        RegistrationService svc = new RegistrationService(
+                Fakes.scriptedPassport("{\"status\":1,\"data\":{\"code\":3,\"msg\":\"实名认证失败\"}}"),
+                Fakes.factory(Fakes.FakeSms.single("1", "2")), Fakes.NO_SLEEP);
+        RegistrationOutcome o = svc.realName("FP", "SK", "张三", "110101199001011230");
+        assertFalse("真失败必须判失败", o.realNameVerified);
+        assertEquals("实名认证失败", o.realNameMessage);
+    }
+
+    @Test
+    public void realName_outerStatus0_fails() {
+        RegistrationService svc = new RegistrationService(
+                Fakes.scriptedPassport("{\"status\":0,\"error\":\"风控拒绝\"}"),
+                Fakes.factory(Fakes.FakeSms.single("1", "2")), Fakes.NO_SLEEP);
+        RegistrationOutcome o = svc.realName("FP", "SK", "张三", "110101199001011230");
+        assertFalse(o.realNameVerified);
+        assertTrue("失败消息应透出上游 error: " + o.realNameMessage,
+                o.realNameMessage.contains("风控拒绝"));
     }
 
     // ---------------- registerOnePhone ----------------

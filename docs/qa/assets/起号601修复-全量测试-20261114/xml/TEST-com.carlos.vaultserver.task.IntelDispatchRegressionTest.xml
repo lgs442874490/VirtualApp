@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.IntelDispatchRegressionTest" tests="2" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.007">
+  <properties/>
+  <testcase name="playedExpiredEvent_isNotDispatched" classname="com.carlos.vaultserver.task.IntelDispatchRegressionTest" time="0.001"/>
+  <testcase name="rescueInFlight_doesNotBlockHuntingDispatch" classname="com.carlos.vaultserver.task.IntelDispatchRegressionTest" time="0.005"/>
+  <system-out><![CDATA[06:18:32.461 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:32.462 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:32.463 W/VaultSrv: 编队容量未知/夹取 [AUTO] capacity=0 欲下发=50000（不夹取，仅告警）
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

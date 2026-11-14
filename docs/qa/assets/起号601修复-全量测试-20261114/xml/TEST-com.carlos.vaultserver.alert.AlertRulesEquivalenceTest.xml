@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" tests="15" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:41" hostname="lgs.local" time="0.012">
+  <properties/>
+  <testcase name="singleAttackOnAllyCity_accepted" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="selfLoop_keepsOldSemantics" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="alertText_incomingMatchesLegacyFormat" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.0"/>
+  <testcase name="typePredicates_keepOldSemantics" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="loopbackAndSelfTarget_rejected" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.0"/>
+  <testcase name="scoutFollowerLanded_rejected" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="threatLevel_keepsOldSemantics" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="monitorAllowed_keepsOldSemantics" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="rallyFollower_keepsOldSemantics" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.0"/>
+  <testcase name="behemothRally_notCity_rejected" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="incomingAllowed_keepsOldSemantics" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="cityCacheMissing_doesNotRejectRealThreat" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.0"/>
+  <testcase name="sameAllianceTarget_rejected" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="alertText_incomingWithoutEndpointSkipsCoords" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <testcase name="gatherAndGarrison_rejectedAsNonPvp" classname="com.carlos.vaultserver.alert.AlertRulesEquivalenceTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

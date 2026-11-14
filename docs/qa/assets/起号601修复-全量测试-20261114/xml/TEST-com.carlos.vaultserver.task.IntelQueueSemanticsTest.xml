@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.IntelQueueSemanticsTest" tests="13" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.001">
+  <properties/>
+  <testcase name="gate_constantsAreDistinct" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="remainingNormalSlots_webFormula" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="queueSnapshot_nullEngineFallsBackWithoutThrowing" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="queueSlots_unchangedContract" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="worldMarchTypes_matchWeb" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="consumesNormalSlot_onlyWorldMarchExceptRescue" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.001"/>
+  <testcase name="gate_rescueNotBlockedByFullQueue" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="gatherPriority_excludesRescueAndPve_includesHunts" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="gate_monsterNeedsNormalSlot" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="gate_pveAndUnknownStamina" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="remainingNormalSlots_unknownIdleFallback" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="snapshot_activeIntelligence_isSplitNormalAndSpecial" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <testcase name="defaultQueueCount_isOneLikeWeb" classname="com.carlos.vaultserver.task.IntelQueueSemanticsTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

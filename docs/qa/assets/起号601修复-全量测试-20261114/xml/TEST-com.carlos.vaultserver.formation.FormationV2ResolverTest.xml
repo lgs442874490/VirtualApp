@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.formation.FormationV2ResolverTest" tests="31" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.031">
+  <properties/>
+  <testcase name="role_rejectsDuplicateHeroIds" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_rejectsDuplicateProfession" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="auto_unknownProfessionExcluded" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.0"/>
+  <testcase name="role_manualCountsOverCapacity_scaledProportionally" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_blacklist_hitsHeroAway_triesNextCandidate" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.002"/>
+  <testcase name="role_captainFirstInPayload" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_formationIdsCandidateFallback_inOrder" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_allCandidatesInvalid_skipWithPerCandidateSummary" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_explicitSoldiersOverCapacity_scaledByFitFormation" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_406Scale_appliedToSoldiers" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_usedHeroesReservation_triesNextCandidateAndSkipsIfAllReserved" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="auto415_decrementsThenSuccessRestores" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.0"/>
+  <testcase name="role_rejectsHeroNotInCatalog" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_gameFormationReadOnly" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.0"/>
+  <testcase name="role_v2MetaExposed_templateBuiltInAllocation" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_percentageNo406Scaling" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.004"/>
+  <testcase name="role_blacklist_withFormationFallbackAuto" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.004"/>
+  <testcase name="role_capacityUnknown_noClampOnlyWarn" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="auto_usedHeroesReservation_excludesReserved" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="auto_defaultRatioUnchanged_whenNoAutomaticSettings" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.0"/>
+  <testcase name="role_percentageWithStoredSoldiers_usesCapacity" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_unknownProfessionSkipped_notFalsePositive" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_capacityBuffBp_expandsConfiguredTotal" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="auto_usesLibraryAutomaticSettingsWhenPresent" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.0"/>
+  <testcase name="role_rejectsTooManyHeroes_neverDispatches" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_stockShortage_scalesToStock" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_totalParamLegacyCompat_keepsOldSemantics" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.0"/>
+  <testcase name="auto406_scalesTargetThenSuccessRestores" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="fallback_noParamsStillLegacy" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <testcase name="role_percentageMode_allocatesByCapacity" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.0"/>
+  <testcase name="role_blacklist_defaultSkipWithReadableReason" classname="com.carlos.vaultserver.formation.FormationV2ResolverTest" time="0.001"/>
+  <system-out><![CDATA[06:18:17.354 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.355 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.356 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.358 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.358 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=100（不夹取，仅告警）
+06:18:17.359 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.359 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=100（不夹取，仅告警）
+06:18:17.360 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.361 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=150（不夹取，仅告警）
+06:18:17.361 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.363 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.363 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=1000（不夹取，仅告警）
+06:18:17.364 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.364 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=10（不夹取，仅告警）
+06:18:17.365 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.365 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.366 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.366 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.367 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=1（不夹取，仅告警）
+06:18:17.371 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.372 W/VaultSrv: 编队容量未知/夹取 [AUTO] capacity=0 欲下发=50000（不夹取，仅告警）
+06:18:17.376 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.376 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=2200（不夹取，仅告警）
+06:18:17.376 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.377 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.377 W/VaultSrv: 编队容量未知/夹取 [AUTO] capacity=0 欲下发=50000（不夹取，仅告警）
+06:18:17.378 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.378 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=100（不夹取，仅告警）
+06:18:17.380 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.380 W/VaultSrv: 编队容量未知/夹取 [AUTO] capacity=0 欲下发=50000（不夹取，仅告警）
+06:18:17.380 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.381 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.381 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=150000（不夹取，仅告警）
+06:18:17.382 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.382 W/VaultSrv: 编队容量未知/夹取 [ROLE] capacity=0 欲下发=900（不夹取，仅告警）
+06:18:17.382 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.382 W/VaultSrv: 编队容量未知/夹取 [AUTO] capacity=0 欲下发=1000（不夹取，仅告警）
+06:18:17.383 W/VaultSrv: 编队容量未知/夹取 [AUTO] capacity=0 欲下发=1000（不夹取，仅告警）
+06:18:17.383 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.384 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.RewardStateFixTest" tests="17" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.019">
+  <properties/>
+  <testcase name="day21Sign_freeTrackClaimableAndPaidLocked" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.0"/>
+  <testcase name="signClaimedToday_prefersLedgerThenState" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.0"/>
+  <testcase name="signRewardDetail_matchesPerTrackEvidence" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.006"/>
+  <testcase name="claimSignTrack_ledgerAndStateGates_withoutProtocol" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <testcase name="fourteenSign_capturedShape_notClaimable" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <testcase name="computedWakeAt_passesRunnerBoundary" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.0"/>
+  <testcase name="backpackUpdate_addAccumulates_delSubtracts_unknownIgnored" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.002"/>
+  <testcase name="signEvidence_keepsLegacyStringRewardShape" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <testcase name="backpackInit_listShape_parsed" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <testcase name="supplyNextWakeAtMillis_readsCaptureState" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.0"/>
+  <testcase name="fourteenSign_missingNotify_notReady" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <testcase name="adventureNextWakeAtMillis_geometry" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <testcase name="fourteenSign_newDayClaimable_includingEpicTrack" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <testcase name="receivedSignDays_acceptsAllNotifyShapesAndFiltersJunk" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.0"/>
+  <testcase name="backpackItems_alternateShapesAndCountFields" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <testcase name="backpackCount_fieldPriority" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <testcase name="sevenSign_completeAndInProgress" classname="com.carlos.vaultserver.task.RewardStateFixTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

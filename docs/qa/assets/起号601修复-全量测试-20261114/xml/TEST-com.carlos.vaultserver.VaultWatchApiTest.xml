@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.VaultWatchApiTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:36" hostname="lgs.local" time="0.111">
+  <properties/>
+  <testcase name="watch_legacyConstructorReturnsNotEnabled" classname="com.carlos.vaultserver.VaultWatchApiTest" time="0.014"/>
+  <testcase name="watch_addListUpdateRemove" classname="com.carlos.vaultserver.VaultWatchApiTest" time="0.019"/>
+  <testcase name="events_cursorFlow" classname="com.carlos.vaultserver.VaultWatchApiTest" time="0.037"/>
+  <testcase name="watch_addByFid_resolvesUid" classname="com.carlos.vaultserver.VaultWatchApiTest" time="0.011"/>
+  <testcase name="watch_configValidationAndEcho" classname="com.carlos.vaultserver.VaultWatchApiTest" time="0.029"/>
+  <system-out><![CDATA[06:15:36.532 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.533 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.540 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.541 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.545 I/VaultSrv: 监视名单新增 fpid=48460403 uid=57347368
+06:15:36.552 I/VaultSrv: 监视名单更新 fpid=48460403 uid=57347368
+06:15:36.555 I/VaultSrv: 监视名单删除 fpid=48460403 uid=57347368
+06:15:36.560 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.560 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.580 I/VaultSrv: 战争通知命中 48460403 uid=57347368 进攻 type=2 行军201（事件 w1）
+06:15:36.582 I/VaultSrv: 战争通知命中 48460403 uid=57347369 进攻 type=2 行军202（事件 w2）
+06:15:36.584 I/VaultSrv: 战争通知命中 48460403 uid=57347370 进攻 type=2 行军203（事件 w3）
+06:15:36.591 I/VaultSrv: 战争结算 48460403 uid=57347368 撤回 行军201 耗时100s 破城（事件 w4）
+06:15:36.597 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.598 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.600 I/VaultSrv: 监视名单 FID 换算 fpid=48460403 fid=778899 → uid=57347368
+06:15:36.602 I/VaultSrv: 监视名单新增 fpid=48460403 uid=57347368
+06:15:36.617 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.617 I/VaultSrv: HTTP API 已启动：127.0.0.1:0
+06:15:36.627 I/VaultSrv: 战争通知配置已保存 enabled=true wecom=true 冷却=120s 静默=23~7
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

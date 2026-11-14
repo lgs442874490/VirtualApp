@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.TownBarracksArenaFixTest" tests="15" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:28" hostname="lgs.local" time="0.015">
+  <properties/>
+  <testcase name="trainResponseQueue_winsOverStaleNotify" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.002"/>
+  <testcase name="barrackTrainTier_autoUsesHighestUnlocked" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="barrackTrainTier_explicitStrategyClampedToUnlocked" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="trainResponseQueue_parsesFinishTsAndBid" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.0"/>
+  <testcase name="trainResponseQueue_shapeCompatibility" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="arenaRewardGating_retryAndAllowed" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="defaultCatalogKeepsBarracksAndArenaOn" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="roleConfigEnablesBarracksAndArenaInCadence" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.002"/>
+  <testcase name="arenaWindowBoundaries_beijing" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="cadenceCoversBarracksAndArena" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="arenaFightableHeroes_andOpponentNotes" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="arenaDailyFightCap_includesBoughtTimes" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.0"/>
+  <testcase name="trainResponseQueue_statusTextFormat" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="wakeRulesForBarracksAndHospital" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <testcase name="trainResponseQueue_totalTimeFallbackAndMillisCompat" classname="com.carlos.vaultserver.task.TownBarracksArenaFixTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

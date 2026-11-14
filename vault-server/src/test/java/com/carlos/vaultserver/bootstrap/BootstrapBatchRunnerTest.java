@@ -65,6 +65,9 @@ public class BootstrapBatchRunnerTest {
         final long serverId;
         RuntimeException loginError;
         int loginCalls;
+        /** 前 N 次 login 抛「角色已存在」（建号失败 → 回退登录链路用）。 */
+        int failNextLogins;
+        int initializeCalls;
         boolean closed;
 
         FakeEngine(long uid, long serverId) {
@@ -74,10 +77,19 @@ public class BootstrapBatchRunnerTest {
         }
 
         @Override
+        public void initialize() {
+            initializeCalls++;
+        }
+
+        @Override
         public LoginResult login(String fpid, String sdkToken, Long serverid,
                                  Map<String, Object> extraParams) throws Exception {
             loginCalls++;
             if (loginError != null) throw loginError;
+            if (failNextLogins > 0) {
+                failNextLogins--;
+                throw new IllegalStateException("loginauth code=9 角色已存在");
+            }
             LoginResult r = new LoginResult();
             r.uid = uid;
             r.serverId = serverid != null ? serverid : serverId;
@@ -139,6 +151,26 @@ public class BootstrapBatchRunnerTest {
         return content("uid", 8001L, "name", "起号号",
                 "buildings", buildings, "queues", new java.util.ArrayList<>(),
                 "res", content("101", 0));
+    }
+
+    /**
+     * 601 复现用 loaddata：熔炉 5 + 铁矿厂 304 1 级 + 家具 601 1 级
+     * （熔炉 6 需 304 到 5 级 → 601 需先到 2 级）。另带一条忙碌建造队列（302），
+     * 使每轮 runUntil 的第一个动作是「秒完施工队列」→ 失败轮也一定是 started&gt;0。
+     */
+    private static Map<String, Object> loadFurnitureStall() {
+        Map<String, Object> buildings = new LinkedHashMap<>();
+        buildings.put("301", content("bid", 301L, "lv", 5L, "status", 0L));
+        buildings.put("304", content("bid", 304L, "lv", 1L, "status", 0L));
+        buildings.put("318", content("bid", 318L, "lv", 1L, "status", 0L));
+        buildings.put("310", content("bid", 310L, "lv", 3L, "status", 0L));
+        buildings.put("302", content("bid", 302L, "lv", 1L, "status", 0L));
+        Map<String, Object> busyQueue = content("qid", 1L, "bid", 302L, "status", 0L);
+        return content("uid", 8001L, "name", "起号号",
+                "buildings", buildings,
+                "furnitures", List.of(content("bid", 304L, "conf_fid", 601L, "lv", 1L)),
+                "queues", List.of(busyQueue),
+                "res", content("103", 100000, "101", 500));
     }
 
     /** 合法加密串（RegistrationService.parseEncrypted 可解析：fpid\ntoken\nbase64(device)）。 */
@@ -412,6 +444,148 @@ public class BootstrapBatchRunnerTest {
         assertEquals("FAILED", runner.state());
         assertEquals(AccountState.FAILED, runner.entry(0).state);
         assertTrue(runner.entry(0).error.contains("起号超时上限"));
+    }
+
+    // ================= 601 终态传导（P1-1）/ 回退登录降级（P2-6） =================
+
+    /**
+     * P1-1 回归（2026-11-14 二次审查）：家具 51 达上限的 {@code FAILED} 必须是显式终态。
+     * 旧实现的失败只留在 {@code summary.results} 里，而 {@code runLeveling} 在
+     * {@code started>0} 时按「有进展」继续 → 计数被清 → 循环到单号超时（120 分钟）。
+     *
+     * <p>本用例把上限配成 1（第一轮即达上限），并用一条忙碌建造队列保证失败轮
+     * {@code started>0}（首个动作是「秒完施工队列」），从而精确复现被吞路径。
+     */
+    @Test
+    public void run_furnitureStallFailed_notSwallowedWhenRoundStarted() {
+        BootstrapBatchStore store = new BootstrapBatchStore(dataDir());
+        BootstrapReferral referral = new BootstrapReferral(dataDir());
+        BootstrapConfig cfg = new BootstrapConfig(true, 1L, 9, true, false, false,
+                "", false, "", 1);
+        ScriptedPort[] portBox = new ScriptedPort[1];
+        EngineFactory factory = (fpid, sdkToken, serverId) -> {
+            FakeEngine engine = new FakeEngine(8001L, serverId);
+            engines.add(engine);
+            ScriptedPort port = new ScriptedPort();
+            portBox[0] = port;
+            for (int i = 0; i < 60; i++) {
+                port.when("req_loaddata", loadFurnitureStall());
+                port.when("req_upgrade_furniture", content("code", 51L));
+            }
+            return new Session(engine, port);
+        };
+        BootstrapBatchRunner runner = new BootstrapBatchRunner(cfg, accounts("fp-stall"),
+                store, referral, factory, NO_SLEEP, 5_000L, new ConcurrentHashMap<>());
+
+        runner.run();
+
+        // 证明失败轮确实 started>0：首轮先「秒完施工队列」（STARTED），同一轮内才发生 51 失败。
+        List<String> protos = new ArrayList<>();
+        for (Map.Entry<String, Map<String, Object>> call : portBox[0].calls) {
+            protos.add(call.getKey());
+        }
+        int load = protos.indexOf("req_loaddata");
+        int speed = protos.indexOf(BootstrapService.QUEUE_SPEED);
+        int upgrade = protos.indexOf("req_upgrade_furniture");
+        assertTrue("首轮应先秒队列（STARTED）：" + protos, speed > load);
+        assertTrue("51 失败应发生在同一轮的秒队列之后：" + protos, upgrade > speed);
+        assertFalse("秒队列与 51 失败之间不得重新拉 loaddata（同一轮）：" + protos,
+                protos.subList(speed, upgrade).contains("req_loaddata"));
+
+        assertEquals("601 是显式终态，必须是 FAILED",
+                AccountState.FAILED, runner.entry(0).state);
+        assertTrue("失败原因必须是「重新发起起号」而不是超时/空转：" + runner.entry(0).error,
+                runner.entry(0).error.contains("重新发起起号"));
+        assertFalse("不得被「起号停滞：」前缀改写（原始 message 直出）：" + runner.entry(0).error,
+                runner.entry(0).error.startsWith("起号停滞"));
+        assertEquals("终态失败计入 failCount", 1, runner.failCount());
+    }
+
+    /**
+     * 二次审查 P2-3：清单显式 {@code #uid} 是操作者意图，钉扎失败必须 fail-fast，
+     * 不得降级到服务端默认角色（否则可能在老号上继续起号、误耗资源）。
+     */
+    @Test
+    public void run_explicitUidPinnedMismatch_failsFast() {
+        BootstrapBatchStore store = new BootstrapBatchStore(dataDir());
+        BootstrapReferral referral = new BootstrapReferral(dataDir());
+        List<AccountEntry> accounts = new ArrayList<>();
+        AccountEntry entry = new AccountEntry("fp-uid", "tk-uid", null, "");
+        entry.targetUid = 9999L;   // 显式指定角色 uid，服务端实际返回 8001
+        accounts.add(entry);
+        EngineFactory factory = (fpid, sdkToken, serverId) -> {
+            FakeEngine engine = new FakeEngine(8001L, serverId);
+            engine.failNextLogins = 1;   // 建号失败（角色已存在）→ 进入回退登录
+            engines.add(engine);
+            ScriptedPort port = new ScriptedPort();
+            port.when("req_loaddata", loadCompleted(9L));
+            return new Session(engine, port);
+        };
+        BootstrapBatchRunner runner = runner(batchConfig(1L, 9), accounts, store, referral,
+                factory, new ConcurrentHashMap<>());
+
+        runner.run();
+
+        assertEquals("显式 #uid 失配必须 fail-fast，不得降级登错角色："
+                        + runner.entry(0).error, AccountState.FAILED, runner.entry(0).state);
+        assertTrue("失败原因应说明指定角色未命中：" + runner.entry(0).error,
+                runner.entry(0).error.contains("未能登录指定角色"));
+        assertFalse("不得静默降级：", String.join("；", runner.entry(0).steps).contains("降级"));
+    }
+
+    /**
+     * P2-6 回归（二次审查 P2-3 调整后）：只有**存档启发式 uid**（非显式 #uid）钉扎失败时，
+     * 才降级为「服务端默认角色」再登录一次，避免回退链路直接失败。
+     */
+    @Test
+    public void run_archivedUidPinnedMismatch_degradesToDefaultLogin() {
+        BootstrapBatchStore store = new BootstrapBatchStore(dataDir());
+        BootstrapReferral referral = new BootstrapReferral(dataDir());
+        // 存档记录 uid=9999（已失效），服务端实际返回 8001
+        Path archiveDir;
+        try {
+            archiveDir = tmp.newFolder("archive-degrade").toPath();
+        } catch (java.io.IOException e) {
+            throw new AssertionError(e);
+        }
+        com.carlos.vaultserver.registration.AccountArchive archive =
+                com.carlos.vaultserver.registration.AccountArchive.install(archiveDir);
+        archive.recordRole("fp-arch", 1L, 9999L);
+        try {
+            EngineFactory factory = (fpid, sdkToken, serverId) -> {
+                FakeEngine engine = new FakeEngine(8001L, serverId);
+                engine.failNextLogins = 1;   // 建号失败（角色已存在）→ 进入回退登录
+                engines.add(engine);
+                ScriptedPort port = new ScriptedPort();
+                port.when("req_loaddata", loadCompleted(9L));
+                return new Session(engine, port);
+            };
+            BootstrapBatchRunner runner = runner(batchConfig(1L, 9), accounts("fp-arch"),
+                    store, referral, factory, new ConcurrentHashMap<>());
+
+            runner.run();
+
+            assertEquals("存档 uid 未命中应降级默认登录并继续：" + runner.entry(0).error,
+                    AccountState.SUCCESS, runner.entry(0).state);
+            assertEquals(8001L, runner.entry(0).uid);
+            assertTrue("步骤摘要应记录降级：" + String.join("；", runner.entry(0).steps),
+                    String.join("；", runner.entry(0).steps).contains("降级"));
+        } finally {
+            resetArchiveSingleton();
+        }
+    }
+
+    /** 清理 AccountArchive 进程级单例，避免污染其它用例。 */
+    private static void resetArchiveSingleton() {
+        try {
+            java.lang.reflect.Field field =
+                    com.carlos.vaultserver.registration.AccountArchive.class
+                            .getDeclaredField("INSTANCE");
+            field.setAccessible(true);
+            field.set(null, null);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("重置 AccountArchive 单例失败", e);
+        }
     }
 
     // ================= cancel 语义 =================

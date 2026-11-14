@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" tests="18" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:28" hostname="lgs.local" time="0.002">
+  <properties/>
+  <testcase name="buildingOf_parsesBooleanBuildFinish" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.001"/>
+  <testcase name="plainTarget_returnsNull" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="ownCapital_isDefend" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="ownUnbuiltFlag_isBuild" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="ownBuiltFlag_isDefend" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="otherFlag_isDestroy_evenIfBuilt" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="otherHall_isDestroy" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="resourceIdle_isGather" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="ownBuiltHall_isDefend_ownUnbuiltHall_isBuild" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="otherTrap_notClassified" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="buildingOf_resolvesKinds" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.001"/>
+  <testcase name="otherCapital_isDestroy" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="scoutNeverClassified" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="unknownOwnership_notClassified" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="resourceOccupied_isClash" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="resourceEarlierInbound_isClash" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="ownTrap_builtOrNot_isBuild_neverDefend" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <testcase name="nonGatherTypeOnResource_returnsNull" classname="com.carlos.vaultserver.watchpoint.WatchPointMarchActivityClassifyTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

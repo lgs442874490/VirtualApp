@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.bootstrap.BootstrapReferralTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:16" hostname="lgs.local" time="0.021">
+  <properties/>
+  <testcase name="appendSameFpidReplacesAndResetsPulled" classname="com.carlos.vaultserver.bootstrap.BootstrapReferralTest" time="0.004"/>
+  <testcase name="backupWrittenOnSecondFlush" classname="com.carlos.vaultserver.bootstrap.BootstrapReferralTest" time="0.004"/>
+  <testcase name="emptyAndInvalidEntriesIgnored" classname="com.carlos.vaultserver.bootstrap.BootstrapReferralTest" time="0.001"/>
+  <testcase name="appendListPendingMarkPulled" classname="com.carlos.vaultserver.bootstrap.BootstrapReferralTest" time="0.006"/>
+  <testcase name="maskShortAndLongValues" classname="com.carlos.vaultserver.bootstrap.BootstrapReferralTest" time="0.001"/>
+  <testcase name="restartRestoresFromFile" classname="com.carlos.vaultserver.bootstrap.BootstrapReferralTest" time="0.005"/>
+  <system-out><![CDATA[06:18:16.993 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026110704000001 furnaceLevel=9
+06:18:16.994 I/VaultSrv: 回流清单标记已拉取 1 条（请求 1 个 fpid）
+06:18:16.995 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026110704000001 furnaceLevel=9
+06:18:16.997 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026110704000001 furnaceLevel=9
+06:18:16.998 I/VaultSrv: 回流清单追加 fpid=fp2 batchId=bb2026110704000001 furnaceLevel=9
+06:18:16.999 W/VaultSrv: 回流清单文件解析失败 bootstrap_referral.json：Expected a ':' after a key at 7 [character 8 line 1]
+06:18:17.001 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026110704000001 furnaceLevel=9
+06:18:17.003 I/VaultSrv: 回流清单追加 fpid=fp2 batchId=bb2026110704000001 furnaceLevel=9
+06:18:17.004 I/VaultSrv: 回流清单标记已拉取 1 条（请求 2 个 fpid）
+06:18:17.004 I/VaultSrv: 回流清单标记已拉取 0 条（请求 1 个 fpid）
+06:18:17.006 I/VaultSrv: 回流清单标记已拉取 1 条（请求 1 个 fpid）
+06:18:17.008 I/VaultSrv: 回流清单追加 fpid=fp1 batchId=bb2026110704000001 furnaceLevel=9
+06:18:17.010 I/VaultSrv: 回流清单追加 fpid=fp2 batchId=bb2026110704000001 furnaceLevel=9
+06:18:17.012 I/VaultSrv: 回流清单标记已拉取 1 条（请求 1 个 fpid）
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

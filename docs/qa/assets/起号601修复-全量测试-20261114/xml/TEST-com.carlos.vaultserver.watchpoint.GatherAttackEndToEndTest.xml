@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.watchpoint.GatherAttackEndToEndTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:28" hostname="lgs.local" time="0.012">
+  <properties/>
+  <testcase name="pveMarchOnGatherPointIsSilent" classname="com.carlos.vaultserver.watchpoint.GatherAttackEndToEndTest" time="0.006"/>
+  <testcase name="sameAllianceGatherAttackIsSilent" classname="com.carlos.vaultserver.watchpoint.GatherAttackEndToEndTest" time="0.0"/>
+  <testcase name="attackOnGatherPointAlertsWithAttackerVictimAndPoint" classname="com.carlos.vaultserver.watchpoint.GatherAttackEndToEndTest" time="0.002"/>
+  <testcase name="unrelatedGatherAttackIsSilent" classname="com.carlos.vaultserver.watchpoint.GatherAttackEndToEndTest" time="0.001"/>
+  <testcase name="emptyResourceClearsStaleGatherer" classname="com.carlos.vaultserver.watchpoint.GatherAttackEndToEndTest" time="0.001"/>
+  <testcase name="staleGatherPointIsSilent" classname="com.carlos.vaultserver.watchpoint.GatherAttackEndToEndTest" time="0.001"/>
+  <testcase name="friendlyCoalitionGatherAttackIsSilent" classname="com.carlos.vaultserver.watchpoint.GatherAttackEndToEndTest" time="0.001"/>
+  <system-out><![CDATA[06:23:28.164 I/VaultSrv: [观察点] 采集点告警跳过（PvE 行军（巨兽/野外集结/采集/打野））：攻击者 uid=31374667 aid=0 采集者 uid=19694427 aid=89700352 资源点=(512,688)
+06:23:28.165 I/VaultSrv: [观察点] 采集点告警跳过（同联盟（盟友无法互相攻击））：攻击者 uid=31374667 aid=89700055 采集者 uid=19694427 aid=89700055 资源点=(512,688)
+06:23:28.166 I/VaultSrv: [观察点] ]]>&#x1f6a8;<![CDATA[ 资源·受袭 攻击人：未知名玩家  坐标 (278,607) 出征信息：进攻 兵力：未知 ETA：3分0秒 被攻击人：未知名玩家 资源点：(512,688) 时间：06:23:28
+06:23:28.168 I/VaultSrv: [观察点] 监视目标 818 80级 (uid31374667) 本轮未出现（连续 1 轮，最后坐标 278,607)
+06:23:28.169 I/VaultSrv: [观察点] 采集点告警跳过（采集点缓存过期（>20 分钟未刷新））：攻击者 uid=31374667 aid=0 采集者 uid=19694427 aid=89700352 资源点=(512,688)
+06:23:28.170 I/VaultSrv: [观察点] 采集点告警跳过（同阵营友盟（友军之间不互相攻击））：攻击者 uid=31374667 aid=89700055 采集者 uid=19694427 aid=89700483 资源点=(512,688)
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

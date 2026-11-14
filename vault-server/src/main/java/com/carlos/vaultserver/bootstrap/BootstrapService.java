@@ -237,15 +237,29 @@ public final class BootstrapService {
     /** 起号配置（原版 BootstrapConfig 移植：字段/默认值/fromMap/toMap 一致）。 */
     public record BootstrapConfig(boolean enabled, long targetServerId, int targetFurnaceLevel,
                                   boolean instantDiamond, boolean claimRewards, boolean buyShopResources,
-                                  String allianceName, boolean autoApplyWhenPrivate, String roleName) {
+                                  String allianceName, boolean autoApplyWhenPrivate, String roleName,
+                                  int furnitureStallLimit) {
         public static final int MAX_ROLE_NAME_LENGTH = 16;
         public static final String SECTION = "settings";
         public static final int DEFAULT_TARGET_FURNACE_LEVEL = 9;
         public static final int MAX_TARGET_FURNACE_LEVEL = 9;
+        /** 家具连续 51 的默认失败上限（10 次 ≈ 5 分钟，2026-11-13 实跑经验值）。 */
+        public static final int DEFAULT_FURNITURE_STALL_LIMIT = 10;
+        public static final int MAX_FURNITURE_STALL_LIMIT = 100;
+
+        /** 兼容旧调用方（9 参）：家具 51 上限取默认值。 */
+        public BootstrapConfig(boolean enabled, long targetServerId, int targetFurnaceLevel,
+                               boolean instantDiamond, boolean claimRewards, boolean buyShopResources,
+                               String allianceName, boolean autoApplyWhenPrivate, String roleName) {
+            this(enabled, targetServerId, targetFurnaceLevel, instantDiamond, claimRewards,
+                    buyShopResources, allianceName, autoApplyWhenPrivate, roleName,
+                    DEFAULT_FURNITURE_STALL_LIMIT);
+        }
 
         public static BootstrapConfig defaults() {
             // 需求 R-12：buyShopResources 默认 true（与 BootstrapApi 统一，51 时可自动用钻石补资源）
-            return new BootstrapConfig(false, 0L, 9, true, false, true, "", false, "");
+            return new BootstrapConfig(false, 0L, 9, true, false, true, "", false, "",
+                    DEFAULT_FURNITURE_STALL_LIMIT);
         }
 
         public static BootstrapConfig fromMap(Map<String, Object> raw) {
@@ -261,7 +275,9 @@ public final class BootstrapService {
                     booleanValue(raw.get("buyShopResources"), true),
                     text(raw.get("allianceName")),
                     booleanValue(raw.get("autoApplyWhenPrivate"), false),
-                    normalizeRoleName(raw.get("roleName")));
+                    normalizeRoleName(raw.get("roleName")),
+                    clampFurnitureStallLimit((int) ProtocolValueSupport.number(
+                            raw.get("furnitureStallLimit"))));
         }
 
         public Map<String, Object> toMap() {
@@ -275,6 +291,7 @@ public final class BootstrapService {
             result.put("allianceName", allianceName);
             result.put("autoApplyWhenPrivate", autoApplyWhenPrivate);
             result.put("roleName", roleName);
+            result.put("furnitureStallLimit", furnitureStallLimit);
             return result;
         }
 
@@ -287,6 +304,12 @@ public final class BootstrapService {
         /** 熔炉目标等级夹取（1..9；JDK 17 无 Math.clamp，手写同语义）。 */
         private static int clampFurnaceLevel(int raw) {
             return Math.max(1, Math.min(MAX_TARGET_FURNACE_LEVEL, raw));
+        }
+
+        /** 家具 51 上限夹取（1..100；未配置/0 取默认 10）。包内可见：BootstrapApi 装配链复用。 */
+        static int clampFurnitureStallLimit(int raw) {
+            if (raw <= 0) return DEFAULT_FURNITURE_STALL_LIMIT;
+            return Math.max(1, Math.min(MAX_FURNITURE_STALL_LIMIT, raw));
         }
 
         private static boolean booleanValue(Object raw, boolean fallback) {
@@ -329,6 +352,28 @@ public final class BootstrapService {
     private BootstrapConfig config = BootstrapConfig.defaults();
     /** 本地家具等级覆盖（跨轮保留：154「已存在」/153「已达上限」标记，避免重复规划）。 */
     private final java.util.Map<String, Long> furnitureOverrides = new java.util.concurrent.ConcurrentHashMap<>();
+    /**
+     * 家具升级连续 51 次数（{@code building:furniture} → 次数）。
+     * 2026-11-13 实跑定论：新建角色后家具实例状态未就绪，UPGRADE 持续返回 51；
+     * 本地「重置为 0 → CREATE(154) → 再 UPGRADE」会形成死循环，30 秒退避永远等不到同步。
+     * 连续达到 {@link BootstrapConfig#DEFAULT_FURNITURE_STALL_LIMIT} 次即判定状态脱节，
+     * 直接以 FAILED 终态收尾并提示操作者**重新发起起号**（本分支已无重连逻辑）。
+     *
+     * <p>复位点（2026-11-14 二次审查 P1-2）：153（已达建筑等级上限，属正常阶段切换）、
+     * UPGRADE_FURNITURE 成功。**154（服务端已存在）不复位**——601 死循环正是
+     * 「重置→CREATE(154)→UPGRADE(51)」，若 154 复位则计数永远到不了上限，终态检测失效。
+     */
+    private final java.util.Map<String, Integer> furnitureStall = new java.util.concurrent.ConcurrentHashMap<>();
+
+    /**
+     * 显式终态失败（2026-11-14 二次审查 P1-1）：非空表示本账号已不可继续，
+     * 批次层必须在 {@code started} 判定之前直接置 {@code FAILED}，
+     * 不能因为同一轮还有其它动作成功（{@code started>0}）就把失败吞掉。
+     *
+     * <p>只由「明确不可恢复」的分支（家具 51 达上限）设置；未知错误码的 FAILED 不进终态
+     * （二次审查 P2-1：保留下一轮重试语义）。
+     */
+    private volatile String terminalFailure = "";
     /** 英雄动作连发计数（对齐新版 yieldTurn；阈值必须小于每轮步数 STEPS_PER_ROUND=8）。 */
     private int heroBurst;
     /** 已见过的钻石最大值（资源 101 不一定每轮都推送，跨轮取最大值避免读到 0）。 */
@@ -489,6 +534,12 @@ public final class BootstrapService {
      */
     public Map<String, Object> runNext() throws Exception {
         BootstrapConfig cfg = requireEnabled();
+        // P1-1：显式终态不可再推进（单号挂点重复点击/批次重入都直接返回失败原文）
+        if (!terminalFailure.isEmpty()) {
+            Map<String, Object> failed = actionResult("FAILED", terminalFailure);
+            failed.put("terminal", true);
+            return failed;
+        }
         if (session.resourceEnded()) {
             return actionResult("ENDED", "大熔炉资源耗尽，起号结束");
         }
@@ -605,6 +656,8 @@ public final class BootstrapService {
             result.put("blockedReason", plan.blockedReason());
             return result;
         }
+        // P2-2（2026-11-14 二次审查）：原 [起号][诊断plan] 已删除——每个执行动作一行且含全量家具表/
+        // overrides，信息量最低、日志量最大；plan.blockedReason + 执行结果 step 已覆盖同等信息。
         return executeFirstAction(cfg, plan.actions().get(0));
     }
 
@@ -767,6 +820,8 @@ public final class BootstrapService {
             results.add(result);
             String status = text(result.get("status"));
             if (!"STARTED".equals(status)) {
+                // 二次审查 P2-1：终态只由「明确不可恢复」的分支（51 达上限）设置，
+                // 未知错误码的 FAILED 不升级为永久终态，保留旧实现的下一轮重试语义。
                 stopMessage = text(result.get("message"));
                 break;
             }
@@ -782,6 +837,10 @@ public final class BootstrapService {
         summary.put("results", List.copyOf(results));
         summary.put("state", status());
         summary.put("message", stopSummary(started, stopMessage));
+        // P1-1：显式终态透出（空串 = 无终态失败）。批次层必须在 started 判定之前消费。
+        String terminal = terminalFailure;
+        summary.put("terminalStatus", terminal.isEmpty() ? "" : "FAILED");
+        summary.put("terminalFailure", terminal);
         return summary;
     }
 
@@ -904,6 +963,11 @@ public final class BootstrapService {
                     content(response).getOrDefault("lv", 0L));
             state.markedFurniture(action.buildingId(), action.furnitureId(),
                     appliedLevel > 0L ? appliedLevel : action.toLevel());
+            // 家具升级真正成功 → 连续 51 计数清零（只在 UPGRADE 成功时清；CREATE/154 不清，
+            // 避免 601 卡点的 CREATE(154)↔UPGRADE(51) 循环把计数反复冲掉）。
+            if (action.kind() == ActionKind.UPGRADE_FURNITURE) {
+                furnitureStall.remove(furnitureKey(action.buildingId(), action.furnitureId()));
+            }
         }
         FileLog.info("[起号] 已请求{}（instantDiamond={}）", action.label(), cfg.instantDiamond());
         // 需求 R-07：耗尽计数只在钻石直升成功时清零；普通动作成功不再清零。
@@ -947,11 +1011,19 @@ public final class BootstrapService {
                                                 ProtocolException exception,
                                                 Map<String, Object> preparation) {
         int code = exception.code();
+        // 601 卡点诊断（2026-11-13 临时）：记录服务端真实拒绝码与原文，用于区分
+        // 「资源不足 / 前置不满足 / 家具不存在」等 51 语义。**待删**：601 根因闭环、上线
+        // 版本（待定）后随分支删除；删除条件登记在 docs/review/起号601卡点与实名判定-代码审查-20261114.md §6。
+        FileLog.info("[起号][诊断拒绝] code={} kind={} action={} 上游msg={}",
+                code, String.valueOf(action.kind()), action.label(),
+                String.valueOf(exception.getMessage()));
         // 154：家具服务端已存在（本地未同步）→ 标记 1 级继续，不算失败（新版同语义）
         if (code == 154 && action.kind() == ActionKind.CREATE_FURNITURE) {
             state.markedFurniture(action.buildingId(), action.furnitureId(), 1L);
             furnitureOverrides.put(furnitureKey(action.buildingId(), action.furnitureId()), 1L);
             // 154 时服务端没有可用实例 id：本地不记录实例（furnitureInstanceId 会按公式兜底）
+            // 注意（P1-2）：154 **不复位** furnitureStall——601 死循环正是「重置→CREATE(154)→UPGRADE(51)」，
+            // 复位会让计数永远到不了上限、终态检测失效。
             Map<String, Object> exists = actionResult("STARTED",
                     action.buildingName() + " 的家具 " + action.furnitureId() + " 服务端已存在，按 1 级继续");
             exists.put("step", stepView(action));
@@ -961,6 +1033,8 @@ public final class BootstrapService {
         // 153：家具已达当前建筑等级上限（新版 FURNITURE_MAX_LEVEL）→ 标记"已达上限"后等待建筑升级，
         // 否则 planner 会每轮重复规划同一家具升级，形成死循环（实测熔炉卡 3 级 600+ 轮）。
         if (code == 153) {
+            // P1-2：153 表示阶段正常切换（等建筑升级），之前的 51 累积不应延续到建筑升级之后。
+            furnitureStall.remove(furnitureKey(action.buildingId(), action.furnitureId()));
             long cap = Math.max(0L, state.level(action.buildingId()));
             for (Cost req : catalog.furnitureRequirement(action.buildingId(), cap)) {
                 if (req.id() == action.furnitureId()) {
@@ -994,6 +1068,34 @@ public final class BootstrapService {
             // 重置本地等级为 0 并持久化覆盖，下一轮先走 CREATE；服务端已存在时 154 会兜底按 1 级继续。
             if (action.kind() == ActionKind.UPGRADE_FURNITURE) {
                 String fkey = furnitureKey(action.buildingId(), action.furnitureId());
+                int stall = furnitureStall.merge(fkey, 1, Integer::sum);
+                int stallLimit = Math.max(1, cfg.furnitureStallLimit());
+                // 601 卡点诊断（2026-11-13 临时）：每次 51 事件（含达上限那次）打印 stall 轨迹。
+                // **待删**：601 根因闭环后删除（删除条件同 [诊断拒绝]）。
+                // 口径说明（二次审查 P2-5）：stall 是「事件数」，单次事件内部还会补资源重试一次，
+                // 实际服务端拒绝次数约为 2×stall；运营按事件数对照 stallLimit 即可。
+                FileLog.info("[起号][诊断51] {} kind={} fkey={} stall={}/{} 家具表={} overrides={}",
+                        action.label(), String.valueOf(action.kind()), fkey, stall, stallLimit,
+                        String.valueOf(state.furnitureLevels()), String.valueOf(furnitureOverrides));
+                if (stall >= stallLimit) {
+                    // 601 卡点（2026-11-13 实跑定论）：新建角色后服务端家具实例状态未就绪，
+                    // 重置等级、CREATE(154)、退避、重连全部无效；实测只有重新发起一次起号能恢复。
+                    // 达到上限即如实失败并提示重跑，避免无限退避把批次拖到断线。
+                    // P1-2：不再臆测「实例未生成」——51 是通用 ITEM_NOT_ENOUGH，资源快照滞后/
+                    // 前置不满足/实例缺失都可能返回 51，文案只陈述「连续 N 次被拒」并给出重跑动作。
+                    furnitureStall.remove(fkey);
+                    String message = action.label() + " 连续 " + stall
+                            + " 次升级尝试被服务端拒绝（code=51，资源/前置/同步原因待查），请重新发起起号";
+                    FileLog.warn("[起号] {}", message);
+                    Map<String, Object> failed = actionResult("FAILED", message);
+                    failed.put("step", stepView(action));
+                    failed.put("errorCode", code);
+                    failed.put("furnitureStall", true);
+                    // P1-1：显式终态。批次层看到 terminalFailure 必须在 started 判定之前置 FAILED，
+                    // 否则同一轮领奖/秒队列成功的 started>0 会把失败吞掉，账户跑满 120 分钟超时。
+                    terminalFailure = message;
+                    return failed;
+                }
                 state.markedFurniture(action.buildingId(), action.furnitureId(), 0L);
                 furnitureOverrides.put(fkey, 0L);
             }
@@ -2894,15 +2996,18 @@ public final class BootstrapService {
         // 建号 = 一次 loginauth + is_create=true（对齐新版 RegistrationRoleCreationService）。
         // 建号限制（block_create_role_endtime）在 loginauth 响应里，失败时据此给明确中文提示；
         // 不做额外的前置登录——新版同样是一次请求，避免多余会话与顶号风险。
-        // 建号前注入「本角色独立设备指纹」（对齐网页版 ensureAccountFingerprint）：
-        // 网页版 30 秒内同区连建两号不被拒，靠的就是每个角色不同的 device_id/distinct_id/login_ip；
-        // 共用指纹会触发游戏侧设备风控（实测 loginauth code=25）。
+        // 建号前注入「本角色设备指纹」（对齐网页版 ensureAccountFingerprint）。
+        // 2026-11-13 code=25 排查一度改为固定 salt，但随后定论 code=25 = 账号封禁（2999 年），
+        // 「设备漂移触发 code=25」的假设被证伪；2026-11-14 二次审查 P1-3 决定（方案 b）：
+        // **回退固定 salt**，恢复 DeviceFingerprint 契约的「一角色一设备」（时间戳盐），
+        // 避免在未取得用户书面接受前，把「同账号同区多角色共用设备」的未知风险带上生产。
+        // 若后续需要「建号重试不漂移设备」，应作为独立需求评审并登记已知限制后再改。
         try {
             String fingerprint = DeviceFingerprint.forNewRole(fpid, serverId,
                     String.valueOf(System.currentTimeMillis()));
             engine.applyIdentity(fingerprint);
         } catch (RuntimeException ignored) {
-            // 注入失败退回引擎默认随机指纹（仍比固定指纹安全）
+            // 注入失败不阻断建号（引擎会沿用/生成默认身份；语义见 DeviceFingerprint 类注释）
         }
         LinkedHashMap<String, Object> extraParams = new LinkedHashMap<>();
         extraParams.put("is_create", true);
@@ -2966,19 +3071,20 @@ public final class BootstrapService {
         if (serverId <= 0L) {
             throw new IllegalArgumentException("请选择目标区服");
         }
-        // 指定 uid 时优先：一次 loginauth 带 uid 直接定位该角色
+        // 指定 uid 时优先：先用「该角色稳定指纹」重连，再一次 loginauth 带 uid 直接定位该角色。
+        // 2026-11-13 实跑：建号失败回退登录时若沿用建号注入的一次性新指纹，会被游戏侧
+        // 按设备风控拒绝（loginauth code=25），导致老号回退登录也失败——必须先换稳定指纹。
         if (targetUid > 0L) {
             Map<String, Object> extra = new LinkedHashMap<>();
             extra.put("uid", targetUid);
+            engine.close();
+            engine.applyIdentity(DeviceFingerprint.forRole(fpid, serverId, targetUid));
+            engine.initialize();
             WjdrEngine.LoginResult pinned = engine.login(fpid, sdkToken, serverId, extra);
             if (pinned.uid == targetUid) {
-                engine.close();
-                engine.applyIdentity(DeviceFingerprint.forRole(fpid, serverId, targetUid));
-                engine.initialize();
-                WjdrEngine.LoginResult relogin = engine.login(fpid, sdkToken, serverId, extra);
-                return new LoginOutcome(relogin.uid, relogin.serverId,
-                        relogin.authContent == null ? Map.of() : relogin.authContent, false,
-                        "已登录指定角色 uid=" + relogin.uid + describeServer(relogin.serverId));
+                return new LoginOutcome(pinned.uid, pinned.serverId,
+                        pinned.authContent == null ? Map.of() : pinned.authContent, false,
+                        "已登录指定角色 uid=" + pinned.uid + describeServer(pinned.serverId));
             }
             throw new IllegalStateException("未能登录指定角色 uid=" + targetUid
                     + "（服务端返回 uid=" + pinned.uid + "）" + describeServer(pinned.serverId));
@@ -3173,6 +3279,10 @@ public final class BootstrapService {
         if (!config.enabled()) {
             return "DISABLED";
         }
+        // P1-1：显式终态优先（51 达上限等，不再显示 READY 误导操作者重复点击）
+        if (!terminalFailure.isEmpty()) {
+            return "FAILED";
+        }
         // 需求 R-06：资源耗尽为终态，优先于 READY/LEVEL_COMPLETED 呈现
         if (session.resourceEnded()) {
             return "ENDED";
@@ -3189,6 +3299,10 @@ public final class BootstrapService {
     private String runMessage() {
         if (!config.enabled()) {
             return "主开关未开启，起号流程不会执行";
+        }
+        // P1-1：终态原因直出，UI/批次看到的就是失败原文
+        if (!terminalFailure.isEmpty()) {
+            return terminalFailure;
         }
         if (session.resourceEnded()) {
             return "大熔炉资源耗尽，起号结束";

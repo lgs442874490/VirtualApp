@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.passport.PassportClientTest" tests="11" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.015">
+  <properties/>
+  <testcase name="signature_matchesWechatQrLoginGoldenValue" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.007"/>
+  <testcase name="parse_loginProfileNestedLayer" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.001"/>
+  <testcase name="smsLogin_notAffectedBySmsCooldown" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.002"/>
+  <testcase name="parse_rootFallbackAndErrorText" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.0"/>
+  <testcase name="sendSms_transportFailure_releasesReservation" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.001"/>
+  <testcase name="parse_flatDataLayer" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.0"/>
+  <testcase name="smsLogin_formAssemblyAndOrder" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.001"/>
+  <testcase name="realName_localValidation" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.0"/>
+  <testcase name="cgSeid_explicitWins_andFpcsDerived" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.001"/>
+  <testcase name="sendSms_cooldownBlocksSecondCall" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.001"/>
+  <testcase name="parse_invalidJson_throwsWithoutAuthorization" classname="com.carlos.vaultserver.passport.PassportClientTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.ServerBearTasksTest" tests="45" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:07" hostname="lgs.local" time="0.014">
+  <properties/>
+  <testcase name="fallbackWindowLaunchGuard_defaultSkip" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="prepareTimeIndex_clampedAndMappedToSeconds" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="window_customWeekdayAndHour" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="joinConfirmation_responseAndDetail" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="dayKey_isBeijingDate" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.001"/>
+  <testcase name="bearPetSkillIds_excludesRazorbeak" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="autoRecallProto_onlyStationedIsAutomatic" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="chooseSquadHeroes_avoidsLaunchedHeroes" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="window_noReserve_usesConfiguredFridayWindow" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="allianceTrapPoints_filtersType33AndUnfinished" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="launchedRecord_sameDayAndWindow_isIdempotent" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.001"/>
+  <testcase name="liveMarchTargets_fallsBackToSnapshotsWhenAssetLibraryMissing" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="bearRallyJoinable_guardsMatchWeb" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="fallbackTrapSummary_mentionsConfiguredWindow" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="parseTrapTarget_fromMapobj" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="preferredLeader_waitsThenFallsBackToAll" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.002"/>
+  <testcase name="parsePreferredLeaders_supportsStringAndObjects" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="memberMatch_detectsDifferentFormation" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="pendingJoin_roundTripDedupeAndWindowReset" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.001"/>
+  <testcase name="soldierTypeIndex_mapsThreeTypes" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="phaseText_allPhases" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="bearState_mergeNewerKeepsProgress" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="window_reserveIsAuthoritative" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.001"/>
+  <testcase name="ownMarchTargets_skipsBearAndJoinRallies" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="stateJson_roundTrip" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="window_reserveEqualsTrapStart_notDuplicated" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="window_trapStartFuture_becomesNextWindow" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="needTrapSync_throttling" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.001"/>
+  <testcase name="parseRallyCandidates_shapesAndTypeFilter" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="parseTrapTimes_schemaFields" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="launchedRecord_failedAttempt_stillBlocksSecondLaunch" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.002"/>
+  <testcase name="trapSummary_texts" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="joinPayload_shapeMatchesWeb" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="configOf_defaultsAndClamps" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.001"/>
+  <testcase name="window_trapStartCoversReserveRollover" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="bearCodeText_knownCodes" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="isTruthy_onlyExplicitTrue" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="roleScopedSuffix_isolatesUid" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="prepGateDue_onlyWithinFiveMinutesOncePerWindow" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="launchPayload_shapeMatchesWeb" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.001"/>
+  <testcase name="joinsRecord_appendParseDedupe" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="heroIds_roundTripAndAppend" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="syncTrapTimes_rejectsDegradedResponse" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="launchPayload_rejectsIncompleteInput" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.0"/>
+  <testcase name="preferredLeader_onlyKeepsMatchingCandidate" classname="com.carlos.vaultserver.task.ServerBearTasksTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

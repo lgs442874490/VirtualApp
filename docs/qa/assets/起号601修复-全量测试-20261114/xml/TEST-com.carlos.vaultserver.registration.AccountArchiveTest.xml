@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.registration.AccountArchiveTest" tests="6" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.012">
+  <properties/>
+  <testcase name="recordRegistration_storesPhoneAndToken" classname="com.carlos.vaultserver.registration.AccountArchiveTest" time="0.002"/>
+  <testcase name="persistence_survivesReload" classname="com.carlos.vaultserver.registration.AccountArchiveTest" time="0.002"/>
+  <testcase name="updateToken_refreshesForDeviceSwitch" classname="com.carlos.vaultserver.registration.AccountArchiveTest" time="0.003"/>
+  <testcase name="mask_hidesMiddle" classname="com.carlos.vaultserver.registration.AccountArchiveTest" time="0.0"/>
+  <testcase name="recordRole_appendsServerAndUid" classname="com.carlos.vaultserver.registration.AccountArchiveTest" time="0.004"/>
+  <testcase name="findByFpid_unknownReturnsNull" classname="com.carlos.vaultserver.registration.AccountArchiveTest" time="0.001"/>
+  <system-out><![CDATA[06:18:31.238 I/VaultSrv: 账号存档：注册 fpid=542893784 phone=177****5597 provider=d1 token=tk-****-123
+06:18:31.240 I/VaultSrv: 账号存档：注册 fpid=777 phone=139****0000 provider=d1 token=***
+06:18:31.242 I/VaultSrv: 账号存档：注册 fpid=999 phone=138****0000 provider=d1 token=old****oken
+06:18:31.245 I/VaultSrv: 账号存档：注册 fpid=536409023 phone=162****0893 provider=d1 token=***
+06:18:31.246 I/VaultSrv: 账号存档：建号 fpid=536409023 server=888 uid=299452689
+06:18:31.247 I/VaultSrv: 账号存档：建号 fpid=536409023 server=888 uid=299453063
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

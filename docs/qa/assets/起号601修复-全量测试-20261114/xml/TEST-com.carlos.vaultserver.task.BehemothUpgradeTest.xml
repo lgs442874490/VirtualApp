@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.BehemothUpgradeTest" tests="22" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.006">
+  <properties/>
+  <testcase name="staminaFromContent_listAndMapShapes" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="wakeAt_justLaunched_recheck" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.001"/>
+  <testcase name="config_subFlagsCompatibleWithApp" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="formationReady_validation" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="codeText_knownCodes" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="rallies_parseAndFilter" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.001"/>
+  <testcase name="stamina_currentAt_includesNaturalRecovery" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="levels_maxToMinDescending" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.001"/>
+  <testcase name="effectiveQueueCount_minOfConfigAndCapacity" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="prepareSeconds_mapping" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="config_clampsAndParses" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="state_rollDay_resetsOnNewDayOnly" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.001"/>
+  <testcase name="bossTarget_parseMapObj" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="wakeAt_launchDisabled_noOverride" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="staminaItemCount_deficitToItems" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="nextDayWakeSec_beijingMidnightPlusOffset" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.001"/>
+  <testcase name="wakeAt_lowStamina_waitRecovery" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="wakeAt_limitReached_nextBeijingDay" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="joinPayload_shapeMatchesWeb" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="config_defaults_safe" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="stamina_waitSeconds_toRequired" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <testcase name="launchPayload_shapeMatchesWeb" classname="com.carlos.vaultserver.task.BehemothUpgradeTest" time="0.0"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

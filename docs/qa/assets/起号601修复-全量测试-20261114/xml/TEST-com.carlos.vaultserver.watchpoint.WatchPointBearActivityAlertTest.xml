@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" tests="9" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:28" hostname="lgs.local" time="0.009">
+  <properties/>
+  <testcase name="bearRallyOnOtherTrap_notAlerted" classname="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" time="0.001"/>
+  <testcase name="bearRallyOnOwnTrap_notAlerted" classname="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" time="0.001"/>
+  <testcase name="activityKeyOnNormalType_notAlerted" classname="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" time="0.001"/>
+  <testcase name="sameOwnerSameBehaviorWithin30Min_alertsOnce" classname="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" time="0.001"/>
+  <testcase name="otherTrapDestroyNeverAlerted" classname="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" time="0.001"/>
+  <testcase name="knownEnemyFlag_stillDestroys" classname="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" time="0.001"/>
+  <testcase name="unknownBuildingAidOnFlag_noDestroyAlert" classname="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" time="0.001"/>
+  <testcase name="unknownOwnerAidOnFlag_noDestroyAlert" classname="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" time="0.0"/>
+  <testcase name="destroyNotSuppressedBy30MinWindow" classname="com.carlos.vaultserver.watchpoint.WatchPointBearActivityAlertTest" time="0.002"/>
+  <system-out><![CDATA[06:23:28.209 I/VaultSrv: [观察点] 打熊活动行军静默（非破坏）：uid=7000 type=411 目标=(275,608)
+06:23:28.210 I/VaultSrv: [观察点] 打熊活动行军静默（非破坏）：uid=7000 type=411 目标=(275,608)
+06:23:28.210 I/VaultSrv: [观察点] 打熊活动行军静默（非破坏）：uid=7000 type=2 目标=(275,608)
+06:23:28.211 I/VaultSrv: [观察点] 监视目标 818 监视目标 (uid7000) 本轮未出现（连续 1 轮，最后坐标 250,600)
+06:23:28.212 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 资源·建设 发起人：[818]监视目标 目标点：(275,608) 兵力：未知 ETA：5分0秒 时间：06:23:28
+06:23:28.212 I/VaultSrv: [观察点] 资源告警窗口内重复（30 分钟，同人+同行为+同目标），静默：uid7000 建设 (275,608)
+06:23:28.213 I/VaultSrv: [观察点] 建筑目标行为未判定（归属未知/陷阱非己方/不适用），静默：uid=7000 type=2 目标=陷阱 aid=89700055 发起人aid=89700731 坐标=(275,608)
+06:23:28.214 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 资源·破坏 发起人：[818]监视目标 目标点：(275,608) 兵力：未知 ETA：5分0秒 时间：06:23:28
+06:23:28.214 I/VaultSrv: [观察点] 建筑目标行为未判定（归属未知/陷阱非己方/不适用），静默：uid=7000 type=2 目标=旗子 aid=0 发起人aid=89700731 坐标=(275,608)
+06:23:28.215 I/VaultSrv: [观察点] 建筑目标行为未判定（归属未知/陷阱非己方/不适用），静默：uid=7000 type=2 目标=旗子 aid=89700055 发起人aid=0 坐标=(275,608)
+06:23:28.216 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 资源·破坏 发起人：[818]监视目标 目标点：(275,608) 兵力：未知 ETA：5分0秒 时间：06:23:28
+06:23:28.216 I/VaultSrv: [观察点] ]]>&#x1f4cd;<![CDATA[ 资源·破坏 发起人：[818]监视目标 目标点：(275,608) 兵力：未知 ETA：5分0秒 时间：06:23:28
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

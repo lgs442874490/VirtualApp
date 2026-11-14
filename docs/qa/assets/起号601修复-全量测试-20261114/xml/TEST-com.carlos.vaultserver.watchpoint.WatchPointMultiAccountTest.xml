@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" tests="9" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:28" hostname="lgs.local" time="0.012">
+  <properties/>
+  <testcase name="crossKidSupported_threshold" classname="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" time="0.001"/>
+  <testcase name="crossProbe_available_whenCitiesReturned" classname="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" time="0.004"/>
+  <testcase name="snapshotApply_multiAccountCrossFields" classname="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" time="0.002"/>
+  <testcase name="n3_scanDistribution_balancedAndUnique" classname="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" time="0.003"/>
+  <testcase name="pickEngines_multiAccount_andWhitelist" classname="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" time="0.0"/>
+  <testcase name="crossProbe_unavailable_excludedFromFuturePicks" classname="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" time="0.001"/>
+  <testcase name="crossProbeVerdict_thresholds" classname="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" time="0.0"/>
+  <testcase name="singleRoleFallback_unchanged" classname="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" time="0.001"/>
+  <testcase name="pickEngines_crossKid_switchAndUidList" classname="com.carlos.vaultserver.watchpoint.WatchPointMultiAccountTest" time="0.0"/>
+  <system-out><![CDATA[06:23:28.251 I/VaultSrv: [观察点] 触发整图扫描：跨区可用探测（484 格，预计 15–20s）
+06:23:28.253 I/VaultSrv: [观察点] 跨区角色 uid=21 kid=999 探测可用（已获 1 城/1 tile）
+06:23:28.256 I/VaultSrv: [观察点] 触发整图扫描：三引擎（484 格，预计 15–20s）
+06:23:28.259 I/VaultSrv: [观察点] 触发整图扫描：跨区探测（484 格，预计 15–20s）
+06:23:28.260 W/VaultSrv: [观察点] 跨区角色 uid=20 kid=999 探测不可用（前 8 tile 0 城）→ 自动排除，查询仍带 kid=888
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.guardian.GuardianReserveTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:18" hostname="lgs.local" time="0.003">
+  <properties/>
+  <testcase name="effectiveMaxQueues_keepsAtLeastOneGatherQueue" classname="com.carlos.vaultserver.guardian.GuardianReserveTest" time="0.0"/>
+  <testcase name="reserveSlots_paramAndClamp" classname="com.carlos.vaultserver.guardian.GuardianReserveTest" time="0.001"/>
+  <testcase name="envOverrides_enableDryRun" classname="com.carlos.vaultserver.guardian.GuardianReserveTest" time="0.001"/>
+  <testcase name="enabledLive_defaultReserveOne" classname="com.carlos.vaultserver.guardian.GuardianReserveTest" time="0.0"/>
+  <testcase name="disabledOrDryRun_zeroReserve" classname="com.carlos.vaultserver.guardian.GuardianReserveTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

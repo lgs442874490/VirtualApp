@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.RewardHistoryUseTest" tests="13" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.007">
+  <properties/>
+  <testcase name="mergeChestFrames_emptyHistoryKeepsSingleFrameView" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.001"/>
+  <testcase name="mergeChestContent_singleFrameOverrideAndReceiveFlag" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.0"/>
+  <testcase name="safeNextWakeAtMillis_dropsPastAndBeyond24h" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.001"/>
+  <testcase name="mergeMailTypes_unionOrderDedupeAndCap" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.001"/>
+  <testcase name="mailHistoryTypes_emptyAndInvalidData" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.0"/>
+  <testcase name="chestHistoryContents_emptyHistoryAndNoEngine_returnsEmpty" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.0"/>
+  <testcase name="notifyPayload_unwrapsOneLayerLikeNotifyData" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.001"/>
+  <testcase name="logHistoryMerge_throttleSmoke" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.0"/>
+  <testcase name="mergeChestFrames_multipleAddFrames_dedupLaterWins" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.001"/>
+  <testcase name="historyDedupe_identicalFrameRecordedOnce" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.0"/>
+  <testcase name="chestHistoryContents_multiFrameFromNotifyHistory" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.0"/>
+  <testcase name="chestHistoryContents_sinceInit_filtersPreviousSessionAdds" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.001"/>
+  <testcase name="mailHistoryTypes_unionOfNewMailAndActionableTypeInfo" classname="com.carlos.vaultserver.task.RewardHistoryUseTest" time="0.001"/>
+  <system-out><![CDATA[06:18:32.783 I/VaultSrv: 通知历史合并 fpid=48460403 proto=alliance_chest_add frames=2
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

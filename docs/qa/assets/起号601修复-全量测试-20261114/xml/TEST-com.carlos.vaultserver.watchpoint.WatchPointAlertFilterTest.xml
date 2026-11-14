@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" tests="13" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:28" hostname="lgs.local" time="0.009">
+  <properties/>
+  <testcase name="shouldAlertMonitor_keepsSameAllianceFilter" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.001"/>
+  <testcase name="isSelfMarch_sameStartAndEnd" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.0"/>
+  <testcase name="scoutQuota_allowsThreePerFiveMinutes" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.0"/>
+  <testcase name="allySuffix_knownAndUnknown" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.001"/>
+  <testcase name="outgoingAlertText_marksUnknownAllianceOnAttackerAndTarget" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.0"/>
+  <testcase name="abbrFromNick_extractsBracketPrefix" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.001"/>
+  <testcase name="incomingAlertText_marksUnknownAlliance" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.001"/>
+  <testcase name="shouldAlertIncoming_onlyKnownFriendCity" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.0"/>
+  <testcase name="troopsTag_gradesFeintAndThreat" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.001"/>
+  <testcase name="isSelfMarch_targetIsOwnCity" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.001"/>
+  <testcase name="rallyFollowerAlertsSwitchFilters99And100Only" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.0"/>
+  <testcase name="storeConfig_incomingRallyFollowerAlertsDefaultsTrue" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.002"/>
+  <testcase name="allySuffix_prefersLabelsThenNickPrefix" classname="com.carlos.vaultserver.watchpoint.WatchPointAlertFilterTest" time="0.001"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

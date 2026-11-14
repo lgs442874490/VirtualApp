@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.formation.FormationCatalogTest" tests="10" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.005">
+  <properties/>
+  <testcase name="heroInit_weaponLevelFromElv_andExpeditionSkillFromSkills" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.001"/>
+  <testcase name="capture_heroesSortedByPower_andFields" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.0"/>
+  <testcase name="heroesOf_parsesListShapeAndAliases" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.0"/>
+  <testcase name="heroInit_legacyFrameWithoutSkillFields_defaultsZero" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.0"/>
+  <testcase name="capture_capacityAndSnapshotShape" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.001"/>
+  <testcase name="soldierUpdate_incrementallyAdjustsStock" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.001"/>
+  <testcase name="capture_isIdempotent_andResetClearsCache" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.0"/>
+  <testcase name="capture_soldierStock_sumsAllTiers" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.001"/>
+  <testcase name="capture_missingPushes_emptyCatalogNoCrash" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.0"/>
+  <testcase name="heroInit_levAliasParsed" classname="com.carlos.vaultserver.formation.FormationCatalogTest" time="0.0"/>
+  <system-out><![CDATA[06:18:17.259 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.261 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.261 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.262 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.262 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+06:18:17.263 I/VaultSrv: 出征容量未就绪 note=英雄等级未同步；指挥中心等级未同步；科技等级未同步；家园等级未同步； | notify_shelter_info=null | notify_all_research=null | notify_homeland_info=null | notify_buff_show=null
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

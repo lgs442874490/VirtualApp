@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="com.carlos.vaultserver.task.IntelPreemptTest" tests="7" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.004">
+  <properties/>
+  <testcase name="budget_cooldownAndWindowCap" classname="com.carlos.vaultserver.task.IntelPreemptTest" time="0.0"/>
+  <testcase name="tryPreempt_recallsExactlyOneGather_andHonorsCooldown" classname="com.carlos.vaultserver.task.IntelPreemptTest" time="0.001"/>
+  <testcase name="needsPreempt_onlyWhenExpiringAndQueueFullByOthers" classname="com.carlos.vaultserver.task.IntelPreemptTest" time="0.001"/>
+  <testcase name="chooseGather_onlyType4InFlightOrArrived_earliestEnd" classname="com.carlos.vaultserver.task.IntelPreemptTest" time="0.0"/>
+  <testcase name="chooseGather_prefersInFlightOverArrivedEvenIfArrivedEndsEarlier" classname="com.carlos.vaultserver.task.IntelPreemptTest" time="0.0"/>
+  <testcase name="chooseGather_noneWhenOnlyProtectedOrNoGather" classname="com.carlos.vaultserver.task.IntelPreemptTest" time="0.0"/>
+  <testcase name="preemptKey_isRoleScoped" classname="com.carlos.vaultserver.task.IntelPreemptTest" time="0.0"/>
+  <system-out><![CDATA[06:18:32.472 I/VaultSrv: intel 采集让位 fpid=fpid 召回 marchId=2 type=4 state=2 code=0 剩余采集≈500s（采集 3→2 队）
+06:18:32.472 I/VaultSrv: intel 采集让位冷却中 fpid=fpid last=1794608312472
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>
