@@ -604,6 +604,28 @@ public class BootstrapApiTest {
                         .buyShopResources());
     }
 
+    /**
+     * 二次审查 P1-1：{@code furnitureStallLimit} 必须经 batch-start → BootstrapConfig 装配链生效
+     * （缺省 10、显式值透传、0/负数取默认、>100 夹取到 100），避免「测试通过但生产无效」。
+     */
+    @Test
+    public void batchStart_furnitureStallLimitWired() {
+        assertEquals("缺省 10", 10,
+                BootstrapApi.batchConfigOf(fields("serverId", 1L)).furnitureStallLimit());
+        assertEquals("显式值透传", 3,
+                BootstrapApi.batchConfigOf(fields("serverId", 1L, "furnitureStallLimit", 3))
+                        .furnitureStallLimit());
+        assertEquals("超出上限夹取 100", 100,
+                BootstrapApi.batchConfigOf(fields("serverId", 1L, "furnitureStallLimit", 999))
+                        .furnitureStallLimit());
+        assertEquals("0/负数取默认 10", 10,
+                BootstrapApi.batchConfigOf(fields("serverId", 1L, "furnitureStallLimit", 0))
+                        .furnitureStallLimit());
+        assertEquals("非法字符串取默认 10", 10,
+                BootstrapApi.batchConfigOf(fields("serverId", 1L, "furnitureStallLimit", "abc"))
+                        .furnitureStallLimit());
+    }
+
     @Test
     public void engineCloseIdempotentOnFakeSession() {
         // Session.close 走 WjdrEngine.close（fake 覆写空转）——断言不抛即语义正常

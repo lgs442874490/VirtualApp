@@ -441,8 +441,35 @@ public final class BootstrapBatchRunner {
                 FileLog.warn("起号建号失败，回退既有角色登录 fpid={}：{}", entry.fpid,
                         String.valueOf(createError.getMessage()));
                 session.engine.initialize();   // 二次 loginauth 必须走全新连接
-                outcome = service.loginExisting(session.engine,
-                        entry.fpid, entry.sdkToken, config.targetServerId(), entry.targetUid);
+                // 2026-11-13：回退登录必须按「既有角色」定位 uid，才能用该角色的稳定指纹重连；
+                // 否则沿用建号注入的一次性新指纹会被游戏侧设备风控拒绝（loginauth code=25）。
+                // 2026-11-14 二次审查 P2-3：区分来源——清单显式 `#uid` 是操作者意图，钉扎失败必须
+                // fail-fast（不得静默登到服务端默认角色、在老号上继续消耗资源）；只有存档启发式 uid
+                // 才允许降级。
+                boolean explicitUid = entry.targetUid > 0L;
+                long knownUid = explicitUid ? entry.targetUid
+                        : archivedRoleUid(entry.fpid, config.targetServerId());
+                if (knownUid > 0L) {
+                    FileLog.info("起号回退登录按{}定位既有角色 fpid={} server={} uid={}",
+                            explicitUid ? "清单" : "存档",
+                            entry.fpid, String.valueOf(config.targetServerId()),
+                            String.valueOf(knownUid));
+                }
+                try {
+                    outcome = service.loginExisting(session.engine,
+                            entry.fpid, entry.sdkToken, config.targetServerId(), knownUid);
+                } catch (Exception pinnedError) {
+                    if (explicitUid || knownUid <= 0L) throw pinnedError;
+                    // P2-6（2026-11-14 二次审查）：存档 uid 失效/同区多角色时钉扎会失败，
+                    // 回退链路是建号失败后的唯一兜底，必须降级为「服务端默认角色」再登录一次，
+                    // 而不是直接让该号 FAILED。
+                    FileLog.warn("起号回退登录存档 uid 未命中，降级按服务端默认角色登录 fpid={} uid={}：{}",
+                            entry.fpid, String.valueOf(knownUid),
+                            String.valueOf(pinnedError.getMessage()));
+                    entry.steps.add("回退登录：存档角色 uid=" + knownUid + " 未命中，降级为默认角色登录");
+                    outcome = service.loginExisting(session.engine,
+                            entry.fpid, entry.sdkToken, config.targetServerId(), 0L);
+                }
                 entry.steps.add("已存在角色，直接登录 uid=" + outcome.uid());
             }
             entry.state = AccountState.RUNNING;
@@ -458,7 +485,7 @@ public final class BootstrapBatchRunner {
                 // 存档失败不影响起号
             }
 
-            runLeveling(session.port, service, entry);
+            runLeveling(session, service, entry);
             // 二次审查低优先级：ENDED/FAILED 也回填熔炉等级（UI 不再显示 0）
             entry.furnaceLevel = service.state().furnaceLevel();
 
@@ -549,8 +576,31 @@ public final class BootstrapBatchRunner {
         }
     }
 
-    private void runLeveling(BootstrapService.ProtocolPort port, BootstrapService service,
+    /** 从账号存档取该 fpid 在目标区服的既有角色 uid（回退登录定位用；0=未知）。 */
+    private static long archivedRoleUid(String fpid, long serverId) {
+        try {
+            com.carlos.vaultserver.registration.AccountArchive archive =
+                    com.carlos.vaultserver.registration.AccountArchive.get();
+            if (archive == null || serverId <= 0L) return 0L;
+            Map<String, Object> record = archive.findByFpid(fpid);
+            if (record == null) return 0L;
+            Object raw = record.get("roles");
+            if (!(raw instanceof org.json.JSONArray roles)) return 0L;
+            for (int i = 0; i < roles.length(); i++) {
+                org.json.JSONObject role = roles.optJSONObject(i);
+                if (role == null || role.optLong("serverId") != serverId) continue;
+                long uid = role.optLong("uid");
+                if (uid > 0L) return uid;
+            }
+        } catch (RuntimeException ignored) {
+            // 存档缺失不影响回退登录（退回服务端默认角色）
+        }
+        return 0L;
+    }
+
+    private void runLeveling(Session session, BootstrapService service,
                              AccountEntry entry) throws Exception {
+        BootstrapService.ProtocolPort port = session.port;
         long target = config.targetFurnaceLevel();
         long deadline = System.currentTimeMillis() + timeoutMillis();
         int round = 0;
@@ -728,7 +778,23 @@ public final class BootstrapBatchRunner {
                 return;
             }
             if (furnace >= target) {
+                // 二次审查 P2-1：已达标优先于终态——同一轮先升到目标熔炉、随后家具动作失败时，
+                // 应按 SUCCESS 收尾（目标已达成），不因边界失败把成果判掉。
                 entry.state = AccountState.SUCCESS;
+                return;
+            }
+            // P1-1（2026-11-14 二次审查）：显式终态在 started 判定之前消费（熔炉/ENDED 判定之后）。
+            // 51 达上限的 FAILED 若只留在 summary.results 里，同一轮领奖/秒队列成功的 started>0
+            // 会把它当「有进展」吞掉 → 计数被清 → 账户跑满单号超时（120 分钟）。
+            String terminalFailure = String.valueOf(
+                    summary.getOrDefault("terminalFailure", "")).trim();
+            if (!terminalFailure.isEmpty()) {
+                entry.state = AccountState.FAILED;
+                entry.error = terminalFailure;
+                entry.steps.add("失败：" + terminalFailure);
+                failCount++;
+                FileLog.warn("起号批次 {} 账号显式失败 fpid={} error={}",
+                        id, entry.fpid, terminalFailure);
                 return;
             }
             if (started == 0) {
@@ -829,7 +895,8 @@ public final class BootstrapBatchRunner {
     private BootstrapConfig accountConfig() {
         return new BootstrapConfig(true, config.targetServerId(), config.targetFurnaceLevel(),
                 config.instantDiamond(), config.claimRewards(), config.buyShopResources(),
-                config.allianceName(), config.autoApplyWhenPrivate(), config.roleName());
+                config.allianceName(), config.autoApplyWhenPrivate(), config.roleName(),
+                config.furnitureStallLimit());
     }
 
     /** 单号超时上限毫秒（包级可覆写语义字段；测试构造可注入 0 立即触发超时分支）。 */

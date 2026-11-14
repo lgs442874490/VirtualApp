@@ -2302,4 +2302,207 @@ public class BootstrapServiceTest {
                 store.holder(scope).worldAttempts());
         assertEquals("in-flight 不得发 fog", 0, port.count("req_world_map_fog"));
     }
+
+    // ================= 601 卡点复现（2026-11-13 真机实跑） =================
+
+    /** 熔炉 5 + 铁矿厂 304 1 级 + 家具 601 1 级（熔炉 6 需 304 到 5 级 → 601 需先到 2 级）。 */
+    private static Map<String, Object> readyLoadIronworks() {
+        Map<String, Object> buildings = new LinkedHashMap<>();
+        buildings.put("301", content("bid", 301L, "lv", 5L, "status", 0L));
+        buildings.put("304", content("bid", 304L, "lv", 1L, "status", 0L));
+        buildings.put("318", content("bid", 318L, "lv", 1L, "status", 0L));
+        buildings.put("310", content("bid", 310L, "lv", 3L, "status", 0L));
+        buildings.put("302", content("bid", 302L, "lv", 1L, "status", 0L));
+        return content("uid", 8001L, "name", "旧名字",
+                "buildings", buildings,
+                "furnitures", List.of(content("bid", 304L, "conf_fid", 601L, "lv", 1L)),
+                "queues", new ArrayList<>(),
+                "res", content("103", 100000, "101", 500));
+    }
+
+    /**
+     * 复现 2026-11-13 实跑：家具 601 升级 2 级持续 51 时，51 分支应把本地等级重置为 0，
+     * 使下一轮规划改走 CREATE_FURNITURE（而非无限重复同一个 UPGRADE）。
+     * 若此用例失败，说明「重置 → CREATE」链路在生产同样不生效，即 601 死循环的代码侧根因。
+     */
+    @Test
+    public void upgradeFurniture_51_resetsThenCreates() throws Exception {
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 8; i++) {
+            port.when("req_upgrade_furniture", content("code", 51L));
+        }
+        BootstrapService svc = service(port, readyLoadIronworks(),
+                new BootstrapConfig(true, 0L, 9, true, false, false, "", false, ""));
+        for (int round = 0; round < 3 && port.count("req_create_furniture") == 0; round++) {
+            svc.runUntil(30);
+        }
+        StringBuilder trace = new StringBuilder();
+        for (Map.Entry<String, Map<String, Object>> call : port.calls) {
+            if (!call.getKey().contains("furniture")) continue;
+            trace.append(call.getKey()).append(" → ").append(call.getValue()).append(" | ");
+        }
+        assertTrue("51 后应改走建造家具，实际：upgrade=" + port.count("req_upgrade_furniture")
+                        + " create=" + port.count("req_create_furniture") + " 轨迹=" + trace,
+                port.count("req_create_furniture") > 0);
+    }
+
+    /**
+     * 601 卡点（2026-11-13 实跑定论）：新建角色后服务端家具实例未生成，家具体检升级持续 51，
+     * 重置等级/CREATE(154)/退避/重连都无效；达到上限（10 次）必须如实失败并提示「重新发起起号」，
+     * 绝不能无限退避把批次拖到断线。
+     */
+    @Test
+    public void upgradeFurniture_51_exceedsLimitFailsWithRerunHint() throws Exception {
+        long[] now = {1_000L};
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 30; i++) {
+            port.when("req_upgrade_furniture", content("code", 51L));
+        }
+        BootstrapHoldStore holds = new BootstrapHoldStore(() -> now[0]);
+        BootstrapService svc = service(port, readyLoadIronworks(),
+                new BootstrapConfig(true, 0L, 9, true, false, false, "", false, ""),
+                holds, "fp-stall");
+        Map<String, Object> failed = null;
+        for (int i = 0; i < 60 && failed == null; i++) {
+            Map<String, Object> r = svc.runNext();
+            if ("FAILED".equals(String.valueOf(r.get("status")))) {
+                failed = r;
+            }
+            now[0] += 31_000L;
+        }
+        assertNotNull("家具连续 51 达上限应判失败，而不是无限退避", failed);
+        assertEquals(Boolean.TRUE, failed.get("furnitureStall"));
+        String message = String.valueOf(failed.get("message"));
+        assertTrue("必须提示重新发起起号: " + message, message.contains("重新发起起号"));
+        assertEquals("服务端真实码应透出", 51, com.carlos.vault.wjdr.protocol.ProtocolValueSupport
+                .number(failed.get("errorCode")));
+        // P1-1：显式终态必须能被 status/runState 读出（批次层据此判 FAILED，而不是靠 started==0）
+        assertEquals("FAILED", String.valueOf(svc.status().get("runState")));
+        assertTrue("status.message 应透出终态原因",
+                String.valueOf(svc.status().get("message")).contains("重新发起起号"));
+    }
+
+    /**
+     * P1-2 回归：153（家具已达建筑等级上限）表示状态已变化，之前的 51 计数必须复位。
+     * 旧实现只在 UPGRADE 成功时清零：9 次 51 → 153 → 建筑升级后第一次 51 就直接 stall=10 误判失败。
+     */
+    @Test
+    public void upgradeFurniture_51_counterResetsAfter153() throws Exception {
+        long[] now = {1_000L};
+        ScriptedPort port = new ScriptedPort();
+        // 每次 51 事件会走「补资源后重试一次」，故每次事件消耗 2 条脚本回应
+        for (int i = 0; i < 9; i++) {
+            port.when("req_upgrade_furniture", content("code", 51L), content("code", 51L));
+        }
+        port.when("req_upgrade_furniture", content("code", 153L));
+        for (int i = 0; i < 5; i++) {
+            port.when("req_upgrade_furniture", content("code", 51L), content("code", 51L));
+            port.when("req_create_furniture", content("code", 0L));
+        }
+        BootstrapHoldStore holds = new BootstrapHoldStore(() -> now[0]);
+        BootstrapService svc = service(port, readyLoadIronworks(),
+                new BootstrapConfig(true, 0L, 9, true, false, false, "", false, ""),
+                holds, "fp-reset153");
+        Map<String, Object> last = null;
+        int fiftyOnes = 0;
+        boolean saw153 = false;
+        boolean failed = false;
+        for (int i = 0; i < 300; i++) {
+            last = svc.runNext();
+            String status = String.valueOf(last.get("status"));
+            long code = com.carlos.vault.wjdr.protocol.ProtocolValueSupport
+                    .number(last.get("errorCode"));
+            if ("FAILED".equals(status)) {
+                failed = true;
+                break;
+            }
+            if (code == 153) {
+                saw153 = true;
+            } else if (code == 51) {
+                if (saw153) break;   // 本次即 153 之后第一次 51：旧实现此时会误判 FAILED
+                fiftyOnes++;
+            }
+            now[0] += 31_000L;
+        }
+        assertEquals("应先累计 9 次 51 再出现 153", 9, fiftyOnes);
+        assertTrue("脚本应触发 153（家具已达建筑等级上限）", saw153);
+        assertFalse("153 已复位计数，153 后第 1 次 51 不得判失败："
+                        + (last == null ? "" : last.get("message")), failed);
+        assertNotNull(last);
+        assertEquals("153 后第 1 次 51 应按退避等待处理", "WAITING",
+                String.valueOf(last.get("status")));
+    }
+
+    /**
+     * 二次审查 §8-1 缺口：**154（服务端已存在）不得复位** 51 计数——601 死循环正是
+     * 「UPGRADE 51 → 重置 0 → CREATE 154 → 再 UPGRADE 51」；若 154 复位，计数永远到不了上限，
+     * P1-1 的终态检测在真实 601 上永不触发。本用例固化该设计。
+     */
+    @Test
+    public void upgradeFurniture_51_154DoesNotResetCounter() throws Exception {
+        long[] now = {1_000L};
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 10; i++) {
+            port.when("req_upgrade_furniture", content("code", 51L), content("code", 51L));
+            port.when("req_create_furniture", content("code", 154L));
+        }
+        BootstrapHoldStore holds = new BootstrapHoldStore(() -> now[0]);
+        BootstrapService svc = service(port, readyLoadIronworks(),
+                new BootstrapConfig(true, 0L, 9, true, false, false, "", false, ""),
+                holds, "fp-noreset154");
+        Map<String, Object> failed = null;
+        int fiftyOnes = 0;
+        for (int i = 0; i < 200 && failed == null; i++) {
+            Map<String, Object> r = svc.runNext();
+            if (com.carlos.vault.wjdr.protocol.ProtocolValueSupport
+                    .number(r.get("errorCode")) == 51) {
+                fiftyOnes++;
+            }
+            if ("FAILED".equals(String.valueOf(r.get("status")))) {
+                failed = r;
+                break;
+            }
+            now[0] += 31_000L;
+        }
+        assertNotNull("154 不得复位计数：第 10 次 51 仍应判失败", failed);
+        assertEquals("应累计到第 10 次 51 事件才失败", 10, fiftyOnes);
+        assertTrue("终态文案应提示重新发起起号：" + failed.get("message"),
+                String.valueOf(failed.get("message")).contains("重新发起起号"));
+    }
+
+    /**
+     * P1-2 回归：51 失败上限可配置（默认 10）。配置为 3 时第 3 次 51 即应失败，
+     * 而不是写死常量导致运营无法按账号统计调整。
+     */
+    @Test
+    public void upgradeFurniture_51_limitFromConfig() throws Exception {
+        long[] now = {1_000L};
+        ScriptedPort port = new ScriptedPort();
+        for (int i = 0; i < 10; i++) {
+            port.when("req_upgrade_furniture", content("code", 51L), content("code", 51L));
+            port.when("req_create_furniture", content("code", 0L));
+        }
+        BootstrapHoldStore holds = new BootstrapHoldStore(() -> now[0]);
+        BootstrapConfig cfg = new BootstrapConfig(true, 0L, 9, true, false, false,
+                "", false, "", 3);
+        BootstrapService svc = service(port, readyLoadIronworks(), cfg, holds, "fp-limit");
+        Map<String, Object> failed = null;
+        int fiftyOnes = 0;
+        for (int i = 0; i < 120 && failed == null; i++) {
+            Map<String, Object> r = svc.runNext();
+            if (com.carlos.vault.wjdr.protocol.ProtocolValueSupport
+                    .number(r.get("errorCode")) == 51) {
+                fiftyOnes++;
+            }
+            if ("FAILED".equals(String.valueOf(r.get("status")))) {
+                failed = r;
+                break;
+            }
+            now[0] += 31_000L;
+        }
+        assertNotNull("配置阈值 3 时必须判失败", failed);
+        assertEquals("第 3 次 51 即达配置阈值", 3, fiftyOnes);
+        assertTrue("失败文案必须提示重新发起起号：" + failed.get("message"),
+                String.valueOf(failed.get("message")).contains("重新发起起号"));
+    }
 }
