@@ -1576,21 +1576,40 @@ public class EntryDetailActivity extends Activity {
                     if (sep <= 0) { toast("格式: 号ID----token"); return; }
                     String fpid = AccountStore.extractFpid(text.substring(0, sep));
                     if (fpid.isEmpty()) { toast("号ID必须为数字"); return; }
-                    store.setToken(acc.id, fpid, text.substring(sep + 4).trim());
-                    // 【#70 F1】只存 token 是不够的：若 live 仍归属该入口，下次 launchEntry 会走
-                    // keepLive 分支（不 wipe、不还原、**不注入**）⇒ 游戏沿用旧的 live 会话，
-                    // 于是"改了 token 却没生效"。这里摘掉 live 归属，强制下次走 wipe→基线→注入。
-                    // 不删快照（SessionProbe 会按 fpid 判无效），也不在这里杀游戏。
-                    engine.invalidateEntrySession(acc.id);
-                    // 【#72 F1】根因修复：acc 只在 onCreate 取过一次，这里必须重新读。
-                    // 否则紧接着点「▶ 启 动 分 身」时 doLaunch() 把**陈旧 acc**（token 还是旧值/空）
-                    // 交给 engine.launchEntry ⇒ useToken=false ⇒ 跳过注入 ⇒ 要求验证码。
-                    // 主页之所以正常，是因为它每次都会重读库 —— 这就是"主页能用、管理页不行"的原因。
-                    AccountStore.Account fresh = store.byId(acc.id);
-                    if (fresh != null) acc = fresh;
-                    toast("token 已保存，下次打开该入口时重新登录");
-                    refreshInfo();
+                    final String token = text.substring(sep + 4).trim();
+                    if (TokenOwnership.requiresChangeAccountConfirm(acc.fpid, fpid)) {
+                        // P0-2（2026-11-13）：入口已有号，粘贴的是另一个号 ⇒ 这是「换号」，
+                        // 不只是刷新 token：保存后下次启动会摘掉 live 归属并重新注入，
+                        // 游戏内原账号的登录现场会被替换。必须让用户明确确认，
+                        // 避免把从别处（甚至别的入口/别人的号）导出的 token 粘进来覆盖登录。
+                        UiStyle.showConfirmDialog(this, "确认换号",
+                                "本入口当前是号 " + acc.fpid + "，你正在换成号 " + fpid + "。\n\n"
+                                        + "保存后，下次启动本入口会重新注入号 " + fpid
+                                        + " 的 token，游戏内原有的登录现场可能被替换。\n\n"
+                                        + "请确认这个 token 确实属于号 " + fpid + "，不要粘贴别人的 token。",
+                                "确认换号", UiStyle.ERR_INK, () -> applyToken(fpid, token));
+                        return;
+                    }
+                    applyToken(fpid, token);
                 });
+    }
+
+    /** 落库 token 并作废 live 归属（下次启动必然重新注入）。 */
+    private void applyToken(String fpid, String token) {
+        store.setToken(acc.id, fpid, token);
+        // 【#70 F1】只存 token 是不够的：若 live 仍归属该入口，下次 launchEntry 会走
+        // keepLive 分支（不 wipe、不还原、**不注入**）⇒ 游戏沿用旧的 live 会话，
+        // 于是"改了 token 却没生效"。这里摘掉 live 归属，强制下次走 wipe→基线→注入。
+        // 不删快照（SessionProbe 会按 fpid 判无效），也不在这里杀游戏。
+        engine.invalidateEntrySession(acc.id);
+        // 【#72 F1】根因修复：acc 只在 onCreate 取过一次，这里必须重新读。
+        // 否则紧接着点「▶ 启 动 分 身」时 doLaunch() 把**陈旧 acc**（token 还是旧值/空）
+        // 交给 engine.launchEntry ⇒ useToken=false ⇒ 跳过注入 ⇒ 要求验证码。
+        // 主页之所以正常，是因为它每次都会重读库 —— 这就是"主页能用、管理页不行"的原因。
+        AccountStore.Account fresh = store.byId(acc.id);
+        if (fresh != null) acc = fresh;
+        toast("token 已保存，下次打开该入口时重新登录");
+        refreshInfo();
     }
 
     // ---------- 从服务器恢复 token（重装/清数据后的补通道） ----------
@@ -1646,7 +1665,9 @@ public class EntryDetailActivity extends Activity {
 
     private void confirmExportToken() {
         UiStyle.showConfirmDialog(this, "导出 token（迁移/备份）",
-                "将读取当前游戏里登录的那个账号的 token，并复制为「号ID----token」。\n\n"
+                "将读取本入口当前登录的 token，并复制为「号ID----token」。\n\n"
+                        + "前提：游戏里的登录必须属于本入口；若当前游戏登录的是别的账号，"
+                        + "会拒绝导出，避免把别人的 token 复制走。\n\n"
                         + "本机日常登录不用它：扫码登录、设置 token、保存当前登录现场已覆盖日常路径；"
                         + "这里用于换设备导入、备份，或排查 token 是否有效。\n\n"
                         + "读取前会先关闭游戏。token 等同登录凭据，请勿分享给他人。",
@@ -1654,6 +1675,14 @@ public class EntryDetailActivity extends Activity {
     }
 
     private void doExportToken() {
+        // P0-1（2026-11-13）：导出对象必须就是本入口的 live 会话。
+        // 归属不是本入口时直接拒绝，连游戏都不杀——否则会把别的入口/别的账号的
+        // token 复制给用户，用户再粘贴注入就会覆盖原账号的登录（真机 2026-11-13）。
+        String owner = store.getLiveEntryId();
+        if (owner == null || owner.isEmpty() || !owner.equals(acc.id)) {
+            toast("当前游戏里的登录不属于本入口，无法导出；请先在本入口启动并登录");
+            return;
+        }
         ProgressDialog pd = UiStyle.progressDialog(this);
         pd.setMessage("正在读取当前登录…（会先关闭游戏）");
         pd.setCancelable(false);
@@ -1673,6 +1702,22 @@ public class EntryDetailActivity extends Activity {
                     return;
                 }
                 VaultEngine.SessionToken st = (VaultEngine.SessionToken) result;
+                // 读会话会杀游戏并消耗时间，期间归属可能变化；以 post 时刻的最新归属再判一次。
+                TokenOwnership.ExportDecision decision = TokenOwnership.decideExport(
+                        acc.id, acc.fpid, store.getLiveEntryId(), st.fpid);
+                if (decision == TokenOwnership.ExportDecision.REJECT_OWNER_MISMATCH) {
+                    toast("导出期间游戏归属已变化（当前不属于本入口），未导出");
+                    return;
+                }
+                if (decision == TokenOwnership.ExportDecision.REJECT_NO_SESSION) {
+                    toast("当前没有有效登录会话，未导出");
+                    return;
+                }
+                if (decision == TokenOwnership.ExportDecision.REJECT_FPID_MISMATCH) {
+                    toast("当前游戏登录的是号 " + st.fpid + "，与本入口（号 "
+                            + acc.fpid + "）不一致，未导出；请先在本入口登录该号");
+                    return;
+                }
                 String line = st.asLine();
                 try {
                     ClipboardManager cm = (ClipboardManager)
@@ -1682,18 +1727,15 @@ public class EntryDetailActivity extends Activity {
                     toast("复制失败：" + t.getMessage());
                     return;
                 }
-                // 与当前入口号ID一致则同步刷新 token（保留备注名），否则只复制并提示
-                if (acc.fpid != null && acc.fpid.equals(st.fpid)) {
+                if (decision == TokenOwnership.ExportDecision.BIND) {
                     store.setToken(acc.id, st.fpid, st.token);
                     refreshInfo();
                     toast("已导出并复制：号ID " + st.fpid + "（已更新本入口 token）");
-                } else if (acc.fpid == null || acc.fpid.isEmpty()) {
-                    store.setToken(acc.id, st.fpid, st.token);
-                    refreshInfo();
-                    toast("已导出并复制：号ID " + st.fpid + "（已绑定本入口）");
                 } else {
-                    toast("已复制 token。注意：当前登录的是 " + st.fpid
-                            + "，与本入口(号ID " + acc.fpid + ")不同，未覆盖入口");
+                    // COPY_ONLY：入口是原生登录型（尚未绑定号）。只复制，不自动改入口身份，
+                    // 防止一次导出就把入口悄悄变成 live 里的那个号。
+                    toast("已复制当前 live 的 token：号ID " + st.fpid
+                            + "（本入口尚未绑定号，未写入）");
                 }
             }
         }.execute();

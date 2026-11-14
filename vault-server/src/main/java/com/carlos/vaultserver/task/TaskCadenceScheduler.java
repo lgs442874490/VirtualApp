@@ -1045,6 +1045,10 @@ public final class TaskCadenceScheduler {
      *   <li>2=已领取 / 未知 → 正常间隔。</li>
      * </ul>
      */
+    /**
+     * 旧重载（仅按 sid）：构造 {@code RoleKey.uid=0}，与 {@link BearGate} 的角色键可能不一致，
+     * 因此不保证 F2 的“窗口内不退避”生效；生产派单请使用带 {@link RoleKey} 的重载。
+     */
     static long nextIntervalForResult(VaultStore.Account acc, long sid, String fn,
                                       long intervalMillis, Map<String, Object> snapshot) {
         return nextIntervalForResult(acc, new RoleKey(acc == null ? "" : acc.fpid, sid, 0L),
@@ -1054,6 +1058,12 @@ public final class TaskCadenceScheduler {
     /** Phase 2：按角色读当日结果状态机（角色键 miss 回退旧键一次）。 */
     static long nextIntervalForResult(VaultStore.Account acc, RoleKey role, String fn,
                                       long intervalMillis, Map<String, Object> snapshot) {
+        // 2026-11-12 审查修复（P1-2）：巨熊窗口内不走 SKIPPED/ERROR 退避。
+        // 发车被拒后 ServerBearTasks 只允许 60s 后重试一次，若调度器把下次派单推到 ≥180s，
+        // “计划 60s 重试”永远不会按时执行；窗口外保持原退避，不影响全局节奏。
+        if (BearGate.BEAR_TASK_ID.equals(fn) && BearGate.active(role)) {
+            return intervalMillis;
+        }
         String day = Beijing.fmt("yyyy-MM-dd").format(new Date());
         String roleKey = StateKeys.dayState(day, role, fn);
         int st;
