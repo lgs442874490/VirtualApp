@@ -135,3 +135,16 @@ license-server/deploy/license-server-linux
 
 # 部署总览（含主机/SSH/密钥路径），只存本地不入库
 docs/deploy/部署总览-*.md
+
+# ===== 文档类只存本地，不入库（2026-11-15 用户要求）=====
+# 需求/计划/QA/审查/交接/部署记录、测试报告与截图、设计资料一律只留在工作区。
+# 已入库的历史文档已用 `git rm -r --cached` 摘出索引（磁盘文件保留），往后不再跟踪。
+# 注意：这些目录仍可正常读写；只是不随 git 分发。备份见仓库外 .local-docs-backup/。
+/docs/
+/qa/
+/design/
+README.md
+/号库壳开发笔记.md
+/无尽号库使用说明.md
+/license-server/README.md
+
