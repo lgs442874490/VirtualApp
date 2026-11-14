@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.carlos.vaultserver.automation.AutomationConfigTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:41" hostname="lgs.local" time="0.031">
-  <properties/>
-  <testcase name="legacyConfigMapsByActionId" classname="com.carlos.vaultserver.automation.AutomationConfigTest" time="0.03"/>
-  <testcase name="newConfigCanOverrideActionSwitch" classname="com.carlos.vaultserver.automation.AutomationConfigTest" time="0.0"/>
-  <testcase name="toJsonRoundTripKeepsModules" classname="com.carlos.vaultserver.automation.AutomationConfigTest" time="0.001"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

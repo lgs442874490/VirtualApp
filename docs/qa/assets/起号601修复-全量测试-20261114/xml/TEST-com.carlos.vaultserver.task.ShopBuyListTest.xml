@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.carlos.vaultserver.task.ShopBuyListTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:23:07" hostname="lgs.local" time="0.016">
-  <properties/>
-  <testcase name="buyList_stopsWhenCurrencyInsufficient" classname="com.carlos.vaultserver.task.ShopBuyListTest" time="0.014"/>
-  <testcase name="buyList_skipsSoldOut" classname="com.carlos.vaultserver.task.ShopBuyListTest" time="0.001"/>
-  <testcase name="buyList_ordersByUserSelection" classname="com.carlos.vaultserver.task.ShopBuyListTest" time="0.001"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

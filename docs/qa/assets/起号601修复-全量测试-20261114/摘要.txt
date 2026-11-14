@@ -1,5 +1,0 @@
-归档时间: 2026-11-14 (Asia/Shanghai)
-命令: JAVA_HOME=~/java/jdk-17/Contents/Home bash vault-server/gradlew -p .agents/worktrees/modify/realname-verify-status-20261113-0505/vault-server clean test
-结果: BUILD SUCCESSFUL in 8m 33s
-聚合: suites=221 tests=2374 failures=0 errors=0 skipped=0
-代码状态: 未 commit（见 git diff；部署记录需补源码/包校验和）

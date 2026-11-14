@@ -1,8 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.carlos.vaultserver.task.ReqWorldMarchPayloadTest" tests="1" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:32" hostname="lgs.local" time="0.005">
-  <properties/>
-  <testcase name="gatherMarchPayload_heroPairsAndSoldiersRoundTrip" classname="com.carlos.vaultserver.task.ReqWorldMarchPayloadTest" time="0.005"/>
-  <system-out><![CDATA[WjdrProto/W: Server packet reuses inflight session tag=5701 proto=req_world_march session=99; keeping original registration
-]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

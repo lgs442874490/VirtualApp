@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.carlos.vaultserver.bootstrap.DeviceFingerprintTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:17" hostname="lgs.local" time="0.004">
-  <properties/>
-  <testcase name="forNewRole_differentSalt_isAnotherDevice" classname="com.carlos.vaultserver.bootstrap.DeviceFingerprintTest" time="0.002"/>
-  <testcase name="forRole_isStablePerRole" classname="com.carlos.vaultserver.bootstrap.DeviceFingerprintTest" time="0.001"/>
-  <testcase name="forNewRole_sameSalt_isDeterministic" classname="com.carlos.vaultserver.bootstrap.DeviceFingerprintTest" time="0.001"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

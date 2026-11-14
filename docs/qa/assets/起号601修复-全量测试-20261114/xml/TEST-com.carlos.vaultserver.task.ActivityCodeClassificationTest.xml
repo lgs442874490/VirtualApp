@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.carlos.vaultserver.task.ActivityCodeClassificationTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:18:31" hostname="lgs.local" time="0.0">
-  <properties/>
-  <testcase name="miaWishHouse10151_isAlreadyClaimedAndUnavailable" classname="com.carlos.vaultserver.task.ActivityCodeClassificationTest" time="0.0"/>
-  <testcase name="existingCodesUnchanged" classname="com.carlos.vaultserver.task.ActivityCodeClassificationTest" time="0.0"/>
-  <testcase name="loginTrackCodes_1706_11501_areUnavailableNotClaimed" classname="com.carlos.vaultserver.task.ActivityCodeClassificationTest" time="0.0"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>

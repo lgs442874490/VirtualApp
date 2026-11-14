@@ -1,9 +1,0 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<testsuite name="com.carlos.vaultserver.VaultHttpApiShrinkGuardTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-11-13T22:15:36" hostname="lgs.local" time="0.0">
-  <properties/>
-  <testcase name="allow_whenMissingMinorityOrSingle" classname="com.carlos.vaultserver.VaultHttpApiShrinkGuardTest" time="0.0"/>
-  <testcase name="deletedFpids_parsedFromCommaAndWhitespace" classname="com.carlos.vaultserver.VaultHttpApiShrinkGuardTest" time="0.0"/>
-  <testcase name="reject_whenMissingMajorityAndAtLeastTwo" classname="com.carlos.vaultserver.VaultHttpApiShrinkGuardTest" time="0.0"/>
-  <system-out><![CDATA[]]></system-out>
-  <system-err><![CDATA[]]></system-err>
-</testsuite>
